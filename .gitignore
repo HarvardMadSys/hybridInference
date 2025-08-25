@@ -186,3 +186,16 @@ tmp_run/run_cmds.log
 **/res
 results/*
 .claude/*
+
+# Runtime data directory
+data/db/*.db
+data/db/*.sqlite
+data/logs/*.log
+
+# OpenRouter specific
+openrouter_logs.db
+*.db-journal
+
+# Don't ignore .env.example or .env.test
+!.env.example
+!.env.test
