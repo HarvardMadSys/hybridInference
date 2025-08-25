@@ -1,122 +1,362 @@
-# OpenRouter Integration
+# OpenRouter-Compatible API Server
 
-## Overview
+A production-ready OpenRouter-compatible API server that aggregates multiple LLM providers with intelligent routing, load balancing, and comprehensive logging.
 
-HybridInference can act as an OpenRouter-compatible API provider, allowing you to serve your local models through the OpenRouter API format.
+## Current Architecture
 
-## Components
-
-### 1. OpenRouter Server (`serving/servers/openrouter.py`)
-
-A FastAPI server that:
-- Provides OpenRouter-compatible endpoints
-- Forwards requests to your backend servers (vLLM, SGLang, etc.)
-- Supports basic failover between multiple backends
-
-**Endpoints:**
-- `GET /openrouter/models` - Returns available models list
-- `POST /v1/chat/completions` - Chat completions (OpenAI format)
-- `POST /v1/completions` - Text completions (OpenAI format)
-
-### 2. OpenRouter Client (`serving/providers/openrouter.py`)
-
-A client that can connect to:
-- The official OpenRouter API (openrouter.ai)
-- Your local OpenRouter server
-
-**Features:**
-- Generate completions via `generate()` method
-- List available models via `list_models()` method
-
-### 3. Models Configuration (`config/openrouter_models.json`)
-
-Defines which models your server advertises as available:
-
-```json
-{
-  "data": [
-    {
-      "id": "meta-llama/llama-3.1-8b-instruct",
-      "name": "Meta Llama 3.1 8B Instruct",
-      "context_length": 8192,
-      "pricing": {
-        "prompt": "0",
-        "completion": "0"
-      },
-      // ... other OpenRouter-standard fields
-    }
-  ]
-}
+```
+hybridInference/
+├── serving/
+│   ├── servers/
+│   │   └── openrouter.py      # Main OpenRouter server
+│   ├── adapters/              # Provider adapters
+│   │   ├── __init__.py       # Adapter exports
+│   │   ├── base.py           # Base adapter interface
+│   │   ├── vllm.py          # VLLM/Local models adapter
+│   │   ├── deepseek.py      # DeepSeek API adapter
+│   │   ├── gemini.py        # Google Gemini adapter
+│   │   └── llama.py         # Llama API adapter
+│   └── base.py              # Base classes for LLM operations
+│
+├── database/                # Database persistence layer
+│   ├── __init__.py
+│   ├── database.py         # PostgreSQL implementation
+│   └── database_sqlite.py  # SQLite implementation
+│
+├── data/                   # Runtime data (gitignored)
+│   └── db/
+│       └── openrouter_logs.db
+│
+├── scripts/                # Executable scripts
+│   └── start_server.sh    # Server startup script
+│
+├── utils/                  # Utility tools
+│   └── view_logs.py       # Database log viewer
+│
+├── test/                   # Test suite
+│   ├── api/               # API-specific tests
+│   └── test_integration.py # Integration tests
+│
+├── config/                 # Configuration files
+│   └── openrouter_models.json  # Model metadata in OpenRouter format
+│
+└── .env                    # Environment variables
 ```
 
-## Quick Start
+## Features
 
-### Running the Server
+### Core Capabilities
+- **OpenRouter API Compatibility**: Full compliance with OpenRouter API specification
+- **Multi-Provider Support**: VLLM, DeepSeek, Gemini, Llama, and custom providers
+- **Intelligent Routing**: Weighted load balancing with automatic fallback
+- **Usage Tracking**: Token counting for all requests (prompt_tokens, completion_tokens, total_tokens)
+- **Database Logging**: Comprehensive request/response logging with SQLite/PostgreSQL
+- **Streaming Support**: Server-Sent Events (SSE) for real-time responses
 
+### Supported Models
+- **Local Models** (via freeinference.org or custom VLLM):
+  - Llama-4-Scout: `/models/meta-llama_Llama-4-Scout-17B-16E` (alias: `llama-4-scout`)
+  - Qwen3-Coder: `/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8` (alias: `qwen3-coder`)
+  
+- **API Models**:
+  - DeepSeek: `deepseek-chat`
+  - Gemini: `gemini-2.0-flash-exp`, `gemini-2.5-flash`
+  - Llama: Various models via Llama API (if configured)
+
+## Installation
+
+### Using uv (Recommended)
 ```bash
-# Set your backend server URLs (comma-separated for multiple)
-export UPSTREAM_API_BASES="http://localhost:8001/v1"
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
 
-# Start the server
-python -m serving.servers.openrouter
+# Create virtual environment
+uv venv .venv
+source .venv/bin/activate
 
-# Server runs on http://localhost:8080
+# Install dependencies
+uv pip install fastapi uvicorn httpx python-dotenv aiosqlite asyncpg aiohttp uvloop
 ```
 
-### Using the Client
-
-```python
-from serving.providers.openrouter import OpenRouterProvider
-from serving.base import LLMRequest
-
-# Connect to your local server
-provider = OpenRouterProvider({
-    "base_url": "http://localhost:8080/v1"
-})
-
-# List models
-models = await provider.list_models()
-
-# Generate text
-request = LLMRequest(
-    prompt="Hello!",
-    model="meta-llama/llama-3.1-8b-instruct",
-    max_tokens=100
-)
-response = await provider.generate(request)
-print(response.text)
+### Using conda
+```bash
+conda create -n hybrid_inference python=3.11
+conda activate hybrid_inference
+pip install fastapi uvicorn httpx python-dotenv aiosqlite asyncpg aiohttp uvloop
 ```
 
 ## Configuration
 
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `UPSTREAM_API_BASES` | Backend server URLs (comma-separated) | `http://localhost:8001/v1` |
-| `OPENROUTER_MODELS_PATH` | Path to models.json | `config/openrouter_models.json` |
-| `PORT` | Server port | `8080` |
-
-### Configuring Models
-
-Edit `config/openrouter_models.json` to match your deployed models. Key fields:
-
-- `id`: Model identifier (must match your backend)
-- `context_length`: Maximum context size
-- `pricing`: Set to "0" for internal use
-- `quantization`: Your model's quantization (bf16, int8, etc.)
-
-## Testing
+Create `.env` file in project root:
 
 ```bash
-# Test the models endpoint
-curl http://localhost:8080/openrouter/models
+# Local VLLM Models (freeinference.org or your deployment)
+LOCAL_BASE_URL=http://freeinference.org/v1
+
+# API Provider Keys
+DEEPSEEK_API_KEY=your-deepseek-api-key
+GEMINI_API_KEY=your-gemini-api-key
+LLAMA_API_KEY=your-llama-api-key  # Optional
+
+# Database Configuration
+USE_SQLITE_LOG=true  # Use SQLite for development
+# DATABASE_URL=postgresql://user:pass@localhost/openrouter  # For production
+
+# Server Configuration
+PORT=8080
+WORKERS=1  # Set to 4+ for production
+```
+
+### Model Configuration
+
+The `config/openrouter_models.json` file contains detailed model metadata in OpenRouter's standard format, including:
+- Model IDs and display names
+- Context lengths and max output tokens
+- Pricing information
+- Supported features (JSON mode, function calling)
+- Supported sampling parameters
+
+This metadata is exposed via the `/v1/models` endpoint for client compatibility.
+
+## Quick Start
+
+### Start Server
+```bash
+# From project root
+source .venv/bin/activate
+python -m serving.servers.openrouter
+
+# Custom port
+PORT=8888 python -m serving.servers.openrouter
+
+# Production mode with workers
+python -m serving.servers.openrouter --workers 4
+```
+
+### Test Installation
+```bash
+# Check health
+curl http://localhost:8080/health
+
+# List available models
+curl http://localhost:8080/v1/models | jq
 
 # Test chat completion
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "meta-llama/llama-3.1-8b-instruct",
-    "messages": [{"role": "user", "content": "Hello!"}]
+    "model": "llama-4-scout",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "max_tokens": 50
   }'
 ```
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | API information and version |
+| `/health` | GET | Health status (routes_configured, database_connected) |
+| `/v1/models` | GET | List available models |
+| `/v1/chat/completions` | POST | Chat completion (OpenRouter/OpenAI compatible) |
+| `/routing` | GET | Show routing configuration |
+| `/stats` | GET | Usage statistics with filters |
+
+## Usage Examples
+
+### Basic Chat Completion
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-chat",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "What is 2+2?"}
+    ],
+    "max_tokens": 100,
+    "temperature": 0.7
+  }'
+```
+
+### Local Model (freeinference.org)
+```bash
+# Using full model path
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8",
+    "messages": [{"role": "user", "content": "Write a Python hello world"}],
+    "max_tokens": 100
+  }'
+
+# Using alias
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3-coder",
+    "messages": [{"role": "user", "content": "Write a Python hello world"}],
+    "max_tokens": 100
+  }'
+```
+
+### Streaming Response
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-4-scout",
+    "messages": [{"role": "user", "content": "Tell me a story"}],
+    "stream": true,
+    "max_tokens": 200
+  }'
+```
+
+## Response Format
+
+Standard OpenRouter/OpenAI format:
+
+```json
+{
+  "id": "chatcmpl-1756123456789",
+  "object": "chat.completion",
+  "created": 1756123456,
+  "model": "llama-4-scout",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The answer is 4."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 15,
+    "completion_tokens": 10,
+    "total_tokens": 25
+  }
+}
+```
+
+## Database
+
+### Schema
+```sql
+CREATE TABLE api_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT UNIQUE,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    model_id TEXT NOT NULL,
+    provider TEXT,
+    prompt TEXT,
+    response TEXT,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER,
+    latency_ms INTEGER,
+    status_code INTEGER,
+    error TEXT,
+    params TEXT,
+    metadata TEXT
+);
+```
+
+### View Logs
+```bash
+# Use the log viewer utility
+python utils/view_logs.py
+
+# Direct database query
+sqlite3 data/db/openrouter_logs.db "
+  SELECT model_id, COUNT(*) as requests, 
+         SUM(total_tokens) as tokens,
+         AVG(latency_ms) as avg_latency
+  FROM api_logs 
+  WHERE timestamp > datetime('now', '-1 day')
+  GROUP BY model_id;"
+```
+
+## Testing
+
+### Run Integration Tests
+```bash
+# Start server first
+python -m serving.servers.openrouter &
+
+# Run tests
+pytest test/test_integration.py -v
+
+# Run specific test
+pytest test/test_integration.py::TestOpenRouterIntegration::test_health_endpoint -v
+```
+
+## Troubleshooting
+
+### Port Already in Use
+```bash
+# Find and kill process
+lsof -ti :8080 | xargs kill -9
+```
+
+### Module Import Errors
+```bash
+# Ensure you're in project root
+cd /root/hybridInference
+
+# Run as module
+python -m serving.servers.openrouter
+```
+
+### Database Not Found
+```bash
+# Create data directory if missing
+mkdir -p data/db
+
+# Check database path
+ls -la data/db/openrouter_logs.db
+```
+
+### Environment Variables Not Loading
+```bash
+# Check .env file exists in project root
+ls -la .env
+
+# Verify environment variables
+python -c "import os; print(os.getenv('LOCAL_BASE_URL'))"
+```
+
+## Performance Optimization
+
+- **Use uvloop**: Automatically enabled for better async performance
+- **Multiple workers**: `--workers 4` for production
+- **PostgreSQL**: For production workloads with high concurrency
+- **Connection pooling**: Built into aiohttp/httpx adapters
+
+## Architecture Principles
+
+1. **Adapter Pattern**: Each provider has dedicated adapter for clean separation
+2. **Weighted Routing**: Configurable load distribution across providers
+3. **Automatic Fallback**: Resilient to individual provider failures
+4. **Async Throughout**: FastAPI + uvloop for high concurrency
+5. **Comprehensive Logging**: All requests logged with usage metrics
+
+## Development
+
+### Adding a New Provider
+1. Create adapter in `serving/adapters/`
+2. Inherit from `BaseAdapter`
+3. Implement `chat_completion()` and `stream_chat_completion()`
+4. Register in `startup_event()` in `serving/servers/openrouter.py`
+
+### Code Style
+- Follow Google Python Style Guide
+- Use type hints
+- Add docstrings for public methods
+- Run tests before committing
+
+## License
+
+MIT License - See LICENSE file for details
