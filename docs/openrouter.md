@@ -27,18 +27,12 @@ hybridInference/
 │   └── db/
 │       └── openrouter_logs.db
 │
-├── scripts/                # Executable scripts
-│   └── start_server.sh    # Server startup script
-│
 ├── utils/                  # Utility tools
 │   └── view_logs.py       # Database log viewer
 │
 ├── test/                   # Test suite
 │   ├── api/               # API-specific tests
-│   └── test_integration.py # Integration tests
-│
-├── config/                 # Configuration files
-│   └── openrouter_models.json  # Model metadata in OpenRouter format
+│   └── test_openrouter_models.py # openrouter providing models test
 │
 └── .env                    # Environment variables
 ```
@@ -97,7 +91,7 @@ LOCAL_BASE_URL=http://freeinference.org/v1
 # API Provider Keys
 DEEPSEEK_API_KEY=your-deepseek-api-key
 GEMINI_API_KEY=your-gemini-api-key
-LLAMA_API_KEY=your-llama-api-key  # Optional
+LLAMA_API_KEY=your-llama-api-key
 
 # Database Configuration
 USE_SQLITE_LOG=true  # Use SQLite for development
@@ -287,10 +281,8 @@ sqlite3 data/db/openrouter_logs.db "
 python -m serving.servers.openrouter &
 
 # Run tests
-pytest test/test_integration.py -v
+pytest test/test_openrouter_models.py -v
 
-# Run specific test
-pytest test/test_integration.py::TestOpenRouterIntegration::test_health_endpoint -v
 ```
 
 ## Troubleshooting
