@@ -42,6 +42,7 @@ hybridInference/
 ### Core Capabilities
 - **OpenRouter API Compatibility**: Full compliance with OpenRouter API specification
 - **Multi-Provider Support**: VLLM, DeepSeek, Gemini, Llama, and custom providers
+- **OFFLOAD Mode**: Set `OFFLOAD=1` to fully offload to provider APIs (skip local VLLM)
 - **Intelligent Routing**: Weighted load balancing with automatic fallback
 - **Usage Tracking**: Token counting for all requests (prompt_tokens, completion_tokens, total_tokens)
 - **Database Logging**: Comprehensive request/response logging with SQLite/PostgreSQL
@@ -54,8 +55,8 @@ hybridInference/
   
 - **API Models**:
   - DeepSeek: `deepseek-chat`
-  - Gemini: `gemini-2.0-flash-exp`, `gemini-2.5-flash`
-  - Llama: Various models via Llama API (if configured)
+  - Gemini: `gemini-2.5-flash`
+  - Llama API: `llama-api` (when configured)
 
 ## Installation
 
@@ -88,10 +89,14 @@ Create `.env` file in project root:
 # Local VLLM Models (freeinference.org or your deployment)
 LOCAL_BASE_URL=http://freeinference.org/v1
 
+# OFFLOAD Mode (skip local VLLM, use only provider APIs)
+OFFLOAD=0  # set to 1 to enable full offload
+
 # API Provider Keys
 DEEPSEEK_API_KEY=your-deepseek-api-key
 GEMINI_API_KEY=your-gemini-api-key
 LLAMA_API_KEY=your-llama-api-key
+LLAMA_BASE_URL=https://your-llama-api-base/v1
 
 # Database Configuration
 USE_SQLITE_LOG=true  # Use SQLite for development
@@ -102,16 +107,17 @@ PORT=8080
 WORKERS=1  # Set to 4+ for production
 ```
 
-### Model Configuration
+### Model Metadata
 
-The `config/openrouter_models.json` file contains detailed model metadata in OpenRouter's standard format, including:
+The server exposes model metadata via the models endpoint, including:
 - Model IDs and display names
-- Context lengths and max output tokens
-- Pricing information
-- Supported features (JSON mode, function calling)
-- Supported sampling parameters
+- Context lengths (`context_length`) and max output tokens (`max_output_length`)
+- Pricing (string USD fields: `prompt`, `completion`, `image`, `request`, `input_cache_reads`, `input_cache_writes`)
+- Supported features (`tools`, `json_mode`, `structured_outputs`)
+- Supported sampling parameters (`temperature`, `top_p`, `top_k`, `stop`, etc.)
+- Modalities (`input_modalities`, `output_modalities`) and `quantization`
 
-This metadata is exposed via the `/v1/models` endpoint for client compatibility.
+Clients should read this from the HTTP endpoint rather than a static file.
 
 ## Quick Start
 
@@ -128,13 +134,23 @@ PORT=8888 python -m serving.servers.openrouter
 python -m serving.servers.openrouter --workers 4
 ```
 
+### Start in OFFLOAD-only Mode (Meta Llama API, DeepSeek, Gemini)
+```bash
+export OFFLOAD=1
+export LLAMA_BASE_URL=https://your-llama-api-base/v1
+export LLAMA_API_KEY=your-llama-api-key
+export DEEPSEEK_API_KEY=your-deepseek-api-key
+export GEMINI_API_KEY=your-gemini-api-key
+python -m serving.servers.openrouter
+```
+
 ### Test Installation
 ```bash
 # Check health
 curl http://localhost:8080/health
 
 # List available models
-curl http://localhost:8080/v1/models | jq
+curl http://localhost:8080/models | jq
 
 # Test chat completion
 curl -X POST http://localhost:8080/v1/chat/completions \
@@ -152,8 +168,9 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 |----------|--------|-------------|
 | `/` | GET | API information and version |
 | `/health` | GET | Health status (routes_configured, database_connected) |
-| `/v1/models` | GET | List available models |
+| `/models` | GET | List available models (OpenRouter schema; also `/v1/models`, `/openrouter/models`) |
 | `/v1/chat/completions` | POST | Chat completion (OpenRouter/OpenAI compatible) |
+| `/completion` | POST | Single-shot completion (alias for chat completions) |
 | `/routing` | GET | Show routing configuration |
 | `/stats` | GET | Usage statistics with filters |
 
@@ -232,6 +249,36 @@ Standard OpenRouter/OpenAI format:
     "completion_tokens": 10,
     "total_tokens": 25
   }
+}
+```
+
+## Models Endpoint Response
+
+Example item (schema similar to OpenRouter provider requirements):
+
+```json
+{
+  "id": "llama-4-scout",
+  "name": "Llama 4 Scout 17B",
+  "object": "model",
+  "created": 1756123456,
+  "owned_by": "vllm",
+  "input_modalities": ["text"],
+  "output_modalities": ["text"],
+  "quantization": "bf16",
+  "context_length": 262144,
+  "max_output_length": 16384,
+  "pricing": {
+    "prompt": "0",
+    "completion": "0",
+    "image": "0",
+    "request": "0",
+    "input_cache_reads": "0",
+    "input_cache_writes": "0"
+  },
+  "supported_sampling_parameters": ["temperature", "top_p", "top_k", "stop", "max_tokens"],
+  "supported_features": ["tools", "json_mode", "structured_outputs"],
+  "openrouter": {"slug": "llama-4-scout"}
 }
 ```
 
@@ -318,4 +365,4 @@ ls -la .env
 
 # Verify environment variables
 python -c "import os; print(os.getenv('LOCAL_BASE_URL'))"
-```
+
