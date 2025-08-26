@@ -250,8 +250,10 @@ async def startup_event() -> None:
     
     # Register local VLLM models (freeinference.org or custom deployment)
     local_base_url = os.getenv("LOCAL_BASE_URL", "")
+    offload_flag = os.getenv("OFFLOAD", "0").strip().lower()
+    offload_enabled = offload_flag in ("1", "true", "yes")
     
-    if local_base_url:
+    if local_base_url and not offload_enabled:
         # Register Llama-4-Scout model
         llama_config = ModelConfig(
             id="/models/meta-llama_Llama-4-Scout-17B-16E",
@@ -305,6 +307,8 @@ async def startup_event() -> None:
             router.register_route(alias, [(qwen_adapter, 1.0)])
         
         logger.info("Registered local VLLM models")
+    elif local_base_url and offload_enabled:
+        logger.info("OFFLOAD=1 detected: Skipping local VLLM model registration")
     
     # Register DeepSeek (single endpoint, no routing needed)
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
