@@ -365,4 +365,4 @@ ls -la .env
 
 # Verify environment variables
 python -c "import os; print(os.getenv('LOCAL_BASE_URL'))"
-```
+

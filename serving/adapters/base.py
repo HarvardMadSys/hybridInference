@@ -26,6 +26,9 @@ class ModelConfig:
     provider: str
     base_url: str
     api_key: Optional[str] = None
+    quantization: str = "bf16"
+    input_modalities: List[str] = field(default_factory=lambda: ["text"])
+    output_modalities: List[str] = field(default_factory=lambda: ["text"])
     context_length: int = 8192
     max_output_length: int = 4096
     supports_tools: bool = False
@@ -35,7 +38,11 @@ class ModelConfig:
     ])
     pricing: Dict[str, str] = field(default_factory=lambda: {
         "prompt": "0",
-        "completion": "0"
+        "completion": "0",
+        "image": "0",
+        "request": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0"
     })
 
 
