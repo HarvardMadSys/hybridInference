@@ -24,7 +24,10 @@ from serving.adapters import (
 )
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
 from database.database import DatabaseLogger
 from database.database_sqlite import SQLiteDatabaseLogger
 
@@ -33,7 +36,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # Load .env from project root
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
+ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
+load_dotenv(ENV_PATH)
 
 
 @dataclass
@@ -258,6 +262,7 @@ async def startup_event() -> None:
             name="Llama 4 Scout 17B",
             provider="vllm",
             base_url=local_base_url.rstrip("/"),
+            quantization="bf16",
             context_length=262144,  # 256K context
             max_output_length=16384,
             supports_tools=True,
@@ -284,6 +289,7 @@ async def startup_event() -> None:
             name="Qwen3 Coder 480B",
             provider="vllm",
             base_url=local_base_url.rstrip("/"),
+            quantization="fp8",
             context_length=32768,
             max_output_length=8192,
             supports_tools=True,
@@ -315,6 +321,7 @@ async def startup_event() -> None:
             provider="deepseek",
             base_url="https://api.deepseek.com/v1",
             api_key=deepseek_key,
+            quantization="bf16",
             context_length=65536,
             max_output_length=8192,
             supports_tools=True,
@@ -340,6 +347,9 @@ async def startup_event() -> None:
             provider="gemini",
             base_url="https://generativelanguage.googleapis.com/v1beta",
             api_key=gemini_key,
+            quantization="bf16",
+            input_modalities=["text", "image"],
+            output_modalities=["text"],
             context_length=1048576,
             max_output_length=8192,
             supports_tools=True,
@@ -357,7 +367,10 @@ async def startup_event() -> None:
         logger.info("Registered Gemini adapter")
     
     # Optional: Setup Llama API routing if configured separately
-    llama_api_base = os.getenv("LLAMA_API_BASE", "")
+    # Accept multiple env var names for base URL for robustness
+    llama_api_base = (
+        os.getenv("LLAMA_BASE_URL")
+    )
     llama_api_key = os.getenv("LLAMA_API_KEY")
     
     if llama_api_base and llama_api_key:
@@ -399,6 +412,8 @@ async def root() -> Dict[str, Any]:
         "features": ["Load balancing", "Automatic fallback", "Database logging"],
         "endpoints": {
             "/v1/chat/completions": "Chat completions endpoint",
+            "/completion": "Single-shot completion endpoint (alias)",
+            "/models": "List available models (OpenRouter schema)",
             "/v1/models": "List available models",
             "/openrouter/models": "OpenRouter format models list",
             "/routing": "Show routing configuration",
@@ -440,19 +455,81 @@ async def get_routing() -> Dict[str, Any]:
     }
 
 
+@app.get("/models")
 @app.get("/v1/models")
 @app.get("/openrouter/models")
 async def list_models() -> Dict[str, Any]:
-    """List available models in OpenRouter format."""
-    models = []
-    for model_id in router.routes.keys():
-        models.append({
-            "id": model_id,
+    """List available models with metadata similar to OpenRouter schema.
+
+    Includes per-model context length and maximum output tokens. When multiple
+    adapters are registered for a model, the server advertises conservative
+    limits (minimum across adapters) to ensure compatibility regardless of the
+    routed backend.
+    """
+    now = int(time.time())
+    models: List[Dict[str, Any]] = []
+    emitted_ids: set[str] = set()
+    
+    for model_id, route in router.routes.items():
+        configs = [adapter.config for adapter, _ in route.adapters]
+        if not configs:
+            continue
+        
+        # Conservative limits across all adapters for this model
+        context_length = min(cfg.context_length for cfg in configs)
+        max_output_length = min(cfg.max_output_length for cfg in configs)
+        
+        # Intersection of supported sampling params across adapters
+        supported_params_sets = [set(cfg.supported_params) for cfg in configs]
+        if supported_params_sets:
+            supported_sampling_parameters = sorted(list(set.intersection(*supported_params_sets)))
+        else:
+            supported_sampling_parameters = []
+        
+        # Supported features per OpenRouter provider doc
+        supported_features: List[str] = []
+        if any(cfg.supports_tools for cfg in configs):
+            supported_features.append("tools")
+        if any(cfg.supports_structured_output for cfg in configs):
+            supported_features.append("json_mode")
+            supported_features.append("structured_outputs")
+        
+        # Use the first config for display name/provider/pricing as canonical
+        primary_cfg = configs[0]
+        canonical_id = primary_cfg.id
+        if canonical_id in emitted_ids:
+            # Skip aliases; only emit one entry per canonical model id
+            continue
+        emitted_ids.add(canonical_id)
+        model_entry: Dict[str, Any] = {
+            "id": canonical_id,
+            "name": primary_cfg.name,
             "object": "model",
-            "created": int(time.time()),
-            "owned_by": "openrouter"
-        })
+            "created": now,
+            "owned_by": primary_cfg.provider,
+            "input_modalities": primary_cfg.input_modalities,
+            "output_modalities": primary_cfg.output_modalities,
+            "quantization": primary_cfg.quantization,
+            "context_length": context_length,
+            "max_output_length": max_output_length,
+            "pricing": primary_cfg.pricing,
+            "supported_sampling_parameters": supported_sampling_parameters,
+            "supported_features": supported_features
+        }
+        # Optional OpenRouter-specific metadata
+        if model_id != canonical_id:
+            # Prefer a human-friendly alias as slug if present
+            model_entry["openrouter"] = {"slug": model_id}
+        models.append(model_entry)
+    
     return {"object": "list", "data": models}
+
+@app.post("/completion")
+async def single_completion(request: Request):
+    """Compatibility alias for single-shot completion requests.
+    Forwards to /v1/chat/completions using the provided payload.
+    """
+    return await chat_completions(request)
 
 
 @app.post("/v1/chat/completions")

@@ -319,36 +319,3 @@ ls -la .env
 # Verify environment variables
 python -c "import os; print(os.getenv('LOCAL_BASE_URL'))"
 ```
-
-## Performance Optimization
-
-- **Use uvloop**: Automatically enabled for better async performance
-- **Multiple workers**: `--workers 4` for production
-- **PostgreSQL**: For production workloads with high concurrency
-- **Connection pooling**: Built into aiohttp/httpx adapters
-
-## Architecture Principles
-
-1. **Adapter Pattern**: Each provider has dedicated adapter for clean separation
-2. **Weighted Routing**: Configurable load distribution across providers
-3. **Automatic Fallback**: Resilient to individual provider failures
-4. **Async Throughout**: FastAPI + uvloop for high concurrency
-5. **Comprehensive Logging**: All requests logged with usage metrics
-
-## Development
-
-### Adding a New Provider
-1. Create adapter in `serving/adapters/`
-2. Inherit from `BaseAdapter`
-3. Implement `chat_completion()` and `stream_chat_completion()`
-4. Register in `startup_event()` in `serving/servers/openrouter.py`
-
-### Code Style
-- Follow Google Python Style Guide
-- Use type hints
-- Add docstrings for public methods
-- Run tests before committing
-
-## License
-
-MIT License - See LICENSE file for details
