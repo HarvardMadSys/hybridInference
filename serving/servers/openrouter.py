@@ -24,7 +24,10 @@ from serving.adapters import (
 )
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
 from database.database import DatabaseLogger
 from database.database_sqlite import SQLiteDatabaseLogger
 from serving.servers.rate_limiter import (
@@ -38,7 +41,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # Load .env from project root.
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
+ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
+load_dotenv(ENV_PATH)
 
 
 @dataclass
