@@ -40,7 +40,7 @@ from serving.servers.rate_limiter import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Load .env from project root.
+# Load .env from project root
 ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
 load_dotenv(ENV_PATH)
 
@@ -379,11 +379,10 @@ async def startup_event() -> None:
         # Configure rate limit: 1M tokens per minute (configurable via env)  
         # Rate limiting will be configured after rate_limiter initialization
     
-    # Optional: Setup Llama API routing if configured separately.
+    # Optional: Setup Llama API routing if configured separately
     # Accept multiple env var names for base URL for robustness
     llama_api_base = (
-        os.getenv("LLAMA_BASE_URL") or 
-        os.getenv("LLAMA_API_BASE", "")
+        os.getenv("LLAMA_BASE_URL")
     )
     llama_api_key = os.getenv("LLAMA_API_KEY")
     
