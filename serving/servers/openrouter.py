@@ -36,7 +36,7 @@ from serving.servers.rate_limiter import (
     TokenCounter
 )
 
-# Configure logging.
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ class SimpleRouter:
         if not route or not route.adapters:
             return None
         
-        # Weighted random selection.
+        # Weighted random selection
         rand = random.random()
         cumulative = 0.0
         
@@ -103,7 +103,7 @@ class SimpleRouter:
             if rand <= cumulative:
                 return adapter
         
-        # Fallback to last adapter (handles floating point rounding).
+        # Fallback to last adapter (handles floating point rounding)
         return route.adapters[-1][0]
     
     async def chat_completion(
@@ -140,7 +140,7 @@ class SimpleRouter:
             }
             return response
         except Exception as primary_error:
-            # Fallback to other adapters.
+            # Fallback to other adapters
             route = self.routes[model_id]
             for adapter, _ in route.adapters:
                 if adapter == primary_adapter:
@@ -154,9 +154,9 @@ class SimpleRouter:
                     }
                     return response
                 except Exception:
-                    continue  # Try next adapter.
+                    continue  # Try next adapter
             
-            # All adapters failed.
+            # All adapters failed
             raise primary_error
     
     async def stream_chat_completion(
@@ -190,7 +190,7 @@ class SimpleRouter:
                 yield chunk
             return
         except Exception as primary_error:
-            # Fallback to other adapters.
+            # Fallback to other adapters
             route = self.routes[model_id]
             for adapter, _ in route.adapters:
                 if adapter == primary_adapter:
@@ -200,16 +200,16 @@ class SimpleRouter:
                         yield chunk
                     return
                 except Exception:
-                    continue  # Try next adapter.
+                    continue  # Try next adapter
             
-            # All adapters failed.
+            # All adapters failed
             raise primary_error
 
 router = SimpleRouter()
 db_logger: Optional[DatabaseLogger] = None
 
 
-# Global rate limiter instance.
+# Global rate limiter instance
 rate_limiter: Optional[PersistentRateLimiter] = None
 
 
@@ -241,8 +241,8 @@ async def startup_event() -> None:
     """Initialize server components on startup."""
     global db_logger, router, rate_limiter
     
-    # Initialize database logger.
-    # Use SQLite for easy demo (no PostgreSQL needed).
+    # Initialize database logger
+    # Use SQLite for easy demo (no PostgreSQL needed)
     use_sqlite = os.getenv("USE_SQLITE_LOG", "true").lower() == "true"
     
     if use_sqlite:
@@ -251,7 +251,7 @@ async def startup_event() -> None:
         await db_logger.initialize()
         logger.info(f"SQLite database initialized at {db_path}")
     else:
-        # PostgreSQL if configured.
+        # PostgreSQL if configured
         db_url = os.getenv("DATABASE_URL")
         if db_url:
             db_config = {
@@ -261,13 +261,13 @@ async def startup_event() -> None:
             await db_logger.initialize()
             logger.info("PostgreSQL database initialized")
     
-    # Register local VLLM models (freeinference.org or custom deployment).
+    # Register local VLLM models (freeinference.org or custom deployment)
     local_base_url = os.getenv("LOCAL_BASE_URL", "")
     offload_flag = os.getenv("OFFLOAD", "0").strip().lower()
     offload_enabled = offload_flag in ("1", "true", "yes")
     
     if local_base_url and not offload_enabled:
-        # Register Llama-4-Scout model.
+        # Register Llama-4-Scout model
         llama_config = ModelConfig(
             id="/models/meta-llama_Llama-4-Scout-17B-16E",
             name="Llama 4 Scout 17B",
@@ -293,7 +293,7 @@ async def startup_event() -> None:
         for alias in llama_aliases:
             router.register_route(alias, [(llama_adapter, 1.0)])
         
-        # Register Qwen3-Coder model.
+        # Register Qwen3-Coder model
         qwen_config = ModelConfig(
             id="/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8",
             name="Qwen3 Coder 480B",
@@ -323,7 +323,7 @@ async def startup_event() -> None:
     elif local_base_url and offload_enabled:
         logger.info("OFFLOAD=1 detected: Skipping local VLLM model registration")
     
-    # Register DeepSeek (single endpoint, no routing needed).
+    # Register DeepSeek (single endpoint, no routing needed)
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
     if deepseek_key:
         config = ModelConfig(
@@ -351,7 +351,7 @@ async def startup_event() -> None:
         # Configure rate limit: 1M tokens per day (configurable via env)
         # Rate limiting will be configured after rate_limiter initialization
     
-    # Register Gemini (single endpoint, no routing needed).
+    # Register Gemini (single endpoint, no routing needed)
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
         config = ModelConfig(
@@ -387,7 +387,7 @@ async def startup_event() -> None:
     llama_api_key = os.getenv("LLAMA_API_KEY")
     
     if llama_api_base and llama_api_key:
-        # Only register Llama API if it's different from local base.
+        # Only register Llama API if it's different from local base
         if llama_api_base != local_base_url:
             api_config = ModelConfig(
                 id="llama-api",
@@ -409,11 +409,11 @@ async def startup_event() -> None:
             router.register_route("llama-api", [(llama_api_adapter, 1.0)])
             logger.info("Registered Llama API adapter")
     
-    # Initialize rate limiter with persistence.
+    # Initialize rate limiter with persistence
     if os.getenv("RATE_LIMIT_ENABLED", "1") == "1":
         rate_limiter = PersistentRateLimiter()
         
-        # Configure DeepSeek rate limit.
+        # Configure DeepSeek rate limit
         if deepseek_key:
             deepseek_tpd = int(os.getenv("DEEPSEEK_TPD_LIMIT", "1000000"))
             if deepseek_tpd > 0:
@@ -428,7 +428,7 @@ async def startup_event() -> None:
                 rate_limiter.configure(config)
                 logger.info(f"Configured DeepSeek rate limit: {deepseek_tpd:,} tokens per day")
         
-        # Configure Gemini rate limit.
+        # Configure Gemini rate limit
         if gemini_key:
             gemini_tpm = int(os.getenv("GEMINI_TPM_LIMIT", "1000000"))
             if gemini_tpm > 0:
@@ -602,18 +602,18 @@ async def chat_completions(
                 headers=headers
             )
     
-    # Generate request ID.
+    # Generate request ID
     request_id = f"req_{int(time.time() * 1000000)}"
     start_time = time.time()
     
-    # Extract metadata for logging.
+    # Extract metadata for logging
     metadata = {
         "user_agent": request.headers.get("user-agent"),
         "ip": request.client.host if request.client else None,
         "authorization": bool(authorization)
     }
     
-    # Handle streaming.
+    # Handle streaming
     if body.get("stream", False):
         async def stream_generator():
             try:
@@ -622,7 +622,7 @@ async def chat_completions(
                     # responsible for emitting a final usage chunk.
                     yield chunk
                 
-                # Log the streaming request.
+                # Log the streaming request
                 if db_logger:
                     await db_logger.log_request(
                         request_id=request_id,
@@ -651,7 +651,7 @@ async def chat_completions(
                         params=params,
                         metadata=metadata
                     )
-                # Release tokens on streaming error.
+                # Release tokens on streaming error
                 if rate_limiter:
                     estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
                     await rate_limiter.release_tokens(model, estimated_tokens)
@@ -674,18 +674,18 @@ async def chat_completions(
             }
         )
     
-    # Non-streaming request.
+    # Non-streaming request
     try:
         response = await router.chat_completion(model, messages, **params)
         
-        # Log the request.
+        # Log the request
         if db_logger:
-            # Extract provider from routing metadata if available.
+            # Extract provider from routing metadata if available
             provider = "router"
             if "_routing" in response:
                 provider = response["_routing"]["provider"]
                 metadata.update(response["_routing"])
-                del response["_routing"]  # Remove internal metadata.
+                del response["_routing"]  # Remove internal metadata
             else:
                 provider = "router"
             
@@ -702,7 +702,7 @@ async def chat_completions(
                 metadata=metadata
             )
         
-        # Log actual token usage for metrics.
+        # Log actual token usage for metrics
         if rate_limiter:
             actual_tokens = response.get("usage", {}).get("total_tokens")
             if actual_tokens:
@@ -714,11 +714,11 @@ async def chat_completions(
         return response
         
     except Exception as e:
-        # Release tokens on error.
+        # Release tokens on error
         if rate_limiter:
             estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
             await rate_limiter.release_tokens(model, estimated_tokens)
-        # Log the error.
+        # Log the error
         if db_logger:
             provider = "router"
             await db_logger.log_request(
@@ -797,18 +797,18 @@ async def reset_circuit_breaker(model_id: str):
 
 @app.post("/v1/completions")
 async def completions(request: Request):
-    # For backward compatibility, convert to chat completions.
+    # For backward compatibility, convert to chat completions
     body = await request.json()
     
-    # Convert prompt to messages format.
+    # Convert prompt to messages format
     prompt = body.get("prompt", "")
     messages = [{"role": "user", "content": prompt}]
     
-    # Update body.
+    # Update body
     body["messages"] = messages
     del body["prompt"]
     
-    # Forward to chat completions.
+    # Forward to chat completions
     request._body = json.dumps(body).encode()
     return await chat_completions(request)
 
