@@ -199,3 +199,5 @@ openrouter_logs.db
 # Don't ignore .env.example or .env.test
 !.env.example
 !.env.test
+
+CLAUDE.md

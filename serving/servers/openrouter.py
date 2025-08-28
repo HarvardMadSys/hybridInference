@@ -395,9 +395,10 @@ async def startup_event() -> None:
     if llama_api_base and llama_api_key:
         # Only register Llama API if it's different from local base
         if llama_api_base != local_base_url:
-            api_config = ModelConfig(
-                id="llama-api",
-                name="Llama API",
+            # Register Llama 4 Scout model
+            llama4_scout_config = ModelConfig(
+                id="llama-4-scout",
+                name="Llama 4 Scout",
                 provider="llama",
                 base_url=llama_api_base.rstrip("/"),
                 api_key=llama_api_key,
@@ -411,9 +412,32 @@ async def startup_event() -> None:
                     "stop", "max_tokens", "seed"
                 ]
             )
-            llama_api_adapter = LlamaAdapter(api_config)
-            router.register_route("llama-api", [(llama_api_adapter, 1.0)])
-            logger.info("Registered Llama API adapter")
+            llama4_adapter = LlamaAdapter(llama4_scout_config)
+            
+            # Register Llama 3.3 70B model
+            llama33_70b_config = ModelConfig(
+                id="llama-3.3-70b-instruct",
+                name="Llama 3.3 70B Instruct",
+                provider="llama",
+                base_url=llama_api_base.rstrip("/"),
+                api_key=llama_api_key,
+                context_length=131072,  # 128K context for Llama 3.3
+                max_output_length=8192,
+                supports_tools=True,
+                supports_structured_output=True,
+                supported_params=[
+                    "temperature", "top_p", "top_k", "min_p",
+                    "frequency_penalty", "presence_penalty",
+                    "stop", "max_tokens", "seed"
+                ]
+            )
+            llama33_adapter = LlamaAdapter(llama33_70b_config)
+            
+            # Register both models with their routes
+            router.register_route("llama-4-scout", [(llama4_adapter, 1.0)])
+            router.register_route("llama-3.3-70b-instruct", [(llama33_adapter, 1.0)])
+            
+            logger.info("Registered Llama API adapters: Llama 4 Scout and Llama 3.3 70B")
     
     # Initialize rate limiter with persistence
     if os.getenv("RATE_LIMIT_ENABLED", "1") == "1":
