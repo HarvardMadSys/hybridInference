@@ -2,6 +2,7 @@
 
 ## Installation
 
+### conda 
 First, create a conda environment and activate it:
 ```bash
 # Create a new conda environment
@@ -12,6 +13,12 @@ conda activate hybrid_inference
 Then, install the required dependencies:
 ```bash
 pip install -r requirements.txt
+```
+### uv
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
 ```
 
 ## Quick Start
