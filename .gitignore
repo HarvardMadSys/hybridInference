@@ -200,4 +200,7 @@ openrouter_logs.db
 !.env.example
 !.env.test
 
+
+# Docs for AI agents
 CLAUDE.md
+AGENTS.md
