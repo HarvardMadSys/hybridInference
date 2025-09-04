@@ -1,0 +1,114 @@
+"""Model registry and configuration loader.
+
+Supports registering adapters either from environment variables or a
+YAML configuration file (config/models.yaml).
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+from serving.adapters import (
+    VLLMAdapter,
+    DeepSeekAdapter,
+    GeminiAdapter,
+    LlamaAdapter,
+    ModelConfig,
+)
+from routing.executor import RouteExecutor
+
+
+def _make_adapter(kind: str, cfg: Dict[str, Any]):
+    model_cfg = ModelConfig(**cfg)
+    if kind == "vllm":
+        return VLLMAdapter(model_cfg)
+    if kind == "deepseek":
+        return DeepSeekAdapter(model_cfg)
+    if kind == "gemini":
+        return GeminiAdapter(model_cfg)
+    if kind == "llama":
+        return LlamaAdapter(model_cfg)
+    raise ValueError(f"Unknown adapter kind: {kind}")
+
+
+def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
+    """Register models and routes from a YAML configuration file.
+
+    The file schema:
+      models:
+        - id: llama-3.3-70b-instruct
+          name: Llama 3.3 70B Instruct
+          provider: llama
+          base_url: ${LLAMA_BASE_URL}
+          api_key: ${LLAMA_API_KEY}
+          context_length: 131072
+          max_output_length: 8192
+          supports_tools: true
+          supports_structured_output: true
+          supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
+          aliases: ["llama-3.3-70b-instruct"]
+          route:
+            - kind: llama
+              weight: 1.0
+              base_url: ${LLAMA_BASE_URL}
+              api_key: ${LLAMA_API_KEY}
+
+    Returns the number of registered routes.
+    """
+    if not path.exists():
+        return 0
+    data = yaml.safe_load(path.read_text()) or {}
+    models: List[Dict[str, Any]] = data.get("models", [])
+    count = 0
+    for m in models:
+        # Environment expansion for base_url/api_key in both top-level and route entries
+        def expand_env(val: Optional[str]) -> Optional[str]:
+            if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
+                return os.getenv(val[2:-1])
+            return val
+
+        # Build primary config
+        top_cfg = {k: m.get(k) for k in (
+            "id", "name", "provider", "base_url", "api_key", "quantization",
+            "input_modalities", "output_modalities", "context_length",
+            "max_output_length", "supports_tools", "supports_structured_output",
+            "supported_params", "pricing",
+        )}
+        if top_cfg.get("base_url"):
+            top_cfg["base_url"] = expand_env(top_cfg["base_url"])  # type: ignore
+        if top_cfg.get("api_key"):
+            top_cfg["api_key"] = expand_env(top_cfg["api_key"])  # type: ignore
+
+        # If no explicit route list, use a single route targeting the primary config
+        routes = m.get("route") or [
+            {"kind": top_cfg.get("provider"), "weight": 1.0, **{k: top_cfg.get(k) for k in ("base_url", "api_key")}}
+        ]
+
+        adapters_with_weights = []
+        for r in routes:
+            kind = r.get("kind") or top_cfg.get("provider")
+            base_url = expand_env(r.get("base_url") or top_cfg.get("base_url"))
+            api_key = expand_env(r.get("api_key") or top_cfg.get("api_key"))
+            weight = float(r.get("weight", 1.0))
+
+            # Adapter config inherits from top-level model config
+            adapter_cfg = dict(top_cfg)
+            adapter_cfg["base_url"] = base_url
+            adapter_cfg["api_key"] = api_key
+            adapter_cfg["provider"] = kind
+
+            adapter = _make_adapter(kind, adapter_cfg)
+            adapters_with_weights.append((adapter, weight))
+
+        # Register canonical id and aliases
+        model_id = str(top_cfg["id"])  # type: ignore
+        aliases = m.get("aliases", []) or []
+        for alias in [model_id] + aliases:
+            router.register_route(alias, adapters_with_weights)
+            count += 1
+
+    return count

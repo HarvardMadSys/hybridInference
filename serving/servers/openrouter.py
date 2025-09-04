@@ -1,12 +1,10 @@
 """OpenRouter-compatible API server with intelligent routing and load balancing."""
 
 import json
-import logging
 import os
-import random
+from pathlib import Path
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -20,194 +18,41 @@ from serving.adapters import (
     VLLMAdapter,
     DeepSeekAdapter,
     GeminiAdapter,
-    LlamaAdapter
+    LlamaAdapter,
 )
-import sys
-import os
-
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.append(PROJECT_ROOT)
 from database.database import DatabaseLogger
 from database.database_sqlite import SQLiteDatabaseLogger
-from serving.servers.rate_limiter import (
+from .rate_limiter import (
     PersistentRateLimiter,
     RateLimitConfig,
     TokenCounter
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+from utils.logging_utils import setup_logging, get_logger
+from ..schemas import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ModelItem,
+    ModelList,
+    ErrorResponse,
+)
+from routing.executor import RouteExecutor
+from .registry import register_from_models_yaml
+from routing.manager import RoutingManager
 
-# Load .env from project root
-ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
-load_dotenv(ENV_PATH)
+# Configure logging (level and format via LOG_LEVEL/LOG_FORMAT)
+setup_logging()
+logger = get_logger(__name__)
+
+# Load environment variables from nearest .env (fallback to CWD)
+# Keep it simple here; centralized config loading happens in serving.config
+load_dotenv()
 
 
-@dataclass
-class RouteConfig:
-    """Configuration for weighted routing between adapters."""
-    adapters: List[tuple[BaseAdapter, float]]  # List of (adapter, weight) pairs
 
-
-class SimpleRouter:
-    """Weighted routing for load balancing and automatic fallback.
-    
-    Distributes requests across multiple adapters based on configured weights,
-    with automatic fallback to alternative adapters on failure.
-    """
-    
-    def __init__(self) -> None:
-        self.routes: Dict[str, RouteConfig] = {}
-    
-    def register_route(
-        self,
-        model_id: str,
-        adapters_with_weights: List[tuple[BaseAdapter, float]]
-    ) -> None:
-        """Register adapters with weights for a model.
-        
-        Args:
-            model_id: Model identifier.
-            adapters_with_weights: List of (adapter, weight) tuples.
-                Weights are normalized to sum to 1.0.
-        """
-        total_weight = sum(weight for _, weight in adapters_with_weights)
-        if total_weight > 0:
-            normalized = [
-                (adapter, weight / total_weight)
-                for adapter, weight in adapters_with_weights
-            ]
-            self.routes[model_id] = RouteConfig(adapters=normalized)
-    
-    def _select_adapter(self, model_id: str) -> Optional[BaseAdapter]:
-        """Select an adapter using weighted random selection.
-        
-        Args:
-            model_id: Model identifier.
-            
-        Returns:
-            Selected adapter or None if no route configured.
-        """
-        route = self.routes.get(model_id)
-        if not route or not route.adapters:
-            return None
-        
-        # Weighted random selection
-        rand = random.random()
-        cumulative = 0.0
-        
-        for adapter, weight in route.adapters:
-            cumulative += weight
-            if rand <= cumulative:
-                return adapter
-        
-        # Fallback to last adapter (handles floating point rounding)
-        return route.adapters[-1][0]
-    
-    async def chat_completion(
-        self,
-        model_id: str,
-        messages: List[Dict[str, Any]],
-        **params: Any
-    ) -> Dict[str, Any]:
-        """Route chat completion request with automatic fallback.
-        
-        Args:
-            model_id: Model identifier.
-            messages: Chat messages.
-            **params: Additional parameters.
-            
-        Returns:
-            Response dictionary with routing metadata.
-            
-        Raises:
-            ValueError: If no route configured or all adapters fail.
-        """
-        primary_adapter = self._select_adapter(model_id)
-        if not primary_adapter:
-            raise ValueError(f"No route configured for model {model_id}")
-        
-        logger.debug(f"Routing request for {model_id} to {primary_adapter.config.provider} ({primary_adapter.config.base_url})")
-        
-        # Try primary adapter first
-        try:
-            response = await primary_adapter.chat_completion(messages, **params)
-            response["_routing"] = {
-                "provider": primary_adapter.config.provider,
-                "base_url": primary_adapter.config.base_url
-            }
-            return response
-        except Exception as primary_error:
-            # Fallback to other adapters
-            route = self.routes[model_id]
-            for adapter, _ in route.adapters:
-                if adapter == primary_adapter:
-                    continue
-                try:
-                    response = await adapter.chat_completion(messages, **params)
-                    response["_routing"] = {
-                        "provider": adapter.config.provider,
-                        "base_url": adapter.config.base_url,
-                        "fallback": True
-                    }
-                    return response
-                except Exception:
-                    continue  # Try next adapter
-            
-            # All adapters failed
-            raise primary_error
-    
-    async def stream_chat_completion(
-        self,
-        model_id: str,
-        messages: List[Dict[str, Any]],
-        **params: Any
-    ):
-        """Stream chat completion with automatic fallback.
-        
-        Args:
-            model_id: Model identifier.
-            messages: Chat messages.
-            **params: Additional parameters.
-            
-        Yields:
-            Response chunks.
-            
-        Raises:
-            ValueError: If no route configured or all adapters fail.
-        """
-        primary_adapter = self._select_adapter(model_id)
-        if not primary_adapter:
-            raise ValueError(f"No route configured for model {model_id}")
-        
-        logger.debug(f"Routing request for {model_id} to {primary_adapter.config.provider} ({primary_adapter.config.base_url})")
-        
-        # Try primary adapter
-        try:
-            async for chunk in primary_adapter.stream_chat_completion(messages, **params):
-                yield chunk
-            return
-        except Exception as primary_error:
-            # Fallback to other adapters
-            route = self.routes[model_id]
-            for adapter, _ in route.adapters:
-                if adapter == primary_adapter:
-                    continue
-                try:
-                    async for chunk in adapter.stream_chat_completion(messages, **params):
-                        yield chunk
-                    return
-                except Exception:
-                    continue  # Try next adapter
-            
-            # All adapters failed
-            raise primary_error
-
-router = SimpleRouter()
+router = RouteExecutor()
 db_logger: Optional[DatabaseLogger] = None
-
+routing_manager: Optional[RoutingManager] = None
 
 # Global rate limiter instance
 rate_limiter: Optional[PersistentRateLimiter] = None
@@ -239,15 +84,26 @@ app.add_middleware(
 
 async def startup_event() -> None:
     """Initialize server components on startup."""
-    global db_logger, router, rate_limiter
+    global db_logger, router, rate_limiter, routing_manager
     
     # Initialize database logger
     # Use SQLite for easy demo (no PostgreSQL needed)
     use_sqlite = os.getenv("USE_SQLITE_LOG", "true").lower() == "true"
     
     if use_sqlite:
-        db_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'db', 'openrouter_logs.db')
-        db_logger = SQLiteDatabaseLogger(db_path)
+        # Resolve DB path with sensible defaults and ensure directory exists
+        # Priority: SQLITE_DB_PATH > DATA_DIR/openrouter_logs.db
+        sqlite_env = os.getenv("SQLITE_DB_PATH") or os.getenv("OPENROUTER_SQLITE_DB")
+        if sqlite_env:
+            db_path = Path(sqlite_env).expanduser().resolve()
+        else:
+            project_root = Path(__file__).resolve().parents[2]
+            data_dir = Path(os.getenv("DATA_DIR") or (project_root / "data"))
+            db_dir = data_dir / "db"
+            db_dir.mkdir(parents=True, exist_ok=True)
+            db_path = db_dir / "openrouter_logs.db"
+
+        db_logger = SQLiteDatabaseLogger(str(db_path))
         await db_logger.initialize()
         logger.info(f"SQLite database initialized at {db_path}")
     else:
@@ -261,7 +117,32 @@ async def startup_event() -> None:
             await db_logger.initialize()
             logger.info("PostgreSQL database initialized")
     
-    # Register local VLLM models (freeinference.org or custom deployment)
+    # Try config-driven model registration first
+    try:
+        models_path = Path(os.getenv("MODELS_CONFIG", "config/models.yaml"))
+        registered = register_from_models_yaml(router, models_path)
+        if registered:
+            logger.info(f"Registered {registered} routes from {models_path}")
+    except Exception as e:
+        logger.warning(f"Failed to load models.yaml: {e}")
+
+    # Optional RoutingManager: apply local/remote split from config/routing.yaml
+    try:
+        routing_cfg_path = Path(os.getenv("ROUTING_CONFIG", "config/routing.yaml"))
+        if routing_cfg_path.exists():
+            routing_manager = RoutingManager(router, routing_cfg_path)
+            routing_manager.load()
+            updated = routing_manager.apply()
+            if updated:
+                logger.info(f"RoutingManager applied weights to {updated} routes from {routing_cfg_path}")
+            else:
+                logger.info("RoutingManager loaded but no routes were updated (check config)")
+        else:
+            logger.info("No routing config found; using default routes")
+    except Exception as e:
+        logger.warning(f"RoutingManager failed to initialize: {e}")
+
+    # Env-based fallback: register local VLLM models (freeinference.org or custom deployment)
     local_base_url = os.getenv("LOCAL_BASE_URL", "")
     offload_flag = os.getenv("OFFLOAD", "0").strip().lower()
     offload_enabled = offload_flag in ("1", "true", "yes")
@@ -535,16 +416,22 @@ async def get_routing() -> Dict[str, Any]:
             for adapter, weight in route.adapters
         ]
     
-    return {
+    response = {
         "routes": routing_info,
         "description": "Weight distribution for each model. Requests are randomly distributed based on weights."
     }
+    
+    # Add routing manager status if available
+    if routing_manager:
+        response["manager_status"] = routing_manager.get_status()
+    
+    return response
 
 
 @app.get("/models")
-@app.get("/v1/models")
 @app.get("/openrouter/models")
-async def list_models() -> Dict[str, Any]:
+@app.get("/v1/models", response_model=ModelList)
+async def list_models() -> ModelList:
     """List available models with metadata similar to OpenRouter schema.
 
     Includes per-model context length and maximum output tokens. When multiple
@@ -553,7 +440,7 @@ async def list_models() -> Dict[str, Any]:
     routed backend.
     """
     now = int(time.time())
-    models: List[Dict[str, Any]] = []
+    models: List[ModelItem] = []
     emitted_ids: set[str] = set()
     
     for model_id, route in router.routes.items():
@@ -587,28 +474,27 @@ async def list_models() -> Dict[str, Any]:
             # Skip aliases; only emit one entry per canonical model id
             continue
         emitted_ids.add(canonical_id)
-        model_entry: Dict[str, Any] = {
-            "id": canonical_id,
-            "name": primary_cfg.name,
-            "object": "model",
-            "created": now,
-            "owned_by": primary_cfg.provider,
-            "input_modalities": primary_cfg.input_modalities,
-            "output_modalities": primary_cfg.output_modalities,
-            "quantization": primary_cfg.quantization,
-            "context_length": context_length,
-            "max_output_length": max_output_length,
-            "pricing": primary_cfg.pricing,
-            "supported_sampling_parameters": supported_sampling_parameters,
-            "supported_features": supported_features
-        }
+        model_entry = ModelItem(
+            id=canonical_id,
+            name=primary_cfg.name,
+            created=now,
+            owned_by=primary_cfg.provider,
+            input_modalities=primary_cfg.input_modalities,
+            output_modalities=primary_cfg.output_modalities,
+            quantization=primary_cfg.quantization,
+            context_length=context_length,
+            max_output_length=max_output_length,
+            pricing=primary_cfg.pricing,
+            supported_sampling_parameters=supported_sampling_parameters,
+            supported_features=supported_features,
+        )
         # Optional OpenRouter-specific metadata
         if model_id != canonical_id:
             # Prefer a human-friendly alias as slug if present
-            model_entry["openrouter"] = {"slug": model_id}
+            model_entry.openrouter = {"slug": model_id}
         models.append(model_entry)
     
-    return {"object": "list", "data": models}
+    return ModelList(data=models)
 
 @app.post("/completion")
 async def single_completion(request: Request):
@@ -618,24 +504,34 @@ async def single_completion(request: Request):
     return await chat_completions(request)
 
 
-@app.post("/v1/chat/completions")
+@app.post(
+    "/v1/chat/completions",
+    response_model=ChatCompletionResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Bad Request"},
+        404: {"model": ErrorResponse, "description": "Model Not Found"},
+        429: {"model": ErrorResponse, "description": "Rate Limit Exceeded"},
+        500: {"model": ErrorResponse, "description": "Server Error"},
+    },
+)
 async def chat_completions(
     request: Request,
-    authorization: Optional[str] = Header(None)
+    authorization: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
-    """Handle chat completion requests with routing and fallback."""
+    """Handle chat completion requests with routing and fallback.
+
+    Parses the request body using Pydantic for validation, then routes
+    to the appropriate adapter. Streaming and non-streaming flows are
+    both supported.
+    """
     try:
         body = await request.json()
+        payload = ChatCompletionRequest.model_validate(body)
     except Exception:
-        raise HTTPException(400, "Invalid JSON in request body")
+        raise HTTPException(400, "Invalid JSON or schema in request body")
     
-    model = body.get("model")
-    if not model:
-        raise HTTPException(400, "Missing 'model' in request")
-    
-    messages = body.get("messages", [])
-    if not messages:
-        raise HTTPException(400, "Missing 'messages' in request")
+    model = payload.model
+    messages = [m.model_dump() for m in payload.messages]
     
     # Check if model has routing configured
     if model not in router.routes:
@@ -643,12 +539,31 @@ async def chat_completions(
     
     # Extract parameters
     params = {}
-    for key in ["temperature", "top_p", "top_k", "min_p", 
-                "max_tokens", "stop", "seed",
-                "frequency_penalty", "presence_penalty",
-                "tools", "tool_choice", "response_format"]:
-        if key in body:
-            params[key] = body[key]
+    # Copy supported params from the validated payload
+    if payload.temperature is not None:
+        params["temperature"] = payload.temperature
+    if payload.top_p is not None:
+        params["top_p"] = payload.top_p
+    if payload.top_k is not None:
+        params["top_k"] = payload.top_k
+    if payload.min_p is not None:
+        params["min_p"] = payload.min_p
+    if payload.max_tokens is not None:
+        params["max_tokens"] = payload.max_tokens
+    if payload.stop is not None:
+        params["stop"] = payload.stop
+    if payload.seed is not None:
+        params["seed"] = payload.seed
+    if payload.frequency_penalty is not None:
+        params["frequency_penalty"] = payload.frequency_penalty
+    if payload.presence_penalty is not None:
+        params["presence_penalty"] = payload.presence_penalty
+    if payload.tools is not None:
+        params["tools"] = payload.tools
+    if payload.tool_choice is not None:
+        params["tool_choice"] = payload.tool_choice
+    if payload.response_format is not None:
+        params["response_format"] = payload.response_format.model_dump()
     
     # Rate limit check with advanced features
     if rate_limiter:
@@ -708,7 +623,7 @@ async def chat_completions(
     }
     
     # Handle streaming
-    if body.get("stream", False):
+    if payload.stream:
         async def stream_generator():
             try:
                 async for chunk in router.stream_chat_completion(model, messages, **params):
