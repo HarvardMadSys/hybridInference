@@ -1,23 +1,70 @@
-.PHONY: format lint typecheck test setup-dev
+.PHONY: help format lint typecheck test test-verbose test-cov setup-dev clean check all
 
-format:
-	@echo "Running yapf (google style) and ruff format..."
-	ruff format .
-	yapf --style=google -r -i serving routing database client utils llama_benchmark
+# Default target
+.DEFAULT_GOAL := help
 
-lint:
-	@echo "Running ruff and pydocstyle..."
-	ruff .
-	pydocstyle
+# Allow overriding uv run flags, e.g.:
+#   make lint UV_RUN="uv run --active"
+UV_RUN ?= uv run
 
-typecheck:
-	@echo "Running mypy..."
-	mypy .
+# Colors for terminal output
+RESET := \033[0m
+BOLD := \033[1m
+GREEN := \033[32m
+YELLOW := \033[33m
+BLUE := \033[34m
 
-test:
-	pytest -q
+help:  ## Show this help message
+	@echo "$(BOLD)Available targets:$(RESET)"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-15s$(RESET) %s\n", $$1, $$2}'
 
-setup-dev:
-	python -m pip install -r requirements.txt
-	python -m pip install -r requirements-dev.txt
-	pre-commit install
+format:  ## Format code with ruff (configured for Google style)
+	@echo "$(YELLOW)Running formatter...$(RESET)"
+	$(UV_RUN) ruff format .
+	$(UV_RUN) ruff check --fix .
+	@echo "$(GREEN)✓ Code formatted$(RESET)"
+
+lint:  ## Run linters (ruff, pydocstyle)
+	@echo "$(YELLOW)Running linters...$(RESET)"
+	$(UV_RUN) ruff check --no-fix .
+	$(UV_RUN) pydocstyle
+	@echo "$(GREEN)✓ Linting passed$(RESET)"
+
+typecheck:  ## Run type checking with mypy
+	@echo "$(YELLOW)Running type checker...$(RESET)"
+	$(UV_RUN) mypy .
+	@echo "$(GREEN)✓ Type checking passed$(RESET)"
+
+test:  ## Run tests (quiet mode)
+	@echo "$(YELLOW)Running tests...$(RESET)"
+	$(UV_RUN) pytest -q
+	@echo "$(GREEN)✓ Tests passed$(RESET)"
+
+test-verbose:  ## Run tests with verbose output
+	$(UV_RUN) pytest -vv
+
+test-cov:  ## Run tests with coverage report
+	$(UV_RUN) pytest --cov=. --cov-report=term-missing --cov-report=html
+
+check: lint typecheck test  ## Run all checks (lint, typecheck, test)
+	@echo "$(GREEN)✓ All checks passed$(RESET)"
+
+all: format check  ## Format code and run all checks
+
+setup-dev:  ## Set up development environment
+	@echo "$(YELLOW)Setting up development environment...$(RESET)"
+	@# Create venv if it doesn't exist; keep idempotent
+	[ -d .venv ] || uv venv -p 3.10
+	uv pip install -r requirements.txt
+	uv sync --group dev
+	$(UV_RUN) pre-commit install
+	@echo "$(GREEN)✓ Development environment ready$(RESET)"
+
+clean:  ## Clean build artifacts and cache
+	@echo "$(YELLOW)Cleaning up...$(RESET)"
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . -type f -name "*.pyc" -delete
+	find . -type f -name "*.pyo" -delete
+	find . -type f -name ".coverage" -delete
+	rm -rf htmlcov/ .pytest_cache/ .mypy_cache/ .ruff_cache/
+	@echo "$(GREEN)✓ Cleanup complete$(RESET)"

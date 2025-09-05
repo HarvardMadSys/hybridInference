@@ -204,3 +204,24 @@ openrouter_logs.db
 # Docs for AI agents
 CLAUDE.md
 AGENTS.md
+
+# uv lockfile
+uv.lock
+
+# Ruff cache
+.ruff_cache/
+
+# VS Code / Cursor
+.vscode/
+.cursor/
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# IDE specific
+.idea/
