@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Dict
+
+import aiohttp
+
+
+class HealthMonitor:
+    """Health monitoring for deployment endpoints.
+    
+    Periodically checks endpoint health via GET /health requests.
+    """
+    
+    def __init__(self, timeout_s: int, interval_s: int) -> None:
+        """Initialize health monitor.
+        
+        Args:
+            timeout_s: Request timeout in seconds.
+            interval_s: Check interval in seconds (0 to disable).
+        """
+        self.timeout_s = timeout_s
+        self.interval_s = interval_s
+        self._status: Dict[str, bool] = {}
+        self._task: asyncio.Task | None = None
+
+    def is_healthy(self, endpoint: str) -> bool:
+        """Check if an endpoint is healthy.
+        
+        Args:
+            endpoint: Endpoint URL to check.
+            
+        Returns:
+            True if healthy or unknown, False if known unhealthy.
+        """
+        return self._status.get(endpoint, True)
+
+    async def _check_once(self, session: aiohttp.ClientSession, endpoint: str) -> bool:
+        try:
+            url = endpoint.rstrip("/") + "/health"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout_s)) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    async def _run(self, endpoints: list[str]) -> None:
+        if self.interval_s <= 0:
+            return
+        timeout = aiohttp.ClientTimeout(total=self.timeout_s)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            while True:
+                for ep in endpoints:
+                    ok = await self._check_once(session, ep)
+                    self._status[ep] = ok
+                await asyncio.sleep(self.interval_s)
+
+    def start(self, endpoints: list[str]) -> None:
+        """Start health monitoring for given endpoints.
+        
+        Args:
+            endpoints: List of endpoint URLs to monitor.
+        """
+        if self.interval_s <= 0 or self._task is not None:
+            return
+        self._task = asyncio.create_task(self._run(endpoints))
+
+    async def shutdown(self) -> None:
+        """Stop health monitoring and cleanup resources."""
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
