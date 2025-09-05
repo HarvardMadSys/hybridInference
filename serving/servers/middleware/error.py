@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+"""Global exception handlers that produce OpenRouter-style error bodies."""
+
+from typing import Any, Dict, Optional
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from serving.schemas import ErrorDetail, ErrorResponse
+
+
+def _build_error_response(
+    message: str,
+    *,
+    code: Optional[int] = None,
+    typ: str = "server_error",
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a standardized error response payload.
+
+    Args:
+        message: Human-readable error message.
+        code: Optional HTTP status code associated with the error.
+        typ: Error type identifier.
+        extra: Optional additional fields to include under ``error``.
+
+    Returns:
+        Dict[str, Any]: Serialized error object conforming to OpenRouter style.
+    """
+    detail = ErrorDetail(type=typ, message=message, code=code, **(extra or {}))
+    return ErrorResponse(error=detail).model_dump()
+
+
+def install_error_handlers(app: FastAPI) -> None:
+    """Install global exception handlers that return OpenRouter-like errors."""
+
+    @app.exception_handler(HTTPException)
+    async def http_exc_handler(request: Request, exc: HTTPException):  # type: ignore[override]
+        # If detail already shaped like our error, forward as-is
+        if isinstance(exc.detail, dict) and "error" in exc.detail:
+            return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=exc.headers)
+
+        content = _build_error_response(str(exc.detail), code=exc.status_code)
+        return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
+
+    @app.exception_handler(Exception)
+    async def any_exc_handler(request: Request, exc: Exception):  # type: ignore[override]
+        content = _build_error_response(str(exc), code=500)
+        return JSONResponse(status_code=500, content=content)
