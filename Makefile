@@ -35,16 +35,19 @@ typecheck:  ## Run type checking with mypy
 	$(UV_RUN) mypy .
 	@echo "$(GREEN)✓ Type checking passed$(RESET)"
 
-test:  ## Run tests (quiet mode)
-	@echo "$(YELLOW)Running tests...$(RESET)"
-	$(UV_RUN) pytest -q
-	@echo "$(GREEN)✓ Tests passed$(RESET)"
+test:  ## Run unit/integration tests (exclude external)
+    @echo "$(YELLOW)Running tests (not external)...$(RESET)"
+    $(UV_RUN) pytest -q -m "not external"
+    @echo "$(GREEN)✓ Tests passed$(RESET)"
 
-test-verbose:  ## Run tests with verbose output
-	$(UV_RUN) pytest -vv
+test-verbose: ## Run tests with verbose output (exclude external)
+    $(UV_RUN) pytest -vv -m "not external"
 
-test-cov:  ## Run tests with coverage report
-	$(UV_RUN) pytest --cov=. --cov-report=term-missing --cov-report=html
+test-cov:  ## Run tests with coverage (exclude external)
+    $(UV_RUN) pytest -m "not external" --cov=. --cov-report=term-missing --cov-report=html
+
+test-e2e: ## Run external/E2E tests (may require local server)
+    $(UV_RUN) pytest -m external -vv
 
 check: lint typecheck test  ## Run all checks (lint, typecheck, test)
 	@echo "$(GREEN)✓ All checks passed$(RESET)"
@@ -55,7 +58,7 @@ setup-dev:  ## Set up development environment
 	@echo "$(YELLOW)Setting up development environment...$(RESET)"
 	@# Create venv if it doesn't exist; keep idempotent
 	[ -d .venv ] || uv venv -p 3.10
-	uv pip install -r requirements.txt
+	uv pip install -e .
 	uv sync --group dev
 	$(UV_RUN) pre-commit install
 	@echo "$(GREEN)✓ Development environment ready$(RESET)"
