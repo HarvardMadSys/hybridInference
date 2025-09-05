@@ -50,8 +50,8 @@ hybridInference/
 
 ### Supported Models
 - **Local Models** (via freeinference.org or custom VLLM):
-  - Llama-4-Scout: `/models/meta-llama_Llama-4-Scout-17B-16E` (alias: `llama-4-scout`)
-  - Qwen3-Coder: `/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8` (alias: `qwen3-coder`)
+  - Llama-4-Scout: `llama-4-scout` (provider_model_id: `/models/meta-llama_Llama-4-Scout-17B-16E`)
+  - Qwen3-Coder: `qwen3-coder` (provider_model_id: `/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8`)
   
 - **API Models**:
   - DeepSeek: `deepseek-chat`
@@ -125,13 +125,13 @@ Clients should read this from the HTTP endpoint rather than a static file.
 ```bash
 # From project root
 source .venv/bin/activate
-python -m serving.servers.openrouter
+python -m serving.servers.app
 
 # Custom port
-PORT=8888 python -m serving.servers.openrouter
+PORT=8888 python -m serving.servers.app
 
 # Production mode with workers
-python -m serving.servers.openrouter --workers 4
+python -m serving.servers.app --workers 4
 ```
 
 ### Start in OFFLOAD-only Mode (Meta Llama API, DeepSeek, Gemini)
@@ -193,20 +193,20 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Local Model (freeinference.org)
 ```bash
-# Using full model path
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8",
-    "messages": [{"role": "user", "content": "Write a Python hello world"}],
-    "max_tokens": 100
-  }'
-
-# Using alias
+# Using public id (recommended)
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-coder",
+    "messages": [{"role": "user", "content": "Write a Python hello world"}],
+    "max_tokens": 100
+  }'
+
+# Using provider_model_id (still supported as alias)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8",
     "messages": [{"role": "user", "content": "Write a Python hello world"}],
     "max_tokens": 100
   }'
@@ -365,4 +365,3 @@ ls -la .env
 
 # Verify environment variables
 python -c "import os; print(os.getenv('LOCAL_BASE_URL'))"
-
