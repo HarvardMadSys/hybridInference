@@ -1,30 +1,33 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)(?::-(.*?))?\}")
 
 
 def _expand_env_value(val: Any) -> Any:
     """Recursively expand environment variables in configuration values.
-    
+
     Supports ${VAR} and ${VAR:-default} syntax. Applies to strings, lists, and dicts.
-    
+
     Args:
         val: Configuration value to process (str, list, dict, or other).
-        
+
     Returns:
         The value with environment variables expanded.
     """
     if isinstance(val, str):
+
         def repl(match: re.Match[str]) -> str:
             import os
+
             key = match.group(1)
             default = match.group(2)
             return os.getenv(key, default if default is not None else "")
@@ -39,13 +42,14 @@ def _expand_env_value(val: Any) -> Any:
 
 class Deployment(BaseModel):
     """Configuration for a single deployment endpoint.
-    
+
     Attributes:
         endpoint: HTTP(S) URL of the deployment.
         models: List of model IDs available at this endpoint.
     """
+
     endpoint: str
-    models: List[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
 
     @field_validator("endpoint")
     @classmethod
@@ -56,7 +60,7 @@ class Deployment(BaseModel):
 
     @field_validator("models")
     @classmethod
-    def _validate_models(cls, v: List[str]) -> List[str]:
+    def _validate_models(cls, v: list[str]) -> list[str]:
         if not v:
             raise ValueError("models list must not be empty")
         return v
@@ -64,10 +68,11 @@ class Deployment(BaseModel):
 
 class RoutingParameter(BaseModel):
     """Parameters for routing strategies.
-    
+
     Attributes:
         local_fraction: Fraction of traffic routed to local deployments (0.0-1.0).
     """
+
     local_fraction: float = 0.5
 
     @field_validator("local_fraction")
@@ -80,7 +85,7 @@ class RoutingParameter(BaseModel):
 
 class RoutingConfig(BaseModel):
     """Complete routing configuration schema.
-    
+
     Attributes:
         routing_strategy: Strategy name (currently only "fixed" is supported).
         routing_parameter: Parameters for the selected strategy.
@@ -90,14 +95,15 @@ class RoutingConfig(BaseModel):
         local_deployment: List of local deployment configurations.
         remote_deployment: List of remote deployment configurations.
     """
+
     routing_strategy: str = Field(default="fixed")
     routing_parameter: RoutingParameter = Field(default_factory=RoutingParameter)
     timeout: int = 2
     health_check: int = 0  # seconds; 0 disables health checking
-    logging: Dict[str, Any] = Field(default_factory=dict)
+    logging: dict[str, Any] = Field(default_factory=dict)
 
-    local_deployment: List[Deployment] = Field(default_factory=list)
-    remote_deployment: List[Deployment] = Field(default_factory=list)
+    local_deployment: list[Deployment] = Field(default_factory=list)
+    remote_deployment: list[Deployment] = Field(default_factory=list)
 
     @field_validator("timeout", "health_check")
     @classmethod
@@ -109,13 +115,13 @@ class RoutingConfig(BaseModel):
 
 def load_routing_config(path: Path) -> RoutingConfig:
     """Load and validate routing configuration from YAML file.
-    
+
     Args:
         path: Path to the YAML configuration file.
-        
+
     Returns:
         Validated RoutingConfig object with environment variables expanded.
-        
+
     Raises:
         ValueError: If configuration is invalid or file cannot be read.
     """
@@ -124,4 +130,4 @@ def load_routing_config(path: Path) -> RoutingConfig:
     try:
         return RoutingConfig.model_validate(expanded)
     except ValidationError as e:
-        raise ValueError(f"Invalid routing config: {e}")
+        raise ValueError(f"Invalid routing config: {e}") from e

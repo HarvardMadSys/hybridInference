@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -12,10 +12,9 @@ from serving.schemas import (
     ChatCompletionResponse,
     ErrorResponse,
 )
-from serving.servers.deps import get_router, get_rate_limiter, get_db_logger
+from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
 from serving.servers.rate_limiter import TokenCounter
 from utils.logging_utils import get_logger
-
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -33,11 +32,11 @@ router = APIRouter()
 )
 async def chat_completions(
     request: Request,
-    authorization: Optional[str] = Header(None),
-    router_exec = Depends(get_router),
-    rate_limiter = Depends(get_rate_limiter),
-    db_logger = Depends(get_db_logger),
-) -> Dict[str, Any]:
+    authorization: str | None = Header(None),
+    router_exec=Depends(get_router),
+    rate_limiter=Depends(get_rate_limiter),
+    db_logger=Depends(get_db_logger),
+) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
 
     Parses the request body using Pydantic for validation, then routes
@@ -47,8 +46,8 @@ async def chat_completions(
     try:
         body = await request.json()
         payload = ChatCompletionRequest.model_validate(body)
-    except Exception:
-        raise HTTPException(400, "Invalid JSON or schema in request body")
+    except Exception as e:
+        raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     model = payload.model
     messages = [m.model_dump() for m in payload.messages]
@@ -58,7 +57,7 @@ async def chat_completions(
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Extract parameters
-    params: Dict[str, Any] = {}
+    params: dict[str, Any] = {}
     if payload.temperature is not None:
         params["temperature"] = payload.temperature
     if payload.top_p is not None:
@@ -96,7 +95,7 @@ async def chat_completions(
         )
 
         if not success:
-            error_detail: Dict[str, Any] = {
+            error_detail: dict[str, Any] = {
                 "error": {
                     "type": "rate_limit_exceeded",
                     "message": meta.get("error", "Rate limit exceeded"),
@@ -109,7 +108,7 @@ async def chat_completions(
             if "queue_size" in meta:
                 error_detail["error"]["queue_size"] = meta["queue_size"]
 
-            headers: Dict[str, str] = {
+            headers: dict[str, str] = {
                 "X-RateLimit-RetryAfter": str(meta.get("retry_after", 60)),
                 "X-RateLimit-Model": model,
             }
@@ -136,6 +135,7 @@ async def chat_completions(
 
     # Streaming path
     if payload.stream:
+
         async def stream_generator():
             try:
                 async for chunk in router_exec.stream_chat_completion(model, messages, **params):
@@ -171,12 +171,12 @@ async def chat_completions(
                         metadata=metadata,
                     )
                 if rate_limiter:
-                    estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
+                    estimated_tokens = TokenCounter.estimate_tokens(
+                        messages, params.get("max_tokens")
+                    )
                     await rate_limiter.release_tokens(model, estimated_tokens)
 
-                error_chunk = {
-                    "error": {"message": str(exc), "type": "server_error", "code": 500}
-                }
+                error_chunk = {"error": {"message": str(exc), "type": "server_error", "code": 500}}
                 yield f"data: {json.dumps(error_chunk)}\n\n"
 
         return StreamingResponse(
@@ -238,5 +238,4 @@ async def chat_completions(
                 params=params,
                 metadata=metadata,
             )
-        raise HTTPException(500, str(exc))
-
+        raise HTTPException(500, str(exc)) from exc

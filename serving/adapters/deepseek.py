@@ -1,35 +1,27 @@
 import json
-import time
-from typing import Dict, Any, List, AsyncGenerator
-from .base import BaseAdapter, UsageInfo, ModelConfig
+from collections.abc import AsyncGenerator
+from typing import Any
+
+from serving.stream import done_sentinel, make_final_usage_chunk
 from utils.tokens import estimate_prompt_tokens, estimate_text_tokens
-from serving.stream import make_final_usage_chunk, done_sentinel
+
+from .base import BaseAdapter, UsageInfo
 
 
 class DeepSeekAdapter(BaseAdapter):
-    
-    async def chat_completion(
-        self,
-        messages: List[Dict[str, Any]],
-        **params
-    ) -> Dict[str, Any]:
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         validated_params = self.validate_params(params)
-        
-        payload = {
-            "model": "deepseek-chat",
-            "messages": messages,
-            **validated_params
-        }
-        
+
+        payload = {"model": "deepseek-chat", "messages": messages, **validated_params}
+
         if params.get("tools"):
             payload["tools"] = params["tools"]
             if params.get("tool_choice"):
                 payload["tool_choice"] = params["tool_choice"]
-        
-        if params.get("response_format"):
-            if params["response_format"].get("type") == "json_object":
-                payload["response_format"] = {"type": "json_object"}
-        
+
+        if params.get("response_format") and params["response_format"].get("type") == "json_object":
+            payload["response_format"] = {"type": "json_object"}
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}",
@@ -40,7 +32,7 @@ class DeepSeekAdapter(BaseAdapter):
             json=payload,
             headers=headers,
         )
-        
+
         usage = UsageInfo(
             prompt_tokens=data["usage"].get("prompt_tokens", 0),
             completion_tokens=data["usage"].get("completion_tokens", 0),
@@ -56,50 +48,47 @@ class DeepSeekAdapter(BaseAdapter):
                 completion_tokens=int(completion_tokens),
                 total_tokens=int(prompt_tokens + completion_tokens),
             )
-        
+
         tool_calls = None
         if "tool_calls" in data["choices"][0]["message"]:
             tool_calls = data["choices"][0]["message"]["tool_calls"]
-        
+
         return self.format_response(
             content=data["choices"][0]["message"]["content"],
             model=self.config.id,
             usage=usage,
             tool_calls=tool_calls,
-            finish_reason=data["choices"][0]["finish_reason"]
+            finish_reason=data["choices"][0]["finish_reason"],
         )
-    
+
     async def stream_chat_completion(
-        self,
-        messages: List[Dict[str, Any]],
-        **params
+        self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
         validated_params = self.validate_params(params)
-        
+
         payload = {
             "model": "deepseek-chat",
             "messages": messages,
             "stream": True,
-            **validated_params
+            **validated_params,
         }
-        
+
         if params.get("tools"):
             payload["tools"] = params["tools"]
             if params.get("tool_choice"):
                 payload["tool_choice"] = params["tool_choice"]
-        
-        if params.get("response_format"):
-            if params["response_format"].get("type") == "json_object":
-                payload["response_format"] = {"type": "json_object"}
-        
+
+        if params.get("response_format") and params["response_format"].get("type") == "json_object":
+            payload["response_format"] = {"type": "json_object"}
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}",
         }
-        
+
         total_content = ""
         prompt_tokens = 0
-        
+
         async for line in self.http.stream_post(
             f"{self.config.base_url}/chat/completions",
             json=payload,

@@ -8,9 +8,9 @@ intentionally free of HTTP concerns so it can be imported from multiple entry
 points (e.g., CLI tools, tests, or the FastAPI app factory).
 """
 
+import contextlib
 import os
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -32,11 +32,10 @@ from .deps import AppServices
 from .rate_limiter import PersistentRateLimiter, RateLimitConfig
 from .registry import register_from_models_yaml
 
-
 logger = get_logger(__name__)
 
 
-def _init_db_logger() -> Optional[DatabaseLogger]:
+def _init_db_logger() -> DatabaseLogger | None:
     """Initialize a database logger based on environment configuration.
 
     Returns:
@@ -254,7 +253,7 @@ async def _init_router_and_models(router: RouteExecutor) -> None:
         logger.info("Registered Llama API adapters")
 
 
-def _apply_routing_manager(router: RouteExecutor) -> Optional[RoutingManager]:
+def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
     """Optionally load the routing manager and apply weights from YAML.
 
     Returns:
@@ -343,7 +342,7 @@ async def initialize() -> AppServices:
     routing_manager = _apply_routing_manager(router)
 
     # Rate limiter (optional)
-    rate_limiter: Optional[PersistentRateLimiter] = None
+    rate_limiter: PersistentRateLimiter | None = None
     if os.getenv("RATE_LIMIT_ENABLED", "1") == "1":
         rate_limiter = PersistentRateLimiter()
         _configure_rate_limiter(rate_limiter)
@@ -381,7 +380,5 @@ async def shutdown(services: AppServices) -> None:
         await services.routing_manager.shutdown()
 
     # Close shared HTTP client
-    try:
+    with contextlib.suppress(Exception):
         await AsyncHTTPClient.shared().close()
-    except Exception:
-        pass

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Global exception handlers that produce OpenRouter-style error bodies."""
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -13,10 +13,10 @@ from serving.schemas import ErrorDetail, ErrorResponse
 def _build_error_response(
     message: str,
     *,
-    code: Optional[int] = None,
+    code: int | None = None,
     typ: str = "server_error",
-    extra: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build a standardized error response payload.
 
     Args:
@@ -39,7 +39,9 @@ def install_error_handlers(app: FastAPI) -> None:
     async def http_exc_handler(request: Request, exc: HTTPException):  # type: ignore[override]
         # If detail already shaped like our error, forward as-is
         if isinstance(exc.detail, dict) and "error" in exc.detail:
-            return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=exc.headers)
+            return JSONResponse(
+                status_code=exc.status_code, content=exc.detail, headers=exc.headers
+            )
 
         content = _build_error_response(str(exc.detail), code=exc.status_code)
         return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)

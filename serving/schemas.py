@@ -7,7 +7,8 @@ with upstream providers while validating required fields and ranges.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -17,35 +18,35 @@ class ChatMessage(BaseModel):
 
 
 class ResponseFormat(BaseModel):
-    type: Optional[str] = None
+    type: str | None = None
     # Some providers carry a JSON schema for guided decoding
-    schema_: Optional[Dict[str, Any]] = Field(default=None, alias="schema")
+    schema_: dict[str, Any] | None = Field(default=None, alias="schema")
 
 
 class ChatCompletionRequest(BaseModel):
     model: str
-    messages: List[ChatMessage]
-    stream: Optional[bool] = False
+    messages: list[ChatMessage]
+    stream: bool | None = False
 
     # Sampling / decoding params
-    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    top_k: Optional[int] = Field(default=None, ge=0)
-    min_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=0)
+    min_p: float | None = Field(default=None, ge=0.0, le=1.0)
 
     # Limits and stopping
-    max_tokens: Optional[int] = Field(default=None, ge=1)
-    stop: Optional[Union[str, List[str]]] = None
-    seed: Optional[int] = None
+    max_tokens: int | None = Field(default=None, ge=1)
+    stop: str | list[str] | None = None
+    seed: int | None = None
 
     # Penalties
-    frequency_penalty: Optional[float] = None
-    presence_penalty: Optional[float] = None
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
 
     # Tools / structured output
-    tools: Optional[List[Dict[str, Any]]] = None
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
-    response_format: Optional[ResponseFormat] = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    response_format: ResponseFormat | None = None
 
     class Config:
         extra = "ignore"
@@ -53,16 +54,17 @@ class ChatCompletionRequest(BaseModel):
 
 # Response models
 
+
 class ChoiceMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
-    content: Optional[str] = ""
-    tool_calls: Optional[List[Dict[str, Any]]] = None
+    content: str | None = ""
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class ChatCompletionChoice(BaseModel):
     index: int
     message: ChoiceMessage
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
 
 
 class Usage(BaseModel):
@@ -76,8 +78,8 @@ class ChatCompletionResponse(BaseModel):
     object: Literal["chat.completion"] = "chat.completion"
     created: int
     model: str
-    choices: List[ChatCompletionChoice]
-    usage: Optional[Usage] = None
+    choices: list[ChatCompletionChoice]
+    usage: Usage | None = None
 
 
 class ModelItem(BaseModel):
@@ -86,32 +88,32 @@ class ModelItem(BaseModel):
     object: Literal["model"] = "model"
     created: int
     owned_by: str
-    input_modalities: List[str]
-    output_modalities: List[str]
+    input_modalities: list[str]
+    output_modalities: list[str]
     quantization: str
     context_length: int
     max_output_length: int
-    pricing: Dict[str, str]
-    supported_sampling_parameters: List[str] = []
-    supported_features: List[str] = []
-    openrouter: Optional[Dict[str, Any]] = None
+    pricing: dict[str, str]
+    supported_sampling_parameters: list[str] = []
+    supported_features: list[str] = []
+    openrouter: dict[str, Any] | None = None
 
 
 class ModelList(BaseModel):
     object: Literal["list"] = "list"
-    data: List[ModelItem]
+    data: list[ModelItem]
 
 
 # Error schemas for documenting non-2xx responses
 class ErrorDetail(BaseModel):
-    type: Optional[str] = None
+    type: str | None = None
     message: str
-    code: Optional[int] = None
+    code: int | None = None
     # Optional rate limit / routing metadata
-    model: Optional[str] = None
-    retry_after: Optional[int] = None
-    tokens_requested: Optional[int] = None
-    queue_size: Optional[int] = None
+    model: str | None = None
+    retry_after: int | None = None
+    tokens_requested: int | None = None
+    queue_size: int | None = None
 
 
 class ErrorResponse(BaseModel):

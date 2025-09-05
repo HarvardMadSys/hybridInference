@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
-from serving.adapters.base import BaseAdapter
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from serving.adapters.base import BaseAdapter
 
 
 @dataclass
 class RouteConfig:
     """Weighted adapter list for a model."""
 
-    adapters: List[Tuple[BaseAdapter, float]]
+    adapters: list[tuple[BaseAdapter, float]]
 
 
 class RouteExecutor:
@@ -24,13 +27,13 @@ class RouteExecutor:
     """
 
     def __init__(self) -> None:
-        self.routes: Dict[str, RouteConfig] = {}
+        self.routes: dict[str, RouteConfig] = {}
 
     def register_route(
-        self, model_id: str, adapters_with_weights: List[Tuple[BaseAdapter, float]]
+        self, model_id: str, adapters_with_weights: list[tuple[BaseAdapter, float]]
     ) -> None:
         """Register a weighted route for a model.
-        
+
         Args:
             model_id: Model identifier.
             adapters_with_weights: List of (adapter, weight) tuples.
@@ -39,17 +42,15 @@ class RouteExecutor:
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
             return
-        normalized = [
-            (adapter, weight / total_weight) for adapter, weight in adapters_with_weights
-        ]
+        normalized = [(adapter, weight / total_weight) for adapter, weight in adapters_with_weights]
         self.routes[model_id] = RouteConfig(adapters=normalized)
 
-    def _select_adapter(self, model_id: str) -> Optional[BaseAdapter]:
+    def _select_adapter(self, model_id: str) -> BaseAdapter | None:
         """Select an adapter using weighted random selection.
-        
+
         Args:
             model_id: Model identifier.
-            
+
         Returns:
             Selected adapter or None if no route configured.
         """
@@ -65,18 +66,18 @@ class RouteExecutor:
         return route.adapters[-1][0]
 
     async def chat_completion(
-        self, model_id: str, messages: List[Dict[str, Any]], **params: Any
-    ) -> Dict[str, Any]:
+        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+    ) -> dict[str, Any]:
         """Execute chat completion with automatic fallback.
-        
+
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
             **params: Additional parameters for the adapter.
-            
+
         Returns:
             Chat completion response with routing metadata.
-            
+
         Raises:
             ValueError: If no route configured for model.
         """
@@ -108,18 +109,18 @@ class RouteExecutor:
             raise primary_error
 
     async def stream_chat_completion(
-        self, model_id: str, messages: List[Dict[str, Any]], **params: Any
+        self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ) -> AsyncIterator[Any]:
         """Stream chat completion with automatic fallback.
-        
+
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
             **params: Additional parameters for the adapter.
-            
+
         Yields:
             SSE chunks from the adapter.
-            
+
         Raises:
             ValueError: If no route configured for model.
         """
@@ -136,9 +137,7 @@ class RouteExecutor:
                 if adapter == primary:
                     continue
                 try:
-                    async for chunk in adapter.stream_chat_completion(
-                        messages, **params
-                    ):
+                    async for chunk in adapter.stream_chat_completion(messages, **params):
                         yield chunk
                     return
                 except Exception:

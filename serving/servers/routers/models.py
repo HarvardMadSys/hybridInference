@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Set
 
 from fastapi import APIRouter, Depends
 
-from serving.servers.deps import get_router
 from serving.schemas import ModelItem, ModelList
-
+from serving.servers.deps import get_router
 
 router = APIRouter()
 
@@ -16,7 +14,7 @@ router = APIRouter()
 @router.get("/openrouter/models")
 @router.get("/v1/models", response_model=ModelList)
 async def list_models(
-    router_exec = Depends(get_router),
+    router_exec=Depends(get_router),
 ) -> ModelList:
     """List available models with metadata similar to OpenRouter schema.
 
@@ -25,8 +23,8 @@ async def list_models(
     regardless of the routed backend.
     """
     now = int(time.time())
-    models: List[ModelItem] = []
-    emitted_ids: Set[str] = set()
+    models: list[ModelItem] = []
+    emitted_ids: set[str] = set()
 
     for model_id, route in router_exec.routes.items():
         configs = [adapter.config for adapter, _ in route.adapters]
@@ -40,12 +38,12 @@ async def list_models(
         # Intersection of supported sampling params across adapters
         supported_params_sets = [set(cfg.supported_params) for cfg in configs]
         if supported_params_sets:
-            supported_sampling_parameters = sorted(list(set.intersection(*supported_params_sets)))
+            supported_sampling_parameters = sorted(set.intersection(*supported_params_sets))
         else:
             supported_sampling_parameters = []
 
         # Supported features per OpenRouter provider doc
-        supported_features: List[str] = []
+        supported_features: list[str] = []
         if any(cfg.supports_tools for cfg in configs):
             supported_features.append("tools")
         if any(cfg.supports_structured_output for cfg in configs):
@@ -80,4 +78,3 @@ async def list_models(
         models.append(model_entry)
 
     return ModelList(data=models)
-
