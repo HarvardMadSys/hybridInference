@@ -1,4 +1,4 @@
-"""SQLite database logger for easy demo without PostgreSQL setup."""
+"""SQLite database logger for development without PostgreSQL setup."""
 
 import json
 import sqlite3
@@ -7,6 +7,10 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 import asyncio
 from contextlib import contextmanager
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class SQLiteDatabaseLogger:
@@ -171,9 +175,9 @@ class SQLiteDatabaseLogger:
                     json.dumps(metadata) if metadata else None
                 ))
                 conn.commit()
-                print(f"📊 Logged request {request_id} to database")
+                logger.info("Logged request to SQLite DB: request_id=%s", request_id)
             except Exception as e:
-                print(f"Failed to log request: {e}")
+                logger.exception("Failed to log request: %s", e)
     
     async def get_stats(
         self,

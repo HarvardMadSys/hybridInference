@@ -1,15 +1,11 @@
-import aiohttp
 import json
 import time
-from typing import Dict, Any, List, AsyncGenerator, Optional
+from typing import Dict, Any, List, AsyncGenerator
 from .base import BaseAdapter, UsageInfo, ModelConfig
+from utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 
 class GeminiAdapter(BaseAdapter):
-    
-    async def _ensure_session(self):
-        if not self.session:
-            self.session = aiohttp.ClientSession()
     
     def _convert_messages_to_gemini(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         system_instruction = None
@@ -94,7 +90,6 @@ class GeminiAdapter(BaseAdapter):
         messages: List[Dict[str, Any]],
         **params
     ) -> Dict[str, Any]:
-        await self._ensure_session()
         
         request_body = self._convert_messages_to_gemini(messages)
         
@@ -106,73 +101,68 @@ class GeminiAdapter(BaseAdapter):
             request_body["tools"] = self._convert_tools(params["tools"])
         
         url = f"{self.config.base_url}/models/gemini-2.5-flash:generateContent?key={self.config.api_key}"
+
+        data = await self.http.json_post_with_retry(url, json=request_body)
         
-        async with self.session.post(url, json=request_body) as response:
-            data = await response.json()
-            
-            if response.status != 200:
-                raise Exception(f"Gemini API error: {data}")
-            
-            candidate = data["candidates"][0]
-            content_parts = candidate["content"]["parts"]
-            
-            text_content = ""
-            tool_calls = []
-            
-            for part in content_parts:
-                if "text" in part:
-                    text_content += part["text"]
-                elif "functionCall" in part:
-                    func_call = part["functionCall"]
-                    tool_calls.append({
-                        "id": f"call_{int(time.time() * 1000)}",
-                        "type": "function",
-                        "function": {
-                            "name": func_call["name"],
-                            "arguments": json.dumps(func_call.get("args", {}))
-                        }
-                    })
-            
-            if "usageMetadata" in data:
-                usage = UsageInfo(
-                    prompt_tokens=data["usageMetadata"]["promptTokenCount"],
-                    completion_tokens=data["usageMetadata"]["candidatesTokenCount"],
-                    total_tokens=data["usageMetadata"]["totalTokenCount"]
-                )
-            else:
-                prompt_tokens = sum(len(m.get("content", "").split()) * 1.3 for m in messages)
-                completion_tokens = len(text_content.split()) * 1.3
-                usage = UsageInfo(
-                    prompt_tokens=int(prompt_tokens),
-                    completion_tokens=int(completion_tokens),
-                    total_tokens=int(prompt_tokens + completion_tokens)
-                )
-            
-            finish_reason_map = {
-                "STOP": "stop",
-                "MAX_TOKENS": "length",
-                "SAFETY": "content_filter",
-                "OTHER": "stop"
-            }
-            finish_reason = finish_reason_map.get(
-                candidate.get("finishReason", "STOP"),
-                "stop"
+        candidate = data["candidates"][0]
+        content_parts = candidate["content"]["parts"]
+        
+        text_content = ""
+        tool_calls = []
+        
+        for part in content_parts:
+            if "text" in part:
+                text_content += part["text"]
+            elif "functionCall" in part:
+                func_call = part["functionCall"]
+                tool_calls.append({
+                    "id": f"call_{int(time.time() * 1000)}",
+                    "type": "function",
+                    "function": {
+                        "name": func_call["name"],
+                        "arguments": json.dumps(func_call.get("args", {}))
+                    }
+                })
+        
+        if "usageMetadata" in data:
+            usage = UsageInfo(
+                prompt_tokens=data["usageMetadata"]["promptTokenCount"],
+                completion_tokens=data["usageMetadata"]["candidatesTokenCount"],
+                total_tokens=data["usageMetadata"]["totalTokenCount"]
             )
-            
-            return self.format_response(
-                content=text_content,
-                model=self.config.id,
-                usage=usage,
-                tool_calls=tool_calls if tool_calls else None,
-                finish_reason=finish_reason
+        else:
+            prompt_tokens = estimate_prompt_tokens(messages)
+            completion_tokens = estimate_text_tokens(text_content)
+            usage = UsageInfo(
+                prompt_tokens=int(prompt_tokens),
+                completion_tokens=int(completion_tokens),
+                total_tokens=int(prompt_tokens + completion_tokens),
             )
+        
+        finish_reason_map = {
+            "STOP": "stop",
+            "MAX_TOKENS": "length",
+            "SAFETY": "content_filter",
+            "OTHER": "stop"
+        }
+        finish_reason = finish_reason_map.get(
+            candidate.get("finishReason", "STOP"),
+            "stop"
+        )
+        
+        return self.format_response(
+            content=text_content,
+            model=self.config.id,
+            usage=usage,
+            tool_calls=tool_calls if tool_calls else None,
+            finish_reason=finish_reason
+        )
     
     async def stream_chat_completion(
         self,
         messages: List[Dict[str, Any]],
         **params
     ) -> AsyncGenerator[str, None]:
-        await self._ensure_session()
         
         request_body = self._convert_messages_to_gemini(messages)
         
@@ -184,36 +174,34 @@ class GeminiAdapter(BaseAdapter):
             request_body["tools"] = self._convert_tools(params["tools"])
         
         url = f"{self.config.base_url}/models/gemini-2.5-flash:streamGenerateContent?key={self.config.api_key}"
-        
+
         total_content = ""
         prompt_tokens = 0
-        
-        async with self.session.post(url, json=request_body) as response:
-            async for line in response.content:
-                line = line.decode('utf-8').strip()
-                if not line:
-                    continue
-                
-                try:
-                    data = json.loads(line)
-                    
-                    if "candidates" in data:
-                        candidate = data["candidates"][0]
-                        content_parts = candidate["content"]["parts"]
-                        
-                        for part in content_parts:
-                            if "text" in part:
-                                text = part["text"]
-                                total_content += text
-                                yield self.format_stream_chunk(text, self.config.id)
-                    
-                    if "usageMetadata" in data:
-                        prompt_tokens = data["usageMetadata"].get("promptTokenCount", prompt_tokens)
-                
-                except json.JSONDecodeError:
-                    continue
-        
-        completion_tokens = len(total_content.split()) * 1.3
+
+        async for line in self.http.stream_post(url, json=request_body, mode="ndjson"):
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+
+                if "candidates" in data:
+                    candidate = data["candidates"][0]
+                    content_parts = candidate["content"]["parts"]
+
+                    for part in content_parts:
+                        if "text" in part:
+                            text = part["text"]
+                            total_content += text
+                            yield self.format_stream_chunk(text, self.config.id)
+
+                if "usageMetadata" in data:
+                    prompt_tokens = data["usageMetadata"].get("promptTokenCount", prompt_tokens)
+
+            except json.JSONDecodeError:
+                continue
+
+        completion_tokens = estimate_text_tokens(total_content)
+        final_prompt_tokens = prompt_tokens or estimate_prompt_tokens(messages)
         usage_chunk = {
             "id": f"chatcmpl-{int(time.time() * 1000)}",
             "object": "chat.completion.chunk",
@@ -221,10 +209,10 @@ class GeminiAdapter(BaseAdapter):
             "model": self.config.id,
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             "usage": {
-                "prompt_tokens": prompt_tokens if prompt_tokens else int(sum(len(m.get("content", "").split()) * 1.3 for m in messages)),
+                "prompt_tokens": int(final_prompt_tokens),
                 "completion_tokens": int(completion_tokens),
-                "total_tokens": prompt_tokens + int(completion_tokens)
-            }
+                "total_tokens": int(final_prompt_tokens + completion_tokens),
+            },
         }
         yield f"data: {json.dumps(usage_chunk)}\n\n"
         yield "data: [DONE]\n\n"
