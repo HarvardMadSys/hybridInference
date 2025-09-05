@@ -28,59 +28,19 @@ logger = logging.getLogger(__name__)
 
 
 class TokenCounter:
-    """Multi-strategy token counter with fallback mechanisms."""
-    
+    """Unified token estimation facade for rate limiting.
+
+    Delegates to utils.tokens to avoid duplication and keep consistency
+    with adapters' token accounting. Public API remains unchanged.
+    """
+
     @staticmethod
-    def estimate_tokens(messages: List[Dict[str, Any]], max_tokens: Optional[int] = None) -> int:
-        """Estimate tokens using multiple strategies.
-        
-        Strategy hierarchy:
-        1. Tiktoken (if available) - Most accurate
-        2. Character-based estimation - Good approximation
-        3. Word-based estimation - Basic fallback
-        """
-        try:
-            # Try to use tiktoken if available for better accuracy.
-            return TokenCounter._tiktoken_count(messages, max_tokens)
-        except ImportError:
-            pass
-        
-        return TokenCounter._character_count(messages, max_tokens)
-    
-    @staticmethod
-    def _tiktoken_count(messages: List[Dict[str, Any]], max_tokens: Optional[int]) -> int:
-        """Accurate token counting using tiktoken."""
-        import tiktoken
-        
-        encoding = tiktoken.get_encoding("cl100k_base")
-        
-        prompt_tokens = 0
-        for msg in messages:
-            content = str(msg.get("content", ""))
-            role = str(msg.get("role", ""))
-            
-            prompt_tokens += len(encoding.encode(content))
-            prompt_tokens += len(encoding.encode(role))
-            prompt_tokens += 4
-        
-        prompt_tokens += 3
-        
-        completion_tokens = max_tokens if max_tokens else 500
-        return prompt_tokens + completion_tokens
-    
-    @staticmethod
-    def _character_count(messages: List[Dict[str, Any]], max_tokens: Optional[int]) -> int:
-        """Character-based token estimation (4 chars ≈ 1 token)."""
-        total_chars = 0
-        for msg in messages:
-            content = str(msg.get("content", ""))
-            role = str(msg.get("role", ""))
-            total_chars += len(content) + len(role)
-        
-        prompt_tokens = total_chars // 4
-        completion_tokens = max_tokens if max_tokens else 500
-        
-        return prompt_tokens + completion_tokens
+    def estimate_tokens(
+        messages: List[Dict[str, Any]], max_tokens: Optional[int] = None
+    ) -> int:
+        from utils.tokens import estimate_total_tokens
+
+        return int(estimate_total_tokens(messages, max_tokens))
 
 
 @dataclass
