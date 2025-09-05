@@ -1,22 +1,18 @@
-import aiohttp
 import json
+import time
 from typing import Dict, Any, List, AsyncGenerator
 from .base import BaseAdapter, UsageInfo
+from utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.stream import make_final_usage_chunk, done_sentinel
 
 
 class LlamaAdapter(BaseAdapter):
-    
-    async def _ensure_session(self):
-        if not self.session:
-            self.session = aiohttp.ClientSession()
     
     async def chat_completion(
         self,
         messages: List[Dict[str, Any]],
         **params
     ) -> Dict[str, Any]:
-        await self._ensure_session()
-        
         validated_params = self.validate_params(params)
         
         # Llama API expects the /inference endpoint
@@ -52,56 +48,50 @@ class LlamaAdapter(BaseAdapter):
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
-        
+
         # Use the /inference endpoint for Llama API
         url = f"{self.config.base_url}/inference"
+
+        data = await self.http.json_post_with_retry(url, json=payload, headers=headers)
         
-        async with self.session.post(url, json=payload, headers=headers) as response:
-            data = await response.json()
-            
-            if response.status != 200:
-                raise Exception(f"Llama API error: {data}")
-            
-            # Check if usage is provided, otherwise estimate
-            usage = None
-            if "usage" in data:
-                usage = UsageInfo(
-                    prompt_tokens=data["usage"].get("prompt_tokens", 0),
-                    completion_tokens=data["usage"].get("completion_tokens", 0),
-                    total_tokens=data["usage"].get("total_tokens", 0)
-                )
-            else:
-                # Estimate tokens if not provided
-                content = data.get("content", "")
-                prompt_tokens = sum(len(m.get("content", "").split()) * 1.3 for m in messages)
-                completion_tokens = len(content.split()) * 1.3
-                usage = UsageInfo(
-                    prompt_tokens=int(prompt_tokens),
-                    completion_tokens=int(completion_tokens),
-                    total_tokens=int(prompt_tokens + completion_tokens)
-                )
-            
-            # Extract tool calls if present
-            tool_calls = None
-            if "tool_calls" in data:
-                tool_calls = data["tool_calls"]
-            
-            # Format response to OpenAI standard
-            return self.format_response(
-                content=data.get("content", ""),
-                model=self.config.id,
-                usage=usage,
-                tool_calls=tool_calls,
-                finish_reason=data.get("stop_reason", "stop")
+        # Check if usage is provided, otherwise estimate
+        usage = None
+        if "usage" in data:
+            usage = UsageInfo(
+                prompt_tokens=data["usage"].get("prompt_tokens", 0),
+                completion_tokens=data["usage"].get("completion_tokens", 0),
+                total_tokens=data["usage"].get("total_tokens", 0)
             )
+        else:
+            # Estimate tokens if not provided
+            content = data.get("content", "")
+            prompt_tokens = estimate_prompt_tokens(messages)
+            completion_tokens = estimate_text_tokens(content)
+            usage = UsageInfo(
+                prompt_tokens=int(prompt_tokens),
+                completion_tokens=int(completion_tokens),
+                total_tokens=int(prompt_tokens + completion_tokens),
+            )
+        
+        # Extract tool calls if present
+        tool_calls = None
+        if "tool_calls" in data:
+            tool_calls = data["tool_calls"]
+        
+        # Format response to OpenAI standard
+        return self.format_response(
+            content=data.get("content", ""),
+            model=self.config.id,
+            usage=usage,
+            tool_calls=tool_calls,
+            finish_reason=data.get("stop_reason", "stop")
+        )
     
     async def stream_chat_completion(
         self,
         messages: List[Dict[str, Any]],
         **params
     ) -> AsyncGenerator[str, None]:
-        await self._ensure_session()
-        
         validated_params = self.validate_params(params)
         
         payload = {
@@ -127,23 +117,28 @@ class LlamaAdapter(BaseAdapter):
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
-        
+
         url = f"{self.config.base_url}/inference"
+
+        total_content = ""
         
-        async with self.session.post(url, json=payload, headers=headers) as response:
-            async for line in response.content:
-                line = line.decode('utf-8').strip()
-                if line.startswith("data: "):
-                    if line == "data: [DONE]":
-                        yield self.format_stream_chunk("", self.config.id, "stop")
-                        break
-                    
-                    try:
-                        chunk_data = json.loads(line[6:])
-                        if "content" in chunk_data:
-                            yield self.format_stream_chunk(
-                                chunk_data["content"],
-                                self.config.id
-                            )
-                    except json.JSONDecodeError:
-                        continue
+        async for line in self.http.stream_post(url, json=payload, headers=headers):
+            if not line.startswith("data: "):
+                continue
+            if line == "data: [DONE]":
+                yield make_final_usage_chunk(
+                    model=self.config.id,
+                    messages=messages,
+                    total_content=total_content,
+                    finish_reason="stop",
+                )
+                yield done_sentinel()
+                break
+            try:
+                chunk_data = json.loads(line[6:])
+                if "content" in chunk_data:
+                    content = chunk_data["content"]
+                    total_content += content
+                    yield self.format_stream_chunk(content, self.config.id)
+            except json.JSONDecodeError:
+                continue

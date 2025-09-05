@@ -1,28 +1,22 @@
-import aiohttp
 import json
-from typing import Dict, Any, List, AsyncGenerator, Optional
+import time
+from typing import Dict, Any, List, AsyncGenerator
 from .base import BaseAdapter, UsageInfo, ModelConfig
+from utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.stream import make_final_usage_chunk, done_sentinel
 
 
 class VLLMAdapter(BaseAdapter):
-    
-    async def _ensure_session(self):
-        if not self.session:
-            self.session = aiohttp.ClientSession()
     
     async def chat_completion(
         self,
         messages: List[Dict[str, Any]],
         **params
     ) -> Dict[str, Any]:
-        await self._ensure_session()
-        
         validated_params = self.validate_params(params)
         
-        # Handle freeinference.org model ID format
-        model_id = self.config.id
-        if "llama-4-scout" in model_id.lower():
-            model_id = "/models/meta-llama_Llama-4-Scout-17B-16E"
+        # Use provider-specific model id when provided
+        model_id = self.config.provider_model_id or self.config.id
         
         payload = {
             "model": model_id,
@@ -42,59 +36,51 @@ class VLLMAdapter(BaseAdapter):
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
-        
-        async with self.session.post(
+
+        data = await self.http.json_post_with_retry(
             f"{self.config.base_url}/chat/completions",
             json=payload,
-            headers=headers
-        ) as response:
-            data = await response.json()
-            
-            if response.status != 200:
-                raise Exception(f"VLLM API error: {data}")
-            
-            usage = None
-            if "usage" in data:
-                usage = UsageInfo(
-                    prompt_tokens=data["usage"].get("prompt_tokens", 0),
-                    completion_tokens=data["usage"].get("completion_tokens", 0),
-                    total_tokens=data["usage"].get("total_tokens", 0)
-                )
-            else:
-                content = data["choices"][0]["message"]["content"]
-                prompt_tokens = sum(len(m.get("content", "").split()) * 1.3 for m in messages)
-                completion_tokens = len(content.split()) * 1.3
-                usage = UsageInfo(
-                    prompt_tokens=int(prompt_tokens),
-                    completion_tokens=int(completion_tokens),
-                    total_tokens=int(prompt_tokens + completion_tokens)
-                )
-            
-            tool_calls = None
-            if "tool_calls" in data["choices"][0]["message"]:
-                tool_calls = data["choices"][0]["message"]["tool_calls"]
-            
-            return self.format_response(
-                content=data["choices"][0]["message"]["content"],
-                model=self.config.id,
-                usage=usage,
-                tool_calls=tool_calls,
-                finish_reason=data["choices"][0].get("finish_reason", "stop")
+            headers=headers,
+        )
+        
+        usage = None
+        if "usage" in data:
+            usage = UsageInfo(
+                prompt_tokens=data["usage"].get("prompt_tokens", 0),
+                completion_tokens=data["usage"].get("completion_tokens", 0),
+                total_tokens=data["usage"].get("total_tokens", 0)
             )
+        else:
+            content = data["choices"][0]["message"]["content"]
+            prompt_tokens = estimate_prompt_tokens(messages)
+            completion_tokens = estimate_text_tokens(content)
+            usage = UsageInfo(
+                prompt_tokens=int(prompt_tokens),
+                completion_tokens=int(completion_tokens),
+                total_tokens=int(prompt_tokens + completion_tokens),
+            )
+        
+        tool_calls = None
+        if "tool_calls" in data["choices"][0]["message"]:
+            tool_calls = data["choices"][0]["message"]["tool_calls"]
+
+        return self.format_response(
+            content=data["choices"][0]["message"]["content"],
+            model=self.config.id,
+            usage=usage,
+            tool_calls=tool_calls,
+            finish_reason=data["choices"][0].get("finish_reason", "stop"),
+        )
     
     async def stream_chat_completion(
         self,
         messages: List[Dict[str, Any]],
         **params
     ) -> AsyncGenerator[str, None]:
-        await self._ensure_session()
-        
         validated_params = self.validate_params(params)
         
-        # Handle freeinference.org model ID format
-        model_id = self.config.id
-        if "llama-4-scout" in model_id.lower():
-            model_id = "/models/meta-llama_Llama-4-Scout-17B-16E"
+        # Use provider-specific model id when provided
+        model_id = self.config.provider_model_id or self.config.id
         
         payload = {
             "model": model_id,
@@ -114,25 +100,31 @@ class VLLMAdapter(BaseAdapter):
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
+
+        total_content = ""
         
-        async with self.session.post(
+        async for line in self.http.stream_post(
             f"{self.config.base_url}/chat/completions",
             json=payload,
-            headers=headers
-        ) as response:
-            async for line in response.content:
-                line = line.decode('utf-8').strip()
-                if line.startswith("data: "):
-                    if line == "data: [DONE]":
-                        yield self.format_stream_chunk("", self.config.id, "stop")
-                        break
-                    
-                    try:
-                        chunk_data = json.loads(line[6:])
-                        if chunk_data["choices"][0]["delta"].get("content"):
-                            yield self.format_stream_chunk(
-                                chunk_data["choices"][0]["delta"]["content"],
-                                self.config.id
-                            )
-                    except json.JSONDecodeError:
-                        continue
+            headers=headers,
+        ):
+            if not line.startswith("data: "):
+                continue
+            if line == "data: [DONE]":
+                # Emit final usage chunk with estimated tokens
+                yield make_final_usage_chunk(
+                    model=self.config.id,
+                    messages=messages,
+                    total_content=total_content,
+                    finish_reason="stop",
+                )
+                yield done_sentinel()
+                break
+            try:
+                chunk_data = json.loads(line[6:])
+                if chunk_data["choices"][0]["delta"].get("content"):
+                    content = chunk_data["choices"][0]["delta"]["content"]
+                    total_content += content
+                    yield self.format_stream_chunk(content, self.config.id)
+            except json.JSONDecodeError:
+                continue
