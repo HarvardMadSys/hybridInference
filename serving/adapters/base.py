@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 import time
 import json
 
+from serving.http import AsyncHTTPClient
+from serving.stream import make_stream_chunk
+
 
 @dataclass
 class UsageInfo:
@@ -26,6 +29,11 @@ class ModelConfig:
     provider: str
     base_url: str
     api_key: Optional[str] = None
+    # Public aliases that should also route to this adapter configuration.
+    aliases: List[str] = field(default_factory=list)
+    # Provider-specific model identifier to send to upstream. If not set,
+    # `id` is used.
+    provider_model_id: Optional[str] = None
     quantization: str = "bf16"
     input_modalities: List[str] = field(default_factory=lambda: ["text"])
     output_modalities: List[str] = field(default_factory=lambda: ["text"])
@@ -50,7 +58,10 @@ class BaseAdapter(ABC):
     
     def __init__(self, config: ModelConfig):
         self.config = config
+        # Legacy: some adapters still use self.session; keep for compatibility.
         self.session = None
+        # Shared HTTP client for new/updated adapters.
+        self.http = AsyncHTTPClient.shared()
     
     @abstractmethod
     async def chat_completion(
@@ -130,20 +141,7 @@ class BaseAdapter(ABC):
         model: str,
         finish_reason: Optional[str] = None
     ) -> str:
-        chunk = {
-            "id": f"chatcmpl-{int(time.time() * 1000)}",
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": content} if content else {},
-                    "finish_reason": finish_reason
-                }
-            ]
-        }
-        return f"data: {json.dumps(chunk)}\n\n"
+        return make_stream_chunk(model=model, content=content, finish_reason=finish_reason)
     
     async def cleanup(self):
         if self.session:

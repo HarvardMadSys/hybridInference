@@ -1,7 +1,8 @@
 """Model registry and configuration loader.
 
-Supports registering adapters either from environment variables or a
-YAML configuration file (config/models.yaml).
+This module builds provider adapters from configuration and registers them on a
+``RouteExecutor``. It supports both environment-based and YAML-based
+configuration. Prefer YAML (``config/models.yaml``) for reproducibility.
 """
 
 from __future__ import annotations
@@ -13,16 +14,28 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from serving.adapters import (
-    VLLMAdapter,
     DeepSeekAdapter,
     GeminiAdapter,
     LlamaAdapter,
     ModelConfig,
+    VLLMAdapter,
 )
 from routing.executor import RouteExecutor
 
 
 def _make_adapter(kind: str, cfg: Dict[str, Any]):
+    """Construct a provider adapter from a kind string and model config.
+
+    Args:
+        kind: Adapter kind (``"vllm"``, ``"deepseek"``, ``"gemini"``, ``"llama"``).
+        cfg: ``ModelConfig`` keyword arguments.
+
+    Returns:
+        A concrete adapter instance.
+
+    Raises:
+        ValueError: When ``kind`` is unknown.
+    """
     model_cfg = ModelConfig(**cfg)
     if kind == "vllm":
         return VLLMAdapter(model_cfg)
@@ -38,26 +51,32 @@ def _make_adapter(kind: str, cfg: Dict[str, Any]):
 def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
     """Register models and routes from a YAML configuration file.
 
-    The file schema:
-      models:
-        - id: llama-3.3-70b-instruct
-          name: Llama 3.3 70B Instruct
-          provider: llama
-          base_url: ${LLAMA_BASE_URL}
-          api_key: ${LLAMA_API_KEY}
-          context_length: 131072
-          max_output_length: 8192
-          supports_tools: true
-          supports_structured_output: true
-          supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
-          aliases: ["llama-3.3-70b-instruct"]
-          route:
-            - kind: llama
-              weight: 1.0
-              base_url: ${LLAMA_BASE_URL}
-              api_key: ${LLAMA_API_KEY}
+    Example schema::
 
-    Returns the number of registered routes.
+        models:
+          - id: llama-3.3-70b-instruct
+            name: Llama 3.3 70B Instruct
+            provider: llama
+            base_url: ${LLAMA_BASE_URL}
+            api_key: ${LLAMA_API_KEY}
+            context_length: 131072
+            max_output_length: 8192
+            supports_tools: true
+            supports_structured_output: true
+            supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
+            aliases: ["llama-3.3-70b-instruct"]
+            route:
+              - kind: llama
+                weight: 1.0
+                base_url: ${LLAMA_BASE_URL}
+                api_key: ${LLAMA_API_KEY}
+
+    Args:
+        router: Executor to receive registered routes.
+        path: Path to the YAML configuration file.
+
+    Returns:
+        int: Number of registered route identifiers (including aliases).
     """
     if not path.exists():
         return 0
@@ -73,8 +92,9 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
 
         # Build primary config
         top_cfg = {k: m.get(k) for k in (
-            "id", "name", "provider", "base_url", "api_key", "quantization",
-            "input_modalities", "output_modalities", "context_length",
+            "id", "name", "provider", "base_url", "api_key",
+            "aliases", "provider_model_id",
+            "quantization", "input_modalities", "output_modalities", "context_length",
             "max_output_length", "supports_tools", "supports_structured_output",
             "supported_params", "pricing",
         )}
@@ -106,7 +126,7 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
 
         # Register canonical id and aliases
         model_id = str(top_cfg["id"])  # type: ignore
-        aliases = m.get("aliases", []) or []
+        aliases = (top_cfg.get("aliases") or []) or []
         for alias in [model_id] + aliases:
             router.register_route(alias, adapters_with_weights)
             count += 1
