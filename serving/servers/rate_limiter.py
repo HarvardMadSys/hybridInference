@@ -344,11 +344,7 @@ class PersistentRateLimiter:
                 }
 
         self.metrics[model_id]["rejected_requests"] += 1
-<<<<<<< HEAD
         RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()
-=======
-        # RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()  # TODO: Enable metrics
->>>>>>> main
         return False, {
             "error": "Rate limit exceeded",
             "tokens_requested": estimated_tokens,
