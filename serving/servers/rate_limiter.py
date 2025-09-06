@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+from utils.server_metrics import RATE_LIMIT_HITS
 
 
 class TokenCounter:
@@ -284,6 +285,7 @@ class PersistentRateLimiter:
             Tuple of (success, metadata dict with details)
         """
         if model_id not in self.configs:
+            RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()
             return True, {"unlimited": True}
 
         self.metrics[model_id]["total_requests"] += 1
@@ -300,6 +302,7 @@ class PersistentRateLimiter:
             success, wait_or_remaining = bucket.try_consume(estimated_tokens)
             if success:
                 self.metrics[model_id]["accepted_requests"] += 1
+                RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()
                 return True, {
                     "tokens_consumed": estimated_tokens,
                     "tokens_remaining": wait_or_remaining,
@@ -310,6 +313,7 @@ class PersistentRateLimiter:
         # If we can't serve immediately, cooperatively wait up to timeout
         if wait_time > timeout:
             self.metrics[model_id]["rejected_requests"] += 1
+            RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()
             return False, {
                 "error": "Rate limit exceeded",
                 "tokens_requested": estimated_tokens,
@@ -330,6 +334,7 @@ class PersistentRateLimiter:
             success, wait_or_remaining = bucket.try_consume(estimated_tokens)
             if success:
                 self.metrics[model_id]["accepted_requests"] += 1
+                RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()
                 return True, {
                     "tokens_consumed": estimated_tokens,
                     "tokens_remaining": wait_or_remaining,
@@ -337,6 +342,7 @@ class PersistentRateLimiter:
                 }
 
         self.metrics[model_id]["rejected_requests"] += 1
+        RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()
         return False, {
             "error": "Rate limit exceeded",
             "tokens_requested": estimated_tokens,
