@@ -9,21 +9,27 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class ChatMessage(BaseModel):
+class ChatMessage(BaseModel):  # type: ignore[no-any-unimported]
+    """Single chat message with role and content."""
+
     role: Literal["system", "user", "assistant"]
     content: str
 
 
-class ResponseFormat(BaseModel):
+class ResponseFormat(BaseModel):  # type: ignore[no-any-unimported]
+    """Optional structured output hints for providers."""
+
     type: str | None = None
     # Some providers carry a JSON schema for guided decoding
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
 
 
-class ChatCompletionRequest(BaseModel):
+class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """OpenAI-compatible chat completions request payload."""
+
     model: str
     messages: list[ChatMessage]
     stream: bool | None = False
@@ -48,32 +54,40 @@ class ChatCompletionRequest(BaseModel):
     tool_choice: str | dict[str, Any] | None = None
     response_format: ResponseFormat | None = None
 
-    class Config:
-        extra = "ignore"
+    # Pydantic v2 configuration: ignore extra fields in requests
+    model_config = ConfigDict(extra="ignore")
 
 
 # Response models
 
 
-class ChoiceMessage(BaseModel):
+class ChoiceMessage(BaseModel):  # type: ignore[no-any-unimported]
+    """Assistant message in a completion choice."""
+
     role: Literal["assistant"] = "assistant"
     content: str | None = ""
     tool_calls: list[dict[str, Any]] | None = None
 
 
-class ChatCompletionChoice(BaseModel):
+class ChatCompletionChoice(BaseModel):  # type: ignore[no-any-unimported]
+    """One choice in the chat completion result set."""
+
     index: int
     message: ChoiceMessage
     finish_reason: str | None = None
 
 
-class Usage(BaseModel):
+class Usage(BaseModel):  # type: ignore[no-any-unimported]
+    """Token usage accounting for the request/response."""
+
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
 
 
-class ChatCompletionResponse(BaseModel):
+class ChatCompletionResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """OpenAI-compatible chat completions response payload."""
+
     id: str
     object: Literal["chat.completion"] = "chat.completion"
     created: int
@@ -82,7 +96,9 @@ class ChatCompletionResponse(BaseModel):
     usage: Usage | None = None
 
 
-class ModelItem(BaseModel):
+class ModelItem(BaseModel):  # type: ignore[no-any-unimported]
+    """Model metadata for listing endpoints."""
+
     id: str
     name: str
     object: Literal["model"] = "model"
@@ -99,13 +115,17 @@ class ModelItem(BaseModel):
     openrouter: dict[str, Any] | None = None
 
 
-class ModelList(BaseModel):
+class ModelList(BaseModel):  # type: ignore[no-any-unimported]
+    """List of models supported by the server."""
+
     object: Literal["list"] = "list"
     data: list[ModelItem]
 
 
 # Error schemas for documenting non-2xx responses
-class ErrorDetail(BaseModel):
+class ErrorDetail(BaseModel):  # type: ignore[no-any-unimported]
+    """Error detail payload aligned with OpenAI error shape."""
+
     type: str | None = None
     message: str
     code: int | None = None
@@ -116,5 +136,12 @@ class ErrorDetail(BaseModel):
     queue_size: int | None = None
 
 
-class ErrorResponse(BaseModel):
+class ErrorResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Top-level error wrapper."""
+
     error: ErrorDetail
+
+
+# Backward-compatibility aliases for older tests referring to Choice
+# New code should import ChatCompletionChoice explicitly.
+Choice = ChatCompletionChoice

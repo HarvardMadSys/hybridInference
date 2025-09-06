@@ -14,6 +14,9 @@ import aiohttp
 
 from serving.servers.sse import SSEParser
 
+# from utils import request_context as req_ctx  # TODO: Enable when observability is added
+# from utils.server_metrics import API_RETRIES  # TODO: Enable metrics
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -28,6 +31,7 @@ class AsyncHTTPClient:
 
     @classmethod
     def shared(cls) -> AsyncHTTPClient:
+        """Get or create a shared AsyncHTTPClient instance."""
         if cls._shared is None:
             cls._shared = AsyncHTTPClient()
         return cls._shared
@@ -47,6 +51,7 @@ class AsyncHTTPClient:
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> dict[str, Any]:
+        """Send a POST request with JSON payload."""
         session = await self._ensure_session()
         async with session.post(url, json=json, headers=headers, timeout=timeout) as resp:
             resp.raise_for_status()
@@ -77,6 +82,11 @@ class AsyncHTTPClient:
                 if attempt == retries - 1:
                     raise
                 delay = backoff_base * (backoff_factor**attempt)
+                # # metrics: retry with context provider label if available
+                # ctx = req_ctx.get()
+                # API_RETRIES.labels(
+                #     provider=str(ctx.get("provider", "unknown")), reason=err.__class__.__name__
+                # ).inc()  # TODO: Enable metrics
                 await asyncio.sleep(delay)
         # Should never reach here, but keep mypy happy.
         assert last_err is not None
@@ -89,6 +99,7 @@ class AsyncHTTPClient:
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> dict[str, Any]:
+        """Send a GET request and return JSON response."""
         session = await self._ensure_session()
         async with session.get(url, headers=headers, timeout=timeout) as resp:
             resp.raise_for_status()
@@ -114,6 +125,10 @@ class AsyncHTTPClient:
                 if attempt == retries - 1:
                     raise
                 delay = backoff_base * (backoff_factor**attempt)
+                # ctx = req_ctx.get()
+                # API_RETRIES.labels(
+                #     provider=str(ctx.get("provider", "unknown")), reason=err.__class__.__name__
+                # ).inc()  # TODO: Enable metrics
                 await asyncio.sleep(delay)
         assert last_err is not None
         raise last_err
@@ -188,5 +203,6 @@ class AsyncHTTPClient:
                     yield raw.decode("utf-8").strip()
 
     async def close(self) -> None:
+        """Close the HTTP session."""
         if self._session and not self._session.closed:
             await self._session.close()

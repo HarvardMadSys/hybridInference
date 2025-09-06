@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+# from utils.server_metrics import RATE_LIMIT_HITS  # TODO: Enable when observability is added
 
 
 class TokenCounter:
@@ -188,14 +189,16 @@ class PersistentRateLimiter:
                 bucket.last_refill = float(last_refill_val)
             else:
                 # Legacy fallback: derive tokens from tokens_used and use window_start as last_refill
-                if window_start is not None and tokens_used is not None and now - float(window_start) < float(config.window_seconds):
-                        bucket.tokens = max(
-                            0.0,
-                            min(
-                                float(config.capacity_tokens - tokens_used), float(bucket.capacity)
-                            ),
-                        )
-                        bucket.last_refill = float(window_start)
+                if (
+                    window_start is not None
+                    and tokens_used is not None
+                    and now - float(window_start) < float(config.window_seconds)
+                ):
+                    bucket.tokens = max(
+                        0.0,
+                        min(float(config.capacity_tokens - tokens_used), float(bucket.capacity)),
+                    )
+                    bucket.last_refill = float(window_start)
 
             if metrics_json:
                 with suppress(json.JSONDecodeError):
@@ -284,6 +287,7 @@ class PersistentRateLimiter:
             Tuple of (success, metadata dict with details)
         """
         if model_id not in self.configs:
+            # RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()  # TODO: Enable metrics
             return True, {"unlimited": True}
 
         self.metrics[model_id]["total_requests"] += 1
@@ -300,6 +304,7 @@ class PersistentRateLimiter:
             success, wait_or_remaining = bucket.try_consume(estimated_tokens)
             if success:
                 self.metrics[model_id]["accepted_requests"] += 1
+                # RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()  # TODO: Enable metrics
                 return True, {
                     "tokens_consumed": estimated_tokens,
                     "tokens_remaining": wait_or_remaining,
@@ -310,6 +315,7 @@ class PersistentRateLimiter:
         # If we can't serve immediately, cooperatively wait up to timeout
         if wait_time > timeout:
             self.metrics[model_id]["rejected_requests"] += 1
+            # RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()  # TODO: Enable metrics
             return False, {
                 "error": "Rate limit exceeded",
                 "tokens_requested": estimated_tokens,
@@ -330,6 +336,7 @@ class PersistentRateLimiter:
             success, wait_or_remaining = bucket.try_consume(estimated_tokens)
             if success:
                 self.metrics[model_id]["accepted_requests"] += 1
+                # RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()  # TODO: Enable metrics
                 return True, {
                     "tokens_consumed": estimated_tokens,
                     "tokens_remaining": wait_or_remaining,
@@ -337,6 +344,7 @@ class PersistentRateLimiter:
                 }
 
         self.metrics[model_id]["rejected_requests"] += 1
+        # RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()  # TODO: Enable metrics
         return False, {
             "error": "Rate limit exceeded",
             "tokens_requested": estimated_tokens,

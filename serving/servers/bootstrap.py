@@ -74,10 +74,14 @@ async def _init_router_and_models(router: RouteExecutor) -> None:
 
     # Try config-driven model registration first
     try:
-        models_path = Path(os.getenv("MODELS_CONFIG", "config/models.yaml"))
-        registered = register_from_models_yaml(router, models_path)
-        if registered:
-            logger.info(f"Registered {registered} routes from {models_path}")
+        models_env = os.getenv("MODELS_CONFIG")
+        models_path = Path(models_env or "config/models.yaml")
+        if models_env and not models_path.exists():
+            logger.warning(f"Models config not found: {models_path}")
+        else:
+            registered = register_from_models_yaml(router, models_path)
+            if registered:
+                logger.info(f"Registered {registered} routes from {models_path}")
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
 
@@ -148,6 +152,20 @@ async def _init_router_and_models(router: RouteExecutor) -> None:
         logger.info("Registered local VLLM models")
     elif local_base_url and offload_enabled:
         logger.info("OFFLOAD=1 detected: Skipping local VLLM model registration")
+
+    # If OFFLOAD=1, remove any VLLM routes pointing to LOCAL_BASE_URL that may have
+    # been registered via YAML to avoid accidental local usage.
+    if offload_enabled and local_base_url:
+        to_remove: list[str] = []
+        for model_id, route in router.routes.items():
+            for adapter, _ in route.adapters:
+                if adapter.config.provider == "vllm" and adapter.config.base_url.rstrip(
+                    "/"
+                ) == local_base_url.rstrip("/"):
+                    to_remove.append(model_id)
+                    break
+        for mid in to_remove:
+            router.routes.pop(mid, None)
 
     # Register DeepSeek
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
@@ -262,8 +280,11 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
     """
 
     try:
-        routing_cfg_path = Path(os.getenv("ROUTING_CONFIG", "config/routing.yaml"))
-        if routing_cfg_path.exists():
+        routing_env = os.getenv("ROUTING_CONFIG")
+        routing_cfg_path = Path(routing_env or "config/routing.yaml")
+        if routing_env and not routing_cfg_path.exists():
+            logger.warning(f"Routing config not found: {routing_cfg_path}")
+        elif routing_cfg_path.exists():
             manager = RoutingManager(router, routing_cfg_path)
             manager.load()
             updated = manager.apply()
@@ -274,7 +295,8 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
             else:
                 logger.info("RoutingManager loaded; no routes updated (check config)")
             return manager
-        logger.info("No routing config found; using default routes")
+        else:
+            logger.info("No routing config found; using default routes")
     except Exception as exc:
         logger.warning(f"RoutingManager failed to initialize: {exc}")
     return None
@@ -282,21 +304,6 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
 
 def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
     """Configure model-specific rate limits from environment variables."""
-
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-    if deepseek_key:
-        deepseek_tpd = int(os.getenv("DEEPSEEK_TPD_LIMIT", "1000000"))
-        if deepseek_tpd > 0:
-            cfg = RateLimitConfig(
-                model_id="deepseek-chat",
-                window_seconds=86400,
-                capacity_tokens=deepseek_tpd,
-                burst_multiplier=1.0,
-                queue_size=50,
-                enable_persistence=True,
-            )
-            limiter.configure(cfg)
-            logger.info(f"Configured DeepSeek limit: {deepseek_tpd:,}/day")
 
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
@@ -312,6 +319,21 @@ def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
             )
             limiter.configure(cfg)
             logger.info(f"Configured Gemini limit: {gemini_tpm:,}/min")
+
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    if deepseek_key:
+        deepseek_tpd = int(os.getenv("DEEPSEEK_TPD_LIMIT", "1000000"))
+        if deepseek_tpd > 0:
+            cfg = RateLimitConfig(
+                model_id="deepseek-chat",
+                window_seconds=86400,
+                capacity_tokens=deepseek_tpd,
+                burst_multiplier=1.0,
+                queue_size=50,
+                enable_persistence=True,
+            )
+            limiter.configure(cfg)
+            logger.info(f"Configured DeepSeek limit: {deepseek_tpd:,}/day")
 
 
 async def initialize() -> AppServices:
@@ -333,7 +355,11 @@ async def initialize() -> AppServices:
     # Database logger
     db_logger = _init_db_logger()
     if db_logger:
-        await db_logger.initialize()
+        try:
+            await db_logger.initialize()
+        except Exception as exc:
+            logger.warning(f"Database logger failed to initialize: {exc}")
+            db_logger = None
 
     # Models into router
     await _init_router_and_models(router)
@@ -369,15 +395,24 @@ async def shutdown(services: AppServices) -> None:
 
     # Database logger
     if services.db_logger:
-        await services.db_logger.cleanup()
+        try:
+            await services.db_logger.cleanup()
+        except Exception as exc:
+            logger.error(f"DB cleanup failed: {exc}")
 
     # Persist limiter state
     if services.rate_limiter:
-        await services.rate_limiter._persist_state()
+        try:
+            await services.rate_limiter._persist_state()
+        except Exception as exc:
+            logger.error(f"Persist rate limiter failed: {exc}")
 
     # Routing manager health monitor
     if services.routing_manager:
-        await services.routing_manager.shutdown()
+        try:
+            await services.routing_manager.shutdown()
+        except Exception as exc:
+            logger.error(f"Routing manager shutdown failed: {exc}")
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):

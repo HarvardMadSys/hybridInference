@@ -4,7 +4,18 @@ import json
 import os
 from datetime import datetime
 
-def log_result(model_id, provider, total_seconds_0, total_seconds, ping_rtt, status, response_text, prompt, prompt_type="default"):
+
+def log_result(
+    model_id,
+    provider,
+    total_seconds_0,
+    total_seconds,
+    ping_rtt,
+    status,
+    response_text,
+    prompt,
+    prompt_type="default",
+):
     log_data = {
         "timestamp": datetime.utcnow().isoformat(),
         "model_id": model_id,
@@ -15,7 +26,7 @@ def log_result(model_id, provider, total_seconds_0, total_seconds, ping_rtt, sta
         "status": status,
         "prompt_type": prompt_type,
         "prompt": prompt,
-        "response": response_text
+        "response": response_text,
     }
 
     # Sanitize model ID to be filename-safe
