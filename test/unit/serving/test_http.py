@@ -133,4 +133,4 @@ async def test_stream_post_ndjson(monkeypatch):
     async for line in client.stream_post("http://example/ndjson", json={}, mode="ndjson"):
         lines.append(line)
 
-    assert [json.loads(l) for l in lines] == [{"a": 1}, {"b": 2}]
+    assert [json.loads(line) for line in lines] == [{"a": 1}, {"b": 2}]

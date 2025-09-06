@@ -118,12 +118,12 @@ async def test_streaming_sse_format(completions_client: AsyncClient):
         async for line in resp.aiter_lines():
             if line.startswith("data: "):
                 lines.append(line)
-        assert any(l == "data: [DONE]" for l in lines)
+        assert any(line == "data: [DONE]" for line in lines)
         # Concatenate content chunks (ignore usage chunk)
         content = "".join(
-            json.loads(l[6:])["choices"][0]["delta"].get("content", "")
-            for l in lines
-            if l != "data: [DONE]" and l != "data: {}"
+            json.loads(line[6:])["choices"][0]["delta"].get("content", "")
+            for line in lines
+            if line != "data: [DONE]" and line != "data: {}"
         )
         assert content == "Test response"
 
