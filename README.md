@@ -6,16 +6,15 @@ A high-performance hybrid inference server providing local deployment and offlin
 
 ```
 hybrid-inference/
-├── serving/         # API serving layer
-├── routing/         # Request routing logic
-├── database/        # Database abstraction layer
-├── client/          # Client implementations
-├── llama_benchmark/ # Performance benchmarking suite
-├── utils/           # Shared utilities
-├── test/            # Test suite
-├── config/          # Configuration files
-├── scripts/         # Utility scripts
-└── docs/            # Documentation
+├── serving/   # API serving layer (app, routers, adapters)
+├── routing/   # Request routing logic
+├── database/  # Database abstraction layer
+├── client/    # Client implementations (loaders, runner, metrics)
+├── utils/     # Shared utilities
+├── test/      # Test suite
+├── config/    # Configuration files
+├── scripts/   # Utility scripts
+└── docs/      # Documentation
 ```
 
 ## Development Setup
@@ -63,10 +62,10 @@ This project uses `pyproject.toml` for dependency management (PEP 517/518 standa
 uv add fastapi httpx pydantic
 
 # Add development dependency
-uv add --group dev pytest black mypy
+uv add --group dev ruff mypy pydocstyle pytest
 
 # Update a package
-uv add pandas --upgrade
+uv add fastapi --upgrade
 
 # Sync all dependencies
 uv sync
@@ -132,7 +131,7 @@ PORT=8002 ./scripts/start_vllm.sh
 
 This project follows industry best practices:
 
-- **Code Style**: Google Python Style Guide (enforced by yapf)
+- **Code Style**: Google Python Style Guide (formatted with ruff)
 - **Linting**: ruff with extensive rule sets
 - **Type Checking**: mypy with strict mode
 - **Documentation**: Google-style docstrings (pydocstyle)
