@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Dict, List, Tuple
-
-from serving.adapters.base import BaseAdapter
+from typing import TYPE_CHECKING
 
 from .config import RoutingConfig, load_routing_config
-from .executor import RouteExecutor
 from .health import HealthMonitor
 from .strategies import FixedRatioStrategy
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from serving.adapters.base import BaseAdapter
+
+    from .executor import RouteExecutor
 
 
 class RoutingManager:
@@ -29,8 +32,7 @@ class RoutingManager:
         self.conf = load_routing_config(self.config_path)
         if self.conf.health_check > 0:
             endpoints = [
-                d.endpoint
-                for d in (self.conf.local_deployment + self.conf.remote_deployment)
+                d.endpoint for d in (self.conf.local_deployment + self.conf.remote_deployment)
             ]
             self.health = HealthMonitor(
                 timeout_s=self.conf.timeout, interval_s=self.conf.health_check
@@ -44,7 +46,7 @@ class RoutingManager:
 
     def _group_adapters(
         self,
-    ) -> Dict[str, Tuple[List[Tuple[BaseAdapter, str]], List[Tuple[BaseAdapter, str]]]]:
+    ) -> dict[str, tuple[list[tuple[BaseAdapter, str]], list[tuple[BaseAdapter, str]]]]:
         """Return mapping model_id -> (local_adapters, remote_adapters).
 
         Each entry is a list of (adapter, model_id) pairs.
@@ -53,14 +55,12 @@ class RoutingManager:
         local_eps = {d.endpoint for d in self.conf.local_deployment}
         remote_eps = {d.endpoint for d in self.conf.remote_deployment}
         local_models: set[str] = {m for d in self.conf.local_deployment for m in d.models}
-        remote_models: set[str] = {
-            m for d in self.conf.remote_deployment for m in d.models
-        }
+        remote_models: set[str] = {m for d in self.conf.remote_deployment for m in d.models}
 
-        groups: Dict[str, Tuple[List[Tuple[BaseAdapter, str]], List[Tuple[BaseAdapter, str]]]] = {}
+        groups: dict[str, tuple[list[tuple[BaseAdapter, str]], list[tuple[BaseAdapter, str]]]] = {}
         for model_id, route_cfg in self.router.routes.items():
-            local: List[Tuple[BaseAdapter, str]] = []
-            remote: List[Tuple[BaseAdapter, str]] = []
+            local: list[tuple[BaseAdapter, str]] = []
+            remote: list[tuple[BaseAdapter, str]] = []
             for adapter, _w in route_cfg.adapters:
                 ep = adapter.config.base_url.rstrip("/")
                 # Select by endpoint group and model listing. Exact match only.
@@ -68,9 +68,12 @@ class RoutingManager:
                     # Optionally skip unhealthy endpoints
                     if not self.health or self.health.is_healthy(ep):
                         local.append((adapter, model_id))
-                elif ep in remote_eps and (model_id in remote_models):
-                    if not self.health or self.health.is_healthy(ep):
-                        remote.append((adapter, model_id))
+                elif (
+                    ep in remote_eps
+                    and (model_id in remote_models)
+                    and (not self.health or self.health.is_healthy(ep))
+                ):
+                    remote.append((adapter, model_id))
             groups[model_id] = (local, remote)
         return groups
 
@@ -83,9 +86,7 @@ class RoutingManager:
         if self.conf.routing_strategy != "fixed":
             # For now only fixed supported; ignore otherwise
             return 0
-        strat = FixedRatioStrategy(
-            local_fraction=self.conf.routing_parameter.local_fraction
-        )
+        strat = FixedRatioStrategy(local_fraction=self.conf.routing_parameter.local_fraction)
         groups = self._group_adapters()
         updated = 0
         for model_id, route_cfg in list(self.router.routes.items()):
@@ -95,7 +96,7 @@ class RoutingManager:
                 continue
             weights = strat.assign(local, remote)
             # Build new adapters list preserving order: first those with new weights, else keep existing
-            new_adapters: List[Tuple[BaseAdapter, float]] = []
+            new_adapters: list[tuple[BaseAdapter, float]] = []
             seen: set[BaseAdapter] = set()
             for adapter, _ in route_cfg.adapters:
                 if adapter in weights:
@@ -110,7 +111,7 @@ class RoutingManager:
                 updated += 1
         return updated
 
-    def get_status(self) -> Dict[str, object]:
+    def get_status(self) -> dict[str, object]:
         """Return a summary of current routing status for diagnostics.
 
         Returns:

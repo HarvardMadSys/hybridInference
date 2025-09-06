@@ -48,6 +48,7 @@ models:
     name: Llama 4 Scout
     provider: vllm
     base_url: ${LOCAL_BASE_URL}
+    provider_model_id: "/models/meta-llama_Llama-4-Scout-17B-16E"  # backend expects this id
     context_length: 262144
     max_output_length: 16384
     supports_tools: true
@@ -61,7 +62,9 @@ models:
 ```
 
 ### Key Points:
-- `id`: Model name used by the API layer; `aliases` provide compatibility
+- `id`: Public model ID exposed by the API (what clients use to call the model)
+- `provider_model_id`: The actual model name sent to the backend provider (e.g., vLLM/freeinference's `/models/...`). If omitted, uses `id`
+- `aliases`: Additional public aliases that are registered alongside `id` to point to the same adapter
 - `provider`: Determines adapter type (`llama`, `vllm`, `deepseek`, `gemini`, etc.)
 - `/v1/models` endpoint dynamically generates its response from registered adapters
 
@@ -122,8 +125,9 @@ Simply omit `routing.yaml` to use default weights from `models.yaml` (typically 
 
 ### Start the Server:
 ```bash
-python -m serving.servers.openrouter
+python -m serving.servers.app
 # Or use uvicorn/pm2/supervisor for production
+# uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
 ```
 
 ### Verify Operation:

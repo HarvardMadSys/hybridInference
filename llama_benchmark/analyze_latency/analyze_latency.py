@@ -1,17 +1,15 @@
-import json
 import argparse
-import matplotlib.pyplot as plt
-from datetime import datetime
+import json
 from collections import defaultdict
+from datetime import datetime
+
+import matplotlib.pyplot as plt
+
 
 def load_data(log_path):
-    by_prompt_type = defaultdict(lambda: {
-        "timestamps": [],
-        "latencies": [],
-        "tcp_rtts": []
-    })
+    by_prompt_type = defaultdict(lambda: {"timestamps": [], "latencies": [], "tcp_rtts": []})
 
-    with open(log_path, "r") as f:
+    with open(log_path) as f:
         for line in f:
             entry = json.loads(line)
             if entry["total_seconds"] is None:
@@ -19,16 +17,21 @@ def load_data(log_path):
 
             prompt_type = entry.get("prompt_type", "default")
 
-            by_prompt_type[prompt_type]["timestamps"].append(datetime.fromisoformat(entry["timestamp"]))
+            by_prompt_type[prompt_type]["timestamps"].append(
+                datetime.fromisoformat(entry["timestamp"])
+            )
             by_prompt_type[prompt_type]["latencies"].append(entry["total_seconds"])
-            by_prompt_type[prompt_type]["tcp_rtts"].append(entry.get("ping_rtt"))  # will be None if not logged
+            by_prompt_type[prompt_type]["tcp_rtts"].append(
+                entry.get("ping_rtt")
+            )  # will be None if not logged
 
     return by_prompt_type
+
 
 def plot_series(timestamps, values, prompt_type, label, ylabel, title, values_1=None, label_1=None):
     if prompt_type != "default":
         label = f"{prompt_type} (queuing)"
-        plt.plot(timestamps, values, marker='o', label=label)
+        plt.plot(timestamps, values, marker="o", label=label)
         plt.title(title)
         plt.xlabel("Time")
         plt.ylabel(ylabel)
@@ -37,9 +40,9 @@ def plot_series(timestamps, values, prompt_type, label, ylabel, title, values_1=
         plt.legend()
         plt.savefig(f"{title.replace(' ', '_').replace(':', '')}.png")
         return
-    plt.plot(timestamps, values, marker='o', label=label)
+    plt.plot(timestamps, values, marker="o", label=label)
     if values_1 is not None:
-        plt.plot(timestamps, values_1, marker='o', label=label_1, markersize=2)
+        plt.plot(timestamps, values_1, marker="o", label=label_1, markersize=2)
     plt.title(title)
     plt.xlabel("Time")
     plt.ylabel(ylabel)
@@ -47,6 +50,7 @@ def plot_series(timestamps, values, prompt_type, label, ylabel, title, values_1=
     plt.tight_layout()
     plt.legend()
     plt.savefig(f"{title.replace(' ', '_').replace(':', '')}.png")
+
 
 def analyze(log_path):
     model_name = log_path.split("/")[-1].replace(".jsonl", "")
@@ -56,18 +60,25 @@ def analyze(log_path):
         print(f"\n--- Prompt Type: {prompt_type} ---")
         timestamps = series["timestamps"]
 
-        plot_series(timestamps, series["latencies"], prompt_type,
-                    label="latency",
-                    ylabel="seconds (s)",
-                    title=f"{model_name}",
-                    values_1=series["tcp_rtts"],
-                    label_1="TCP RTT (s)")
-
+        plot_series(
+            timestamps,
+            series["latencies"],
+            prompt_type,
+            label="latency",
+            ylabel="seconds (s)",
+            title=f"{model_name}",
+            values_1=series["tcp_rtts"],
+            label_1="TCP RTT (s)",
+        )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--log", required=True, help="Path to model log file (e.g. logs/Llama-3.3-70B-Instruct.jsonl)")
+    parser.add_argument(
+        "--log",
+        required=True,
+        help="Path to model log file (e.g. logs/Llama-3.3-70B-Instruct.jsonl)",
+    )
     args = parser.parse_args()
 
     analyze(args.log)

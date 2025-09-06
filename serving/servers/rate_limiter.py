@@ -18,74 +18,34 @@ import os
 import sqlite3
 import time
 from collections import defaultdict
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
+# from utils.server_metrics import RATE_LIMIT_HITS  # TODO: Enable when observability is added
 
 
 class TokenCounter:
-    """Multi-strategy token counter with fallback mechanisms."""
-    
+    """Unified token estimation facade for rate limiting.
+
+    Delegates to utils.tokens to avoid duplication and keep consistency
+    with adapters' token accounting. Public API remains unchanged.
+    """
+
     @staticmethod
-    def estimate_tokens(messages: List[Dict[str, Any]], max_tokens: Optional[int] = None) -> int:
-        """Estimate tokens using multiple strategies.
-        
-        Strategy hierarchy:
-        1. Tiktoken (if available) - Most accurate
-        2. Character-based estimation - Good approximation
-        3. Word-based estimation - Basic fallback
-        """
-        try:
-            # Try to use tiktoken if available for better accuracy.
-            return TokenCounter._tiktoken_count(messages, max_tokens)
-        except ImportError:
-            pass
-        
-        return TokenCounter._character_count(messages, max_tokens)
-    
-    @staticmethod
-    def _tiktoken_count(messages: List[Dict[str, Any]], max_tokens: Optional[int]) -> int:
-        """Accurate token counting using tiktoken."""
-        import tiktoken
-        
-        encoding = tiktoken.get_encoding("cl100k_base")
-        
-        prompt_tokens = 0
-        for msg in messages:
-            content = str(msg.get("content", ""))
-            role = str(msg.get("role", ""))
-            
-            prompt_tokens += len(encoding.encode(content))
-            prompt_tokens += len(encoding.encode(role))
-            prompt_tokens += 4
-        
-        prompt_tokens += 3
-        
-        completion_tokens = max_tokens if max_tokens else 500
-        return prompt_tokens + completion_tokens
-    
-    @staticmethod
-    def _character_count(messages: List[Dict[str, Any]], max_tokens: Optional[int]) -> int:
-        """Character-based token estimation (4 chars ≈ 1 token)."""
-        total_chars = 0
-        for msg in messages:
-            content = str(msg.get("content", ""))
-            role = str(msg.get("role", ""))
-            total_chars += len(content) + len(role)
-        
-        prompt_tokens = total_chars // 4
-        completion_tokens = max_tokens if max_tokens else 500
-        
-        return prompt_tokens + completion_tokens
+    def estimate_tokens(messages: list[dict[str, Any]], max_tokens: int | None = None) -> int:
+        from utils.tokens import estimate_total_tokens
+
+        return int(estimate_total_tokens(messages, max_tokens))
 
 
 @dataclass
 class RateLimitConfig:
     """Configuration for rate limiting."""
+
     model_id: str
     window_seconds: int
     capacity_tokens: int
@@ -97,68 +57,71 @@ class RateLimitConfig:
 @dataclass
 class TokenBucket:
     """Token bucket with refill rate for smooth rate limiting."""
+
     capacity: int
     refill_rate: float
     tokens: float = field(init=False)
     last_refill: float = field(init=False)
-    
+
     def __post_init__(self):
         self.tokens = float(self.capacity)
         self.last_refill = time.time()
-    
-    def try_consume(self, amount: int) -> Tuple[bool, float]:
+
+    def try_consume(self, amount: int) -> tuple[bool, float]:
         """Try to consume tokens from bucket."""
         now = time.time()
         elapsed = now - self.last_refill
-        
+
         self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
         self.last_refill = now
-        
+
         if self.tokens >= amount:
             self.tokens -= amount
             return True, self.tokens
-        
+
         wait_time = (amount - self.tokens) / self.refill_rate
         return False, wait_time
 
 
 class RateLimitState(Enum):
     """Simplified circuit state placeholder (always closed)."""
+
     CLOSED = "closed"
 
 
 class PersistentRateLimiter:
     """Production-grade rate limiter with persistence and circuit breaker."""
-    
-    def __init__(self, db_path: Optional[str] = None):
+
+    def __init__(self, db_path: str | None = None):
         self.db_path = db_path or os.path.join(
-            Path(__file__).parent.parent.parent,
-            "data", "db", "rate_limits.db"
+            Path(__file__).parent.parent.parent, "data", "db", "rate_limits.db"
         )
-        
-        self.configs: Dict[str, RateLimitConfig] = {}
-        self.buckets: Dict[str, TokenBucket] = {}
-        self.queues: Dict[str, asyncio.Queue] = {}
-        self.states: Dict[str, RateLimitState] = defaultdict(lambda: RateLimitState.CLOSED)
-        self.metrics: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
-            "total_requests": 0,
-            "accepted_requests": 0,
-            "rejected_requests": 0,
-            "queued_requests": 0,
-            "total_tokens": 0,
-            "circuit_breaker_trips": 0
-        })
-        
+
+        self.configs: dict[str, RateLimitConfig] = {}
+        self.buckets: dict[str, TokenBucket] = {}
+        self.queues: dict[str, asyncio.Queue] = {}
+        self.states: dict[str, RateLimitState] = defaultdict(lambda: RateLimitState.CLOSED)
+        self.metrics: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "total_requests": 0,
+                "accepted_requests": 0,
+                "rejected_requests": 0,
+                "queued_requests": 0,
+                "total_tokens": 0,
+                "circuit_breaker_trips": 0,
+            }
+        )
+
         self._lock = asyncio.Lock()
         self._initialized = False
-    
+
     async def initialize(self):
         """Initialize database and restore state."""
         if self._initialized:
             return
-        
+
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        
+
         async with self._lock:
             conn = sqlite3.connect(self.db_path)
             try:
@@ -171,15 +134,14 @@ class PersistentRateLimiter:
                     # Table exists, check for new columns.
                     cursor = conn.execute("PRAGMA table_info(rate_limit_state)")
                     columns = {col[1] for col in cursor.fetchall()}
-                    
+
                     if "tokens" not in columns:
                         conn.execute("ALTER TABLE rate_limit_state ADD COLUMN tokens REAL")
                     if "last_refill" not in columns:
                         conn.execute("ALTER TABLE rate_limit_state ADD COLUMN last_refill REAL")
                 else:
                     # Create new table with all columns.
-                    conn.execute(
-                        """
+                    conn.execute("""
                         CREATE TABLE rate_limit_state (
                             model_id TEXT PRIMARY KEY,
                             tokens_used REAL,
@@ -189,36 +151,33 @@ class PersistentRateLimiter:
                             tokens REAL,
                             last_refill REAL
                         )
-                        """
-                    )
+                        """)
                 conn.commit()
-                
+
                 await self._restore_state(conn)
             finally:
                 conn.close()
-        
+
         self._initialized = True
-        
-        asyncio.create_task(self._periodic_persistence())
-    
+
+        _ = asyncio.create_task(self._periodic_persistence())  # noqa: RUF006
+
     async def _restore_state(self, conn: sqlite3.Connection):
         """Restore rate limit state from database."""
-        cursor = conn.execute(
-            """
+        cursor = conn.execute("""
             SELECT model_id, tokens_used, window_start, last_update, metrics, tokens, last_refill
             FROM rate_limit_state
-            """
-        )
-        
+            """)
+
         now = time.time()
         for row in cursor:
             model_id, tokens_used, window_start, _, metrics_json, tokens_val, last_refill_val = row
-            
+
             if model_id not in self.configs:
                 continue
-            
+
             config = self.configs[model_id]
-            
+
             bucket = self.buckets.get(model_id)
             if not bucket:
                 continue
@@ -230,35 +189,39 @@ class PersistentRateLimiter:
                 bucket.last_refill = float(last_refill_val)
             else:
                 # Legacy fallback: derive tokens from tokens_used and use window_start as last_refill
-                if window_start is not None and tokens_used is not None:
-                    if now - float(window_start) < float(config.window_seconds):
-                        bucket.tokens = max(0.0, min(float(config.capacity_tokens - tokens_used), float(bucket.capacity)))
-                        bucket.last_refill = float(window_start)
-            
+                if (
+                    window_start is not None
+                    and tokens_used is not None
+                    and now - float(window_start) < float(config.window_seconds)
+                ):
+                    bucket.tokens = max(
+                        0.0,
+                        min(float(config.capacity_tokens - tokens_used), float(bucket.capacity)),
+                    )
+                    bucket.last_refill = float(window_start)
+
             if metrics_json:
-                try:
+                with suppress(json.JSONDecodeError):
                     self.metrics[model_id] = json.loads(metrics_json)
-                except json.JSONDecodeError:
-                    pass
-    
+
     async def _periodic_persistence(self):
         """Periodically persist state to database."""
         while True:
             await asyncio.sleep(10)
             await self._persist_state()
-    
+
     async def _persist_state(self):
         """Persist current state to database."""
         if not self._initialized:
             return
-        
+
         conn = sqlite3.connect(self.db_path)
         try:
             for model_id, config in self.configs.items():
                 bucket = self.buckets.get(model_id)
                 if not bucket:
                     continue
-                
+
                 tokens_remaining = float(bucket.tokens)
                 metrics_json = json.dumps(self.metrics[model_id])
 
@@ -279,14 +242,14 @@ class PersistentRateLimiter:
                         float(bucket.last_refill),
                     ),
                 )
-            
+
             conn.commit()
         finally:
             conn.close()
-    
+
     def configure(self, config: RateLimitConfig):
         """Configure rate limiting for a model.
-        
+
         For strict compliance (no burst beyond window capacity), we clamp
         effective capacity to exactly `capacity_tokens` regardless of
         `burst_multiplier`. This avoids overshooting provider quotas.
@@ -298,8 +261,7 @@ class PersistentRateLimiter:
 
         refill_rate = config.capacity_tokens / config.window_seconds
         self.buckets[config.model_id] = TokenBucket(
-            capacity=effective_capacity,
-            refill_rate=refill_rate
+            capacity=effective_capacity, refill_rate=refill_rate
         )
 
         # Keep a queue placeholder for status compatibility, but we no longer
@@ -310,30 +272,31 @@ class PersistentRateLimiter:
             f"Configured rate limit for {config.model_id}: "
             f"{config.capacity_tokens:,} tokens per {config.window_seconds}s"
         )
-    
+
     async def acquire_tokens(
         self,
         model_id: str,
-        messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        messages: list[dict[str, Any]],
+        max_tokens: int | None = None,
         priority: int = 0,  # Reserved for future use.
-        timeout: float = 30.0
-    ) -> Tuple[bool, Dict[str, Any]]:
+        timeout: float = 30.0,
+    ) -> tuple[bool, dict[str, Any]]:
         """Acquire tokens with cooperative waiting (no internal queueing).
-        
+
         Returns:
             Tuple of (success, metadata dict with details)
         """
         if model_id not in self.configs:
+            # RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()  # TODO: Enable metrics
             return True, {"unlimited": True}
-        
+
         self.metrics[model_id]["total_requests"] += 1
-        
+
         # No circuit breaker transitions; always CLOSED in this simplified version
-        
+
         estimated_tokens = TokenCounter.estimate_tokens(messages, max_tokens)
         self.metrics[model_id]["total_tokens"] += estimated_tokens
-        
+
         bucket = self.buckets[model_id]
 
         # First, fast-path try
@@ -341,6 +304,7 @@ class PersistentRateLimiter:
             success, wait_or_remaining = bucket.try_consume(estimated_tokens)
             if success:
                 self.metrics[model_id]["accepted_requests"] += 1
+                # RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()  # TODO: Enable metrics
                 return True, {
                     "tokens_consumed": estimated_tokens,
                     "tokens_remaining": wait_or_remaining,
@@ -351,11 +315,12 @@ class PersistentRateLimiter:
         # If we can't serve immediately, cooperatively wait up to timeout
         if wait_time > timeout:
             self.metrics[model_id]["rejected_requests"] += 1
+            # RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()  # TODO: Enable metrics
             return False, {
                 "error": "Rate limit exceeded",
                 "tokens_requested": estimated_tokens,
                 "wait_time": wait_time,
-                "retry_after": int(wait_time)
+                "retry_after": int(wait_time),
             }
 
         # Sleep close to the theoretical needed wait to avoid busy looping
@@ -371,6 +336,7 @@ class PersistentRateLimiter:
             success, wait_or_remaining = bucket.try_consume(estimated_tokens)
             if success:
                 self.metrics[model_id]["accepted_requests"] += 1
+                # RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()  # TODO: Enable metrics
                 return True, {
                     "tokens_consumed": estimated_tokens,
                     "tokens_remaining": wait_or_remaining,
@@ -378,40 +344,38 @@ class PersistentRateLimiter:
                 }
 
         self.metrics[model_id]["rejected_requests"] += 1
+        # RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()  # TODO: Enable metrics
         return False, {
             "error": "Rate limit exceeded",
             "tokens_requested": estimated_tokens,
-            "retry_after": int(max(1, wait_or_remaining))
+            "retry_after": int(max(1, wait_or_remaining)),
         }
-    
+
     async def release_tokens(self, model_id: str, tokens: int):
         """Release tokens back to the bucket (on error)."""
         if model_id not in self.buckets:
             return
-        
+
         async with self._lock:
             bucket = self.buckets[model_id]
             bucket.tokens = min(bucket.capacity, bucket.tokens + tokens)
-    
-    def get_metrics(self, model_id: Optional[str] = None) -> Dict[str, Any]:
+
+    def get_metrics(self, model_id: str | None = None) -> dict[str, Any]:
         """Get rate limiter metrics."""
         if model_id:
             return dict(self.metrics.get(model_id, {}))
-        
-        return {
-            model: dict(metrics)
-            for model, metrics in self.metrics.items()
-        }
-    
-    def get_status(self, model_id: str) -> Dict[str, Any]:
+
+        return {model: dict(metrics) for model, metrics in self.metrics.items()}
+
+    def get_status(self, model_id: str) -> dict[str, Any]:
         """Get current status for a model."""
         if model_id not in self.configs:
             return {"configured": False}
-        
+
         config = self.configs[model_id]
         bucket = self.buckets[model_id]
         queue = self.queues[model_id]
-        
+
         return {
             "configured": True,
             "capacity": config.capacity_tokens,
@@ -421,24 +385,24 @@ class PersistentRateLimiter:
             "queue_size": queue.qsize(),
             "queue_capacity": config.queue_size,
             "circuit_breaker_state": RateLimitState.CLOSED.value,
-            "metrics": self.get_metrics(model_id)
+            "metrics": self.get_metrics(model_id),
         }
-    
+
     def reset_circuit_breaker(self, model_id: str):
         """No-op in simplified version (always closed)."""
         logger.info(f"Circuit breaker reset requested for {model_id} (no-op)")
 
 
 @asynccontextmanager
-async def create_rate_limiter(configs: List[RateLimitConfig], db_path: Optional[str] = None):
+async def create_rate_limiter(configs: list[RateLimitConfig], db_path: str | None = None):
     """Create and initialize a rate limiter with configs."""
     limiter = PersistentRateLimiter(db_path)
-    
+
     for config in configs:
         limiter.configure(config)
-    
+
     await limiter.initialize()
-    
+
     try:
         yield limiter
     finally:

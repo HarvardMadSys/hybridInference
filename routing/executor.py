@@ -1,17 +1,24 @@
+"""Execution logic for routing requests to AI model adapters."""
+
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
-from serving.adapters.base import BaseAdapter
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from serving.adapters.base import BaseAdapter
+# from utils import request_context as req_ctx  # TODO: Enable when observability is added
+# from utils.server_metrics import API_FALLBACKS, STREAMING_INTERRUPTION  # TODO: Enable metrics
 
 
 @dataclass
 class RouteConfig:
     """Weighted adapter list for a model."""
 
-    adapters: List[Tuple[BaseAdapter, float]]
+    adapters: list[tuple[BaseAdapter, float]]
 
 
 class RouteExecutor:
@@ -24,13 +31,13 @@ class RouteExecutor:
     """
 
     def __init__(self) -> None:
-        self.routes: Dict[str, RouteConfig] = {}
+        self.routes: dict[str, RouteConfig] = {}
 
     def register_route(
-        self, model_id: str, adapters_with_weights: List[Tuple[BaseAdapter, float]]
+        self, model_id: str, adapters_with_weights: list[tuple[BaseAdapter, float]]
     ) -> None:
         """Register a weighted route for a model.
-        
+
         Args:
             model_id: Model identifier.
             adapters_with_weights: List of (adapter, weight) tuples.
@@ -39,17 +46,15 @@ class RouteExecutor:
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
             return
-        normalized = [
-            (adapter, weight / total_weight) for adapter, weight in adapters_with_weights
-        ]
+        normalized = [(adapter, weight / total_weight) for adapter, weight in adapters_with_weights]
         self.routes[model_id] = RouteConfig(adapters=normalized)
 
-    def _select_adapter(self, model_id: str) -> Optional[BaseAdapter]:
+    def _select_adapter(self, model_id: str) -> BaseAdapter | None:
         """Select an adapter using weighted random selection.
-        
+
         Args:
             model_id: Model identifier.
-            
+
         Returns:
             Selected adapter or None if no route configured.
         """
@@ -65,18 +70,18 @@ class RouteExecutor:
         return route.adapters[-1][0]
 
     async def chat_completion(
-        self, model_id: str, messages: List[Dict[str, Any]], **params: Any
-    ) -> Dict[str, Any]:
+        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+    ) -> dict[str, Any]:
         """Execute chat completion with automatic fallback.
-        
+
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
             **params: Additional parameters for the adapter.
-            
+
         Returns:
             Chat completion response with routing metadata.
-            
+
         Raises:
             ValueError: If no route configured for model.
         """
@@ -84,6 +89,7 @@ class RouteExecutor:
         if not primary:
             raise ValueError(f"No route configured for model {model_id}")
         try:
+            # with req_ctx.push(model=model_id, provider=primary.config.provider):  # TODO: Enable context
             resp = await primary.chat_completion(messages, **params)
             resp["_routing"] = {
                 "provider": primary.config.provider,
@@ -96,30 +102,36 @@ class RouteExecutor:
                 if adapter == primary:
                     continue
                 try:
+                    # with req_ctx.push(model=model_id, provider=adapter.config.provider):  # TODO: Enable context
                     resp = await adapter.chat_completion(messages, **params)
                     resp["_routing"] = {
                         "provider": adapter.config.provider,
                         "base_url": adapter.config.base_url,
                         "fallback": True,
                     }
+                    # API_FALLBACKS.labels(
+                    #     from_provider=primary.config.provider,
+                    #     to_provider=adapter.config.provider,
+                    #     reason=primary_error.__class__.__name__,
+                    # ).inc()  # TODO: Enable metrics
                     return resp
                 except Exception:
                     continue
             raise primary_error
 
     async def stream_chat_completion(
-        self, model_id: str, messages: List[Dict[str, Any]], **params: Any
+        self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ) -> AsyncIterator[Any]:
         """Stream chat completion with automatic fallback.
-        
+
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
             **params: Additional parameters for the adapter.
-            
+
         Yields:
             SSE chunks from the adapter.
-            
+
         Raises:
             ValueError: If no route configured for model.
         """
@@ -127,20 +139,36 @@ class RouteExecutor:
         if not primary:
             raise ValueError(f"No route configured for model {model_id}")
         try:
+            # with req_ctx.push(model=model_id, provider=primary.config.provider):  # TODO: Enable context
             async for chunk in primary.stream_chat_completion(messages, **params):
                 yield chunk
             return
         except Exception as primary_error:
+            # record streaming interruption for primary provider
+            # STREAMING_INTERRUPTION.labels(
+            #     model=model_id,
+            #     provider=primary.config.provider,
+            #     stage="adapter_stream",
+            # ).inc()  # TODO: Enable metrics
             route = self.routes[model_id]
             for adapter, _ in route.adapters:
                 if adapter == primary:
                     continue
                 try:
-                    async for chunk in adapter.stream_chat_completion(
-                        messages, **params
-                    ):
+                    # with req_ctx.push(model=model_id, provider=adapter.config.provider):  # TODO: Enable context
+                    async for chunk in adapter.stream_chat_completion(messages, **params):
                         yield chunk
+                    # API_FALLBACKS.labels(
+                    #     from_provider=primary.config.provider,
+                    #     to_provider=adapter.config.provider,
+                    #     reason=primary_error.__class__.__name__,
+                    # ).inc()  # TODO: Enable metrics
                     return
                 except Exception:
+                    # STREAMING_INTERRUPTION.labels(
+                    #     model=model_id,
+                    #     provider=adapter.config.provider,
+                    #     stage="adapter_stream",
+                    # ).inc()  # TODO: Enable metrics
                     continue
             raise primary_error

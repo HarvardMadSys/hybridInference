@@ -1,5 +1,7 @@
-from ping3 import ping  # ICMP ping
 from urllib.parse import urlparse
+
+from ping3 import ping  # ICMP ping
+
 
 def get_ping_rtt(api_base):
     hostname = urlparse(api_base).hostname
@@ -10,8 +12,10 @@ def get_ping_rtt(api_base):
         print(f"Ping error: {e}")
         return None
 
+
 import socket
 import time
+
 
 def tcp_ping(host, port=443, timeout=1):
     try:
