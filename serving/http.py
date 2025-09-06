@@ -14,6 +14,9 @@ import aiohttp
 
 from serving.servers.sse import SSEParser
 
+# from utils import request_context as req_ctx  # TODO: Enable when observability is added
+# from utils.server_metrics import API_RETRIES  # TODO: Enable metrics
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -77,6 +80,11 @@ class AsyncHTTPClient:
                 if attempt == retries - 1:
                     raise
                 delay = backoff_base * (backoff_factor**attempt)
+                # # metrics: retry with context provider label if available
+                # ctx = req_ctx.get()
+                # API_RETRIES.labels(
+                #     provider=str(ctx.get("provider", "unknown")), reason=err.__class__.__name__
+                # ).inc()  # TODO: Enable metrics
                 await asyncio.sleep(delay)
         # Should never reach here, but keep mypy happy.
         assert last_err is not None
@@ -114,6 +122,10 @@ class AsyncHTTPClient:
                 if attempt == retries - 1:
                     raise
                 delay = backoff_base * (backoff_factor**attempt)
+                # ctx = req_ctx.get()
+                # API_RETRIES.labels(
+                #     provider=str(ctx.get("provider", "unknown")), reason=err.__class__.__name__
+                # ).inc()  # TODO: Enable metrics
                 await asyncio.sleep(delay)
         assert last_err is not None
         raise last_err

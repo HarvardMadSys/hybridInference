@@ -8,6 +8,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from serving.adapters.base import BaseAdapter
+# from utils import request_context as req_ctx  # TODO: Enable when observability is added
+# from utils.server_metrics import API_FALLBACKS, STREAMING_INTERRUPTION  # TODO: Enable metrics
 
 
 @dataclass
@@ -85,6 +87,7 @@ class RouteExecutor:
         if not primary:
             raise ValueError(f"No route configured for model {model_id}")
         try:
+            # with req_ctx.push(model=model_id, provider=primary.config.provider):  # TODO: Enable context
             resp = await primary.chat_completion(messages, **params)
             resp["_routing"] = {
                 "provider": primary.config.provider,
@@ -97,12 +100,18 @@ class RouteExecutor:
                 if adapter == primary:
                     continue
                 try:
+                    # with req_ctx.push(model=model_id, provider=adapter.config.provider):  # TODO: Enable context
                     resp = await adapter.chat_completion(messages, **params)
                     resp["_routing"] = {
                         "provider": adapter.config.provider,
                         "base_url": adapter.config.base_url,
                         "fallback": True,
                     }
+                    # API_FALLBACKS.labels(
+                    #     from_provider=primary.config.provider,
+                    #     to_provider=adapter.config.provider,
+                    #     reason=primary_error.__class__.__name__,
+                    # ).inc()  # TODO: Enable metrics
                     return resp
                 except Exception:
                     continue
@@ -128,18 +137,36 @@ class RouteExecutor:
         if not primary:
             raise ValueError(f"No route configured for model {model_id}")
         try:
+            # with req_ctx.push(model=model_id, provider=primary.config.provider):  # TODO: Enable context
             async for chunk in primary.stream_chat_completion(messages, **params):
                 yield chunk
             return
         except Exception as primary_error:
+            # record streaming interruption for primary provider
+            # STREAMING_INTERRUPTION.labels(
+            #     model=model_id,
+            #     provider=primary.config.provider,
+            #     stage="adapter_stream",
+            # ).inc()  # TODO: Enable metrics
             route = self.routes[model_id]
             for adapter, _ in route.adapters:
                 if adapter == primary:
                     continue
                 try:
+                    # with req_ctx.push(model=model_id, provider=adapter.config.provider):  # TODO: Enable context
                     async for chunk in adapter.stream_chat_completion(messages, **params):
                         yield chunk
+                    # API_FALLBACKS.labels(
+                    #     from_provider=primary.config.provider,
+                    #     to_provider=adapter.config.provider,
+                    #     reason=primary_error.__class__.__name__,
+                    # ).inc()  # TODO: Enable metrics
                     return
                 except Exception:
+                    # STREAMING_INTERRUPTION.labels(
+                    #     model=model_id,
+                    #     provider=adapter.config.provider,
+                    #     stage="adapter_stream",
+                    # ).inc()  # TODO: Enable metrics
                     continue
             raise primary_error
