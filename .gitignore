@@ -206,7 +206,7 @@ CLAUDE.md
 AGENTS.md
 
 # uv lockfile
-uv.lock
+# uv.lock
 
 # Ruff cache
 .ruff_cache/
