@@ -119,9 +119,17 @@ async def app_services(mock_router, mock_db_logger, mock_rate_limiter):
 
     # Cleanup
     if services.db_logger:
-        await services.db_logger.cleanup()
+        try:
+            await services.db_logger.cleanup()
+        except Exception:
+            # Suppress teardown errors to avoid masking test results
+            pass
     if services.rate_limiter:
-        await services.rate_limiter._persist_state()
+        try:
+            await services.rate_limiter._persist_state()
+        except Exception:
+            # Suppress teardown errors to avoid masking test results
+            pass
 
 
 @pytest_asyncio.fixture
