@@ -308,9 +308,8 @@ class TestBootstrapErrorHandling:
             # Should still return services
             assert isinstance(services, AppServices)
             # Routing manager is optional, so None is acceptable
-            assert (
-                services.routing_manager is None
-                or isinstance(services.routing_manager, RoutingManager)
+            assert services.routing_manager is None or isinstance(
+                services.routing_manager, RoutingManager
             )
             # Should log a warning about routing config failure/missing
             mock_logger.warning.assert_called()
