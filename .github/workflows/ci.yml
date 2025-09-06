@@ -96,6 +96,10 @@ jobs:
           uv sync --group dev
       
       - name: Run tests with coverage
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LLAMA_API_KEY: ${{ secrets.LLAMA_API_KEY }}
         run: |
           uv run pytest --cov=. --cov-report=term-missing --cov-report=xml -v
       
