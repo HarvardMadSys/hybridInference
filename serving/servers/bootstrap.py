@@ -74,10 +74,14 @@ async def _init_router_and_models(router: RouteExecutor) -> None:
 
     # Try config-driven model registration first
     try:
-        models_path = Path(os.getenv("MODELS_CONFIG", "config/models.yaml"))
-        registered = register_from_models_yaml(router, models_path)
-        if registered:
-            logger.info(f"Registered {registered} routes from {models_path}")
+        models_env = os.getenv("MODELS_CONFIG")
+        models_path = Path(models_env or "config/models.yaml")
+        if models_env and not models_path.exists():
+            logger.warning(f"Models config not found: {models_path}")
+        else:
+            registered = register_from_models_yaml(router, models_path)
+            if registered:
+                logger.info(f"Registered {registered} routes from {models_path}")
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
 
@@ -276,8 +280,11 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
     """
 
     try:
-        routing_cfg_path = Path(os.getenv("ROUTING_CONFIG", "config/routing.yaml"))
-        if routing_cfg_path.exists():
+        routing_env = os.getenv("ROUTING_CONFIG")
+        routing_cfg_path = Path(routing_env or "config/routing.yaml")
+        if routing_env and not routing_cfg_path.exists():
+            logger.warning(f"Routing config not found: {routing_cfg_path}")
+        elif routing_cfg_path.exists():
             manager = RoutingManager(router, routing_cfg_path)
             manager.load()
             updated = manager.apply()
@@ -288,7 +295,8 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
             else:
                 logger.info("RoutingManager loaded; no routes updated (check config)")
             return manager
-        logger.info("No routing config found; using default routes")
+        else:
+            logger.info("No routing config found; using default routes")
     except Exception as exc:
         logger.warning(f"RoutingManager failed to initialize: {exc}")
     return None

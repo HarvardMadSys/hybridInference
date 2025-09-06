@@ -68,7 +68,11 @@ class RoutingManager:
                     # Optionally skip unhealthy endpoints
                     if not self.health or self.health.is_healthy(ep):
                         local.append((adapter, model_id))
-                elif ep in remote_eps and (model_id in remote_models) and (not self.health or self.health.is_healthy(ep)):
+                elif (
+                    ep in remote_eps
+                    and (model_id in remote_models)
+                    and (not self.health or self.health.is_healthy(ep))
+                ):
                     remote.append((adapter, model_id))
             groups[model_id] = (local, remote)
         return groups

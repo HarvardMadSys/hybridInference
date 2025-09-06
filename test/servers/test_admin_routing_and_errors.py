@@ -41,7 +41,11 @@ async def test_admin_routing_status_with_and_without_manager():
     # Case 1: with routing manager
     class _Mgr:
         def get_status(self) -> dict[str, Any]:
-            return {"loaded": True, "strategy": "fixed", "deployments": {"local": 1, "remote": 0}}
+            return {
+                "loaded": True,
+                "strategy": "fixed",
+                "deployments": {"local": 1, "remote": 0},
+            }
 
     app = FastAPI()
     app.state.services = AppServices(
@@ -77,7 +81,6 @@ async def test_admin_routing_status_with_and_without_manager():
 @pytest.mark.asyncio
 async def test_error_middleware_integration_http_exception_and_generic():
     app = FastAPI()
-    install_error_handlers(app)
 
     @app.get("/raise-http")
     def raise_http():
@@ -87,6 +90,9 @@ async def test_error_middleware_integration_http_exception_and_generic():
     @app.get("/raise-any")
     def raise_any():
         raise RuntimeError("boom")
+
+    # Install error handlers after routes are defined
+    install_error_handlers(app)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

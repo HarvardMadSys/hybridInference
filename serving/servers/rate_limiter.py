@@ -189,14 +189,16 @@ class PersistentRateLimiter:
                 bucket.last_refill = float(last_refill_val)
             else:
                 # Legacy fallback: derive tokens from tokens_used and use window_start as last_refill
-                if window_start is not None and tokens_used is not None and now - float(window_start) < float(config.window_seconds):
-                        bucket.tokens = max(
-                            0.0,
-                            min(
-                                float(config.capacity_tokens - tokens_used), float(bucket.capacity)
-                            ),
-                        )
-                        bucket.last_refill = float(window_start)
+                if (
+                    window_start is not None
+                    and tokens_used is not None
+                    and now - float(window_start) < float(config.window_seconds)
+                ):
+                    bucket.tokens = max(
+                        0.0,
+                        min(float(config.capacity_tokens - tokens_used), float(bucket.capacity)),
+                    )
+                    bucket.last_refill = float(window_start)
 
             if metrics_json:
                 with suppress(json.JSONDecodeError):
@@ -342,7 +344,11 @@ class PersistentRateLimiter:
                 }
 
         self.metrics[model_id]["rejected_requests"] += 1
+<<<<<<< HEAD
         RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()
+=======
+        # RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()  # TODO: Enable metrics
+>>>>>>> main
         return False, {
             "error": "Rate limit exceeded",
             "tokens_requested": estimated_tokens,

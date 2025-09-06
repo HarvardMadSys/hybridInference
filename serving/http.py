@@ -30,6 +30,7 @@ class AsyncHTTPClient:
 
     @classmethod
     def shared(cls) -> AsyncHTTPClient:
+        """Get or create a shared AsyncHTTPClient instance."""
         if cls._shared is None:
             cls._shared = AsyncHTTPClient()
         return cls._shared
@@ -49,6 +50,7 @@ class AsyncHTTPClient:
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> dict[str, Any]:
+        """Send a POST request with JSON payload."""
         session = await self._ensure_session()
         async with session.post(url, json=json, headers=headers, timeout=timeout) as resp:
             resp.raise_for_status()
@@ -96,6 +98,7 @@ class AsyncHTTPClient:
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> dict[str, Any]:
+        """Send a GET request and return JSON response."""
         session = await self._ensure_session()
         async with session.get(url, headers=headers, timeout=timeout) as resp:
             resp.raise_for_status()
@@ -200,5 +203,6 @@ class AsyncHTTPClient:
                     yield raw.decode("utf-8").strip()
 
     async def close(self) -> None:
+        """Close the HTTP session."""
         if self._session and not self._session.closed:
             await self._session.close()

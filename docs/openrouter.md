@@ -8,7 +8,7 @@ A production-ready OpenRouter-compatible API server that aggregates multiple LLM
 hybridInference/
 ├── serving/
 │   ├── servers/
-│   │   └── openrouter.py      # Main OpenRouter server
+│   │   └── app.py             # OpenRouter-compatible FastAPI app entry
 │   ├── adapters/              # Provider adapters
 │   │   ├── __init__.py       # Adapter exports
 │   │   ├── base.py           # Base adapter interface
@@ -32,7 +32,7 @@ hybridInference/
 │
 ├── test/                   # Test suite
 │   ├── api/               # API-specific tests
-│   └── test_openrouter_models.py # openrouter providing models test
+│   └── servers/           # Server behavior tests
 │
 └── .env                    # Environment variables
 ```
@@ -52,7 +52,7 @@ hybridInference/
 - **Local Models** (via freeinference.org or custom VLLM):
   - Llama-4-Scout: `llama-4-scout` (provider_model_id: `/models/meta-llama_Llama-4-Scout-17B-16E`)
   - Qwen3-Coder: `qwen3-coder` (provider_model_id: `/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8`)
-  
+
 - **API Models**:
   - DeepSeek: `deepseek-chat`
   - Gemini: `gemini-2.5-flash`
@@ -142,6 +142,7 @@ export LLAMA_API_KEY=your-llama-api-key
 export DEEPSEEK_API_KEY=your-deepseek-api-key
 export GEMINI_API_KEY=your-gemini-api-key
 python -m serving.servers.openrouter
+python -m serving.servers.app
 ```
 
 ### Test Installation
@@ -312,24 +313,23 @@ python utils/view_logs.py
 
 # Direct database query
 sqlite3 data/db/openrouter_logs.db "
-  SELECT model_id, COUNT(*) as requests, 
+  SELECT model_id, COUNT(*) as requests,
          SUM(total_tokens) as tokens,
          AVG(latency_ms) as avg_latency
-  FROM api_logs 
+  FROM api_logs
   WHERE timestamp > datetime('now', '-1 day')
   GROUP BY model_id;"
 ```
 
 ## Testing
 
-### Run Integration Tests
+### Run Tests
 ```bash
-# Start server first
-python -m serving.servers.openrouter &
+# Unit and server tests (no external calls)
+pytest -m "not external" -q
 
-# Run tests
-pytest test/test_openrouter_models.py -v
-
+# Or run a subset
+pytest test/servers -q
 ```
 
 ## Troubleshooting
@@ -346,7 +346,7 @@ lsof -ti :8080 | xargs kill -9
 cd /root/hybridInference
 
 # Run as module
-python -m serving.servers.openrouter
+python -m serving.servers.app
 ```
 
 ### Database Not Found

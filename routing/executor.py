@@ -1,3 +1,5 @@
+"""Execution logic for routing requests to AI model adapters."""
+
 from __future__ import annotations
 
 import random

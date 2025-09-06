@@ -1,9 +1,14 @@
 import os
+import pytest
 
 import dotenv
 from openai import AzureOpenAI
 
 dotenv.load_dotenv()
+
+# Skip Azure tests if credentials not configured
+if not os.getenv("OAI_KEY") or not os.getenv("OAI_ENDPOINT"):
+    pytest.skip("Azure OpenAI credentials not configured, skipping tests", allow_module_level=True)
 
 # api_key = os.getenv("OAI_KEY")
 # api_endpoint = os.getenv("OAI_ENDPOINT")
