@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, Depends
 
 from serving.servers.deps import get_router, get_services
 
-
 router = APIRouter()
 
 
 @router.get("/")
-async def root() -> Dict[str, Any]:
+async def root() -> dict[str, Any]:
     """Root endpoint showing API information and static metadata."""
     return {
         "message": "OpenRouter-Compatible API Server",
@@ -40,9 +39,9 @@ async def root() -> Dict[str, Any]:
 
 @router.get("/health")
 async def health(
-    router_exec = Depends(get_router),
-    services = Depends(get_services),
-) -> Dict[str, Any]:
+    router_exec=Depends(get_router),
+    services=Depends(get_services),
+) -> dict[str, Any]:
     """Health check endpoint."""
     routes_count = len(router_exec.routes)
     return {
@@ -54,11 +53,11 @@ async def health(
 
 @router.get("/routing")
 async def get_routing(
-    router_exec = Depends(get_router),
-    services = Depends(get_services),
-) -> Dict[str, Any]:
+    router_exec=Depends(get_router),
+    services=Depends(get_services),
+) -> dict[str, Any]:
     """Show current routing configuration and manager status if present."""
-    routing_info: Dict[str, Any] = {}
+    routing_info: dict[str, Any] = {}
     for model_id, route in router_exec.routes.items():
         routing_info[model_id] = [
             {
@@ -69,7 +68,7 @@ async def get_routing(
             for adapter, weight in route.adapters
         ]
 
-    response: Dict[str, Any] = {
+    response: dict[str, Any] = {
         "routes": routing_info,
         "description": "Weight distribution for each model. Requests are randomly distributed based on weights.",
     }
@@ -78,4 +77,3 @@ async def get_routing(
         response["manager_status"] = services.routing_manager.get_status()
 
     return response
-

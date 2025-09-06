@@ -20,13 +20,13 @@ MODEL_CATALOG = [
         "model_id": "Llama-3.3-70B-Instruct",
         "provider": "Meta",
         "input_modalities": ["text"],
-        "output_modalities": ["text"]
+        "output_modalities": ["text"],
     },
     {
         "model_id": "Llama-3.3-8B-Instruct",
         "provider": "Meta",
         "input_modalities": ["text"],
-        "output_modalities": ["text"]
+        "output_modalities": ["text"],
     },
     # {
     #     "model_id": "Cerebras-Llama-4-Maverick-17B-128E-Instruct",
@@ -48,7 +48,4 @@ MODEL_CATALOG = [
     # },
 ]
 
-HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json"
-}
+HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}

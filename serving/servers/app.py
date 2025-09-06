@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import bootstrap
-from .deps import AppServices
 from .middleware.error import install_error_handlers
-from .routers import health, models, completions, compat, admin
+from .routers import admin, compat, completions, health, models
+
+if TYPE_CHECKING:
+    from .deps import AppServices
 
 
 @asynccontextmanager

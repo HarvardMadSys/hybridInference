@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
-
 
 class FixedRatioStrategy:
     """Distribute weights between two groups by a fixed fraction."""
@@ -11,9 +9,9 @@ class FixedRatioStrategy:
 
     def assign(
         self,
-        local: List[Tuple[object, str]],
-        remote: List[Tuple[object, str]],
-    ) -> Dict[object, float]:
+        local: list[tuple[object, str]],
+        remote: list[tuple[object, str]],
+    ) -> dict[object, float]:
         """Return per-adapter weights.
 
         Args:
@@ -22,7 +20,7 @@ class FixedRatioStrategy:
         Returns:
             Mapping of adapter -> weight in [0,1]
         """
-        weights: Dict[object, float] = {}
+        weights: dict[object, float] = {}
         lf = self.local_fraction
         rf = max(0.0, 1.0 - lf)
 

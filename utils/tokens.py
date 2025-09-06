@@ -8,8 +8,6 @@ pure and do not depend on adapter types to avoid circular imports.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
-
 
 def _count_with_tiktoken(text: str) -> int:
     """Count tokens in a string using tiktoken if available.
@@ -36,7 +34,7 @@ def estimate_text_tokens(text: str) -> int:
     return _count_with_tiktoken(text)
 
 
-def estimate_prompt_tokens(messages: List[Dict[str, str]]) -> int:
+def estimate_prompt_tokens(messages: list[dict[str, str]]) -> int:
     """Estimate token count for an OpenAI-style messages list.
 
     We approximate the per-message overhead and roles to stay consistent
@@ -61,9 +59,8 @@ def estimate_prompt_tokens(messages: List[Dict[str, str]]) -> int:
     return total
 
 
-def estimate_total_tokens(messages: List[Dict[str, str]], max_tokens: Optional[int] = None) -> int:
+def estimate_total_tokens(messages: list[dict[str, str]], max_tokens: int | None = None) -> int:
     """Estimate total tokens for a request (prompt + completion budget)."""
     prompt_tokens = estimate_prompt_tokens(messages)
     completion_budget = max_tokens if max_tokens is not None else 500
     return prompt_tokens + int(completion_budget)
-

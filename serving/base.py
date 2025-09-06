@@ -1,16 +1,15 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Any, List
 from dataclasses import dataclass
-import time
+from typing import Any
 
 
 @dataclass
 class LLMRequest:
     prompt: str
     model: str
-    max_tokens: Optional[int] = 4096
+    max_tokens: int | None = 4096
     temperature: float = 0.7
-    
+
 
 @dataclass
 class LLMResponse:
@@ -21,18 +20,18 @@ class LLMResponse:
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers"""
-    
-    def __init__(self, config: Dict[str, Any]):
+
+    def __init__(self, config: dict[str, Any]):
         self.config = config
-    
+
     @abstractmethod
     async def generate(self, request: LLMRequest) -> LLMResponse:
         """Generate a completion for the given request"""
         pass
-    
-    async def list_models(self) -> List[Dict[str, Any]]:
+
+    async def list_models(self) -> list[dict[str, Any]]:
         """List available models from this provider.
-        
+
         Returns:
             List of model metadata dictionaries.
             Default implementation returns empty list.

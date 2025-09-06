@@ -1,22 +1,21 @@
-import numpy as np
 from collections import defaultdict
-import math
+
 
 def simulate_local_gpu(
     df,
-    mode='local',
+    mode="local",
     local_gpus=1,
     queue_threshold=None,
     sim_duration=240,
-    model_name='ChatGPT',
-    local_hardware='L4',
-    local_provider='AWS',
-    cloud_provider='OpenAI',
-    config=None
+    model_name="ChatGPT",
+    local_hardware="L4",
+    local_provider="AWS",
+    cloud_provider="OpenAI",
+    config=None,
 ):
     if config is None:
         raise ValueError("Infra config must be provided.")
-    
+
     # Track hourly request timestamps
     hourly_total_requests = defaultdict(list)
     hourly_api_requests = defaultdict(list)
@@ -34,29 +33,28 @@ def simulate_local_gpu(
     latencies = []
     total_cost = 0.0
 
-    if mode == 'cloud':
+    if mode == "cloud":
         for _, row in df.iterrows():
-            ts = row['Timestamp']
+            ts = row["Timestamp"]
             if ts > sim_duration:
                 break
-            model = row['Model']
-            input_tokens = row['Request tokens']
-            output_tokens = row['Response tokens']
+            model = row["Model"]
+            input_tokens = row["Request tokens"]
+            output_tokens = row["Response tokens"]
             total_cost += (
-                input_tokens * cloud_cost_input[model] +
-                output_tokens * cloud_cost_output[model]
+                input_tokens * cloud_cost_input[model] + output_tokens * cloud_cost_output[model]
             )
             latencies.append(cloud_latency)
 
-    elif mode == 'local':
+    elif mode == "local":
         gpu_available_at = [0.0] * local_gpus
         for _, row in df.iterrows():
-            ts = row['Timestamp']
+            ts = row["Timestamp"]
             if ts > sim_duration:
                 break
-            model = row['Model']
-            input_tokens = row['Request tokens']
-            output_tokens = row['Response tokens']
+            model = row["Model"]
+            input_tokens = row["Request tokens"]
+            output_tokens = row["Response tokens"]
 
             prefill_time = input_tokens / prefill_rate
             decode_time = output_tokens / decode_rate
@@ -70,17 +68,17 @@ def simulate_local_gpu(
 
         total_cost = local_gpus * gpu_cost_per_hr * (sim_duration / 3600)
 
-    elif mode == 'hybrid':
+    elif mode == "hybrid":
         gpu_available_at = [0.0] * local_gpus
         for _, row in df.iterrows():
-            ts = row['Timestamp']
+            ts = row["Timestamp"]
             if ts > sim_duration:
                 break
-            model = row['Model']
+            model = row["Model"]
 
-            input_tokens = row['Request tokens']
-            output_tokens = row['Response tokens']
-            
+            input_tokens = row["Request tokens"]
+            output_tokens = row["Response tokens"]
+
             day = int(ts) // 86400
             hour = (int(ts) // 3600) % 24
             key = (day, hour)
@@ -96,8 +94,8 @@ def simulate_local_gpu(
             if wait_time > queue_threshold:
                 latencies.append(cloud_latency)
                 total_cost += (
-                    input_tokens * cloud_cost_input[model] +
-                    output_tokens * cloud_cost_output[model]
+                    input_tokens * cloud_cost_input[model]
+                    + output_tokens * cloud_cost_output[model]
                 )
                 temp_api[key] += input_tokens + output_tokens
             else:
@@ -108,13 +106,13 @@ def simulate_local_gpu(
                 gpu_available_at[selected_gpu] = end_time
 
         total_cost += local_gpus * gpu_cost_per_hr * (sim_duration / 3600)
-        
+
         for (day, hour), count in temp_total.items():
             hourly_total_requests[hour].append(count)
 
         for (day, hour), count in temp_api.items():
             hourly_api_requests[hour].append(count)
-        
+
         print("GPU available at (end):", gpu_available_at)
 
     else:

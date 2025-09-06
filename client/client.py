@@ -1,29 +1,31 @@
 """Main client class."""
 
-from typing import Optional
 from serving.base import LLMRequest, LLMResponse
+
 from .base import DataLoader, RequestGenerator
 from .metrics import MetricsCollector
 
 
 class HybridClient:
     """Client for the hybrid inference system."""
-    
-    def __init__(self, 
-                 data_loader: Optional[DataLoader] = None,
-                 request_generator: Optional[RequestGenerator] = None,
-                 metrics_collector: Optional[MetricsCollector] = None):
+
+    def __init__(
+        self,
+        data_loader: DataLoader | None = None,
+        request_generator: RequestGenerator | None = None,
+        metrics_collector: MetricsCollector | None = None,
+    ):
         self.data_loader = data_loader
         self.request_generator = request_generator
         self.metrics_collector = metrics_collector or MetricsCollector()
-    
+
     async def send_request(self, request: LLMRequest) -> LLMResponse:
         """Send a single request to the system."""
         # This will be implemented to call the serving layer
         # For now, just record the request
         self.metrics_collector.record_request(request)
         raise NotImplementedError("Will connect to serving layer")
-    
+
     async def run_benchmark(self):
         """Run benchmark using configured data loader or request generator."""
         if self.data_loader:

@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
 
-from fastapi import APIRouter, Request, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 
-from .completions import chat_completions
 from serving.servers.deps import (
-    get_router,
-    get_rate_limiter,
     get_db_logger,
+    get_rate_limiter,
+    get_router,
 )
 
+from .completions import chat_completions
 
 router = APIRouter()
 
@@ -19,10 +18,10 @@ router = APIRouter()
 @router.post("/completion")
 async def single_completion(
     request: Request,
-    authorization: Optional[str] = Header(None),
-    router_exec = Depends(get_router),
-    rate_limiter = Depends(get_rate_limiter),
-    db_logger = Depends(get_db_logger),
+    authorization: str | None = Header(None),
+    router_exec=Depends(get_router),
+    rate_limiter=Depends(get_rate_limiter),
+    db_logger=Depends(get_db_logger),
 ):
     """Compatibility alias for single-shot completion requests.
     Forwards to /v1/chat/completions using the provided payload.
@@ -39,10 +38,10 @@ async def single_completion(
 @router.post("/v1/completions")
 async def legacy_completions(
     request: Request,
-    authorization: Optional[str] = Header(None),
-    router_exec = Depends(get_router),
-    rate_limiter = Depends(get_rate_limiter),
-    db_logger = Depends(get_db_logger),
+    authorization: str | None = Header(None),
+    router_exec=Depends(get_router),
+    rate_limiter=Depends(get_rate_limiter),
+    db_logger=Depends(get_db_logger),
 ):
     """OpenAI-style legacy completions endpoint: convert to chat format.
 

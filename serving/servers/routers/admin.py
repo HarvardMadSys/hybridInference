@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.servers.deps import get_db_logger, get_rate_limiter, get_router, get_services
-
 
 router = APIRouter()
 
@@ -13,11 +12,11 @@ router = APIRouter()
 @router.get("/stats")
 @router.get("/admin/stats")
 async def get_stats(
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
+    model: str | None = None,
+    provider: str | None = None,
     hours: int = 24,
-    db_logger = Depends(get_db_logger),
-) -> Dict[str, Any]:
+    db_logger=Depends(get_db_logger),
+) -> dict[str, Any]:
     """Return usage statistics from the database logger."""
     if not db_logger:
         return {"error": "Database logging not configured"}
@@ -32,7 +31,7 @@ async def get_stats(
 
 @router.get("/rate-limits/{model_id}")
 @router.get("/admin/rate-limits/{model_id}")
-async def get_rate_limit_status(model_id: str, rate_limiter = Depends(get_rate_limiter)):
+async def get_rate_limit_status(model_id: str, rate_limiter=Depends(get_rate_limiter)):
     """Get rate limit status and metrics for a specific model."""
     if not rate_limiter:
         return {"error": "Rate limiting not configured"}
@@ -44,7 +43,7 @@ async def get_rate_limit_status(model_id: str, rate_limiter = Depends(get_rate_l
 
 @router.get("/rate-limits")
 @router.get("/admin/rate-limits")
-async def get_all_rate_limits(rate_limiter = Depends(get_rate_limiter)):
+async def get_all_rate_limits(rate_limiter=Depends(get_rate_limiter)):
     """Get rate limit metrics for all models."""
     if not rate_limiter:
         return {"error": "Rate limiting not configured"}
@@ -53,7 +52,7 @@ async def get_all_rate_limits(rate_limiter = Depends(get_rate_limiter)):
 
 @router.post("/rate-limits/{model_id}/reset")
 @router.post("/admin/rate-limits/{model_id}/reset")
-async def reset_circuit_breaker(model_id: str, rate_limiter = Depends(get_rate_limiter)):
+async def reset_circuit_breaker(model_id: str, rate_limiter=Depends(get_rate_limiter)):
     """Reset circuit breaker for a model (admin endpoint)."""
     if not rate_limiter:
         return {"error": "Rate limiting not configured"}
@@ -62,7 +61,9 @@ async def reset_circuit_breaker(model_id: str, rate_limiter = Depends(get_rate_l
 
 
 @router.get("/admin/routing")
-async def admin_get_routing(router_exec = Depends(get_router), services = Depends(get_services)) -> Dict[str, Any]:
+async def admin_get_routing(
+    router_exec=Depends(get_router), services=Depends(get_services)
+) -> dict[str, Any]:
     """Admin alias for routing information."""
     routing_info = {}
     for model_id, route in router_exec.routes.items():
@@ -75,11 +76,10 @@ async def admin_get_routing(router_exec = Depends(get_router), services = Depend
             for adapter, weight in route.adapters
         ]
 
-    response: Dict[str, Any] = {
+    response: dict[str, Any] = {
         "routes": routing_info,
         "description": "Weight distribution for each model.",
     }
     if services.routing_manager:
         response["manager_status"] = services.routing_manager.get_status()
     return response
-

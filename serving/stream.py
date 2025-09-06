@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, Optional, List
+from typing import Any
+
 from utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 
@@ -17,7 +18,7 @@ def make_stream_chunk(
     *,
     model: str,
     content: str = "",
-    finish_reason: Optional[str] = None,
+    finish_reason: str | None = None,
 ) -> str:
     """Create a single SSE data line for a chat.completion.chunk.
 
@@ -28,7 +29,7 @@ def make_stream_chunk(
     Returns:
         A string representing one SSE line with a trailing blank line.
     """
-    chunk: Dict[str, Any] = {
+    chunk: dict[str, Any] = {
         "id": f"chatcmpl-{int(time.time() * 1000)}",
         "object": "chat.completion.chunk",
         "created": int(time.time()),
@@ -52,9 +53,9 @@ def done_sentinel() -> str:
 def make_final_usage_chunk(
     *,
     model: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     total_content: str,
-    prompt_tokens_override: Optional[int] = None,
+    prompt_tokens_override: int | None = None,
     finish_reason: str = "stop",
 ) -> str:
     """Create the final SSE chunk carrying usage metrics.
@@ -69,7 +70,7 @@ def make_final_usage_chunk(
         else int(estimate_prompt_tokens(messages))
     )
     completion_tokens = int(estimate_text_tokens(total_content))
-    chunk: Dict[str, Any] = {
+    chunk: dict[str, Any] = {
         "id": f"chatcmpl-{int(time.time() * 1000)}",
         "object": "chat.completion.chunk",
         "created": int(time.time()),

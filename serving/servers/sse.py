@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import codecs
 from dataclasses import dataclass
-from typing import Generator, List, Optional
 
 
 @dataclass
@@ -16,8 +15,8 @@ class SSEMessage:
     """
 
     data: str
-    event: Optional[str] = None
-    id: Optional[str] = None
+    event: str | None = None
+    id: str | None = None
 
 
 class SSEParser:
@@ -32,7 +31,7 @@ class SSEParser:
         self._decoder = codecs.getincrementaldecoder("utf-8")()
         self._buffer: str = ""
 
-    def feed(self, chunk: bytes) -> List[SSEMessage]:
+    def feed(self, chunk: bytes) -> list[SSEMessage]:
         """Feed a raw byte chunk and return any completed SSE messages.
 
         Args:
@@ -48,7 +47,7 @@ class SSEParser:
         except UnicodeDecodeError:
             # Incomplete multibyte sequence; wait for next chunk.
             return []
-        messages: List[SSEMessage] = []
+        messages: list[SSEMessage] = []
         while "\n\n" in self._buffer:
             frame, self._buffer = self._buffer.split("\n\n", 1)
             if not frame.strip():
@@ -58,9 +57,9 @@ class SSEParser:
 
     @staticmethod
     def _parse_frame(frame: str) -> SSEMessage:
-        data_lines: List[str] = []
-        event: Optional[str] = None
-        msg_id: Optional[str] = None
+        data_lines: list[str] = []
+        event: str | None = None
+        msg_id: str | None = None
         for line in frame.splitlines():
             if line.startswith(":"):
                 # Comment line; ignore
