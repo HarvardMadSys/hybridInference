@@ -41,7 +41,7 @@ repos:
     rev: v1.10.0
     hooks:
       - id: mypy
-        additional_dependencies: ["types-requests", "types-pyyaml"]
+        additional_dependencies: ["types-requests", "types-pyyaml", "types-tabulate"]
         args: ["--ignore-missing-imports"]
         exclude: "^(test|tests)/"
 
