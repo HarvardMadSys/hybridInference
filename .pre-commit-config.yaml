@@ -1,7 +1,8 @@
 default_language_version:
   python: python3
 
-default_stages: [commit, push]
+# Run hooks on commit only to avoid re-linting the whole branch at push time.
+default_stages: [commit]
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
