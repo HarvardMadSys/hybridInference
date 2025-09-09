@@ -1,3 +1,10 @@
+"""PostgreSQL-backed request/metrics logger using asyncpg.
+
+This module provides a simple database logger that writes API requests,
+responses, and usage metrics into PostgreSQL tables. It is intended for
+production or staging environments where PostgreSQL is available.
+"""
+
 import json
 from typing import Any
 
@@ -5,17 +12,29 @@ import asyncpg
 
 
 class DatabaseLogger:
-    def __init__(self, db_config: dict[str, str]):
-        self.db_config = db_config
-        self.pool: asyncpg.Pool | None = None
+    """Asynchronous PostgreSQL logger using a pooled connection."""
 
-    async def initialize(self):
+    def __init__(self, db_config: dict[str, str]):
+        """Initialize the logger with a DSN/config mapping.
+
+        Args:
+            db_config: Mapping with asyncpg pool connection arguments.
+        """
+        self.db_config = db_config
+        # Use Any to avoid mypy issues when asyncpg types are unavailable.
+        self.pool: Any | None = None
+
+    async def initialize(self) -> None:
+        """Create the connection pool and ensure tables exist."""
         self.pool = await asyncpg.create_pool(
             **self.db_config, min_size=2, max_size=10, command_timeout=60
         )
         await self._create_tables()
 
-    async def _create_tables(self):
+    async def _create_tables(self) -> None:
+        """Create tables and indexes if they do not exist."""
+        if self.pool is None:
+            raise RuntimeError("DatabaseLogger not initialized")
         async with self.pool.acquire() as conn:
             # Main logs table
             await conn.execute("""
@@ -37,6 +56,7 @@ class DatabaseLogger:
                     -- Usage metrics
                     prompt_tokens INTEGER,
                     completion_tokens INTEGER,
+                    reasoning_tokens INTEGER,
                     total_tokens INTEGER,
 
                     -- Performance metrics
@@ -100,6 +120,12 @@ class DatabaseLogger:
                 WHERE error IS NOT NULL
             """)
 
+            # Add reasoning_tokens column if it doesn't exist (migration)
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS reasoning_tokens INTEGER
+            """)
+
             # Aggregated stats table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS api_stats_hourly (
@@ -119,30 +145,8 @@ class DatabaseLogger:
                     p50_latency_ms INTEGER,
                     p95_latency_ms INTEGER,
                     p99_latency_ms INTEGER,
-
                     PRIMARY KEY (hour, model_id, provider)
                 )
-            """)
-
-            # Create a view for easy querying
-            await conn.execute("""
-                CREATE OR REPLACE VIEW api_logs_summary AS
-                SELECT
-                    DATE_TRUNC('hour', timestamp) as hour,
-                    model_id,
-                    provider,
-                    COUNT(*) as request_count,
-                    SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) as success_count,
-                    SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as error_count,
-                    SUM(prompt_tokens) as total_prompt_tokens,
-                    SUM(completion_tokens) as total_completion_tokens,
-                    SUM(total_tokens) as total_tokens,
-                    AVG(latency_ms) as avg_latency_ms,
-                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms) as p50_latency_ms,
-                    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) as p95_latency_ms,
-                    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms) as p99_latency_ms
-                FROM api_logs
-                GROUP BY DATE_TRUNC('hour', timestamp), model_id, provider
             """)
 
     async def log_request(
@@ -158,99 +162,80 @@ class DatabaseLogger:
         error: str | None = None,
         params: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-    ):
-        if not self.pool:
-            return
+    ) -> None:
+        """Insert a single request log row.
 
-        try:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO api_logs (
-                        request_id, model_id, provider,
-                        prompt, response,
-                        prompt_tokens, completion_tokens, total_tokens,
-                        latency_ms, status_code, error,
-                        temperature, top_p, max_tokens, seed,
-                        tools, response_format,
-                        user_id, session_id, metadata
-                    ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                        $12, $13, $14, $15, $16, $17, $18, $19, $20
-                    )
-                    ON CONFLICT (request_id) DO NOTHING
-                """,
-                    request_id,
-                    model_id,
-                    provider,
-                    json.dumps(prompt),
-                    json.dumps(response) if response else None,
-                    usage.get("prompt_tokens") if usage else None,
-                    usage.get("completion_tokens") if usage else None,
-                    usage.get("total_tokens") if usage else None,
-                    latency_ms,
-                    status_code,
-                    error,
-                    params.get("temperature") if params else None,
-                    params.get("top_p") if params else None,
-                    params.get("max_tokens") if params else None,
-                    params.get("seed") if params else None,
-                    json.dumps(params.get("tools")) if params and params.get("tools") else None,
-                    json.dumps(params.get("response_format"))
-                    if params and params.get("response_format")
-                    else None,
-                    metadata.get("user_id") if metadata else None,
-                    metadata.get("session_id") if metadata else None,
-                    json.dumps(metadata) if metadata else None,
+        Args:
+            request_id: Unique request identifier.
+            model_id: Logical model identifier.
+            provider: Provider name for the request.
+            prompt: Request messages payload.
+            response: Provider response payload.
+            usage: Token usage breakdown.
+            latency_ms: End-to-end latency in milliseconds.
+            status_code: HTTP status code returned to client.
+            error: Optional error message.
+            params: Request parameters (temperature, max_tokens, etc.).
+            metadata: Additional metadata (user_id, session_id, etc.).
+        """
+        if not self.pool:
+            raise RuntimeError("DatabaseLogger not initialized")
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO api_logs (
+                    request_id, model_id, provider, prompt, response,
+                    prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
+                    latency_ms, status_code, error, user_id, session_id, metadata,
+                    temperature, top_p, max_tokens, seed, tools, response_format
                 )
-        except Exception as e:
-            print(f"Failed to log request: {e}")
+                VALUES ($1,$2,$3, $4::jsonb, $5::jsonb, $6,$7,$8,$9, $10,$11,$12, $13,$14,$15::jsonb,
+                        $16,$17,$18,$19, $20::jsonb, $21::jsonb)
+                ON CONFLICT (request_id) DO NOTHING
+                """,
+                request_id,
+                model_id,
+                provider,
+                json.dumps(prompt),
+                json.dumps(response) if response else None,
+                usage.get("prompt_tokens") if usage else None,
+                usage.get("completion_tokens") if usage else None,
+                usage.get("reasoning_tokens") if usage else None,
+                usage.get("total_tokens") if usage else None,
+                latency_ms,
+                status_code,
+                error,
+                (metadata or {}).get("user_id"),
+                (metadata or {}).get("session_id"),
+                json.dumps(metadata) if metadata else None,
+                (params or {}).get("temperature"),
+                (params or {}).get("top_p"),
+                (params or {}).get("max_tokens"),
+                (params or {}).get("seed"),
+                json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
+                json.dumps((params or {}).get("response_format"))
+                if (params or {}).get("response_format")
+                else None,
+            )
 
     async def get_stats(
         self, model_id: str | None = None, provider: str | None = None, hours: int = 24
     ) -> list[dict[str, Any]]:
+        """Fetch aggregated hourly stats for the given time window."""
         if not self.pool:
             return []
-
-        query = """
-            SELECT
-                hour,
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM api_stats_hourly
+                WHERE hour >= NOW() - ($1 || ' hours')::interval
+                AND ($2::text IS NULL OR model_id = $2)
+                AND ($3::text IS NULL OR provider = $3)
+                ORDER BY hour DESC
+                LIMIT 1000
+                """,
+                hours,
                 model_id,
                 provider,
-                request_count,
-                success_count,
-                error_count,
-                total_prompt_tokens,
-                total_completion_tokens,
-                total_tokens,
-                avg_latency_ms,
-                p50_latency_ms,
-                p95_latency_ms,
-                p99_latency_ms
-            FROM api_logs_summary
-            WHERE hour >= NOW() - INTERVAL '%s hours'
-        """
-
-        conditions = []
-        params = [hours]
-
-        if model_id:
-            conditions.append(f"model_id = ${len(params) + 1}")
-            params.append(model_id)
-
-        if provider:
-            conditions.append(f"provider = ${len(params) + 1}")
-            params.append(provider)
-
-        if conditions:
-            query += " AND " + " AND ".join(conditions)
-
-        query += " ORDER BY hour DESC"
-
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(query, *params)
-            return [dict(row) for row in rows]
-
-    async def cleanup(self):
-        if self.pool:
-            await self.pool.close()
+            )
+        return [dict(r) for r in rows]

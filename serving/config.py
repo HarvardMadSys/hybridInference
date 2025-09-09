@@ -1,10 +1,20 @@
+"""Configuration helpers for provider endpoints and API keys.
+
+Loads environment variables (via dotenv) and returns a simple mapping used by
+the serving components. Keep this file lightweight and free of heavy logic.
+"""
+
 import os
 
 from dotenv import load_dotenv
 
 
-def get_config():
-    """Load environment variables and return simple config"""
+def get_config() -> dict[str, dict[str, str | None]]:
+    """Load environment variables and return a simple config map.
+
+    Returns:
+      A nested mapping of provider names to configuration values.
+    """
     load_dotenv()
 
     return {
