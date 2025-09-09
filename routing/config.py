@@ -1,7 +1,9 @@
+"""Routing configuration schema and loader (Pydantic-based)."""
+
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -40,7 +42,7 @@ def _expand_env_value(val: Any) -> Any:
     return val
 
 
-class Deployment(BaseModel):
+class Deployment(BaseModel):  # type: ignore[no-any-unimported]
     """Configuration for a single deployment endpoint.
 
     Attributes:
@@ -66,7 +68,7 @@ class Deployment(BaseModel):
         return v
 
 
-class RoutingParameter(BaseModel):
+class RoutingParameter(BaseModel):  # type: ignore[no-any-unimported]
     """Parameters for routing strategies.
 
     Attributes:
@@ -83,7 +85,7 @@ class RoutingParameter(BaseModel):
         return v
 
 
-class RoutingConfig(BaseModel):
+class RoutingConfig(BaseModel):  # type: ignore[no-any-unimported]
     """Complete routing configuration schema.
 
     Attributes:
@@ -128,6 +130,6 @@ def load_routing_config(path: Path) -> RoutingConfig:
     raw = yaml.safe_load(path.read_text()) or {}
     expanded = _expand_env_value(raw)
     try:
-        return RoutingConfig.model_validate(expanded)
+        return cast("RoutingConfig", RoutingConfig.model_validate(expanded))
     except ValidationError as e:
         raise ValueError(f"Invalid routing config: {e}") from e

@@ -1,4 +1,4 @@
-# mypy: disable-error-code=no-any-unimported,no-any-return
+# mypy: disable-error-code=no-any-unimported
 """Lightweight shared async HTTP client for adapters.
 
 Provides a shared aiohttp session with convenience helpers for JSON
@@ -55,7 +55,9 @@ class AsyncHTTPClient:
         session = await self._ensure_session()
         async with session.post(url, json=json, headers=headers, timeout=timeout) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            from typing import cast
+
+            return cast("dict[str, Any]", await resp.json())
 
     async def json_post_with_retry(
         self,
@@ -103,7 +105,9 @@ class AsyncHTTPClient:
         session = await self._ensure_session()
         async with session.get(url, headers=headers, timeout=timeout) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            from typing import cast
+
+            return cast("dict[str, Any]", await resp.json())
 
     async def json_get_with_retry(
         self,

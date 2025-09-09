@@ -1,7 +1,11 @@
+"""Simple health-check loop for deployment endpoints."""
+
+# mypy: disable-error-code=no-any-unimported
 from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 
 import aiohttp
 
@@ -35,13 +39,13 @@ class HealthMonitor:
         """
         return self._status.get(endpoint, True)
 
-    async def _check_once(self, session: aiohttp.ClientSession, endpoint: str) -> bool:
+    async def _check_once(self, session: Any, endpoint: str) -> bool:
         try:
             url = endpoint.rstrip("/") + "/health"
             async with session.get(
                 url, timeout=aiohttp.ClientTimeout(total=self.timeout_s)
             ) as resp:
-                return resp.status == 200
+                return bool(resp.status == 200)
         except Exception:
             return False
 
