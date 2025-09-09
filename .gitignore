@@ -14,7 +14,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -187,7 +186,11 @@ tmp_run/run_cmds.log
 results/*
 .claude/*
 
-# Runtime data directory
+# Runtime data directories (var/)
+var/**
+!var/.gitkeep
+
+# Back-compat (legacy data/ paths)
 data/db/*.db
 data/db/*.sqlite
 data/logs/*.log
@@ -225,3 +228,5 @@ AGENTS.md
 
 # IDE specific
 .idea/
+
+data/*
