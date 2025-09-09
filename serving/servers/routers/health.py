@@ -51,6 +51,42 @@ async def health(
     }
 
 
+@router.get("/health/deep")
+async def deep_health(
+    router_exec=Depends(get_router),
+    services=Depends(get_services),
+) -> dict[str, Any]:
+    """Deep health check with provider/circuit and rate limiter info."""
+    routes_count = len(router_exec.routes)
+    provider_status = (
+        router_exec.get_provider_status() if hasattr(router_exec, "get_provider_status") else {}
+    )
+    rl = services.rate_limiter
+    rl_status: dict[str, Any] | None = None
+    if rl is not None:
+        try:
+            # When model_id omitted, returns per-model dict
+            rl_status = rl.get_metrics(None)
+        except Exception:
+            rl_status = None
+
+    overall = "healthy"
+    for _p, s in provider_status.items():
+        if s.get("circuit_state") == "open" or (
+            s.get("availability") is not None and s.get("availability") < 0.9
+        ):
+            overall = "degraded"
+            break
+
+    return {
+        "status": overall,
+        "routes_configured": routes_count,
+        "database_connected": services.db_logger is not None,
+        "providers": provider_status,
+        "rate_limiter": rl_status,
+    }
+
+
 @router.get("/routing")
 async def get_routing(
     router_exec=Depends(get_router),

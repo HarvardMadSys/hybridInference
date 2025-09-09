@@ -7,8 +7,7 @@ fallback behavior, and basic rate-limit rejection using injected services.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from fastapi import FastAPI, status
@@ -20,6 +19,9 @@ from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import compat, completions, health, models
 from serving.stream import done_sentinel, make_final_usage_chunk
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 class DummyAdapter(BaseAdapter):

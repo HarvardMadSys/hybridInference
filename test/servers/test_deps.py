@@ -12,7 +12,6 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from database.database_sqlite import SQLiteDatabaseLogger
 from routing.executor import RouteExecutor
 from serving.servers.deps import (
     AppServices,
@@ -22,6 +21,7 @@ from serving.servers.deps import (
     get_services,
 )
 from serving.servers.rate_limiter import PersistentRateLimiter
+from serving.storage.database_sqlite import SQLiteDatabaseLogger
 
 
 class TestAppServices:

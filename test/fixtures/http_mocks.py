@@ -7,12 +7,14 @@ without hitting the network.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from serving.http import AsyncHTTPClient
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 class _MockHTTPClient:

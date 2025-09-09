@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from fastapi import FastAPI, status
@@ -13,6 +12,9 @@ from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.routers import models
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 class _Adapter(BaseAdapter):

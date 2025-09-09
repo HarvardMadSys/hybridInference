@@ -8,7 +8,7 @@ payload so the endpoint still exists without crashing.
 
 from fastapi import APIRouter, Response
 
-from utils.server_metrics import render_latest
+from serving.observability.metrics import render_latest
 
 router = APIRouter()
 

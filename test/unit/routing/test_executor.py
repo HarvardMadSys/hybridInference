@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 def _cfg(mid: str, provider: str = "p") -> ModelConfig:
