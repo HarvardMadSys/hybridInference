@@ -3,7 +3,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from serving.stream import done_sentinel, make_final_usage_chunk
-from utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
 
