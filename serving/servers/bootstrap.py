@@ -14,8 +14,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from database.database import DatabaseLogger
-from database.database_sqlite import SQLiteDatabaseLogger
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from serving.adapters import (
@@ -26,7 +24,9 @@ from serving.adapters import (
     VLLMAdapter,
 )
 from serving.http import AsyncHTTPClient
-from utils.logging_utils import get_logger, setup_logging
+from serving.storage.database import DatabaseLogger
+from serving.storage.database_sqlite import SQLiteDatabaseLogger
+from serving.utils.logging import get_logger, setup_logging
 
 from .deps import AppServices
 from .rate_limiter import PersistentRateLimiter, RateLimitConfig
@@ -50,8 +50,8 @@ def _init_db_logger() -> DatabaseLogger | None:
             db_path = Path(sqlite_env).expanduser().resolve()
         else:
             project_root = Path(__file__).resolve().parents[2]
-            data_dir = Path(os.getenv("DATA_DIR") or (project_root / "data"))
-            db_dir = data_dir / "db"
+            var_dir = Path(os.getenv("VAR_DIR") or (project_root / "var"))
+            db_dir = var_dir / "db"
             db_dir.mkdir(parents=True, exist_ok=True)
             db_path = db_dir / "openrouter_logs.db"
         logger.info(f"SQLite database path: {db_path}")

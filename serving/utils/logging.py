@@ -1,8 +1,5 @@
-"""Lightweight logging utilities with optional JSON formatting.
-
-Environment variables:
-- LOG_LEVEL: DEBUG|INFO|WARNING|ERROR (default: INFO)
-- LOG_FORMAT: json|plain (default: plain)
+"""
+Logging utilities with optional JSON formatter.
 """
 
 from __future__ import annotations
@@ -10,16 +7,27 @@ from __future__ import annotations
 import json
 import logging
 import os
+from typing import Any
+
+from . import context as req_ctx
 
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "time": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
             "name": record.name,
             "message": record.getMessage(),
         }
+        # Merge request context fields if present
+        try:
+            ctx = req_ctx.get()
+            for k in ("request_id", "model", "provider"):
+                if k in ctx:
+                    payload[k] = ctx[k]
+        except Exception:
+            pass
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)
@@ -59,3 +67,10 @@ def get_logger(name: str | None = None) -> logging.Logger:
     """Get a module logger after ensuring logging is initialized."""
     setup_logging()
     return logging.getLogger(name or __name__)
+
+
+__all__ = [
+    "JsonFormatter",
+    "get_logger",
+    "setup_logging",
+]

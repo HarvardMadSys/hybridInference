@@ -8,7 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import bootstrap
 from .middleware.error import install_error_handlers
-from .routers import admin, compat, completions, health, models
+from .middleware.metrics import MetricsMiddleware
+from .middleware.request_id import RequestIdMiddleware
+from .middleware.request_log import RequestLogMiddleware
+from .routers import admin, compat, completions, health, metrics, models
 
 if TYPE_CHECKING:
     from .deps import AppServices
@@ -43,11 +46,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Request ID and metrics middlewares
+    app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(MetricsMiddleware)
+    app.add_middleware(RequestLogMiddleware)
+
     # Error handlers
     install_error_handlers(app)
 
     # Routers
     app.include_router(health.router)
+    app.include_router(metrics.router)
     app.include_router(models.router)
     app.include_router(completions.router)
     app.include_router(compat.router)

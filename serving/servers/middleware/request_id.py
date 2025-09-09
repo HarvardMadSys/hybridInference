@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import secrets
-from collections.abc import Callable
+from typing import TYPE_CHECKING
 
-from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from utils import request_context as req_ctx
+from serving.utils import context as req_ctx
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from fastapi import Request, Response
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):

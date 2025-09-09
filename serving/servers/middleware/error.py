@@ -8,6 +8,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from serving.schemas import ErrorDetail, ErrorResponse
+from serving.utils.errors import categorize_exception
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def _build_error_response(
@@ -42,30 +46,31 @@ def install_error_handlers(app: FastAPI) -> None:
             return JSONResponse(
                 status_code=exc.status_code, content=exc.detail, headers=exc.headers
             )
-
-        content = _build_error_response(str(exc.detail), code=exc.status_code)
+        err_type = categorize_exception(exc)
+        logger.error(
+            "http_error",
+            extra={
+                "error_type": err_type,
+                "status_code": exc.status_code,
+                "path": request.url.path,
+                "method": request.method,
+            },
+            exc_info=exc,
+        )
+        content = _build_error_response(str(exc.detail), code=exc.status_code, typ=err_type)
         return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
     @app.exception_handler(Exception)
     async def any_exc_handler(request: Request, exc: Exception) -> JSONResponse:
-        content = _build_error_response(str(exc), code=500)
+        err_type = categorize_exception(exc)
+        logger.error(
+            "unhandled_exception",
+            extra={
+                "error_type": err_type,
+                "path": request.url.path,
+                "method": request.method,
+            },
+            exc_info=exc,
+        )
+        content = _build_error_response(str(exc), code=500, typ=err_type)
         return JSONResponse(status_code=500, content=content)
-
-    # As a defensive fallback, also install an HTTP middleware that catches any
-    # exceptions that might bypass the exception handlers in certain testing
-    # transports or edge cases, ensuring a consistent JSON error response.
-    @app.middleware("http")
-    async def catch_all_errors(request: Request, call_next: Any) -> Any:
-        try:
-            return await call_next(request)
-        except HTTPException as exc:
-            # Mirror the HTTPException handler behavior.
-            if isinstance(exc.detail, dict) and "error" in exc.detail:
-                return JSONResponse(
-                    status_code=exc.status_code, content=exc.detail, headers=exc.headers
-                )
-            content = _build_error_response(str(exc.detail), code=exc.status_code)
-            return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
-        except Exception as exc:  # pragma: no cover - exercised in integration test
-            content = _build_error_response(str(exc), code=500)
-            return JSONResponse(status_code=500, content=content)
