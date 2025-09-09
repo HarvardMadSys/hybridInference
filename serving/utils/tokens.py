@@ -22,7 +22,7 @@ def _count_with_tiktoken(text: str) -> int:
       Estimated token count (>= 1 for non-empty strings).
     """
     try:
-        import tiktoken  # type: ignore
+        import tiktoken
 
         encoding = tiktoken.get_encoding("cl100k_base")
         return len(encoding.encode(text))

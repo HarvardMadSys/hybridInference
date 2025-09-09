@@ -1,3 +1,4 @@
+# mypy: disable-error-code=no-any-unimported,no-any-return
 """Lightweight shared async HTTP client for adapters.
 
 Provides a shared aiohttp session with convenience helpers for JSON
@@ -12,9 +13,9 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from serving.observability.metrics import API_RETRIES
 from serving.servers.sse import SSEParser
-from utils import request_context as req_ctx
-from utils.server_metrics import API_RETRIES
+from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
