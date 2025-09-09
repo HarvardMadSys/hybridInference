@@ -7,7 +7,7 @@ import sqlite3
 from tabulate import tabulate
 
 
-def connect_db(db_path: str = "data/db/openrouter_logs.db") -> sqlite3.Connection:
+def connect_db(db_path: str = "var/db/openrouter_logs.db") -> sqlite3.Connection:
     """Connect to the SQLite database."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -246,7 +246,7 @@ def main() -> None:
         print("\n" + "=" * 100)
         print(" End of log analysis")
         print("\n Tip: You can query the SQLite database directly:")
-        print("  sqlite3 serving/openrouter_logs.db")
+        print("  sqlite3 var/db/openrouter_logs.db")
         print("  .tables")
         print("  SELECT * FROM api_logs LIMIT 5;")
 
