@@ -1,3 +1,5 @@
+"""Llama API adapter for OpenAI-compatible interface."""
+
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -8,8 +10,13 @@ from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 from .base import BaseAdapter, UsageInfo
 
 
-class LlamaAdapter(BaseAdapter):
-    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
+    """Adapter for Llama API using OpenAI-compatible endpoints."""
+
+    async def chat_completion(
+        self, messages: list[dict[str, Any]], **params: Any
+    ) -> dict[str, Any]:
+        """Send chat completion request to Llama API."""
         validated_params = self.validate_params(params)
 
         # Llama API expects the /inference endpoint
@@ -43,7 +50,8 @@ class LlamaAdapter(BaseAdapter):
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
         # Use the /inference endpoint for Llama API
-        url = f"{self.config.base_url}/inference"
+        # Use standard OpenAI-compatible endpoint for Llama
+        url = f"{self.config.base_url}/chat/completions"
 
         data = await self.http.json_post_with_retry(url, json=payload, headers=headers)
 
@@ -72,17 +80,19 @@ class LlamaAdapter(BaseAdapter):
             tool_calls = data["tool_calls"]
 
         # Format response to OpenAI standard
-        return self.format_response(
+        response = self.format_response(
             content=data.get("content", ""),
             model=self.config.id,
             usage=usage,
             tool_calls=tool_calls,
             finish_reason=data.get("stop_reason", "stop"),
         )
+        return response  # type: ignore[no-any-return]
 
     async def stream_chat_completion(
-        self, messages: list[dict[str, Any]], **params
+        self, messages: list[dict[str, Any]], **params: Any
     ) -> AsyncGenerator[str, None]:
+        """Stream chat completion response from Llama API."""
         validated_params = self.validate_params(params)
 
         payload = {
@@ -109,7 +119,8 @@ class LlamaAdapter(BaseAdapter):
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
-        url = f"{self.config.base_url}/inference"
+        # Use standard OpenAI-compatible endpoint for Llama
+        url = f"{self.config.base_url}/chat/completions"
 
         total_content = ""
 
