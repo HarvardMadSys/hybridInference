@@ -19,8 +19,22 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         """Send chat completion request to Llama API."""
         validated_params = self.validate_params(params)
 
-        # Llama API expects the /inference endpoint
-        payload = {"model": self.config.id, "messages": messages, **validated_params}
+        # Use provider_model_id if specified, otherwise fall back to id
+        model_id = self.config.provider_model_id or self.config.id
+        
+        # Llama API requires a "developer" role message for proper operation
+        # Add one if not present, converting the first user/system message if needed
+        llama_messages = []
+        has_developer = any(msg.get("role") == "developer" for msg in messages)
+        
+        if not has_developer and messages:
+            # Add a developer message at the start
+            llama_messages.append({"role": "developer", "content": "You are a helpful assistant."})
+            llama_messages.extend(messages)
+        else:
+            llama_messages = messages
+        
+        payload = {"model": model_id, "messages": llama_messages, **validated_params}
 
         # Llama API specific parameters
         if "top_k" in params and "top_k" in self.config.supported_params:
@@ -79,9 +93,17 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         if "tool_calls" in data:
             tool_calls = data["tool_calls"]
 
+        # Extract content from OpenAI-compatible response format
+        content = ""
+        if "choices" in data and data["choices"] and "message" in data["choices"][0]:
+            content = data["choices"][0]["message"].get("content", "")
+        else:
+            # Fallback to direct content field for compatibility
+            content = data.get("content", "")
+
         # Format response to OpenAI standard
         response = self.format_response(
-            content=data.get("content", ""),
+            content=content,
             model=self.config.id,
             usage=usage,
             tool_calls=tool_calls,
@@ -95,9 +117,24 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         """Stream chat completion response from Llama API."""
         validated_params = self.validate_params(params)
 
+        # Use provider_model_id if specified, otherwise fall back to id
+        model_id = self.config.provider_model_id or self.config.id
+        
+        # Llama API requires a "developer" role message for proper operation
+        # Add one if not present
+        llama_messages = []
+        has_developer = any(msg.get("role") == "developer" for msg in messages)
+        
+        if not has_developer and messages:
+            # Add a developer message at the start
+            llama_messages.append({"role": "developer", "content": "You are a helpful assistant."})
+            llama_messages.extend(messages)
+        else:
+            llama_messages = messages
+        
         payload = {
-            "model": self.config.id,
-            "messages": messages,
+            "model": model_id,
+            "messages": llama_messages,
             "stream": True,
             **validated_params,
         }
