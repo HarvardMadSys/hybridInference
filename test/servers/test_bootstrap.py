@@ -212,25 +212,63 @@ class TestBootstrapHelpers:
         assert "qwen3-coder" not in router.routes
 
     @pytest.mark.asyncio
-    async def test_init_router_with_deepseek(self, monkeypatch):
-        """Test router initialization with DeepSeek API."""
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    async def test_init_router_with_deepseek(self, monkeypatch, tmp_path):
+        """DeepSeek should be loaded from YAML, not env fallback."""
+        models_yaml = tmp_path / "models_deepseek.yaml"
+        models_yaml.write_text(
+            """
+models:
+  - id: deepseek-chat
+    name: DeepSeek Chat
+    provider: deepseek
+    base_url: https://api.deepseek.com/v1
+    api_key: test-key
+    context_length: 65536
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, frequency_penalty, presence_penalty]
+    route:
+      - kind: deepseek
+        weight: 1.0
+        base_url: https://api.deepseek.com/v1
+        api_key: test-key
+"""
+        )
+        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
 
         router = RouteExecutor()
-
         await bootstrap._init_router_and_models(router)
-
         assert "deepseek-chat" in router.routes
 
     @pytest.mark.asyncio
-    async def test_init_router_with_gemini(self, monkeypatch):
-        """Test router initialization with Gemini API."""
-        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    async def test_init_router_with_gemini(self, monkeypatch, tmp_path):
+        """Gemini should be loaded from YAML, not env fallback."""
+        models_yaml = tmp_path / "models_gemini.yaml"
+        models_yaml.write_text(
+            """
+models:
+  - id: gemini-2.5-flash
+    name: Gemini 2.5 Flash
+    provider: gemini
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    api_key: test-key
+    context_length: 1048576
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, top_k, max_tokens, stop]
+    route:
+      - kind: gemini
+        weight: 1.0
+        base_url: https://generativelanguage.googleapis.com/v1beta
+        api_key: test-key
+"""
+        )
+        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
 
         router = RouteExecutor()
-
         await bootstrap._init_router_and_models(router)
-
         assert "gemini-2.5-flash" in router.routes
 
     def test_configure_rate_limiter_deepseek(self, monkeypatch, mock_rate_limiter):
