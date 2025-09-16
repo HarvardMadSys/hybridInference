@@ -31,9 +31,9 @@ class RoutingManager:
         """Load routing configuration and start health monitoring if enabled."""
         self.conf = load_routing_config(self.config_path)
         if self.conf.health_check > 0:
-            endpoints = [
-                d.endpoint for d in (self.conf.local_deployment + self.conf.remote_deployment)
-            ]
+            # Only monitor local deployments. Remote provider endpoints generally do not
+            # expose our /health path and would be falsely marked unhealthy.
+            endpoints = [d.endpoint for d in self.conf.local_deployment]
             self.health = HealthMonitor(
                 timeout_s=self.conf.timeout, interval_s=self.conf.health_check
             )
