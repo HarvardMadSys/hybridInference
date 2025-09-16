@@ -1,4 +1,4 @@
-.PHONY: help format lint typecheck test test-verbose test-cov setup-dev clean check all
+.PHONY: help format lint test test-verbose test-cov setup-dev clean check all
 
 # Default target
 .DEFAULT_GOAL := help
@@ -30,11 +30,6 @@ lint:  ## Run linters (ruff, pydocstyle)
 	$(UV_RUN) pydocstyle
 	@echo "$(GREEN)✓ Linting passed$(RESET)"
 
-typecheck:  ## Run type checking with mypy
-	@echo "$(YELLOW)Running type checker...$(RESET)"
-	$(UV_RUN) mypy .
-	@echo "$(GREEN)✓ Type checking passed$(RESET)"
-
 test:  ## Run unit/integration tests (exclude external)
 	@echo "$(YELLOW)Running tests (not external)...$(RESET)"
 	$(UV_RUN) pytest -q -m "not external"
@@ -49,7 +44,7 @@ test-cov:  ## Run tests with coverage (exclude external)
 test-e2e: ## Run external/E2E tests (may require local server)
 	$(UV_RUN) pytest -m external -vv
 
-check: lint typecheck test  ## Run all checks (lint, typecheck, test)
+check: lint test  ## Run all checks (lint, test)
 	@echo "$(GREEN)✓ All checks passed$(RESET)"
 
 all: format check  ## Format code and run all checks

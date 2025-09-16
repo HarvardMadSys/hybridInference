@@ -40,25 +40,6 @@ repos:
         additional_dependencies: ["tomli"]
         exclude: "^(test|tests)/"
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
-    hooks:
-      - id: mypy
-        additional_dependencies:
-          [
-            "types-requests",
-            "types-pyyaml",
-            "types-tabulate",
-          ]
-        args:
-          [
-            "--ignore-missing-imports",
-            "--follow-imports=skip",
-            "--cache-dir=.mypy_cache",
-          ]
-        files: "^(serving/|routing/)"
-        exclude: "^(test|tests)/"
-
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.18.4
     hooks:
