@@ -28,6 +28,23 @@ class JsonFormatter(logging.Formatter):
                     payload[k] = ctx[k]
         except Exception:
             pass
+        # Merge well-known attributes passed via ``logger.*(extra=...)``
+        for key in (
+            "method",
+            "path",
+            "status_code",
+            "duration_ms",
+            "remote_ip",
+            "x_forwarded_for",
+            "user_agent",
+            "host",
+            "request_id",
+            "model",
+            "provider",
+        ):
+            if hasattr(record, key):
+                payload[key] = getattr(record, key)
+
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)

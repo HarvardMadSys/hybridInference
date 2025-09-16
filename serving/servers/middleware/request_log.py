@@ -24,6 +24,15 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
         response: Response = await call_next(request)
         duration_ms = int((time.perf_counter() - start) * 1000)
         ctx = req_ctx.get()
+        # Enrich logs to help identify misrouted or unexpected callers.
+        # Note: ``request.client.host`` will be the proxy's IP (e.g., NGINX). The
+        # original client should be available via ``X-Forwarded-For`` when the
+        # proxy sets it.
+        remote_ip = getattr(getattr(request, "client", None), "host", None)
+        xff = request.headers.get("x-forwarded-for")
+        user_agent = request.headers.get("user-agent")
+        host = request.headers.get("host")
+        request_id = ctx.get("request_id")
         logger.info(
             "http_request",
             extra={
@@ -33,6 +42,11 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
                 "duration_ms": duration_ms,
                 "model": ctx.get("model"),
                 "provider": ctx.get("provider"),
+                "remote_ip": remote_ip,
+                "x_forwarded_for": xff,
+                "user_agent": user_agent,
+                "host": host,
+                "request_id": request_id,
             },
         )
         return response
