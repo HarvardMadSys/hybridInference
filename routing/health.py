@@ -40,10 +40,19 @@ class HealthMonitor:
         return self._status.get(endpoint, True)
 
     async def _check_once(self, session: Any, endpoint: str) -> bool:
+        """Perform a single health check against the origin's /health path.
+
+        This ignores any API prefix (e.g., "/v1") present in the endpoint URL
+        to avoid 404s such as "/v1/health".
+        """
         try:
-            url = endpoint.rstrip("/") + "/health"
+            from urllib.parse import urlparse, urlunparse
+
+            parsed = urlparse(endpoint)
+            # Always probe the origin root at /health.
+            health_url = urlunparse((parsed.scheme, parsed.netloc, "/health", "", "", ""))
             async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=self.timeout_s)
+                health_url, timeout=aiohttp.ClientTimeout(total=self.timeout_s)
             ) as resp:
                 return bool(resp.status == 200)
         except Exception:
