@@ -21,19 +21,19 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         # Use provider_model_id if specified, otherwise fall back to id
         model_id = self.config.provider_model_id or self.config.id
-        
+
         # Llama API requires a "developer" role message for proper operation
         # Add one if not present, converting the first user/system message if needed
         llama_messages = []
         has_developer = any(msg.get("role") == "developer" for msg in messages)
-        
+
         if not has_developer and messages:
             # Add a developer message at the start
             llama_messages.append({"role": "developer", "content": "You are a helpful assistant."})
             llama_messages.extend(messages)
         else:
             llama_messages = messages
-        
+
         payload = {"model": model_id, "messages": llama_messages, **validated_params}
 
         # Llama API specific parameters
@@ -119,19 +119,19 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         # Use provider_model_id if specified, otherwise fall back to id
         model_id = self.config.provider_model_id or self.config.id
-        
+
         # Llama API requires a "developer" role message for proper operation
         # Add one if not present
         llama_messages = []
         has_developer = any(msg.get("role") == "developer" for msg in messages)
-        
+
         if not has_developer and messages:
             # Add a developer message at the start
             llama_messages.append({"role": "developer", "content": "You are a helpful assistant."})
             llama_messages.extend(messages)
         else:
             llama_messages = messages
-        
+
         payload = {
             "model": model_id,
             "messages": llama_messages,

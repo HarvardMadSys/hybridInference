@@ -96,7 +96,6 @@ async def run_stress_test(
     # Create session with connection pooling
     connector = aiohttp.TCPConnector(limit=max_concurrent)
     async with aiohttp.ClientSession(connector=connector) as session:
-
         start_time = time.time()
         request_interval = 1.0 / rps
         request_count = 0
@@ -179,7 +178,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Stress test the hybrid inference server")
     parser.add_argument(
         "--base-url",
-        default="http://localhost:8000",
+        default="http://localhost:8080",
         help="Server base URL (default: http://localhost:8000)",
     )
     parser.add_argument(
@@ -249,18 +248,18 @@ async def main():
     print(f"Failures: {results['failed_requests']}")
     print(f"Actual RPS: {results['actual_rps']:.2f}")
 
-    if results['successful_requests'] > 0:
+    if results["successful_requests"] > 0:
         print("Latency (ms):")
-        lat = results['latency']
+        lat = results["latency"]
         print(f"  P50: {lat['p50']:.1f}")
         print(f"  P95: {lat['p95']:.1f}")
         print(f"  P99: {lat['p99']:.1f}")
         print(f"  Min: {lat['min']:.1f}")
         print(f"  Max: {lat['max']:.1f}")
 
-    if results['error_types']:
+    if results["error_types"]:
         print("\nError Summary:")
-        for error_type, count in sorted(results['error_types'].items(), key=lambda x: -x[1])[:5]:
+        for error_type, count in sorted(results["error_types"].items(), key=lambda x: -x[1])[:5]:
             print(f"  {error_type}: {count}")
 
 
