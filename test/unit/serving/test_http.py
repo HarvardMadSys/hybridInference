@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import aiohttp
 import pytest
 
 from serving.http import AsyncHTTPClient
@@ -41,7 +42,7 @@ async def test_json_post_with_retry_exhausts_all_attempts(monkeypatch):
 
     monkeypatch.setattr(AsyncHTTPClient, "json_post", always_fail)
 
-    with pytest.raises(Exception):
+    with pytest.raises(aiohttp.ClientError):
         await client.json_post_with_retry("http://example/api", json={}, retries=3)
 
 

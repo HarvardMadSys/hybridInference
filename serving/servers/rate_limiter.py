@@ -25,20 +25,19 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
-# from utils.server_metrics import RATE_LIMIT_HITS  # TODO: Enable when observability is added
+from serving.observability.metrics import (
+    RATE_LIMIT_HITS,
+    RATE_LIMIT_QUEUE_SIZE,
+    RATE_LIMIT_QUEUE_WAIT,
+)
+from serving.utils.tokens import estimate_total_tokens
 
 
 class TokenCounter:
-    """Unified token estimation facade for rate limiting.
-
-    Delegates to utils.tokens to avoid duplication and keep consistency
-    with adapters' token accounting. Public API remains unchanged.
-    """
+    """Unified token estimation facade for rate limiting."""
 
     @staticmethod
     def estimate_tokens(messages: list[dict[str, Any]], max_tokens: int | None = None) -> int:
-        from utils.tokens import estimate_total_tokens
-
         return int(estimate_total_tokens(messages, max_tokens))
 
 
@@ -114,6 +113,8 @@ class PersistentRateLimiter:
 
         self._lock = asyncio.Lock()
         self._initialized = False
+        # Track cooperative waiters per model to expose as a queue size gauge
+        self._waiting: dict[str, int] = defaultdict(int)
 
     async def initialize(self):
         """Initialize database and restore state."""
@@ -286,8 +287,10 @@ class PersistentRateLimiter:
         Returns:
             Tuple of (success, metadata dict with details)
         """
+        start_ts = time.time()
+
         if model_id not in self.configs:
-            # RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()  # TODO: Enable metrics
+            RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()
             return True, {"unlimited": True}
 
         self.metrics[model_id]["total_requests"] += 1
@@ -304,7 +307,10 @@ class PersistentRateLimiter:
             success, wait_or_remaining = bucket.try_consume(estimated_tokens)
             if success:
                 self.metrics[model_id]["accepted_requests"] += 1
-                # RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()  # TODO: Enable metrics
+                RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()
+                RATE_LIMIT_QUEUE_WAIT.labels(model=model_id, outcome="accepted").observe(
+                    max(0.0, time.time() - start_ts)
+                )
                 return True, {
                     "tokens_consumed": estimated_tokens,
                     "tokens_remaining": wait_or_remaining,
@@ -315,7 +321,10 @@ class PersistentRateLimiter:
         # If we can't serve immediately, cooperatively wait up to timeout
         if wait_time > timeout:
             self.metrics[model_id]["rejected_requests"] += 1
-            # RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()  # TODO: Enable metrics
+            RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()
+            RATE_LIMIT_QUEUE_WAIT.labels(model=model_id, outcome="rejected").observe(
+                max(0.0, time.time() - start_ts)
+            )
             return False, {
                 "error": "Rate limit exceeded",
                 "tokens_requested": estimated_tokens,
@@ -324,6 +333,10 @@ class PersistentRateLimiter:
             }
 
         # Sleep close to the theoretical needed wait to avoid busy looping
+        # Mark as waiting and expose gauge
+        self._waiting[model_id] += 1
+        RATE_LIMIT_QUEUE_SIZE.labels(model=model_id).set(self._waiting[model_id])
+
         deadline = time.time() + timeout
         remaining_time = deadline - time.time()
         # Add a small safety margin and cap to remaining_time.
@@ -336,7 +349,13 @@ class PersistentRateLimiter:
             success, wait_or_remaining = bucket.try_consume(estimated_tokens)
             if success:
                 self.metrics[model_id]["accepted_requests"] += 1
-                # RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()  # TODO: Enable metrics
+                RATE_LIMIT_HITS.labels(model=model_id, outcome="accepted").inc()
+                RATE_LIMIT_QUEUE_WAIT.labels(model=model_id, outcome="accepted").observe(
+                    max(0.0, time.time() - start_ts)
+                )
+                # Update waiting gauge
+                self._waiting[model_id] = max(0, self._waiting[model_id] - 1)
+                RATE_LIMIT_QUEUE_SIZE.labels(model=model_id).set(self._waiting[model_id])
                 return True, {
                     "tokens_consumed": estimated_tokens,
                     "tokens_remaining": wait_or_remaining,
@@ -344,7 +363,13 @@ class PersistentRateLimiter:
                 }
 
         self.metrics[model_id]["rejected_requests"] += 1
-        # RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()  # TODO: Enable metrics
+        RATE_LIMIT_HITS.labels(model=model_id, outcome="rejected").inc()
+        RATE_LIMIT_QUEUE_WAIT.labels(model=model_id, outcome="rejected").observe(
+            max(0.0, time.time() - start_ts)
+        )
+        # Update waiting gauge
+        self._waiting[model_id] = max(0, self._waiting[model_id] - 1)
+        RATE_LIMIT_QUEUE_SIZE.labels(model=model_id).set(self._waiting[model_id])
         return False, {
             "error": "Rate limit exceeded",
             "tokens_requested": estimated_tokens,

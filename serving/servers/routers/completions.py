@@ -7,6 +7,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from serving.observability.metrics import (
+    API_TOKEN_ANOMALIES,
+    API_TOKENS,
+    normalize_model_label,
+    normalize_provider_label,
+)
 from serving.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -14,7 +20,8 @@ from serving.schemas import (
 )
 from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
 from serving.servers.rate_limiter import TokenCounter
-from utils.logging_utils import get_logger
+from serving.utils.logging import get_logger
+from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -196,18 +203,83 @@ async def chat_completions(
                 metadata.update(response["_routing"])  # type: ignore[arg-type]
                 del response["_routing"]
 
+            # Normalize usage to extract reasoning_tokens from nested locations
+            normalized_usage = normalize_usage(response.get("usage"))
+
             await db_logger.log_request(
                 request_id=request_id,
                 model_id=model,
                 provider=provider,
                 prompt=messages,
                 response=response,
-                usage=response.get("usage"),
+                usage=normalized_usage,
                 latency_ms=int((time.time() - start_time) * 1000),
                 status_code=200,
                 params=params,
                 metadata=metadata,
             )
+
+        # Emit token counters when usage is available, with anomaly checks
+        # Normalize usage to extract reasoning_tokens from nested locations
+        raw_usage = response.get("usage", {}) if isinstance(response, dict) else {}
+        usage = normalize_usage(raw_usage) or {}
+        if usage:
+            prompt_tokens_raw = usage.get("prompt_tokens")
+            completion_tokens_raw = usage.get("completion_tokens")
+            total_tokens_raw = usage.get("total_tokens")
+            reasoning_tokens_raw = usage.get("reasoning_tokens")
+
+            try:
+                prompt_tokens = int(prompt_tokens_raw or 0)
+                completion_tokens = int(completion_tokens_raw or 0)
+                reasoning_tokens = int(reasoning_tokens_raw or 0)
+                total_tokens = int(
+                    total_tokens_raw or (prompt_tokens + completion_tokens + reasoning_tokens)
+                )
+            except Exception:
+                API_TOKEN_ANOMALIES.labels(
+                    model=normalize_model_label(model),
+                    provider=normalize_provider_label(provider),
+                    reason="non_integer",
+                ).inc()
+                logger.warning(f"Invalid token usage types for {model}/{provider}: {usage}")
+                prompt_tokens = completion_tokens = reasoning_tokens = total_tokens = 0
+
+            # Basic sanity: non-negative, totals consistent, and not absurdly large
+            max_tokens_cap = 10_000_000
+            sane = (
+                0 <= prompt_tokens < max_tokens_cap
+                and 0 <= completion_tokens < max_tokens_cap
+                and 0 <= reasoning_tokens < max_tokens_cap
+                and 0 <= total_tokens < max_tokens_cap
+                and total_tokens >= prompt_tokens + completion_tokens + reasoning_tokens
+            )
+            if not sane:
+                API_TOKEN_ANOMALIES.labels(
+                    model=normalize_model_label(model),
+                    provider=normalize_provider_label(provider),
+                    reason="invalid_values",
+                ).inc()
+                logger.warning(f"Token usage anomaly for {model}/{provider}: {usage}")
+            else:
+                if prompt_tokens:
+                    API_TOKENS.labels(
+                        model=normalize_model_label(model),
+                        provider=normalize_provider_label(provider),
+                        direction="prompt",
+                    ).inc(prompt_tokens)
+                if completion_tokens:
+                    API_TOKENS.labels(
+                        model=normalize_model_label(model),
+                        provider=normalize_provider_label(provider),
+                        direction="completion",
+                    ).inc(completion_tokens)
+                if reasoning_tokens:
+                    API_TOKENS.labels(
+                        model=normalize_model_label(model),
+                        provider=normalize_provider_label(provider),
+                        direction="reasoning",
+                    ).inc(reasoning_tokens)
 
         if rate_limiter:
             actual_tokens = response.get("usage", {}).get("total_tokens")

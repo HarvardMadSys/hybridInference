@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from fastapi import FastAPI, status
@@ -12,6 +11,9 @@ from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import compat, completions
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 class _Adapter(BaseAdapter):

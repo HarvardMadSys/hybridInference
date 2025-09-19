@@ -12,10 +12,7 @@ def sse_line(payload: dict[str, Any] | str) -> str:
     Tests commonly iterate over lines already prefixed with 'data: ' from
     serving.http.stream_post. This helper mirrors that shape.
     """
-    if isinstance(payload, str):
-        body = payload
-    else:
-        body = json.dumps(payload)
+    body = payload if isinstance(payload, str) else json.dumps(payload)
     return f"data: {body}"
 
 

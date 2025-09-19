@@ -184,8 +184,31 @@ class TestBootstrapHelpers:
             assert logger is not None
 
     @pytest.mark.asyncio
-    async def test_init_router_with_local_models(self, monkeypatch):
-        """Test router initialization with local VLLM models."""
+    async def test_init_router_with_local_models(self, monkeypatch, tmp_path):
+        """Test router initialization with hybrid models (local + remote)."""
+        # Create test models.yaml with hybrid configuration
+        test_models = tmp_path / "hybrid_models.yaml"
+        test_models.write_text("""
+models:
+  - id: llama-4-scout
+    name: Test Model
+    provider: hybrid
+    context_length: 8192
+    max_output_length: 4096
+    route:
+      # Local VLLM endpoint
+      - kind: vllm
+        weight: 1.0
+        base_url: ${LOCAL_BASE_URL}
+        provider_model_id: "/models/llama-4-scout"
+      # Remote API endpoint
+      - kind: llama
+        weight: 1.0
+        base_url: https://api.example.com
+        api_key: test-key
+""")
+
+        monkeypatch.setenv("MODELS_CONFIG", str(test_models))
         monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
         monkeypatch.setenv("OFFLOAD", "0")
 
@@ -193,13 +216,45 @@ class TestBootstrapHelpers:
 
         await bootstrap._init_router_and_models(router)
 
-        # Should have registered local models
+        # Should have registered model with both adapters
         assert "llama-4-scout" in router.routes
-        assert "qwen3-coder" in router.routes
+        # Check it has 2 adapters (local + remote)
+        assert len(router.routes["llama-4-scout"].adapters) == 2
 
     @pytest.mark.asyncio
-    async def test_init_router_with_offload(self, monkeypatch):
-        """Test router skips local models when OFFLOAD=1."""
+    async def test_init_router_with_offload(self, monkeypatch, tmp_path):
+        """Test hard OFFLOAD removes local adapters from hybrid models."""
+        # Create test models.yaml with hybrid configuration
+        test_models = tmp_path / "hybrid_models.yaml"
+        test_models.write_text("""
+models:
+  - id: llama-4-scout
+    name: Test Model
+    provider: hybrid
+    context_length: 8192
+    max_output_length: 4096
+    route:
+      # Local VLLM endpoint
+      - kind: vllm
+        weight: 1.0
+        base_url: ${LOCAL_BASE_URL}
+        provider_model_id: "/models/llama-4-scout"
+      # Remote API endpoint
+      - kind: llama
+        weight: 1.0
+        base_url: https://api.example.com
+        api_key: test-key
+
+  - id: local-only-model
+    name: Local Only
+    provider: vllm
+    route:
+      - kind: vllm
+        weight: 1.0
+        base_url: ${LOCAL_BASE_URL}
+""")
+
+        monkeypatch.setenv("MODELS_CONFIG", str(test_models))
         monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
         monkeypatch.setenv("OFFLOAD", "1")
 
@@ -207,30 +262,74 @@ class TestBootstrapHelpers:
 
         await bootstrap._init_router_and_models(router)
 
-        # Should NOT have registered local models
-        assert "llama-4-scout" not in router.routes
-        assert "qwen3-coder" not in router.routes
+        # llama-4-scout should still exist but with only remote adapter
+        assert "llama-4-scout" in router.routes
+        assert len(router.routes["llama-4-scout"].adapters) == 1
+        # Verify it's the remote adapter (not local)
+        adapter, _ = router.routes["llama-4-scout"].adapters[0]
+        assert adapter.config.base_url != "http://localhost:8001"
+
+        # local-only-model should be completely removed
+        assert "local-only-model" not in router.routes
 
     @pytest.mark.asyncio
-    async def test_init_router_with_deepseek(self, monkeypatch):
-        """Test router initialization with DeepSeek API."""
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    async def test_init_router_with_deepseek(self, monkeypatch, tmp_path):
+        """DeepSeek should be loaded from YAML, not env fallback."""
+        models_yaml = tmp_path / "models_deepseek.yaml"
+        models_yaml.write_text(
+            """
+models:
+  - id: deepseek-chat
+    name: DeepSeek Chat
+    provider: deepseek
+    base_url: https://api.deepseek.com/v1
+    api_key: test-key
+    context_length: 65536
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, frequency_penalty, presence_penalty]
+    route:
+      - kind: deepseek
+        weight: 1.0
+        base_url: https://api.deepseek.com/v1
+        api_key: test-key
+"""
+        )
+        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
 
         router = RouteExecutor()
-
         await bootstrap._init_router_and_models(router)
-
         assert "deepseek-chat" in router.routes
 
     @pytest.mark.asyncio
-    async def test_init_router_with_gemini(self, monkeypatch):
-        """Test router initialization with Gemini API."""
-        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    async def test_init_router_with_gemini(self, monkeypatch, tmp_path):
+        """Gemini should be loaded from YAML, not env fallback."""
+        models_yaml = tmp_path / "models_gemini.yaml"
+        models_yaml.write_text(
+            """
+models:
+  - id: gemini-2.5-flash
+    name: Gemini 2.5 Flash
+    provider: gemini
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    api_key: test-key
+    context_length: 1048576
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, top_k, max_tokens, stop]
+    route:
+      - kind: gemini
+        weight: 1.0
+        base_url: https://generativelanguage.googleapis.com/v1beta
+        api_key: test-key
+"""
+        )
+        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
 
         router = RouteExecutor()
-
         await bootstrap._init_router_and_models(router)
-
         assert "gemini-2.5-flash" in router.routes
 
     def test_configure_rate_limiter_deepseek(self, monkeypatch, mock_rate_limiter):

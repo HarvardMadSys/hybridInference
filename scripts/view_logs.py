@@ -7,14 +7,14 @@ import sqlite3
 from tabulate import tabulate
 
 
-def connect_db(db_path="data/db/openrouter_logs.db"):
+def connect_db(db_path: str = "var/db/openrouter_logs.db") -> sqlite3.Connection:
     """Connect to the SQLite database."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def show_recent_logs(conn, limit=10):
+def show_recent_logs(conn: sqlite3.Connection, limit: int = 10) -> None:
     """Show recent API requests."""
     print("\n Recent API Requests")
     print("=" * 100)
@@ -74,7 +74,7 @@ def show_recent_logs(conn, limit=10):
         print("No logs found.")
 
 
-def show_statistics(conn):
+def show_statistics(conn: sqlite3.Connection) -> None:
     """Show usage statistics."""
     print("\n Usage Statistics")
     print("=" * 100)
@@ -133,7 +133,7 @@ def show_statistics(conn):
         print(tabulate(table_data, headers=headers, tablefmt="grid"))
 
 
-def show_sample_conversation(conn):
+def show_sample_conversation(conn: sqlite3.Connection) -> None:
     """Show a sample conversation with details."""
     print("\n Sample Conversation Details")
     print("=" * 100)
@@ -190,7 +190,7 @@ def show_sample_conversation(conn):
         print("No successful requests found.")
 
 
-def show_error_logs(conn):
+def show_error_logs(conn: sqlite3.Connection) -> None:
     """Show any errors that occurred."""
     print("\n  Error Logs")
     print("=" * 100)
@@ -217,7 +217,7 @@ def show_error_logs(conn):
         print(" No errors found!")
 
 
-def main():
+def main() -> None:
     """Main function."""
     print(" OpenRouter Database Log Viewer")
     print("=" * 100)
@@ -246,7 +246,7 @@ def main():
         print("\n" + "=" * 100)
         print(" End of log analysis")
         print("\n Tip: You can query the SQLite database directly:")
-        print("  sqlite3 serving/openrouter_logs.db")
+        print("  sqlite3 var/db/openrouter_logs.db")
         print("  .tables")
         print("  SELECT * FROM api_logs LIMIT 5;")
 

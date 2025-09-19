@@ -1,6 +1,7 @@
 """Shared fixtures for server tests."""
 
 import asyncio
+import contextlib
 import sys
 from collections.abc import Generator
 from pathlib import Path
@@ -15,10 +16,10 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from database.database_sqlite import SQLiteDatabaseLogger
 from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices
 from serving.servers.rate_limiter import PersistentRateLimiter
+from serving.storage.database_sqlite import SQLiteDatabaseLogger
 
 
 @pytest.fixture(scope="session")
@@ -119,17 +120,13 @@ async def app_services(mock_router, mock_db_logger, mock_rate_limiter):
 
     # Cleanup
     if services.db_logger:
-        try:
+        with contextlib.suppress(Exception):
+            # Suppress teardown errors to avoid masking test results
             await services.db_logger.cleanup()
-        except Exception:
-            # Suppress teardown errors to avoid masking test results
-            pass
     if services.rate_limiter:
-        try:
-            await services.rate_limiter._persist_state()
-        except Exception:
+        with contextlib.suppress(Exception):
             # Suppress teardown errors to avoid masking test results
-            pass
+            await services.rate_limiter._persist_state()
 
 
 @pytest_asyncio.fixture

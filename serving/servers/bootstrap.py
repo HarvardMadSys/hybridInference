@@ -14,25 +14,79 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from database.database import DatabaseLogger
-from database.database_sqlite import SQLiteDatabaseLogger
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from serving.adapters import (
     DeepSeekAdapter,
     GeminiAdapter,
     LlamaAdapter,
-    ModelConfig,
-    VLLMAdapter,
 )
 from serving.http import AsyncHTTPClient
-from utils.logging_utils import get_logger, setup_logging
+from serving.storage.database import DatabaseLogger
+from serving.storage.database_sqlite import SQLiteDatabaseLogger
+from serving.utils.logging import get_logger, setup_logging
 
 from .deps import AppServices
 from .rate_limiter import PersistentRateLimiter, RateLimitConfig
 from .registry import register_from_models_yaml
 
 logger = get_logger(__name__)
+
+
+def _apply_hard_offload(router: RouteExecutor, local_base_url: str) -> None:
+    """Apply hard OFFLOAD by filtering out local adapters from routes.
+
+    In hybrid mode, a model may have both local and remote adapters.
+    Hard OFFLOAD removes all local adapters, leaving only remote ones.
+    This is different from soft OFFLOAD which adjusts weights via RoutingManager.
+
+    Args:
+        router: The route executor to modify
+        local_base_url: The base URL identifying local services
+    """
+    normalized_local = local_base_url.rstrip("/").lower()
+    models_affected = 0
+    adapters_removed = 0
+
+    for model_id, route in list(router.routes.items()):
+        # Filter out local adapters from the route
+        original_count = len(route.adapters)
+        filtered_adapters = []
+
+        for adapter, weight in route.adapters:
+            base_url = getattr(adapter.config, "base_url", None)
+            if base_url and isinstance(base_url, str):
+                normalized_url = base_url.rstrip("/").lower()
+                if normalized_url == normalized_local:
+                    # Skip local adapter
+                    adapters_removed += 1
+                    logger.debug(
+                        f"OFFLOAD: Removing local adapter from {model_id} "
+                        f"(provider={adapter.config.provider}, base_url={base_url})"
+                    )
+                else:
+                    # Keep remote adapter
+                    filtered_adapters.append((adapter, weight))
+            else:
+                # Keep adapters without base_url (shouldn't happen but be safe)
+                filtered_adapters.append((adapter, weight))
+
+        if len(filtered_adapters) < original_count:
+            models_affected += 1
+
+        if filtered_adapters:
+            # Update route with only non-local adapters
+            route.adapters = filtered_adapters
+        else:
+            # Remove route entirely if no adapters left
+            router.routes.pop(model_id)
+            logger.info(f"OFFLOAD: Removed route {model_id} (no non-local adapters)")
+
+    if adapters_removed > 0:
+        logger.info(
+            f"Hard OFFLOAD applied: removed {adapters_removed} local adapters "
+            f"from {models_affected} models"
+        )
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -50,8 +104,8 @@ def _init_db_logger() -> DatabaseLogger | None:
             db_path = Path(sqlite_env).expanduser().resolve()
         else:
             project_root = Path(__file__).resolve().parents[2]
-            data_dir = Path(os.getenv("DATA_DIR") or (project_root / "data"))
-            db_dir = data_dir / "db"
+            var_dir = Path(os.getenv("VAR_DIR") or (project_root / "var"))
+            db_dir = var_dir / "db"
             db_dir.mkdir(parents=True, exist_ok=True)
             db_path = db_dir / "openrouter_logs.db"
         logger.info(f"SQLite database path: {db_path}")
@@ -65,210 +119,37 @@ def _init_db_logger() -> DatabaseLogger | None:
 
 
 async def _init_router_and_models(router: RouteExecutor) -> None:
-    """Register models on the router from YAML and environment.
+    """Register models on the router from YAML configuration.
 
-    This mirrors the legacy configuration to preserve behavior during the
-    refactor. The preferred source is `config/models.yaml`; environment
-    variables act as a fallback for simple setups.
+    All models should be configured via YAML for consistency and flexibility.
+    Supports hybrid mode where a single model can have multiple adapters
+    (e.g., local VLLM and remote API) for failover and load balancing.
     """
 
-    # Try config-driven model registration first
+    # Load models from YAML configuration
     try:
         models_env = os.getenv("MODELS_CONFIG")
         models_path = Path(models_env or "config/models.yaml")
         if models_env and not models_path.exists():
             logger.warning(f"Models config not found: {models_path}")
-        else:
+        elif models_path.exists():
             registered = register_from_models_yaml(router, models_path)
             if registered:
                 logger.info(f"Registered {registered} routes from {models_path}")
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
 
-    # Env-based fallback: register local VLLM models (freeinference.org or custom deployment)
-    local_base_url = os.getenv("LOCAL_BASE_URL", "")
+    # Hard OFFLOAD: Filter out local adapters from multi-adapter routes
+    # This is different from soft OFFLOAD which adjusts weights in RoutingManager
     offload_flag = os.getenv("OFFLOAD", "0").strip().lower()
     offload_enabled = offload_flag in ("1", "true", "yes")
 
-    if local_base_url and not offload_enabled:
-        llama_config = ModelConfig(
-            id="llama-4-scout",
-            name="Llama 4 Scout 17B",
-            provider="vllm",
-            base_url=local_base_url.rstrip("/"),
-            provider_model_id="/models/meta-llama_Llama-4-Scout-17B-16E",
-            quantization="bf16",
-            context_length=262144,
-            max_output_length=16384,
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_params=[
-                "temperature",
-                "top_p",
-                "top_k",
-                "min_p",
-                "frequency_penalty",
-                "presence_penalty",
-                "stop",
-                "max_tokens",
-                "seed",
-            ],
-        )
-        llama_adapter = VLLMAdapter(llama_config)
-        for alias in [
-            "llama-4-scout",
-            "/models/meta-llama_Llama-4-Scout-17B-16E",
-        ]:
-            router.register_route(alias, [(llama_adapter, 1.0)])
-
-        qwen_config = ModelConfig(
-            id="qwen3-coder",
-            name="Qwen3 Coder 480B",
-            provider="vllm",
-            base_url=local_base_url.rstrip("/"),
-            provider_model_id="/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8",
-            quantization="fp8",
-            context_length=32768,
-            max_output_length=8192,
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_params=[
-                "temperature",
-                "top_p",
-                "top_k",
-                "frequency_penalty",
-                "presence_penalty",
-                "stop",
-                "max_tokens",
-                "seed",
-            ],
-        )
-        qwen_adapter = VLLMAdapter(qwen_config)
-        for alias in [
-            "qwen3-coder",
-            "/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8",
-        ]:
-            router.register_route(alias, [(qwen_adapter, 1.0)])
-        logger.info("Registered local VLLM models")
-    elif local_base_url and offload_enabled:
-        logger.info("OFFLOAD=1 detected: Skipping local VLLM model registration")
-
-    # If OFFLOAD=1, remove any VLLM routes pointing to LOCAL_BASE_URL that may have
-    # been registered via YAML to avoid accidental local usage.
-    if offload_enabled and local_base_url:
-        to_remove: list[str] = []
-        for model_id, route in router.routes.items():
-            for adapter, _ in route.adapters:
-                if adapter.config.provider == "vllm" and adapter.config.base_url.rstrip(
-                    "/"
-                ) == local_base_url.rstrip("/"):
-                    to_remove.append(model_id)
-                    break
-        for mid in to_remove:
-            router.routes.pop(mid, None)
-
-    # Register DeepSeek
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-    if deepseek_key:
-        config = ModelConfig(
-            id="deepseek-chat",
-            name="DeepSeek Chat",
-            provider="deepseek",
-            base_url="https://api.deepseek.com/v1",
-            api_key=deepseek_key,
-            quantization="bf16",
-            context_length=65536,
-            max_output_length=8192,
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_params=[
-                "temperature",
-                "top_p",
-                "max_tokens",
-                "stop",
-                "frequency_penalty",
-                "presence_penalty",
-            ],
-        )
-        deepseek_adapter = DeepSeekAdapter(config)
-        router.register_route("deepseek-chat", [(deepseek_adapter, 1.0)])
-        logger.info("Registered DeepSeek adapter")
-
-    # Register Gemini
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if gemini_key:
-        config = ModelConfig(
-            id="gemini-2.5-flash",
-            name="Gemini 2.5 Flash",
-            provider="gemini",
-            base_url="https://generativelanguage.googleapis.com/v1beta",
-            api_key=gemini_key,
-            quantization="bf16",
-            input_modalities=["text", "image"],
-            output_modalities=["text"],
-            context_length=1048576,
-            max_output_length=8192,
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_params=["temperature", "top_p", "top_k", "max_tokens", "stop"],
-        )
-        gemini_adapter = GeminiAdapter(config)
-        router.register_route("gemini-2.5-flash", [(gemini_adapter, 1.0)])
-        logger.info("Registered Gemini adapter")
-
-    # Llama API
-    llama_api_base = os.getenv("LLAMA_BASE_URL")
-    llama_api_key = os.getenv("LLAMA_API_KEY")
-    if llama_api_base and llama_api_key and llama_api_base != local_base_url:
-        llama4_scout_config = ModelConfig(
-            id="llama-4-scout",
-            name="Llama 4 Scout",
-            provider="llama",
-            base_url=llama_api_base.rstrip("/"),
-            api_key=llama_api_key,
-            context_length=262144,
-            max_output_length=16384,
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_params=[
-                "temperature",
-                "top_p",
-                "top_k",
-                "min_p",
-                "frequency_penalty",
-                "presence_penalty",
-                "stop",
-                "max_tokens",
-                "seed",
-            ],
-        )
-        llama33_70b_config = ModelConfig(
-            id="llama-3.3-70b-instruct",
-            name="Llama 3.3 70B Instruct",
-            provider="llama",
-            base_url=llama_api_base.rstrip("/"),
-            api_key=llama_api_key,
-            context_length=131072,
-            max_output_length=8192,
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_params=[
-                "temperature",
-                "top_p",
-                "top_k",
-                "min_p",
-                "frequency_penalty",
-                "presence_penalty",
-                "stop",
-                "max_tokens",
-                "seed",
-            ],
-        )
-        llama4_adapter = LlamaAdapter(llama4_scout_config)
-        llama33_adapter = LlamaAdapter(llama33_70b_config)
-        router.register_route("llama-4-scout", [(llama4_adapter, 1.0)])
-        router.register_route("llama-3.3-70b-instruct", [(llama33_adapter, 1.0)])
-        logger.info("Registered Llama API adapters")
+    if offload_enabled:
+        local_base_url = os.getenv("LOCAL_BASE_URL", "")
+        if local_base_url:
+            _apply_hard_offload(router, local_base_url)
+        else:
+            logger.info("OFFLOAD=1 but LOCAL_BASE_URL not set; no adapters filtered")
 
 
 def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:

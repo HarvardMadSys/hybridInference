@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING
 from fastapi import Depends, Request
 
 if TYPE_CHECKING:
-    from database.database import DatabaseLogger
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
+    from serving.storage.database import DatabaseLogger
 
     from .rate_limiter import PersistentRateLimiter
 

@@ -11,7 +11,7 @@ import json
 import time
 from typing import Any
 
-from utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 
 def make_stream_chunk(

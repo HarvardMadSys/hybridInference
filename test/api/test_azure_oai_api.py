@@ -1,7 +1,7 @@
 import os
-import pytest
 
 import dotenv
+import pytest
 from openai import AzureOpenAI
 
 dotenv.load_dotenv()
