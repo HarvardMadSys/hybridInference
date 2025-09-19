@@ -239,3 +239,11 @@ class DatabaseLogger:
                 provider,
             )
         return [dict(r) for r in rows]
+
+    async def cleanup(self) -> None:
+        """Close the connection pool if initialized."""
+        if self.pool:
+            try:
+                await self.pool.close()  # type: ignore[attr-defined]
+            finally:
+                self.pool = None

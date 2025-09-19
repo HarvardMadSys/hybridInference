@@ -20,8 +20,6 @@ from serving.adapters import (
     DeepSeekAdapter,
     GeminiAdapter,
     LlamaAdapter,
-    ModelConfig,
-    VLLMAdapter,
 )
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
@@ -33,6 +31,62 @@ from .rate_limiter import PersistentRateLimiter, RateLimitConfig
 from .registry import register_from_models_yaml
 
 logger = get_logger(__name__)
+
+
+def _apply_hard_offload(router: RouteExecutor, local_base_url: str) -> None:
+    """Apply hard OFFLOAD by filtering out local adapters from routes.
+
+    In hybrid mode, a model may have both local and remote adapters.
+    Hard OFFLOAD removes all local adapters, leaving only remote ones.
+    This is different from soft OFFLOAD which adjusts weights via RoutingManager.
+
+    Args:
+        router: The route executor to modify
+        local_base_url: The base URL identifying local services
+    """
+    normalized_local = local_base_url.rstrip("/").lower()
+    models_affected = 0
+    adapters_removed = 0
+
+    for model_id, route in list(router.routes.items()):
+        # Filter out local adapters from the route
+        original_count = len(route.adapters)
+        filtered_adapters = []
+
+        for adapter, weight in route.adapters:
+            base_url = getattr(adapter.config, "base_url", None)
+            if base_url and isinstance(base_url, str):
+                normalized_url = base_url.rstrip("/").lower()
+                if normalized_url == normalized_local:
+                    # Skip local adapter
+                    adapters_removed += 1
+                    logger.debug(
+                        f"OFFLOAD: Removing local adapter from {model_id} "
+                        f"(provider={adapter.config.provider}, base_url={base_url})"
+                    )
+                else:
+                    # Keep remote adapter
+                    filtered_adapters.append((adapter, weight))
+            else:
+                # Keep adapters without base_url (shouldn't happen but be safe)
+                filtered_adapters.append((adapter, weight))
+
+        if len(filtered_adapters) < original_count:
+            models_affected += 1
+
+        if filtered_adapters:
+            # Update route with only non-local adapters
+            route.adapters = filtered_adapters
+        else:
+            # Remove route entirely if no adapters left
+            router.routes.pop(model_id)
+            logger.info(f"OFFLOAD: Removed route {model_id} (no non-local adapters)")
+
+    if adapters_removed > 0:
+        logger.info(
+            f"Hard OFFLOAD applied: removed {adapters_removed} local adapters "
+            f"from {models_affected} models"
+        )
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -65,110 +119,37 @@ def _init_db_logger() -> DatabaseLogger | None:
 
 
 async def _init_router_and_models(router: RouteExecutor) -> None:
-    """Register models on the router from YAML and environment.
+    """Register models on the router from YAML configuration.
 
-    This mirrors the legacy configuration to preserve behavior during the
-    refactor. The preferred source is `config/models.yaml`; environment
-    variables act as a fallback for simple setups.
+    All models should be configured via YAML for consistency and flexibility.
+    Supports hybrid mode where a single model can have multiple adapters
+    (e.g., local VLLM and remote API) for failover and load balancing.
     """
 
-    # Try config-driven model registration first
+    # Load models from YAML configuration
     try:
         models_env = os.getenv("MODELS_CONFIG")
         models_path = Path(models_env or "config/models.yaml")
         if models_env and not models_path.exists():
             logger.warning(f"Models config not found: {models_path}")
-        else:
+        elif models_path.exists():
             registered = register_from_models_yaml(router, models_path)
             if registered:
                 logger.info(f"Registered {registered} routes from {models_path}")
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
 
-    # Env-based fallback: register local VLLM models (freeinference.org or custom deployment)
-    local_base_url = os.getenv("LOCAL_BASE_URL", "")
+    # Hard OFFLOAD: Filter out local adapters from multi-adapter routes
+    # This is different from soft OFFLOAD which adjusts weights in RoutingManager
     offload_flag = os.getenv("OFFLOAD", "0").strip().lower()
     offload_enabled = offload_flag in ("1", "true", "yes")
 
-    if local_base_url and not offload_enabled:
-        llama_config = ModelConfig(
-            id="llama-4-scout",
-            name="Llama 4 Scout 17B",
-            provider="vllm",
-            base_url=local_base_url.rstrip("/"),
-            provider_model_id="/models/meta-llama_Llama-4-Scout-17B-16E",
-            quantization="bf16",
-            context_length=262144,
-            max_output_length=16384,
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_params=[
-                "temperature",
-                "top_p",
-                "top_k",
-                "min_p",
-                "frequency_penalty",
-                "presence_penalty",
-                "stop",
-                "max_tokens",
-                "seed",
-            ],
-        )
-        llama_adapter = VLLMAdapter(llama_config)
-        for alias in [
-            "llama-4-scout",
-            "/models/meta-llama_Llama-4-Scout-17B-16E",
-        ]:
-            router.register_route(alias, [(llama_adapter, 1.0)])
-
-        qwen_config = ModelConfig(
-            id="qwen3-coder",
-            name="Qwen3 Coder 480B",
-            provider="vllm",
-            base_url=local_base_url.rstrip("/"),
-            provider_model_id="/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8",
-            quantization="fp8",
-            context_length=32768,
-            max_output_length=8192,
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_params=[
-                "temperature",
-                "top_p",
-                "top_k",
-                "frequency_penalty",
-                "presence_penalty",
-                "stop",
-                "max_tokens",
-                "seed",
-            ],
-        )
-        qwen_adapter = VLLMAdapter(qwen_config)
-        for alias in [
-            "qwen3-coder",
-            "/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8",
-        ]:
-            router.register_route(alias, [(qwen_adapter, 1.0)])
-        logger.info("Registered local VLLM models")
-    elif local_base_url and offload_enabled:
-        logger.info("OFFLOAD=1 detected: Skipping local VLLM model registration")
-
-    # If OFFLOAD=1, remove any VLLM routes pointing to LOCAL_BASE_URL that may have
-    # been registered via YAML to avoid accidental local usage.
-    if offload_enabled and local_base_url:
-        to_remove: list[str] = []
-        for model_id, route in router.routes.items():
-            for adapter, _ in route.adapters:
-                if adapter.config.provider == "vllm" and adapter.config.base_url.rstrip(
-                    "/"
-                ) == local_base_url.rstrip("/"):
-                    to_remove.append(model_id)
-                    break
-        for mid in to_remove:
-            router.routes.pop(mid, None)
-
-    # Provider API models (DeepSeek, Gemini, Llama API) should be configured via YAML.
-    # Keeping bootstrap free of provider-specific registrations avoids overriding YAML.
+    if offload_enabled:
+        local_base_url = os.getenv("LOCAL_BASE_URL", "")
+        if local_base_url:
+            _apply_hard_offload(router, local_base_url)
+        else:
+            logger.info("OFFLOAD=1 but LOCAL_BASE_URL not set; no adapters filtered")
 
 
 def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:

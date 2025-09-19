@@ -261,3 +261,12 @@ class SQLiteDatabaseLogger:
                     log["timestamp"] = str(log["timestamp"])
                 logs.append(log)
             return logs
+
+    async def cleanup(self) -> None:
+        """No-op cleanup for interface parity.
+
+        SQLite uses short-lived connections per operation in this logger, so
+        there is no persistent pool to close. This method exists to match the
+        async interface used by the PostgreSQL logger and tests.
+        """
+        self.initialized = False
