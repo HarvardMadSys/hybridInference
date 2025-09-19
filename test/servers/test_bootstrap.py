@@ -184,8 +184,31 @@ class TestBootstrapHelpers:
             assert logger is not None
 
     @pytest.mark.asyncio
-    async def test_init_router_with_local_models(self, monkeypatch):
-        """Test router initialization with local VLLM models."""
+    async def test_init_router_with_local_models(self, monkeypatch, tmp_path):
+        """Test router initialization with hybrid models (local + remote)."""
+        # Create test models.yaml with hybrid configuration
+        test_models = tmp_path / "hybrid_models.yaml"
+        test_models.write_text("""
+models:
+  - id: llama-4-scout
+    name: Test Model
+    provider: hybrid
+    context_length: 8192
+    max_output_length: 4096
+    route:
+      # Local VLLM endpoint
+      - kind: vllm
+        weight: 1.0
+        base_url: ${LOCAL_BASE_URL}
+        provider_model_id: "/models/llama-4-scout"
+      # Remote API endpoint
+      - kind: llama
+        weight: 1.0
+        base_url: https://api.example.com
+        api_key: test-key
+""")
+
+        monkeypatch.setenv("MODELS_CONFIG", str(test_models))
         monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
         monkeypatch.setenv("OFFLOAD", "0")
 
@@ -193,13 +216,45 @@ class TestBootstrapHelpers:
 
         await bootstrap._init_router_and_models(router)
 
-        # Should have registered local models
+        # Should have registered model with both adapters
         assert "llama-4-scout" in router.routes
-        assert "qwen3-coder" in router.routes
+        # Check it has 2 adapters (local + remote)
+        assert len(router.routes["llama-4-scout"].adapters) == 2
 
     @pytest.mark.asyncio
-    async def test_init_router_with_offload(self, monkeypatch):
-        """Test router skips local models when OFFLOAD=1."""
+    async def test_init_router_with_offload(self, monkeypatch, tmp_path):
+        """Test hard OFFLOAD removes local adapters from hybrid models."""
+        # Create test models.yaml with hybrid configuration
+        test_models = tmp_path / "hybrid_models.yaml"
+        test_models.write_text("""
+models:
+  - id: llama-4-scout
+    name: Test Model
+    provider: hybrid
+    context_length: 8192
+    max_output_length: 4096
+    route:
+      # Local VLLM endpoint
+      - kind: vllm
+        weight: 1.0
+        base_url: ${LOCAL_BASE_URL}
+        provider_model_id: "/models/llama-4-scout"
+      # Remote API endpoint
+      - kind: llama
+        weight: 1.0
+        base_url: https://api.example.com
+        api_key: test-key
+
+  - id: local-only-model
+    name: Local Only
+    provider: vllm
+    route:
+      - kind: vllm
+        weight: 1.0
+        base_url: ${LOCAL_BASE_URL}
+""")
+
+        monkeypatch.setenv("MODELS_CONFIG", str(test_models))
         monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
         monkeypatch.setenv("OFFLOAD", "1")
 
@@ -207,9 +262,15 @@ class TestBootstrapHelpers:
 
         await bootstrap._init_router_and_models(router)
 
-        # Should NOT have registered local models
-        assert "llama-4-scout" not in router.routes
-        assert "qwen3-coder" not in router.routes
+        # llama-4-scout should still exist but with only remote adapter
+        assert "llama-4-scout" in router.routes
+        assert len(router.routes["llama-4-scout"].adapters) == 1
+        # Verify it's the remote adapter (not local)
+        adapter, _ = router.routes["llama-4-scout"].adapters[0]
+        assert adapter.config.base_url != "http://localhost:8001"
+
+        # local-only-model should be completely removed
+        assert "local-only-model" not in router.routes
 
     @pytest.mark.asyncio
     async def test_init_router_with_deepseek(self, monkeypatch, tmp_path):
