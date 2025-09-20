@@ -184,77 +184,56 @@ class TestBootstrapHelpers:
             assert logger is not None
 
     @pytest.mark.asyncio
-    async def test_init_router_with_local_models(self, monkeypatch, tmp_path):
-        """Test router initialization with hybrid models (local + remote)."""
-        # Create test models.yaml with hybrid configuration
-        test_models = tmp_path / "hybrid_models.yaml"
-        test_models.write_text("""
+    async def test_init_router_with_remote_models(self, monkeypatch, tmp_path):
+        """Router should register purely remote models from YAML."""
+        models_yaml = tmp_path / "remote_models.yaml"
+        models_yaml.write_text(
+            """
 models:
-  - id: llama-4-scout
-    name: Test Model
-    provider: hybrid
+  - id: remote-model
+    name: Remote Only Model
+    provider: llama
     context_length: 8192
     max_output_length: 4096
     route:
-      # Local VLLM endpoint
-      - kind: vllm
-        weight: 1.0
-        base_url: ${LOCAL_BASE_URL}
-        provider_model_id: "/models/llama-4-scout"
-      # Remote API endpoint
       - kind: llama
         weight: 1.0
         base_url: https://api.example.com
         api_key: test-key
-""")
+"""
+        )
 
-        monkeypatch.setenv("MODELS_CONFIG", str(test_models))
-        monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
+        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
         monkeypatch.setenv("OFFLOAD", "0")
 
         router = RouteExecutor()
 
         await bootstrap._init_router_and_models(router)
 
-        # Should have registered model with both adapters
-        assert "llama-4-scout" in router.routes
-        # Check it has 2 adapters (local + remote)
-        assert len(router.routes["llama-4-scout"].adapters) == 2
+        assert "remote-model" in router.routes
+        assert len(router.routes["remote-model"].adapters) == 1
 
     @pytest.mark.asyncio
-    async def test_init_router_with_offload(self, monkeypatch, tmp_path):
-        """Test hard OFFLOAD removes local adapters from hybrid models."""
-        # Create test models.yaml with hybrid configuration
-        test_models = tmp_path / "hybrid_models.yaml"
-        test_models.write_text("""
+    async def test_init_router_with_offload_no_local(self, monkeypatch, tmp_path):
+        """Hard OFFLOAD should keep remote-only models untouched."""
+        models_yaml = tmp_path / "remote_models.yaml"
+        models_yaml.write_text(
+            """
 models:
-  - id: llama-4-scout
-    name: Test Model
-    provider: hybrid
+  - id: remote-model
+    name: Remote Only Model
+    provider: llama
     context_length: 8192
     max_output_length: 4096
     route:
-      # Local VLLM endpoint
-      - kind: vllm
-        weight: 1.0
-        base_url: ${LOCAL_BASE_URL}
-        provider_model_id: "/models/llama-4-scout"
-      # Remote API endpoint
       - kind: llama
         weight: 1.0
         base_url: https://api.example.com
         api_key: test-key
+"""
+        )
 
-  - id: local-only-model
-    name: Local Only
-    provider: vllm
-    route:
-      - kind: vllm
-        weight: 1.0
-        base_url: ${LOCAL_BASE_URL}
-""")
-
-        monkeypatch.setenv("MODELS_CONFIG", str(test_models))
+        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
         monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
         monkeypatch.setenv("OFFLOAD", "1")
 
@@ -262,15 +241,9 @@ models:
 
         await bootstrap._init_router_and_models(router)
 
-        # llama-4-scout should still exist but with only remote adapter
-        assert "llama-4-scout" in router.routes
-        assert len(router.routes["llama-4-scout"].adapters) == 1
-        # Verify it's the remote adapter (not local)
-        adapter, _ = router.routes["llama-4-scout"].adapters[0]
-        assert adapter.config.base_url != "http://localhost:8001"
-
-        # local-only-model should be completely removed
-        assert "local-only-model" not in router.routes
+        # No local adapters to remove; remote model should remain intact
+        assert "remote-model" in router.routes
+        assert len(router.routes["remote-model"].adapters) == 1
 
     @pytest.mark.asyncio
     async def test_init_router_with_deepseek(self, monkeypatch, tmp_path):
@@ -334,21 +307,26 @@ models:
 
     def test_configure_rate_limiter_deepseek(self, monkeypatch, mock_rate_limiter):
         """Test rate limiter configuration for DeepSeek."""
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("GLM_TPH_LIMIT", raising=False)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
         monkeypatch.setenv("DEEPSEEK_TPD_LIMIT", "500000")
 
         bootstrap._configure_rate_limiter(mock_rate_limiter)
 
         mock_rate_limiter.configure.assert_called()
-        config = mock_rate_limiter.configure.call_args[0][0]
-        assert config.model_id == "deepseek-chat"
-        assert config.capacity_tokens == 500000
-        assert config.window_seconds == 86400
+        configs = [call.args[0] for call in mock_rate_limiter.configure.call_args_list]
+        deepseek_cfg = next((cfg for cfg in configs if cfg.model_id == "deepseek-chat"), None)
+        assert deepseek_cfg is not None
+        assert deepseek_cfg.capacity_tokens == 500000
+        assert deepseek_cfg.window_seconds == 86400
 
     def test_configure_rate_limiter_gemini(self, monkeypatch, mock_rate_limiter):
         """Test rate limiter configuration for Gemini."""
         # Clear any existing keys first
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("GLM_TPH_LIMIT", raising=False)
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         monkeypatch.setenv("GEMINI_TPM_LIMIT", "2000000")
 
@@ -360,7 +338,7 @@ models:
         calls = mock_rate_limiter.configure.call_args_list
         gemini_config = None
         for call in calls:
-            config = call[0][0]
+            config = call.args[0]
             if config.model_id == "gemini-2.5-flash":
                 gemini_config = config
                 break
@@ -368,6 +346,22 @@ models:
         assert gemini_config is not None, "Gemini config not found"
         assert gemini_config.capacity_tokens == 2000000
         assert gemini_config.window_seconds == 60
+
+    def test_configure_rate_limiter_glm(self, monkeypatch, mock_rate_limiter):
+        """Test rate limiter configuration for GLM."""
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.setenv("ZAI_API_KEY", "glm-test-key")
+        monkeypatch.setenv("GLM_TPH_LIMIT", "750000")
+
+        bootstrap._configure_rate_limiter(mock_rate_limiter)
+
+        mock_rate_limiter.configure.assert_called()
+        configs = [call.args[0] for call in mock_rate_limiter.configure.call_args_list]
+        glm_config = next((cfg for cfg in configs if cfg.model_id == "glm-4.5"), None)
+        assert glm_config is not None
+        assert glm_config.capacity_tokens == 750000
+        assert glm_config.window_seconds == 3600
 
 
 class TestBootstrapErrorHandling:
