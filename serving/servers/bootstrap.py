@@ -16,11 +16,6 @@ from dotenv import load_dotenv
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
-from serving.adapters import (
-    DeepSeekAdapter,
-    GeminiAdapter,
-    LlamaAdapter,
-)
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
 from serving.storage.database_sqlite import SQLiteDatabaseLogger

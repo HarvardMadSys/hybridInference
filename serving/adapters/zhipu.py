@@ -66,21 +66,24 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         )
 
         # Extract response components
-        if "choices" in data and data["choices"]:
-            content = data["choices"][0]["message"].get("content", "")
-            tool_calls = data["choices"][0]["message"].get("tool_calls")
-            finish_reason = data["choices"][0].get("finish_reason", "stop")
+        choices = data.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            content = message.get("content", "")
+            tool_calls = message.get("tool_calls")
+            finish_reason = choices[0].get("finish_reason", "stop")
         else:
             content = ""
             tool_calls = None
             finish_reason = "stop"
 
         # Get or estimate usage
-        if "usage" in data:
+        usage_payload = data.get("usage") or {}
+        if usage_payload:
             usage = UsageInfo(
-                prompt_tokens=data["usage"].get("prompt_tokens", 0),
-                completion_tokens=data["usage"].get("completion_tokens", 0),
-                total_tokens=data["usage"].get("total_tokens", 0),
+                prompt_tokens=usage_payload.get("prompt_tokens", 0),
+                completion_tokens=usage_payload.get("completion_tokens", 0),
+                total_tokens=usage_payload.get("total_tokens", 0),
             )
         else:
             prompt_tokens = estimate_prompt_tokens(messages)
@@ -141,9 +144,7 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         finish_reason = "stop"
 
         # Use existing HTTP client stream_post (returns SSE lines)
-        async for line in self.http.stream_post(
-            endpoint, json=payload, headers=headers
-        ):
+        async for line in self.http.stream_post(endpoint, json=payload, headers=headers):
             # Lines are already in "data: ..." format from stream_post
             if not line.startswith("data: "):
                 continue
@@ -163,18 +164,17 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             # Parse the JSON chunk
             try:
                 chunk_data = json.loads(line[6:])
-                if "choices" in chunk_data and chunk_data["choices"]:
-                    delta = chunk_data["choices"][0].get("delta", {})
-                    if "content" in delta and delta["content"]:
-                        content = delta["content"]
+                choices = chunk_data.get("choices") or []
+                if choices:
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content")
+                    if content:
                         total_content += content
                         # Use format_stream_chunk for consistency
                         yield self.format_stream_chunk(content, self.config.id)
 
-                    # Update finish reason if provided
-                    if "finish_reason" in chunk_data["choices"][0]:
-                        fr = chunk_data["choices"][0]["finish_reason"]
-                        if fr:
-                            finish_reason = fr
+                    fr = choices[0].get("finish_reason")
+                    if fr:
+                        finish_reason = fr
             except json.JSONDecodeError:
                 continue

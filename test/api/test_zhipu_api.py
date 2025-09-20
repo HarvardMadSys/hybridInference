@@ -16,10 +16,7 @@ if not api_key:
     exit(1)
 
 # Zhipu uses OpenAI-compatible endpoint
-client = OpenAI(
-    api_key=api_key,
-    base_url="https://open.bigmodel.cn/api/paas/v4/"
-)
+client = OpenAI(api_key=api_key, base_url="https://open.bigmodel.cn/api/paas/v4/")
 
 print("Testing GLM-4.5 model...")
 
@@ -28,16 +25,21 @@ try:
     completion = client.chat.completions.create(
         model="glm-4.5",
         messages=[
-            {"role": "user", "content": "Hello! Please respond with 'Hi there' to confirm you're working."},
+            {
+                "role": "user",
+                "content": "Hello! Please respond with 'Hi there' to confirm you're working.",
+            },
         ],
         temperature=0.7,
         max_tokens=20,
     )
     print("✅ GLM-4.5 response:", completion.choices[0].message.content)
     print(f"   Model: {completion.model}")
-    print(f"   Usage: prompt={completion.usage.prompt_tokens}, "
-          f"completion={completion.usage.completion_tokens}, "
-          f"total={completion.usage.total_tokens}")
+    print(
+        f"   Usage: prompt={completion.usage.prompt_tokens}, "
+        f"completion={completion.usage.completion_tokens}, "
+        f"total={completion.usage.total_tokens}"
+    )
 except Exception as e:
     print(f"❌ GLM-4.5 failed: {e}")
 
@@ -67,7 +69,10 @@ try:
     completion = client.chat.completions.create(
         model="glm-4.5",
         messages=[
-            {"role": "system", "content": "You are a helpful assistant. Always respond in Chinese."},
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Always respond in Chinese.",
+            },
             {"role": "user", "content": "What is the capital of France?"},
         ],
         temperature=0.7,
@@ -77,7 +82,7 @@ try:
 except Exception as e:
     print(f"❌ System message test failed: {e}")
 
-print("\n" + "="*50)
+print("\n" + "=" * 50)
 print("Note: If tests fail, check:")
 print("1. ZAI_API_KEY is valid")
 print("2. API endpoint hasn't changed")
