@@ -1,367 +1,194 @@
-# OpenRouter-Compatible API Server
+# OpenRouter-Compatible API Gateway
 
-A production-ready OpenRouter-compatible API server that aggregates multiple LLM providers with intelligent routing, load balancing, and comprehensive logging.
+A FastAPI-based gateway that serves OpenRouter-compatible traffic, fans out to local and remote LLM adapters, and exposes observability interfaces for operations. The application listens on port 80 in production (via `systemd`) and can also run on a developer-selectable port for local work.
 
-## Current Architecture
+## Architecture
 
 ```
 hybridInference/
+├── docs/                       # Deployment and integration guides
 ├── serving/
 │   ├── servers/
-│   │   └── app.py             # OpenRouter-compatible FastAPI app entry
-│   ├── adapters/              # Provider adapters
-│   │   ├── __init__.py       # Adapter exports
-│   │   ├── base.py           # Base adapter interface
-│   │   ├── vllm.py          # VLLM/Local models adapter
-│   │   ├── deepseek.py      # DeepSeek API adapter
-│   │   ├── gemini.py        # Google Gemini adapter
-│   │   └── llama.py         # Llama API adapter
-│   └── base.py              # Base classes for LLM operations
-│
-├── database/                # Database persistence layer
-│   ├── __init__.py
-│   ├── database.py         # PostgreSQL implementation
-│   └── database_sqlite.py  # SQLite implementation
-│
-├── data/                   # Runtime data (gitignored)
-│   └── db/
-│       └── openrouter_logs.db
-│
-├── utils/                  # Utility tools
-│   └── view_logs.py       # Database log viewer
-│
-├── test/                   # Test suite
-│   ├── api/               # API-specific tests
-│   └── servers/           # Server behavior tests
-│
-└── .env                    # Environment variables
+│   │   ├── app.py              # FastAPI entry point (exposes /v1/*)
+│   │   ├── bootstrap.py        # Service bootstrap: models, routing, DB, rate limits
+│   │   └── routers/            # API routers (health, models, completions, admin)
+│   ├── adapters/               # Provider adapters (local VLLM, DeepSeek, Gemini, Llama, ...)
+│   ├── storage/                # Database loggers (SQLite/PostgreSQL)
+│   ├── observability/          # Metrics export (Prometheus, traces)
+│   └── utils/                  # Logging, configuration helpers
+├── routing/                    # Routing manager and execution strategies
+├── config/
+│   ├── models.yaml             # Canonical model definitions + adapters
+│   └── routing.yaml (optional) # Weighted routing configuration
+├── infrastructure/systemd/     # Production unit files (FastAPI on port 80)
+└── var/db/openrouter_logs.db   # Default SQLite request log (created at runtime)
 ```
+
+### Key Components
+- **FastAPI app (`serving.servers.app:create_app`)**: Hosts OpenRouter-compatible endpoints plus admin and metrics routes.
+- **Bootstrap (`serving.servers.bootstrap`)**: Loads environment, registers models, applies routing weights, wires database logging, and configures rate limits.
+- **Adapters (`serving.adapters.*`)**: Translate requests to providers such as local VLLM, DeepSeek, Gemini, and Llama API.
+- **Routing (`routing.*`)**: Supports fixed-ratio and future strategies for splitting traffic across adapters.
+- **Observability (`serving.observability.metrics`)**: Prometheus metrics and structured request logging.
 
 ## Features
 
-### Core Capabilities
-- **OpenRouter API Compatibility**: Full compliance with OpenRouter API specification
-- **Multi-Provider Support**: VLLM, DeepSeek, Gemini, Llama, and custom providers
-- **OFFLOAD Mode**: Set `OFFLOAD=1` to fully offload to provider APIs (skip local VLLM)
-- **Intelligent Routing**: Weighted load balancing with automatic fallback
-- **Usage Tracking**: Token counting for all requests (prompt_tokens, completion_tokens, total_tokens)
-- **Database Logging**: Comprehensive request/response logging with SQLite/PostgreSQL
-- **Streaming Support**: Server-Sent Events (SSE) for real-time responses
+- **OpenRouter API compatibility**: Implements `/v1/chat/completions`, `/v1/models`, and related schemas.
+- **Hybrid routing**: Combine local VLLM workers with hosted APIs; supports hard/soft offload.
+- **Resilient adapters**: Automatic retry/fallback when a provider returns errors.
+- **Usage accounting**: Prompt/completion token tracking and persisted request logs.
+- **Streaming responses**: Server-Sent Events (SSE) for incremental output.
+- **Observability hooks**: Prometheus metrics endpoint and structured request logs (SQLite/PostgreSQL).
 
-### Supported Models
-- **Local Models** (via freeinference.org or custom VLLM):
-  - Llama-4-Scout: `llama-4-scout` (provider_model_id: `/models/meta-llama_Llama-4-Scout-17B-16E`)
-  - Qwen3-Coder: `qwen3-coder` (provider_model_id: `/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8`)
+## Development Setup
 
-- **API Models**:
-  - DeepSeek: `deepseek-chat`
-  - Gemini: `gemini-2.5-flash`
-  - Llama API: `llama-api` (when configured)
+### Prerequisites
+- Python 3.10 or newer
+- [uv](https://github.com/astral-sh/uv) (recommended) or conda
 
-## Installation
-
-### Using uv (Recommended)
+### Create Environment
 ```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.local/bin/env
-
-# Create virtual environment
-uv venv .venv
+# Clone and bootstrap
+git clone <repository-url>
+cd hybridInference
+uv venv -p 3.10
 source .venv/bin/activate
-
-# Install dependencies
-uv pip install fastapi uvicorn httpx python-dotenv aiosqlite asyncpg aiohttp uvloop
+uv sync
 ```
 
-### Using conda
+### Local Environment Variables
+Create `.env` from the template:
 ```bash
-conda create -n hybrid_inference python=3.11
-conda activate hybrid_inference
-pip install fastapi uvicorn httpx python-dotenv aiosqlite asyncpg aiohttp uvloop
+cp .env.example .env
 ```
-
-## Configuration
-
-Create `.env` file in project root:
-
-```bash
-# Local VLLM Models (freeinference.org or your deployment)
+Populate it with provider credentials and runtime configuration:
+```env
 LOCAL_BASE_URL=http://freeinference.org/v1
-
-# OFFLOAD Mode (skip local VLLM, use only provider APIs)
-OFFLOAD=0  # set to 1 to enable full offload
-
-# API Provider Keys
+OFFLOAD=0
 DEEPSEEK_API_KEY=your-deepseek-api-key
 GEMINI_API_KEY=your-gemini-api-key
 LLAMA_API_KEY=your-llama-api-key
 LLAMA_BASE_URL=https://your-llama-api-base/v1
-
-# Database Configuration
-USE_SQLITE_LOG=true  # Use SQLite for development
-# DATABASE_URL=postgresql://user:pass@localhost/openrouter  # For production
-
-# Server Configuration
-PORT=8080
-WORKERS=1  # Set to 4+ for production
+USE_SQLITE_LOG=true
 ```
 
-### Model Metadata
-
-The server exposes model metadata via the models endpoint, including:
-- Model IDs and display names
-- Context lengths (`context_length`) and max output tokens (`max_output_length`)
-- Pricing (string USD fields: `prompt`, `completion`, `image`, `request`, `input_cache_reads`, `input_cache_writes`)
-- Supported features (`tools`, `json_mode`, `structured_outputs`)
-- Supported sampling parameters (`temperature`, `top_p`, `top_k`, `stop`, etc.)
-- Modalities (`input_modalities`, `output_modalities`) and `quantization`
-
-Clients should read this from the HTTP endpoint rather than a static file.
-
-## Quick Start
-
-### Start Server
+### Run Locally
 ```bash
-# From project root
-source .venv/bin/activate
-python -m serving.servers.app
+# Development server with reload on port 8080
+uvicorn serving.servers.app:app --reload --host 0.0.0.0 --port 8080
 
-# Custom port
-PORT=8888 python -m serving.servers.app
-
-# Production mode with workers
-python -m serving.servers.app --workers 4
+# Alternate: respect PORT env var
+PORT=9000 uvicorn serving.servers.app:app --host 0.0.0.0 --port $PORT
 ```
 
-### Start in OFFLOAD-only Mode (Meta Llama API, DeepSeek, Gemini)
-```bash
-export OFFLOAD=1
-export LLAMA_BASE_URL=https://your-llama-api-base/v1
-export LLAMA_API_KEY=your-llama-api-key
-export DEEPSEEK_API_KEY=your-deepseek-api-key
-export GEMINI_API_KEY=your-gemini-api-key
-python -m serving.servers.openrouter
-python -m serving.servers.app
-```
+When the app starts it will:
+1. Load environment variables (dotenv).
+2. Register models from `config/models.yaml`.
+3. Apply routing overrides from `config/routing.yaml` if present.
+4. Initialize the database logger (SQLite under `var/db` by default).
+5. Configure per-provider rate limits when API keys are supplied.
 
-### Test Installation
+### Quick Checks
 ```bash
-# Check health
+# Health
 curl http://localhost:8080/health
 
-# List available models
-curl http://localhost:8080/models | jq
+# Models (OpenRouter schema)
+curl http://localhost:8080/v1/models | jq
 
-# Test chat completion
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "llama-4-scout",
-    "messages": [{"role": "user", "content": "Hello"}],
-    "max_tokens": 50
-  }'
+# Chat completion
+env \
+  http_proxy= \
+  curl -X POST http://localhost:8080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+          "model": "llama-4-scout",
+          "messages": [{"role": "user", "content": "Ping"}],
+          "max_tokens": 64
+        }'
 ```
 
-## API Endpoints
+## Production Deployment
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | API information and version |
-| `/health` | GET | Health status (routes_configured, database_connected) |
-| `/models` | GET | List available models (OpenRouter schema; also `/v1/models`, `/openrouter/models`) |
-| `/v1/chat/completions` | POST | Chat completion (OpenRouter/OpenAI compatible) |
-| `/completion` | POST | Single-shot completion (alias for chat completions) |
-| `/routing` | GET | Show routing configuration |
-| `/stats` | GET | Usage statistics with filters |
+We run the service directly on port 80 under `systemd`, letting Cloudflare terminate TLS at the edge. The repository ships a maintained unit file at `infrastructure/systemd/hybrid_inference.service`.
 
-## Usage Examples
-
-### Basic Chat Completion
 ```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-chat",
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "What is 2+2?"}
-    ],
-    "max_tokens": 100,
-    "temperature": 0.7
-  }'
+# Copy the unit file
+sudo cp infrastructure/systemd/hybrid_inference.service \
+        /etc/systemd/system/freeinference.service
+
+# Reload systemd and enable on boot
+sudo systemctl daemon-reload
+sudo systemctl enable freeinference.service
+sudo systemctl start freeinference.service
+sudo systemctl status freeinference.service
 ```
 
-### Local Model (freeinference.org)
+Runtime operations:
+- Restart: `sudo systemctl restart freeinference.service`
+- Logs: `journalctl -u freeinference.service -f`
+- Health: `curl http://freeinference.org/health`
+
+## API Surface
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET | `/v1/models` | Enumerate available models with OpenRouter metadata |
+| POST | `/v1/chat/completions` | OpenRouter/OpenAI-compatible chat completion |
+| GET | `/health` | Liveness and dependency checks |
+| GET | `/metrics` | Prometheus metrics (requires auth upstream) |
+| GET | `/routing` | Current routing weights (admin scope) |
+| GET | `/stats` | Aggregated usage statistics |
+
+### Example Requests
 ```bash
-# Using public id (recommended)
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3-coder",
-    "messages": [{"role": "user", "content": "Write a Python hello world"}],
-    "max_tokens": 100
-  }'
-
-# Using provider_model_id (still supported as alias)
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "/models/Qwen_Qwen3-Coder-480B-A35B-Instruct-FP8",
-    "messages": [{"role": "user", "content": "Write a Python hello world"}],
-    "max_tokens": 100
-  }'
+# Streaming response
+env \
+  http_proxy= \
+  curl -N -X POST http://localhost:8080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+          "model": "deepseek-chat",
+          "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Describe the architecture."}
+          ],
+          "stream": true,
+          "temperature": 0.7,
+          "max_tokens": 256
+        }'
 ```
 
-### Streaming Response
+## Logging and Metrics
+
+- **SQLite (default)**: When `USE_SQLITE_LOG=true`, logs persist to `var/db/openrouter_logs.db`. Override with `SQLITE_DB_PATH` or `OPENROUTER_SQLITE_DB`.
+- **PostgreSQL**: Set `USE_SQLITE_LOG=false` and `DATABASE_URL=<dsn>` to stream logs into PostgreSQL for analytics.
+- **Metrics**: `/metrics` exposes Prometheus counters/latencies. Enable scraping through infrastructure (e.g., Prometheus + Grafana).
+
+Inspect logs locally:
 ```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "llama-4-scout",
-    "messages": [{"role": "user", "content": "Tell me a story"}],
-    "stream": true,
-    "max_tokens": 200
-  }'
-```
-
-## Response Format
-
-Standard OpenRouter/OpenAI format:
-
-```json
-{
-  "id": "chatcmpl-1756123456789",
-  "object": "chat.completion",
-  "created": 1756123456,
-  "model": "llama-4-scout",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "The answer is 4."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 15,
-    "completion_tokens": 10,
-    "total_tokens": 25
-  }
-}
-```
-
-## Models Endpoint Response
-
-Example item (schema similar to OpenRouter provider requirements):
-
-```json
-{
-  "id": "llama-4-scout",
-  "name": "Llama 4 Scout 17B",
-  "object": "model",
-  "created": 1756123456,
-  "owned_by": "vllm",
-  "input_modalities": ["text"],
-  "output_modalities": ["text"],
-  "quantization": "bf16",
-  "context_length": 262144,
-  "max_output_length": 16384,
-  "pricing": {
-    "prompt": "0",
-    "completion": "0",
-    "image": "0",
-    "request": "0",
-    "input_cache_reads": "0",
-    "input_cache_writes": "0"
-  },
-  "supported_sampling_parameters": ["temperature", "top_p", "top_k", "stop", "max_tokens"],
-  "supported_features": ["tools", "json_mode", "structured_outputs"],
-  "openrouter": {"slug": "llama-4-scout"}
-}
-```
-
-## Database
-
-### Schema
-```sql
-CREATE TABLE api_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    request_id TEXT UNIQUE,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    model_id TEXT NOT NULL,
-    provider TEXT,
-    prompt TEXT,
-    response TEXT,
-    prompt_tokens INTEGER,
-    completion_tokens INTEGER,
-    total_tokens INTEGER,
-    latency_ms INTEGER,
-    status_code INTEGER,
-    error TEXT,
-    params TEXT,
-    metadata TEXT
-);
-```
-
-### View Logs
-```bash
-# Use the log viewer utility
-python utils/view_logs.py
-
-# Direct database query
-sqlite3 data/db/openrouter_logs.db "
-  SELECT model_id, COUNT(*) as requests,
-         SUM(total_tokens) as tokens,
-         AVG(latency_ms) as avg_latency
-  FROM api_logs
-  WHERE timestamp > datetime('now', '-1 day')
-  GROUP BY model_id;"
+python scripts/view_logs.py
+sqlite3 var/db/openrouter_logs.db 'SELECT model_id, COUNT(*) FROM api_logs GROUP BY model_id;'
 ```
 
 ## Testing
 
-### Run Tests
 ```bash
-# Unit and server tests (no external calls)
+# Fast unit/integration tests
 pytest -m "not external" -q
 
-# Or run a subset
-pytest test/servers -q
+# Focused server tests
+pytest test/servers/test_bootstrap.py -q
 ```
 
 ## Troubleshooting
 
-### Port Already in Use
-```bash
-# Find and kill process
-lsof -ti :8080 | xargs kill -9
-```
+- **Port already in use**: `sudo lsof -ti :80 | xargs sudo kill -9`
+- **Missing models**: Verify `config/models.yaml` contains the expected entries and that `LOCAL_BASE_URL` is reachable.
+- **No logs written**: Confirm `USE_SQLITE_LOG` and filesystem permissions for `var/db/`.
+- **Provider rate limiting**: Adjust `GEMINI_TPM_LIMIT`, `DEEPSEEK_TPM_LIMIT`, or equivalent environment variables as needed.
 
-### Module Import Errors
-```bash
-# Ensure you're in project root
-cd /root/hybridInference
+## Related Docs
 
-# Run as module
-python -m serving.servers.app
-```
-
-### Database Not Found
-```bash
-# Create data directory if missing
-mkdir -p data/db
-
-# Check database path
-ls -la data/db/openrouter_logs.db
-```
-
-### Environment Variables Not Loading
-```bash
-# Check .env file exists in project root
-ls -la .env
-
-# Verify environment variables
-python -c "import os; print(os.getenv('LOCAL_BASE_URL'))"
+- `docs/freeinference.md`: Deployment history and rationale for running FastAPI directly on port 80.
+- `docs/ROUTING.md`: Detailed routing manager configuration and strategy extension guide.
