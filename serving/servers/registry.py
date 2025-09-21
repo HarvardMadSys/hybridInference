@@ -119,6 +119,8 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
             top_cfg["base_url"] = expand_env(top_cfg["base_url"])  # type: ignore
         if top_cfg.get("api_key"):
             top_cfg["api_key"] = expand_env(top_cfg["api_key"])  # type: ignore
+        if top_cfg.get("provider_model_id"):
+            top_cfg["provider_model_id"] = expand_env(top_cfg["provider_model_id"])  # type: ignore
 
         # If no explicit route list, use a single route targeting the primary config
         routes = m.get("route") or [
@@ -141,6 +143,10 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
             adapter_cfg["base_url"] = base_url
             adapter_cfg["api_key"] = api_key
             adapter_cfg["provider"] = kind
+
+            route_provider_model_id = r.get("provider_model_id")
+            if route_provider_model_id is not None:
+                adapter_cfg["provider_model_id"] = expand_env(route_provider_model_id)
 
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
