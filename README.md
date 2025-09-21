@@ -5,17 +5,19 @@ A high-performance hybrid inference server providing local deployment and offlin
 ## Project Structure
 
 ```
-hybrid-inference/
-├── serving/   # API serving layer (app, routers, adapters)
-├── routing/   # Request routing logic
-├── database/  # Database abstraction layer
-├── client/    # Client implementations (loaders, runner, metrics)
-├── utils/     # Shared utilities
-├── test/      # Test suite
-├── config/    # Configuration files
-├── scripts/   # Utility scripts
-└── docs/      # Documentation
+hybridInference/
+├── serving/        # FastAPI gateway, adapters, observability, storage
+├── routing/        # Routing manager and execution strategies
+├── config/         # Model + routing configuration files
+├── infrastructure/ # Systemd units, observability manifests, deployment assets
+├── scripts/        # Operational and perf tooling
+├── docs/           # Architecture and integration guides
+├── var/            # Runtime artifacts (e.g., SQLite logs)
+├── test/           # Test suite
+└── client/         # Client tooling (loaders, runners, metrics)
 ```
+
+For service-specific deployment and routing details, refer to `docs/openrouter.md`, `docs/freeinference.md`, and `docs/ROUTING.md`.
 
 ## Development Setup
 

@@ -51,10 +51,14 @@ remote_deployment:
 ## Running the Server
 
 ```bash
-python -m serving.servers.openrouter
+# Development: run FastAPI app with routing enabled
+uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
+
+# Respect production environment (see docs/openrouter.md for systemd deployment)
+PORT=9000 uvicorn serving.servers.app:app --host 0.0.0.0 --port $PORT
 ```
 
-If `routing.yaml` exists, the `RoutingManager` will apply the configured weights at startup. Otherwise, the system uses default weights from `models.yaml`.
+When the application starts, `serving.servers.bootstrap` loads `config/models.yaml` and optionally `config/routing.yaml`. If `routing.yaml` is present the `RoutingManager` applies the configured weights; otherwise default weights from `models.yaml` are used.
 
 ## API Endpoints
 
