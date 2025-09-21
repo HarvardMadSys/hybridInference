@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import time
 from typing import Any
 
@@ -149,7 +148,6 @@ async def run_stress_test(
         # Error analysis
         error_types = {}
         for r in failed:
-            error = r.get("error", "Unknown")
             status = r.get("status", 0)
             key = f"Status {status}"
             error_types[key] = error_types.get(key, 0) + 1
@@ -221,13 +219,13 @@ async def main():
     """Run the main stress test program."""
     args = parse_args()
 
-    print(f"=== Hybrid Inference Server Stress Test ===")
+    print("=== Hybrid Inference Server Stress Test ===")
     print(f"Server: {args.base_url}")
     print(f"Model: {args.model}")
     print(f"Target RPS: {args.rps}")
     print(f"Duration: {args.duration}s")
     print(f"Max Concurrent: {args.concurrent}")
-    print(f"Starting test...\n")
+    print("Starting test...\n")
 
     results = await run_stress_test(
         base_url=args.base_url,

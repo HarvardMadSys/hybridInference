@@ -18,6 +18,7 @@ from serving.adapters import (
     LlamaAdapter,
     ModelConfig,
     VLLMAdapter,
+    ZhipuAdapter,
 )
 
 if TYPE_CHECKING:
@@ -30,7 +31,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
-        kind: Adapter kind (``"vllm"``, ``"deepseek"``, ``"gemini"``, ``"llama"``).
+        kind: Adapter kind (``"vllm"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"zhipu"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -48,6 +49,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         return GeminiAdapter(model_cfg)
     if kind == "llama":
         return LlamaAdapter(model_cfg)
+    if kind == "zhipu":
+        return ZhipuAdapter(model_cfg)
     raise ValueError(f"Unknown adapter kind: {kind}")
 
 

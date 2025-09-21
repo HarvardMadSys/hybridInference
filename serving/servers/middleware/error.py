@@ -52,7 +52,7 @@ def install_error_handlers(app: FastAPI) -> None:
         except HTTPException:
             # Let the specific HTTP handler below shape the payload/code.
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             err_type = categorize_exception(exc)
             logger.error(
                 "unhandled_exception",

@@ -3,6 +3,7 @@ from .deepseek import DeepSeekAdapter
 from .gemini import GeminiAdapter
 from .llama import LlamaAdapter
 from .vllm import VLLMAdapter
+from .zhipu import ZhipuAdapter
 
 __all__ = [
     "BaseAdapter",
@@ -12,4 +13,5 @@ __all__ = [
     "ModelConfig",
     "UsageInfo",
     "VLLMAdapter",
+    "ZhipuAdapter",
 ]

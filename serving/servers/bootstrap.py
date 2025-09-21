@@ -16,11 +16,6 @@ from dotenv import load_dotenv
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
-from serving.adapters import (
-    DeepSeekAdapter,
-    GeminiAdapter,
-    LlamaAdapter,
-)
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
 from serving.storage.database_sqlite import SQLiteDatabaseLogger
@@ -215,6 +210,22 @@ def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
             )
             limiter.configure(cfg)
             logger.info(f"Configured DeepSeek limit: {deepseek_tpd:,}/day")
+
+    # GLM-4.5: 1M tokens per hour
+    glm_key = os.getenv("ZAI_API_KEY")
+    if glm_key:
+        glm_tph = int(os.getenv("GLM_TPH_LIMIT", "1000000"))  # 1M tokens per hour
+        if glm_tph > 0:
+            cfg = RateLimitConfig(
+                model_id="glm-4.5",
+                window_seconds=3600,  # 1 hour
+                capacity_tokens=glm_tph,
+                burst_multiplier=1.0,
+                queue_size=50,
+                enable_persistence=True,
+            )
+            limiter.configure(cfg)
+            logger.info(f"Configured GLM-4.5 limit: {glm_tph:,}/hour")
 
 
 async def initialize() -> AppServices:
