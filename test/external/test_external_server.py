@@ -14,11 +14,11 @@ BASE_URL = os.getenv("EXTERNAL_BASE_URL", "http://localhost").rstrip("/")
 pytestmark = pytest.mark.external
 
 
-def _ensure_up() -> None:
+def _ensure_up(base_url: str) -> None:
     try:
-        requests.get(f"{BASE_URL}/health", timeout=0.5)
+        requests.get(f"{base_url}/health", timeout=0.5)
     except Exception:
-        pytest.skip(f"Server not reachable at {BASE_URL}")
+        pytest.skip(f"Server not reachable at {base_url}")
 
 
 @pytest.fixture(scope="module")
@@ -27,13 +27,13 @@ def base_url() -> str:
 
 
 def test_health_check(base_url: str) -> None:
-    _ensure_up()
+    _ensure_up(base_url)
     response = requests.get(f"{base_url}/health", timeout=2)
     assert response.status_code == 200
 
 
 def test_models_endpoint(base_url: str) -> None:
-    _ensure_up()
+    _ensure_up(base_url)
     response = requests.get(f"{base_url}/v1/models", timeout=10)
     assert response.status_code == 200
     parsed = ModelList.model_validate(response.json())
@@ -41,7 +41,7 @@ def test_models_endpoint(base_url: str) -> None:
 
 
 def test_non_streaming_completion(base_url: str) -> None:
-    _ensure_up()
+    _ensure_up(base_url)
     models_payload = requests.get(f"{base_url}/v1/models", timeout=5).json().get("data", [])
     model_id = models_payload[0]["id"] if models_payload else "llama-4-scout"
     payload = {
@@ -61,7 +61,7 @@ def test_non_streaming_completion(base_url: str) -> None:
 
 
 def test_streaming_completion(base_url: str) -> None:
-    _ensure_up()
+    _ensure_up(base_url)
     models_payload = requests.get(f"{base_url}/v1/models", timeout=5).json().get("data", [])
     model_id = models_payload[0]["id"] if models_payload else "llama-4-scout"
     payload = {
@@ -92,5 +92,5 @@ def test_streaming_completion(base_url: str) -> None:
         chunk_count += 1
 
     if chunk_count == 0:
-        pytest.xfail("no streaming data returned; provider may not support streaming")
+        pytest.skip("Streaming not yet available at target; tracked separately")
     assert chunk_count > 0
