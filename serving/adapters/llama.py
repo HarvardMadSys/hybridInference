@@ -197,7 +197,3 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                     yield self.format_stream_chunk(content, self.config.id)
                 continue
 
-            content = chunk_data.get("content")
-            if content:
-                total_content += content
-                yield self.format_stream_chunk(content, self.config.id)

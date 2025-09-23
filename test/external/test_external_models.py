@@ -1,7 +1,4 @@
-"""
-Model Inference Testing Script
-Tests all available models on the freeinference.org API
-"""
+"""Async smoke tester for OpenRouter-compatible model endpoints."""
 
 import asyncio
 import json
