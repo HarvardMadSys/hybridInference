@@ -160,6 +160,8 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         url = f"{self.config.base_url}/chat/completions"
 
         total_content = ""
+        prompt_tokens_override: int | None = None
+        finish_reason = "stop"
 
         async for line in self.http.stream_post(url, json=payload, headers=headers):
             if not line.startswith("data: "):
@@ -169,15 +171,28 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                     model=self.config.id,
                     messages=messages,
                     total_content=total_content,
-                    finish_reason="stop",
+                    prompt_tokens_override=prompt_tokens_override,
+                    finish_reason=finish_reason,
                 )
                 yield done_sentinel()
                 break
             try:
                 chunk_data = json.loads(line[6:])
-                if "content" in chunk_data:
-                    content = chunk_data["content"]
+            except json.JSONDecodeError:
+                continue
+
+            if "usage" in chunk_data:
+                prompt_tokens_override = chunk_data["usage"].get(
+                    "prompt_tokens", prompt_tokens_override
+                )
+
+            choices = chunk_data.get("choices") or []
+            if choices:
+                choice = choices[0]
+                finish_reason = choice.get("finish_reason") or finish_reason
+                delta = choice.get("delta") or {}
+                content = delta.get("content")
+                if content:
                     total_content += content
                     yield self.format_stream_chunk(content, self.config.id)
-            except json.JSONDecodeError:
                 continue

@@ -91,6 +91,4 @@ def test_streaming_completion(base_url: str) -> None:
             continue
         chunk_count += 1
 
-    if chunk_count == 0:
-        pytest.skip("Streaming not yet available at target; tracked separately")
     assert chunk_count > 0
