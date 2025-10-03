@@ -105,13 +105,25 @@ Create a `.env` file from the template:
 cp .env.example .env
 ```
 
-Edit `.env` and add your API keys:
+**IMPORTANT: Security Configuration**
 
+Edit `.env` and configure:
+
+1. **API Keys** (for external providers):
 ```env
 OPENAI_API_KEY=your-actual-openai-api-key
 LLAMA_API_KEY=your-actual-llama-api-key
 GEMINI_API_KEY=your-actual-gemini-api-key
 ```
+
+2. **Database Credentials** (required, no defaults):
+```env
+DB_NAME=your_database_name
+DB_USER=your_database_user
+DB_PASSWORD=your_secure_password
+```
+
+⚠️ **Security Note**: Database credentials are **required** and have no default values. Services will fail to start without proper configuration.
 
 ### 2. Start Local vLLM Server
 

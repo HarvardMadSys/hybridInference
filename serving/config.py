@@ -42,13 +42,28 @@ def get_db_config() -> dict[str, str | int]:
 
     Returns:
         A mapping of asyncpg connection parameters.
+
+    Raises:
+        ValueError: If required database credentials are not set.
     """
     load_dotenv()
+
+    # Required fields with no defaults for security
+    db_user = os.getenv("DB_USER")
+    db_password = os.getenv("DB_PASSWORD")
+    db_name = os.getenv("DB_NAME")
+
+    if not db_user:
+        raise ValueError("DB_USER must be set in environment or .env file")
+    if not db_password:
+        raise ValueError("DB_PASSWORD must be set in environment or .env file")
+    if not db_name:
+        raise ValueError("DB_NAME must be set in environment or .env file")
 
     return {
         "host": os.getenv("DB_HOST", "localhost"),
         "port": int(os.getenv("DB_PORT", "5432")),
-        "database": os.getenv("DB_NAME", "freeinference_db"),
-        "user": os.getenv("DB_USER", "murphy"),
-        "password": os.getenv("DB_PASSWORD", "harvardsys"),
+        "database": db_name,
+        "user": db_user,
+        "password": db_password,
     }
