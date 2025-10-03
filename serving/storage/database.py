@@ -235,14 +235,18 @@ class DatabaseLogger:
             prompt_hash = compute_prompt_hash(prompt)
 
         # Privacy control: use per-request override or instance default
-        should_store_full = store_full_content if store_full_content is not None else self.store_full_prompts
+        should_store_full = (
+            store_full_content if store_full_content is not None else self.store_full_prompts
+        )
 
         if should_store_full:
             # Store full prompt and response text
             prompt_str = json.dumps(prompt) if isinstance(prompt, list) else str(prompt)
             response_str = (
-                json.dumps(response) if isinstance(response, dict)
-                else str(response) if response is not None
+                json.dumps(response)
+                if isinstance(response, dict)
+                else str(response)
+                if response is not None
                 else None
             )
         else:
