@@ -35,3 +35,20 @@ def get_config() -> dict[str, dict[str, str | None]]:
             "x_title": os.getenv("OPENROUTER_X_TITLE", None),
         },
     }
+
+
+def get_db_config() -> dict[str, str | int]:
+    """Load PostgreSQL database configuration from environment.
+
+    Returns:
+        A mapping of asyncpg connection parameters.
+    """
+    load_dotenv()
+
+    return {
+        "host": os.getenv("DB_HOST", "localhost"),
+        "port": int(os.getenv("DB_PORT", "5432")),
+        "database": os.getenv("DB_NAME", "freeinference_db"),
+        "user": os.getenv("DB_USER", "murphy"),
+        "password": os.getenv("DB_PASSWORD", "harvardsys"),
+    }

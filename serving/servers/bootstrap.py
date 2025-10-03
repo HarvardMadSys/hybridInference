@@ -16,9 +16,9 @@ from dotenv import load_dotenv
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
+from serving.config import get_db_config
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
-from serving.storage.database_sqlite import SQLiteDatabaseLogger
 from serving.utils.logging import get_logger, setup_logging
 
 from .deps import AppServices
@@ -85,32 +85,28 @@ def _apply_hard_offload(router: RouteExecutor, local_base_url: str) -> None:
 
 
 def _init_db_logger() -> DatabaseLogger | None:
-    """Initialize a database logger based on environment configuration.
+    """Initialize PostgreSQL database logger from environment configuration.
 
     Returns:
-        Optional[DatabaseLogger]: A database logger instance or None when
-        logging is disabled or misconfigured.
+        Optional[DatabaseLogger]: A PostgreSQL logger instance or None when
+        database logging is explicitly disabled.
     """
+    # Allow explicit opt-out via DB_ENABLED=false
+    if os.getenv("DB_ENABLED", "true").lower() in ("false", "0", "no"):
+        logger.info("Database logging disabled via DB_ENABLED=false")
+        return None
 
-    use_sqlite = os.getenv("USE_SQLITE_LOG", "true").lower() == "true"
-    if use_sqlite:
-        sqlite_env = os.getenv("SQLITE_DB_PATH") or os.getenv("OPENROUTER_SQLITE_DB")
-        if sqlite_env:
-            db_path = Path(sqlite_env).expanduser().resolve()
-        else:
-            project_root = Path(__file__).resolve().parents[2]
-            var_dir = Path(os.getenv("VAR_DIR") or (project_root / "var"))
-            db_dir = var_dir / "db"
-            db_dir.mkdir(parents=True, exist_ok=True)
-            db_path = db_dir / "openrouter_logs.db"
-        logger.info(f"SQLite database path: {db_path}")
-        return SQLiteDatabaseLogger(str(db_path))
-
-    db_url = os.getenv("DATABASE_URL")
-    if db_url:
-        db_config = {"dsn": db_url}
-        return DatabaseLogger(db_config)
-    return None
+    try:
+        db_config = get_db_config()
+        logger.info(
+            f"Initializing PostgreSQL logger: {db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+        )
+        # Note: store_full_prompts defaults to True
+        # Can be controlled per-request via log_request() parameters
+        return DatabaseLogger(db_config, store_full_prompts=True)
+    except Exception as exc:
+        logger.warning(f"Failed to create database logger: {exc}")
+        return None
 
 
 async def _init_router_and_models(router: RouteExecutor) -> None:
