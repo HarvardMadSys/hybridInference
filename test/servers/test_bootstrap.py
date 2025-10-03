@@ -42,6 +42,8 @@ class TestBootstrapInitialization:
         monkeypatch.setenv("DB_ENABLED", "true")
         monkeypatch.setenv("DB_HOST", "testhost")
         monkeypatch.setenv("DB_NAME", "testdb")
+        monkeypatch.setenv("DB_USER", "testuser")
+        monkeypatch.setenv("DB_PASSWORD", "testpass")
 
         with (
             patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
