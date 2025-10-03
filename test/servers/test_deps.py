@@ -21,7 +21,7 @@ from serving.servers.deps import (
     get_services,
 )
 from serving.servers.rate_limiter import PersistentRateLimiter
-from serving.storage.database_sqlite import SQLiteDatabaseLogger
+from serving.storage.database import DatabaseLogger
 
 
 class TestAppServices:
@@ -31,7 +31,7 @@ class TestAppServices:
         """Test creating AppServices with all fields."""
         router = RouteExecutor()
         rate_limiter = MagicMock(spec=PersistentRateLimiter)
-        db_logger = MagicMock(spec=SQLiteDatabaseLogger)
+        db_logger = MagicMock(spec=DatabaseLogger)
         routing_manager = MagicMock()
 
         services = AppServices(

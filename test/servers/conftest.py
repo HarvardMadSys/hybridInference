@@ -160,8 +160,6 @@ async def test_client(test_app):
         yield client
 
 
-
-
 @pytest.fixture
 def temp_models_yaml(tmp_path):
     """Create a temporary models.yaml for testing."""

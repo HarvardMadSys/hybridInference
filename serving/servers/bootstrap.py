@@ -99,7 +99,8 @@ def _init_db_logger() -> DatabaseLogger | None:
     try:
         db_config = get_db_config()
         logger.info(
-            f"Initializing PostgreSQL logger: {db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+            f"Initializing PostgreSQL logger: "
+            f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )
         # Note: store_full_prompts defaults to True
         # Can be controlled per-request via log_request() parameters

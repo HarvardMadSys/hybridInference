@@ -30,7 +30,7 @@ def get_config() -> dict[str, dict[str, str | None]]:
         "openrouter": {
             "base_url": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
             "api_key": os.getenv("OPENROUTER_API_KEY"),
-            # Optional attribution headers for OpenRouter, Site URL and title for rankings on openrouter.ai.
+            # Optional attribution headers for OpenRouter rankings
             "http_referer": os.getenv("OPENROUTER_HTTP_REFERER", None),
             "x_title": os.getenv("OPENROUTER_X_TITLE", None),
         },
