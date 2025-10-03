@@ -37,20 +37,27 @@ class TestBootstrapInitialization:
             assert services.routing_manager is None
 
     @pytest.mark.asyncio
-    async def test_initialize_with_database(self, mock_env, temp_db_path, monkeypatch):
-        """Test initialization with SQLite database enabled."""
-        monkeypatch.setenv("USE_SQLITE_LOG", "true")
-        monkeypatch.setenv("SQLITE_DB_PATH", temp_db_path)
+    async def test_initialize_with_database(self, mock_env, monkeypatch):
+        """Test initialization with PostgreSQL database enabled."""
+        monkeypatch.setenv("DB_ENABLED", "true")
+        monkeypatch.setenv("DB_HOST", "testhost")
+        monkeypatch.setenv("DB_NAME", "testdb")
+        monkeypatch.setenv("DB_USER", "testuser")
+        monkeypatch.setenv("DB_PASSWORD", "testpass")
 
         with (
             patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap._configure_rate_limiter"),
+            patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger,
         ):
+            mock_logger = AsyncMock()
+            MockDBLogger.return_value = mock_logger
+
             services = await bootstrap.initialize()
 
             assert services.db_logger is not None
-            await services.db_logger.cleanup()
+            mock_logger.initialize.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_initialize_with_rate_limiter(self, mock_env, monkeypatch):
@@ -154,34 +161,28 @@ class TestBootstrapShutdown:
 class TestBootstrapHelpers:
     """Test bootstrap helper functions."""
 
-    def test_init_db_logger_sqlite(self, monkeypatch, temp_db_path):
-        """Test SQLite database logger initialization."""
-        monkeypatch.setenv("USE_SQLITE_LOG", "true")
-        monkeypatch.setenv("SQLITE_DB_PATH", temp_db_path)
+    def test_init_db_logger_postgres(self, monkeypatch):
+        """Test PostgreSQL database logger initialization."""
+        monkeypatch.setenv("DB_HOST", "testhost")
+        monkeypatch.setenv("DB_PORT", "5433")
+        monkeypatch.setenv("DB_NAME", "testdb")
+        monkeypatch.setenv("DB_USER", "testuser")
+        monkeypatch.setenv("DB_PASSWORD", "testpass")
 
         logger = bootstrap._init_db_logger()
 
         assert logger is not None
-        assert temp_db_path in str(logger.db_path)
+        assert isinstance(logger, bootstrap.DatabaseLogger)
+        assert logger.db_config["host"] == "testhost"
+        assert logger.db_config["database"] == "testdb"
 
     def test_init_db_logger_disabled(self, monkeypatch):
         """Test database logger when disabled."""
-        monkeypatch.setenv("USE_SQLITE_LOG", "false")
+        monkeypatch.setenv("DB_ENABLED", "false")
 
         logger = bootstrap._init_db_logger()
 
         assert logger is None
-
-    def test_init_db_logger_postgres(self, monkeypatch):
-        """Test PostgreSQL database logger initialization."""
-        monkeypatch.setenv("USE_SQLITE_LOG", "false")
-        monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/db")
-
-        with patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger:
-            logger = bootstrap._init_db_logger()
-
-            MockDBLogger.assert_called_once()
-            assert logger is not None
 
     @pytest.mark.asyncio
     async def test_init_router_with_remote_models(self, monkeypatch, tmp_path):

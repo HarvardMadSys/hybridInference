@@ -1,4 +1,3 @@
-from .database import DatabaseLogger as DatabaseLogger
-from .database_sqlite import SQLiteDatabaseLogger as SQLiteDatabaseLogger
+from .database import DatabaseLogger as DatabaseLogger, compute_prompt_hash as compute_prompt_hash
 
-__all__ = ["DatabaseLogger", "SQLiteDatabaseLogger"]
+__all__ = ["DatabaseLogger", "compute_prompt_hash"]

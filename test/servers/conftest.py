@@ -19,7 +19,7 @@ from httpx import AsyncClient
 from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices
 from serving.servers.rate_limiter import PersistentRateLimiter
-from serving.storage.database_sqlite import SQLiteDatabaseLogger
+from serving.storage.database import DatabaseLogger
 
 
 @pytest.fixture(scope="session")
@@ -34,7 +34,7 @@ def event_loop() -> Generator:
 def mock_env(monkeypatch):
     """Mock environment variables for testing."""
     test_env = {
-        "USE_SQLITE_LOG": "false",  # Disable DB in tests by default
+        "DB_ENABLED": "false",  # Disable DB in tests by default
         "RATE_LIMIT_ENABLED": "0",  # Disable rate limiting in tests
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
@@ -76,13 +76,11 @@ def mock_router():
 @pytest.fixture
 def mock_db_logger():
     """Create a mock database logger."""
-    logger = MagicMock(spec=SQLiteDatabaseLogger)
+    logger = MagicMock(spec=DatabaseLogger)
     logger.initialize = AsyncMock()
     logger.cleanup = AsyncMock()
     logger.log_request = AsyncMock()
-    logger.get_stats = AsyncMock(
-        return_value={"total_requests": 0, "total_tokens": 0, "average_latency_ms": 0}
-    )
+    logger.get_stats = AsyncMock(return_value=[])
     return logger
 
 
@@ -160,13 +158,6 @@ async def test_client(test_app):
     transport = ASGITransport(app=test_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
-
-
-@pytest.fixture
-def temp_db_path(tmp_path):
-    """Create a temporary database path for testing."""
-    db_path = tmp_path / "test_db.sqlite"
-    return str(db_path)
 
 
 @pytest.fixture
