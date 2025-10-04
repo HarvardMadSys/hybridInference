@@ -107,10 +107,15 @@ class GeminiAdapter(BaseAdapter):
         candidate = data["candidates"][0]
 
         # Handle case where content or parts might be missing
+        # This can happen when model hits MAX_TOKENS during thinking phase
         if "content" not in candidate:
             raise ValueError(f"No content in candidate: {json.dumps(candidate)}")
 
-        content_parts = candidate["content"].get("parts", [])
+        content = candidate.get("content", {})
+        content_parts = content.get("parts", [])
+
+        # If no parts, the model likely hit token limit during thinking
+        # or content was filtered. Return empty response.
 
         text_content = ""
         tool_calls = []
