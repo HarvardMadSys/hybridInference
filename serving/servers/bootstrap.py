@@ -182,16 +182,18 @@ def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
     if gemini_key:
         gemini_tpm = int(os.getenv("GEMINI_TPM_LIMIT", "1000000"))
         if gemini_tpm > 0:
-            cfg = RateLimitConfig(
-                model_id="gemini-2.5-flash",
-                window_seconds=60,
-                capacity_tokens=gemini_tpm,
-                burst_multiplier=1.0,
-                queue_size=100,
-                enable_persistence=True,
-            )
-            limiter.configure(cfg)
-            logger.info(f"Configured Gemini limit: {gemini_tpm:,}/min")
+            # Configure rate limit for both Gemini models with same policy
+            for model_id in ["gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025"]:
+                cfg = RateLimitConfig(
+                    model_id=model_id,
+                    window_seconds=60,
+                    capacity_tokens=gemini_tpm,
+                    burst_multiplier=1.0,
+                    queue_size=100,
+                    enable_persistence=True,
+                )
+                limiter.configure(cfg)
+            logger.info(f"Configured Gemini limit: {gemini_tpm:,}/min (both models)")
 
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
     if deepseek_key:

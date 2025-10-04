@@ -286,6 +286,7 @@ models:
   - id: gemini-2.5-flash
     name: Gemini 2.5 Flash
     provider: gemini
+    provider_model_id: "gemini-2.5-flash"
     base_url: https://generativelanguage.googleapis.com/v1beta
     api_key: test-key
     context_length: 1048576
@@ -298,6 +299,7 @@ models:
         weight: 1.0
         base_url: https://generativelanguage.googleapis.com/v1beta
         api_key: test-key
+        provider_model_id: "gemini-2.5-flash"
 """
         )
         monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
@@ -323,7 +325,7 @@ models:
         assert deepseek_cfg.window_seconds == 86400
 
     def test_configure_rate_limiter_gemini(self, monkeypatch, mock_rate_limiter):
-        """Test rate limiter configuration for Gemini."""
+        """Test rate limiter configuration for Gemini (both models)."""
         # Clear any existing keys first
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
@@ -333,20 +335,28 @@ models:
 
         bootstrap._configure_rate_limiter(mock_rate_limiter)
 
-        # Check that configure was called for Gemini
+        # Check that configure was called for both Gemini models
         mock_rate_limiter.configure.assert_called()
-        # Find the call with gemini model_id
         calls = mock_rate_limiter.configure.call_args_list
-        gemini_config = None
+
+        # Find both Gemini model configs
+        gemini_flash_config = None
+        gemini_preview_config = None
         for call in calls:
             config = call.args[0]
             if config.model_id == "gemini-2.5-flash":
-                gemini_config = config
-                break
+                gemini_flash_config = config
+            elif config.model_id == "gemini-2.5-flash-preview-09-2025":
+                gemini_preview_config = config
 
-        assert gemini_config is not None, "Gemini config not found"
-        assert gemini_config.capacity_tokens == 2000000
-        assert gemini_config.window_seconds == 60
+        # Verify both models are configured with same policy
+        assert gemini_flash_config is not None, "Gemini flash config not found"
+        assert gemini_flash_config.capacity_tokens == 2000000
+        assert gemini_flash_config.window_seconds == 60
+
+        assert gemini_preview_config is not None, "Gemini preview config not found"
+        assert gemini_preview_config.capacity_tokens == 2000000
+        assert gemini_preview_config.window_seconds == 60
 
     def test_configure_rate_limiter_glm(self, monkeypatch, mock_rate_limiter):
         """Test rate limiter configuration for GLM."""

@@ -93,12 +93,29 @@ class GeminiAdapter(BaseAdapter):
         if params.get("tools"):
             request_body["tools"] = self._convert_tools(params["tools"])
 
-        url = f"{self.config.base_url}/models/gemini-2.5-flash:generateContent?key={self.config.api_key}"
+        # Use provider_model_id if available, otherwise fall back to config.id
+        model_name = getattr(self.config, "provider_model_id", None) or self.config.id
+        url = (
+            f"{self.config.base_url}/models/{model_name}:generateContent?key={self.config.api_key}"
+        )
 
         data = await self.http.json_post_with_retry(url, json=request_body)
 
+        if "candidates" not in data or not data["candidates"]:
+            raise ValueError(f"Unexpected Gemini response structure: {json.dumps(data)}")
+
         candidate = data["candidates"][0]
-        content_parts = candidate["content"]["parts"]
+
+        # Handle case where content or parts might be missing
+        # This can happen when model hits MAX_TOKENS during thinking phase
+        if "content" not in candidate:
+            raise ValueError(f"No content in candidate: {json.dumps(candidate)}")
+
+        content = candidate.get("content", {})
+        content_parts = content.get("parts", [])
+
+        # If no parts, the model likely hit token limit during thinking
+        # or content was filtered. Return empty response.
 
         text_content = ""
         tool_calls = []
@@ -120,10 +137,23 @@ class GeminiAdapter(BaseAdapter):
                 )
 
         if "usageMetadata" in data:
+            usage_meta = data["usageMetadata"]
+            # Handle different field names in different API versions
+            prompt_tokens = usage_meta.get("promptTokenCount", 0)
+            total_tokens = usage_meta.get("totalTokenCount", 0)
+
+            # Preview models may not include candidatesTokenCount
+            # In that case, calculate it from total - prompt - thoughts
+            completion_tokens = usage_meta.get("candidatesTokenCount")
+            if completion_tokens is None:
+                # Calculate completion tokens: total - prompt - thoughts
+                thoughts_tokens = usage_meta.get("thoughtsTokenCount", 0)
+                completion_tokens = total_tokens - prompt_tokens - thoughts_tokens
+
             usage = UsageInfo(
-                prompt_tokens=data["usageMetadata"]["promptTokenCount"],
-                completion_tokens=data["usageMetadata"]["candidatesTokenCount"],
-                total_tokens=data["usageMetadata"]["totalTokenCount"],
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
             )
         else:
             prompt_tokens = estimate_prompt_tokens(messages)
@@ -162,7 +192,9 @@ class GeminiAdapter(BaseAdapter):
         if params.get("tools"):
             request_body["tools"] = self._convert_tools(params["tools"])
 
-        url = f"{self.config.base_url}/models/gemini-2.5-flash:streamGenerateContent?key={self.config.api_key}"
+        # Use provider_model_id if available, otherwise fall back to config.id
+        model_name = getattr(self.config, "provider_model_id", None) or self.config.id
+        url = f"{self.config.base_url}/models/{model_name}:streamGenerateContent?key={self.config.api_key}"
 
         total_content = ""
         prompt_tokens = 0
@@ -175,7 +207,10 @@ class GeminiAdapter(BaseAdapter):
 
                 if "candidates" in data:
                     candidate = data["candidates"][0]
-                    content_parts = candidate["content"]["parts"]
+                    # Handle case where content or parts might be missing
+                    if "content" not in candidate:
+                        continue
+                    content_parts = candidate["content"].get("parts", [])
 
                     for part in content_parts:
                         if "text" in part:

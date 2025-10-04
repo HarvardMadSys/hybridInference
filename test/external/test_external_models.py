@@ -30,10 +30,14 @@ class ModelTester:
         """Test a single model with a simple message"""
         start_time = time.time()
 
+        # Use higher max_tokens for thinking models (e.g., Gemini preview)
+        # which may consume tokens for internal reasoning
+        max_tokens = 1000 if "preview" in model_id else 200
+
         payload = {
             "model": model_id,
             "messages": [{"role": "user", "content": test_message}],
-            "max_tokens": 200,
+            "max_tokens": max_tokens,
             "temperature": 0.7,
         }
 
