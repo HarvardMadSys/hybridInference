@@ -93,7 +93,9 @@ class GeminiAdapter(BaseAdapter):
         if params.get("tools"):
             request_body["tools"] = self._convert_tools(params["tools"])
 
-        url = f"{self.config.base_url}/models/gemini-2.5-flash:generateContent?key={self.config.api_key}"
+        # Use provider_model_id if available, otherwise fall back to config.id
+        model_name = getattr(self.config, 'provider_model_id', None) or self.config.id
+        url = f"{self.config.base_url}/models/{model_name}:generateContent?key={self.config.api_key}"
 
         data = await self.http.json_post_with_retry(url, json=request_body)
 
@@ -162,7 +164,9 @@ class GeminiAdapter(BaseAdapter):
         if params.get("tools"):
             request_body["tools"] = self._convert_tools(params["tools"])
 
-        url = f"{self.config.base_url}/models/gemini-2.5-flash:streamGenerateContent?key={self.config.api_key}"
+        # Use provider_model_id if available, otherwise fall back to config.id
+        model_name = getattr(self.config, 'provider_model_id', None) or self.config.id
+        url = f"{self.config.base_url}/models/{model_name}:streamGenerateContent?key={self.config.api_key}"
 
         total_content = ""
         prompt_tokens = 0
