@@ -191,4 +191,5 @@ pytest test/servers/test_bootstrap.py -q
 ## Related Docs
 
 - `docs/freeinference.md`: Deployment history and rationale for running FastAPI directly on port 80.
-- `docs/ROUTING.md`: Detailed routing manager configuration and strategy extension guide.
+- `docs/routing.md`: Detailed routing manager configuration and strategy extension guide.
+- `docs/adding_models.md`: How to add new models (YAML) and integrate new providers (adapter) in one place.
