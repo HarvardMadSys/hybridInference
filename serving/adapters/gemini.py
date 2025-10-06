@@ -1,3 +1,5 @@
+"""Google Gemini API adapter with cache and thinking token tracking."""
+
 import json
 import time
 from collections.abc import AsyncGenerator
@@ -9,6 +11,8 @@ from .base import BaseAdapter, UsageInfo
 
 
 class GeminiAdapter(BaseAdapter):
+    """Adapter for Google Gemini 2.0/2.5 models."""
+
     def _convert_messages_to_gemini(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         system_instruction = None
         contents = []
@@ -84,6 +88,7 @@ class GeminiAdapter(BaseAdapter):
         return gemini_tools
 
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        """Execute non-streaming chat completion with thinking and cache token extraction."""
         request_body = self._convert_messages_to_gemini(messages)
 
         generation_config = self._apply_generation_config(params)
@@ -141,19 +146,39 @@ class GeminiAdapter(BaseAdapter):
             # Handle different field names in different API versions
             prompt_tokens = usage_meta.get("promptTokenCount", 0)
             total_tokens = usage_meta.get("totalTokenCount", 0)
+            cached_tokens = usage_meta.get("cachedContentTokenCount", 0)
 
             # Preview models may not include candidatesTokenCount
             # In that case, calculate it from total - prompt - thoughts
             completion_tokens = usage_meta.get("candidatesTokenCount")
+            reasoning_tokens = usage_meta.get("thoughtsTokenCount", 0)
             if completion_tokens is None:
                 # Calculate completion tokens: total - prompt - thoughts
-                thoughts_tokens = usage_meta.get("thoughtsTokenCount", 0)
-                completion_tokens = total_tokens - prompt_tokens - thoughts_tokens
+                calculated = total_tokens - prompt_tokens - reasoning_tokens
+                # Validate calculation: fallback to estimation if invalid or zero with content
+                if calculated > 0:
+                    completion_tokens = calculated
+                elif calculated == 0 and text_content:
+                    # Edge case: totalTokenCount=0 but model returned text
+                    # This means usage metadata is incomplete, estimate from response
+                    completion_tokens = estimate_text_tokens(text_content)
+                    total_tokens = prompt_tokens + int(completion_tokens) + reasoning_tokens
+                elif calculated < 0:
+                    # totalTokenCount missing or incomplete, estimate from response
+                    completion_tokens = estimate_text_tokens(text_content)
+                    # Recalculate total if it was missing
+                    if total_tokens == 0:
+                        total_tokens = prompt_tokens + int(completion_tokens) + reasoning_tokens
+                else:
+                    # calculated == 0 and no text_content, legitimately empty
+                    completion_tokens = 0
 
             usage = UsageInfo(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
+                prompt_tokens=int(prompt_tokens),
+                completion_tokens=int(completion_tokens),
+                total_tokens=int(total_tokens),
+                reasoning_tokens=int(reasoning_tokens),
+                cache_read_tokens=int(cached_tokens),  # Gemini: cached tokens are read from cache
             )
         else:
             prompt_tokens = estimate_prompt_tokens(messages)
@@ -183,6 +208,7 @@ class GeminiAdapter(BaseAdapter):
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
+        """Execute streaming chat completion with thinking and cache token extraction."""
         request_body = self._convert_messages_to_gemini(messages)
 
         generation_config = self._apply_generation_config(params)
