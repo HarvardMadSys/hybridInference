@@ -1,14 +1,10 @@
 """Pydantic schemas for admin API endpoints."""
 
-from __future__ import annotations
-
+from datetime import datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
-
-if TYPE_CHECKING:
-    from datetime import datetime
 
 
 class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
@@ -161,13 +157,15 @@ class RegenerateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
 
 
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
-CreateAPIKeyRequest.model_rebuild()
-CreateAPIKeyResponse.model_rebuild()
-APIKeyListItem.model_rebuild()
-ListAPIKeysResponse.model_rebuild()
-APIKeyDetailUsage.model_rebuild()
-APIKeyDetailResponse.model_rebuild()
-UpdateAPIKeyRequest.model_rebuild()
-UpdateAPIKeyResponse.model_rebuild()
-RevokeAPIKeyResponse.model_rebuild()
-RegenerateAPIKeyResponse.model_rebuild()
+__all__ = [
+    "CreateAPIKeyRequest",
+    "CreateAPIKeyResponse",
+    "APIKeyListItem",
+    "ListAPIKeysResponse",
+    "APIKeyDetailUsage",
+    "APIKeyDetailResponse",
+    "UpdateAPIKeyRequest",
+    "UpdateAPIKeyResponse",
+    "RevokeAPIKeyResponse",
+    "RegenerateAPIKeyResponse",
+]
