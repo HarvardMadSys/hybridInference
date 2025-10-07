@@ -64,9 +64,7 @@ async def test_auth_disabled_returns_anonymous(monkeypatch, mock_request):
 
 
 @pytest.mark.asyncio
-async def test_auth_missing_headers_returns_401(
-    monkeypatch, mock_request, mock_db_with_pool
-):
+async def test_auth_missing_headers_returns_401(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     monkeypatch.setenv("API_KEY_SECRET", "test-secret")
     db_logger, _ = mock_db_with_pool
@@ -107,9 +105,7 @@ def _hashed_key(monkeypatch, plaintext: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_auth_authorization_bearer_valid(
-    monkeypatch, mock_request, mock_db_with_pool
-):
+async def test_auth_authorization_bearer_valid(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     db_logger, connection = mock_db_with_pool
     plaintext_key = "hyi-valid-key"
@@ -143,9 +139,7 @@ async def test_auth_authorization_bearer_valid(
 
 
 @pytest.mark.asyncio
-async def test_auth_x_api_key_header_valid(
-    monkeypatch, mock_request, mock_db_with_pool
-):
+async def test_auth_x_api_key_header_valid(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     plaintext_key = "hyi-x-header"
     _hashed_key(monkeypatch, plaintext_key)
@@ -176,9 +170,7 @@ async def test_auth_x_api_key_header_valid(
 
 
 @pytest.mark.asyncio
-async def test_auth_invalid_key_hash_returns_401(
-    monkeypatch, mock_request, mock_db_with_pool
-):
+async def test_auth_invalid_key_hash_returns_401(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     plaintext_key = "hyi-invalid"
     _hashed_key(monkeypatch, plaintext_key)
@@ -197,9 +189,7 @@ async def test_auth_invalid_key_hash_returns_401(
 
 
 @pytest.mark.asyncio
-async def test_auth_quota_exceeded_returns_429(
-    monkeypatch, mock_request, mock_db_with_pool
-):
+async def test_auth_quota_exceeded_returns_429(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     plaintext_key = "hyi-over-quota"
     _hashed_key(monkeypatch, plaintext_key)
@@ -230,9 +220,7 @@ async def test_auth_quota_exceeded_returns_429(
 
 
 @pytest.mark.asyncio
-async def test_auth_quota_null_uses_default_1000(
-    monkeypatch, mock_request, mock_db_with_pool
-):
+async def test_auth_quota_null_uses_default_1000(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     plaintext_key = "hyi-null-quota"
     _hashed_key(monkeypatch, plaintext_key)
@@ -261,9 +249,7 @@ async def test_auth_quota_null_uses_default_1000(
 
 
 @pytest.mark.asyncio
-async def test_auth_missing_secret_raises_error(
-    monkeypatch, mock_request, mock_db_with_pool
-):
+async def test_auth_missing_secret_raises_error(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     monkeypatch.delenv("API_KEY_SECRET", raising=False)
     plaintext_key = "hyi-no-secret"
@@ -290,9 +276,7 @@ async def test_auth_missing_secret_raises_error(
 
 
 @pytest.mark.asyncio
-async def test_auth_updates_last_used_at(
-    monkeypatch, mock_request, mock_db_with_pool
-):
+async def test_auth_updates_last_used_at(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     plaintext_key = "hyi-update-last-used"
     _hashed_key(monkeypatch, plaintext_key)

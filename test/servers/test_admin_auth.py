@@ -92,9 +92,7 @@ def test_serialize_for_audit_handles_decimal_and_datetime():
     data = {
         "quota": Decimal("123.45"),
         "expires": now,
-        "nested": {
-            "values": [Decimal("1.1"), {"ts": now}]
-        },
+        "nested": {"values": [Decimal("1.1"), {"ts": now}]},
         "plain": "ok",
     }
 
@@ -125,7 +123,7 @@ async def test_log_admin_action_writes_entry(monkeypatch, db_logger_with_pool):
     assert call.args[1] == "10.0.0.1"
     assert call.args[2] == "create_key"
     assert call.args[3] == "user123"
-    assert call.args[4] == "{\"quota\": 100}"
+    assert call.args[4] == '{"quota": 100}'
     assert call.args[5] is True
 
 

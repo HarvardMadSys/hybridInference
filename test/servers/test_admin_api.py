@@ -150,12 +150,8 @@ async def test_list_api_keys_batches_usage(admin_client):
                 "notes": None,
             }
         ],
-        [
-            {"user_id": "alice", "cost_spent": Decimal("12.34")}
-        ],
-        [
-            {"user_id": "alice", "cost_spent": Decimal("23.45")}
-        ],
+        [{"user_id": "alice", "cost_spent": Decimal("12.34")}],
+        [{"user_id": "alice", "cost_spent": Decimal("23.45")}],
     ]
 
     response = await client.get(

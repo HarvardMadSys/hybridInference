@@ -30,9 +30,7 @@ def pg_dsn() -> str:
 async def _truncate_tables(pool: asyncpg.pool.Pool) -> None:
     async with pool.acquire() as conn:
         for table in ("api_logs", "api_keys"):
-            exists = await conn.fetchval(
-                "SELECT to_regclass($1)", f"public.{table}"
-            )
+            exists = await conn.fetchval("SELECT to_regclass($1)", f"public.{table}")
             if exists:
                 await conn.execute(f"TRUNCATE TABLE {table}")
 
@@ -113,9 +111,7 @@ async def test_log_request_persists_cost_and_usage(db_logger: DatabaseLogger):
 
 
 @pytest.mark.asyncio
-async def test_verify_api_key_against_real_database(
-    db_logger: DatabaseLogger, monkeypatch
-):
+async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger, monkeypatch):
     assert db_logger.pool is not None
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     monkeypatch.setenv("API_KEY_SECRET", "integration-secret")

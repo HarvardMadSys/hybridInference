@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import compat, completions
@@ -49,6 +50,18 @@ async def compat_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     app.state.services = AppServices(router=router, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
     app.include_router(compat.router)
     app.include_router(completions.router)
+
+    # Skip database-backed auth in unit tests; compat routes only need routing glue.
+    async def _anon_user(*_args, **_kwargs):
+        return {
+            "user_id": "anonymous",
+            "user_name": None,
+            "tier": "free",
+            "authenticated": False,
+            "quota_remaining_cost_usd": float("inf"),
+        }
+
+    app.dependency_overrides[verify_api_key] = _anon_user
     return app
 
 

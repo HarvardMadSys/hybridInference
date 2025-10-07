@@ -47,9 +47,7 @@ class TrackingAdapter(BaseAdapter):
             usage=usage,
         )
 
-    async def stream_chat_completion(
-        self, messages: list[dict[str, Any]], **params
-    ) -> Any:
+    async def stream_chat_completion(self, messages: list[dict[str, Any]], **params) -> Any:
         yield self.format_stream_chunk("Streamed", self.config.id)
         chunk = {
             "id": "stream-usage",
@@ -107,9 +105,7 @@ async def tracking_client(tracking_app: FastAPI):
 
 
 @pytest.mark.asyncio
-async def test_non_streaming_logs_pricing_and_usage(
-    tracking_client, mock_db_logger
-):
+async def test_non_streaming_logs_pricing_and_usage(tracking_client, mock_db_logger):
     client, _app = tracking_client
     mock_db_logger.log_request.reset_mock()
 
@@ -156,9 +152,7 @@ async def test_streaming_logs_usage(tracking_client, mock_db_logger):
 
 
 @pytest.mark.asyncio
-async def test_authenticated_user_priority(
-    tracking_client, mock_rate_limiter
-):
+async def test_authenticated_user_priority(tracking_client, mock_rate_limiter):
     client, app = tracking_client
     mock_rate_limiter.acquire_tokens.reset_mock()
 
@@ -184,9 +178,7 @@ async def test_authenticated_user_priority(
 
 
 @pytest.mark.asyncio
-async def test_anonymous_user_priority_zero(
-    tracking_client, mock_rate_limiter
-):
+async def test_anonymous_user_priority_zero(tracking_client, mock_rate_limiter):
     client, app = tracking_client
     mock_rate_limiter.acquire_tokens.reset_mock()
 
