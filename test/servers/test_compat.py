@@ -38,7 +38,8 @@ def _cfg(model_id: str) -> ModelConfig:
 
 
 @pytest.fixture
-async def compat_app() -> FastAPI:
+async def compat_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
     router = RouteExecutor()
     t = _Adapter(_cfg("trk"))
     router.register_route("trk", [(t, 1.0)])
