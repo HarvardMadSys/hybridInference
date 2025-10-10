@@ -48,8 +48,8 @@ class OutsourcingRequestInfo:
     status: RequestStatus = RequestStatus.WAITING
     is_prefill_complete: bool = False
     
-    # Pricing/value (optional, for knapsack)
-    input_price_per_token: float = 1.25 / 1_000_000  # Default: GPT-4 pricing
+    # Pricing/value (for knapsack)
+    input_price_per_token: float = 1.25 / 1_000_000
     output_price_per_token: float = 10.0 / 1_000_000
     
     # Metadata
@@ -447,7 +447,7 @@ class SimpleFLOPCalculator(FLOPCalculatorInterface):
 
 
 # ============================================================================
-# Usage Example
+# Usage Example (AKA Integration Snippet with other parts of the system)
 # ============================================================================
 
 def example_usage():
