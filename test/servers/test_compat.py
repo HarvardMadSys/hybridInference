@@ -52,7 +52,7 @@ async def compat_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     app.include_router(completions.router)
 
     # Skip database-backed auth in unit tests; compat routes only need routing glue.
-    async def _anon_user(*_args, **_kwargs):
+    async def _anon_user():
         return {
             "user_id": "anonymous",
             "user_name": None,
