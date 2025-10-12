@@ -122,7 +122,7 @@ models:
   - id: gemini-2.5-flash
     name: Gemini 2.5 Flash
     provider: gemini
-    provider_model_id: "gemini-2.5-flash"
+    provider_model_id: "gemini-2.5-flash-preview-09-2025"
     base_url: https://generativelanguage.googleapis.com/v1beta
     api_key: ${GEMINI_API_KEY}
     quantization: "bf16"
@@ -145,12 +145,12 @@ models:
         weight: 1.0
         base_url: https://generativelanguage.googleapis.com/v1beta
         api_key: ${GEMINI_API_KEY}
-        provider_model_id: "gemini-2.5-flash"
+        provider_model_id: "gemini-2.5-flash-preview-09-2025"
 
-  - id: gemini-2.5-flash-preview-09-2025
-    name: Gemini 2.5 Flash Preview (Sep 2025)
+  - id: gemini-2.5-flash-lite
+    name: Gemini 2.5 Flash Lite
     provider: gemini
-    provider_model_id: "gemini-2.5-flash-preview-09-2025"
+    provider_model_id: "gemini-flash-lite-latest"
     base_url: https://generativelanguage.googleapis.com/v1beta
     api_key: ${GEMINI_API_KEY}
     quantization: "bf16"
@@ -162,18 +162,46 @@ models:
     supports_structured_output: true
     supported_params: [temperature, top_p, top_k, max_tokens, stop]
     pricing:
-      prompt: "0.15"  # Input tokens per 1M tokens (same as stable)
-      completion: "1.25"  # Output tokens (including thinking) per 1M tokens
+      prompt: "0.075"  # Input tokens per 1M tokens
+      completion: "0.30"  # Output tokens (including thinking) per 1M tokens
       image: "0"
       request: "0"
-      input_cache_reads: "0.075"  # Cache hit tokens per 1M tokens (50% discount)
+      input_cache_reads: "0.0375"  # Cache hit tokens per 1M tokens (50% discount)
       input_cache_writes: "1.0"  # Cache storage per 1M tokens per hour
     route:
       - kind: gemini
         weight: 1.0
         base_url: https://generativelanguage.googleapis.com/v1beta
         api_key: ${GEMINI_API_KEY}
-        provider_model_id: "gemini-2.5-flash-preview-09-2025"
+        provider_model_id: "gemini-flash-lite-latest"
+
+  - id: gemini-2.5-pro
+    name: Gemini 2.5 Pro
+    provider: gemini
+    provider_model_id: "gemini-2.5-pro"
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    api_key: ${GEMINI_API_KEY}
+    quantization: "bf16"
+    input_modalities: ["text", "image"]
+    output_modalities: ["text"]
+    context_length: 2097152
+    max_output_length: 65536
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, top_k, max_tokens, stop]
+    pricing:
+      prompt: "1.25"  # Input tokens per 1M tokens
+      completion: "10.00"  # Output tokens (including thinking) per 1M tokens
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.3125"  # Cache hit tokens per 1M tokens (75% discount)
+      input_cache_writes: "4.50"  # Cache storage per 1M tokens per hour
+    route:
+      - kind: gemini
+        weight: 1.0
+        base_url: https://generativelanguage.googleapis.com/v1beta
+        api_key: ${GEMINI_API_KEY}
+        provider_model_id: "gemini-2.5-pro"
 
   # Zhipu AI models (OpenAI-compatible)
   - id: glm-4.5
