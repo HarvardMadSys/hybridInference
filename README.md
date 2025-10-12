@@ -17,7 +17,7 @@ hybridInference/
 └── client/         # Client tooling (loaders, runners, metrics)
 ```
 
-For service-specific deployment and routing details, refer to `docs/openrouter.md`, `docs/freeinference.md`, and `docs/ROUTING.md`.
+For service-specific deployment and routing details, refer to `docs/openrouter.md`, `docs/freeinference.md`, and `docs/routing.md`. For extension guides (adding models or new providers), see `docs/adding_models.md`.
 
 ## Development Setup
 
