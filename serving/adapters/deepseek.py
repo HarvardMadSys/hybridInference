@@ -1,3 +1,5 @@
+"""DeepSeek API adapter with cache token tracking."""
+
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -9,7 +11,10 @@ from .base import BaseAdapter, UsageInfo
 
 
 class DeepSeekAdapter(BaseAdapter):
+    """Adapter for DeepSeek R1 and compatible models."""
+
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        """Execute non-streaming chat completion with cache token extraction."""
         validated_params = self.validate_params(params)
 
         payload = {"model": "deepseek-chat", "messages": messages, **validated_params}
@@ -33,10 +38,31 @@ class DeepSeekAdapter(BaseAdapter):
             headers=headers,
         )
 
+        # Extract cache information from DeepSeek response
+        usage_data = data.get("usage", {})
+        cache_hit_tokens = usage_data.get("prompt_cache_hit_tokens", 0)
+        cache_miss_tokens = usage_data.get("prompt_cache_miss_tokens", 0)
+
+        # DeepSeek returns prompt_tokens = cache_hit + cache_miss
+        # For cost calculation, we need to separate them
+        prompt_tokens = usage_data.get("prompt_tokens", 0)
+
+        # If cache fields are present, use them; otherwise all tokens are "miss" (full price)
+        if cache_hit_tokens > 0 or cache_miss_tokens > 0:
+            # Cache info available
+            actual_cache_read = cache_hit_tokens
+            actual_prompt_tokens = cache_miss_tokens  # Only non-cached tokens count as "prompt"
+        else:
+            # No cache info, all tokens charged at regular prompt price
+            actual_cache_read = 0
+            actual_prompt_tokens = prompt_tokens
+
         usage = UsageInfo(
-            prompt_tokens=data["usage"].get("prompt_tokens", 0),
-            completion_tokens=data["usage"].get("completion_tokens", 0),
-            total_tokens=data["usage"].get("total_tokens", 0),
+            prompt_tokens=actual_prompt_tokens,  # Non-cached prompt tokens
+            completion_tokens=usage_data.get("completion_tokens", 0),
+            total_tokens=usage_data.get("total_tokens", 0),
+            reasoning_tokens=usage_data.get("reasoning_tokens", 0),
+            cache_read_tokens=actual_cache_read,  # Cache hit tokens
         )
         if usage.total_tokens == 0:
             # Fallback estimate when provider omits usage
@@ -64,6 +90,7 @@ class DeepSeekAdapter(BaseAdapter):
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
+        """Execute streaming chat completion with cache token extraction."""
         validated_params = self.validate_params(params)
 
         payload = {
