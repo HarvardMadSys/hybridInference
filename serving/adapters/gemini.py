@@ -11,7 +11,7 @@ from .base import BaseAdapter, UsageInfo
 
 
 class GeminiAdapter(BaseAdapter):
-    """Adapter for Google Gemini 2.0/2.5 models."""
+    """Adapter for Google Gemini models (1.5/2.0/2.5 series)."""
 
     def _convert_messages_to_gemini(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         system_instruction = None
