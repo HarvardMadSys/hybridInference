@@ -62,21 +62,41 @@ async def verify_api_key(
 
     # Validate key against database
     if not db_logger or not db_logger.pool:
+        # Update metric to reflect database unavailability
+        from serving.observability.metrics import DATABASE_CONNECTED
+
+        DATABASE_CONNECTED.set(0)
         raise HTTPException(status_code=500, detail="Database not available for authentication")
 
     key_hash = hash_api_key(api_key)
 
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            """
-            SELECT id, user_id, user_name, quota_daily_cost_usd, tier
-            FROM api_keys
-            WHERE key_hash = $1
-              AND status = 'active'
-              AND (expires_at IS NULL OR expires_at > NOW())
-            """,
-            key_hash,
-        )
+    try:
+        import asyncpg
+
+        async with db_logger.pool.acquire() as conn:
+            user_row = await conn.fetchrow(
+                """
+                SELECT id, user_id, user_name, quota_daily_cost_usd, tier
+                FROM api_keys
+                WHERE key_hash = $1
+                  AND status = 'active'
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                """,
+                key_hash,
+            )
+
+        # Database query succeeded - mark as healthy for faster recovery detection
+        from serving.observability.metrics import DATABASE_CONNECTED
+
+        DATABASE_CONNECTED.set(1)
+
+    except asyncpg.PostgresError:
+        # Database-specific error (connection failure, timeout, query error, etc.)
+        # Update metric and re-raise
+        from serving.observability.metrics import DATABASE_CONNECTED
+
+        DATABASE_CONNECTED.set(0)
+        raise
 
     if not user_row:
         raise HTTPException(

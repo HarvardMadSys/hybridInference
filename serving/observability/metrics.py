@@ -189,6 +189,12 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    DATABASE_CONNECTED = Gauge(
+        "database_connected",
+        "Database connection status (1=connected, 0=disconnected)",
+        registry=REGISTRY,
+    )
+
     # Rate limiter queueing and wait time
     RATE_LIMIT_QUEUE_SIZE = Gauge(
         "rate_limit_queue_size",
@@ -336,6 +342,7 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     CIRCUIT_OPEN_TOTAL = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
+    DATABASE_CONNECTED = type("NoopGauge", (), {"set": _noop})()
 
     def render_latest() -> bytes:  # pragma: no cover
         """Return a minimal body when metrics are disabled."""
@@ -382,6 +389,8 @@ __all__ = [
     # Circuit breaker metrics
     "CIRCUIT_OPEN_TOTAL",
     "CIRCUIT_STATE",
+    # Database metrics
+    "DATABASE_CONNECTED",
     # Provider metrics
     "PROVIDER_AVAILABILITY",
     "PROVIDER_LATENCY",
