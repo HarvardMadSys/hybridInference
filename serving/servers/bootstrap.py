@@ -237,20 +237,44 @@ async def initialize() -> AppServices:
     Returns:
         AppServices: A typed container with initialized services.
     """
+    import asyncio
 
     setup_logging()
     load_dotenv()
 
     router = RouteExecutor()
 
-    # Database logger
+    # Database logger with retry logic
     db_logger = _init_db_logger()
     if db_logger:
-        try:
-            await db_logger.initialize()
-        except Exception as exc:
-            logger.warning(f"Database logger failed to initialize: {exc}")
-            db_logger = None
+        max_retries = 3
+        retry_delay = 2  # seconds
+        for attempt in range(max_retries):
+            try:
+                await db_logger.initialize()
+                logger.info("Database logger initialized successfully")
+                # Proactively update metric on successful initialization
+                from serving.observability.metrics import DATABASE_CONNECTED
+
+                DATABASE_CONNECTED.set(1)
+                break
+            except Exception as exc:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Database initialization failed (attempt {attempt + 1}/{max_retries}): {exc}. "
+                        f"Retrying in {retry_delay}s..."
+                    )
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(
+                        f"Database logger failed to initialize after {max_retries} attempts: {exc}. "
+                        "Service will start without database logging."
+                    )
+                    db_logger = None
+                    # Proactively update metric on initialization failure
+                    from serving.observability.metrics import DATABASE_CONNECTED
+
+                    DATABASE_CONNECTED.set(0)
 
     # Models into router
     await _init_router_and_models(router)
