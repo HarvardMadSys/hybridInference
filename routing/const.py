@@ -48,3 +48,11 @@ TFLOPS_TO_FLOPS = 1e12
 # Small values for numerical stability
 MIN_WEIGHT_VALUE = 1.0
 MIN_VALUE_FOR_RATIO = 1e-10
+
+# ============================================================================
+# Tree Cache Constants
+# ============================================================================
+
+# Tree Cache Configuration
+MAX_TREE_NODE_LENGTH = 128
+MAX_TREE_CACHE_SIZE = 100_000_000
