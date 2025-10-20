@@ -78,11 +78,19 @@ class ChatCompletionChoice(BaseModel):  # type: ignore[no-any-unimported]
 
 
 class Usage(BaseModel):  # type: ignore[no-any-unimported]
-    """Token usage accounting for the request/response."""
+    """Token usage accounting for the request/response.
+
+    Extended to include cache and reasoning tokens for accurate cost tracking.
+    """
 
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+
+    # Optional fields for advanced billing
+    reasoning_tokens: int | None = None  # For models like DeepSeek-R1
+    cache_read_tokens: int | None = None  # Tokens read from cache (cheaper)
+    cache_write_tokens: int | None = None  # Tokens written to cache
 
 
 class ChatCompletionResponse(BaseModel):  # type: ignore[no-any-unimported]

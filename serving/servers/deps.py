@@ -60,3 +60,15 @@ def get_db_logger(
     """Dependency to obtain the database logger (if configured)."""
 
     return services.db_logger
+
+
+def is_database_connected(db_logger: DatabaseLogger | None) -> bool:
+    """Check if database connection is active.
+
+    Args:
+        db_logger: DatabaseLogger instance from get_db_logger dependency
+
+    Returns:
+        True if database is connected and pool is available, False otherwise
+    """
+    return db_logger is not None and db_logger.pool is not None

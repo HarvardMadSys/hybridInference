@@ -1,3 +1,5 @@
+"""Base adapter interface and shared utilities for LLM providers."""
+
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
@@ -10,20 +12,38 @@ from serving.stream import make_stream_chunk
 
 @dataclass
 class UsageInfo:
+    """Token usage statistics with cache and reasoning token support."""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    reasoning_tokens: int = 0
+    # Cache tokens for cost calculation
+    cache_read_tokens: int = 0  # Tokens read from cache (cheaper)
+    cache_write_tokens: int = 0  # Tokens written to cache (may have cost)
 
     def to_dict(self) -> dict[str, int]:
-        return {
+        """Convert usage info to OpenAI-compatible dict format."""
+        result = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
         }
+        # Include reasoning tokens if present (for models like DeepSeek-R1)
+        if self.reasoning_tokens > 0:
+            result["reasoning_tokens"] = self.reasoning_tokens
+        # Include cache tokens if present (for transparency)
+        if self.cache_read_tokens > 0:
+            result["cache_read_tokens"] = self.cache_read_tokens
+        if self.cache_write_tokens > 0:
+            result["cache_write_tokens"] = self.cache_write_tokens
+        return result
 
 
 @dataclass
 class ModelConfig:
+    """Configuration for a model and its upstream provider."""
+
     id: str
     name: str
     provider: str
@@ -57,6 +77,8 @@ class ModelConfig:
 
 
 class BaseAdapter(ABC):
+    """Abstract base class for LLM provider adapters."""
+
     def __init__(self, config: ModelConfig):
         self.config = config
         # Legacy: some adapters still use self.session; keep for compatibility.
@@ -66,15 +88,18 @@ class BaseAdapter(ABC):
 
     @abstractmethod
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        """Execute non-streaming chat completion request."""
         pass
 
     @abstractmethod
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
+        """Execute streaming chat completion request."""
         pass
 
     def validate_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Validate and clamp request parameters to provider limits."""
         validated = {}
 
         if "max_tokens" in params:
@@ -102,6 +127,7 @@ class BaseAdapter(ABC):
         tool_calls: list[dict] | None = None,
         finish_reason: str = "stop",
     ) -> dict[str, Any]:
+        """Format provider response into OpenAI-compatible schema."""
         response = {
             "id": f"chatcmpl-{int(time.time() * 1000)}",
             "object": "chat.completion",
@@ -127,8 +153,10 @@ class BaseAdapter(ABC):
     def format_stream_chunk(
         self, content: str, model: str, finish_reason: str | None = None
     ) -> str:
+        """Format streaming chunk into SSE format."""
         return make_stream_chunk(model=model, content=content, finish_reason=finish_reason)
 
     async def cleanup(self):
+        """Clean up adapter resources (override if needed)."""
         if self.session:
             await self.session.close()

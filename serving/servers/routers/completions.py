@@ -1,3 +1,5 @@
+"""OpenAI-compatible chat completions endpoint with routing and auth."""
+
 from __future__ import annotations
 
 import json
@@ -18,6 +20,7 @@ from serving.schemas import (
     ChatCompletionResponse,
     ErrorResponse,
 )
+from serving.servers.auth import verify_api_key
 from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
 from serving.servers.rate_limiter import TokenCounter
 from serving.utils.logging import get_logger
@@ -40,6 +43,7 @@ router = APIRouter()
 async def chat_completions(
     request: Request,
     authorization: str | None = Header(None),
+    user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     rate_limiter=Depends(get_rate_limiter),
     db_logger=Depends(get_db_logger),
@@ -92,7 +96,8 @@ async def chat_completions(
 
     # Rate limit check with advanced features
     if rate_limiter:
-        priority = 1 if authorization else 0  # Higher priority for authenticated requests
+        # Higher priority for authenticated requests (via Authorization or X-API-Key)
+        priority = 1 if user_ctx.get("authenticated") else 0
         success, meta = await rate_limiter.acquire_tokens(
             model_id=model,
             messages=messages,
@@ -134,33 +139,88 @@ async def chat_completions(
     # Generate request ID and metadata
     request_id = f"req_{int(time.time() * 1000000)}"
     start_time = time.time()
+    is_authenticated = bool(user_ctx.get("authenticated"))
     metadata = {
         "user_agent": request.headers.get("user-agent"),
         "ip": request.client.host if request.client else None,
-        "authorization": bool(authorization),
+        # Preserve legacy field but treat either auth header as authenticated
+        "authorization": bool(authorization) or is_authenticated,
+        "authenticated": is_authenticated,
+        "user_id": user_ctx.get("user_id"),
     }
+
+    # Helper function to get pricing for a specific provider
+    def get_pricing_for_provider(
+        provider_name: str, base_url: str | None = None
+    ) -> dict[str, str] | None:
+        """Find pricing from the actual adapter used (by provider + base_url)."""
+        if model not in router_exec.routes:
+            return None
+        route_config = router_exec.routes[model]
+
+        # Match adapter by provider and optionally base_url
+        for adapter, _ in route_config.adapters:
+            if not hasattr(adapter, "config"):
+                continue
+            if adapter.config.provider == provider_name:
+                # If base_url provided, match it too (for same provider, different endpoints)
+                if (
+                    base_url
+                    and hasattr(adapter.config, "base_url")
+                    and adapter.config.base_url != base_url
+                ):
+                    continue
+                # Found matching adapter
+                if hasattr(adapter.config, "pricing"):
+                    return adapter.config.pricing
+        return None
 
     # Streaming path
     if payload.stream:
 
         async def stream_generator():
+            usage_data = None
+            routing_info = None
             try:
                 async for chunk in router_exec.stream_chat_completion(model, messages, **params):
                     # Forward adapter SSE chunks directly. Adapters emit final usage chunk.
                     yield chunk
 
+                    # Extract usage and routing info from chunks
+                    if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+                        try:
+                            chunk_json = json.loads(chunk[6:])
+                            if chunk_json.get("usage"):
+                                usage_data = chunk_json["usage"]
+                            # Streaming adapters may also include _routing in final chunk
+                            if "_routing" in chunk_json:
+                                routing_info = chunk_json["_routing"]
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+
+                # Get pricing from actual provider used
+                provider = "router"
+                pricing = None
+                if routing_info:
+                    provider = routing_info.get("provider", "router")
+                    base_url = routing_info.get("base_url")
+                    pricing = get_pricing_for_provider(provider, base_url)
+                    if routing_info:
+                        metadata.update(routing_info)
+
                 if db_logger:
                     await db_logger.log_request(
                         request_id=request_id,
                         model_id=model,
-                        provider="router",
+                        provider=provider,
                         prompt=messages,
                         response={"stream": True},
-                        usage=None,
+                        usage=usage_data,
                         latency_ms=int((time.time() - start_time) * 1000),
                         status_code=200,
                         params=params,
                         metadata=metadata,
+                        pricing=pricing,
                     )
             except Exception as exc:
                 if db_logger:
@@ -176,6 +236,7 @@ async def chat_completions(
                         error=str(exc),
                         params=params,
                         metadata=metadata,
+                        pricing=None,  # Error case - no pricing available
                     )
                 if rate_limiter:
                     estimated_tokens = TokenCounter.estimate_tokens(
@@ -198,8 +259,12 @@ async def chat_completions(
 
         if db_logger:
             provider = "router"
+            pricing = None
             if "_routing" in response:
                 provider = response["_routing"]["provider"]
+                base_url = response["_routing"].get("base_url")
+                # Get pricing from actual provider used
+                pricing = get_pricing_for_provider(provider, base_url)
                 metadata.update(response["_routing"])  # type: ignore[arg-type]
                 del response["_routing"]
 
@@ -217,6 +282,7 @@ async def chat_completions(
                 status_code=200,
                 params=params,
                 metadata=metadata,
+                pricing=pricing,
             )
 
         # Emit token counters when usage is available, with anomaly checks
@@ -309,5 +375,6 @@ async def chat_completions(
                 error=str(exc),
                 params=params,
                 metadata=metadata,
+                pricing=None,  # Error case - no pricing available
             )
         raise HTTPException(500, str(exc)) from exc

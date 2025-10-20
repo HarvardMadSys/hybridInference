@@ -31,6 +31,37 @@ def compute_prompt_hash(prompt: list[dict[str, Any]] | str) -> str:
     return hashlib.sha256(prompt_str.encode("utf-8")).hexdigest()
 
 
+def calculate_cost(
+    usage: dict[str, Any] | None,
+    pricing: dict[str, str] | None,
+) -> float | None:
+    """Compute request cost in USD based on usage and pricing tables."""
+    if not usage or not pricing:
+        return None
+
+    try:
+        prompt_tokens = float(usage.get("prompt_tokens", 0))
+        completion_tokens = float(usage.get("completion_tokens", 0))
+        reasoning_tokens = float(usage.get("reasoning_tokens", 0))
+        cache_read_tokens = float(usage.get("cache_read_tokens", 0))
+        cache_write_tokens = float(usage.get("cache_write_tokens", 0))
+
+        prompt_price = float(pricing.get("prompt", "0"))
+        completion_price = float(pricing.get("completion", "0"))
+        cache_read_price = float(pricing.get("input_cache_reads", "0"))
+        cache_write_price = float(pricing.get("input_cache_writes", "0"))
+
+        return (
+            (prompt_tokens * prompt_price / 1_000_000)
+            + (completion_tokens * completion_price / 1_000_000)
+            + (reasoning_tokens * completion_price / 1_000_000)
+            + (cache_read_tokens * cache_read_price / 1_000_000)
+            + (cache_write_tokens * cache_write_price / 1_000_000)
+        )
+    except (ValueError, TypeError):
+        return None
+
+
 class DatabaseLogger:
     """Asynchronous PostgreSQL logger using a pooled connection."""
 
@@ -168,6 +199,21 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS prompt_hash TEXT
             """)
 
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)
+            """)
+
             # Aggregated stats table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS api_stats_hourly (
@@ -191,6 +237,92 @@ class DatabaseLogger:
                 )
             """)
 
+            # API Keys table for user authentication
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id BIGSERIAL PRIMARY KEY,
+                    key_hash TEXT NOT NULL UNIQUE,
+                    key_prefix TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    user_name TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+
+                    quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00,
+                    quota_monthly_cost_usd DECIMAL(10, 4),
+
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ,
+                    last_used_at TIMESTAMPTZ,
+
+                    tier TEXT DEFAULT 'free',
+                    notes TEXT,
+                    metadata JSONB
+                )
+            """)
+
+            # Indexes for api_keys
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_keys_user
+                ON api_keys(user_id)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_keys_status
+                ON api_keys(status, expires_at)
+            """)
+
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix_unique
+                ON api_keys(key_prefix)
+            """)
+
+            # Enforce 1:1 user-to-key relationship (one active key per user)
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique
+                ON api_keys(user_id) WHERE status = 'active'
+            """)
+
+            # Migrations for api_keys table (from token-based to cost-based quotas)
+            await conn.execute("""
+                ALTER TABLE api_keys
+                ADD COLUMN IF NOT EXISTS quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_keys
+                ADD COLUMN IF NOT EXISTS quota_monthly_cost_usd DECIMAL(10, 4)
+            """)
+
+            # Admin audit log table for tracking all admin operations
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS admin_audit_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TIMESTAMPTZ DEFAULT NOW(),
+                    admin_ip TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    target_user_id TEXT,
+                    details JSONB,
+                    success BOOLEAN DEFAULT TRUE
+                )
+            """)
+
+            # Indexes for admin audit log
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_admin_audit_timestamp
+                ON admin_audit_log(timestamp DESC)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_admin_audit_user
+                ON admin_audit_log(target_user_id, timestamp DESC)
+            """)
+
+            # Critical index for usage analytics (prevents full table scan on cost queries)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost
+                ON api_logs(user_id, timestamp, cost_usd)
+            """)
+
     async def log_request(
         self,
         request_id: str,
@@ -207,6 +339,7 @@ class DatabaseLogger:
         ttft_ms: int | None = None,
         prompt_hash: str | None = None,
         store_full_content: bool | None = None,
+        pricing: dict[str, str] | None = None,
     ) -> None:
         """Insert a single request log row.
 
@@ -226,6 +359,7 @@ class DatabaseLogger:
             prompt_hash: Hash of prompt for deduplication/caching (auto-computed if None).
             store_full_content: Override instance default for storing full prompt/response.
                 If None, uses self.store_full_prompts. Set False for privacy mode (hash only).
+            pricing: Model pricing config for cost calculation (per 1M tokens).
         """
         if not self.pool:
             raise RuntimeError("DatabaseLogger not initialized")
@@ -254,6 +388,9 @@ class DatabaseLogger:
             prompt_str = None
             response_str = None
 
+        # Calculate cost based on usage and pricing
+        cost_usd = calculate_cost(usage, pricing)
+
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
@@ -262,6 +399,7 @@ class DatabaseLogger:
                     temperature, top_p, max_tokens, seed, stream,
                     ttft_ms, latency_ms,
                     prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
+                    cache_read_tokens, cache_write_tokens, cost_usd,
                     prompt, response, prompt_hash,
                     status_code, error, user_id, session_id, metadata,
                     tools, response_format
@@ -272,8 +410,9 @@ class DatabaseLogger:
                     $9, $10,
                     $11, $12, $13, $14,
                     $15, $16, $17,
-                    $18, $19, $20, $21, $22::jsonb,
-                    $23::jsonb, $24::jsonb
+                    $18, $19, $20,
+                    $21, $22, $23, $24, $25::jsonb,
+                    $26::jsonb, $27::jsonb
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -294,6 +433,10 @@ class DatabaseLogger:
                 (usage or {}).get("completion_tokens"),
                 (usage or {}).get("reasoning_tokens"),
                 (usage or {}).get("total_tokens"),
+                # Cache and cost
+                (usage or {}).get("cache_read_tokens"),
+                (usage or {}).get("cache_write_tokens"),
+                cost_usd,
                 # Content
                 prompt_str,
                 response_str,
