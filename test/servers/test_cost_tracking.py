@@ -16,7 +16,6 @@ from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import completions
 
-
 SAMPLE_PRICING = {
     "prompt": "0.15",
     "completion": "1.25",

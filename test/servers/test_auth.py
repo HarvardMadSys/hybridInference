@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from typing import Any
-
-from fastapi import HTTPException
-from fastapi import Request
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastapi import HTTPException, Request
 
 from serving.servers.auth import hash_api_key, verify_api_key
 from serving.storage.database import DatabaseLogger
