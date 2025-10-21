@@ -15,7 +15,6 @@ from fastapi import Request
 from serving.servers.auth import hash_api_key, verify_api_key
 from serving.storage.database import DatabaseLogger, calculate_cost
 
-
 pytestmark = pytest.mark.integration
 
 
