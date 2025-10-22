@@ -13,10 +13,12 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from serving.adapters import (
+    ClaudeAdapter,
     DeepSeekAdapter,
     GeminiAdapter,
     LlamaAdapter,
     ModelConfig,
+    OpenAIAdapter,
     VLLMAdapter,
     ZhipuAdapter,
 )
@@ -31,7 +33,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
-        kind: Adapter kind (``"vllm"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"zhipu"``).
+        kind: Adapter kind (``"vllm"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"openai"``, ``"zhipu"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -43,12 +45,16 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     model_cfg = ModelConfig(**cfg)
     if kind == "vllm":
         return VLLMAdapter(model_cfg)
+    if kind == "claude":
+        return ClaudeAdapter(model_cfg)
     if kind == "deepseek":
         return DeepSeekAdapter(model_cfg)
     if kind == "gemini":
         return GeminiAdapter(model_cfg)
     if kind == "llama":
         return LlamaAdapter(model_cfg)
+    if kind == "openai":
+        return OpenAIAdapter(model_cfg)
     if kind == "zhipu":
         return ZhipuAdapter(model_cfg)
     raise ValueError(f"Unknown adapter kind: {kind}")
