@@ -1,10 +1,11 @@
-"""OpenAI adapter for OpenAI-compatible Chat Completions API.
+"""Azure OpenAI adapter for Chat Completions API.
 
-This adapter forwards OpenAI-style chat completion requests to the
-OpenAI API (or any service exposing an OpenAI-compatible endpoint), and
-normalizes responses to the shared OpenAI schema used across the
-gateway. Streaming uses Server-Sent Events (SSE) in the same format as
-other adapters for consistency.
+This adapter forwards chat completion requests to Azure OpenAI services,
+handling Azure-specific authentication (api-key header), API versioning,
+and reasoning model parameter requirements (GPT-5/o1/o3).
+
+Streaming uses Server-Sent Events (SSE) in the same format as other
+adapters for consistency.
 """
 
 from __future__ import annotations
@@ -21,11 +22,16 @@ from .base import BaseAdapter, UsageInfo
 
 
 class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
-    """Adapter for OpenAI GPT models over Chat Completions API.
+    """Adapter for Azure OpenAI GPT models over Chat Completions API.
 
-    This adapter assumes a standard OpenAI-compatible JSON request/response
-    contract. It does not inject provider-specific roles or fields, and it
-    passes through optional parameters such as tools, tool_choice, and
+    This adapter handles Azure OpenAI-specific requirements:
+    - Authentication via 'api-key' header (not Bearer token)
+    - API versioning via query parameter (api-version=2024-12-01-preview)
+    - Reasoning models (GPT-5/o1/o3) require 'max_completion_tokens' and
+      do not support temperature, top_p, etc.
+    - Model selection is handled by deployment, not 'model' parameter
+
+    It passes through optional parameters such as tools, tool_choice, and
     response_format when declared supported by the model configuration.
     """
 
@@ -44,107 +50,64 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         """
         validated_params = self.validate_params(params)
 
-        # Prefer provider_model_id if set; otherwise use the logical id.
-        model_id = self.config.provider_model_id or self.config.id
-
-        # Build endpoint URL with optional api-version query param
-        base_url = self.config.base_url.rstrip("/")
-        endpoint = f"{base_url}/chat/completions"
-
-        # Check if this is XHS runway API
-        is_xhs_runway = "runway.devops" in base_url or "xiaohongshu" in base_url
-
-        # Initialize logger early for debugging
+        # Initialize logger
         from serving.utils.logging import get_logger
-
         logger = get_logger(__name__)
 
-        # Build payload in OpenAI format.
+        # Build Azure OpenAI endpoint with api-version
+        base_url = self.config.base_url.rstrip("/")
+        endpoint = f"{base_url}/chat/completions?api-version=2024-12-01-preview"
+
+        # Build payload - Azure OpenAI does not require 'model' field (determined by deployment)
         payload: dict[str, Any] = {
             "messages": messages,
             **validated_params,
         }
 
-        # XHS runway API doesn't accept 'model' parameter, other APIs require it
-        if not is_xhs_runway:
-            payload["model"] = model_id
-
-        # XHS runway GPT-5 API requires 'max_completion_tokens' instead of 'max_tokens'
-        # This is true for OpenAI's reasoning models (o1, o3, gpt-5)
-        if is_xhs_runway and "max_tokens" in payload:
+        # Azure OpenAI reasoning models (GPT-5/o1/o3) require 'max_completion_tokens'
+        if "max_tokens" in payload:
             payload["max_completion_tokens"] = payload.pop("max_tokens")
 
-        # XHS runway GPT-5 (reasoning model) has strict parameter requirements
-        if is_xhs_runway:
-            # Remove unsupported parameters for reasoning models
-            # GPT-5/o1/o3-style models don't support: temperature, top_p, frequency_penalty, presence_penalty
-            # NOTE: tools ARE supported by GPT-5, so we keep them
-            unsupported_params = [
-                "temperature",
-                "top_p",
-                "frequency_penalty",
-                "presence_penalty",
-                "top_k",
-                "min_p",
-                "stop",
-            ]
-            for param in unsupported_params:
-                payload.pop(param, None)
+        # Reasoning models have strict parameter requirements
+        # GPT-5/o1/o3 do not support: temperature, top_p, frequency_penalty, presence_penalty
+        # NOTE: tools ARE supported by reasoning models
+        unsupported_params = [
+            "temperature",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "top_k",
+            "min_p",
+            "stop",
+        ]
+        for param in unsupported_params:
+            payload.pop(param, None)
 
-            # Add api-version query param
-            endpoint = f"{endpoint}?api-version=2024-12-01-preview"
+        logger.debug("🧹 [Azure OpenAI] Cleaned payload for reasoning model compatibility")
 
-            logger.warning("🧹 [XHS RUNWAY] Cleaned payload for reasoning model")
+        # Add tools support if configured
+        if params.get("tools") and self.config.supports_tools:
+            payload["tools"] = params["tools"]
+            logger.debug(f"🔧 [Azure OpenAI] Added {len(params['tools'])} tools to payload")
+            if params.get("tool_choice") is not None:
+                payload["tool_choice"] = params["tool_choice"]
 
-            # Add tools support for GPT-5 if configured
-            if params.get("tools") and self.config.supports_tools:
-                payload["tools"] = params["tools"]
-                logger.warning(f"🔧 [XHS RUNWAY] Added {len(params['tools'])} tools to payload")
-                if params.get("tool_choice") is not None:
-                    payload["tool_choice"] = params["tool_choice"]
-
-            if params.get("response_format") and self.config.supports_structured_output:
-                payload["response_format"] = params["response_format"]
-        else:
-            # Standard OpenAI API - add optional features
-            if params.get("tools") and self.config.supports_tools:
-                payload["tools"] = params["tools"]
-                if params.get("tool_choice") is not None:
-                    payload["tool_choice"] = params["tool_choice"]
-
-            if params.get("response_format") and self.config.supports_structured_output:
-                payload["response_format"] = params["response_format"]
-
-            # Common OpenAI sampling knobs when declared supported by config.
-            for opt in (
-                "frequency_penalty",
-                "presence_penalty",
-                "top_k",
-                "min_p",
-                "seed",
-            ):
-                if opt in params and opt in self.config.supported_params:
-                    payload[opt] = params[opt]
+        # Add structured output support if configured
+        if params.get("response_format") and self.config.supports_structured_output:
+            payload["response_format"] = params["response_format"]
 
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
 
-        # Debug: log the payload for XHS runway API
-        if is_xhs_runway:
-            logger.warning(f"🚀 [XHS RUNWAY] Endpoint: {endpoint}")
-            logger.warning(f"🚀 [XHS RUNWAY] Payload: {json.dumps(payload, indent=2)}")
-        else:
-            logger.warning(f"🌐 [OPENAI] Endpoint: {endpoint}")
-            logger.warning(f"🌐 [OPENAI] Payload: {json.dumps(payload, indent=2)}")
-
-        # XHS runway API uses 'api-key' header instead of 'Authorization: Bearer'
+        # Azure OpenAI uses 'api-key' header for authentication
         if self.config.api_key:
-            if "runway.devops" in base_url or "xiaohongshu" in base_url:
-                headers["api-key"] = self.config.api_key
-            else:
-                headers["Authorization"] = f"Bearer {self.config.api_key}"
+            headers["api-key"] = self.config.api_key
+
+        # Debug logging
+        logger.debug(f"🚀 [Azure OpenAI] Endpoint: {endpoint}")
+        logger.debug(f"🚀 [Azure OpenAI] Payload: {json.dumps(payload, indent=2)}")
 
         data = await self.http.json_post_with_retry(
             endpoint, json=payload, headers=headers, timeout=None, retries=3
@@ -210,98 +173,64 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         """
         validated_params = self.validate_params(params)
 
-        model_id = self.config.provider_model_id or self.config.id
-
-        # Build endpoint URL with optional api-version query param
-        base_url = self.config.base_url.rstrip("/")
-        endpoint = f"{base_url}/chat/completions"
-
-        # Check if this is XHS runway API
-        is_xhs_runway = "runway.devops" in base_url or "xiaohongshu" in base_url
-
-        # Initialize logger early for debugging
+        # Initialize logger
         from serving.utils.logging import get_logger
-
         logger = get_logger(__name__)
 
+        # Build Azure OpenAI endpoint with api-version
+        base_url = self.config.base_url.rstrip("/")
+        endpoint = f"{base_url}/chat/completions?api-version=2024-12-01-preview"
+
+        # Build payload - Azure OpenAI does not require 'model' field (determined by deployment)
         payload: dict[str, Any] = {
             "messages": messages,
             "stream": True,
             **validated_params,
         }
 
-        # XHS runway API doesn't accept 'model' parameter, other APIs require it
-        if not is_xhs_runway:
-            payload["model"] = model_id
-
-        # XHS runway GPT-5 API requires 'max_completion_tokens' instead of 'max_tokens'
-        if is_xhs_runway and "max_tokens" in payload:
+        # Azure OpenAI reasoning models (GPT-5/o1/o3) require 'max_completion_tokens'
+        if "max_tokens" in payload:
             payload["max_completion_tokens"] = payload.pop("max_tokens")
 
-        # XHS runway GPT-5 (reasoning model) has strict parameter requirements
-        if is_xhs_runway:
-            # Remove unsupported parameters for reasoning models
-            # GPT-5/o1/o3-style models don't support: temperature, top_p, frequency_penalty, presence_penalty
-            # NOTE: tools ARE supported by GPT-5, so we keep them
-            unsupported_params = [
-                "temperature",
-                "top_p",
-                "frequency_penalty",
-                "presence_penalty",
-                "top_k",
-                "min_p",
-                "stop",
-            ]
-            for param in unsupported_params:
-                payload.pop(param, None)
+        # Reasoning models have strict parameter requirements
+        # GPT-5/o1/o3 do not support: temperature, top_p, frequency_penalty, presence_penalty
+        # NOTE: tools ARE supported by reasoning models
+        unsupported_params = [
+            "temperature",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "top_k",
+            "min_p",
+            "stop",
+        ]
+        for param in unsupported_params:
+            payload.pop(param, None)
 
-            # Add api-version query param
-            endpoint = f"{endpoint}?api-version=2024-12-01-preview"
-            # Add stream_options for proper usage tracking
-            payload["stream_options"] = {"include_usage": True}
+        # Add stream_options for proper usage tracking
+        payload["stream_options"] = {"include_usage": True}
 
-            logger.warning("🧹 [XHS RUNWAY] Cleaned payload for reasoning model")
+        logger.debug("🧹 [Azure OpenAI] Cleaned payload for reasoning model compatibility")
 
-            # Add tools support for GPT-5 if configured
-            if params.get("tools") and self.config.supports_tools:
-                payload["tools"] = params["tools"]
-                logger.warning(f"🔧 [XHS RUNWAY STREAM] Added {len(params['tools'])} tools to payload")
-                if params.get("tool_choice") is not None:
-                    payload["tool_choice"] = params["tool_choice"]
+        # Add tools support if configured
+        if params.get("tools") and self.config.supports_tools:
+            payload["tools"] = params["tools"]
+            logger.debug(f"🔧 [Azure OpenAI Stream] Added {len(params['tools'])} tools to payload")
+            if params.get("tool_choice") is not None:
+                payload["tool_choice"] = params["tool_choice"]
 
-            if params.get("response_format") and self.config.supports_structured_output:
-                payload["response_format"] = params["response_format"]
-        else:
-            # Standard OpenAI API - add optional features
-            if params.get("tools") and self.config.supports_tools:
-                payload["tools"] = params["tools"]
-                if params.get("tool_choice") is not None:
-                    payload["tool_choice"] = params["tool_choice"]
-
-            if params.get("response_format") and self.config.supports_structured_output:
-                payload["response_format"] = params["response_format"]
-
-            for opt in (
-                "frequency_penalty",
-                "presence_penalty",
-                "top_k",
-                "min_p",
-                "seed",
-            ):
-                if opt in params and opt in self.config.supported_params:
-                    payload[opt] = params[opt]
+        # Add structured output support if configured
+        if params.get("response_format") and self.config.supports_structured_output:
+            payload["response_format"] = params["response_format"]
 
         headers = {
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
 
-        # XHS runway API uses 'api-key' header instead of 'Authorization: Bearer'
+        # Azure OpenAI uses 'api-key' header for authentication
         if self.config.api_key:
-            if "runway.devops" in base_url or "xiaohongshu" in base_url:
-                headers["api-key"] = self.config.api_key
-            else:
-                headers["Authorization"] = f"Bearer {self.config.api_key}"
+            headers["api-key"] = self.config.api_key
 
         total_content = ""
         prompt_tokens_override: int | None = None
@@ -309,21 +238,21 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         finish_reason = "stop"
         line_count = 0
 
-        logger.warning(f"🌊 [OPENAI STREAM] Starting stream to: {endpoint}")
-        logger.warning(f"🌊 [OPENAI STREAM] Payload: {json.dumps(payload, indent=2)}")
+        logger.debug(f"🌊 [Azure OpenAI Stream] Starting stream to: {endpoint}")
+        logger.debug(f"🌊 [Azure OpenAI Stream] Payload: {json.dumps(payload, indent=2)}")
 
         async for line in self.http.stream_post(endpoint, json=payload, headers=headers):
             line_count += 1
             # Log every line for first 10, then sample every 10th
             if line_count <= 10 or line_count % 10 == 0:
-                logger.warning(f"📨 [OPENAI LINE {line_count}] Raw: {line[:300]}")
+                logger.debug(f"📨 [Azure OpenAI LINE {line_count}] Raw: {line[:300]}")
 
             if not line.startswith("data: "):
-                logger.warning(f"⚠️ [OPENAI LINE {line_count}] Skipping non-data line: {line[:100]}")
+                logger.debug(f"⚠️ [Azure OpenAI LINE {line_count}] Skipping non-data line: {line[:100]}")
                 continue
 
             if line == "data: [DONE]":
-                logger.warning(f"🏁 [OPENAI STREAM] Received [DONE] at line {line_count}")
+                logger.debug(f"🏁 [Azure OpenAI Stream] Received [DONE] at line {line_count}")
 
                 # Emit a final usage packet and stream terminator for consistency.
                 if final_usage_payload:
@@ -380,18 +309,18 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                         prompt_tokens_override=prompt_tokens_override,
                         finish_reason=finish_reason,
                     )
-                logger.warning(
-                    f"📤 [OPENAI YIELD FINAL] Yielding final usage chunk: {final_usage[:200]}"
+                logger.debug(
+                    f"📤 [Azure OpenAI Yield Final] Yielding final usage chunk: {final_usage[:200]}"
                 )
                 yield final_usage
 
                 done_msg = done_sentinel()
-                logger.warning(f"📤 [OPENAI YIELD DONE] Yielding done sentinel: {done_msg[:50]}")
+                logger.debug(f"📤 [Azure OpenAI Yield Done] Yielding done sentinel: {done_msg[:50]}")
                 yield done_msg
 
                 # Log streaming completion summary
-                logger.warning(
-                    f"✅ [OPENAI STREAM COMPLETE] "
+                logger.debug(
+                    f"✅ [Azure OpenAI Stream Complete] "
                     f"model={self.config.id}, "
                     f"prompt_tokens={prompt_tokens_override or 'estimated'}, "
                     f"total_chars={len(total_content)}, "
@@ -403,12 +332,12 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             try:
                 chunk_data = json.loads(line[6:])
                 if line_count <= 5:
-                    logger.warning(
-                        f"🔍 [OPENAI PARSE {line_count}] Parsed chunk: {json.dumps(chunk_data)[:200]}"
+                    logger.debug(
+                        f"🔍 [Azure OpenAI Parse {line_count}] Parsed chunk: {json.dumps(chunk_data)[:200]}"
                     )
             except json.JSONDecodeError as e:
-                logger.warning(
-                    f"⚠️ [OPENAI LINE {line_count}] JSON decode error: {e}, line: {line[:100]}"
+                logger.debug(
+                    f"⚠️ [Azure OpenAI LINE {line_count}] JSON decode error: {e}, line: {line[:100]}"
                 )
                 continue
 
@@ -418,13 +347,13 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 pt = final_usage_payload.get("prompt_tokens")
                 if isinstance(pt, int):
                     prompt_tokens_override = pt
-                    logger.warning(
-                        f"📊 [OPENAI USAGE {line_count}] Captured upstream usage with prompt_tokens={pt}"
+                    logger.debug(
+                        f"📊 [Azure OpenAI Usage {line_count}] Captured upstream usage with prompt_tokens={pt}"
                     )
 
             choices = chunk_data.get("choices") or []
             if not choices:
-                logger.warning(f"⚠️ [OPENAI LINE {line_count}] No choices in chunk")
+                logger.debug(f"⚠️ [Azure OpenAI LINE {line_count}] No choices in chunk")
                 continue
 
             choice = choices[0]
@@ -433,7 +362,7 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
             # Log delta even if no content
             if line_count <= 5:
-                logger.warning(f"🔍 [OPENAI DELTA {line_count}] Delta: {delta}")
+                logger.debug(f"🔍 [Azure OpenAI Delta {line_count}] Delta: {delta}")
 
             # Check if this chunk has content (role is handled by completions.py)
             content = delta.get("content")
@@ -442,11 +371,11 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 total_content += content
                 chunk_output = self.format_stream_chunk(content, self.config.id)
                 if line_count <= 10:
-                    logger.warning(
-                        f"📤 [OPENAI YIELD {line_count}] Yielding content ({len(content)} chars): {content[:100]}"
+                    logger.debug(
+                        f"📤 [Azure OpenAI Yield {line_count}] Yielding content ({len(content)} chars): {content[:100]}"
                     )
-                    logger.warning(
-                        f"📤 [OPENAI YIELD {line_count}] Formatted output: {chunk_output[:200]}"
+                    logger.debug(
+                        f"📤 [Azure OpenAI Yield {line_count}] Formatted output: {chunk_output[:200]}"
                     )
                 yield chunk_output
 
@@ -458,15 +387,15 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 chunk_copy["model"] = self.config.id
                 chunk_output = f"data: {json.dumps(chunk_copy)}\n\n"
                 if line_count <= 10:
-                    logger.warning(
-                        f"📤 [OPENAI YIELD TOOLS {line_count}] Yielding tool_calls delta: {chunk_output[:200]}"
+                    logger.debug(
+                        f"📤 [Azure OpenAI Yield Tools {line_count}] Yielding tool_calls delta: {chunk_output[:200]}"
                     )
                 yield chunk_output
 
         # Log if we exit without [DONE]
         if line_count == 0:
-            logger.warning("⚠️ [OPENAI STREAM] No lines received from stream!")
+            logger.debug("⚠️ [Azure OpenAI Stream] No lines received from stream!")
         else:
-            logger.warning(
-                f"📊 [OPENAI STREAM END] Total lines: {line_count}, Total content chars: {len(total_content)}"
+            logger.debug(
+                f"📊 [Azure OpenAI Stream End] Total lines: {line_count}, Total content chars: {len(total_content)}"
             )
