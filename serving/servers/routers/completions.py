@@ -63,6 +63,18 @@ async def chat_completions(
     model = payload.model
     messages = [m.model_dump() for m in payload.messages]
 
+    # Debug-only: log inbound message roles to verify client behavior.
+    # Note: We intentionally avoid logging message contents to protect privacy.
+    try:
+        roles = [msg.get("role") for msg in messages]
+        tool_count = sum(1 for msg in messages if msg.get("role") == "tool")
+        logger.warning(
+            f"🧭 [INBOUND ROLES] model={model}, roles={roles}, tool_messages={tool_count}, total={len(messages)}"
+        )
+    except Exception:
+        # Swallow any logging issues to avoid impacting request handling.
+        pass
+
     # Check if model has routing configured
     if model not in router_exec.routes:
         raise HTTPException(404, f"Model '{model}' not found")
@@ -92,7 +104,7 @@ async def chat_completions(
     if payload.tool_choice is not None:
         params["tool_choice"] = payload.tool_choice
     if payload.response_format is not None:
-        params["response_format"] = payload.response_format.model_dump()
+        params["response_format"] = payload.response_format.model_dump(by_alias=True)
 
     # Rate limit check with advanced features
     if rate_limiter:
@@ -140,6 +152,8 @@ async def chat_completions(
     request_id = f"req_{int(time.time() * 1000000)}"
     start_time = time.time()
     is_authenticated = bool(user_ctx.get("authenticated"))
+    # Initialize provider early to avoid UnboundLocalError in exception handlers
+    provider = "router"
     metadata = {
         "user_agent": request.headers.get("user-agent"),
         "ip": request.client.host if request.client else None,
@@ -181,9 +195,31 @@ async def chat_completions(
         async def stream_generator():
             usage_data = None
             routing_info = None
+            chunk_count = 0
             try:
+                # Emit initial assistant role chunk for client compatibility (e.g., Cursor)
+                from serving.stream import make_role_chunk
+
+                role_chunk = make_role_chunk(model=model)
+                logger.warning(
+                    f"🎬 [COMPLETIONS STREAM] Yielding initial role chunk: {role_chunk[:150]}"
+                )
+                yield role_chunk
+
+                logger.warning(
+                    f"🎬 [COMPLETIONS STREAM] Starting to consume adapter stream for model: {model}"
+                )
                 async for chunk in router_exec.stream_chat_completion(model, messages, **params):
+                    chunk_count += 1
                     # Forward adapter SSE chunks directly. Adapters emit final usage chunk.
+                    if chunk_count <= 10 or chunk_count % 10 == 0:
+                        logger.warning(
+                            f"🔄 [COMPLETIONS CHUNK {chunk_count}] Received from adapter: {chunk[:200]}"
+                        )
+
+                    logger.warning(
+                        f"📤 [COMPLETIONS YIELD {chunk_count}] Yielding to client: {chunk[:150]}"
+                    )
                     yield chunk
 
                     # Extract usage and routing info from chunks
@@ -192,11 +228,24 @@ async def chat_completions(
                             chunk_json = json.loads(chunk[6:])
                             if chunk_json.get("usage"):
                                 usage_data = chunk_json["usage"]
+                                logger.warning(
+                                    f"📊 [COMPLETIONS USAGE {chunk_count}] Extracted usage: {usage_data}"
+                                )
                             # Streaming adapters may also include _routing in final chunk
                             if "_routing" in chunk_json:
                                 routing_info = chunk_json["_routing"]
-                        except (json.JSONDecodeError, KeyError):
+                                logger.warning(
+                                    f"🔀 [COMPLETIONS ROUTING {chunk_count}] Extracted routing: {routing_info}"
+                                )
+                        except (json.JSONDecodeError, KeyError) as e:
+                            logger.warning(
+                                f"⚠️ [COMPLETIONS CHUNK {chunk_count}] Failed to parse: {e}"
+                            )
                             pass
+
+                logger.warning(
+                    f"✅ [COMPLETIONS STREAM] Adapter stream ended, total chunks: {chunk_count}"
+                )
 
                 # Get pricing from actual provider used
                 provider = "router"
@@ -245,8 +294,11 @@ async def chat_completions(
                     await rate_limiter.release_tokens(model, estimated_tokens)
 
                 error_chunk = {"error": {"message": str(exc), "type": "server_error", "code": 500}}
-                yield f"data: {json.dumps(error_chunk)}\n\n"
+                error_msg = f"data: {json.dumps(error_chunk)}\n\n"
+                logger.warning(f"❌ [COMPLETIONS ERROR] Yielding error chunk: {error_msg}")
+                yield error_msg
 
+        logger.warning(f"🚀 [COMPLETIONS] Creating StreamingResponse for model: {model}")
         return StreamingResponse(
             stream_generator(),
             media_type="text/event-stream",

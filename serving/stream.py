@@ -19,6 +19,7 @@ def make_stream_chunk(
     model: str,
     content: str = "",
     finish_reason: str | None = None,
+    role: str | None = None,
 ) -> str:
     """Create a single SSE data line for a chat.completion.chunk.
 
@@ -26,9 +27,20 @@ def make_stream_chunk(
         model: Model identifier to emit in the chunk.
         content: Delta content for this chunk; empty for terminal chunks.
         finish_reason: When provided, marks the final chunk finish reason.
+        role: Role for the first chunk (e.g., "assistant"). OpenAI spec requires the first chunk to include role.
     Returns:
         A string representing one SSE line with a trailing blank line.
     """
+    delta: dict[str, Any] = {}
+    if role:
+        delta["role"] = role
+    if content:
+        delta["content"] = content
+
+    # If delta is empty and no finish_reason, at least include empty content
+    if not delta and not finish_reason:
+        delta = {"content": content}
+
     chunk: dict[str, Any] = {
         "id": f"chatcmpl-{int(time.time() * 1000)}",
         "object": "chat.completion.chunk",
@@ -37,7 +49,7 @@ def make_stream_chunk(
         "choices": [
             {
                 "index": 0,
-                "delta": {"content": content} if content else {},
+                "delta": delta,
                 "finish_reason": finish_reason,
             }
         ],
@@ -81,5 +93,28 @@ def make_final_usage_chunk(
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
         },
+    }
+    return f"data: {json.dumps(chunk)}\n\n"
+
+
+def make_role_chunk(*, model: str) -> str:
+    """Create the initial SSE chunk specifying assistant role.
+
+    Many OpenAI-compatible clients expect the first streaming chunk to include
+    a delta with "role": "assistant" to mark the beginning of the AI message.
+    This helper emits that role-only chunk without content.
+    """
+    chunk: dict[str, Any] = {
+        "id": f"chatcmpl-{int(time.time() * 1000)}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant"},
+                "finish_reason": None,
+            }
+        ],
     }
     return f"data: {json.dumps(chunk)}\n\n"
