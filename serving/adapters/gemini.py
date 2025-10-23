@@ -417,7 +417,7 @@ class GeminiAdapter(BaseAdapter):
         logger = get_logger(__name__)
         if any(msg.get("role") == "tool" for msg in messages):
             logger.warning(
-                f"🔧 [GEMINI REQUEST] Sending request with tool results: {json.dumps(request_body, indent=2)[:2000]}"
+                f"[GEMINI REQUEST] Sending request with tool results: {json.dumps(request_body, indent=2)[:2000]}"
             )
 
         total_content = ""

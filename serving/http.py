@@ -192,9 +192,9 @@ class AsyncHTTPClient:
 
                 logger = logging.getLogger(__name__)
                 logger.warning(
-                    f"🌐 [HTTP STREAM] Connected to {url}, status={resp.status}, type={content_type or 'unknown'}"
+                    f"[HTTP STREAM] Connected to {url}, status={resp.status}, type={content_type or 'unknown'}"
                 )
-                logger.warning(f"🌐 [HTTP STREAM] Response headers: {dict(resp.headers)}")
+                logger.warning(f"[HTTP STREAM] Response headers: {dict(resp.headers)}")
 
                 parser = SSEParser()
                 chunk_count = 0
@@ -202,45 +202,43 @@ class AsyncHTTPClient:
                 async for raw in resp.content.iter_chunked(4096):
                     chunk_count += 1
                     if chunk_count <= 5 or chunk_count % 10 == 0:
-                        logger.warning(f"🌐 [HTTP CHUNK {chunk_count}] Received {len(raw)} bytes")
+                        logger.warning(f"[HTTP CHUNK {chunk_count}] Received {len(raw)} bytes")
                         # Show first few bytes to debug encoding issues
                         preview = raw[:200].decode("utf-8", errors="replace")
-                        logger.warning(f"🌐 [HTTP CHUNK {chunk_count}] Preview: {preview}")
+                        logger.warning(f"[HTTP CHUNK {chunk_count}] Preview: {preview}")
 
                     messages = list(parser.feed(raw))
                     if messages and chunk_count <= 5:
                         logger.warning(
-                            f"🌐 [HTTP CHUNK {chunk_count}] Parser produced {len(messages)} messages"
+                            f"[HTTP CHUNK {chunk_count}] Parser produced {len(messages)} messages"
                         )
 
                     for msg in messages:
                         if not msg.data:
-                            logger.warning("⚠️ [HTTP MSG] Empty message data, skipping")
+                            logger.warning("[HTTP MSG] Empty message data, skipping")
                             continue
 
                         message_count += 1
                         if message_count <= 10 or message_count % 10 == 0:
                             logger.warning(
-                                f"🌐 [HTTP MSG {message_count}] SSE message data: {msg.data[:200]}"
+                                f"[HTTP MSG {message_count}] SSE message data: {msg.data[:200]}"
                             )
 
                         # Preserve legacy adapter expectations (no trailing newlines)
                         if msg.data.strip() == "[DONE]":
                             logger.warning(
-                                f"🌐 [HTTP STREAM] Received [DONE], total chunks: {chunk_count}, total messages: {message_count}"
+                                f"[HTTP STREAM] Received [DONE], total chunks: {chunk_count}, total messages: {message_count}"
                             )
                             yield "data: [DONE]"
                             return
 
                         output = f"data: {msg.data}"
                         if message_count <= 5:
-                            logger.warning(
-                                f"📤 [HTTP YIELD {message_count}] Yielding: {output[:200]}"
-                            )
+                            logger.warning(f"[HTTP YIELD {message_count}] Yielding: {output[:200]}")
                         yield output
 
                 logger.warning(
-                    f"🌐 [HTTP STREAM] Stream ended naturally, total chunks: {chunk_count}, total messages: {message_count}"
+                    f"[HTTP STREAM] Stream ended naturally, total chunks: {chunk_count}, total messages: {message_count}"
                 )
             elif detected_mode == "ndjson":
                 # Incremental UTF-8 decode + line buffering

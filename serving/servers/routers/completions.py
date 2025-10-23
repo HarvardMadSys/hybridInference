@@ -69,7 +69,7 @@ async def chat_completions(
         roles = [msg.get("role") for msg in messages]
         tool_count = sum(1 for msg in messages if msg.get("role") == "tool")
         logger.warning(
-            f"🧭 [INBOUND ROLES] model={model}, roles={roles}, tool_messages={tool_count}, total={len(messages)}"
+            f"[INBOUND ROLES] model={model}, roles={roles}, tool_messages={tool_count}, total={len(messages)}"
         )
     except Exception:
         # Swallow any logging issues to avoid impacting request handling.
@@ -202,23 +202,23 @@ async def chat_completions(
 
                 role_chunk = make_role_chunk(model=model)
                 logger.warning(
-                    f"🎬 [COMPLETIONS STREAM] Yielding initial role chunk: {role_chunk[:150]}"
+                    f"[COMPLETIONS STREAM] Yielding initial role chunk: {role_chunk[:150]}"
                 )
                 yield role_chunk
 
                 logger.warning(
-                    f"🎬 [COMPLETIONS STREAM] Starting to consume adapter stream for model: {model}"
+                    f"[COMPLETIONS STREAM] Starting to consume adapter stream for model: {model}"
                 )
                 async for chunk in router_exec.stream_chat_completion(model, messages, **params):
                     chunk_count += 1
                     # Forward adapter SSE chunks directly. Adapters emit final usage chunk.
                     if chunk_count <= 10 or chunk_count % 10 == 0:
                         logger.warning(
-                            f"🔄 [COMPLETIONS CHUNK {chunk_count}] Received from adapter: {chunk[:200]}"
+                            f"[COMPLETIONS CHUNK {chunk_count}] Received from adapter: {chunk[:200]}"
                         )
 
                     logger.warning(
-                        f"📤 [COMPLETIONS YIELD {chunk_count}] Yielding to client: {chunk[:150]}"
+                        f"[COMPLETIONS YIELD {chunk_count}] Yielding to client: {chunk[:150]}"
                     )
                     yield chunk
 
@@ -229,22 +229,22 @@ async def chat_completions(
                             if chunk_json.get("usage"):
                                 usage_data = chunk_json["usage"]
                                 logger.warning(
-                                    f"📊 [COMPLETIONS USAGE {chunk_count}] Extracted usage: {usage_data}"
+                                    f"[COMPLETIONS USAGE {chunk_count}] Extracted usage: {usage_data}"
                                 )
                             # Streaming adapters may also include _routing in final chunk
                             if "_routing" in chunk_json:
                                 routing_info = chunk_json["_routing"]
                                 logger.warning(
-                                    f"🔀 [COMPLETIONS ROUTING {chunk_count}] Extracted routing: {routing_info}"
+                                    f"[COMPLETIONS ROUTING {chunk_count}] Extracted routing: {routing_info}"
                                 )
                         except (json.JSONDecodeError, KeyError) as e:
                             logger.warning(
-                                f"⚠️ [COMPLETIONS CHUNK {chunk_count}] Failed to parse: {e}"
+                                f"[COMPLETIONS CHUNK {chunk_count}] Failed to parse: {e}"
                             )
                             pass
 
                 logger.warning(
-                    f"✅ [COMPLETIONS STREAM] Adapter stream ended, total chunks: {chunk_count}"
+                    f"[COMPLETIONS STREAM] Adapter stream ended, total chunks: {chunk_count}"
                 )
 
                 # Get pricing from actual provider used
@@ -298,7 +298,7 @@ async def chat_completions(
                 logger.warning(f"❌ [COMPLETIONS ERROR] Yielding error chunk: {error_msg}")
                 yield error_msg
 
-        logger.warning(f"🚀 [COMPLETIONS] Creating StreamingResponse for model: {model}")
+        logger.warning(f"[COMPLETIONS] Creating StreamingResponse for model: {model}")
         return StreamingResponse(
             stream_generator(),
             media_type="text/event-stream",

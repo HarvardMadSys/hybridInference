@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncGenerator
-from pathlib import Path
+from contextlib import suppress
 from typing import Any
 
 from serving.stream import done_sentinel, make_final_usage_chunk
@@ -61,11 +61,7 @@ class ClaudeAdapter(BaseAdapter):
                 payload["system"] = sys_text
 
         # Add validated parameters
-        if "max_tokens" in validated_params:
-            payload["max_tokens"] = validated_params["max_tokens"]
-        else:
-            # Claude requires max_tokens, default to model's max output
-            payload["max_tokens"] = self.config.max_output_length
+        payload["max_tokens"] = validated_params.get("max_tokens", self.config.max_output_length)
 
         if "temperature" in validated_params:
             payload["temperature"] = validated_params["temperature"]
@@ -152,9 +148,7 @@ class ClaudeAdapter(BaseAdapter):
         # Separate non-cached prompt tokens from cached reads for accurate billing
         input_tokens = int(usage_data.get("input_tokens", 0) or 0)
         cache_read_input_tokens = int(usage_data.get("cache_read_input_tokens", 0) or 0)
-        cache_creation_input_tokens = int(
-            usage_data.get("cache_creation_input_tokens", 0) or 0
-        )
+        cache_creation_input_tokens = int(usage_data.get("cache_creation_input_tokens", 0) or 0)
         output_tokens = int(usage_data.get("output_tokens", 0) or 0)
 
         usage = UsageInfo(
@@ -205,10 +199,7 @@ class ClaudeAdapter(BaseAdapter):
                 payload["system"] = sys_text
 
         # Add validated parameters
-        if "max_tokens" in validated_params:
-            payload["max_tokens"] = validated_params["max_tokens"]
-        else:
-            payload["max_tokens"] = self.config.max_output_length
+        payload["max_tokens"] = validated_params.get("max_tokens", self.config.max_output_length)
 
         if "temperature" in validated_params:
             payload["temperature"] = validated_params["temperature"]
@@ -275,9 +266,9 @@ class ClaudeAdapter(BaseAdapter):
         from serving.utils.logging import get_logger
 
         logger = get_logger(__name__)
-        logger.warning(f"🌊 [CLAUDE STREAM] Starting stream to: {endpoint}")
+        logger.warning(f"[CLAUDE STREAM] Starting stream to: {endpoint}")
         logger.warning(
-            f"🌊 [CLAUDE STREAM] Payload summary: {json.dumps(self._summarize_messages(converted_msgs))}"
+            f"[CLAUDE STREAM] Payload summary: {json.dumps(self._summarize_messages(converted_msgs))}"
         )
 
         try:
@@ -295,33 +286,29 @@ class ClaudeAdapter(BaseAdapter):
                     chunk_data = json.loads(line)
                     if line_count <= 10:
                         logger.warning(
-                            f"🔍 [CLAUDE PARSE {line_count}] Chunk: {json.dumps(chunk_data)[:300]}"
+                            f"[CLAUDE PARSE {line_count}] Chunk: {json.dumps(chunk_data)[:300]}"
                         )
                 except json.JSONDecodeError:
-                    logger.warning(
-                        f"⚠️ [CLAUDE LINE {line_count}] Failed to parse JSON: {line[:100]}"
-                    )
+                    logger.warning(f"[CLAUDE LINE {line_count}] Failed to parse JSON: {line[:100]}")
                     continue
 
                 # Check for upstream API errors
                 if "Code" in chunk_data and "Error" in chunk_data:
                     error_code = chunk_data.get("Code")
                     error_msg = chunk_data.get("Error")
+                    logger.error(f"[CLAUDE UPSTREAM ERROR] Code: {error_code}, Error: {error_msg}")
                     logger.error(
-                        f"❌ [CLAUDE UPSTREAM ERROR] Code: {error_code}, Error: {error_msg}"
+                        "[CLAUDE UPSTREAM ERROR] This is likely an issue with the API, not our code."
                     )
                     logger.error(
-                        "❌ [CLAUDE UPSTREAM ERROR] This is likely an issue with the API, not our code."
-                    )
-                    logger.error(
-                        "❌ [CLAUDE UPSTREAM ERROR] Falling back to non-streaming endpoint..."
+                        "[CLAUDE UPSTREAM ERROR] Falling back to non-streaming endpoint..."
                     )
                     # Raise exception to trigger fallback
                     raise RuntimeError(f"Upstream API error: {error_msg}")
 
                 chunk_type = chunk_data.get("type")
                 if line_count <= 10:
-                    logger.warning(f"🔍 [CLAUDE TYPE {line_count}] Chunk type: {chunk_type}")
+                    logger.warning(f"[CLAUDE TYPE {line_count}] Chunk type: {chunk_type}")
 
                 # Google Vertex API sometimes returns a complete "message" object instead of streaming chunks
                 if chunk_type == "message":
@@ -330,7 +317,7 @@ class ClaudeAdapter(BaseAdapter):
                     full_text = ""
                     tool_calls_list = []
 
-                    role_emitted = False
+                    # Router emits initial role chunk; no need to track here.
                     for block in content_blocks:
                         block_type = block.get("type")
                         if block_type == "text":
@@ -349,16 +336,14 @@ class ClaudeAdapter(BaseAdapter):
                             }
                             tool_calls_list.append(tool_call)
                             logger.warning(
-                                f"🔧 [CLAUDE MESSAGE TOOL] Found tool_use: {block.get('name')}, id: {block.get('id')}, index: {tool_call['index']}"
+                                f"[CLAUDE MESSAGE TOOL] Found tool_use: {block.get('name')}, id: {block.get('id')}, index: {tool_call['index']}"
                             )
 
                     # Extract usage
                     usage_data = chunk_data.get("usage", {})
                     input_tokens = int(usage_data.get("input_tokens", 0) or 0)
                     output_tokens = int(usage_data.get("output_tokens", 0) or 0)
-                    cache_read_input_tokens = int(
-                        usage_data.get("cache_read_input_tokens", 0) or 0
-                    )
+                    cache_read_input_tokens = int(usage_data.get("cache_read_input_tokens", 0) or 0)
                     cache_creation_input_tokens = int(
                         usage_data.get("cache_creation_input_tokens", 0) or 0
                     )
@@ -368,14 +353,11 @@ class ClaudeAdapter(BaseAdapter):
                         total_content = full_text
                         # Log full text length and preview for debugging
                         logger.warning(
-                            f"📝 [CLAUDE FULL TEXT] Length: {len(full_text)}, Preview: {full_text[:500]}"
+                            f"[CLAUDE FULL TEXT] Length: {len(full_text)}, Preview: {full_text[:500]}"
                         )
-                        logger.warning(
-                            f"📝 [CLAUDE FULL TEXT END] ...{full_text[-200:]}"
-                        )
+                        logger.warning(f"[CLAUDE FULL TEXT END] ...{full_text[-200:]}")
                         # Don't include role - router layer handles initial role chunk
                         yield self.format_stream_chunk(full_text, self.config.id)
-                        role_emitted = True
 
                     # Map stop_reason
                     stop_reason = chunk_data.get("stop_reason", "end_turn")
@@ -386,9 +368,7 @@ class ClaudeAdapter(BaseAdapter):
                         # Forward tool_calls to client per OpenAI streaming protocol
                         # Router layer handles initial role chunk, we just send tools
                         tool_chunk = self.format_tool_chunk(tool_calls_list, self.config.id)
-                        logger.warning(
-                            f"📤 [CLAUDE TOOL] Yielding {len(tool_calls_list)} tool calls"
-                        )
+                        logger.warning(f"[CLAUDE TOOL] Yielding {len(tool_calls_list)} tool calls")
                         yield tool_chunk
 
                         # Ensure finish_reason reflects tool_calls for OpenAI clients
@@ -396,9 +376,7 @@ class ClaudeAdapter(BaseAdapter):
                         finish_chunk = self.format_stream_chunk(
                             "", self.config.id, finish_reason=finish_reason
                         )
-                        logger.warning(
-                            f"📤 [CLAUDE FINISH] Yielding finish_reason={finish_reason}"
-                        )
+                        logger.warning(f"[CLAUDE FINISH] Yielding finish_reason={finish_reason}")
                         yield finish_chunk
 
                         # Send usage even for tool_calls to enable proper logging and billing
@@ -408,7 +386,9 @@ class ClaudeAdapter(BaseAdapter):
                             model=self.config.id,
                             messages=messages,
                             total_content=total_content,
-                            prompt_tokens_override=input_tokens_msg if input_tokens_msg > 0 else None,
+                            prompt_tokens_override=input_tokens_msg
+                            if input_tokens_msg > 0
+                            else None,
                             finish_reason=finish_reason,
                         )
                         yield done_sentinel()
@@ -434,12 +414,12 @@ class ClaudeAdapter(BaseAdapter):
                 if chunk_type == "content_block_start":
                     block = chunk_data.get("content_block", {})
                     block_type = block.get("type")
-                    logger.warning(f"🔧 [CLAUDE BLOCK START {line_count}] Block type: {block_type}")
+                    logger.warning(f"[CLAUDE BLOCK START {line_count}] Block type: {block_type}")
                     if block_type == "tool_use":
                         tool_id = block.get("id")
                         tool_name = block.get("name")
                         logger.warning(
-                            f"🔧 [CLAUDE TOOL START {line_count}] Tool: {tool_name}, ID: {tool_id}, Index: {current_tool_index}"
+                            f"[CLAUDE TOOL START {line_count}] Tool: {tool_name}, ID: {tool_id}, Index: {current_tool_index}"
                         )
 
                         # Start accumulating tool use with OpenAI streaming format
@@ -460,7 +440,7 @@ class ClaudeAdapter(BaseAdapter):
                     delta_type = delta.get("type")
                     if line_count <= 10:
                         logger.warning(
-                            f"🔍 [CLAUDE DELTA {line_count}] Delta type: {delta_type}, delta: {delta}"
+                            f"[CLAUDE DELTA {line_count}] Delta type: {delta_type}, delta: {delta}"
                         )
 
                     if delta_type == "text_delta":
@@ -469,7 +449,7 @@ class ClaudeAdapter(BaseAdapter):
                             total_content += text
                             if line_count <= 5:
                                 logger.warning(
-                                    f"📤 [CLAUDE YIELD {line_count}] Yielding text: {text[:100]}"
+                                    f"[CLAUDE YIELD {line_count}] Yielding text: {text[:100]}"
                                 )
                             yield self.format_stream_chunk(text, self.config.id)
 
@@ -477,7 +457,7 @@ class ClaudeAdapter(BaseAdapter):
                         # Tool use - JSON input is being streamed
                         partial_json = delta.get("partial_json", "")
                         logger.warning(
-                            f"🔧 [CLAUDE TOOL {line_count}] Tool input delta: {partial_json[:200]}"
+                            f"[CLAUDE TOOL {line_count}] Tool input delta: {partial_json[:200]}"
                         )
 
                         # Accumulate the JSON input
@@ -492,7 +472,7 @@ class ClaudeAdapter(BaseAdapter):
                         # Add to completed tools list (don't send immediately)
                         completed_tool_calls.append(current_tool_use)
                         logger.warning(
-                            f"🛠️ [CLAUDE TOOL STOP] Collected tool call #{len(completed_tool_calls)}: {current_tool_use.get('function', {}).get('name')}"
+                            f"[CLAUDE TOOL STOP] Collected tool call #{len(completed_tool_calls)}: {current_tool_use.get('function', {}).get('name')}"
                         )
 
                         # Reset for next tool
@@ -522,7 +502,7 @@ class ClaudeAdapter(BaseAdapter):
                     # If we collected tool calls, send them now
                     if completed_tool_calls:
                         logger.warning(
-                            f"📤 [CLAUDE MESSAGE STOP] Sending {len(completed_tool_calls)} collected tool calls"
+                            f"[CLAUDE MESSAGE STOP] Sending {len(completed_tool_calls)} collected tool calls"
                         )
                         # Send all tool calls at once
                         tool_chunk = self.format_tool_chunk(completed_tool_calls, self.config.id)
@@ -547,9 +527,7 @@ class ClaudeAdapter(BaseAdapter):
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": self.config.id,
-                            "choices": [
-                                {"index": 0, "delta": {}, "finish_reason": finish_reason}
-                            ],
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                             "usage": usage_obj,
                             "_routing": {
                                 "provider": self.config.provider,
@@ -576,9 +554,7 @@ class ClaudeAdapter(BaseAdapter):
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": self.config.id,
-                            "choices": [
-                                {"index": 0, "delta": {}, "finish_reason": finish_reason}
-                            ],
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                             "usage": usage_obj,
                             "_routing": {
                                 "provider": self.config.provider,
@@ -591,7 +567,7 @@ class ClaudeAdapter(BaseAdapter):
         except Exception as e:
             import aiohttp
 
-            logger.error(f"❌ [CLAUDE STREAM ERROR] {type(e).__name__}: {e}")
+            logger.error(f"[CLAUDE STREAM ERROR] {type(e).__name__}: {e}")
             if isinstance(e, aiohttp.ClientResponseError):
                 logger.error(f"Response status: {e.status}, message: {e.message}")
                 logger.error(f"Request info: {e.request_info}")
@@ -601,7 +577,7 @@ class ClaudeAdapter(BaseAdapter):
                         await e.response.text() if hasattr(e, "response") else "No response body"
                     )
                     logger.error(f"Response body: {error_body[:500]}")
-                except:
+                except Exception:
                     pass
             # Fail-fast: propagate error immediately instead of fallback
             raise
@@ -639,13 +615,11 @@ class ClaudeAdapter(BaseAdapter):
                     blocks.append({"type": "text", "text": content})
                 elif isinstance(content, list):
                     # Pass through structured blocks (e.g., text/image)
-                    blocks.extend([b for b in content if isinstance(b, (dict, str))])
+                    blocks.extend([b for b in content if isinstance(b, dict | str)])
                 elif content:
                     # Fallback: dump unknown content to text
-                    try:
+                    with suppress(Exception):
                         blocks.append({"type": "text", "text": json.dumps(content)})
-                    except Exception:
-                        pass
 
                 # Append tool_use blocks if tool_calls provided
                 tool_calls = msg.get("tool_calls")
@@ -753,15 +727,11 @@ class ClaudeAdapter(BaseAdapter):
                     if isinstance(block, dict) and block.get("type") == "text":
                         parts.append(str(block.get("text", "")))
                     else:
-                        try:
+                        with suppress(Exception):
                             parts.append(json.dumps(block))
-                        except Exception:
-                            pass
             elif content is not None:
-                try:
+                with suppress(Exception):
                     parts.append(json.dumps(content))
-                except Exception:
-                    pass
         joined = "\n\n".join([p for p in parts if p])
         return joined if joined else None
 

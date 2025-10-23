@@ -11,11 +11,13 @@ adapters for consistency.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator
-from typing import Any
 import time
+from typing import TYPE_CHECKING, Any
 
 from serving.stream import done_sentinel, make_final_usage_chunk
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
@@ -52,6 +54,7 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         # Initialize logger
         from serving.utils.logging import get_logger
+
         logger = get_logger(__name__)
 
         # Build Azure OpenAI endpoint with api-version
@@ -83,12 +86,12 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         for param in unsupported_params:
             payload.pop(param, None)
 
-        logger.debug("🧹 [Azure OpenAI] Cleaned payload for reasoning model compatibility")
+        logger.debug("[Azure OpenAI] Cleaned payload for reasoning model compatibility")
 
         # Add tools support if configured
         if params.get("tools") and self.config.supports_tools:
             payload["tools"] = params["tools"]
-            logger.debug(f"🔧 [Azure OpenAI] Added {len(params['tools'])} tools to payload")
+            logger.debug(f"[Azure OpenAI] Added {len(params['tools'])} tools to payload")
             if params.get("tool_choice") is not None:
                 payload["tool_choice"] = params["tool_choice"]
 
@@ -106,8 +109,8 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             headers["api-key"] = self.config.api_key
 
         # Debug logging
-        logger.debug(f"🚀 [Azure OpenAI] Endpoint: {endpoint}")
-        logger.debug(f"🚀 [Azure OpenAI] Payload: {json.dumps(payload, indent=2)}")
+        logger.debug(f"[Azure OpenAI] Endpoint: {endpoint}")
+        logger.debug(f"[Azure OpenAI] Payload: {json.dumps(payload, indent=2)}")
 
         data = await self.http.json_post_with_retry(
             endpoint, json=payload, headers=headers, timeout=None, retries=3
@@ -175,6 +178,7 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         # Initialize logger
         from serving.utils.logging import get_logger
+
         logger = get_logger(__name__)
 
         # Build Azure OpenAI endpoint with api-version
@@ -210,12 +214,12 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         # Add stream_options for proper usage tracking
         payload["stream_options"] = {"include_usage": True}
 
-        logger.debug("🧹 [Azure OpenAI] Cleaned payload for reasoning model compatibility")
+        logger.debug("[Azure OpenAI] Cleaned payload for reasoning model compatibility")
 
         # Add tools support if configured
         if params.get("tools") and self.config.supports_tools:
             payload["tools"] = params["tools"]
-            logger.debug(f"🔧 [Azure OpenAI Stream] Added {len(params['tools'])} tools to payload")
+            logger.debug(f"[Azure OpenAI Stream] Added {len(params['tools'])} tools to payload")
             if params.get("tool_choice") is not None:
                 payload["tool_choice"] = params["tool_choice"]
 
@@ -238,47 +242,39 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         finish_reason = "stop"
         line_count = 0
 
-        logger.debug(f"🌊 [Azure OpenAI Stream] Starting stream to: {endpoint}")
-        logger.debug(f"🌊 [Azure OpenAI Stream] Payload: {json.dumps(payload, indent=2)}")
+        logger.debug(f"[Azure OpenAI Stream] Starting stream to: {endpoint}")
+        logger.debug(f"[Azure OpenAI Stream] Payload: {json.dumps(payload, indent=2)}")
 
         async for line in self.http.stream_post(endpoint, json=payload, headers=headers):
             line_count += 1
             # Log every line for first 10, then sample every 10th
             if line_count <= 10 or line_count % 10 == 0:
-                logger.debug(f"📨 [Azure OpenAI LINE {line_count}] Raw: {line[:300]}")
+                logger.debug(f"[Azure OpenAI LINE {line_count}] Raw: {line[:300]}")
 
             if not line.startswith("data: "):
-                logger.debug(f"⚠️ [Azure OpenAI LINE {line_count}] Skipping non-data line: {line[:100]}")
+                logger.debug(
+                    f"[Azure OpenAI LINE {line_count}] Skipping non-data line: {line[:100]}"
+                )
                 continue
 
             if line == "data: [DONE]":
-                logger.debug(f"🏁 [Azure OpenAI Stream] Received [DONE] at line {line_count}")
+                logger.debug(f"[Azure OpenAI Stream] Received [DONE] at line {line_count}")
 
                 # Emit a final usage packet and stream terminator for consistency.
                 if final_usage_payload:
-                    completion_details = final_usage_payload.get(
-                        "completion_tokens_details", {}
-                    )
-                    reasoning_tokens = int(
-                        completion_details.get("reasoning_tokens", 0) or 0
-                    )
+                    completion_details = final_usage_payload.get("completion_tokens_details", {})
+                    reasoning_tokens = int(completion_details.get("reasoning_tokens", 0) or 0)
                     prompt_details = final_usage_payload.get("prompt_tokens_details", {})
                     cached_tokens = int(prompt_details.get("cached_tokens", 0) or 0)
-                    prompt_tokens_total = int(
-                        final_usage_payload.get("prompt_tokens", 0) or 0
-                    )
-                    prompt_tokens_non_cached = max(
-                        0, prompt_tokens_total - cached_tokens
-                    )
+                    prompt_tokens_total = int(final_usage_payload.get("prompt_tokens", 0) or 0)
+                    prompt_tokens_non_cached = max(0, prompt_tokens_total - cached_tokens)
 
                     usage_obj: dict[str, int] = {
                         "prompt_tokens": prompt_tokens_non_cached,
                         "completion_tokens": int(
                             final_usage_payload.get("completion_tokens", 0) or 0
                         ),
-                        "total_tokens": int(
-                            final_usage_payload.get("total_tokens", 0) or 0
-                        ),
+                        "total_tokens": int(final_usage_payload.get("total_tokens", 0) or 0),
                     }
                     if reasoning_tokens > 0:
                         usage_obj["reasoning_tokens"] = reasoning_tokens
@@ -290,9 +286,7 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                         "object": "chat.completion.chunk",
                         "created": int(time.time()),
                         "model": self.config.id,
-                        "choices": [
-                            {"index": 0, "delta": {}, "finish_reason": finish_reason}
-                        ],
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                         "usage": usage_obj,
                         # Include routing info so server can attach pricing for DB logging
                         "_routing": {
@@ -310,17 +304,17 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                         finish_reason=finish_reason,
                     )
                 logger.debug(
-                    f"📤 [Azure OpenAI Yield Final] Yielding final usage chunk: {final_usage[:200]}"
+                    f"[Azure OpenAI Yield Final] Yielding final usage chunk: {final_usage[:200]}"
                 )
                 yield final_usage
 
                 done_msg = done_sentinel()
-                logger.debug(f"📤 [Azure OpenAI Yield Done] Yielding done sentinel: {done_msg[:50]}")
+                logger.debug(f"[Azure OpenAI Yield Done] Yielding done sentinel: {done_msg[:50]}")
                 yield done_msg
 
                 # Log streaming completion summary
                 logger.debug(
-                    f"✅ [Azure OpenAI Stream Complete] "
+                    f"[Azure OpenAI Stream Complete] "
                     f"model={self.config.id}, "
                     f"prompt_tokens={prompt_tokens_override or 'estimated'}, "
                     f"total_chars={len(total_content)}, "
@@ -333,11 +327,11 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 chunk_data = json.loads(line[6:])
                 if line_count <= 5:
                     logger.debug(
-                        f"🔍 [Azure OpenAI Parse {line_count}] Parsed chunk: {json.dumps(chunk_data)[:200]}"
+                        f"[Azure OpenAI Parse {line_count}] Parsed chunk: {json.dumps(chunk_data)[:200]}"
                     )
             except json.JSONDecodeError as e:
                 logger.debug(
-                    f"⚠️ [Azure OpenAI LINE {line_count}] JSON decode error: {e}, line: {line[:100]}"
+                    f"[Azure OpenAI LINE {line_count}] JSON decode error: {e}, line: {line[:100]}"
                 )
                 continue
 
@@ -348,12 +342,12 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 if isinstance(pt, int):
                     prompt_tokens_override = pt
                     logger.debug(
-                        f"📊 [Azure OpenAI Usage {line_count}] Captured upstream usage with prompt_tokens={pt}"
+                        f"[Azure OpenAI Usage {line_count}] Captured upstream usage with prompt_tokens={pt}"
                     )
 
             choices = chunk_data.get("choices") or []
             if not choices:
-                logger.debug(f"⚠️ [Azure OpenAI LINE {line_count}] No choices in chunk")
+                logger.debug(f"[Azure OpenAI LINE {line_count}] No choices in chunk")
                 continue
 
             choice = choices[0]
@@ -362,7 +356,7 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
             # Log delta even if no content
             if line_count <= 5:
-                logger.debug(f"🔍 [Azure OpenAI Delta {line_count}] Delta: {delta}")
+                logger.debug(f"[Azure OpenAI Delta {line_count}] Delta: {delta}")
 
             # Check if this chunk has content (role is handled by completions.py)
             content = delta.get("content")
@@ -372,10 +366,10 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 chunk_output = self.format_stream_chunk(content, self.config.id)
                 if line_count <= 10:
                     logger.debug(
-                        f"📤 [Azure OpenAI Yield {line_count}] Yielding content ({len(content)} chars): {content[:100]}"
+                        f"[Azure OpenAI Yield {line_count}] Yielding content ({len(content)} chars): {content[:100]}"
                     )
                     logger.debug(
-                        f"📤 [Azure OpenAI Yield {line_count}] Formatted output: {chunk_output[:200]}"
+                        f"[Azure OpenAI Yield {line_count}] Formatted output: {chunk_output[:200]}"
                     )
                 yield chunk_output
 
@@ -388,14 +382,14 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 chunk_output = f"data: {json.dumps(chunk_copy)}\n\n"
                 if line_count <= 10:
                     logger.debug(
-                        f"📤 [Azure OpenAI Yield Tools {line_count}] Yielding tool_calls delta: {chunk_output[:200]}"
+                        f"[Azure OpenAI Yield Tools {line_count}] Yielding tool_calls delta: {chunk_output[:200]}"
                     )
                 yield chunk_output
 
         # Log if we exit without [DONE]
         if line_count == 0:
-            logger.debug("⚠️ [Azure OpenAI Stream] No lines received from stream!")
+            logger.debug("[Azure OpenAI Stream] No lines received from stream!")
         else:
             logger.debug(
-                f"📊 [Azure OpenAI Stream End] Total lines: {line_count}, Total content chars: {len(total_content)}"
+                f"[Azure OpenAI Stream End] Total lines: {line_count}, Total content chars: {len(total_content)}"
             )
