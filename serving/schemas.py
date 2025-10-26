@@ -13,10 +13,23 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatMessage(BaseModel):  # type: ignore[no-any-unimported]
-    """Single chat message with role and content."""
+    """Single chat message with role and content.
 
-    role: Literal["system", "user", "assistant"]
-    content: str
+    Supports tool role for tool execution results in function calling flows.
+    """
+
+    role: Literal["system", "user", "assistant", "tool"]
+    # Allow either plain string (OpenAI style) or structured blocks (provider-specific)
+    content: Any | None = None
+    # For role="tool" messages, associates result back to a prior tool call
+    tool_call_id: str | None = None
+    # Optional tool name for role="tool" messages
+    name: str | None = None
+    # For assistant messages carrying tool calls in OpenAI format
+    tool_calls: list[dict[str, Any]] | None = None
+
+    # Ignore unknown extra fields to be permissive with client payloads
+    model_config = ConfigDict(extra="ignore")
 
 
 class ResponseFormat(BaseModel):  # type: ignore[no-any-unimported]

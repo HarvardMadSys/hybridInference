@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
-import asyncpg
 import pytest
 import pytest_asyncio
 from fastapi import Request
 
 from serving.servers.auth import hash_api_key, verify_api_key
 from serving.storage.database import DatabaseLogger, calculate_cost
+
+if TYPE_CHECKING:
+    import asyncpg
 
 pytestmark = pytest.mark.integration
 
