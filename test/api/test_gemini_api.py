@@ -15,9 +15,7 @@ def test_gemini_simple_generation():
 
     response = client.models.generate_content(
         model="gemini-2.5-flash",
-        config=types.GenerateContentConfig(
-            system_instruction="You are a cat. Your name is Neko."
-        ),
+        config=types.GenerateContentConfig(system_instruction="You are a cat. Your name is Neko."),
         contents="Hello there",
     )
 

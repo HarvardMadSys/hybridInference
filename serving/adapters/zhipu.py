@@ -157,9 +157,7 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             # Lines are already in "data: ..." format from stream_post
             if not line.startswith("data: "):
                 if line_count <= 5:
-                    logger.debug(
-                        f"Skipping non-data line at {line_count}: {line[:100]}"
-                    )
+                    logger.debug(f"Skipping non-data line at {line_count}: {line[:100]}")
                 continue
 
             # Check for stream end
@@ -179,9 +177,7 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             try:
                 chunk_data = json.loads(line[6:])
                 if line_count <= 10:
-                    logger.debug(
-                        f"Chunk {line_count}: {json.dumps(chunk_data)[:300]}"
-                    )
+                    logger.debug(f"Chunk {line_count}: {json.dumps(chunk_data)[:300]}")
 
                 choices = chunk_data.get("choices") or []
                 if choices:
@@ -196,9 +192,7 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                         total_content += content
                         # Use format_stream_chunk for consistency
                         if line_count <= 5:
-                            logger.debug(
-                                f"Yielding content at line {line_count}: {content[:100]}"
-                            )
+                            logger.debug(f"Yielding content at line {line_count}: {content[:100]}")
                         yield self.format_stream_chunk(content, self.config.id)
 
                     # Handle tool_calls - forward the entire chunk to preserve streaming format
@@ -223,11 +217,7 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                         finish_reason = fr
                         logger.debug(f"Finish reason: {fr}")
             except json.JSONDecodeError as e:
-                logger.warning(
-                    f"JSON decode error at line {line_count}: {e}, line: {line[:100]}"
-                )
+                logger.warning(f"JSON decode error at line {line_count}: {e}, line: {line[:100]}")
                 continue
 
-        logger.info(
-            f"Stream complete: lines={line_count}, content_chars={len(total_content)}"
-        )
+        logger.info(f"Stream complete: lines={line_count}, content_chars={len(total_content)}")

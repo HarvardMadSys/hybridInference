@@ -220,9 +220,7 @@ class AsyncHTTPClient:
 
                         message_count += 1
                         if message_count <= 10 or message_count % 10 == 0:
-                            logger.debug(
-                                f"Message {message_count} SSE data: {msg.data[:200]}"
-                            )
+                            logger.debug(f"Message {message_count} SSE data: {msg.data[:200]}")
 
                         # Preserve legacy adapter expectations (no trailing newlines)
                         if msg.data.strip() == "[DONE]":
@@ -237,9 +235,7 @@ class AsyncHTTPClient:
                             logger.debug(f"Yielding message {message_count}: {output[:200]}")
                         yield output
 
-                logger.info(
-                    f"Stream complete: chunks={chunk_count}, messages={message_count}"
-                )
+                logger.info(f"Stream complete: chunks={chunk_count}, messages={message_count}")
             elif detected_mode == "ndjson":
                 # Incremental UTF-8 decode + line buffering
                 import codecs

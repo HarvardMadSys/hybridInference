@@ -41,12 +41,7 @@ def test_non_streaming_completion():
     payload = {
         "anthropic_version": "vertex-2023-10-16",
         "max_tokens": 1024,
-        "messages": [
-            {
-                "role": "user",
-                "content": "Say hello in English"
-            }
-        ],
+        "messages": [{"role": "user", "content": "Say hello in English"}],
     }
 
     with httpx.Client(timeout=30.0) as client:
@@ -82,48 +77,44 @@ def test_streaming_completion():
         "anthropic_version": "vertex-2023-10-16",
         "stream": True,
         "max_tokens": 1024,
-        "messages": [
-            {
-                "role": "user",
-                "content": "Count from 1 to 5"
-            }
-        ],
+        "messages": [{"role": "user", "content": "Count from 1 to 5"}],
     }
 
     chunks = []
     full_text = ""
 
-    with httpx.Client(timeout=30.0) as client, client.stream(
-        "POST", url, headers=headers, json=payload
-    ) as response:
+    with (
+        httpx.Client(timeout=30.0) as client,
+        client.stream("POST", url, headers=headers, json=payload) as response,
+    ):
         response.raise_for_status()
         for line in response.iter_lines():
-                if not line.strip():
+            if not line.strip():
+                continue
+
+            # Claude streaming format: "data: {...}"
+            if line.startswith("data: "):
+                data_str = line[6:]
+                try:
+                    chunk_data = json.loads(data_str)
+                    chunk_type = chunk_data.get("type")
+
+                    # Extract text from content_block_delta
+                    if chunk_type == "content_block_delta":
+                        delta = chunk_data.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text", "")
+                            if text:
+                                chunks.append(text)
+                                full_text += text
+                                print(text, end="", flush=True)
+
+                    # Message complete
+                    elif chunk_type == "message_stop":
+                        break
+
+                except json.JSONDecodeError:
                     continue
-
-                # Claude streaming format: "data: {...}"
-                if line.startswith("data: "):
-                    data_str = line[6:]
-                    try:
-                        chunk_data = json.loads(data_str)
-                        chunk_type = chunk_data.get("type")
-
-                        # Extract text from content_block_delta
-                        if chunk_type == "content_block_delta":
-                            delta = chunk_data.get("delta", {})
-                            if delta.get("type") == "text_delta":
-                                text = delta.get("text", "")
-                                if text:
-                                    chunks.append(text)
-                                    full_text += text
-                                    print(text, end="", flush=True)
-
-                        # Message complete
-                        elif chunk_type == "message_stop":
-                            break
-
-                    except json.JSONDecodeError:
-                        continue
 
     print(f"\n\n Received {len(chunks)} chunks")
     print(f"Full response: {full_text}")
@@ -145,12 +136,7 @@ def test_with_system_prompt():
         "anthropic_version": "vertex-2023-10-16",
         "max_tokens": 500,
         "system": "You are a helpful AI assistant. Always respond concisely.",
-        "messages": [
-            {
-                "role": "user",
-                "content": "What is 2+2?"
-            }
-        ],
+        "messages": [{"role": "user", "content": "What is 2+2?"}],
     }
 
     with httpx.Client(timeout=30.0) as client:
@@ -186,12 +172,7 @@ def test_multimodal_support():
         "messages": [
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Describe what a red apple looks like."
-                    }
-                ]
+                "content": [{"type": "text", "text": "Describe what a red apple looks like."}],
             }
         ],
     }
@@ -228,5 +209,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nTest failed with error: {e}")
         import traceback
+
         traceback.print_exc()
         exit(1)

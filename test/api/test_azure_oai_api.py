@@ -16,6 +16,7 @@ dotenv.load_dotenv()
 #   api_version="2024-12-01-preview"
 # )
 
+
 # response = client.chat.completions.create(
 #     model="o4-mini", # replace with the model deployment name of your o1-preview, or o1-mini model
 #     messages=[

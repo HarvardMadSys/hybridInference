@@ -78,31 +78,32 @@ def test_streaming_completion():
     chunks = []
     usage_data = None
 
-    with httpx.Client(timeout=30.0) as client, client.stream(
-        "POST", url, headers=headers, json=payload
-    ) as response:
+    with (
+        httpx.Client(timeout=30.0) as client,
+        client.stream("POST", url, headers=headers, json=payload) as response,
+    ):
         response.raise_for_status()
         for line in response.iter_lines():
-                if not line.strip():
+            if not line.strip():
+                continue
+            if line.startswith("data: "):
+                data_str = line[6:]  # Remove "data: " prefix
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk_data = json.loads(data_str)
+                    # Capture usage from final chunk
+                    if "usage" in chunk_data:
+                        usage_data = chunk_data["usage"]
+                    # Extract content delta
+                    if chunk_data.get("choices"):
+                        delta = chunk_data["choices"][0].get("delta", {})
+                        if "content" in delta:
+                            content = delta["content"]
+                            chunks.append(content)
+                            print(content, end="", flush=True)
+                except json.JSONDecodeError:
                     continue
-                if line.startswith("data: "):
-                    data_str = line[6:]  # Remove "data: " prefix
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk_data = json.loads(data_str)
-                        # Capture usage from final chunk
-                        if "usage" in chunk_data:
-                            usage_data = chunk_data["usage"]
-                        # Extract content delta
-                        if chunk_data.get("choices"):
-                            delta = chunk_data["choices"][0].get("delta", {})
-                            if "content" in delta:
-                                content = delta["content"]
-                                chunks.append(content)
-                                print(content, end="", flush=True)
-                    except json.JSONDecodeError:
-                        continue
 
     full_response = "".join(chunks)
     print(f"\n\n Received {len(chunks)} chunks")

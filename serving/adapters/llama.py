@@ -265,7 +265,7 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 arguments = fc.get("arguments") or "{}"
                 tool_calls = [
                     {
-                        "id": f"call_{int(__import__('time').time()*1000)}",
+                        "id": f"call_{int(__import__('time').time() * 1000)}",
                         "type": "function",
                         "function": {"name": name, "arguments": arguments},
                     }
@@ -347,9 +347,7 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 )
                 # Debug: log first tool definition
                 if payload["tools"]:
-                    logger.debug(
-                        f"First tool: {json.dumps(payload['tools'][0], indent=2)}"
-                    )
+                    logger.debug(f"First tool: {json.dumps(payload['tools'][0], indent=2)}")
                 # Debug: log messages
                 logger.debug(f"Message count: {len(payload['messages'])}")
                 for i, msg in enumerate(payload["messages"][-3:]):  # Log last 3 messages
@@ -458,7 +456,7 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                         # Keep arguments as-is (string) per OpenAI stream format
                         chunk_copy = {
                             "id": chunk_data.get("id")
-                            or f"chatcmpl-{int(__import__('time').time()*1000)}",
+                            or f"chatcmpl-{int(__import__('time').time() * 1000)}",
                             "object": "chat.completion.chunk",
                             "created": chunk_data.get("created") or int(__import__("time").time()),
                             "model": self.config.id,
@@ -468,7 +466,7 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                                     "delta": {
                                         "tool_calls": [
                                             {
-                                                "id": f"call_{int(__import__('time').time()*1000)}",
+                                                "id": f"call_{int(__import__('time').time() * 1000)}",
                                                 "type": "function",
                                                 "function": {"name": name, "arguments": args},
                                             }

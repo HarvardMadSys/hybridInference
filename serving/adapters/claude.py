@@ -269,9 +269,7 @@ class ClaudeAdapter(BaseAdapter):
 
         logger = get_logger(__name__)
         logger.debug(f"Starting stream to: {endpoint}")
-        logger.debug(
-            f"Payload summary: {json.dumps(self._summarize_messages(converted_msgs))}"
-        )
+        logger.debug(f"Payload summary: {json.dumps(self._summarize_messages(converted_msgs))}")
 
         try:
             # Google Vertex API may return non-streaming JSON instead of SSE
@@ -287,9 +285,7 @@ class ClaudeAdapter(BaseAdapter):
                 try:
                     chunk_data = json.loads(line)
                     if line_count <= 10:
-                        logger.debug(
-                            f"Chunk {line_count}: {json.dumps(chunk_data)[:300]}"
-                        )
+                        logger.debug(f"Chunk {line_count}: {json.dumps(chunk_data)[:300]}")
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse JSON at line {line_count}: {line[:100]}")
                     continue
@@ -450,17 +446,13 @@ class ClaudeAdapter(BaseAdapter):
                         if text:
                             total_content += text
                             if line_count <= 5:
-                                logger.debug(
-                                    f"Yielding text at line {line_count}: {text[:100]}"
-                                )
+                                logger.debug(f"Yielding text at line {line_count}: {text[:100]}")
                             yield self.format_stream_chunk(text, self.config.id)
 
                     elif delta_type == "input_json_delta":
                         # Tool use - JSON input is being streamed
                         partial_json = delta.get("partial_json", "")
-                        logger.debug(
-                            f"Tool input delta at line {line_count}: {partial_json[:200]}"
-                        )
+                        logger.debug(f"Tool input delta at line {line_count}: {partial_json[:200]}")
 
                         # Accumulate the JSON input
                         tool_input_buffer += partial_json

@@ -201,25 +201,17 @@ async def chat_completions(
                 from serving.stream import make_role_chunk
 
                 role_chunk = make_role_chunk(model=model)
-                logger.debug(
-                    f"Yielding initial role chunk: {role_chunk[:150]}"
-                )
+                logger.debug(f"Yielding initial role chunk: {role_chunk[:150]}")
                 yield role_chunk
 
-                logger.debug(
-                    f"Starting to consume adapter stream for model: {model}"
-                )
+                logger.debug(f"Starting to consume adapter stream for model: {model}")
                 async for chunk in router_exec.stream_chat_completion(model, messages, **params):
                     chunk_count += 1
                     # Forward adapter SSE chunks directly. Adapters emit final usage chunk.
                     if chunk_count <= 10 or chunk_count % 10 == 0:
-                        logger.debug(
-                            f"Chunk {chunk_count} received from adapter: {chunk[:200]}"
-                        )
+                        logger.debug(f"Chunk {chunk_count} received from adapter: {chunk[:200]}")
 
-                    logger.debug(
-                        f"Yielding chunk {chunk_count} to client: {chunk[:150]}"
-                    )
+                    logger.debug(f"Yielding chunk {chunk_count} to client: {chunk[:150]}")
                     yield chunk
 
                     # Extract usage and routing info from chunks
@@ -238,14 +230,10 @@ async def chat_completions(
                                     f"Extracted routing from chunk {chunk_count}: {routing_info}"
                                 )
                         except (json.JSONDecodeError, KeyError) as e:
-                            logger.warning(
-                                f"Failed to parse chunk {chunk_count}: {e}"
-                            )
+                            logger.warning(f"Failed to parse chunk {chunk_count}: {e}")
                             pass
 
-                logger.info(
-                    f"Stream complete: total_chunks={chunk_count}"
-                )
+                logger.info(f"Stream complete: total_chunks={chunk_count}")
 
                 # Get pricing from actual provider used
                 provider = "router"
