@@ -17,7 +17,6 @@ from serving.storage.database import DatabaseLogger, calculate_cost
 if TYPE_CHECKING:
     import asyncpg
 
-
 pytestmark = pytest.mark.integration
 
 
