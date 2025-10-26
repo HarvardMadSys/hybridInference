@@ -25,8 +25,7 @@ CLAUDE_BASE_URL = os.getenv("CLAUDE_BASE_URL")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 
 if not CLAUDE_API_KEY:
-    print("CLAUDE_API_KEY not found in environment. Skipping test.")
-    exit(0)
+    pytest.skip("CLAUDE_API_KEY not configured", allow_module_level=True)
 
 
 def test_non_streaming_completion():
@@ -211,4 +210,3 @@ if __name__ == "__main__":
         import traceback
 
         traceback.print_exc()
-        exit(1)

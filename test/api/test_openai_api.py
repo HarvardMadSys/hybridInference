@@ -21,8 +21,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_VERSION = "2024-12-01-preview"
 
 if not OPENAI_API_KEY:
-    print("️  OPENAI_API_KEY not found in environment. Skipping test.")
-    exit(0)
+    pytest.skip("OPENAI_API_KEY not configured", allow_module_level=True)
 
 
 def test_non_streaming_completion():
