@@ -203,8 +203,8 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             elif default_tool_choice:
                 payload["tool_choice"] = default_tool_choice
             with suppress(Exception):
-                logger.warning(
-                    f"[LLAMA NONSTREAM] tools={len(payload['tools'])}, tool_choice={payload.get('tool_choice')}"
+                logger.debug(
+                    f"Non-stream: tools={len(payload['tools'])}, tool_choice={payload.get('tool_choice')}"
                 )
 
         # Structured output support
@@ -342,22 +342,22 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             elif default_tool_choice:
                 payload["tool_choice"] = default_tool_choice
             try:
-                logger.warning(
-                    f"[LLAMA STREAM] tools={len(payload['tools'])}, tool_choice={payload.get('tool_choice')}"
+                logger.debug(
+                    f"Stream: tools={len(payload['tools'])}, tool_choice={payload.get('tool_choice')}"
                 )
                 # Debug: log first tool definition
                 if payload["tools"]:
-                    logger.warning(
-                        f"[LLAMA STREAM] First tool: {json.dumps(payload['tools'][0], indent=2)}"
+                    logger.debug(
+                        f"First tool: {json.dumps(payload['tools'][0], indent=2)}"
                     )
                 # Debug: log messages
-                logger.warning(f"[LLAMA STREAM] Message count: {len(payload['messages'])}")
+                logger.debug(f"Message count: {len(payload['messages'])}")
                 for i, msg in enumerate(payload["messages"][-3:]):  # Log last 3 messages
-                    logger.warning(
-                        f"[LLAMA STREAM] Message {i}: role={msg.get('role')}, has_content={bool(msg.get('content'))}, has_tool_calls={bool(msg.get('tool_calls'))}"
+                    logger.debug(
+                        f"Message {i}: role={msg.get('role')}, has_content={bool(msg.get('content'))}, has_tool_calls={bool(msg.get('tool_calls'))}"
                     )
             except Exception as e:
-                logger.warning(f"[LLAMA STREAM] Debug logging failed: {e}")
+                logger.debug(f"Debug logging failed: {e}")
                 pass
 
         if params.get("response_format") and self.config.supports_structured_output:

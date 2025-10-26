@@ -68,8 +68,8 @@ async def chat_completions(
     try:
         roles = [msg.get("role") for msg in messages]
         tool_count = sum(1 for msg in messages if msg.get("role") == "tool")
-        logger.warning(
-            f"[INBOUND ROLES] model={model}, roles={roles}, tool_messages={tool_count}, total={len(messages)}"
+        logger.debug(
+            f"Inbound roles: model={model}, roles={roles}, tool_messages={tool_count}, total={len(messages)}"
         )
     except Exception:
         # Swallow any logging issues to avoid impacting request handling.
@@ -201,24 +201,24 @@ async def chat_completions(
                 from serving.stream import make_role_chunk
 
                 role_chunk = make_role_chunk(model=model)
-                logger.warning(
-                    f"[COMPLETIONS STREAM] Yielding initial role chunk: {role_chunk[:150]}"
+                logger.debug(
+                    f"Yielding initial role chunk: {role_chunk[:150]}"
                 )
                 yield role_chunk
 
-                logger.warning(
-                    f"[COMPLETIONS STREAM] Starting to consume adapter stream for model: {model}"
+                logger.debug(
+                    f"Starting to consume adapter stream for model: {model}"
                 )
                 async for chunk in router_exec.stream_chat_completion(model, messages, **params):
                     chunk_count += 1
                     # Forward adapter SSE chunks directly. Adapters emit final usage chunk.
                     if chunk_count <= 10 or chunk_count % 10 == 0:
-                        logger.warning(
-                            f"[COMPLETIONS CHUNK {chunk_count}] Received from adapter: {chunk[:200]}"
+                        logger.debug(
+                            f"Chunk {chunk_count} received from adapter: {chunk[:200]}"
                         )
 
-                    logger.warning(
-                        f"[COMPLETIONS YIELD {chunk_count}] Yielding to client: {chunk[:150]}"
+                    logger.debug(
+                        f"Yielding chunk {chunk_count} to client: {chunk[:150]}"
                     )
                     yield chunk
 
@@ -228,23 +228,23 @@ async def chat_completions(
                             chunk_json = json.loads(chunk[6:])
                             if chunk_json.get("usage"):
                                 usage_data = chunk_json["usage"]
-                                logger.warning(
-                                    f"[COMPLETIONS USAGE {chunk_count}] Extracted usage: {usage_data}"
+                                logger.debug(
+                                    f"Extracted usage from chunk {chunk_count}: {usage_data}"
                                 )
                             # Streaming adapters may also include _routing in final chunk
                             if "_routing" in chunk_json:
                                 routing_info = chunk_json["_routing"]
-                                logger.warning(
-                                    f"[COMPLETIONS ROUTING {chunk_count}] Extracted routing: {routing_info}"
+                                logger.debug(
+                                    f"Extracted routing from chunk {chunk_count}: {routing_info}"
                                 )
                         except (json.JSONDecodeError, KeyError) as e:
                             logger.warning(
-                                f"[COMPLETIONS CHUNK {chunk_count}] Failed to parse: {e}"
+                                f"Failed to parse chunk {chunk_count}: {e}"
                             )
                             pass
 
-                logger.warning(
-                    f"[COMPLETIONS STREAM] Adapter stream ended, total chunks: {chunk_count}"
+                logger.info(
+                    f"Stream complete: total_chunks={chunk_count}"
                 )
 
                 # Get pricing from actual provider used
@@ -295,10 +295,10 @@ async def chat_completions(
 
                 error_chunk = {"error": {"message": str(exc), "type": "server_error", "code": 500}}
                 error_msg = f"data: {json.dumps(error_chunk)}\n\n"
-                logger.warning(f"❌ [COMPLETIONS ERROR] Yielding error chunk: {error_msg}")
+                logger.error(f"Yielding error chunk: {error_msg}")
                 yield error_msg
 
-        logger.warning(f"[COMPLETIONS] Creating StreamingResponse for model: {model}")
+        logger.debug(f"Creating StreamingResponse for model: {model}")
         return StreamingResponse(
             stream_generator(),
             media_type="text/event-stream",

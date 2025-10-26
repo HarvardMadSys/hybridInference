@@ -143,8 +143,8 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         from serving.utils.logging import get_logger
 
         logger = get_logger(__name__)
-        logger.warning(f"[ZHIPU STREAM] Starting stream to: {endpoint}")
-        logger.warning(f"[ZHIPU STREAM] Payload: {json.dumps(payload, indent=2)}")
+        logger.debug(f"Starting stream to: {endpoint}")
+        logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
 
         total_content = ""
         finish_reason = "stop"
@@ -157,14 +157,14 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             # Lines are already in "data: ..." format from stream_post
             if not line.startswith("data: "):
                 if line_count <= 5:
-                    logger.warning(
-                        f"[ZHIPU LINE {line_count}] Skipping non-data line: {line[:100]}"
+                    logger.debug(
+                        f"Skipping non-data line at {line_count}: {line[:100]}"
                     )
                 continue
 
             # Check for stream end
             if line == "data: [DONE]":
-                logger.warning(f"[ZHIPU STREAM] Received [DONE] at line {line_count}")
+                logger.debug(f"Received [DONE] at line {line_count}")
                 # Send final usage chunk
                 yield make_final_usage_chunk(
                     model=self.config.id,
@@ -179,8 +179,8 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             try:
                 chunk_data = json.loads(line[6:])
                 if line_count <= 10:
-                    logger.warning(
-                        f"[ZHIPU PARSE {line_count}] Chunk: {json.dumps(chunk_data)[:300]}"
+                    logger.debug(
+                        f"Chunk {line_count}: {json.dumps(chunk_data)[:300]}"
                     )
 
                 choices = chunk_data.get("choices") or []
@@ -188,7 +188,7 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                     delta = choices[0].get("delta") or {}
 
                     if line_count <= 10:
-                        logger.warning(f"[ZHIPU DELTA {line_count}] Delta: {delta}")
+                        logger.debug(f"Delta at line {line_count}: {delta}")
 
                     # Handle content
                     content = delta.get("content")
@@ -196,16 +196,16 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                         total_content += content
                         # Use format_stream_chunk for consistency
                         if line_count <= 5:
-                            logger.warning(
-                                f"[ZHIPU YIELD {line_count}] Yielding content: {content[:100]}"
+                            logger.debug(
+                                f"Yielding content at line {line_count}: {content[:100]}"
                             )
                         yield self.format_stream_chunk(content, self.config.id)
 
                     # Handle tool_calls - forward the entire chunk to preserve streaming format
                     tool_calls_delta = delta.get("tool_calls")
                     if tool_calls_delta:
-                        logger.warning(
-                            f"[ZHIPU TOOL {line_count}] Tool calls delta: {json.dumps(tool_calls_delta)[:300]}"
+                        logger.debug(
+                            f"Tool calls delta at line {line_count}: {json.dumps(tool_calls_delta)[:300]}"
                         )
 
                         # Pass through the chunk but replace model ID with our logical model ID
@@ -213,21 +213,21 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                         chunk_copy = chunk_data.copy()
                         chunk_copy["model"] = self.config.id
                         tool_chunk = f"data: {json.dumps(chunk_copy)}\n\n"
-                        logger.warning(
-                            f"[ZHIPU TOOL YIELD {line_count}] Yielding tool chunk: {tool_chunk[:200]}"
+                        logger.debug(
+                            f"Yielding tool chunk at line {line_count}: {tool_chunk[:200]}"
                         )
                         yield tool_chunk
 
                     fr = choices[0].get("finish_reason")
                     if fr:
                         finish_reason = fr
-                        logger.warning(f"[ZHIPU] Finish reason: {fr}")
+                        logger.debug(f"Finish reason: {fr}")
             except json.JSONDecodeError as e:
                 logger.warning(
-                    f"[ZHIPU LINE {line_count}] JSON decode error: {e}, line: {line[:100]}"
+                    f"JSON decode error at line {line_count}: {e}, line: {line[:100]}"
                 )
                 continue
 
-        logger.warning(
-            f"[ZHIPU STREAM END] Total lines: {line_count}, Total content: {len(total_content)} chars"
+        logger.info(
+            f"Stream complete: lines={line_count}, content_chars={len(total_content)}"
         )

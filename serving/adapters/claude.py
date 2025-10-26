@@ -266,9 +266,9 @@ class ClaudeAdapter(BaseAdapter):
         from serving.utils.logging import get_logger
 
         logger = get_logger(__name__)
-        logger.warning(f"[CLAUDE STREAM] Starting stream to: {endpoint}")
-        logger.warning(
-            f"[CLAUDE STREAM] Payload summary: {json.dumps(self._summarize_messages(converted_msgs))}"
+        logger.debug(f"Starting stream to: {endpoint}")
+        logger.debug(
+            f"Payload summary: {json.dumps(self._summarize_messages(converted_msgs))}"
         )
 
         try:
@@ -285,11 +285,11 @@ class ClaudeAdapter(BaseAdapter):
                 try:
                     chunk_data = json.loads(line)
                     if line_count <= 10:
-                        logger.warning(
-                            f"[CLAUDE PARSE {line_count}] Chunk: {json.dumps(chunk_data)[:300]}"
+                        logger.debug(
+                            f"Chunk {line_count}: {json.dumps(chunk_data)[:300]}"
                         )
                 except json.JSONDecodeError:
-                    logger.warning(f"[CLAUDE LINE {line_count}] Failed to parse JSON: {line[:100]}")
+                    logger.warning(f"Failed to parse JSON at line {line_count}: {line[:100]}")
                     continue
 
                 # Check for upstream API errors
@@ -308,7 +308,7 @@ class ClaudeAdapter(BaseAdapter):
 
                 chunk_type = chunk_data.get("type")
                 if line_count <= 10:
-                    logger.warning(f"[CLAUDE TYPE {line_count}] Chunk type: {chunk_type}")
+                    logger.debug(f"Chunk type at line {line_count}: {chunk_type}")
 
                 # Google Vertex API sometimes returns a complete "message" object instead of streaming chunks
                 if chunk_type == "message":
@@ -335,8 +335,8 @@ class ClaudeAdapter(BaseAdapter):
                                 },
                             }
                             tool_calls_list.append(tool_call)
-                            logger.warning(
-                                f"[CLAUDE MESSAGE TOOL] Found tool_use: {block.get('name')}, id: {block.get('id')}, index: {tool_call['index']}"
+                            logger.debug(
+                                f"Found tool_use: {block.get('name')}, id: {block.get('id')}, index: {tool_call['index']}"
                             )
 
                     # Extract usage
@@ -352,10 +352,10 @@ class ClaudeAdapter(BaseAdapter):
                     if full_text:
                         total_content = full_text
                         # Log full text length and preview for debugging
-                        logger.warning(
-                            f"[CLAUDE FULL TEXT] Length: {len(full_text)}, Preview: {full_text[:500]}"
+                        logger.debug(
+                            f"Full text length: {len(full_text)}, preview: {full_text[:500]}"
                         )
-                        logger.warning(f"[CLAUDE FULL TEXT END] ...{full_text[-200:]}")
+                        logger.debug(f"Full text end: ...{full_text[-200:]}")
                         # Don't include role - router layer handles initial role chunk
                         yield self.format_stream_chunk(full_text, self.config.id)
 
@@ -368,7 +368,7 @@ class ClaudeAdapter(BaseAdapter):
                         # Forward tool_calls to client per OpenAI streaming protocol
                         # Router layer handles initial role chunk, we just send tools
                         tool_chunk = self.format_tool_chunk(tool_calls_list, self.config.id)
-                        logger.warning(f"[CLAUDE TOOL] Yielding {len(tool_calls_list)} tool calls")
+                        logger.debug(f"Yielding {len(tool_calls_list)} tool calls")
                         yield tool_chunk
 
                         # Ensure finish_reason reflects tool_calls for OpenAI clients
@@ -376,7 +376,7 @@ class ClaudeAdapter(BaseAdapter):
                         finish_chunk = self.format_stream_chunk(
                             "", self.config.id, finish_reason=finish_reason
                         )
-                        logger.warning(f"[CLAUDE FINISH] Yielding finish_reason={finish_reason}")
+                        logger.debug(f"Yielding finish_reason={finish_reason}")
                         yield finish_chunk
 
                         # Send usage even for tool_calls to enable proper logging and billing
@@ -414,12 +414,12 @@ class ClaudeAdapter(BaseAdapter):
                 if chunk_type == "content_block_start":
                     block = chunk_data.get("content_block", {})
                     block_type = block.get("type")
-                    logger.warning(f"[CLAUDE BLOCK START {line_count}] Block type: {block_type}")
+                    logger.debug(f"Block start at line {line_count}: {block_type}")
                     if block_type == "tool_use":
                         tool_id = block.get("id")
                         tool_name = block.get("name")
-                        logger.warning(
-                            f"[CLAUDE TOOL START {line_count}] Tool: {tool_name}, ID: {tool_id}, Index: {current_tool_index}"
+                        logger.debug(
+                            f"Tool start at line {line_count}: {tool_name}, ID: {tool_id}, Index: {current_tool_index}"
                         )
 
                         # Start accumulating tool use with OpenAI streaming format
@@ -439,8 +439,8 @@ class ClaudeAdapter(BaseAdapter):
                     delta = chunk_data.get("delta", {})
                     delta_type = delta.get("type")
                     if line_count <= 10:
-                        logger.warning(
-                            f"[CLAUDE DELTA {line_count}] Delta type: {delta_type}, delta: {delta}"
+                        logger.debug(
+                            f"Delta at line {line_count}: type={delta_type}, delta={delta}"
                         )
 
                     if delta_type == "text_delta":
@@ -448,16 +448,16 @@ class ClaudeAdapter(BaseAdapter):
                         if text:
                             total_content += text
                             if line_count <= 5:
-                                logger.warning(
-                                    f"[CLAUDE YIELD {line_count}] Yielding text: {text[:100]}"
+                                logger.debug(
+                                    f"Yielding text at line {line_count}: {text[:100]}"
                                 )
                             yield self.format_stream_chunk(text, self.config.id)
 
                     elif delta_type == "input_json_delta":
                         # Tool use - JSON input is being streamed
                         partial_json = delta.get("partial_json", "")
-                        logger.warning(
-                            f"[CLAUDE TOOL {line_count}] Tool input delta: {partial_json[:200]}"
+                        logger.debug(
+                            f"Tool input delta at line {line_count}: {partial_json[:200]}"
                         )
 
                         # Accumulate the JSON input
@@ -471,8 +471,8 @@ class ClaudeAdapter(BaseAdapter):
 
                         # Add to completed tools list (don't send immediately)
                         completed_tool_calls.append(current_tool_use)
-                        logger.warning(
-                            f"[CLAUDE TOOL STOP] Collected tool call #{len(completed_tool_calls)}: {current_tool_use.get('function', {}).get('name')}"
+                        logger.debug(
+                            f"Collected tool call #{len(completed_tool_calls)}: {current_tool_use.get('function', {}).get('name')}"
                         )
 
                         # Reset for next tool
@@ -501,8 +501,8 @@ class ClaudeAdapter(BaseAdapter):
                 elif chunk_type == "message_stop":
                     # If we collected tool calls, send them now
                     if completed_tool_calls:
-                        logger.warning(
-                            f"[CLAUDE MESSAGE STOP] Sending {len(completed_tool_calls)} collected tool calls"
+                        logger.debug(
+                            f"Sending {len(completed_tool_calls)} collected tool calls at message stop"
                         )
                         # Send all tool calls at once
                         tool_chunk = self.format_tool_chunk(completed_tool_calls, self.config.id)
