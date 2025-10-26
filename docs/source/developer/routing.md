@@ -19,12 +19,12 @@ Performs weighted random selection based on computed weights and provides automa
 
 ## Configuration
 
-See `docs/CONFIG.md` for detailed configuration guide.
+See the [Configuration guide](configuration.md) for detailed options and examples.
 
 ### Required Files
 - `config/models.yaml`: Registers available models and adapters
 
-### Optional Files  
+### Optional Files
 - `config/routing.yaml`: Configures local/remote deployment split and health checking
 
 ### Example Configuration (60/40 split):
@@ -54,7 +54,7 @@ remote_deployment:
 # Development: run FastAPI app with routing enabled
 uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
 
-# Respect production environment (see docs/openrouter.md for systemd deployment)
+# Respect production environment (see openrouter.md for systemd deployment)
 PORT=9000 uvicorn serving.servers.app:app --host 0.0.0.0 --port $PORT
 ```
 
