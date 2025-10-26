@@ -38,6 +38,8 @@ include = [
   "client.*",
   "utils",
   "utils.*",
+  "docs",
+  "docs.*",
 ]
 
 [tool.pytest.ini_options]
