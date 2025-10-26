@@ -14,8 +14,10 @@ import json
 import os
 
 import httpx
+import pytest
 from dotenv import load_dotenv
 
+pytestmark = pytest.mark.external
 load_dotenv()
 
 # Test configuration
@@ -91,10 +93,11 @@ def test_streaming_completion():
     chunks = []
     full_text = ""
 
-    with httpx.Client(timeout=30.0) as client:
-        with client.stream("POST", url, headers=headers, json=payload) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
+    with httpx.Client(timeout=30.0) as client, client.stream(
+        "POST", url, headers=headers, json=payload
+    ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
                 if not line.strip():
                     continue
 

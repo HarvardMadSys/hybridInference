@@ -158,14 +158,14 @@ class RegenerateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
 
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
+    "APIKeyDetailResponse",
+    "APIKeyDetailUsage",
+    "APIKeyListItem",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
-    "APIKeyListItem",
     "ListAPIKeysResponse",
-    "APIKeyDetailUsage",
-    "APIKeyDetailResponse",
+    "RegenerateAPIKeyResponse",
+    "RevokeAPIKeyResponse",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
-    "RevokeAPIKeyResponse",
-    "RegenerateAPIKeyResponse",
 ]

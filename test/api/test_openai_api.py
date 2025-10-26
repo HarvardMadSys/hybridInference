@@ -11,9 +11,9 @@ import json
 import os
 
 import httpx
-from dotenv import load_dotenv
+import pytest
 
-load_dotenv()
+pytestmark = pytest.mark.external
 
 # Test configuration
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
@@ -78,10 +78,11 @@ def test_streaming_completion():
     chunks = []
     usage_data = None
 
-    with httpx.Client(timeout=30.0) as client:
-        with client.stream("POST", url, headers=headers, json=payload) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
+    with httpx.Client(timeout=30.0) as client, client.stream(
+        "POST", url, headers=headers, json=payload
+    ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
                 if not line.strip():
                     continue
                 if line.startswith("data: "):

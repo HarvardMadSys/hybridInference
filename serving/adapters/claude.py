@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncGenerator
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 from serving.stream import done_sentinel, make_final_usage_chunk
 

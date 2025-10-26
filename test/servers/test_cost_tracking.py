@@ -16,7 +16,6 @@ from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import completions
 
-
 SAMPLE_PRICING = {
     "prompt": "0.15",
     "completion": "1.25",
@@ -66,7 +65,10 @@ class TrackingAdapter(BaseAdapter):
 
 
 @pytest.fixture
-async def tracking_app(mock_db_logger, mock_rate_limiter) -> FastAPI:
+async def tracking_app(monkeypatch, mock_db_logger, mock_rate_limiter) -> FastAPI:
+    # Disable auth for cost tracking tests; auth has independent coverage.
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
     router = RouteExecutor()
     config = ModelConfig(
         id="tracked-model",
