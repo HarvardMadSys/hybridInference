@@ -49,6 +49,12 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         if "presence_penalty" in params and "presence_penalty" in self.config.supported_params:
             payload["presence_penalty"] = params["presence_penalty"]
 
+        # GLM-4.6: optional tool streaming and thinking parameters
+        if "tool_stream" in params and "tool_stream" in self.config.supported_params:
+            payload["tool_stream"] = params["tool_stream"]
+        if "thinking" in params and "thinking" in self.config.supported_params:
+            payload["thinking"] = params["thinking"]
+
         endpoint = f"{self.config.base_url.rstrip('/')}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
@@ -132,6 +138,12 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         if "presence_penalty" in params and "presence_penalty" in self.config.supported_params:
             payload["presence_penalty"] = params["presence_penalty"]
+
+        # GLM-4.6: optional tool streaming and thinking parameters (streaming)
+        if "tool_stream" in params and "tool_stream" in self.config.supported_params:
+            payload["tool_stream"] = params["tool_stream"]
+        if "thinking" in params and "thinking" in self.config.supported_params:
+            payload["thinking"] = params["thinking"]
 
         endpoint = f"{self.config.base_url.rstrip('/')}/chat/completions"
         headers = {

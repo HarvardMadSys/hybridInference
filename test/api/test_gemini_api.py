@@ -7,11 +7,17 @@ from google.genai import types
 
 pytestmark = pytest.mark.external
 
+# Load environment variables and check for API key
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    pytest.skip("GEMINI_API_KEY not configured", allow_module_level=True)
+
 
 def test_gemini_simple_generation():
     """Simple Gemini generation call; requires valid key and network."""
-    load_dotenv()
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     response = client.models.generate_content(
         model="gemini-2.5-flash",
