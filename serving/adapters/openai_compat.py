@@ -18,6 +18,15 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _clean_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Remove None values from message dict to ensure API compatibility.
+
+    Some APIs (like Featherless) reject messages with null/None fields,
+    so we strip them before sending.
+    """
+    return {k: v for k, v in message.items() if v is not None}
+
+
 class OpenAICompatAdapter(BaseAdapter):
     """Generic adapter for OpenAI-compatible APIs.
 
@@ -86,10 +95,13 @@ class OpenAICompatAdapter(BaseAdapter):
         """
         validated = self.validate_params(params)
 
+        # Clean messages to remove None fields (some APIs reject them)
+        cleaned_messages = [_clean_message(msg) for msg in messages]
+
         # Build request payload
         payload = {
             "model": self._get_model_identifier(),
-            "messages": messages,
+            "messages": cleaned_messages,
             **validated,
         }
 
@@ -107,6 +119,8 @@ class OpenAICompatAdapter(BaseAdapter):
         headers = self._build_headers()
 
         logger.debug(f"[OpenAICompat] POST {url} model={payload['model']}")
+        logger.debug(f"[OpenAICompat] Payload: {payload}")
+        logger.debug(f"[OpenAICompat] Headers: {headers}")
 
         response = await self.http.json_post_with_retry(
             url=url,
@@ -133,9 +147,12 @@ class OpenAICompatAdapter(BaseAdapter):
         """
         validated = self.validate_params(params)
 
+        # Clean messages to remove None fields (some APIs reject them)
+        cleaned_messages = [_clean_message(msg) for msg in messages]
+
         payload = {
             "model": self._get_model_identifier(),
-            "messages": messages,
+            "messages": cleaned_messages,
             "stream": True,
             **validated,
         }
