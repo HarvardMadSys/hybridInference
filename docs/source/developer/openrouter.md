@@ -62,7 +62,7 @@ Create `.env` from the template:
 cp .env.example .env
 ```
 Populate it with provider credentials and runtime configuration:
-```env
+```bash
 LOCAL_BASE_URL=https://freeinference.org/v1
 OFFLOAD=0
 DEEPSEEK_API_KEY=your-deepseek-api-key

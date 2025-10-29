@@ -50,14 +50,14 @@ cp .env.example .env
 Required configuration:
 
 1. **API Keys** (for external providers):
-   ```env
+   ```bash
    OPENAI_API_KEY=your-actual-openai-api-key
    LLAMA_API_KEY=your-actual-llama-api-key
    GEMINI_API_KEY=your-actual-gemini-api-key
    ```
 
 2. **Database Credentials**:
-   ```env
+   ```bash
    DB_NAME=your_database_name
    DB_USER=your_database_user
    DB_PASSWORD=your_secure_password
