@@ -1,6 +1,4 @@
-"""
-Logging utilities with optional JSON formatter.
-"""
+"""Logging utilities with optional JSON formatter."""
 
 from __future__ import annotations
 
@@ -13,7 +11,17 @@ from . import context as req_ctx
 
 
 class JsonFormatter(logging.Formatter):
+    """Format log records as JSON including request context metadata."""
+
     def format(self, record: logging.LogRecord) -> str:
+        """Return a JSON-formatted representation of the log record.
+
+        Args:
+            record: The log record emitted by the logger.
+
+        Returns:
+            JSON encoded string for the log entry.
+        """
         payload: dict[str, Any] = {
             "time": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
@@ -68,16 +76,25 @@ def setup_logging() -> None:
         root.setLevel(level)
         return
 
-    handler = logging.StreamHandler()
     formatter = (
         JsonFormatter()
         if _env_is_json()
         else logging.Formatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
-    handler.setFormatter(formatter)
+
+    # Console handler (stdout)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    root.addHandler(console_handler)
+
+    # File handler if LOG_FILE is set
+    log_file = os.getenv("LOG_FILE")
+    if log_file:
+        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
 
     root.setLevel(level)
-    root.addHandler(handler)
 
 
 def get_logger(name: str | None = None) -> logging.Logger:
