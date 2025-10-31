@@ -196,6 +196,11 @@ async def chat_completions(
             usage_data = None
             routing_info = None
             chunk_count = 0
+            # Accumulate streamed content for DB logging
+            final_text = ""
+            finish_reason_for_db = "stop"
+            # Properly handle tool_calls delta merging by index
+            tool_calls_map: dict[int, dict[str, Any]] = {}
             try:
                 # Emit initial assistant role chunk for client compatibility (e.g., Cursor)
                 from serving.stream import make_role_chunk
@@ -229,11 +234,89 @@ async def chat_completions(
                                 logger.debug(
                                     f"Extracted routing from chunk {chunk_count}: {routing_info}"
                                 )
+
+                            # Accumulate content and finish_reason for DB logging
+                            choices = chunk_json.get("choices", [])
+                            if choices:
+                                choice = choices[0]
+                                delta = choice.get("delta", {})
+
+                                # Accumulate content
+                                content_piece = delta.get("content")
+                                if content_piece:
+                                    final_text += content_piece
+
+                                # Handle tool_calls delta merging
+                                tool_calls_delta = delta.get("tool_calls")
+                                if tool_calls_delta:
+                                    for tc_delta in tool_calls_delta:
+                                        idx = tc_delta.get("index", 0)
+                                        if idx not in tool_calls_map:
+                                            tool_calls_map[idx] = {
+                                                "index": idx,
+                                                "id": tc_delta.get("id", ""),
+                                                "type": tc_delta.get("type", "function"),
+                                                "function": {"name": "", "arguments": ""},
+                                            }
+
+                                        # Merge id if present
+                                        if "id" in tc_delta:
+                                            tool_calls_map[idx]["id"] = tc_delta["id"]
+
+                                        # Merge type if present
+                                        if "type" in tc_delta:
+                                            tool_calls_map[idx]["type"] = tc_delta["type"]
+
+                                        # Merge function delta
+                                        if "function" in tc_delta:
+                                            fn_delta = tc_delta["function"]
+                                            if "name" in fn_delta:
+                                                tool_calls_map[idx]["function"]["name"] = fn_delta[
+                                                    "name"
+                                                ]
+                                            if "arguments" in fn_delta:
+                                                # Arguments are streamed incrementally
+                                                tool_calls_map[idx]["function"]["arguments"] += (
+                                                    fn_delta["arguments"]
+                                                )
+
+                                # Update finish_reason if present
+                                fr = choice.get("finish_reason")
+                                if fr:
+                                    finish_reason_for_db = fr
                         except (json.JSONDecodeError, KeyError) as e:
                             logger.warning(f"Failed to parse chunk {chunk_count}: {e}")
                             pass
 
                 logger.info(f"Stream complete: total_chunks={chunk_count}")
+
+                # Reconstruct a complete response object for DB logging
+                response_for_db: dict[str, Any] = {
+                    "id": request_id,
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": final_text if final_text else None,
+                            },
+                            "finish_reason": finish_reason_for_db,
+                        }
+                    ],
+                }
+
+                # Add tool_calls if any were accumulated
+                if tool_calls_map:
+                    # Convert map to list, sorted by index
+                    tool_calls_list = [tc for _, tc in sorted(tool_calls_map.items())]
+                    response_for_db["choices"][0]["message"]["tool_calls"] = tool_calls_list
+
+                # Add usage if available
+                if usage_data:
+                    response_for_db["usage"] = normalize_usage(usage_data) or usage_data
 
                 # Get pricing from actual provider used
                 provider = "router"
@@ -251,8 +334,8 @@ async def chat_completions(
                         model_id=model,
                         provider=provider,
                         prompt=messages,
-                        response={"stream": True},
-                        usage=usage_data,
+                        response=response_for_db,
+                        usage=response_for_db.get("usage") if response_for_db else usage_data,
                         latency_ms=int((time.time() - start_time) * 1000),
                         status_code=200,
                         params=params,
