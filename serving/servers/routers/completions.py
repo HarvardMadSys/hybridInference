@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import suppress
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -105,6 +106,8 @@ async def chat_completions(
         params["tool_choice"] = payload.tool_choice
     if payload.response_format is not None:
         params["response_format"] = payload.response_format.model_dump(by_alias=True)
+    # Always record whether this request is streaming for DB analytics
+    params["stream"] = bool(payload.stream)
 
     # Rate limit check with advanced features
     if rate_limiter:
@@ -189,6 +192,22 @@ async def chat_completions(
                     return adapter.config.pricing
         return None
 
+    def get_adapter_config_for_provider(provider_name: str, base_url: str | None = None) -> Any:
+        """Return the adapter config object for the provider/base_url used."""
+        if model not in router_exec.routes:
+            return None
+        route_config = router_exec.routes[model]
+        for adapter, _ in route_config.adapters:
+            cfg = getattr(adapter, "config", None)
+            if not cfg:
+                continue
+            if cfg.provider != provider_name:
+                continue
+            if base_url and getattr(cfg, "base_url", None) != base_url:
+                continue
+            return cfg
+        return None
+
     # Streaming path
     if payload.stream:
 
@@ -201,6 +220,8 @@ async def chat_completions(
             finish_reason_for_db = "stop"
             # Properly handle tool_calls delta merging by index
             tool_calls_map: dict[int, dict[str, Any]] = {}
+            # Track TTFT: time to first token
+            ttft_ms: int | None = None
             try:
                 # Emit initial assistant role chunk for client compatibility (e.g., Cursor)
                 from serving.stream import make_role_chunk
@@ -212,14 +233,11 @@ async def chat_completions(
                 logger.debug(f"Starting to consume adapter stream for model: {model}")
                 async for chunk in router_exec.stream_chat_completion(model, messages, **params):
                     chunk_count += 1
-                    # Forward adapter SSE chunks directly. Adapters emit final usage chunk.
+                    # Forward adapter SSE chunks with sanitization. Adapters may emit final usage chunk.
                     if chunk_count <= 10 or chunk_count % 10 == 0:
                         logger.debug(f"Chunk {chunk_count} received from adapter: {chunk[:200]}")
 
-                    logger.debug(f"Yielding chunk {chunk_count} to client: {chunk[:150]}")
-                    yield chunk
-
-                    # Extract usage and routing info from chunks
+                    # Extract usage and routing info from chunks; sanitize before yielding
                     if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                         try:
                             chunk_json = json.loads(chunk[6:])
@@ -230,10 +248,30 @@ async def chat_completions(
                                 )
                             # Streaming adapters may also include _routing in final chunk
                             if "_routing" in chunk_json:
-                                routing_info = chunk_json["_routing"]
+                                routing_info = chunk_json.get("_routing")
                                 logger.debug(
                                     f"Extracted routing from chunk {chunk_count}: {routing_info}"
                                 )
+                                # Never leak routing info to clients
+                                with suppress(Exception):
+                                    del chunk_json["_routing"]
+
+                            # Record TTFT at the first meaningful delta (content or tool_calls)
+                            if ttft_ms is None:
+                                try:
+                                    choices_local = chunk_json.get("choices", [])
+                                    if choices_local:
+                                        delta_local = choices_local[0].get("delta", {})
+                                        has_content = bool(delta_local.get("content"))
+                                        has_tool_calls = bool(delta_local.get("tool_calls"))
+                                        if has_content or has_tool_calls:
+                                            ttft_ms = int((time.time() - start_time) * 1000)
+                                            logger.debug(
+                                                f"TTFT recorded (first delta): {ttft_ms}ms"
+                                            )
+                                except Exception:
+                                    # Best effort only; do not impact streaming on errors.
+                                    pass
 
                             # Accumulate content and finish_reason for DB logging
                             choices = chunk_json.get("choices", [])
@@ -244,6 +282,10 @@ async def chat_completions(
                                 # Accumulate content
                                 content_piece = delta.get("content")
                                 if content_piece:
+                                    # Record TTFT at the first actual content token
+                                    if ttft_ms is None:
+                                        ttft_ms = int((time.time() - start_time) * 1000)
+                                        logger.debug(f"TTFT recorded: {ttft_ms}ms")
                                     final_text += content_piece
 
                                 # Handle tool_calls delta merging
@@ -284,9 +326,21 @@ async def chat_completions(
                                 fr = choice.get("finish_reason")
                                 if fr:
                                     finish_reason_for_db = fr
+
+                            # Yield sanitized chunk to client
+                            sanitized_chunk = f"data: {json.dumps(chunk_json)}\n\n"
+                            logger.debug(
+                                f"Yielding sanitized chunk {chunk_count} to client: {sanitized_chunk[:150]}"
+                            )
+                            yield sanitized_chunk
+                            continue
                         except (json.JSONDecodeError, KeyError) as e:
                             logger.warning(f"Failed to parse chunk {chunk_count}: {e}")
-                            pass
+                            # Fall through to yield original chunk unmodified
+
+                    # Non-JSON or [DONE] chunks pass through
+                    logger.debug(f"Yielding chunk {chunk_count} to client: {chunk[:150]}")
+                    yield chunk
 
                 logger.info(f"Stream complete: total_chunks={chunk_count}")
 
@@ -338,8 +392,33 @@ async def chat_completions(
                         usage=response_for_db.get("usage") if response_for_db else usage_data,
                         latency_ms=int((time.time() - start_time) * 1000),
                         status_code=200,
-                        params=params,
+                        params=(
+                            (
+                                lambda p: (
+                                    p.update(
+                                        {
+                                            "max_tokens": p.get("max_tokens")
+                                            if p.get("max_tokens") is not None
+                                            else (
+                                                getattr(
+                                                    get_adapter_config_for_provider(
+                                                        provider,
+                                                        routing_info.get("base_url")
+                                                        if routing_info
+                                                        else None,
+                                                    ),
+                                                    "max_output_length",
+                                                    None,
+                                                )
+                                            )
+                                        }
+                                    )
+                                    or p
+                                )
+                            )(dict(params))
+                        ),
                         metadata=metadata,
+                        ttft_ms=ttft_ms,
                         pricing=pricing,
                     )
             except Exception as exc:
@@ -380,16 +459,24 @@ async def chat_completions(
     try:
         response = await router_exec.chat_completion(model, messages, **params)
 
-        if db_logger:
-            provider = "router"
-            pricing = None
-            if "_routing" in response:
-                provider = response["_routing"]["provider"]
+        # Always sanitize internal routing metadata from response to client
+        provider = "router"
+        base_url = None
+        if isinstance(response, dict) and "_routing" in response:
+            try:
+                provider = response["_routing"].get("provider", "router")
                 base_url = response["_routing"].get("base_url")
-                # Get pricing from actual provider used
-                pricing = get_pricing_for_provider(provider, base_url)
+                # Enrich metadata for analytics; safe to skip if no DB logger
                 metadata.update(response["_routing"])  # type: ignore[arg-type]
+            except Exception:
+                # Do not let metadata processing impact client response
+                pass
+            # Never leak internal routing details to clients
+            with suppress(Exception):
                 del response["_routing"]
+
+        if db_logger:
+            pricing = get_pricing_for_provider(provider, base_url)
 
             # Normalize usage to extract reasoning_tokens from nested locations
             normalized_usage = normalize_usage(response.get("usage"))
@@ -403,7 +490,26 @@ async def chat_completions(
                 usage=normalized_usage,
                 latency_ms=int((time.time() - start_time) * 1000),
                 status_code=200,
-                params=params,
+                params=(
+                    (
+                        lambda p: (
+                            p.update(
+                                {
+                                    "max_tokens": p.get("max_tokens")
+                                    if p.get("max_tokens") is not None
+                                    else (
+                                        getattr(
+                                            get_adapter_config_for_provider(provider, base_url),
+                                            "max_output_length",
+                                            None,
+                                        )
+                                    )
+                                }
+                            )
+                            or p
+                        )
+                    )(dict(params))
+                ),
                 metadata=metadata,
                 pricing=pricing,
             )
