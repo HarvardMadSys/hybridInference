@@ -157,6 +157,10 @@ async def chat_completions(
     is_authenticated = bool(user_ctx.get("authenticated"))
     # Initialize provider early to avoid UnboundLocalError in exception handlers
     provider = "router"
+    # Extract a stable session identifier from a single, canonical header.
+    # Clients are expected to send X-Session-ID. Starlette headers are case-insensitive.
+    session_id = request.headers.get("X-Session-ID")
+
     metadata = {
         "user_agent": request.headers.get("user-agent"),
         "ip": request.client.host if request.client else None,
@@ -165,6 +169,8 @@ async def chat_completions(
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
     }
+    if session_id:
+        metadata["session_id"] = session_id
 
     # Helper function to get pricing for a specific provider
     def get_pricing_for_provider(

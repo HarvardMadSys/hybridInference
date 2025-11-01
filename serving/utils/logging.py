@@ -36,7 +36,10 @@ class JsonFormatter(logging.Formatter):
                     payload[k] = ctx[k]
         except Exception:
             pass
-        # Merge well-known attributes passed via ``logger.*(extra=...)``
+        # Merge well-known attributes passed via ``logger.*(extra=...)``.
+        # Note: logging attaches items from ``extra`` into ``record.__dict__``.
+        # Keys with hyphens (e.g., "x-session-id") are not valid attributes,
+        # so ``hasattr`` will not work. We therefore read from ``__dict__``.
         for key in (
             "method",
             "path",
@@ -49,9 +52,13 @@ class JsonFormatter(logging.Formatter):
             "request_id",
             "model",
             "provider",
+            # Canonical session identifier matching database metadata
+            "session_id",
+            # Debug headers snapshot (full request headers when in DEBUG mode)
+            "headers",
         ):
-            if hasattr(record, key):
-                payload[key] = getattr(record, key)
+            if key in record.__dict__:
+                payload[key] = record.__dict__[key]
 
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
@@ -68,19 +75,22 @@ def _env_is_json() -> bool:
 
 
 def setup_logging() -> None:
-    """Initialize root logger once with configured level and format."""
+    """Initialize or update root logger with env-controlled level and format."""
     root = logging.getLogger()
     level = _env_level()
 
-    if root.handlers:
-        root.setLevel(level)
-        return
-
-    formatter = (
+    formatter: logging.Formatter = (
         JsonFormatter()
         if _env_is_json()
         else logging.Formatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
+
+    # If handlers already exist (e.g., logging initialized before dotenv), update them.
+    if root.handlers:
+        root.setLevel(level)
+        for h in root.handlers:
+            h.setFormatter(formatter)
+        return
 
     # Console handler (stdout)
     console_handler = logging.StreamHandler()
