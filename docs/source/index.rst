@@ -12,6 +12,7 @@ Quick Links
 * :doc:`quickstart` - Get started in 5 minutes
 * :doc:`models` - View available models
 * :doc:`examples` - Code examples in Python, JavaScript, and more
+* :doc:`integrations` - Configure with Cursor, Windsurf, and other coding agents
 * :doc:`api-reference` - Complete API reference
 
 .. toctree::
@@ -22,6 +23,7 @@ Quick Links
    quickstart
    models
    examples
+   integrations
    api-reference
 
 .. toctree::
@@ -41,13 +43,6 @@ Quick Links
    developer/fasrc
    developer/contributing
 
-.. toctree::
-   :maxdepth: 1
-   :caption: Project Info:
-   :hidden:
-
-   changelog
-
 Key Features
 ------------
 
@@ -59,9 +54,6 @@ Key Features
 
 **Multiple Models**
    Access Llama, Gemini, GPT, and Claude models
-
-**Free Tier Available**
-   Get started with our free tier
 
 **Production Ready**
    Built for scale with monitoring and observability
