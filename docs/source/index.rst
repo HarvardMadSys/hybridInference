@@ -12,6 +12,7 @@ Quick Links
 * :doc:`quickstart` - Get started in 5 minutes
 * :doc:`models` - View available models
 * :doc:`examples` - Code examples in Python, JavaScript, and more
+* :doc:`integrations` - Configure with Cursor, Windsurf, and other coding agents
 * :doc:`api-reference` - Complete API reference
 
 .. toctree::
@@ -22,6 +23,7 @@ Quick Links
    quickstart
    models
    examples
+   integrations
    api-reference
 
 .. toctree::
