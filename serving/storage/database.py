@@ -128,8 +128,7 @@ class DatabaseLogger:
                     user_id TEXT,
                     session_id TEXT,
                     metadata JSONB,
-                    tools JSONB,
-                    response_format JSONB
+                    tools JSONB
                 )
             """)
 
@@ -213,6 +212,14 @@ class DatabaseLogger:
                 ALTER TABLE api_logs
                 ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)
             """)
+
+            # Migration: drop deprecated response_format column if present
+            await conn.execute(
+                """
+                ALTER TABLE IF EXISTS api_logs
+                DROP COLUMN IF EXISTS response_format
+                """
+            )
 
             # Aggregated stats table
             await conn.execute("""
@@ -402,7 +409,7 @@ class DatabaseLogger:
                     cache_read_tokens, cache_write_tokens, cost_usd,
                     prompt, response, prompt_hash,
                     status_code, error, user_id, session_id, metadata,
-                    tools, response_format
+                    tools
                 )
                 VALUES (
                     $1, $2, $3,
@@ -412,7 +419,7 @@ class DatabaseLogger:
                     $15, $16, $17,
                     $18, $19, $20,
                     $21, $22, $23, $24, $25::jsonb,
-                    $26::jsonb, $27::jsonb
+                    $26::jsonb
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -448,9 +455,6 @@ class DatabaseLogger:
                 (metadata or {}).get("session_id"),
                 json.dumps(metadata) if metadata else None,
                 json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
-                json.dumps((params or {}).get("response_format"))
-                if (params or {}).get("response_format")
-                else None,
             )
 
     async def get_stats(
