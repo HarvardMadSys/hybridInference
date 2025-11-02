@@ -237,8 +237,9 @@ async def initialize() -> AppServices:
     """
     import asyncio
 
-    setup_logging()
+    # Load environment first so logging picks up LOG_FORMAT/LOG_LEVEL.
     load_dotenv()
+    setup_logging()
 
     router = RouteExecutor()
 
