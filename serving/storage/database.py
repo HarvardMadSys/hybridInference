@@ -213,14 +213,6 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)
             """)
 
-            # Migration: drop deprecated response_format column if present
-            await conn.execute(
-                """
-                ALTER TABLE IF EXISTS api_logs
-                DROP COLUMN IF EXISTS response_format
-                """
-            )
-
             # Aggregated stats table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS api_stats_hourly (
