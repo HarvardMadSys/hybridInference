@@ -43,13 +43,6 @@ Quick Links
    developer/fasrc
    developer/contributing
 
-.. toctree::
-   :maxdepth: 1
-   :caption: Project Info:
-   :hidden:
-
-   changelog
-
 Key Features
 ------------
 
@@ -61,9 +54,6 @@ Key Features
 
 **Multiple Models**
    Access Llama, Gemini, GPT, and Claude models
-
-**Free Tier Available**
-   Get started with our free tier
 
 **Production Ready**
    Built for scale with monitoring and observability
