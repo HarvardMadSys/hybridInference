@@ -1,4 +1,4 @@
-name: Deploy Documentation
+name: Build Documentation
 
 on:
   push:
@@ -10,8 +10,11 @@ on:
       - '.github/workflows/docs.yml'
   workflow_dispatch:  # Allow manual trigger
 
-# Cloudflare Pages handles deployment for private repos
-# This workflow only validates that docs build successfully
+# NOTE: Documentation is deployed via Cloudflare Pages:
+#   - User docs: https://doc.freeinference.org/
+#   - Developer docs: https://internal-docs.example.org/
+# Cloudflare automatically builds and deploys on push to main.
+# This workflow only validates that documentation builds without errors.
 permissions:
   contents: read
 

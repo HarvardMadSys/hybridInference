@@ -2,7 +2,7 @@
 
 A high-performance hybrid inference server providing local deployment and offline API access to various LLM providers.
 
-**[Documentation](https://harvardsys.github.io/hybridInference/)** | [Quick Start](#quick-start-with-uv-recommended)
+**[User Documentation](https://doc.freeinference.org/)** | **[Developer Documentation](https://internal-docs.example.org/)** | [Quick Start](#quick-start-with-uv-recommended)
 
 ## Project Structure
 
@@ -191,7 +191,8 @@ uv run pytest -m integration  # Only integration tests
 
 ## Documentation
 
-Full documentation is available at [https://harvardsys.github.io/hybridInference/](https://harvardsys.github.io/hybridInference/)
+- **User Documentation**: [https://doc.freeinference.org/](https://doc.freeinference.org/) - API reference, quick start guides, and usage examples
+- **Developer Documentation**: [https://internal-docs.example.org/](https://internal-docs.example.org/) - Architecture, deployment, and contribution guides
 
 ### Building Documentation Locally
 
