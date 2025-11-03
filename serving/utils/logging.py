@@ -1,6 +1,4 @@
-"""
-Logging utilities with optional JSON formatter.
-"""
+"""Logging utilities with optional JSON formatter."""
 
 from __future__ import annotations
 
@@ -13,7 +11,17 @@ from . import context as req_ctx
 
 
 class JsonFormatter(logging.Formatter):
+    """Format log records as JSON including request context metadata."""
+
     def format(self, record: logging.LogRecord) -> str:
+        """Return a JSON-formatted representation of the log record.
+
+        Args:
+            record: The log record emitted by the logger.
+
+        Returns:
+            JSON encoded string for the log entry.
+        """
         payload: dict[str, Any] = {
             "time": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
@@ -28,7 +36,10 @@ class JsonFormatter(logging.Formatter):
                     payload[k] = ctx[k]
         except Exception:
             pass
-        # Merge well-known attributes passed via ``logger.*(extra=...)``
+        # Merge well-known attributes passed via ``logger.*(extra=...)``.
+        # Note: logging attaches items from ``extra`` into ``record.__dict__``.
+        # Keys with hyphens (e.g., "x-session-id") are not valid attributes,
+        # so ``hasattr`` will not work. We therefore read from ``__dict__``.
         for key in (
             "method",
             "path",
@@ -41,9 +52,13 @@ class JsonFormatter(logging.Formatter):
             "request_id",
             "model",
             "provider",
+            # Canonical session identifier matching database metadata
+            "session_id",
+            # Debug headers snapshot (full request headers when in DEBUG mode)
+            "headers",
         ):
-            if hasattr(record, key):
-                payload[key] = getattr(record, key)
+            if key in record.__dict__:
+                payload[key] = record.__dict__[key]
 
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
@@ -60,24 +75,36 @@ def _env_is_json() -> bool:
 
 
 def setup_logging() -> None:
-    """Initialize root logger once with configured level and format."""
+    """Initialize or update root logger with env-controlled level and format."""
     root = logging.getLogger()
     level = _env_level()
 
-    if root.handlers:
-        root.setLevel(level)
-        return
-
-    handler = logging.StreamHandler()
-    formatter = (
+    formatter: logging.Formatter = (
         JsonFormatter()
         if _env_is_json()
         else logging.Formatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
-    handler.setFormatter(formatter)
+
+    # If handlers already exist (e.g., logging initialized before dotenv), update them.
+    if root.handlers:
+        root.setLevel(level)
+        for h in root.handlers:
+            h.setFormatter(formatter)
+        return
+
+    # Console handler (stdout)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    root.addHandler(console_handler)
+
+    # File handler if LOG_FILE is set
+    log_file = os.getenv("LOG_FILE")
+    if log_file:
+        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
 
     root.setLevel(level)
-    root.addHandler(handler)
 
 
 def get_logger(name: str | None = None) -> logging.Logger:

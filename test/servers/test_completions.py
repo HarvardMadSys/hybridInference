@@ -65,12 +65,15 @@ def _mk_cfg(model_id: str) -> ModelConfig:
 
 
 @pytest.fixture
-async def completions_app(mock_rate_limiter, mock_db_logger) -> FastAPI:
+async def completions_app(monkeypatch, mock_rate_limiter, mock_db_logger) -> FastAPI:
     """Create a FastAPI app with completions/compat routers and injected services.
 
     Note: We set app.state.services directly to avoid relying on lifespan handling
     in the test transport.
     """
+
+    # Disable auth for routing-focused tests to avoid auth noise.
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
     router.register_route("gpt-4", [(DummyAdapter(_mk_cfg("gpt-4")), 1.0)])

@@ -65,7 +65,10 @@ class TrackingAdapter(BaseAdapter):
 
 
 @pytest.fixture
-async def tracking_app(mock_db_logger, mock_rate_limiter) -> FastAPI:
+async def tracking_app(monkeypatch, mock_db_logger, mock_rate_limiter) -> FastAPI:
+    # Disable auth for cost tracking tests; auth has independent coverage.
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
     router = RouteExecutor()
     config = ModelConfig(
         id="tracked-model",

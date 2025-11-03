@@ -73,7 +73,7 @@ models:
 Controls traffic distribution between local and remote deployments with optional health monitoring.
 
 ### Fixed-Ratio Strategy
-- Set `routing_strategy: fixed` 
+- Set `routing_strategy: fixed`
 - Control local traffic percentage via `routing_parameter.local_fraction` (0.0–1.0)
 - Weights are distributed equally within local and remote groups
 

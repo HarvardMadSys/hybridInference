@@ -55,6 +55,8 @@ async def test_stream_post_sse_wraps_lines(monkeypatch):
         def __init__(self, chunks: list[bytes]):
             self._chunks = chunks
             self.content = self
+            self.headers = {}
+            self.status = 200
 
         async def __aenter__(self):
             return self
@@ -102,6 +104,8 @@ async def test_stream_post_ndjson(monkeypatch):
         def __init__(self, chunks: list[bytes]):
             self._chunks = chunks
             self.content = self
+            self.headers = {}
+            self.status = 200
 
         async def __aenter__(self):
             return self

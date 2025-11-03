@@ -61,8 +61,8 @@ We serve OpenRouter-compatible traffic directly through a FastAPI application li
 
 - Restart on demand: `sudo systemctl restart freeinference.service`
 - Follow logs: `journalctl -u freeinference.service -f`
-- Health check: `curl http://freeinference.org/health`
-- List registered models: `curl http://freeinference.org/v1/models | jq`
+- Health check: `curl https://freeinference.org/health`
+- List registered models: `curl https://freeinference.org/v1/models | jq`
 
 ### Why We Dropped Nginx
 
@@ -123,11 +123,11 @@ sudo ln -s /usr/local/openresty/nginx/conf/sites-available/vllm \
 ```bash
 http {
     # ... Others ...
-    
+
     # Lua settings
     lua_package_path "/usr/local/openresty/lualib/?.lua;;";
     lua_shared_dict model_cache 10m;
-    
+
     # Include Site Configuration
     include /usr/local/openresty/nginx/conf/sites-enabled/*;
 }
@@ -149,10 +149,10 @@ sudo openresty -s reload
 
 ```bash
 # check service status
-curl http://freeinference.org/health
+curl https://freeinference.org/health
 
 # list all models
-curl http://freeinference.org/v1/models | jq
+curl https://freeinference.org/v1/models | jq
 
 # Chat with Qwen3-Coder
 curl -X POST http://freeinference.org/v1/chat/completions \
@@ -173,5 +173,5 @@ sudo nginx -t
 sudo systemctl reload nginx
 
 # to test the endpoint
-curl http://freeinference.org/v1/models
+curl https://freeinference.org/v1/models
 ```

@@ -2,6 +2,8 @@
 
 A high-performance hybrid inference server providing local deployment and offline API access to various LLM providers.
 
+**[User Documentation](https://doc.freeinference.org/)** | **[Developer Documentation](https://internaldoc.freeinference.org/)** | [Quick Start](#quick-start-with-uv-recommended)
+
 ## Project Structure
 
 ```
@@ -30,7 +32,7 @@ For service-specific deployment and routing details, refer to `docs/openrouter.m
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/HarvardSys/hybridInference.git
 cd hybridInference
 
 # Set up development environment
@@ -185,6 +187,23 @@ uv run pytest test/test_routing.py
 # Run tests with markers
 uv run pytest -m "not slow"  # Skip slow tests
 uv run pytest -m integration  # Only integration tests
+```
+
+## Documentation
+
+- **User Documentation**: [https://doc.freeinference.org/](https://doc.freeinference.org/) - API reference, quick start guides, and usage examples
+- **Developer Documentation**: [https://internaldoc.freeinference.org/](https://internaldoc.freeinference.org/) - Architecture, deployment, and contribution guides
+
+### Building Documentation Locally
+
+```bash
+cd docs
+make html
+
+# View the documentation
+open build/html/index.html  # macOS
+# or
+xdg-open build/html/index.html  # Linux
 ```
 
 ## Contributing

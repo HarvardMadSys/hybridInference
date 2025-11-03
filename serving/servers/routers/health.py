@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Response, status
 
 from serving.observability.metrics import DATABASE_CONNECTED
 from serving.servers.deps import get_db_logger, get_router, get_services
-from serving.storage.database import DatabaseLogger
+
+if TYPE_CHECKING:
+    from serving.storage.database import DatabaseLogger
 
 router = APIRouter()
 
