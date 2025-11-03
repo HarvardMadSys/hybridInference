@@ -16,6 +16,15 @@ from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 from .base import BaseAdapter, UsageInfo
 
 
+def _clean_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Remove None values from message dict to ensure API compatibility.
+
+    Some APIs reject messages with null/None fields,
+    so we strip them before sending.
+    """
+    return {k: v for k, v in message.items() if v is not None}
+
+
 class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
     """Adapter for Zhipu AI GLM models using OpenAI-compatible endpoints."""
 
@@ -28,8 +37,11 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         # Use provider_model_id if specified, otherwise fall back to id
         model_id = self.config.provider_model_id or self.config.id
 
+        # Clean messages to remove None fields (some APIs reject them)
+        cleaned_messages = [_clean_message(msg) for msg in messages]
+
         # Zhipu uses standard OpenAI format without special roles
-        payload = {"model": model_id, "messages": messages, **validated_params}
+        payload = {"model": model_id, "messages": cleaned_messages, **validated_params}
 
         # Additional parameters if supported
         if "tools" in params and self.config.supports_tools:
@@ -118,8 +130,16 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
         # Use provider_model_id if specified
         model_id = self.config.provider_model_id or self.config.id
 
+        # Clean messages to remove None fields (some APIs reject them)
+        cleaned_messages = [_clean_message(msg) for msg in messages]
+
         # Build payload
-        payload = {"model": model_id, "messages": messages, "stream": True, **validated_params}
+        payload = {
+            "model": model_id,
+            "messages": cleaned_messages,
+            "stream": True,
+            **validated_params,
+        }
 
         # Additional parameters if supported
         if "tools" in params and self.config.supports_tools:
