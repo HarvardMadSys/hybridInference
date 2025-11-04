@@ -1,3 +1,18 @@
+"""OpenRouter-compatible models listing routes.
+
+This module exposes endpoints that return a consolidated list of models in an
+OpenRouter/OpenAI-compatible schema:
+
+- `/models`
+- `/openrouter/models`
+- `/v1/models`
+
+The router aggregates multiple backend adapters per logical model and reports
+conservative capabilities (e.g., minimum context length, intersection of
+sampling parameters). The response is deterministic across concurrent requests;
+for example, the `created` field is frozen at import time.
+"""
+
 from __future__ import annotations
 
 import time
@@ -8,6 +23,10 @@ from serving.schemas import ModelItem, ModelList
 from serving.servers.deps import get_router
 
 router = APIRouter()
+
+# Fixed creation timestamp captured at import time to ensure
+# deterministic responses across concurrent requests.
+CREATED_TS = int(time.time())
 
 
 @router.get("/models")
@@ -22,7 +41,6 @@ async def list_models(
     conservative limits (minimum across adapters) to ensure compatibility
     regardless of the routed backend.
     """
-    now = int(time.time())
     models: list[ModelItem] = []
     emitted_ids: set[str] = set()
 
@@ -61,7 +79,7 @@ async def list_models(
         model_entry = ModelItem(
             id=canonical_id,
             name=primary_cfg.name,
-            created=now,
+            created=CREATED_TS,
             owned_by=primary_cfg.provider,
             input_modalities=primary_cfg.input_modalities,
             output_modalities=primary_cfg.output_modalities,
