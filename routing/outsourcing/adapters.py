@@ -2,15 +2,14 @@
 
 This module contains the SGLang adapter used by the outsourcing engine. In
 SGLang, accessing internal scheduler structures for metrics is discouraged.
-Instead, this adapter supports reading operational metrics from SGLang's
-Prometheus endpoint (e.g. http://localhost:30000/metrics) for observability
-while optionally using a provided scheduler object for queue manipulation in
-deployments where that is possible.
+Instead, this adapter maintains its own internal waiting queue and reads
+operational metrics from SGLang's Prometheus endpoint (e.g. 
+http://localhost:30000/metrics) for observability.
 """
 
 import re
 import time
-from typing import Any
+from collections import deque
 
 import requests
 
@@ -19,19 +18,22 @@ from routing.outsourcing.request import OutsourcingRequestInfo, RequestStatus
 
 
 class SGLangWaitingQueueAdapter(WaitingQueueInterface):
-    """Adapter for SGLang integration.
+    """Adapter for SGLang integration with internal queue management.
 
-    Two complementary capabilities are provided:
-    1) Queue access/manipulation (when a scheduler object is available).
-    2) Metrics collection via SGLang's Prometheus endpoint (no scheduler needed).
+    This adapter maintains its own internal FIFO waiting queue and fetches
+    performance metrics from SGLang's Prometheus endpoint for monitoring.
 
-    Example usage with metrics-only (recommended for production observability):
+    Example usage:
         queue_adapter = SGLangWaitingQueueAdapter(metrics_url="http://localhost:30000/metrics")
-
-    Example usage with a scheduler object (for environments where it's allowed):
-        from sglang import Scheduler
-        scheduler = Scheduler(...)
-        queue_adapter = SGLangWaitingQueueAdapter(scheduler=scheduler)
+        
+        # Add requests to the queue
+        queue_adapter.add_request(request_info)
+        
+        # Use with outsourcing engine
+        engine = OutsourcingEngine(
+            waiting_queue=queue_adapter,
+            ...
+        )
     """
 
     def __init__(
@@ -42,8 +44,6 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         """Initialize the adapter.
 
         Args:
-            scheduler: Optional SGLang scheduler instance with waiting queue access.
-                If provided, queue operations (get_all_waiting/remove) will use it.
             metrics_url: Optional Prometheus metrics URL (defaults to
                 "http://localhost:30000/metrics" if not provided).
             http_timeout_s: Timeout for HTTP requests to the metrics endpoint.
@@ -51,98 +51,40 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         self.metrics_url = metrics_url or "http://localhost:30000/metrics"
         self.http_timeout_s = http_timeout_s
         
+        # Internal waiting queue (FIFO)
+        self._waiting_queue: deque[OutsourcingRequestInfo] = deque()
+        
+        # Index for fast lookup by request ID
+        self._request_index: dict[str, OutsourcingRequestInfo] = {}
+        
+    def add_request(self, request: OutsourcingRequestInfo) -> None:
+        """Add a new request to the waiting queue.
+        
+        Args:
+            request: Request information to add to the queue
+        """
+        # Update queue time to current
+        current_time = time.time()
+        request.queue_time = current_time - request.arrival_time
+        
+        # Add to queue and index
+        self._waiting_queue.append(request)
+        self._request_index[request.request_id] = request
+        
     def get_all_waiting(self) -> list[OutsourcingRequestInfo]:
         """Get snapshot of all waiting requests in queue order (FCFS).
         
         Returns:
             List of OutsourcingRequestInfo for all waiting requests
         """
-        if self.scheduler is None:
-            # Without a scheduler reference, we cannot enumerate individual
-            # requests. Use metrics for aggregate visibility instead via
-            # `get_metrics()`. Returning an empty list signals no actionable
-            # per-request operations can be performed from here.
-            return []
-
-        # Access SGLang's waiting queue. The actual attribute name may vary.
-        # Common patterns: waiting_queue, waiting_reqs, pending_requests
-        waiting_reqs = getattr(self.scheduler, "waiting_queue", [])
-        
-        if not waiting_reqs:
-            # Try alternative attribute names
-            waiting_reqs = getattr(self.scheduler, "waiting_reqs", [])
-        
-        if not waiting_reqs:
-            waiting_reqs = getattr(self.scheduler, "pending_requests", [])
-        
-        result = []
+        # Update queue times for all requests
         current_time = time.time()
+        result = []
         
-        for req in waiting_reqs:
-            try:
-                # Extract request information from SGLang request object
-                request_id = getattr(req, "request_id", getattr(req, "rid", str(id(req))))
-                
-                # Timing information
-                arrival_time = getattr(
-                    req, "created_time", getattr(req, "arrival_time", current_time)
-                )
-                queue_time = current_time - arrival_time
-                
-                # Token information
-                # SGLang typically stores tokens or token IDs
-                prompt_tokens = getattr(req, "prompt_tokens", getattr(req, "input_ids", []))
-                num_prompt_tokens = len(prompt_tokens) if hasattr(prompt_tokens, '__len__') else 0
-                
-                # Output tokens - check sampling params
-                sampling_params = getattr(req, "sampling_params", None)
-                if sampling_params:
-                    num_output_tokens = getattr(
-                        sampling_params, 
-                        "max_new_tokens",
-                        getattr(sampling_params, "max_tokens", 512),
-                    )
-                else:
-                    num_output_tokens = 512  # Default fallback
-                
-                # Processed tokens
-                num_processed_tokens = getattr(req, "num_processed_tokens", 0)
-                
-                # SLO information (if available in metadata)
-                metadata = getattr(req, "metadata", {}) or {}
-                prefill_slo = metadata.get("prefill_slo_seconds")
-                total_slo = metadata.get("total_slo_seconds")
-                
-                # Status and prefill completion
-                is_prefill_complete = getattr(req, "is_prefill_complete", False)
-                
-                # Pricing (can be customized per request via metadata)
-                input_price = metadata.get("input_price_per_token", 1.25 / 1_000_000)
-                output_price = metadata.get("output_price_per_token", 10.0 / 1_000_000)
-                
-                result.append(
-                    OutsourcingRequestInfo(
-                        request_id=request_id,
-                        arrival_time=arrival_time,
-                        queue_time=queue_time,
-                        num_prompt_tokens=num_prompt_tokens,
-                        num_output_tokens=num_output_tokens,
-                        num_processed_tokens=num_processed_tokens,
-                        prefill_slo_seconds=prefill_slo,
-                        total_slo_seconds=total_slo,
-                        status=RequestStatus.WAITING,
-                        is_prefill_complete=is_prefill_complete,
-                        input_price_per_token=input_price,
-                        output_price_per_token=output_price,
-                        metadata=metadata,
-                    )
-                )
-            except Exception as e:
-                # Log error but continue processing other requests
-                print(
-                    f"Warning: Failed to convert request {getattr(req, 'request_id', 'unknown')}: {e}"
-                )
-                continue
+        for req in self._waiting_queue:
+            # Update queue time (in-place is fine, we return the objects)
+            req.queue_time = current_time - req.arrival_time
+            result.append(req)
         
         return result
     
@@ -155,44 +97,22 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         Returns:
             List of removed OutsourcingRequestInfo objects
         """
-        if self.scheduler is None:
-            # Without a scheduler we can't remove specific requests; the serving
-            # process must handle cancellation/outsourcing via its own API.
-            print("Warning: remove_requests is not supported without a scheduler reference")
-            return []
-
-        # Get current waiting requests before removal
-        all_waiting = self.get_all_waiting()
-        to_remove = [req for req in all_waiting if req.request_id in request_ids]
-        
-        # Access SGLang's waiting queue
-        waiting_attr_name = None
-        for attr in ["waiting_queue", "waiting_reqs", "pending_requests"]:
-            if hasattr(self.scheduler, attr):
-                waiting_attr_name = attr
-                break
-        
-        if waiting_attr_name is None:
-            print("Warning: Could not find waiting queue attribute in scheduler")
-            return []
-        
-        # Filter out the requests to remove
-        current_queue = getattr(self.scheduler, waiting_attr_name)
-        
-        # Create a set for faster lookup
+        removed = []
         ids_to_remove = set(request_ids)
         
-        # Filter the queue
-        filtered_queue = []
-        for req in current_queue:
-            req_id = getattr(req, "request_id", getattr(req, "rid", str(id(req))))
-            if req_id not in ids_to_remove:
-                filtered_queue.append(req)
+        # Filter the queue, keeping only requests NOT in the removal set
+        new_queue = deque()
+        for req in self._waiting_queue:
+            if req.request_id in ids_to_remove:
+                # Remove from index and add to removed list
+                self._request_index.pop(req.request_id, None)
+                removed.append(req)
+            else:
+                # Keep in queue
+                new_queue.append(req)
         
-        # Update the scheduler's queue
-        setattr(self.scheduler, waiting_attr_name, filtered_queue)
-        
-        return to_remove
+        self._waiting_queue = new_queue
+        return removed
     
     def get_length(self) -> int:
         """Current number of waiting requests.
@@ -200,21 +120,7 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         Returns:
             Number of requests in the waiting queue
         """
-        # Prefer scheduler queue length if available
-        if self.scheduler is not None:
-            for attr in ["waiting_queue", "waiting_reqs", "pending_requests"]:
-                queue = getattr(self.scheduler, attr, None)
-                if queue is not None:
-                    return len(queue)
-
-        # Fall back to metrics endpoint if configured
-        metrics = self.get_metrics(safe=True)
-        if metrics and isinstance(metrics.get("request_queue"), (int, float)):
-            try:
-                return int(metrics["request_queue"])
-            except Exception:
-                pass
-        return 0
+        return len(self._waiting_queue)
     
     def peek(self) -> OutsourcingRequestInfo | None:
         """Look at the head of the queue without removing.
@@ -222,8 +128,7 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         Returns:
             OutsourcingRequestInfo for the first request, or None if empty
         """
-        waiting = self.get_all_waiting()
-        return waiting[0] if waiting else None
+        return self._waiting_queue[0] if self._waiting_queue else None
 
     # --------------------
     # Metrics integration
