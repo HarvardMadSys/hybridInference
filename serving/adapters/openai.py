@@ -11,7 +11,6 @@ adapters for consistency.
 from __future__ import annotations
 
 import json
-import time
 from typing import TYPE_CHECKING, Any
 
 from serving.stream import done_sentinel, make_final_usage_chunk
@@ -268,33 +267,22 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                     cached_tokens = int(prompt_details.get("cached_tokens", 0) or 0)
                     prompt_tokens_total = int(final_usage_payload.get("prompt_tokens", 0) or 0)
                     prompt_tokens_non_cached = max(0, prompt_tokens_total - cached_tokens)
+                    completion_tokens_total = int(
+                        final_usage_payload.get("completion_tokens", 0) or 0
+                    )
 
-                    usage_obj: dict[str, int] = {
-                        "prompt_tokens": prompt_tokens_non_cached,
-                        "completion_tokens": int(
-                            final_usage_payload.get("completion_tokens", 0) or 0
-                        ),
-                        "total_tokens": int(final_usage_payload.get("total_tokens", 0) or 0),
-                    }
-                    if reasoning_tokens > 0:
-                        usage_obj["reasoning_tokens"] = reasoning_tokens
-                    if cached_tokens > 0:
-                        usage_obj["cache_read_tokens"] = cached_tokens
-
-                    final_chunk = {
-                        "id": f"chatcmpl-{int(time.time() * 1000)}",
-                        "object": "chat.completion.chunk",
-                        "created": int(time.time()),
-                        "model": self.config.id,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                        "usage": usage_obj,
-                        # Include routing info so server can attach pricing for DB logging
-                        "_routing": {
-                            "provider": self.config.provider,
-                            "base_url": base_url,
-                        },
-                    }
-                    final_usage = f"data: {json.dumps(final_chunk)}\n\n"
+                    final_usage = make_final_usage_chunk(
+                        model=self.config.id,
+                        messages=messages,
+                        total_content=total_content,
+                        prompt_tokens_override=prompt_tokens_non_cached,
+                        completion_tokens_override=completion_tokens_total,
+                        finish_reason=finish_reason,
+                        provider=self.config.provider,
+                        base_url=base_url,
+                        reasoning_tokens=reasoning_tokens,
+                        cache_read_tokens=cached_tokens,
+                    )
                 else:
                     final_usage = make_final_usage_chunk(
                         model=self.config.id,
@@ -302,6 +290,8 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                         total_content=total_content,
                         prompt_tokens_override=prompt_tokens_override,
                         finish_reason=finish_reason,
+                        provider=self.config.provider,
+                        base_url=base_url,
                     )
                 logger.debug(
                     f"[Azure OpenAI Yield Final] Yielding final usage chunk: {final_usage[:200]}"

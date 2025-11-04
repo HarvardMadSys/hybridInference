@@ -103,6 +103,8 @@ class VLLMAdapter(BaseAdapter):
                     messages=messages,
                     total_content=total_content,
                     finish_reason="stop",
+                    provider=self.config.provider,
+                    base_url=self.config.base_url,
                 )
                 yield done_sentinel()
                 break
