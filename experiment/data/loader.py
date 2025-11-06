@@ -1,0 +1,231 @@
+"""Data loader for CSV request logs."""
+
+import csv
+import logging
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+
+from experiment.data.schema import Request
+
+logger = logging.getLogger(__name__)
+
+
+class DataLoader:
+    """Load historical request data from CSV files.
+
+    Supports three formats (auto-detected):
+    1. BurstGPT: Timestamp, Model, Request tokens, Response tokens, Total tokens
+    2. Experiment: Timestamp, Model, Request tokens, Response tokens, Total tokens, Provider, Actual Cost
+    3. HybridInference (native): timestamp, model_id, prompt_tokens, completion_tokens, total_tokens, provider, cost_usd
+
+    Attributes:
+        config: Configuration dictionary
+    """
+
+    def __init__(self, config: dict):
+        """Initialize data loader.
+
+        Args:
+            config: Configuration dictionary containing dataset settings
+        """
+        self.config = config
+        self.dataset_config = config.get("dataset", {})
+
+    def load(self, filepath: str | Path) -> list[Request]:
+        """Load requests from CSV file.
+
+        Auto-detects format based on available columns.
+
+        Args:
+            filepath: Path to CSV file
+
+        Returns:
+            List of Request objects, sorted by timestamp
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
+            ValueError: If CSV format is invalid
+        """
+        filepath = Path(filepath)
+
+        if not filepath.exists():
+            raise FileNotFoundError(f"Dataset file not found: {filepath}")
+
+        logger.info(f"Loading dataset from {filepath}")
+
+        # Detect format by reading first row
+        with open(filepath) as f:
+            reader = csv.DictReader(f)
+            first_row = next(reader, None)
+            if first_row is None:
+                raise ValueError("Empty CSV file")
+
+            # Detect format
+            if "prompt_tokens" in first_row:
+                format_type = "hybridinference"
+                has_provider = "provider" in first_row
+                has_actual_cost = "cost_usd" in first_row
+            elif "Request tokens" in first_row:
+                format_type = "experiment"
+                has_provider = "Provider" in first_row
+                has_actual_cost = "Actual Cost" in first_row
+            else:
+                raise ValueError(
+                    "Unknown CSV format. Expected columns like 'Request tokens' or 'prompt_tokens'"
+                )
+
+        # Log detected format
+        if format_type == "hybridinference":
+            logger.info(
+                "Detected HybridInference native format (prompt_tokens, completion_tokens, cost_usd)"
+            )
+        elif has_provider:
+            logger.info("Detected Experiment format with provider info")
+        else:
+            logger.info("Detected BurstGPT format (no provider info)")
+
+        # Load data
+        requests = []
+        skipped = 0
+
+        with open(filepath) as f:
+            reader = csv.DictReader(f)
+
+            for i, row in enumerate(reader):
+                request = self._parse_row(row, format_type, has_provider, has_actual_cost)
+                if request:
+                    requests.append(request)
+                else:
+                    skipped += 1
+
+                # Progress logging for large files
+                if (i + 1) % 100000 == 0:
+                    logger.info(f"Processed {i + 1} rows, {len(requests)} valid requests")
+
+        if skipped > 0:
+            logger.warning(f"Skipped {skipped} invalid rows")
+
+        # Sort by timestamp
+        requests.sort(key=lambda r: r.timestamp)
+
+        logger.info(f"Loaded {len(requests)} requests from {filepath}")
+
+        return requests
+
+    def _parse_row(
+        self, row: dict, format_type: str, has_provider: bool = False, has_actual_cost: bool = False
+    ) -> Request | None:
+        """Parse a single CSV row into Request object.
+
+        Args:
+            row: Dictionary from CSV reader
+            format_type: Format type ("hybridinference" or "experiment")
+            has_provider: Whether Provider column exists
+            has_actual_cost: Whether Actual Cost column exists
+
+        Returns:
+            Request object or None if row is invalid
+        """
+        try:
+            # Parse based on format
+            if format_type == "hybridinference":
+                # HybridInference native format
+                request_tokens = int(row["prompt_tokens"])
+                response_tokens = int(row["completion_tokens"])
+                total_tokens = int(row["total_tokens"])
+
+                # Parse timestamp (multiple formats supported)
+                timestamp_str = row.get("timestamp", "")
+                if "T" in timestamp_str:  # ISO format: 2025-11-06T09:07:36.243526+00:00
+                    dt = datetime.fromisoformat(timestamp_str)
+                    timestamp = int(dt.timestamp())
+                elif " " in timestamp_str:  # Space format: 2025-09-12 15:02:36 or with microseconds
+                    # Remove timezone and microseconds if present
+                    ts_clean = timestamp_str.split("+")[0].split(".")[0]
+                    dt = datetime.strptime(ts_clean, "%Y-%m-%d %H:%M:%S")
+                    timestamp = int(dt.timestamp())
+                else:
+                    timestamp = int(timestamp_str)
+
+                # Parse optional fields
+                model = row.get("model_id")
+                provider = row.get("provider")
+                actual_cost = float(row.get("cost_usd", 0)) if row.get("cost_usd") else None
+
+            else:
+                # Standard experiment format
+                request_tokens = int(row["Request tokens"])
+                response_tokens = int(row["Response tokens"])
+                total_tokens = int(row["Total tokens"])
+                timestamp = int(row["Timestamp"])
+
+                # Parse optional fields
+                model = row.get("Model")
+                provider = row.get("Provider") if has_provider else None
+                actual_cost = float(row.get("Actual Cost", 0)) if has_actual_cost else None
+
+            # Skip rows with zero tokens (likely errors)
+            if total_tokens == 0:
+                return None
+
+            return Request(
+                timestamp=timestamp,
+                request_tokens=request_tokens,
+                response_tokens=response_tokens,
+                total_tokens=total_tokens,
+                model=model,
+                provider=provider,
+                actual_cost=actual_cost,
+            )
+        except (KeyError, ValueError) as e:
+            logger.debug(f"Skipping invalid row: {e}")
+            return None
+
+    def get_statistics(self, requests: list[Request]) -> dict:
+        """Calculate dataset statistics.
+
+        Args:
+            requests: List of requests
+
+        Returns:
+            Dictionary with statistics
+        """
+        if not requests:
+            return {
+                "total_requests": 0,
+                "num_days": 0,
+                "avg_request_tokens": 0,
+                "avg_response_tokens": 0,
+                "total_tokens": 0,
+            }
+
+        stats = {
+            "total_requests": len(requests),
+            "num_days": requests[-1].day + 1,
+            "avg_request_tokens": np.mean([r.request_tokens for r in requests]),
+            "avg_response_tokens": np.mean([r.response_tokens for r in requests]),
+            "total_tokens": sum(r.total_tokens for r in requests),
+            "min_timestamp": requests[0].timestamp,
+            "max_timestamp": requests[-1].timestamp,
+        }
+
+        # Add model distribution if available
+        models = [r.model for r in requests if r.model is not None]
+        if models:
+            stats["models"] = dict(Counter(models))
+
+        # Add provider distribution if available
+        providers = [r.provider for r in requests if r.provider is not None]
+        if providers:
+            stats["providers"] = dict(Counter(providers))
+
+        # Add actual cost if available
+        actual_costs = [r.actual_cost for r in requests if r.actual_cost is not None]
+        if actual_costs:
+            stats["total_actual_cost"] = sum(actual_costs)
+            stats["avg_actual_cost"] = np.mean(actual_costs)
+
+        return stats

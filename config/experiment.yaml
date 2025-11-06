@@ -1,0 +1,69 @@
+# Experiment Configuration
+# This file defines providers, simulation settings, and strategies for offline routing experiments
+
+models:
+  # Subscription provider (Chutes)
+  - id: chutes-subscription
+    name: "Chutes Subscription"
+    provider: chutes
+    type: subscription
+    pricing:
+      monthly_fee: "20.0"      # $20/month
+      daily_quota: 5000        # 5000 requests per day
+
+  # API providers
+  - id: openai-chatgpt
+    name: "OpenAI ChatGPT"
+    provider: openai
+    provider_model_id: "gpt-3.5-turbo"
+    type: api
+    pricing:
+      prompt: "1.5"            # $1.5 per 1M input tokens
+      completion: "2.0"        # $2.0 per 1M output tokens
+
+  - id: openai-gpt4
+    name: "OpenAI GPT-4"
+    provider: openai
+    provider_model_id: "gpt-4"
+    type: api
+    pricing:
+      prompt: "30.0"           # $30 per 1M input tokens
+      completion: "60.0"       # $60 per 1M output tokens
+
+# Simulation settings
+simulation:
+  num_subscriptions: 1         # Number of subscription accounts
+  days_per_month: 30           # Days per month for cost calculation
+  default_subscription: "chutes-subscription"
+  default_api_fallback: "openai-chatgpt"
+
+# Strategy configurations
+strategies:
+  # Phase 1: Only Optimal strategy
+  - name: optimal
+    enabled: true
+
+  # Phase 2: Add Greedy (commented out for now)
+  # - name: greedy
+  #   enabled: false
+
+  # Phase 3: Add TwoStep (commented out for now)
+  # - name: two_step
+  #   enabled: false
+
+# Dataset configuration
+dataset:
+  path: "data/community_logs_full.csv"
+  timestamp_unit: "seconds"    # Timestamp unit in CSV
+
+  # Mapping from CSV model names to provider IDs
+  model_mapping:
+    "ChatGPT": "openai-chatgpt"
+    "GPT-4": "openai-gpt4"
+
+# Output settings
+output:
+  results_dir: "results/experiment"
+  save_decisions: false        # Save individual routing decisions (large file)
+  generate_plots: false        # Generate visualization plots
+  log_level: "INFO"            # Logging level: DEBUG, INFO, WARNING, ERROR
