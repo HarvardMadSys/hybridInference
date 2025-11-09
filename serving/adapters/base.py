@@ -151,10 +151,39 @@ class BaseAdapter(ABC):
         return response
 
     def format_stream_chunk(
-        self, content: str, model: str, finish_reason: str | None = None
+        self, content: str, model: str, finish_reason: str | None = None, role: str | None = None
     ) -> str:
         """Format streaming chunk into SSE format."""
-        return make_stream_chunk(model=model, content=content, finish_reason=finish_reason)
+        return make_stream_chunk(
+            model=model, content=content, finish_reason=finish_reason, role=role
+        )
+
+    def format_tool_chunk(self, tool_calls: list[dict[str, Any]], model: str) -> str:
+        """Format tool calls into OpenAI-compatible streaming chunk.
+
+        Args:
+            tool_calls: List of tool call deltas in OpenAI format
+            model: Model identifier
+
+        Returns:
+            SSE-formatted chunk containing tool_calls in delta
+        """
+        import json
+
+        chunk = {
+            "id": f"chatcmpl-{int(time.time() * 1000)}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": tool_calls},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        return f"data: {json.dumps(chunk)}\n\n"
 
     async def cleanup(self):
         """Clean up adapter resources (override if needed)."""

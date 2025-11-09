@@ -168,18 +168,75 @@ class AsyncHTTPClient:
         session = await self._ensure_session()
         async with session.post(url, json=json, headers=headers, timeout=timeout) as resp:
             resp.raise_for_status()
-            if mode == "sse":
+            # Detect content type for streaming mode if requested
+            content_type = str(resp.headers.get("Content-Type", "")).lower()
+            detected_mode = mode
+            if mode == "auto":
+                if "text/event-stream" in content_type:
+                    detected_mode = "sse"
+                elif (
+                    "application/x-ndjson" in content_type
+                    or "ndjson" in content_type
+                    or "application/json" in content_type
+                ):
+                    # Many upstreams return a single JSON object for stream endpoints.
+                    # Treat it as NDJSON and flush the tail at end.
+                    detected_mode = "ndjson"
+                else:
+                    # Default to SSE when unsure
+                    detected_mode = "sse"
+
+            if detected_mode == "sse":
+                # Debug logging for SSE streams
+                import logging
+
+                logger = logging.getLogger(__name__)
+                logger.debug(
+                    f"Connected to {url}, status={resp.status}, type={content_type or 'unknown'}"
+                )
+                logger.debug(f"Response headers: {dict(resp.headers)}")
+
                 parser = SSEParser()
+                chunk_count = 0
+                message_count = 0
                 async for raw in resp.content.iter_chunked(4096):
-                    for msg in parser.feed(raw):
+                    chunk_count += 1
+                    if chunk_count <= 5 or chunk_count % 10 == 0:
+                        logger.debug(f"Chunk {chunk_count}: received {len(raw)} bytes")
+                        # Show first few bytes to debug encoding issues
+                        preview = raw[:200].decode("utf-8", errors="replace")
+                        logger.debug(f"Chunk {chunk_count} preview: {preview}")
+
+                    messages = list(parser.feed(raw))
+                    if messages and chunk_count <= 5:
+                        logger.debug(
+                            f"Chunk {chunk_count} parser produced {len(messages)} messages"
+                        )
+
+                    for msg in messages:
                         if not msg.data:
+                            logger.debug("Empty message data, skipping")
                             continue
+
+                        message_count += 1
+                        if message_count <= 10 or message_count % 10 == 0:
+                            logger.debug(f"Message {message_count} SSE data: {msg.data[:200]}")
+
                         # Preserve legacy adapter expectations (no trailing newlines)
                         if msg.data.strip() == "[DONE]":
+                            logger.debug(
+                                f"Received [DONE], total chunks: {chunk_count}, total messages: {message_count}"
+                            )
                             yield "data: [DONE]"
                             return
-                        yield f"data: {msg.data}"
-            elif mode == "ndjson":
+
+                        output = f"data: {msg.data}"
+                        if message_count <= 5:
+                            logger.debug(f"Yielding message {message_count}: {output[:200]}")
+                        yield output
+
+                logger.info(f"Stream complete: chunks={chunk_count}, messages={message_count}")
+            elif detected_mode == "ndjson":
                 # Incremental UTF-8 decode + line buffering
                 import codecs
 

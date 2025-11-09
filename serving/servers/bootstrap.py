@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Application bootstrap utilities.
 
 This module centralizes initialization and shutdown of core services such as
@@ -7,6 +5,8 @@ the routing executor, model registry, database logger, and rate limiter. It is
 intentionally free of HTTP concerns so it can be imported from multiple entry
 points (e.g., CLI tools, tests, or the FastAPI app factory).
 """
+
+from __future__ import annotations
 
 import contextlib
 import os
@@ -117,7 +117,6 @@ async def _init_router_and_models(router: RouteExecutor) -> None:
     Supports hybrid mode where a single model can have multiple adapters
     (e.g., local VLLM and remote API) for failover and load balancing.
     """
-
     # Load models from YAML configuration
     try:
         models_env = os.getenv("MODELS_CONFIG")
@@ -151,7 +150,6 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
         Optional[RoutingManager]: The active manager when configuration exists,
         otherwise None.
     """
-
     try:
         routing_env = os.getenv("ROUTING_CONFIG")
         routing_cfg_path = Path(routing_env or "config/routing.yaml")
@@ -177,7 +175,6 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
 
 def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
     """Configure model-specific rate limits from environment variables."""
-
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
         gemini_tpm = int(os.getenv("GEMINI_TPM_LIMIT", "1000000"))
@@ -210,21 +207,22 @@ def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
             limiter.configure(cfg)
             logger.info(f"Configured DeepSeek limit: {deepseek_tpd:,}/day")
 
-    # GLM-4.5: 1M tokens per hour
+    # GLM models: default 1M tokens per hour
     glm_key = os.getenv("ZAI_API_KEY")
     if glm_key:
         glm_tph = int(os.getenv("GLM_TPH_LIMIT", "1000000"))  # 1M tokens per hour
         if glm_tph > 0:
-            cfg = RateLimitConfig(
-                model_id="glm-4.5",
-                window_seconds=3600,  # 1 hour
-                capacity_tokens=glm_tph,
-                burst_multiplier=1.0,
-                queue_size=50,
-                enable_persistence=True,
-            )
-            limiter.configure(cfg)
-            logger.info(f"Configured GLM-4.5 limit: {glm_tph:,}/hour")
+            for model_id in ("glm-4.5", "glm-4.6"):
+                cfg = RateLimitConfig(
+                    model_id=model_id,
+                    window_seconds=3600,  # 1 hour
+                    capacity_tokens=glm_tph,
+                    burst_multiplier=1.0,
+                    queue_size=50,
+                    enable_persistence=True,
+                )
+                limiter.configure(cfg)
+            logger.info(f"Configured GLM limits: {glm_tph:,}/hour (glm-4.5, glm-4.6)")
 
 
 async def initialize() -> AppServices:
@@ -239,8 +237,9 @@ async def initialize() -> AppServices:
     """
     import asyncio
 
-    setup_logging()
+    # Load environment first so logging picks up LOG_FORMAT/LOG_LEVEL.
     load_dotenv()
+    setup_logging()
 
     router = RouteExecutor()
 
@@ -307,7 +306,6 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
-
     # Database logger
     if services.db_logger:
         try:

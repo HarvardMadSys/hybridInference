@@ -13,10 +13,13 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from serving.adapters import (
+    ClaudeAdapter,
     DeepSeekAdapter,
     GeminiAdapter,
     LlamaAdapter,
     ModelConfig,
+    OpenAIAdapter,
+    OpenAICompatAdapter,
     VLLMAdapter,
     ZhipuAdapter,
 )
@@ -31,7 +34,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
-        kind: Adapter kind (``"vllm"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"zhipu"``).
+        kind: Adapter kind (``"vllm"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"openai"``, ``"zhipu"``,
+              ``"chutes"``, ``"featherless"``, ``"openai_compat"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -43,14 +47,23 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     model_cfg = ModelConfig(**cfg)
     if kind == "vllm":
         return VLLMAdapter(model_cfg)
+    if kind == "claude":
+        return ClaudeAdapter(model_cfg)
     if kind == "deepseek":
         return DeepSeekAdapter(model_cfg)
     if kind == "gemini":
         return GeminiAdapter(model_cfg)
     if kind == "llama":
         return LlamaAdapter(model_cfg)
+    if kind == "openai":
+        return OpenAIAdapter(model_cfg)
     if kind == "zhipu":
         return ZhipuAdapter(model_cfg)
+
+    # OpenAI-compatible adapters (gateways + local deployments)
+    if kind in ("chutes", "featherless", "openai_compat"):
+        return OpenAICompatAdapter(model_cfg)
+
     raise ValueError(f"Unknown adapter kind: {kind}")
 
 
@@ -150,6 +163,10 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
             route_provider_model_id = r.get("provider_model_id")
             if route_provider_model_id is not None:
                 adapter_cfg["provider_model_id"] = expand_env(route_provider_model_id)
+
+            # Route-level pricing override (key for cost-aware routing in Phase 2)
+            if "pricing" in r:
+                adapter_cfg["pricing"] = r["pricing"]
 
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))

@@ -33,6 +33,9 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
         user_agent = request.headers.get("user-agent")
         host = request.headers.get("host")
         request_id = ctx.get("request_id")
+        # Extract canonical session_id for logs (same as DB metadata).
+        canonical_session_id = request.headers.get("X-Session-ID")
+
         logger.info(
             "http_request",
             extra={
@@ -47,6 +50,22 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
                 "user_agent": user_agent,
                 "host": host,
                 "request_id": request_id,
+                "session_id": canonical_session_id,
             },
         )
+
+        # Debug-only: emit a compact headers snapshot with sensitive fields masked.
+        # This helps diagnose whether upstream clients (e.g., Cursor) include
+        # conversation/session identifiers without flooding logs.
+        if logger.isEnabledFor(10):  # logging.DEBUG
+            masked_headers: dict[str, str] = {}
+            for k, v in request.headers.items():
+                key_lower = k.lower()
+                if key_lower in {"authorization", "x-api-key"}:
+                    masked_headers[k] = "***"
+                else:
+                    # Truncate very long header values to keep logs readable.
+                    val = v if v is not None else ""
+                    masked_headers[k] = (val[:256] + "…") if len(val) > 256 else val
+            logger.debug("http_request_headers", extra={"headers": masked_headers})
         return response

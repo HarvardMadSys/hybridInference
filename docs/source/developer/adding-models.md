@@ -50,7 +50,7 @@ models:
 
 2. **Configure environment variables** in `.env`:
 
-```env
+```bash
 PROVIDER_BASE_URL=https://api.provider.com/v1
 PROVIDER_API_KEY=your-api-key
 ```
@@ -309,7 +309,7 @@ models:
 
 Add to `.env`:
 
-```env
+```bash
 YOUR_PROVIDER_BASE_URL=https://api.yourprovider.com/v1
 YOUR_PROVIDER_API_KEY=your-api-key-here
 ```
@@ -559,5 +559,5 @@ See `serving/adapters/vllm.py` for integrating local inference servers.
 
 - [OpenRouter Gateway Overview](openrouter.md) — Architecture and endpoints
 - [Routing Configuration](routing.md) — Central weight overrides and strategy
-- [Configuration Guide](config.md) — Environment and YAML configuration
-- [API Reference](../README.md) — Top-level usage and running
+- [Configuration Guide](configuration.md) — Environment and YAML configuration
+- [API Reference](../api-reference.md) — Top-level usage and running

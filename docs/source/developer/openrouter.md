@@ -62,8 +62,8 @@ Create `.env` from the template:
 cp .env.example .env
 ```
 Populate it with provider credentials and runtime configuration:
-```env
-LOCAL_BASE_URL=http://freeinference.org/v1
+```bash
+LOCAL_BASE_URL=https://freeinference.org/v1
 OFFLOAD=0
 DEEPSEEK_API_KEY=your-deepseek-api-key
 GEMINI_API_KEY=your-gemini-api-key
@@ -127,7 +127,7 @@ sudo systemctl status freeinference.service
 Runtime operations:
 - Restart: `sudo systemctl restart freeinference.service`
 - Logs: `journalctl -u freeinference.service -f`
-- Health: `curl http://freeinference.org/health`
+- Health: `curl https://freeinference.org/health`
 
 ## API Surface
 
@@ -190,6 +190,6 @@ pytest test/servers/test_bootstrap.py -q
 
 ## Related Docs
 
-- `docs/freeinference.md`: Deployment history and rationale for running FastAPI directly on port 80.
-- `docs/routing.md`: Detailed routing manager configuration and strategy extension guide.
-- `docs/adding_models.md`: How to add new models (YAML) and integrate new providers (adapter) in one place.
+- [FreeInference Deployment](freeinference.md): Deployment history and rationale for running FastAPI directly on port 80.
+- [Routing](routing.md): Detailed routing manager configuration and strategy extension guide.
+- [Adding Models](adding-models.md): How to add new models (YAML) and integrate new providers (adapter) in one place.
