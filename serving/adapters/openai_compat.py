@@ -72,6 +72,12 @@ class OpenAICompatAdapter(BaseAdapter):
     def _build_url(self) -> str:
         """Build full endpoint URL (standard OpenAI path)."""
         base = (self.config.base_url or "").rstrip("/")
+
+        # If base_url already includes /v1, just append /chat/completions
+        if base.endswith("/v1"):
+            return f"{base}/chat/completions"
+
+        # Otherwise, use the full path
         chat_path = getattr(self.config, "chat_path", None) or "/v1/chat/completions"
         if not chat_path.startswith("/"):
             chat_path = f"/{chat_path}"
@@ -165,6 +171,9 @@ class OpenAICompatAdapter(BaseAdapter):
 
         if params.get("response_format") and self.config.supports_structured_output:
             payload["response_format"] = params["response_format"]
+            # vLLM-specific: guided_json parameter for structured output
+            if schema := params["response_format"].get("schema"):
+                payload["guided_json"] = schema
 
         url = self._build_url()
         headers = self._build_headers()

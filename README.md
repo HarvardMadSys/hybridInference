@@ -127,21 +127,17 @@ DB_PASSWORD=your_secure_password
 
 ⚠️ **Security Note**: Database credentials are **required** and have no default values. Services will fail to start without proper configuration.
 
-### 2. Start Local vLLM Server
+### 2. Config Local Model
 
-```bash
-# Start with default settings (4 GPUs: 4,5,6,7)
-./scripts/start_vllm.sh
-
-# Use all 8 GPUs (0-7)
-USE_ALL_GPU=true ./scripts/start_vllm.sh
-
-# Custom model path
-MODEL_PATH="/path/to/your/model" ./scripts/start_vllm.sh
-
-# Custom port
-PORT=8002 ./scripts/start_vllm.sh
+**Configure in `config/models.yaml`:**
+```yaml
+route:
+  - kind: vllm
+    base_url: <your-local-model-url>  # for example, http://localhost:8001/v1
+    provider_model_id: "<your-model-id>"  # must match served model name
 ```
+
+**For SGLang:** Use `base_url: http://localhost:30000` and `kind: sglang` or `kind: openai_compat`
 
 ## Code Quality Standards
 
