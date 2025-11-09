@@ -5,7 +5,6 @@ from .gemini import GeminiAdapter
 from .llama import LlamaAdapter
 from .openai import OpenAIAdapter
 from .openai_compat import OpenAICompatAdapter
-from .vllm import VLLMAdapter
 from .zhipu import ZhipuAdapter
 
 __all__ = [
@@ -18,6 +17,5 @@ __all__ = [
     "OpenAIAdapter",
     "OpenAICompatAdapter",
     "UsageInfo",
-    "VLLMAdapter",
     "ZhipuAdapter",
 ]

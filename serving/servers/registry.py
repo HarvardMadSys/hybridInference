@@ -20,7 +20,6 @@ from serving.adapters import (
     ModelConfig,
     OpenAIAdapter,
     OpenAICompatAdapter,
-    VLLMAdapter,
     ZhipuAdapter,
 )
 
@@ -34,7 +33,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
-        kind: Adapter kind (``"vllm"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"openai"``, ``"zhipu"``,
+        kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"openai"``, ``"zhipu"``,
               ``"chutes"``, ``"featherless"``, ``"openai_compat"``).
         cfg: ``ModelConfig`` keyword arguments.
 
@@ -45,8 +44,11 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         ValueError: When ``kind`` is unknown.
     """
     model_cfg = ModelConfig(**cfg)
-    if kind == "vllm":
-        return VLLMAdapter(model_cfg)
+
+    # All OpenAI-compatible services use the same adapter
+    if kind in ("vllm", "sglang", "chutes", "featherless", "openai_compat"):
+        return OpenAICompatAdapter(model_cfg)
+
     if kind == "claude":
         return ClaudeAdapter(model_cfg)
     if kind == "deepseek":
@@ -59,10 +61,6 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         return OpenAIAdapter(model_cfg)
     if kind == "zhipu":
         return ZhipuAdapter(model_cfg)
-
-    # OpenAI-compatible adapters (gateways + local deployments)
-    if kind in ("chutes", "featherless", "openai_compat"):
-        return OpenAICompatAdapter(model_cfg)
 
     raise ValueError(f"Unknown adapter kind: {kind}")
 
