@@ -5,6 +5,24 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .const import (
+    ATTENTION_FLOP_MULTIPLIER,
+    DEFAULT_DEVICE_TFLOPS,
+    DEFAULT_HIDDEN_DIM,
+    DEFAULT_INPUT_PRICE_PER_TOKEN,
+    DEFAULT_MAX_BATCH_SIZE,
+    DEFAULT_NUM_ATTENTION_HEADS,
+    DEFAULT_NUM_LAYERS,
+    DEFAULT_OUTPUT_PRICE_PER_TOKEN,
+    DEFAULT_PREFILL_SLO_BASE_SECONDS,
+    DEFAULT_PREFILL_SLO_SLACK_FACTOR,
+    DEFAULT_UTILIZATION_TARGET,
+    FFN_FLOP_MULTIPLIER,
+    MIN_VALUE_FOR_RATIO,
+    MIN_WEIGHT_VALUE,
+    TFLOPS_TO_FLOPS,
+)
+
 # ============================================================================
 # Request Abstraction
 # ============================================================================
@@ -48,8 +66,8 @@ class OutsourcingRequestInfo:
     is_prefill_complete: bool = False
 
     # Pricing/value (for knapsack)
-    input_price_per_token: float = 1.25 / 1_000_000
-    output_price_per_token: float = 10.0 / 1_000_000
+    input_price_per_token: float = DEFAULT_INPUT_PRICE_PER_TOKEN
+    output_price_per_token: float = DEFAULT_OUTPUT_PRICE_PER_TOKEN
 
     # Metadata
     metadata: dict = field(default_factory=dict)
@@ -186,10 +204,10 @@ class OutsourcingEngine:
         self,
         waiting_queue: WaitingQueueInterface,
         flop_calculator: FLOPCalculatorInterface,
-        max_batch_size: int = 256,
-        prefill_slo_base_seconds: float = 4.05,
-        prefill_slo_slack_factor: float = 10.0,
-        utilization_target: float = 0.8,
+        max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
+        prefill_slo_base_seconds: float = DEFAULT_PREFILL_SLO_BASE_SECONDS,
+        prefill_slo_slack_factor: float = DEFAULT_PREFILL_SLO_SLACK_FACTOR,
+        utilization_target: float = DEFAULT_UTILIZATION_TARGET,
     ):
         self.waiting_queue = waiting_queue
         self.flop_calculator = flop_calculator
@@ -329,9 +347,9 @@ class OutsourcingEngine:
             items.append(
                 {
                     "id": req.request_id,
-                    "weight": max(1.0, weight),
-                    "value": max(1e-10, value),
-                    "ratio": value / max(1.0, weight),
+                    "weight": max(MIN_WEIGHT_VALUE, weight),
+                    "value": max(MIN_VALUE_FOR_RATIO, value),
+                    "ratio": value / max(MIN_WEIGHT_VALUE, weight),
                 }
             )
 
@@ -411,22 +429,26 @@ class SimpleFLOPCalculator(FLOPCalculatorInterface):
 
     def __init__(
         self,
-        hidden_dim: int = 4096,
-        num_layers: int = 32,
-        num_attention_heads: int = 32,
-        device_tflops: float = 312.0,  # A100
+        hidden_dim: int = DEFAULT_HIDDEN_DIM,
+        num_layers: int = DEFAULT_NUM_LAYERS,
+        num_attention_heads: int = DEFAULT_NUM_ATTENTION_HEADS,
+        device_tflops: float = DEFAULT_DEVICE_TFLOPS,  # A100
     ):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.num_attention_heads = num_attention_heads
-        self.device_flops = device_tflops * 1e12
+        self.device_flops = device_tflops * TFLOPS_TO_FLOPS
 
     def compute_prefill_flops(self, request: OutsourcingRequestInfo, num_tokens: int) -> float:
         """Prefill: O(n^2 * d) attention + O(n * d^2) FFN, where n = sequence length, d = hidden_dim."""
         # Attention: 2 * n^2 * d per layer (QK^T + softmax * V)
-        attn_flops = 2 * num_tokens * num_tokens * self.hidden_dim * self.num_layers
+        attn_flops = (
+            ATTENTION_FLOP_MULTIPLIER * num_tokens * num_tokens * self.hidden_dim * self.num_layers
+        )
         # FFN: 4 * n * d^2 per layer (two linear projections)
-        ffn_flops = 4 * num_tokens * self.hidden_dim * self.hidden_dim * self.num_layers
+        ffn_flops = (
+            FFN_FLOP_MULTIPLIER * num_tokens * self.hidden_dim * self.hidden_dim * self.num_layers
+        )
         return attn_flops + ffn_flops
 
     def get_device_flops_per_second(self) -> float:
@@ -450,18 +472,18 @@ def example_usage():
     waiting_queue = None  # Replace with actual adapter
 
     flop_calculator = SimpleFLOPCalculator(
-        hidden_dim=4096,
-        num_layers=32,
-        device_tflops=312.0,  # A100
+        hidden_dim=DEFAULT_HIDDEN_DIM,
+        num_layers=DEFAULT_NUM_LAYERS,
+        device_tflops=DEFAULT_DEVICE_TFLOPS,
     )
 
     # 2. Initialize outsourcing engine
     outsourcing = OutsourcingEngine(
         waiting_queue=waiting_queue,
         flop_calculator=flop_calculator,
-        max_batch_size=256,
-        prefill_slo_base_seconds=4.05,
-        utilization_target=0.8,
+        max_batch_size=DEFAULT_MAX_BATCH_SIZE,
+        prefill_slo_base_seconds=DEFAULT_PREFILL_SLO_BASE_SECONDS,
+        utilization_target=DEFAULT_UTILIZATION_TARGET,
     )
 
     # 3. In serving loop (before scheduling)
