@@ -1,8 +1,9 @@
 # Experiment Configuration
-# This file defines providers, simulation settings, and strategies for offline routing experiments
+# Main configuration for offline routing experiments
+# Currently configured for single model (ChatGPT) experiments
 
 models:
-  # Subscription provider (Chutes)
+  # Subscription provider (Chutes) - assumes it can serve ChatGPT
   - id: chutes-subscription
     name: "Chutes Subscription"
     provider: chutes
@@ -11,7 +12,7 @@ models:
       monthly_fee: "20.0"      # $20/month
       daily_quota: 5000        # 5000 requests per day
 
-  # API providers
+  # API provider - ChatGPT pricing
   - id: openai-chatgpt
     name: "OpenAI ChatGPT"
     provider: openai
@@ -20,15 +21,6 @@ models:
     pricing:
       prompt: "1.5"            # $1.5 per 1M input tokens
       completion: "2.0"        # $2.0 per 1M output tokens
-
-  - id: openai-gpt4
-    name: "OpenAI GPT-4"
-    provider: openai
-    provider_model_id: "gpt-4"
-    type: api
-    pricing:
-      prompt: "30.0"           # $30 per 1M input tokens
-      completion: "60.0"       # $60 per 1M output tokens
 
 # Simulation settings
 simulation:
@@ -39,31 +31,40 @@ simulation:
 
 # Strategy configurations
 strategies:
-  # Phase 1: Only Optimal strategy
+  # Phase 1: Optimal strategy
   - name: optimal
     enabled: true
 
-  # Phase 2: Add Greedy (commented out for now)
+  # Phase 2: Greedy (to be implemented)
   # - name: greedy
   #   enabled: false
 
-  # Phase 3: Add TwoStep (commented out for now)
+  # Phase 3: TwoStep (to be implemented)
   # - name: two_step
   #   enabled: false
 
-# Dataset configuration
+# Dataset configuration - SINGLE MODEL ONLY
 dataset:
-  path: "data/community_logs_full.csv"
+  path: "data/community_logs.csv"
   timestamp_unit: "seconds"    # Timestamp unit in CSV
 
-  # Mapping from CSV model names to provider IDs
+  # Filter to only load requests for this model (set to null for all models)
+  filter_model: null           # Options: specific model name, or null for all models
+
+  # Mapping: Model names to provider IDs
   model_mapping:
-    "ChatGPT": "openai-chatgpt"
-    "GPT-4": "openai-gpt4"
+    "llama-3.3-70b-instruct": "openai-chatgpt"
+    "llama-4-scout": "openai-chatgpt"
+    "llama-4-maverick": "openai-chatgpt"
+    "gemini-2.5-flash": "openai-chatgpt"
+    "gemini-2.5-flash-preview-09-2025": "openai-chatgpt"
+    "glm-4.5": "openai-chatgpt"
+    "glm-4.6": "openai-chatgpt"
+    "deepseek-chat": "openai-chatgpt"
 
 # Output settings
 output:
-  results_dir: "results/experiment"
+  results_dir: "experiment/results"
   save_decisions: false        # Save individual routing decisions (large file)
   generate_plots: false        # Generate visualization plots
   log_level: "INFO"            # Logging level: DEBUG, INFO, WARNING, ERROR
