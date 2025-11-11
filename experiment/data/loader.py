@@ -34,13 +34,15 @@ class DataLoader:
         self.config = config
         self.dataset_config = config.get("dataset", {})
 
-    def load(self, filepath: str | Path) -> list[Request]:
+    def load(self, filepath: str | Path, filter_model: str | None = None) -> list[Request]:
         """Load requests from CSV file.
 
         Auto-detects format based on available columns.
 
         Args:
             filepath: Path to CSV file
+            filter_model: Optional model name to filter (e.g., "ChatGPT", "GPT-4").
+                         If provided, only requests for this model are loaded.
 
         Returns:
             List of Request objects, sorted by timestamp
@@ -55,6 +57,8 @@ class DataLoader:
             raise FileNotFoundError(f"Dataset file not found: {filepath}")
 
         logger.info(f"Loading dataset from {filepath}")
+        if filter_model:
+            logger.info(f"Filtering for model: {filter_model}")
 
         # Detect format by reading first row
         with open(filepath) as f:
@@ -90,6 +94,7 @@ class DataLoader:
         # Load data
         requests = []
         skipped = 0
+        filtered_out = 0
 
         with open(filepath) as f:
             reader = csv.DictReader(f)
@@ -97,6 +102,11 @@ class DataLoader:
             for i, row in enumerate(reader):
                 request = self._parse_row(row, format_type, has_provider, has_actual_cost)
                 if request:
+                    # Apply model filter if specified
+                    if filter_model and request.model != filter_model:
+                        filtered_out += 1
+                        continue
+
                     requests.append(request)
                 else:
                     skipped += 1
@@ -107,6 +117,11 @@ class DataLoader:
 
         if skipped > 0:
             logger.warning(f"Skipped {skipped} invalid rows")
+
+        if filter_model and filtered_out > 0:
+            logger.info(
+                f"Filtered out {filtered_out} requests (not matching model '{filter_model}')"
+            )
 
         # Sort by timestamp
         requests.sort(key=lambda r: r.timestamp)

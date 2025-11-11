@@ -20,11 +20,11 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from experiment.config import ExperimentConfig
-from experiment.data.loader import DataLoader
 from experiment.cost.calculator import CostCalculator
+from experiment.data.loader import DataLoader
 from experiment.quota.manager import QuotaManager
-from experiment.strategies.optimal import OptimalStrategy
 from experiment.simulator import OfflineSimulator
+from experiment.strategies.optimal import OptimalStrategy
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -35,38 +35,32 @@ def setup_logging(level: str = "INFO") -> None:
     """
     logging.basicConfig(
         level=getattr(logging, level.upper()),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Run offline routing simulation"
-    )
+    parser = argparse.ArgumentParser(description="Run offline routing simulation")
     parser.add_argument(
         "--config",
         type=str,
         default="config/experiment.yaml",
-        help="Path to experiment configuration file"
+        help="Path to experiment configuration file",
     )
     parser.add_argument(
         "--num-subscriptions",
         type=int,
-        help="Override number of subscriptions (default: from config)"
+        help="Override number of subscriptions (default: from config)",
     )
-    parser.add_argument(
-        "--output",
-        type=str,
-        help="Output file for results (JSON)"
-    )
+    parser.add_argument("--output", type=str, help="Output file for results (JSON)")
     parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level"
+        help="Logging level",
     )
 
     args = parser.parse_args()
@@ -86,37 +80,46 @@ def main():
             logger.info(f"Overriding num_subscriptions to {args.num_subscriptions}")
 
         # Print configuration
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("EXPERIMENT CONFIGURATION")
-        print("="*60)
-        print(f"\nProviders:")
+        print("=" * 60)
+        print("\nProviders:")
         for pid, provider in config.providers.items():
             if provider.is_subscription():
-                print(f"  - {pid}: ${provider.monthly_fee}/month, "
-                      f"{provider.daily_quota} quota/day")
+                print(
+                    f"  - {pid}: ${provider.monthly_fee}/month, "
+                    f"{provider.daily_quota} quota/day"
+                )
             else:
-                print(f"  - {pid}: ${provider.input_price_per_1k:.6f}/1K input, "
-                      f"${provider.output_price_per_1k:.6f}/1K output")
+                print(
+                    f"  - {pid}: ${provider.input_price_per_1k:.6f}/1K input, "
+                    f"${provider.output_price_per_1k:.6f}/1K output"
+                )
 
-        print(f"\nSimulation:")
+        print("\nSimulation:")
         print(f"  - Subscriptions: {config.simulation['num_subscriptions']}")
         print(f"  - Default subscription: {config.simulation['default_subscription']}")
         print(f"  - Default API: {config.simulation['default_api_fallback']}")
 
-        print(f"\nDataset:")
+        print("\nDataset:")
         print(f"  - Path: {config.dataset['path']}")
+        if config.dataset.get("filter_model"):
+            print(f"  - Filter model: {config.dataset['filter_model']}")
 
         # Load data
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("LOADING DATA")
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
 
         loader = DataLoader(config.to_dict())
-        requests = loader.load(config.dataset["path"])
+
+        # Apply model filter if specified in config
+        filter_model = config.dataset.get("filter_model")
+        requests = loader.load(config.dataset["path"], filter_model=filter_model)
 
         # Print dataset statistics
         stats = loader.get_statistics(requests)
-        print(f"\nDataset Statistics:")
+        print("\nDataset Statistics:")
         print(f"  - Total requests: {stats['total_requests']:,}")
         print(f"  - Number of days: {stats['num_days']}")
         print(f"  - Total tokens: {stats['total_tokens']:,}")
@@ -128,13 +131,13 @@ def main():
         calculator = CostCalculator(config.providers)
         quota_manager = QuotaManager(
             daily_quota=config.get_subscription_provider().daily_quota,
-            num_subscriptions=config.simulation["num_subscriptions"]
+            num_subscriptions=config.simulation["num_subscriptions"],
         )
 
         # Create Optimal strategy
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("RUNNING SIMULATION")
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
 
         strategy = OptimalStrategy(calculator, quota_manager, config.to_dict())
 
@@ -148,28 +151,32 @@ def main():
         result = simulator.run()
 
         # Print results
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("RESULTS")
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
 
         print(f"Strategy: {result.strategy_name}")
-        print(f"\nCosts:")
+        print("\nCosts:")
         print(f"  - Total cost:        ${result.total_cost:>10.2f}")
         print(f"  - Subscription cost: ${result.subscription_cost:>10.2f}")
         print(f"  - API cost:          ${result.api_cost:>10.2f}")
 
-        print(f"\nRequests:")
+        print("\nRequests:")
         print(f"  - Total:        {result.num_requests:>10,}")
-        print(f"  - Subscription: {result.subscription_requests:>10,} "
-              f"({result.subscription_requests/result.num_requests*100:.1f}%)")
-        print(f"  - API:          {result.api_requests:>10,} "
-              f"({result.api_requests/result.num_requests*100:.1f}%)")
+        print(
+            f"  - Subscription: {result.subscription_requests:>10,} "
+            f"({result.subscription_requests/result.num_requests*100:.1f}%)"
+        )
+        print(
+            f"  - API:          {result.api_requests:>10,} "
+            f"({result.api_requests/result.num_requests*100:.1f}%)"
+        )
 
-        print(f"\nQuota:")
+        print("\nQuota:")
         print(f"  - Utilization: {result.quota_utilization*100:>10.1f}%")
         print(f"  - Days: {result.num_days}")
 
-        print(f"\nPerformance:")
+        print("\nPerformance:")
         print(f"  - Runtime: {result.runtime_seconds:.2f}s")
 
         # Save results if output file specified
@@ -177,12 +184,12 @@ def main():
             output_path = Path(args.output)
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(output_path, 'w') as f:
+            with open(output_path, "w") as f:
                 json.dump(result.to_dict(), f, indent=2)
 
             print(f"\nResults saved to {output_path}")
 
-        print("\n" + "="*60 + "\n")
+        print("\n" + "=" * 60 + "\n")
 
     except Exception as e:
         logger.error(f"Simulation failed: {e}", exc_info=True)

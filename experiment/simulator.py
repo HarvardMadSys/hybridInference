@@ -95,6 +95,9 @@ class OfflineSimulator:
         # Reset strategy state
         self.strategy.reset()
 
+        # Precompute for offline strategies (e.g., Optimal)
+        self.strategy.precompute(self.requests)
+
         # Track costs
         api_cost = 0.0
         decisions: list[RoutingDecision] = []
@@ -111,12 +114,18 @@ class OfflineSimulator:
 
         runtime = time.time() - start_time
 
-        # Calculate subscription cost
-        num_days = self.requests[-1].day + 1 if self.requests else 0
+        # Calculate subscription cost based on relative days in dataset
+        if self.requests:
+            first_day = self.requests[0].day
+            last_day = self.requests[-1].day
+            num_days = last_day - first_day + 1
+        else:
+            num_days = 0
+
         num_subscriptions = self.config["simulation"]["num_subscriptions"]
 
         subscription_provider_id = self.config["simulation"].get(
-            "default_subscription", "chutes-subscription"
+            "subscription_provider", "chutes-subscription"
         )
         subscription_provider = self.config["providers"][subscription_provider_id]
 
