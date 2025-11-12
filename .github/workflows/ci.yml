@@ -51,6 +51,21 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: freeinference_test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -74,6 +89,24 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LLAMA_API_KEY: ${{ secrets.LLAMA_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          # Database configuration for auth tests
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: 5432
+          TEST_DB_NAME: freeinference_test_db
+          TEST_DB_USER: postgres
+          TEST_DB_PASSWORD: postgres
+          # Auth system configuration
+          JWT_SECRET_KEY: test-secret-key-for-ci-only-do-not-use-in-production
+          JWT_ALGORITHM: HS256
+          JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 15
+          JWT_REFRESH_TOKEN_EXPIRE_DAYS: 30
+          SIGNUP_ENABLED: "1"
+          SIGNUP_DEFAULT_TIER: free
+          SIGNUP_DEFAULT_DAILY_QUOTA_USD: "100.00"
+          SIGNUP_REQUIRE_EMAIL_VERIFICATION: "0"
+          COOKIE_SECURE: "0"
+          COOKIE_SAMESITE: lax
+          BASE_URL: http://localhost:8000
         run: |
           uv run pytest --cov=. --cov-report=term-missing --cov-report=xml -v
 
