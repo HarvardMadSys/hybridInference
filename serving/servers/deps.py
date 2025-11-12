@@ -109,12 +109,12 @@ async def get_current_user(
         raise HTTPException(
             status_code=401,
             detail="Token has expired. Please refresh your token or login again.",
-        )
+        ) from None
     except jwt.InvalidTokenError:
         raise HTTPException(
             status_code=401,
             detail="Invalid authentication token.",
-        )
+        ) from None
 
     # Extract user info from token
     user_id = payload.get("sub")

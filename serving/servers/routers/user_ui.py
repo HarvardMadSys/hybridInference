@@ -189,47 +189,47 @@ async def signup_page() -> str:
       <h2 style="margin-top: 0;">Create Account</h2>
       <div id="error-msg" class="error" style="display: none;"></div>
       <div id="success-msg" class="success" style="display: none;"></div>
-      
+
       <form id="signup-form">
         <div class="field">
           <label>Email</label>
           <input type="email" id="email" required autocomplete="email" />
         </div>
-        
+
         <div class="field">
           <label>Password</label>
           <input type="password" id="password" required autocomplete="new-password" />
           <div class="hint">Min 8 characters, must contain uppercase, lowercase, and number</div>
         </div>
-        
+
         <div class="field">
           <label>Name (optional)</label>
           <input type="text" id="user_name" autocomplete="name" />
         </div>
-        
+
         <button type="submit" id="submit-btn">Sign Up</button>
       </form>
-      
+
       <div class="hint text-center mt-4">
         Already have an account? <a href="/login" class="link">Login</a>
       </div>
     </div>
   </main>
-  
+
   <script>
     const form = document.getElementById('signup-form');
     const submitBtn = document.getElementById('submit-btn');
     const errorMsg = document.getElementById('error-msg');
     const successMsg = document.getElementById('success-msg');
-    
+
     form.addEventListener('submit', async (e) => {{
       e.preventDefault();
-      
+
       errorMsg.style.display = 'none';
       successMsg.style.display = 'none';
       submitBtn.disabled = true;
       submitBtn.textContent = 'Creating account...';
-      
+
       try {{
         const response = await fetch('/auth/signup', {{
           method: 'POST',
@@ -240,14 +240,14 @@ async def signup_page() -> str:
             user_name: document.getElementById('user_name').value || null
           }})
         }});
-        
+
         const data = await response.json();
-        
+
         if (response.ok) {{
           successMsg.textContent = data.message || 'Account created successfully! Please check your email to verify your account.';
           successMsg.style.display = 'block';
           form.reset();
-          
+
           // Redirect to login after 3 seconds
           setTimeout(() => {{
             window.location.href = '/login?registered=true';
@@ -291,27 +291,27 @@ async def login_page() -> str:
       <h2 style="margin-top: 0;">Login</h2>
       <div id="error-msg" class="error" style="display: none;"></div>
       <div id="success-msg" class="success" style="display: none;"></div>
-      
+
       <form id="login-form">
         <div class="field">
           <label>Email</label>
           <input type="email" id="email" required autocomplete="email" />
         </div>
-        
+
         <div class="field">
           <label>Password</label>
           <input type="password" id="password" required autocomplete="current-password" />
         </div>
-        
+
         <button type="submit" id="submit-btn">Login</button>
       </form>
-      
+
       <div class="hint text-center mt-4">
         Don't have an account? <a href="/signup" class="link">Sign Up</a>
       </div>
     </div>
   </main>
-  
+
   <script>
     // Check for registration success message
     const urlParams = new URLSearchParams(window.location.search);
@@ -320,18 +320,18 @@ async def login_page() -> str:
       successMsg.textContent = 'Account created successfully! Please login.';
       successMsg.style.display = 'block';
     }}
-    
+
     const form = document.getElementById('login-form');
     const submitBtn = document.getElementById('submit-btn');
     const errorMsg = document.getElementById('error-msg');
-    
+
     form.addEventListener('submit', async (e) => {{
       e.preventDefault();
-      
+
       errorMsg.style.display = 'none';
       submitBtn.disabled = true;
       submitBtn.textContent = 'Logging in...';
-      
+
       try {{
         const response = await fetch('/auth/login', {{
           method: 'POST',
@@ -342,13 +342,13 @@ async def login_page() -> str:
             password: document.getElementById('password').value
           }})
         }});
-        
+
         const data = await response.json();
-        
+
         if (response.ok) {{
           // Store access token in sessionStorage
           sessionStorage.setItem('access_token', data.access_token);
-          
+
           // Redirect to dashboard
           window.location.href = '/dashboard';
         }} else {{
@@ -397,21 +397,21 @@ async def dashboard_page() -> str:
     <div id="loading" class="card text-center">
       <p>Loading...</p>
     </div>
-    
+
     <div id="content" style="display: none;">
       <!-- User Info Card -->
       <div class="card">
         <h3 style="margin-top: 0;">Account Information</h3>
         <div id="user-info"></div>
       </div>
-      
+
       <!-- API Key Card -->
       <div class="card">
         <h3 style="margin-top: 0;">API Key</h3>
         <div id="api-key-display"></div>
         <div id="api-key-actions" style="margin-top: 16px;"></div>
       </div>
-      
+
       <!-- Usage Card -->
       <div class="card">
         <h3 style="margin-top: 0;">Usage Statistics (Today)</h3>
@@ -419,13 +419,13 @@ async def dashboard_page() -> str:
       </div>
     </div>
   </main>
-  
+
   <script>
     const token = sessionStorage.getItem('access_token');
     if (!token) {{
       window.location.href = '/login';
     }}
-    
+
     async function api(path, options = {{}}) {{
       const response = await fetch(path, {{
         ...options,
@@ -436,14 +436,14 @@ async def dashboard_page() -> str:
         }},
         credentials: 'include'
       }});
-      
+
       if (response.status === 401) {{
         // Try to refresh token
         const refreshResponse = await fetch('/auth/refresh', {{
           method: 'POST',
           credentials: 'include'
         }});
-        
+
         if (refreshResponse.ok) {{
           const data = await refreshResponse.json();
           sessionStorage.setItem('access_token', data.access_token);
@@ -458,22 +458,22 @@ async def dashboard_page() -> str:
             credentials: 'include'
           }});
         }}
-        
+
         // Refresh failed, redirect to login
         sessionStorage.removeItem('access_token');
         window.location.href = '/login';
         throw new Error('Authentication failed');
       }}
-      
+
       return response;
     }}
-    
+
     async function loadDashboard() {{
       try {{
         // Load user info
         const userResponse = await api('/user/me');
         const user = await userResponse.json();
-        
+
         document.getElementById('user-info').innerHTML = `
           <div class="stat">
             <span class="stat-label">Email</span>
@@ -492,12 +492,12 @@ async def dashboard_page() -> str:
             <span class="stat-value">${{new Date(user.created_at).toLocaleDateString()}}</span>
           </div>
         `;
-        
+
         // Load API key info
         try {{
           const keyResponse = await api('/user/api-keys');
           const apiKey = await keyResponse.json();
-          
+
           document.getElementById('api-key-display').innerHTML = `
             <div class="stat">
               <span class="stat-label">API Key</span>
@@ -512,7 +512,7 @@ async def dashboard_page() -> str:
               <span class="stat-value">${{apiKey.last_used_at ? new Date(apiKey.last_used_at).toLocaleString() : 'Never'}}</span>
             </div>
           `;
-          
+
           document.getElementById('api-key-actions').innerHTML = `
             <button class="danger" onclick="regenerateKey()">Regenerate API Key</button>
           `;
@@ -521,7 +521,7 @@ async def dashboard_page() -> str:
             document.getElementById('api-key-display').innerHTML = `
               <p class="hint">No API key found. ${{user.email_verified ? 'Click below to generate one.' : 'Please verify your email first.'}}</p>
             `;
-            
+
             if (user.email_verified) {{
               document.getElementById('api-key-actions').innerHTML = `
                 <button onclick="createKey()">Generate API Key</button>
@@ -529,11 +529,11 @@ async def dashboard_page() -> str:
             }}
           }}
         }}
-        
+
         // Load usage stats
         const usageResponse = await api('/user/usage?period=today');
         const usage = await usageResponse.json();
-        
+
         document.getElementById('usage-stats').innerHTML = `
           <div class="stat">
             <span class="stat-label">Daily Quota</span>
@@ -552,7 +552,7 @@ async def dashboard_page() -> str:
             <span class="stat-value">${{(usage.usage.prompt_tokens + usage.usage.completion_tokens).toLocaleString()}}</span>
           </div>
         `;
-        
+
         document.getElementById('loading').style.display = 'none';
         document.getElementById('content').style.display = 'block';
       }} catch (error) {{
@@ -560,14 +560,14 @@ async def dashboard_page() -> str:
         alert('Failed to load dashboard. Please try again.');
       }}
     }}
-    
+
     async function createKey() {{
       if (!confirm('Generate a new API key? This can only be done once.')) return;
-      
+
       try {{
         const response = await api('/user/api-keys', {{ method: 'POST' }});
         const data = await response.json();
-        
+
         if (response.ok) {{
           alert(`API Key created successfully!\\n\\n${{data.api_key}}\\n\\nSave this key now. It cannot be retrieved later.`);
           loadDashboard();
@@ -578,14 +578,14 @@ async def dashboard_page() -> str:
         alert('Failed to create API key. Please try again.');
       }}
     }}
-    
+
     async function regenerateKey() {{
       if (!confirm('Regenerate API key? Your old key will be immediately invalidated.')) return;
-      
+
       try {{
         const response = await api('/user/api-keys/regenerate', {{ method: 'POST' }});
         const data = await response.json();
-        
+
         if (response.ok) {{
           alert(`New API Key generated!\\n\\n${{data.api_key}}\\n\\nSave this key now. It cannot be retrieved later.\\n\\nOld key (${{data.old_key_prefix}}) has been revoked.`);
           loadDashboard();
@@ -596,7 +596,7 @@ async def dashboard_page() -> str:
         alert('Failed to regenerate API key. Please try again.');
       }}
     }}
-    
+
     document.getElementById('logout-btn').addEventListener('click', async () => {{
       try {{
         await api('/auth/logout', {{ method: 'POST' }});
@@ -607,7 +607,7 @@ async def dashboard_page() -> str:
         window.location.href = '/login';
       }}
     }});
-    
+
     loadDashboard();
   </script>
 </body>

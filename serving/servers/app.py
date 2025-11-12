@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import bootstrap
 from .middleware.error import install_error_handlers
+from .middleware.exception_handler import install_exception_handlers
 from .middleware.metrics import MetricsMiddleware
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
@@ -64,6 +65,9 @@ def create_app() -> FastAPI:
 
     # Error handlers
     install_error_handlers(app)
+
+    # Domain exception handlers (for business logic errors)
+    install_exception_handlers(app)
 
     # Routers
     app.include_router(health.router)
