@@ -11,7 +11,18 @@ from .middleware.error import install_error_handlers
 from .middleware.metrics import MetricsMiddleware
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
-from .routers import admin, admin_ui, compat, completions, health, metrics, models
+from .routers import (
+    admin,
+    admin_ui,
+    auth_routes,
+    compat,
+    completions,
+    health,
+    metrics,
+    models,
+    user_routes,
+    user_ui,
+)
 
 if TYPE_CHECKING:
     from .deps import AppServices
@@ -62,6 +73,9 @@ def create_app() -> FastAPI:
     app.include_router(compat.router)
     app.include_router(admin.router)
     app.include_router(admin_ui.router)
+    app.include_router(auth_routes.router)
+    app.include_router(user_routes.router)
+    app.include_router(user_ui.router)
 
     return app
 
