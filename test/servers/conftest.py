@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import os
 import sys
 from collections.abc import Generator
 from pathlib import Path
@@ -22,6 +23,10 @@ from serving.servers.rate_limiter import PersistentRateLimiter
 from serving.storage.database import DatabaseLogger
 
 
+# ============================================================================
+# Session-level fixtures
+# ============================================================================
+
 @pytest.fixture(scope="session")
 def event_loop() -> Generator:
     """Create an event loop for the test session."""
@@ -29,6 +34,27 @@ def event_loop() -> Generator:
     yield loop
     loop.close()
 
+
+@pytest.fixture(scope="session", autouse=True)
+def auth_test_env():
+    """Set required environment variables for auth tests.
+    
+    This fixture runs automatically and ensures auth-related
+    environment variables are set for all tests.
+    """
+    os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-32-chars-long!!")
+    os.environ.setdefault("API_KEY_SECRET", "test-api-key-secret")
+    os.environ.setdefault("ADMIN_TOKEN", "test-admin-token")
+    os.environ.setdefault("BASE_URL", "http://test")
+    os.environ.setdefault("COOKIE_SECURE", "0")
+    os.environ.setdefault("SIGNUP_ENABLED", "1")
+    os.environ.setdefault("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "10.00")
+    os.environ.setdefault("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "0")
+
+
+# ============================================================================
+# Mock fixtures (for non-auth tests)
+# ============================================================================
 
 @pytest.fixture
 def mock_env(monkeypatch):
@@ -160,6 +186,112 @@ async def test_client(test_app):
         yield client
 
 
+# ============================================================================
+# Auth-specific fixtures (use real app with lifespan)
+# ============================================================================
+
+@pytest_asyncio.fixture
+async def auth_client():
+    """Async HTTP client with FastAPI lifespan enabled for auth tests.
+    
+    CRITICAL: Uses ASGITransport with lifespan="on" to ensure
+    app.state.services is initialized before tests run.
+    
+    This client uses the REAL app with real database and services,
+    unlike test_client which uses mocks.
+    
+    Usage:
+        async def test_login(auth_client):
+            response = await auth_client.post("/auth/login", json={...})
+            assert response.status_code == 200
+    """
+    from serving.servers.app import app
+    from httpx import ASGITransport
+    
+    # CRITICAL: lifespan="on" ensures app.state.services is initialized
+    transport = ASGITransport(app=app, lifespan="on")
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture
+async def auth_db_logger(auth_client):
+    """Database logger from app state (initialized in lifespan).
+    
+    CRITICAL: Access via app.state.services, not Depends(get_db_logger).
+    Depends() functions cannot be called directly in tests.
+    
+    Note: This fixture depends on 'auth_client' fixture to ensure lifespan
+    has run and app.state.services is populated.
+    
+    Usage:
+        async def test_example(auth_client, auth_db_logger):
+            async with auth_db_logger.pool.acquire() as conn:
+                result = await conn.fetchrow("SELECT 1")
+    """
+    from serving.servers.app import app
+    
+    # CRITICAL: Access from app.state.services, not by calling get_db_logger()
+    return app.state.services.db_logger  # type: ignore[attr-defined]
+
+
+@pytest_asyncio.fixture
+async def require_db(auth_db_logger):
+    """Skip tests that require database if not available.
+    
+    This fixture is mainly for local development where developers might not
+    have PostgreSQL running. In CI, the database is always available via
+    the postgres service container (see .github/workflows/ci.yml).
+    
+    Usage:
+        async def test_user_creation(auth_client, require_db):
+            # This test will be skipped if database is not available locally
+            # In CI, it will always run since postgres service is configured
+            ...
+    """
+    if auth_db_logger is None or not hasattr(auth_db_logger, 'pool') or auth_db_logger.pool is None:
+        pytest.skip("Database not available (start PostgreSQL or check DB config)")
+    return auth_db_logger
+
+
+@pytest_asyncio.fixture
+async def test_user(auth_client):
+    """Create a test user for auth tests."""
+    user_data = {
+        "email": f"test_{os.urandom(4).hex()}@example.com",
+        "password": "TestPass123!",
+        "user_name": "Test User"
+    }
+    
+    response = await auth_client.post("/auth/signup", json=user_data)
+    assert response.status_code == 201
+    
+    return {
+        **user_data,
+        "user_id": response.json()["user_id"]
+    }
+
+
+@pytest_asyncio.fixture
+async def authenticated_user(auth_client, test_user):
+    """Create and authenticate a test user."""
+    login_response = await auth_client.post("/auth/login", json={
+        "email": test_user["email"],
+        "password": test_user["password"]
+    })
+    
+    assert login_response.status_code == 200
+    
+    return {
+        **test_user,
+        "access_token": login_response.json()["access_token"]
+    }
+
+
+# ============================================================================
+# Utility fixtures
+# ============================================================================
+
 @pytest.fixture
 def temp_models_yaml(tmp_path):
     """Create a temporary models.yaml for testing."""
@@ -217,3 +349,10 @@ remote_deployment:
 """
     routing_yaml.write_text(content)
     return str(routing_yaml)
+
+
+# Performance test skip marker
+skip_if_not_perf = pytest.mark.skipif(
+    os.getenv("RUN_PERF") != "1",
+    reason="Performance tests are disabled by default (set RUN_PERF=1 to enable)",
+)

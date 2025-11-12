@@ -128,21 +128,22 @@ async def test_user(auth_db_logger, clean_auth_tables):
     """
     user_data = create_test_user()
 
-    async with auth_db_logger.pool.acquire() as conn:
-        # Use a transaction to ensure data is committed
-        async with conn.transaction():
-            await conn.execute(
-                """
-                INSERT INTO users (id, email, password_hash, user_name, status, email_verified)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                """,
-                user_data["id"],
-                user_data["email"].lower(),  # Store email in lowercase
-                user_data["password_hash"],
-                user_data["user_name"],
-                user_data["status"],
-                user_data["email_verified"],
-            )
+    async with (
+        auth_db_logger.pool.acquire() as conn,
+        conn.transaction(),
+    ):
+        await conn.execute(
+            """
+            INSERT INTO users (id, email, password_hash, user_name, status, email_verified)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            user_data["id"],
+            user_data["email"].lower(),  # Store email in lowercase
+            user_data["password_hash"],
+            user_data["user_name"],
+            user_data["status"],
+            user_data["email_verified"],
+        )
 
     return user_data
 

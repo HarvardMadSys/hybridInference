@@ -193,8 +193,8 @@ def install_exception_handlers(app: FastAPI) -> None:
             content={
                 "error_code": "QUOTA_EXCEEDED",
                 "message": str(exc),
-                "quota_usd": exc.quota,
-                "spent_usd": exc.spent,
+                "quota": exc.quota,
+                "spent": exc.spent,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
