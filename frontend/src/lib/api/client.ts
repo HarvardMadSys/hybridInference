@@ -92,7 +92,7 @@ export async function fetchWithAuth(
 export async function jsonOrThrow<T>(resp: Response): Promise<T> {
   if (resp.ok) return resp.json() as Promise<T>;
 
-  let errorData: any = null;
+  let errorData: unknown = null;
   try {
     errorData = await resp.json();
   } catch (parseError) {
@@ -105,40 +105,43 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
   let errorCode = 'UNKNOWN_ERROR';
   let errorMessage = 'An unknown error occurred';
 
-  if (errorData.error) {
-    // Backend error format
-    const error = errorData.error;
-    errorMessage = error.message || errorMessage;
+  if (errorData && typeof errorData === 'object') {
+    const data = errorData as Record<string, unknown>;
 
-    // Map backend error types to frontend error codes
-    if (error.type === 'validation_error') {
-      errorCode = 'VALIDATION_ERROR';
-    } else if (resp.status === 409) {
-      errorCode = 'USER_ALREADY_EXISTS';
-    } else if (resp.status === 401) {
-      errorCode = 'INVALID_CREDENTIALS';
-    } else if (resp.status === 403) {
-      errorCode = 'EMAIL_NOT_VERIFIED';
-    } else if (resp.status === 400) {
-      errorCode = 'WEAK_PASSWORD';
-    }
-  } else if (errorData.detail) {
-    // FastAPI validation error format
-    errorMessage =
-      typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail);
+    if (data.error && typeof data.error === 'object') {
+      // Backend error format
+      const error = data.error as Record<string, unknown>;
+      errorMessage = (error.message as string) || errorMessage;
 
-    // Try to extract more specific error from detail
-    if (errorMessage.includes('already registered')) {
-      errorCode = 'USER_ALREADY_EXISTS';
-    } else if (errorMessage.includes('password')) {
-      errorCode = 'WEAK_PASSWORD';
-    } else if (errorMessage.includes('Invalid email or password')) {
-      errorCode = 'INVALID_CREDENTIALS';
+      // Map backend error types to frontend error codes
+      if (error.type === 'validation_error') {
+        errorCode = 'VALIDATION_ERROR';
+      } else if (resp.status === 409) {
+        errorCode = 'USER_ALREADY_EXISTS';
+      } else if (resp.status === 401) {
+        errorCode = 'INVALID_CREDENTIALS';
+      } else if (resp.status === 403) {
+        errorCode = 'EMAIL_NOT_VERIFIED';
+      } else if (resp.status === 400) {
+        errorCode = 'WEAK_PASSWORD';
+      }
+    } else if (data.detail) {
+      // FastAPI validation error format
+      errorMessage = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+
+      // Try to extract more specific error from detail
+      if (errorMessage.includes('already registered')) {
+        errorCode = 'USER_ALREADY_EXISTS';
+      } else if (errorMessage.includes('password')) {
+        errorCode = 'WEAK_PASSWORD';
+      } else if (errorMessage.includes('Invalid email or password')) {
+        errorCode = 'INVALID_CREDENTIALS';
+      }
+    } else if (data.error_code && typeof data.error_code === 'string') {
+      // Legacy format
+      errorCode = data.error_code;
+      errorMessage = (data.message as string) || errorMessage;
     }
-  } else if (errorData.error_code) {
-    // Legacy format
-    errorCode = errorData.error_code;
-    errorMessage = errorData.message || errorMessage;
   }
 
   throw new APIError(errorCode, errorMessage, resp.status);

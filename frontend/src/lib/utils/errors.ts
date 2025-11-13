@@ -38,9 +38,9 @@ export function getErrorMessage(error: unknown): string {
   }
 
   if (error instanceof Error) {
-    const code = (error as any).code;
-    if (code && ERROR_MESSAGES[code]) {
-      return ERROR_MESSAGES[code];
+    const errorWithCode = error as Error & { code?: string };
+    if (errorWithCode.code && ERROR_MESSAGES[errorWithCode.code]) {
+      return ERROR_MESSAGES[errorWithCode.code];
     }
     return error.message || ERROR_MESSAGES.UNKNOWN_ERROR;
   }
