@@ -1,3 +1,5 @@
+"""FastAPI application factory and configuration."""
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -6,6 +8,7 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from ..config.settings import settings
 from . import bootstrap
 from .middleware.error import install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
@@ -22,7 +25,6 @@ from .routers import (
     metrics,
     models,
     user_routes,
-    user_ui,
 )
 
 if TYPE_CHECKING:
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Manage application lifecycle - initialize and cleanup resources."""
     services: AppServices = await bootstrap.initialize()
     app.state.services = services  # type: ignore[attr-defined]
     try:
@@ -41,7 +44,6 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """Create and configure a FastAPI app instance with modular routers."""
-
     app = FastAPI(
         title="OpenRouter-Compatible API Server",
         description="Unified API server supporting VLLM, DeepSeek, Gemini, and Llama models",
@@ -49,10 +51,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS: be permissive by default to match legacy behavior
+    # CORS: use specific origins when credentials are enabled
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -79,7 +81,6 @@ def create_app() -> FastAPI:
     app.include_router(admin_ui.router)
     app.include_router(auth_routes.router)
     app.include_router(user_routes.router)
-    app.include_router(user_ui.router)
 
     return app
 

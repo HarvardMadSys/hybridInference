@@ -98,11 +98,12 @@ class APIKeyResponse(BaseModel):
 class APIKeyInfo(BaseModel):
     """API key information (masked)."""
 
-    key_prefix: str
-    key_masked: str
-    created_at: datetime
+    has_key: bool
+    key_prefix: str | None = None
+    key_masked: str | None = None
+    created_at: datetime | None = None
     last_used_at: datetime | None = None
-    status: str = "active"
+    status: str | None = None
 
 
 class APIKeyRegenerateResponse(BaseModel):
@@ -118,20 +119,21 @@ class APIKeyRegenerateResponse(BaseModel):
 class QuotaInfo(BaseModel):
     """User quota information."""
 
-    daily_limit_usd: float
+    has_key: bool
+    daily_limit_usd: float | None = None
     monthly_limit_usd: float | None = None
-    spent_today_usd: float
-    spent_month_usd: float
-    remaining_today_usd: float
+    spent_today_usd: float | None = None
+    spent_month_usd: float | None = None
+    remaining_today_usd: float | None = None
 
 
 class UsageStats(BaseModel):
     """User usage statistics."""
 
-    requests: int
-    prompt_tokens: int
-    completion_tokens: int
-    cost_usd: float
+    requests: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 class UsageResponse(BaseModel):
@@ -153,10 +155,49 @@ class ResetPasswordRequest(BaseModel):
     """Reset password request."""
 
     token: str
-    new_password: str = Field(..., min_length=8)
+    new_password: str  # Validate strength in handler to return 400
 
 
 class PasswordResetResponse(BaseModel):
     """Password reset response."""
 
     message: str
+
+
+class ResendVerificationRequest(BaseModel):
+    """Resend email verification request."""
+
+    email: EmailStr
+
+
+class ResendVerificationResponse(BaseModel):
+    """Resend verification response."""
+
+    message: str
+
+
+class ChangePasswordRequest(BaseModel):
+    """Change password request (for logged-in users)."""
+
+    old_password: str
+    new_password: str  # Validate strength in handler to return 400
+
+
+class ChangePasswordResponse(BaseModel):
+    """Change password response."""
+
+    message: str
+
+
+class ChangeEmailRequest(BaseModel):
+    """Change email request."""
+
+    new_email: EmailStr
+    password: str  # Require password confirmation
+
+
+class ChangeEmailResponse(BaseModel):
+    """Change email response."""
+
+    message: str
+    new_email: str

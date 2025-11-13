@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # Base URL
     base_url: str = "http://localhost:8000"
 
+    # CORS
+    cors_allowed_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
     # Trusted proxies (for real IP detection)
     trusted_proxies: list[str] = []
 
