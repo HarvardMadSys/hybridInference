@@ -108,6 +108,20 @@ def mock_db_logger():
     logger.cleanup = AsyncMock()
     logger.log_request = AsyncMock()
     logger.get_stats = AsyncMock(return_value=[])
+
+    # Mock the pool and connection context managers
+    mock_pool = MagicMock()
+    mock_conn = MagicMock()
+    mock_acquire = MagicMock()
+
+    # Setup the context manager chain: pool.acquire().__aenter__()
+    mock_acquire.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_acquire.__aexit__ = AsyncMock(return_value=None)
+    mock_pool.acquire = MagicMock(return_value=mock_acquire)
+
+    # Attach pool to logger
+    logger.pool = mock_pool
+
     return logger
 
 
@@ -167,12 +181,17 @@ async def test_app(app_services):
 
     app = FastAPI(title="Test API Server", version="2.0.0", lifespan=lifespan)
 
+    # Manually set services for testing (lifespan may not trigger in test client)
+    app.state.services = app_services
+
     # Import and register routes from new modular structure
-    from serving.servers.routers import health, models
+    from serving.servers.routers import auth_routes, health, models, user_routes
 
     # Include routers (they have their own routes defined)
     app.include_router(health.router)
     app.include_router(models.router)
+    app.include_router(auth_routes.router)
+    app.include_router(user_routes.router)
 
     return app
 
