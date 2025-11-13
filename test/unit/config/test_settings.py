@@ -1,7 +1,6 @@
 """Unit tests for configuration management."""
 
 import os
-import pytest
 
 from serving.config.settings import Settings, get_settings
 
@@ -18,9 +17,9 @@ class TestSettingsValidation:
         monkeypatch.setenv("DB_NAME", "test_db")
         monkeypatch.setenv("DB_USER", "postgres")
         monkeypatch.setenv("DB_PASSWORD", "password")
-        
+
         settings = Settings()
-        
+
         assert settings.jwt_secret_key == "test-secret-key-32-chars-long!!"
         assert settings.api_key_secret == "test-api-key-secret"
         assert settings.admin_token == "test-admin-token"
@@ -31,9 +30,9 @@ class TestSettingsValidation:
         for key in list(os.environ.keys()):
             if key.startswith(("JWT_", "DB_", "SIGNUP_", "COOKIE_")):
                 monkeypatch.delenv(key, raising=False)
-        
+
         settings = Settings()
-        
+
         # Check defaults (from actual implementation)
         assert settings.jwt_algorithm == "HS256"
         assert settings.jwt_access_token_expire_minutes == 15
@@ -51,9 +50,9 @@ class TestSettingsValidation:
         monkeypatch.setenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30")  # String "30"
         monkeypatch.setenv("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "50.00")  # String "50.00"
         monkeypatch.setenv("DB_PORT", "5433")  # String "5433"
-        
+
         settings = Settings()
-        
+
         # Check type conversions
         assert settings.signup_enabled is False  # bool
         assert settings.jwt_access_token_expire_minutes == 30  # int
@@ -64,16 +63,16 @@ class TestSettingsValidation:
         """Test settings are case-insensitive."""
         monkeypatch.setenv("jwt_secret_key", "test-secret-key")  # lowercase
         monkeypatch.setenv("API_KEY_SECRET", "test-api-key-secret")  # uppercase
-        
+
         settings = Settings()
-        
+
         assert settings.jwt_secret_key == "test-secret-key"
         assert settings.api_key_secret == "test-api-key-secret"
 
     def test_settings_extra_fields_ignored(self, monkeypatch):
         """Test extra environment variables are ignored."""
         monkeypatch.setenv("UNKNOWN_FIELD", "some_value")
-        
+
         # Should not raise error
         settings = Settings()
         assert not hasattr(settings, "unknown_field")
@@ -85,7 +84,7 @@ class TestSettingsUsage:
     def test_settings_singleton_pattern(self):
         """Test settings can be imported as singleton."""
         from serving.config.settings import settings
-        
+
         # Should be accessible
         assert hasattr(settings, "jwt_secret_key")
         assert hasattr(settings, "db_host")
@@ -94,6 +93,6 @@ class TestSettingsUsage:
         """Test get_settings returns cached instance."""
         settings1 = get_settings()
         settings2 = get_settings()
-        
+
         # Should be same instance (cached)
         assert settings1 is settings2

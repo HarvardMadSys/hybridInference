@@ -24,6 +24,12 @@ from test.fixtures.auth_factories import (
 @pytest.fixture
 def auth_env(monkeypatch):
     """Set up environment variables for auth testing."""
+    # CRITICAL: Clear settings cache before setting test env vars
+    # This ensures get_settings() will pick up the new environment variables
+    from serving.config.settings import get_settings
+
+    get_settings.cache_clear()
+
     test_env = {
         # Database
         "DB_ENABLED": "true",
@@ -63,6 +69,9 @@ def auth_env(monkeypatch):
 
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
+
+    # Clear cache again after setting env vars to force reload
+    get_settings.cache_clear()
 
     return test_env
 

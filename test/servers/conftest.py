@@ -22,10 +22,10 @@ from serving.servers.deps import AppServices
 from serving.servers.rate_limiter import PersistentRateLimiter
 from serving.storage.database import DatabaseLogger
 
-
 # ============================================================================
 # Session-level fixtures
 # ============================================================================
+
 
 @pytest.fixture(scope="session")
 def event_loop() -> Generator:
@@ -38,7 +38,7 @@ def event_loop() -> Generator:
 @pytest.fixture(scope="session", autouse=True)
 def auth_test_env():
     """Set required environment variables for auth tests.
-    
+
     This fixture runs automatically and ensures auth-related
     environment variables are set for all tests.
     """
@@ -55,6 +55,7 @@ def auth_test_env():
 # ============================================================================
 # Mock fixtures (for non-auth tests)
 # ============================================================================
+
 
 @pytest.fixture
 def mock_env(monkeypatch):
@@ -190,66 +191,90 @@ async def test_client(test_app):
 # Auth-specific fixtures (use real app with lifespan)
 # ============================================================================
 
+
 @pytest_asyncio.fixture
-async def auth_client():
+async def auth_app(auth_env):
+    """FastAPI app instance with lifespan context for auth tests.
+
+    This fixture creates a fresh app instance and manages its lifespan,
+    ensuring app.state.services is properly initialized.
+
+    Depends on auth_env to ensure test environment variables are set
+    and settings cache is cleared.
+
+    Returns:
+        FastAPI: App instance with initialized services in app.state.services
+    """
+    # Clear settings cache to pick up test environment variables
+    from serving.config.settings import get_settings
+    from serving.servers.app import create_app
+
+    get_settings.cache_clear()
+
+    app = create_app()
+
+    # Manually trigger lifespan startup
+    async with app.router.lifespan_context(app):
+        yield app
+
+
+@pytest_asyncio.fixture
+async def auth_client(auth_app):
     """Async HTTP client with FastAPI lifespan enabled for auth tests.
-    
-    CRITICAL: Uses ASGITransport with lifespan="on" to ensure
+
+    CRITICAL: Uses AsyncClient with app parameter to ensure
     app.state.services is initialized before tests run.
-    
+
     This client uses the REAL app with real database and services,
     unlike test_client which uses mocks.
-    
+
     Usage:
         async def test_login(auth_client):
             response = await auth_client.post("/auth/login", json={...})
             assert response.status_code == 200
     """
-    from serving.servers.app import app
-    from httpx import ASGITransport
-    
-    # CRITICAL: lifespan="on" ensures app.state.services is initialized
-    transport = ASGITransport(app=app, lifespan="on")
+    from httpx import ASGITransport, AsyncClient
+
+    # Use the app from auth_app fixture (lifespan already managed)
+    transport = ASGITransport(app=auth_app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
 
 @pytest_asyncio.fixture
-async def auth_db_logger(auth_client):
+async def auth_db_logger(auth_app):
     """Database logger from app state (initialized in lifespan).
-    
+
     CRITICAL: Access via app.state.services, not Depends(get_db_logger).
     Depends() functions cannot be called directly in tests.
-    
-    Note: This fixture depends on 'auth_client' fixture to ensure lifespan
+
+    Note: This fixture depends on 'auth_app' fixture to ensure lifespan
     has run and app.state.services is populated.
-    
+
     Usage:
         async def test_example(auth_client, auth_db_logger):
             async with auth_db_logger.pool.acquire() as conn:
                 result = await conn.fetchrow("SELECT 1")
     """
-    from serving.servers.app import app
-    
     # CRITICAL: Access from app.state.services, not by calling get_db_logger()
-    return app.state.services.db_logger  # type: ignore[attr-defined]
+    return auth_app.state.services.db_logger  # type: ignore[attr-defined]
 
 
 @pytest_asyncio.fixture
 async def require_db(auth_db_logger):
     """Skip tests that require database if not available.
-    
+
     This fixture is mainly for local development where developers might not
     have PostgreSQL running. In CI, the database is always available via
     the postgres service container (see .github/workflows/ci.yml).
-    
+
     Usage:
         async def test_user_creation(auth_client, require_db):
             # This test will be skipped if database is not available locally
             # In CI, it will always run since postgres service is configured
             ...
     """
-    if auth_db_logger is None or not hasattr(auth_db_logger, 'pool') or auth_db_logger.pool is None:
+    if auth_db_logger is None or not hasattr(auth_db_logger, "pool") or auth_db_logger.pool is None:
         pytest.skip("Database not available (start PostgreSQL or check DB config)")
     return auth_db_logger
 
@@ -260,37 +285,39 @@ async def test_user(auth_client):
     user_data = {
         "email": f"test_{os.urandom(4).hex()}@example.com",
         "password": "TestPass123!",
-        "user_name": "Test User"
+        "user_name": "Test User",
     }
-    
+
     response = await auth_client.post("/auth/signup", json=user_data)
     assert response.status_code == 201
-    
+
+    user_id = response.json()["user_id"]
+
     return {
         **user_data,
-        "user_id": response.json()["user_id"]
+        "user_id": user_id,
+        "id": user_id,  # Add 'id' field for compatibility with conftest_auth tests
+        "status": "active",  # Default status for new users
+        "email_verified": False,  # Email verification is disabled in tests by default
     }
 
 
 @pytest_asyncio.fixture
 async def authenticated_user(auth_client, test_user):
     """Create and authenticate a test user."""
-    login_response = await auth_client.post("/auth/login", json={
-        "email": test_user["email"],
-        "password": test_user["password"]
-    })
-    
+    login_response = await auth_client.post(
+        "/auth/login", json={"email": test_user["email"], "password": test_user["password"]}
+    )
+
     assert login_response.status_code == 200
-    
-    return {
-        **test_user,
-        "access_token": login_response.json()["access_token"]
-    }
+
+    return {**test_user, "access_token": login_response.json()["access_token"]}
 
 
 # ============================================================================
 # Utility fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def temp_models_yaml(tmp_path):

@@ -1,9 +1,10 @@
 """Unit tests for JWT utilities (PyJWT)."""
 
 import os
+from datetime import timedelta
+
 import jwt  # PyJWT, not python-jose
 import pytest
-from datetime import timedelta
 
 from serving.utils.jwt import create_access_token, verify_access_token
 
@@ -25,7 +26,7 @@ class TestJWTCreation:
             email="test@example.com",
             tier="free",
         )
-        
+
         assert isinstance(token, str)
         assert isinstance(jti, str)
         assert jti.startswith("jwt_")  # jti has jwt_ prefix
@@ -37,10 +38,10 @@ class TestJWTCreation:
             email="test@example.com",
             tier="premium",
         )
-        
+
         # Decode without verification to check structure
         payload = jwt.decode(token, options={"verify_signature": False})
-        
+
         assert payload["sub"] == "user_123"
         assert payload["email"] == "test@example.com"
         assert payload["tier"] == "premium"
@@ -56,9 +57,9 @@ class TestJWTCreation:
             email="test@example.com",
             expires_delta=timedelta(minutes=1),
         )
-        
+
         payload = jwt.decode(token, options={"verify_signature": False})
-        
+
         # Should expire in ~60 seconds
         assert payload["exp"] - payload["iat"] == 60
 
@@ -72,9 +73,9 @@ class TestJWTVerification:
             user_id="user_123",
             email="test@example.com",
         )
-        
+
         payload = verify_access_token(token)
-        
+
         assert payload["sub"] == "user_123"
         assert payload["email"] == "test@example.com"
         assert payload["jti"] == jti
@@ -82,16 +83,16 @@ class TestJWTVerification:
     def test_verify_expired_token(self):
         """Test verification of expired token raises jwt.ExpiredSignatureError."""
         import time
-        
+
         token, _ = create_access_token(
             user_id="user_123",
             email="test@example.com",
             expires_delta=timedelta(seconds=1),
         )
-        
+
         # Wait for token to expire
         time.sleep(2)
-        
+
         # CRITICAL: PyJWT raises jwt.ExpiredSignatureError, not JWTError
         with pytest.raises(jwt.ExpiredSignatureError):
             verify_access_token(token)
@@ -101,7 +102,7 @@ class TestJWTVerification:
         # Create token with wrong secret
         payload = {"sub": "user_123", "email": "test@example.com"}
         token = jwt.encode(payload, "wrong-secret-key", algorithm="HS256")
-        
+
         # CRITICAL: PyJWT raises jwt.InvalidTokenError (or subclass)
         with pytest.raises(jwt.InvalidTokenError):
             verify_access_token(token)

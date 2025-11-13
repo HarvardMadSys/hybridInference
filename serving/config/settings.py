@@ -4,6 +4,8 @@ This module provides type-safe, validated configuration management.
 All environment variables are centralized here for easy tracking and testing.
 """
 
+from functools import lru_cache
+
 from pydantic_settings import BaseSettings
 
 
@@ -58,17 +60,20 @@ class Settings(BaseSettings):
     trusted_proxies: list[str] = []
 
     class Config:
+        """Pydantic configuration for Settings class."""
+
         env_file = ".env"
         case_sensitive = False
         # Allow extra fields for forward compatibility
         extra = "ignore"
 
 
+@lru_cache
 def get_settings() -> Settings:
     """Get settings instance.
 
-    Note: Not cached to allow tests to override environment variables.
-    For production use, import the global 'settings' instance instead.
+    This function is cached to return the same instance across the application.
+    For testing, use pytest's monkeypatch or clear the cache with get_settings.cache_clear().
 
     Returns:
         Settings: Validated settings object.

@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
-from serving.config.settings import settings
+from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
 from serving.utils.logging import get_logger, setup_logging
@@ -97,6 +97,9 @@ def _init_db_logger() -> DatabaseLogger | None:
         return None
 
     try:
+        # Get settings dynamically to support test environment overrides
+        settings = get_settings()
+
         # Use centralized settings instead of get_db_config()
         db_config = {
             "host": settings.db_host,
