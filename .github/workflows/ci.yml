@@ -133,11 +133,11 @@ jobs:
           LLAMA_API_KEY: ${{ secrets.LLAMA_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Database configuration for auth tests
-          TEST_DB_HOST: localhost
-          TEST_DB_PORT: 5432
-          TEST_DB_NAME: freeinference_test_db
-          TEST_DB_USER: postgres
-          TEST_DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: freeinference_test_db
+          DB_USER: postgres
+          DB_PASSWORD: postgres
           # Auth system configuration
           JWT_SECRET_KEY: test-secret-key-for-ci-only-do-not-use-in-production
           JWT_ALGORITHM: HS256

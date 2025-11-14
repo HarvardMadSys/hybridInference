@@ -42,6 +42,13 @@ def auth_test_env():
     This fixture runs automatically and ensures auth-related
     environment variables are set for all tests.
     """
+    # Database configuration
+    os.environ.setdefault("DB_HOST", "localhost")
+    os.environ.setdefault("DB_PORT", "5432")
+    os.environ.setdefault("DB_NAME", "freeinference_test_db")
+    os.environ.setdefault("DB_USER", "postgres")
+    os.environ.setdefault("DB_PASSWORD", "postgres")
+    # Auth configuration
     os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-32-chars-long!!")
     os.environ.setdefault("API_KEY_SECRET", "test-api-key-secret")
     os.environ.setdefault("ADMIN_TOKEN", "test-admin-token")
@@ -49,6 +56,7 @@ def auth_test_env():
     os.environ.setdefault("COOKIE_SECURE", "0")
     os.environ.setdefault("SIGNUP_ENABLED", "1")
     os.environ.setdefault("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "10.00")
+    # Disabled by default for backward compatibility with existing tests
     os.environ.setdefault("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "0")
 
 
@@ -212,13 +220,13 @@ async def test_client(test_app):
 
 
 @pytest_asyncio.fixture
-async def auth_app(auth_env):
-    """FastAPI app instance with lifespan context for auth tests.
+async def auth_app(auth_test_env):
+    """App instance with lifespan context for auth tests.
 
     This fixture creates a fresh app instance and manages its lifespan,
     ensuring app.state.services is properly initialized.
 
-    Depends on auth_env to ensure test environment variables are set
+    Depends on auth_test_env to ensure test environment variables are set
     and settings cache is cleared.
 
     Returns:

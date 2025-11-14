@@ -193,6 +193,14 @@ async def login(
             detail="Invalid email or password",
         )
 
+    # Check if email verification is required and if email is verified
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    if require_verification and not user_row["email_verified"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Please check your email for the verification link.",
+        )
+
     # Check account status
     if user_row["status"] != "active":
         raise HTTPException(
@@ -361,7 +369,7 @@ async def refresh(
     async with db_logger.pool.acquire() as conn:
         user_row = await conn.fetchrow(
             """
-            SELECT id, email, status
+            SELECT id, email, status, email_verified
             FROM users
             WHERE id = $1
             """,
@@ -372,6 +380,14 @@ async def refresh(
         raise HTTPException(
             status_code=401,
             detail="User account is not active.",
+        )
+
+    # Check if email verification is required and if email is verified
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    if require_verification and not user_row["email_verified"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Please verify your email to continue.",
         )
 
     # Create new access token
