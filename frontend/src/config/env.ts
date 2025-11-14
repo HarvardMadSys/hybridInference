@@ -7,8 +7,8 @@
 
 export const config = {
   // API Configuration
-  // Default: http://localhost:8000 (matches backend default port)
-  apiBase: process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000',
+  // Default: http://freeinference.org (production backend on port 80)
+  apiBase: process.env.NEXT_PUBLIC_API_BASE || 'http://freeinference.org',
 
   // Application Configuration
   appName: process.env.NEXT_PUBLIC_APP_NAME || 'FreeInference',
