@@ -7,6 +7,9 @@
 #   make lint UV_RUN="uv run --active"
 UV_RUN ?= uv run
 
+# Frontend directory
+FRONTEND_DIR := frontend
+
 # Colors for terminal output
 RESET := \033[0m
 BOLD := \033[1m
@@ -22,18 +25,18 @@ format:  ## Format code with ruff (configured for Google style)
 	@echo "$(YELLOW)Running formatter...$(RESET)"
 	$(UV_RUN) ruff format .
 	$(UV_RUN) ruff check --fix .
-	@echo "$(GREEN)✓ Code formatted$(RESET)"
+	@echo "$(GREEN)OK Code formatted$(RESET)"
 
 lint:  ## Run linters (ruff, pydocstyle)
 	@echo "$(YELLOW)Running linters...$(RESET)"
 	$(UV_RUN) ruff check --no-fix .
 	$(UV_RUN) pydocstyle
-	@echo "$(GREEN)✓ Linting passed$(RESET)"
+	@echo "$(GREEN)OK Linting passed$(RESET)"
 
 test:  ## Run unit/integration tests (exclude external)
 	@echo "$(YELLOW)Running tests (not external)...$(RESET)"
 	$(UV_RUN) pytest -q -m "not external"
-	@echo "$(GREEN)✓ Tests passed$(RESET)"
+	@echo "$(GREEN)OK Tests passed$(RESET)"
 
 test-verbose: ## Run tests with verbose output (exclude external)
 	$(UV_RUN) pytest -vv -m "not external"
@@ -45,7 +48,7 @@ test-e2e: ## Run external/E2E tests (may require local server)
 	$(UV_RUN) pytest -m external -vv
 
 check: lint test  ## Run all checks (lint, test)
-	@echo "$(GREEN)✓ All checks passed$(RESET)"
+	@echo "$(GREEN)OK All checks passed$(RESET)"
 
 all: format check  ## Format code and run all checks
 
@@ -69,4 +72,34 @@ clean:  ## Clean build artifacts and cache
 	find . -type f -name "*.pyo" -delete
 	find . -type f -name ".coverage" -delete
 	rm -rf htmlcov/ .pytest_cache/ .mypy_cache/ .ruff_cache/
-	@echo "$(GREEN)✓ Cleanup complete$(RESET)"
+	@echo "$(GREEN)OK Cleanup complete$(RESET)"
+
+# Frontend targets
+frontend-install:  ## Install frontend dependencies
+	@echo "$(YELLOW)Installing frontend dependencies...$(RESET)"
+	cd $(FRONTEND_DIR) && npm ci
+	@echo "$(GREEN)OK Frontend dependencies installed$(RESET)"
+
+frontend-lint:  ## Run ESLint on frontend code
+	@echo "$(YELLOW)Running frontend linter...$(RESET)"
+	cd $(FRONTEND_DIR) && npm run lint
+	@echo "$(GREEN)OK Frontend linting passed$(RESET)"
+
+frontend-type-check:  ## Run TypeScript type checking
+	@echo "$(YELLOW)Running TypeScript type check...$(RESET)"
+	cd $(FRONTEND_DIR) && npm run type-check
+	@echo "$(GREEN)OK Type checking passed$(RESET)"
+
+frontend-test:  ## Run frontend tests
+	@echo "$(YELLOW)Running frontend tests...$(RESET)"
+	cd $(FRONTEND_DIR) && npm run test -- --run
+	@echo "$(GREEN)OK Frontend tests passed$(RESET)"
+
+frontend-check: frontend-lint frontend-type-check frontend-test  ## Run all frontend checks
+	@echo "$(GREEN)OK All frontend checks passed$(RESET)"
+
+# Combined targets
+check-all: lint test frontend-check  ## Run all checks (backend + frontend)
+	@echo "$(GREEN)OK All checks passed (backend + frontend)$(RESET)"
+
+all-with-frontend: format check-all  ## Format and check everything (backend + frontend)

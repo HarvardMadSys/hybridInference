@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
-from serving.config import get_db_config
+from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
 from serving.utils.logging import get_logger, setup_logging
@@ -97,7 +97,17 @@ def _init_db_logger() -> DatabaseLogger | None:
         return None
 
     try:
-        db_config = get_db_config()
+        # Get settings dynamically to support test environment overrides
+        settings = get_settings()
+
+        # Use centralized settings instead of get_db_config()
+        db_config = {
+            "host": settings.db_host,
+            "port": settings.db_port,
+            "database": settings.db_name,
+            "user": settings.db_user,
+            "password": settings.db_password,
+        }
         logger.info(
             f"Initializing PostgreSQL logger: "
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"

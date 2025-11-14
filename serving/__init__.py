@@ -1,4 +1,8 @@
-from .base import LLMProvider, LLMRequest, LLMResponse
-from .config import get_config
+"""Serving package for HybridInference."""
 
-__all__ = ["LLMProvider", "LLMRequest", "LLMResponse", "get_config"]
+# Remove old config import - now using config/settings.py
+# from .config import get_config
+
+from .base import LLMProvider, LLMRequest, LLMResponse
+
+__all__ = ["LLMProvider", "LLMRequest", "LLMResponse"]

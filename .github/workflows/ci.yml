@@ -14,6 +14,7 @@ env:
   PYTHON_VERSION: "3.13"
   UV_VERSION: "0.5.0"
   UV_SYSTEM_PYTHON: 1
+  NODE_VERSION: "20"
 
 jobs:
   lint:
@@ -47,9 +48,66 @@ jobs:
         run: uv run pydocstyle
         continue-on-error: true  # Allow docstring issues initially
 
+  frontend-lint-test:
+    name: Frontend Lint & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for package-lock.json
+        id: check-lock
+        run: |
+          if [ -f "package-lock.json" ]; then
+            echo "cache=npm" >> $GITHUB_OUTPUT
+          else
+            echo "cache=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: ${{ steps.check-lock.outputs.cache }}
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run Prettier format check
+        run: npm run format:check
+
+      - name: Run TypeScript type check
+        run: npm run type-check
+
+      # TODO: Add frontend tests (vitest/playwright)
+      # - name: Run tests
+      #   run: npm run test -- --run
+
   test:
     name: Test
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: freeinference_test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +132,24 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LLAMA_API_KEY: ${{ secrets.LLAMA_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          # Database configuration for auth tests
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: freeinference_test_db
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          # Auth system configuration
+          JWT_SECRET_KEY: test-secret-key-for-ci-only-do-not-use-in-production
+          JWT_ALGORITHM: HS256
+          JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 15
+          JWT_REFRESH_TOKEN_EXPIRE_DAYS: 30
+          SIGNUP_ENABLED: "1"
+          SIGNUP_DEFAULT_TIER: free
+          SIGNUP_DEFAULT_DAILY_QUOTA_USD: "100.00"
+          SIGNUP_REQUIRE_EMAIL_VERIFICATION: "0"
+          COOKIE_SECURE: "0"
+          COOKIE_SAMESITE: lax
+          BASE_URL: http://localhost:8000
         run: |
           uv run pytest --cov=. --cov-report=term-missing --cov-report=xml -v
 
