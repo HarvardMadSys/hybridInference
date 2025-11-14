@@ -109,12 +109,18 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
     const data = errorData as Record<string, unknown>;
 
     if (data.error && typeof data.error === 'object') {
-      // Backend error format
+      // Backend error format: { error: { message: "...", type: "...", code: 400 } }
       const error = data.error as Record<string, unknown>;
       errorMessage = (error.message as string) || errorMessage;
 
-      // Map backend error types to frontend error codes
-      if (error.type === 'validation_error') {
+      // Extract error patterns from message
+      if (errorMessage.includes('already been used')) {
+        errorCode = 'TOKEN_ALREADY_USED';
+      } else if (errorMessage.includes('expired')) {
+        errorCode = 'TOKEN_EXPIRED';
+      } else if (errorMessage.includes('Invalid') && errorMessage.includes('token')) {
+        errorCode = 'INVALID_TOKEN';
+      } else if (error.type === 'validation_error') {
         errorCode = 'VALIDATION_ERROR';
       } else if (resp.status === 409) {
         errorCode = 'USER_ALREADY_EXISTS';
@@ -122,21 +128,27 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
         errorCode = 'INVALID_CREDENTIALS';
       } else if (resp.status === 403) {
         errorCode = 'EMAIL_NOT_VERIFIED';
-      } else if (resp.status === 400) {
-        errorCode = 'WEAK_PASSWORD';
       }
     } else if (data.detail) {
-      // FastAPI validation error format
+      // FastAPI validation error format: { detail: "..." }
       errorMessage = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
 
-      // Try to extract more specific error from detail
+      // Try to extract more specific error from detail message
       if (errorMessage.includes('already registered')) {
         errorCode = 'USER_ALREADY_EXISTS';
-      } else if (errorMessage.includes('password')) {
+      } else if (errorMessage.includes('already been used')) {
+        errorCode = 'TOKEN_ALREADY_USED';
+      } else if (errorMessage.includes('expired')) {
+        errorCode = 'TOKEN_EXPIRED';
+      } else if (errorMessage.includes('Invalid') && errorMessage.includes('token')) {
+        errorCode = 'INVALID_TOKEN';
+      } else if (errorMessage.includes('password') && errorMessage.includes('characters')) {
         errorCode = 'WEAK_PASSWORD';
       } else if (errorMessage.includes('Invalid email or password')) {
         errorCode = 'INVALID_CREDENTIALS';
       }
+      // If no specific pattern matched, use the detail message directly
+      // Don't force it into a predefined error code
     } else if (data.error_code && typeof data.error_code === 'string') {
       // Legacy format
       errorCode = data.error_code;

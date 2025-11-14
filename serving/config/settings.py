@@ -46,18 +46,27 @@ class Settings(BaseSettings):
     login_rate_limit_per_15min: int = 5
 
     # Email (optional)
-    smtp_host: str = "smtp.gmail.com"
+    smtp_host: str = "smtp.resend.com"
     smtp_port: int = 587
-    smtp_user: str = ""
+    smtp_user: str = "resend"
     smtp_password: str = ""
-    smtp_from_email: str = "noreply@hybridinference.com"
-    smtp_from_name: str = "HybridInference"
+    smtp_from_email: str = "noreply@freeinference.org"
+    smtp_from_name: str = "FreeInference"
 
     # Base URL
-    base_url: str = "http://localhost:8000"
+    base_url: str = "http://freeinference.org"
+
+    # Frontend URL (for email links)
+    frontend_url: str = "http://example.org:3001"
 
     # CORS
-    cors_allowed_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    cors_allowed_origins: list[str] = [
+        "http://localhost:3000",
+        "http://freeinference.org",
+        "http://example.org:3001",
+        "https://freeinference.org",
+        "https://example.org:3001",
+    ]
 
     # Trusted proxies (for real IP detection)
     trusted_proxies: list[str] = []

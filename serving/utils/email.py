@@ -1,29 +1,29 @@
 """Email sending utilities for user verification and password reset."""
 
-import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import urlparse
 
+from serving.config.settings import settings
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def get_smtp_config() -> dict[str, str]:
-    """Get SMTP configuration from environment variables.
+def get_smtp_config() -> dict[str, str | int]:
+    """Get SMTP configuration from settings.
 
     Returns:
         Dictionary with SMTP configuration.
     """
     return {
-        "host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        "port": int(os.getenv("SMTP_PORT", "587")),
-        "user": os.getenv("SMTP_USER", ""),
-        "password": os.getenv("SMTP_PASSWORD", ""),
-        "from_email": os.getenv("SMTP_FROM_EMAIL", "noreply@hybridinference.com"),
-        "from_name": os.getenv("SMTP_FROM_NAME", "HybridInference"),
+        "host": settings.smtp_host,
+        "port": settings.smtp_port,
+        "user": settings.smtp_user,
+        "password": settings.smtp_password,
+        "from_email": settings.smtp_from_email,
+        "from_name": settings.smtp_from_name,
     }
 
 
@@ -33,8 +33,7 @@ def is_email_enabled() -> bool:
     Returns:
         True if SMTP is configured, False otherwise.
     """
-    config = get_smtp_config()
-    return bool(config["user"] and config["password"])
+    return bool(settings.smtp_user and settings.smtp_password)
 
 
 def send_email(to_email: str, subject: str, html_body: str, text_body: str | None = None) -> bool:
@@ -85,16 +84,20 @@ def send_verification_email(to_email: str, verification_token: str, base_url: st
     """Send email verification link to user.
 
     Args:
-        to_email: User email address.
+        to_email: Recipient email address.
         verification_token: Verification token.
-        base_url: Base URL of the application (e.g., https://yourdomain.com).
-                  Should be from BASE_URL environment variable or request origin.
+        base_url: Backend base URL or request origin. Used for basic validation and logging.
+
+    Behavior:
+        - The verification link embedded in the email targets the frontend URL configured
+          in settings.frontend_url, for example:
+          {frontend}/verify-email?token=...
 
     Returns:
         True if email sent successfully, False otherwise.
 
     Security:
-        - base_url is validated to ensure it uses https in production
+        - base_url is validated and warns on insecure http in non-local environments
         - Token is URL-safe and cryptographically random
         - Link expires after 24 hours
     """
@@ -112,15 +115,17 @@ def send_verification_email(to_email: str, verification_token: str, base_url: st
     ):
         logger.warning(f"Using insecure http protocol for verification email: {base_url}")
 
-    verification_url = f"{base_url}/auth/verify-email?token={verification_token}"
+    # Link to frontend page (not backend API)
+    # Frontend will call backend API to verify the token
+    verification_url = f"{settings.frontend_url}/verify-email?token={verification_token}"
 
-    subject = "Verify your HybridInference account"
+    subject = "Verify your FreeInference account"
 
     html_body = f"""
     <html>
     <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
         <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h2 style="color: #2563eb;">Welcome to HybridInference!</h2>
+            <h2 style="color: #2563eb;">Welcome to FreeInference!</h2>
             <p>Thank you for signing up. Please verify your email address by clicking the link below:</p>
             <p style="margin: 30px 0;">
                 <a href="{verification_url}"
@@ -146,7 +151,7 @@ def send_verification_email(to_email: str, verification_token: str, base_url: st
     """
 
     text_body = f"""
-Welcome to HybridInference!
+Welcome to FreeInference!
 
 Thank you for signing up. Please verify your email address by visiting:
 
@@ -164,16 +169,20 @@ def send_password_reset_email(to_email: str, reset_token: str, base_url: str) ->
     """Send password reset link to user.
 
     Args:
-        to_email: User email address.
+        to_email: Recipient email address.
         reset_token: Password reset token.
-        base_url: Base URL of the application.
-                  Should be from BASE_URL environment variable or request origin.
+        base_url: Backend base URL or request origin. Used for basic validation and logging.
+
+    Behavior:
+        - The reset link embedded in the email targets the frontend URL configured
+          in settings.frontend_url, for example:
+          {frontend}/reset-password?token=...
 
     Returns:
         True if email sent successfully, False otherwise.
 
     Security:
-        - base_url is validated to ensure it uses https in production
+        - base_url is validated and warns on insecure http in non-local environments
         - Token is URL-safe and cryptographically random
         - Link expires after 1 hour
     """
@@ -191,9 +200,10 @@ def send_password_reset_email(to_email: str, reset_token: str, base_url: str) ->
     ):
         logger.warning(f"Using insecure http protocol for password reset email: {base_url}")
 
-    reset_url = f"{base_url}/auth/reset-password?token={reset_token}"
+    # Link to frontend page (not backend API)
+    reset_url = f"{settings.frontend_url}/reset-password?token={reset_token}"
 
-    subject = "Reset your HybridInference password"
+    subject = "Reset your FreeInference password"
 
     html_body = f"""
     <html>
