@@ -292,6 +292,127 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS quota_monthly_cost_usd DECIMAL(10, 4)
             """)
 
+            # Add account_id column to link API keys to user accounts (self-registered users only)
+            await conn.execute("""
+                ALTER TABLE api_keys
+                ADD COLUMN IF NOT EXISTS account_id TEXT
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_keys_account
+                ON api_keys(account_id)
+            """)
+
+            # Prevent concurrent duplicate active keys per account (self-registered users)
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique
+                ON api_keys(account_id)
+                WHERE status = 'active' AND account_id IS NOT NULL
+            """)
+
+            # Users table for self-service registration
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    user_name TEXT,
+                    email_verified BOOLEAN DEFAULT FALSE,
+                    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'deleted')),
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    last_login_at TIMESTAMPTZ
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_users_email
+                ON users(email)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_users_status
+                ON users(status)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_users_created_at
+                ON users(created_at DESC)
+            """)
+
+            # Auth sessions table for refresh token management
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    refresh_token_hash TEXT NOT NULL UNIQUE,
+                    jti TEXT,
+                    sid TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    last_used_at TIMESTAMPTZ,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    revoked BOOLEAN DEFAULT FALSE,
+                    user_agent TEXT,
+                    ip_address TEXT
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_auth_sessions_user
+                ON auth_sessions(user_id, expires_at)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_auth_sessions_token
+                ON auth_sessions(refresh_token_hash) WHERE NOT revoked
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti
+                ON auth_sessions(jti)
+            """)
+
+            # Email verification tokens table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS email_verification_tokens (
+                    token TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    used_at TIMESTAMPTZ
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_email_verification_user
+                ON email_verification_tokens(user_id)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_email_verification_expires
+                ON email_verification_tokens(expires_at)
+            """)
+
+            # Password reset tokens table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    token TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    used_at TIMESTAMPTZ
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_password_reset_user
+                ON password_reset_tokens(user_id)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_password_reset_expires
+                ON password_reset_tokens(expires_at)
+            """)
+
             # Admin audit log table for tracking all admin operations
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS admin_audit_log (

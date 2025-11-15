@@ -152,6 +152,7 @@ class ClaudeAdapter(BaseAdapter):
         cache_read_input_tokens = int(usage_data.get("cache_read_input_tokens", 0) or 0)
         cache_creation_input_tokens = int(usage_data.get("cache_creation_input_tokens", 0) or 0)
         output_tokens = int(usage_data.get("output_tokens", 0) or 0)
+        thinking_tokens = int(usage_data.get("thinking_tokens", 0) or 0)
 
         usage = UsageInfo(
             prompt_tokens=max(0, input_tokens - cache_read_input_tokens),
@@ -160,6 +161,8 @@ class ClaudeAdapter(BaseAdapter):
             # Claude includes cache tokens
             cache_read_tokens=cache_read_input_tokens,
             cache_write_tokens=cache_creation_input_tokens,
+            # Forward extended thinking tokens as reasoning tokens for cost tracking
+            reasoning_tokens=thinking_tokens,
         )
 
         # Map Claude's stop_reason to OpenAI's finish_reason
@@ -345,6 +348,7 @@ class ClaudeAdapter(BaseAdapter):
                     cache_creation_input_tokens = int(
                         usage_data.get("cache_creation_input_tokens", 0) or 0
                     )
+                    thinking_tokens = int(usage_data.get("thinking_tokens", 0) or 0)
 
                     # Yield content chunk if present
                     if full_text:
@@ -380,14 +384,26 @@ class ClaudeAdapter(BaseAdapter):
                         # Send usage even for tool_calls to enable proper logging and billing
                         usage_data = chunk_data.get("usage", {})
                         input_tokens_msg = usage_data.get("input_tokens", 0)
+                        cache_read_msg = usage_data.get("cache_read_input_tokens", 0)
+                        cache_creation_msg = usage_data.get("cache_creation_input_tokens", 0)
+                        output_tokens_msg = usage_data.get("output_tokens", 0)
+
                         yield make_final_usage_chunk(
                             model=self.config.id,
                             messages=messages,
                             total_content=total_content,
-                            prompt_tokens_override=input_tokens_msg
+                            prompt_tokens_override=max(0, input_tokens_msg - cache_read_msg)
                             if input_tokens_msg > 0
                             else None,
+                            completion_tokens_override=output_tokens_msg
+                            if output_tokens_msg > 0
+                            else None,
                             finish_reason=finish_reason,
+                            provider=self.config.provider,
+                            base_url=self.config.base_url,
+                            cache_read_tokens=cache_read_msg,
+                            cache_write_tokens=cache_creation_msg,
+                            reasoning_tokens=thinking_tokens,
                         )
                         yield done_sentinel()
                         return
@@ -402,8 +418,16 @@ class ClaudeAdapter(BaseAdapter):
                         model=self.config.id,
                         messages=messages,
                         total_content=total_content,
-                        prompt_tokens_override=input_tokens if input_tokens > 0 else None,
+                        prompt_tokens_override=max(0, input_tokens - cache_read_input_tokens)
+                        if input_tokens > 0
+                        else None,
+                        completion_tokens_override=output_tokens if output_tokens > 0 else None,
                         finish_reason=finish_reason if not tool_calls_list else None,
+                        provider=self.config.provider,
+                        base_url=self.config.base_url,
+                        cache_read_tokens=cache_read_input_tokens,
+                        cache_write_tokens=cache_creation_input_tokens,
+                        reasoning_tokens=thinking_tokens,
                     )
                     yield done_sentinel()
                     return

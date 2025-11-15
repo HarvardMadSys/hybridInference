@@ -169,12 +169,20 @@ class TestBootstrapHelpers:
         monkeypatch.setenv("DB_USER", "testuser")
         monkeypatch.setenv("DB_PASSWORD", "testpass")
 
+        # Clear settings cache to pick up new environment variables
+        from serving.config.settings import get_settings
+
+        get_settings.cache_clear()
+
         logger = bootstrap._init_db_logger()
 
         assert logger is not None
         assert isinstance(logger, bootstrap.DatabaseLogger)
         assert logger.db_config["host"] == "testhost"
+        assert logger.db_config["port"] == 5433
         assert logger.db_config["database"] == "testdb"
+        assert logger.db_config["user"] == "testuser"
+        assert logger.db_config["password"] == "testpass"
 
     def test_init_db_logger_disabled(self, monkeypatch):
         """Test database logger when disabled."""

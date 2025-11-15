@@ -499,5 +499,7 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
             total_content=total_content,
             prompt_tokens_override=prompt_tokens_override,
             finish_reason=finish_reason,
+            provider=self.config.provider,
+            base_url=self.config.base_url,
         )
         yield done_sentinel()

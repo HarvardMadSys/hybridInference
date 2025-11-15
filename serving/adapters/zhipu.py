@@ -201,6 +201,8 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                     messages=messages,
                     total_content=total_content,
                     finish_reason=finish_reason,
+                    provider=self.config.provider,
+                    base_url=self.config.base_url,
                 )
                 yield done_sentinel()
                 break
