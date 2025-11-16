@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 30
 
     # Cookie
-    cookie_secure: bool = False
+    cookie_secure: bool = True
     cookie_domain: str | None = None
     cookie_samesite: str = "lax"
 
@@ -54,10 +54,10 @@ class Settings(BaseSettings):
     smtp_from_name: str = "FreeInference"
 
     # Base URL
-    base_url: str = "http://freeinference.org"
+    base_url: str = "https://freeinference.org"
 
     # Frontend URL (for email links)
-    frontend_url: str = "http://example.org:3001"
+    frontend_url: str = "https://freeinference.org"
 
     # CORS
     cors_allowed_origins: list[str] = [
