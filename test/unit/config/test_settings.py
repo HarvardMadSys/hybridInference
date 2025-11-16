@@ -78,7 +78,8 @@ def test_defaults_without_env_file(make_settings) -> None:
     assert settings.jwt_refresh_token_expire_days == 30
     assert settings.signup_enabled is True
     assert settings.signup_default_daily_quota_usd == 100.00  # float, not Decimal
-    assert settings.cookie_secure is False
+    # In production we default to secure cookies; override via env for local HTTP dev if needed.
+    assert settings.cookie_secure is True
     assert settings.cookie_samesite == "lax"
     assert settings.db_host == "localhost"
     assert settings.db_port == 5432

@@ -14,4 +14,3 @@ remote_deployment:
   - endpoint: ${LLAMA_BASE_URL}
     models:
       - llama-3.3-70b-instruct
-

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { verifyEmail } from '@/lib/api/auth';
@@ -8,7 +8,9 @@ import { getErrorMessage, APIError } from '@/lib/utils/errors';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 
-export default function VerifyEmailPage(): JSX.Element {
+export const dynamic = 'force-dynamic';
+
+function VerifyEmailContent(): JSX.Element {
   const searchParams = useSearchParams();
   const [status, setStatus] = useState<'loading' | 'success' | 'error' | 'already_verified'>(
     'loading',
@@ -106,5 +108,29 @@ export default function VerifyEmailPage(): JSX.Element {
         </div>
       </Card>
     </div>
+  );
+}
+
+export default function VerifyEmailPage(): JSX.Element {
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto w-full max-w-md">
+          <Card>
+            <div className="text-center">
+              <h1 className="text-3xl font-bold tracking-tight text-gray-900">Verifying Email</h1>
+              <p className="mt-2 text-sm text-gray-600">
+                Please wait while we verify your email address.
+              </p>
+            </div>
+            <div className="mt-8 flex justify-center">
+              <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600" />
+            </div>
+          </Card>
+        </div>
+      }
+    >
+      <VerifyEmailContent />
+    </Suspense>
   );
 }
