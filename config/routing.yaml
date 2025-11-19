@@ -9,6 +9,9 @@ local_deployment:
   - endpoint: http://localhost:8003
     models:
       - qwen3-coder-30b
+  - endpoint: http://localhost:12003
+    models:
+      - glm-4.6
   - endpoint: http://localhost:12004
     models:
       - minimax-m2
@@ -19,3 +22,6 @@ remote_deployment:
   - endpoint: https://api.minimax.io/v1
     models:
       - minimax-m2
+  - endpoint: https://api.z.ai/api/coding/paas/v4/
+    models:
+      - glm-4.6
