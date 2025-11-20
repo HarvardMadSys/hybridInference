@@ -16,7 +16,6 @@ __all__ = [
     "ModelConfig",
     "OpenAIAdapter",
     "OpenAICompatAdapter",
-    "SGLangAdapter",
     "UsageInfo",
     "ZhipuAdapter",
 ]
