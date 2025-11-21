@@ -228,7 +228,7 @@ async def auth_app_services(auth_db_logger):
         router=mock_router,
         db_logger=auth_db_logger,
         rate_limiter=mock_rate_limiter,
-        routing_manager=None,
+
     )
 
     yield services

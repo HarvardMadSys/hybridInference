@@ -10,8 +10,7 @@ sys.path.insert(0, str(project_root))
 
 import pytest
 
-from routing.executor import RouteExecutor
-from routing.manager import RoutingManager
+from routing.routers import FixedRouter
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
 
@@ -25,16 +24,14 @@ class TestBootstrapInitialization:
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
             patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
-            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap._configure_rate_limiter"),
         ):
             services = await bootstrap.initialize()
 
             assert isinstance(services, AppServices)
-            assert isinstance(services.router, RouteExecutor)
+            assert isinstance(services.router, FixedRouter)
             assert services.db_logger is None  # Disabled in mock_env
             assert services.rate_limiter is None  # Disabled in mock_env
-            assert services.routing_manager is None
 
     @pytest.mark.asyncio
     async def test_initialize_with_database(self, mock_env, monkeypatch):
@@ -47,7 +44,6 @@ class TestBootstrapInitialization:
 
         with (
             patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
-            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap._configure_rate_limiter"),
             patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger,
         ):
@@ -67,7 +63,6 @@ class TestBootstrapInitialization:
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
             patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
-            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
         ):
             services = await bootstrap.initialize()
 
@@ -82,7 +77,6 @@ class TestBootstrapInitialization:
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
-            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap._configure_rate_limiter"),
         ):
             services = await bootstrap.initialize()
@@ -91,22 +85,6 @@ class TestBootstrapInitialization:
             assert len(services.router.routes) > 0
             assert "test-model-1" in services.router.routes
             assert "test-alias-1" in services.router.routes
-
-    @pytest.mark.asyncio
-    async def test_initialize_with_routing_manager(self, mock_env, temp_routing_yaml, monkeypatch):
-        """Test initialization with routing manager."""
-        monkeypatch.setenv("ROUTING_CONFIG", temp_routing_yaml)
-        monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
-
-        with (
-            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
-            patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
-            patch("serving.servers.bootstrap._configure_rate_limiter"),
-        ):
-            services = await bootstrap.initialize()
-
-            # Routing manager should be initialized
-            assert services.routing_manager is not None
 
 
 class TestBootstrapShutdown:
@@ -119,23 +97,17 @@ class TestBootstrapShutdown:
         app_services.db_logger.cleanup = AsyncMock()
         app_services.rate_limiter._persist_state = AsyncMock()
 
-        # Add routing manager with health monitor
-        routing_manager = MagicMock()
-        routing_manager.shutdown = AsyncMock()
-        app_services.routing_manager = routing_manager
-
         await bootstrap.shutdown(app_services)
 
         # Verify cleanup was called
         app_services.db_logger.cleanup.assert_called_once()
         app_services.rate_limiter._persist_state.assert_called_once()
-        routing_manager.shutdown.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_handles_none_services(self):
         """Test that shutdown handles None values gracefully."""
         services = AppServices(
-            router=RouteExecutor(), db_logger=None, rate_limiter=None, routing_manager=None
+            router=FixedRouter(), db_logger=None, rate_limiter=None
         )
 
         # Should not raise any errors
@@ -215,7 +187,7 @@ models:
         monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
         monkeypatch.setenv("OFFLOAD", "0")
 
-        router = RouteExecutor()
+        router = FixedRouter()
 
         await bootstrap._init_router_and_models(router)
 
@@ -246,7 +218,7 @@ models:
         monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
         monkeypatch.setenv("OFFLOAD", "1")
 
-        router = RouteExecutor()
+        router = FixedRouter()
 
         await bootstrap._init_router_and_models(router)
 
@@ -280,7 +252,7 @@ models:
         )
         monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
 
-        router = RouteExecutor()
+        router = FixedRouter()
         await bootstrap._init_router_and_models(router)
         assert "deepseek-chat" in router.routes
 
@@ -312,7 +284,7 @@ models:
         )
         monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
 
-        router = RouteExecutor()
+        router = FixedRouter()
         await bootstrap._init_router_and_models(router)
         assert "gemini-2.5-flash" in router.routes
 
@@ -393,7 +365,6 @@ class TestBootstrapErrorHandling:
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
-            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap._configure_rate_limiter"),
             patch("serving.servers.bootstrap.logger") as mock_logger,
         ):
@@ -402,26 +373,4 @@ class TestBootstrapErrorHandling:
             # Should still return services
             assert isinstance(services, AppServices)
             # Should log a warning about missing models config
-            mock_logger.warning.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_initialize_handles_routing_manager_error(self, mock_env, monkeypatch):
-        """Test that initialize continues if routing manager fails."""
-        monkeypatch.setenv("ROUTING_CONFIG", "/invalid/routing.yaml")
-
-        with (
-            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
-            patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
-            patch("serving.servers.bootstrap._configure_rate_limiter"),
-            patch("serving.servers.bootstrap.logger") as mock_logger,
-        ):
-            services = await bootstrap.initialize()
-
-            # Should still return services
-            assert isinstance(services, AppServices)
-            # Routing manager is optional, so None is acceptable
-            assert services.routing_manager is None or isinstance(
-                services.routing_manager, RoutingManager
-            )
-            # Should log a warning about routing config failure/missing
             mock_logger.warning.assert_called()

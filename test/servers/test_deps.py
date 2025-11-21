@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.deps import (
     AppServices,
     get_db_logger,
@@ -29,42 +29,40 @@ class TestAppServices:
 
     def test_app_services_creation(self):
         """Test creating AppServices with all fields."""
-        router = RouteExecutor()
-        rate_limiter = MagicMock(spec=PersistentRateLimiter)
-        db_logger = MagicMock(spec=DatabaseLogger)
-        routing_manager = MagicMock()
+        router = MagicMock()
+        rate_limiter = MagicMock()
+        db_logger = MagicMock()
+        nimbus_router = MagicMock()
 
         services = AppServices(
             router=router,
             rate_limiter=rate_limiter,
             db_logger=db_logger,
-            routing_manager=routing_manager,
+            nimbus_router=nimbus_router,
         )
 
         assert services.router is router
         assert services.rate_limiter is rate_limiter
         assert services.db_logger is db_logger
-        assert services.routing_manager is routing_manager
+        assert services.nimbus_router is nimbus_router
 
     def test_app_services_with_defaults(self):
-        """Test creating AppServices with only required fields."""
-        router = RouteExecutor()
-
+        """Test AppServices with default None values."""
+        router = MagicMock()
         services = AppServices(router=router)
 
         assert services.router is router
         assert services.rate_limiter is None
         assert services.db_logger is None
-        assert services.routing_manager is None
+        assert services.nimbus_router is None
 
     def test_app_services_type_annotations(self):
-        """Test that AppServices has proper type annotations."""
+        """Test that AppServices has correct type annotations."""
         annotations = AppServices.__annotations__
-
         assert "router" in annotations
         assert "rate_limiter" in annotations
         assert "db_logger" in annotations
-        assert "routing_manager" in annotations
+        assert "nimbus_router" in annotations
 
 
 class TestDependencyFunctions:
@@ -115,7 +113,7 @@ class TestDependencyFunctions:
 
     def test_get_rate_limiter_when_none(self):
         """Test get_rate_limiter returns None when not configured."""
-        services = AppServices(router=RouteExecutor())
+        services = AppServices(router=FixedRouter())
 
         def mock_get_services():
             return services
@@ -126,7 +124,7 @@ class TestDependencyFunctions:
 
     def test_get_db_logger_when_none(self):
         """Test get_db_logger returns None when not configured."""
-        services = AppServices(router=RouteExecutor())
+        services = AppServices(router=FixedRouter())
 
         def mock_get_services():
             return services
@@ -147,7 +145,7 @@ class TestDependencyIntegration:
         app.state.services = app_services
 
         @app.get("/test-router")
-        def test_router_endpoint(router: RouteExecutor = Depends(get_router)):
+        def test_router_endpoint(router: FixedRouter = Depends(get_router)):
             return {"has_router": router is not None}
 
         @app.get("/test-limiter")
@@ -197,7 +195,7 @@ class TestDependencyIntegration:
         @app.get("/test-nested")
         def test_nested_endpoint(
             services: AppServices = Depends(get_services),
-            router: RouteExecutor = Depends(get_router),
+            router: FixedRouter = Depends(get_router),
         ):
             return {
                 "services_router_match": services.router is router,
@@ -236,8 +234,8 @@ class TestDependencyEdgeCases:
         app.state.services = app_services
 
         @app.get("/test-async")
-        async def test_async_endpoint(router: RouteExecutor = Depends(get_router)):
-            return {"is_router": isinstance(router, RouteExecutor)}
+        async def test_async_endpoint(router: FixedRouter = Depends(get_router)):
+            return {"is_router": isinstance(router, FixedRouter)}
 
         client = TestClient(app)
 

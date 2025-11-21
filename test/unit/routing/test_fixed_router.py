@@ -1,3 +1,9 @@
+"""Unit tests for FixedRouter (formerly RouteExecutor).
+
+Tests the FixedRouter class which provides weighted random routing
+with circuit breaker, health tracking, and automatic fallback.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 
 if TYPE_CHECKING:
@@ -47,16 +53,16 @@ class _FailAdapter(BaseAdapter):
 
 @pytest.mark.unit
 def test_weighted_selection_distribution():
-    exe = RouteExecutor()
+    router = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
-    exe.register_route("m", [(a, 0.8), (b, 0.2)])
+    router.register_route("m", [(a, 0.8), (b, 0.2)])
 
     # Seed RNG for reproducibility
     random.seed(42)
     picks = {"A": 0, "B": 0}
     for _ in range(10000):
-        chosen = exe._select_adapter("m")  # type: ignore[attr-defined]
+        chosen = router._select_adapter("m", {})
         assert chosen is not None
         picks[chosen.config.provider] += 1
 
@@ -70,16 +76,16 @@ def test_weighted_selection_distribution():
 @pytest.mark.unit
 def test_weighted_selection_chi_square():
     """Validate distribution with a chi-square test at 95% confidence without SciPy."""
-    exe = RouteExecutor()
+    router = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
-    exe.register_route("m", [(a, 0.8), (b, 0.2)])
+    router.register_route("m", [(a, 0.8), (b, 0.2)])
 
     random.seed(7)
     n = 10000
     picks = {"A": 0, "B": 0}
     for _ in range(n):
-        chosen = exe._select_adapter("m")  # type: ignore[attr-defined]
+        chosen = router._select_adapter("m", {})
         assert chosen is not None
         picks[chosen.config.provider] += 1
 
@@ -93,16 +99,16 @@ def test_weighted_selection_chi_square():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fallback_on_primary_failure():
-    exe = RouteExecutor()
+    router = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="primary"))
     backup = _EchoAdapter(_cfg("m", provider="backup"))
-    exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
+    router.register_route("m", [(primary, 0.9), (backup, 0.1)])
 
     # Force primary selection by fixing RNG
     random_state = random.random
     try:
         random.random = lambda: 0.01  # always pick primary (weight 0.9)
-        resp = await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+        resp = await router.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
     finally:
         random.random = random_state
     assert resp["choices"][0]["message"]["content"] == "ok"
@@ -113,21 +119,21 @@ async def test_fallback_on_primary_failure():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_no_route_configured_raises():
-    exe = RouteExecutor()
+    router = FixedRouter()
     with pytest.raises(ValueError):
-        await exe.chat_completion("unknown", messages=[{"role": "user", "content": "hi"}])
+        await router.chat_completion("unknown", messages=[{"role": "user", "content": "hi"}])
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_concurrent_route_selection():
     """Verify concurrent selections do not race or corrupt state."""
-    exe = RouteExecutor()
+    router = FixedRouter()
     echo = _EchoAdapter(_cfg("m"))
-    exe.register_route("m", [(echo, 1.0)])
+    router.register_route("m", [(echo, 1.0)])
 
     async def do_one():
-        r = await exe.chat_completion("m", messages=[{"role": "user", "content": "x"}])
+        r = await router.chat_completion("m", messages=[{"role": "user", "content": "x"}])
         return r["choices"][0]["message"]["content"]
 
     results = await asyncio.gather(*(do_one() for _ in range(100)))
@@ -138,19 +144,19 @@ async def test_concurrent_route_selection():
 @pytest.mark.asyncio
 async def test_multiple_fallback_chain():
     """Primary and secondary fail; tertiary succeeds."""
-    exe = RouteExecutor()
+    router = FixedRouter()
     p1 = _FailAdapter(_cfg("m", provider="p1"))
     p2 = _FailAdapter(_cfg("m", provider="p2"))
     p3 = _EchoAdapter(_cfg("m", provider="p3"))
-    exe.register_route("m", [(p1, 0.6), (p2, 0.3), (p3, 0.1)])
+    router.register_route("m", [(p1, 0.6), (p2, 0.3), (p3, 0.1)])
 
     # Force selecting the primary first
-    orig = exe._select_adapter  # type: ignore[attr-defined]
+    orig = router._select_adapter
     try:
-        exe._select_adapter = lambda model_id: p1  # type: ignore[assignment]
-        resp = await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+        router._select_adapter = lambda model_id, context: p1  # type: ignore[assignment]
+        resp = await router.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
     finally:
-        exe._select_adapter = orig  # type: ignore[assignment]
+        router._select_adapter = orig  # type: ignore[assignment]
 
     assert resp["choices"][0]["message"]["content"] == "ok"
     assert resp["_routing"]["provider"] == "p3"
@@ -161,15 +167,15 @@ async def test_multiple_fallback_chain():
 @pytest.mark.perf
 def test_route_selection_performance():
     """Ensure adapter selection is fast enough for basic regression budgets."""
-    exe = RouteExecutor()
+    router = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
-    exe.register_route("m", [(a, 0.8), (b, 0.2)])
+    router.register_route("m", [(a, 0.8), (b, 0.2)])
 
     import time
 
     start = time.perf_counter()
     for _ in range(10000):
-        _ = exe._select_adapter("m")  # type: ignore[attr-defined]
+        _ = router._select_adapter("m", {})
     elapsed = time.perf_counter() - start
     assert elapsed < 0.1

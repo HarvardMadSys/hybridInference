@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
@@ -35,21 +35,13 @@ def _cfg(model_id: str) -> ModelConfig:
 @pytest.mark.asyncio
 async def test_admin_routing_status_with_and_without_manager():
     # Build router with one model
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("m1", [(_EchoAdapter(_cfg("m1")), 1.0)])
 
-    # Case 1: with routing manager
-    class _Mgr:
-        def get_status(self) -> dict[str, Any]:
-            return {
-                "loaded": True,
-                "strategy": "fixed",
-                "deployments": {"local": 1, "remote": 0},
-            }
-
+    # Test routing status endpoint
     app = FastAPI()
     app.state.services = AppServices(
-        router=router, db_logger=None, rate_limiter=None, routing_manager=_Mgr()
+        router=router, db_logger=None, rate_limiter=None
     )  # type: ignore[attr-defined]
     app.include_router(models.router)
     app.include_router(admin.router)
@@ -59,23 +51,10 @@ async def test_admin_routing_status_with_and_without_manager():
         resp = await client.get("/admin/routing")
         assert resp.status_code == 200
         data = resp.json()
-        assert "routes" in data and "manager_status" in data
+        assert "routes" in data
         assert "m1" in data["routes"]
-
-    # Case 2: without routing manager
-    app2 = FastAPI()
-    app2.state.services = AppServices(
-        router=router, db_logger=None, rate_limiter=None, routing_manager=None
-    )  # type: ignore[attr-defined]
-    app2.include_router(models.router)
-    app2.include_router(admin.router)
-
-    transport2 = ASGITransport(app=app2)
-    async with AsyncClient(transport=transport2, base_url="http://test") as client:
-        resp = await client.get("/admin/routing")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "routes" in data and "manager_status" not in data
+        # manager_status is no longer included since we removed RoutingManager
+        assert "manager_status" not in data
 
 
 @pytest.mark.asyncio
