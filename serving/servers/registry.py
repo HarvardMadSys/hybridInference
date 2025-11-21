@@ -1,9 +1,4 @@
-"""Model registry and configuration loader.
-
-This module builds provider adapters from configuration and registers them on a
-``RouteExecutor``. It supports both environment-based and YAML-based
-configuration. Prefer YAML (``config/models.yaml``) for reproducibility.
-"""
+"""Model registry for loading and registering models from YAML configuration."""
 
 from __future__ import annotations
 
@@ -22,11 +17,14 @@ from serving.adapters import (
     OpenAICompatAdapter,
     ZhipuAdapter,
 )
+from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from routing.executor import RouteExecutor
+    from routing.routers import FixedRouter
+
+logger = get_logger(__name__)
 
 
 def _make_adapter(kind: str, cfg: dict[str, Any]):
@@ -65,7 +63,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     raise ValueError(f"Unknown adapter kind: {kind}")
 
 
-def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
+def register_from_models_yaml(router: FixedRouter, path: Path) -> int:
     """Register models and routes from a YAML configuration file.
 
     Example schema::

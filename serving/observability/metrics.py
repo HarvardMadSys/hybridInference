@@ -189,6 +189,15 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    # Nimbus Metrics
+    # Used for caching
+    NIMBUS_QUEUE_DEPTH = Gauge(
+        "nimbus_queue_depth",
+        "Queue depth observed by Nimbus",
+        labelnames=("model", "sglang_port"),
+        registry=REGISTRY,
+    )
+
     DATABASE_CONNECTED = Gauge(
         "database_connected",
         "Database connection status (1=connected, 0=disconnected)",
@@ -342,6 +351,20 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     CIRCUIT_OPEN_TOTAL = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
+
+    ROUTING_STRATEGY_SELECTED = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    NIMBUS_ROUTING_DECISIONS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    NIMBUS_QUEUE_DEPTH = type(
+        "NoopGauge", (), {"labels": lambda *a, **k: type("L", (), {"set": _noop})()}
+    )()
+    NIMBUS_SLO_VIOLATIONS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+
     DATABASE_CONNECTED = type("NoopGauge", (), {"set": _noop})()
 
     def render_latest() -> bytes:  # pragma: no cover
@@ -386,6 +409,11 @@ __all__ = [
     "API_TOKENS",
     "API_TOKEN_ANOMALIES",
     "API_TTFT",
+    # Nimbus metrics
+    "NIMBUS_QUEUE_DEPTH",
+    "NIMBUS_ROUTING_DECISIONS",
+    "NIMBUS_SLO_VIOLATIONS",
+    "ROUTING_STRATEGY_SELECTED",
     # Circuit breaker metrics
     "CIRCUIT_OPEN_TOTAL",
     "CIRCUIT_STATE",

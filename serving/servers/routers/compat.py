@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import (
     get_db_logger,
+    get_nimbus_router,
     get_rate_limiter,
     get_router,
 )
@@ -24,6 +25,7 @@ async def single_completion(
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
+    nimbus_router=Depends(get_nimbus_router),
     rate_limiter=Depends(get_rate_limiter),
     db_logger=Depends(get_db_logger),
 ):
@@ -36,6 +38,7 @@ async def single_completion(
         authorization=authorization,
         user_ctx=user_ctx,
         router_exec=router_exec,
+        nimbus_router=nimbus_router,
         rate_limiter=rate_limiter,
         db_logger=db_logger,
     )
@@ -47,6 +50,7 @@ async def legacy_completions(
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
+    nimbus_router=Depends(get_nimbus_router),
     rate_limiter=Depends(get_rate_limiter),
     db_logger=Depends(get_db_logger),
 ):
@@ -62,6 +66,7 @@ async def legacy_completions(
         authorization=authorization,
         user_ctx=user_ctx,
         router_exec=router_exec,
+        nimbus_router=nimbus_router,
         rate_limiter=rate_limiter,
         db_logger=db_logger,
     )

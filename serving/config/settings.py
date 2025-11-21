@@ -4,9 +4,17 @@ This module provides type-safe, validated configuration management.
 All environment variables are centralized here for easy tracking and testing.
 """
 
+from enum import Enum
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings
+
+
+class RoutingStrategy(Enum):
+    """Available routing strategies."""
+
+    FIXED = "fixed"
+    NIMBUS = "nimbus"
 
 
 class Settings(BaseSettings):
@@ -31,7 +39,7 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 30
 
     # Cookie
-    cookie_secure: bool = False
+    cookie_secure: bool = True
     cookie_domain: str | None = None
     cookie_samesite: str = "lax"
 
@@ -54,10 +62,10 @@ class Settings(BaseSettings):
     smtp_from_name: str = "FreeInference"
 
     # Base URL
-    base_url: str = "http://freeinference.org"
+    base_url: str = "https://freeinference.org"
 
     # Frontend URL (for email links)
-    frontend_url: str = "http://freeinference.org:3001"
+    frontend_url: str = "https://freeinference.org"
 
     # CORS
     cors_allowed_origins: list[str] = [
@@ -70,6 +78,37 @@ class Settings(BaseSettings):
 
     # Trusted proxies (for real IP detection)
     trusted_proxies: list[str] = []
+
+    # ============================================
+    # Routing Strategy Configuration
+    # ============================================
+    # Set to "nimbus" to enable SLO-aware intelligent routing
+    # Set to "fixed" for traditional weighted routing
+    routing_strategy: str = "nimbus"
+
+    # Experiment mode for academic evaluation
+    # When True: disables fallback, records all failures for clean experimental data
+    # When False: enables fallback for production reliability
+    experiment_mode: bool = False
+
+    # Nimbus: Models to enable hybrid routing for
+    # These models MUST have both local (SGLang) and remote (API) adapters configured
+    nimbus_enabled_models: list[str] = [
+        # Example:
+        "glm-4.6",
+        # "qwen3-coder-30b",
+        # "minimax-m2",
+    ]
+
+    # Nimbus: Model-specific SLO thresholds (seconds)
+    # Time-To-First-Token target for each model family
+    glm46_slo_seconds: float = 2.0
+    qwen3_slo_seconds: float = 1.5
+    minimax_slo_seconds: float = 2.5
+
+    def get_routing_strategy(self) -> RoutingStrategy:
+        """Get the global routing strategy."""
+        return RoutingStrategy(self.routing_strategy)
 
     class Config:
         """Pydantic configuration for Settings class."""

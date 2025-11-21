@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from serving.config.settings import RoutingStrategy, get_settings
 from serving.observability.metrics import (
     API_TOKEN_ANOMALIES,
     API_TOKENS,
@@ -22,7 +23,12 @@ from serving.schemas import (
     ErrorResponse,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
+from serving.servers.deps import (
+    get_db_logger,
+    get_nimbus_router,
+    get_rate_limiter,
+    get_router,
+)
 from serving.servers.rate_limiter import TokenCounter
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
@@ -46,6 +52,7 @@ async def chat_completions(
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
+    nimbus_router=Depends(get_nimbus_router),
     rate_limiter=Depends(get_rate_limiter),
     db_logger=Depends(get_db_logger),
 ) -> dict[str, Any]:
@@ -172,6 +179,17 @@ async def chat_completions(
     if session_id:
         metadata["session_id"] = session_id
 
+    # Routing Strategy Selection
+    settings = get_settings()
+    strategy = settings.get_routing_strategy()
+
+    # Use Nimbus if strategy is set to nimbus and router is available
+    use_nimbus = (
+        strategy == RoutingStrategy.NIMBUS
+        and nimbus_router is not None
+        and model in nimbus_router.outsourcing_routers
+    )
+
     # Helper function to get pricing for a specific provider
     def get_pricing_for_provider(
         provider_name: str, base_url: str | None = None
@@ -236,8 +254,17 @@ async def chat_completions(
                 logger.debug(f"Yielding initial role chunk: {role_chunk[:150]}")
                 yield role_chunk
 
-                logger.debug(f"Starting to consume adapter stream for model: {model}")
-                async for chunk in router_exec.stream_chat_completion(model, messages, **params):
+                logger.debug(
+                    f"Starting to consume stream for model: {model} (Strategy: {'Nimbus' if use_nimbus else 'Fixed'})"
+                )
+
+                # Select stream source based on strategy
+                if use_nimbus:
+                    stream_source = nimbus_router.stream_chat_completion(model, messages, **params)
+                else:
+                    stream_source = router_exec.stream_chat_completion(model, messages, **params)
+
+                async for chunk in stream_source:
                     chunk_count += 1
                     # Forward adapter SSE chunks with sanitization. Adapters may emit final usage chunk.
                     if chunk_count <= 10 or chunk_count % 10 == 0:
@@ -463,7 +490,10 @@ async def chat_completions(
 
     # Non-streaming path
     try:
-        response = await router_exec.chat_completion(model, messages, **params)
+        if use_nimbus:
+            response = await nimbus_router.chat_completion(model, messages, **params)
+        else:
+            response = await router_exec.chat_completion(model, messages, **params)
 
         # Always sanitize internal routing metadata from response to client
         provider = "router"
