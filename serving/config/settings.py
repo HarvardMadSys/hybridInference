@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     db_user: str = "postgres"
     db_password: str = ""
 
+    # Database privacy settings
+    db_store_full_content: bool = True
+
     # Admin
     admin_token: str = ""
     user_auth_enabled: bool = True
