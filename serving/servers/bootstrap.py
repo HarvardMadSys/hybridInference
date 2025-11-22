@@ -112,9 +112,16 @@ def _init_db_logger() -> DatabaseLogger | None:
             f"Initializing PostgreSQL logger: "
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )
-        # Note: store_full_prompts defaults to True
-        # Can be controlled per-request via log_request() parameters
-        return DatabaseLogger(db_config, store_full_prompts=True)
+        logger.info(
+            f"Database privacy: store_full_prompts={settings.db_store_full_prompts}, "
+            f"4-token chunked hash enabled"
+        )
+        # Always use 4-token chunked hash
+        return DatabaseLogger(
+            db_config,
+            store_full_prompts=settings.db_store_full_prompts,
+            use_chunked_hash=True,
+        )
     except Exception as exc:
         logger.warning(f"Failed to create database logger: {exc}")
         return None
