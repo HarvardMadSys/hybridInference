@@ -275,12 +275,15 @@ class TestResponseHashing:
     def test_response_hash_long_content(self):
         """Test hashing a long response."""
         # Simulate a long AI response
-        long_response = " ".join([
-            "This is a very long response from the AI assistant.",
-            "It contains multiple sentences and paragraphs.",
-            "The purpose is to test that hashing works correctly",
-            "even with large amounts of text content.",
-        ] * 50)
+        long_response = " ".join(
+            [
+                "This is a very long response from the AI assistant.",
+                "It contains multiple sentences and paragraphs.",
+                "The purpose is to test that hashing works correctly",
+                "even with large amounts of text content.",
+            ]
+            * 50
+        )
 
         hash_result = compute_prompt_hash_chunked(long_response)
 
