@@ -113,13 +113,13 @@ def _init_db_logger() -> DatabaseLogger | None:
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )
         logger.info(
-            f"Database privacy: store_full_prompts={settings.db_store_full_prompts}, "
+            f"Database privacy: store_full_content={settings.db_store_full_content}, "
             f"4-token chunked hash enabled"
         )
         # Always use 4-token chunked hash
         return DatabaseLogger(
             db_config,
-            store_full_prompts=settings.db_store_full_prompts,
+            store_full_prompts=settings.db_store_full_content,
             use_chunked_hash=True,
         )
     except Exception as exc:

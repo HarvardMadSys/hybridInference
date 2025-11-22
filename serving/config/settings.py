@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     db_password: str = ""
 
     # Database privacy settings
-    db_store_full_prompts: bool = True
+    db_store_full_content: bool = True
 
     # Admin
     admin_token: str = ""
