@@ -210,9 +210,8 @@ class GLMProcessor(BaseProcessor):
         keys = re.findall(r"<arg_key>(.*?)</arg_key>", xml_text, re.DOTALL)
         values = re.findall(r"<arg_value>(.*?)</arg_value>", xml_text, re.DOTALL)
 
-        for _i, k in enumerate(keys, strict=False):
+        for k, v in zip(keys, values, strict=False):
             k = k.strip()
-            v = values[_i]
             v = v.strip()
             # Value might be a JSON string (e.g. ["ls", "-la"]) or raw string
             try:
