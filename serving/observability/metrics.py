@@ -195,6 +195,25 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    # User statistics metrics
+    USERS_TOTAL = Gauge(
+        "users_total",
+        "Total number of registered users",
+        registry=REGISTRY,
+    )
+
+    USERS_ACTIVE_DAILY = Gauge(
+        "users_active_daily",
+        "Number of daily active users (last 24 hours)",
+        registry=REGISTRY,
+    )
+
+    USERS_ACTIVE_MONTHLY = Gauge(
+        "users_active_monthly",
+        "Number of monthly active users (last 30 days)",
+        registry=REGISTRY,
+    )
+
     # Rate limiter queueing and wait time
     RATE_LIMIT_QUEUE_SIZE = Gauge(
         "rate_limit_queue_size",
@@ -343,6 +362,9 @@ else:  # No-op fallbacks to avoid hard dependency during tests
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
     DATABASE_CONNECTED = type("NoopGauge", (), {"set": _noop})()
+    USERS_TOTAL = type("NoopGauge", (), {"set": _noop})()
+    USERS_ACTIVE_DAILY = type("NoopGauge", (), {"set": _noop})()
+    USERS_ACTIVE_MONTHLY = type("NoopGauge", (), {"set": _noop})()
 
     def render_latest() -> bytes:  # pragma: no cover
         """Return a minimal body when metrics are disabled."""
@@ -391,6 +413,10 @@ __all__ = [
     "CIRCUIT_STATE",
     # Database metrics
     "DATABASE_CONNECTED",
+    # User statistics metrics
+    "USERS_TOTAL",
+    "USERS_ACTIVE_DAILY",
+    "USERS_ACTIVE_MONTHLY",
     # Provider metrics
     "PROVIDER_AVAILABILITY",
     "PROVIDER_LATENCY",
