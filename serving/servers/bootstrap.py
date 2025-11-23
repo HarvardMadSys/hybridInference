@@ -306,6 +306,16 @@ async def initialize() -> AppServices:
         await rate_limiter.initialize()
         logger.info("Rate limiter initialized with persistence")
 
+    # User statistics collector (optional)
+    user_stats_collector = None
+    if os.getenv("METRICS_ENABLED", "1") == "1" and db_logger:
+        from serving.observability.user_stats import UserStatsCollector
+
+        interval = int(os.getenv("USER_STATS_INTERVAL_SECONDS", "60"))
+        user_stats_collector = UserStatsCollector(db_logger, interval_seconds=interval)
+        user_stats_collector.start()
+        logger.info(f"User stats collector started (interval: {interval}s)")
+
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
 
@@ -314,6 +324,7 @@ async def initialize() -> AppServices:
         rate_limiter=rate_limiter,
         db_logger=db_logger,
         routing_manager=routing_manager,
+        user_stats_collector=user_stats_collector,
     )
 
 
@@ -343,6 +354,13 @@ async def shutdown(services: AppServices) -> None:
             await services.routing_manager.shutdown()
         except Exception as exc:
             logger.error(f"Routing manager shutdown failed: {exc}")
+
+    # User stats collector
+    if services.user_stats_collector:
+        try:
+            await services.user_stats_collector.shutdown()
+        except Exception as exc:
+            logger.error(f"User stats collector shutdown failed: {exc}")
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):
