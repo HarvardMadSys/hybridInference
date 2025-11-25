@@ -174,7 +174,7 @@ class TestPromptHashing:
 
     def test_compute_prompt_hash_chunked_unicode(self):
         """Test chunked hash with Unicode characters."""
-        prompt = "你好世界！This is a test with 中文字符 and émojis 🚀"
+        prompt = "你好世界!This is a test with 中文字符 and émojis 🚀"
 
         hash_result = compute_prompt_hash_chunked(prompt)
 

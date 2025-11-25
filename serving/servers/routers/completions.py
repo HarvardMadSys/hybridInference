@@ -333,6 +333,22 @@ async def chat_completions(
                                 if fr:
                                     finish_reason_for_db = fr
 
+                                # Filter out non-standard fields from delta for OpenAI compatibility
+                                # Some providers (e.g., Zhipu GLM-4.6) return reasoning_content which
+                                # is not part of the OpenAI API spec and may break clients like Codex
+                                if "reasoning_content" in delta:
+                                    # Create a sanitized copy of the chunk without reasoning_content
+                                    chunk_json = json.loads(json.dumps(chunk_json))  # Deep copy
+                                    if chunk_json.get("choices") and chunk_json["choices"]:
+                                        sanitized_delta = {
+                                            k: v
+                                            for k, v in chunk_json["choices"][0]
+                                            .get("delta", {})
+                                            .items()
+                                            if k != "reasoning_content"
+                                        }
+                                        chunk_json["choices"][0]["delta"] = sanitized_delta
+
                             # Yield sanitized chunk to client
                             sanitized_chunk = f"data: {json.dumps(chunk_json)}\n\n"
                             logger.debug(

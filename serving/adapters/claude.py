@@ -589,14 +589,12 @@ class ClaudeAdapter(BaseAdapter):
             if isinstance(e, aiohttp.ClientResponseError):
                 logger.error(f"Response status: {e.status}, message: {e.message}")
                 logger.error(f"Request info: {e.request_info}")
-                # Try to get detailed error message
-                try:
-                    error_body = (
-                        await e.response.text() if hasattr(e, "response") else "No response body"
-                    )
-                    logger.error(f"Response body: {error_body[:500]}")
-                except Exception:
-                    pass
+                # Try to get detailed error message from attached error_body
+                error_body = getattr(e, "error_body", None)
+                if error_body:
+                    logger.error(f"Response body: {error_body[:1000]}")
+                else:
+                    logger.error("Response body: No response body available")
             # Fail-fast: propagate error immediately instead of fallback
             raise
 
@@ -605,6 +603,9 @@ class ClaudeAdapter(BaseAdapter):
 
         Claude doesn't use a separate 'system' role in messages array.
         System messages should be extracted and passed as 'system' parameter.
+
+        IMPORTANT: Claude API requires alternating user/assistant roles.
+        This method merges consecutive messages with the same role.
         """
         converted: list[dict[str, Any]] = []
         for msg in messages:
@@ -623,21 +624,30 @@ class ClaudeAdapter(BaseAdapter):
                     content_blocks = content
                 else:
                     content_blocks = [{"type": "text", "text": json.dumps(content or "")}]
-                converted.append({"role": "user", "content": content_blocks})
+
+                # Merge with previous user message if exists
+                if converted and converted[-1]["role"] == "user":
+                    converted[-1]["content"].extend(content_blocks)
+                else:
+                    converted.append({"role": "user", "content": content_blocks})
 
             # Assistant role: either tool_calls (OpenAI) -> tool_use (Claude), or plain text
             elif role == "assistant":
-                blocks: list[dict[str, Any]] = []
+                text_blocks: list[dict[str, Any]] = []
+                tool_use_blocks: list[dict[str, Any]] = []
+
                 # Preserve assistant text content if present
                 if isinstance(content, str) and content.strip():
-                    blocks.append({"type": "text", "text": content})
+                    text_blocks.append({"type": "text", "text": content})
                 elif isinstance(content, list):
                     # Pass through structured blocks (e.g., text/image)
-                    blocks.extend([b for b in content if isinstance(b, dict | str)])
+                    for b in content:
+                        if isinstance(b, dict | str):
+                            text_blocks.append(b)
                 elif content:
                     # Fallback: dump unknown content to text
                     with suppress(Exception):
-                        blocks.append({"type": "text", "text": json.dumps(content)})
+                        text_blocks.append({"type": "text", "text": json.dumps(content)})
 
                 # Append tool_use blocks if tool_calls provided
                 tool_calls = msg.get("tool_calls")
@@ -650,7 +660,7 @@ class ClaudeAdapter(BaseAdapter):
                             args_obj = json.loads(args_raw)
                         except Exception:
                             args_obj = {}
-                        blocks.append(
+                        tool_use_blocks.append(
                             {
                                 "type": "tool_use",
                                 "id": tc.get("id"),
@@ -659,8 +669,24 @@ class ClaudeAdapter(BaseAdapter):
                             }
                         )
 
+                # IMPORTANT: Claude requires text blocks BEFORE tool_use blocks
+                # Combine in the correct order: text first, then tool_use
+                blocks = text_blocks + tool_use_blocks
+
                 if blocks:
-                    converted.append({"role": "assistant", "content": blocks})
+                    # Merge with previous assistant message if exists
+                    if converted and converted[-1]["role"] == "assistant":
+                        # When merging, maintain the order: existing text, new text, existing tools, new tools
+                        existing_content = converted[-1]["content"]
+                        existing_text = [b for b in existing_content if b.get("type") != "tool_use"]
+                        existing_tools = [
+                            b for b in existing_content if b.get("type") == "tool_use"
+                        ]
+                        converted[-1]["content"] = (
+                            existing_text + text_blocks + existing_tools + tool_use_blocks
+                        )
+                    else:
+                        converted.append({"role": "assistant", "content": blocks})
             elif role == "tool":
                 # Convert OpenAI-style tool result to Claude's tool_result block.
                 tool_use_id = msg.get("tool_call_id") or msg.get("id")
@@ -678,12 +704,16 @@ class ClaudeAdapter(BaseAdapter):
                         {"type": "text", "text": json.dumps(content or "")}
                     ]
 
-                converted.append(
-                    {
-                        "role": "user",
-                        "content": [tool_result_block],
-                    }
-                )
+                # Merge with previous user message if exists (tool results are sent as user messages)
+                if converted and converted[-1]["role"] == "user":
+                    converted[-1]["content"].append(tool_result_block)
+                else:
+                    converted.append(
+                        {
+                            "role": "user",
+                            "content": [tool_result_block],
+                        }
+                    )
 
         return converted
 
