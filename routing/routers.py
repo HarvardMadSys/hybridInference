@@ -12,6 +12,7 @@ health tracking, circuit breakers, and automatic fallback.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import random
 import threading
 import time
@@ -764,19 +765,34 @@ class NimbusRouter:
         local_adapter: BaseAdapter | None = None
         remote_adapter: BaseAdapter | None = None
 
-        for adapter, _weight in route_config.adapters:
-            provider = adapter.config.provider
-            base_url = (adapter.config.base_url or "").lower()
+        def _is_local_adapter(adapter: BaseAdapter) -> bool:
+            """Best-effort classification of a local adapter."""
+            provider = (getattr(adapter.config, "provider", None) or "").lower()
+            base_url = (getattr(adapter.config, "base_url", None) or "").lower()
 
-            # Heuristic: sglang or localhost = local
-            is_local = provider == "sglang" or (
-                provider == "openai_compat" and ("localhost" in base_url or "127.0.0.1" in base_url)
+            if provider in {"sglang", "local"}:
+                return True
+            if any(host in base_url for host in ("localhost", "127.0.0.1", ".local")):
+                return True
+            return provider == "openai_compat" and any(
+                host in base_url for host in ("localhost", "127.0.0.1")
             )
 
-            if is_local and not local_adapter:
+        for adapter, _weight in route_config.adapters:
+            if _is_local_adapter(adapter) and not local_adapter:
                 local_adapter = adapter
-            elif not is_local and not remote_adapter:
+            elif not _is_local_adapter(adapter) and not remote_adapter:
                 remote_adapter = adapter
+
+        # Fallback classification when heuristics cannot find clear local/remote.
+        if (not local_adapter or not remote_adapter) and len(route_config.adapters) >= 2:
+            if not local_adapter:
+                local_adapter = route_config.adapters[0][0]
+            if not remote_adapter:
+                for candidate, _weight in route_config.adapters:
+                    if candidate is not local_adapter:
+                        remote_adapter = candidate
+                        break
 
         if not local_adapter or not remote_adapter:
             raise ValueError(
@@ -863,7 +879,10 @@ class NimbusRouter:
         router = self.outsourcing_routers.get(model_id)
         if router:
             # Use Nimbus hybrid routing (calls OutsourcingRouter directly)
-            async for chunk in router.stream_chat_completion(messages, **params):
+            stream_iter = router.stream_chat_completion(messages, **params)
+            if inspect.isawaitable(stream_iter):
+                stream_iter = await stream_iter
+            async for chunk in stream_iter:
                 yield chunk
         else:
             # Fallback to fixed routing
