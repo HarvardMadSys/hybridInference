@@ -679,8 +679,12 @@ class ClaudeAdapter(BaseAdapter):
                         # When merging, maintain the order: existing text, new text, existing tools, new tools
                         existing_content = converted[-1]["content"]
                         existing_text = [b for b in existing_content if b.get("type") != "tool_use"]
-                        existing_tools = [b for b in existing_content if b.get("type") == "tool_use"]
-                        converted[-1]["content"] = existing_text + text_blocks + existing_tools + tool_use_blocks
+                        existing_tools = [
+                            b for b in existing_content if b.get("type") == "tool_use"
+                        ]
+                        converted[-1]["content"] = (
+                            existing_text + text_blocks + existing_tools + tool_use_blocks
+                        )
                     else:
                         converted.append({"role": "assistant", "content": blocks})
             elif role == "tool":

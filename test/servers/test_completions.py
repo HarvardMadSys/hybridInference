@@ -238,9 +238,7 @@ async def test_reasoning_content_filtered_in_streaming(
 
     # Create router with adapter that emits reasoning_content
     router = RouteExecutor()
-    router.register_route(
-        "glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)]
-    )
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Reasoning Content Filter")
     app.state.services = AppServices(  # type: ignore[attr-defined]
@@ -277,9 +275,9 @@ async def test_reasoning_content_filtered_in_streaming(
                     if chunk.get("choices"):
                         delta = chunk["choices"][0].get("delta", {})
                         # Assert that reasoning_content is NOT present
-                        assert (
-                            "reasoning_content" not in delta
-                        ), f"reasoning_content should be filtered out, but found in: {line}"
+                        assert "reasoning_content" not in delta, (
+                            f"reasoning_content should be filtered out, but found in: {line}"
+                        )
                 except json.JSONDecodeError:
                     pass  # Skip malformed lines
 

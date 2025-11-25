@@ -78,9 +78,9 @@ def test_merge_consecutive_user_messages(claude_adapter):
 
     # Verify no consecutive user messages
     for i in range(len(converted) - 1):
-        assert not (
-            converted[i]["role"] == "user" and converted[i + 1]["role"] == "user"
-        ), f"Found consecutive user messages at index {i}"
+        assert not (converted[i]["role"] == "user" and converted[i + 1]["role"] == "user"), (
+            f"Found consecutive user messages at index {i}"
+        )
 
     # Verify the user message contains both text blocks
     user_msgs = [m for m in converted if m["role"] == "user"]
@@ -147,9 +147,9 @@ def test_alternating_roles(claude_adapter):
 
     # Verify strictly alternating roles (system is skipped)
     for i in range(len(converted) - 1):
-        assert (
-            converted[i]["role"] != converted[i + 1]["role"]
-        ), f"Non-alternating roles at index {i}: {converted[i]['role']} -> {converted[i+1]['role']}"
+        assert converted[i]["role"] != converted[i + 1]["role"], (
+            f"Non-alternating roles at index {i}: {converted[i]['role']} -> {converted[i + 1]['role']}"
+        )
 
 
 def test_empty_assistant_messages_are_skipped(claude_adapter):

@@ -342,7 +342,9 @@ async def chat_completions(
                                     if chunk_json.get("choices") and chunk_json["choices"]:
                                         sanitized_delta = {
                                             k: v
-                                            for k, v in chunk_json["choices"][0].get("delta", {}).items()
+                                            for k, v in chunk_json["choices"][0]
+                                            .get("delta", {})
+                                            .items()
                                             if k != "reasoning_content"
                                         }
                                         chunk_json["choices"][0]["delta"] = sanitized_delta
