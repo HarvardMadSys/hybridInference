@@ -46,7 +46,7 @@ export function Button({
       {isLoading ? (
         <span className="flex items-center gap-2">
           <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-solid border-current border-r-transparent"></span>
-          <span>加载中...</span>
+          <span>Loading...</span>
         </span>
       ) : (
         children

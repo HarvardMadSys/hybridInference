@@ -95,19 +95,19 @@ parse_args() {
 # Load environment variables from .env file
 load_env() {
     local env_file="${PROJECT_ROOT}/.env"
-    
+
     if [[ ! -f "$env_file" ]]; then
         log_warning ".env file not found at ${env_file}"
         log_warning "PostgreSQL backup may fail without credentials"
         return 1
     fi
-    
+
     # Export variables from .env (ignore comments and empty lines)
     set -a
     # shellcheck disable=SC1090
     source <(grep -v '^#' "$env_file" | grep -v '^$' | sed 's/\r$//')
     set +a
-    
+
     log_info "Loaded environment variables from .env"
 }
 
@@ -126,33 +126,33 @@ check_postgres_container() {
 setup_backup_dir() {
     local timestamp
     timestamp=$(date +%Y%m%d_%H%M%S)
-    
+
     BACKUP_DIR="${BACKUP_DIR}/backup_${timestamp}"
-    
+
     mkdir -p "${BACKUP_DIR}"
-    
+
     log_info "Created backup directory: ${BACKUP_DIR}"
 }
 
 # Backup PostgreSQL database
 backup_postgres() {
     log_info "Starting PostgreSQL backup..."
-    
+
     if ! check_postgres_container; then
         return 1
     fi
-    
+
     # Validate required environment variables
     if [[ -z "${DB_NAME:-}" ]] || [[ -z "${DB_USER:-}" ]] || [[ -z "${DB_PASSWORD:-}" ]]; then
         log_error "DB_NAME, DB_USER, and DB_PASSWORD must be set in .env file"
         return 1
     fi
-    
+
     local backup_file="${BACKUP_DIR}/${DB_NAME}_$(date +%Y%m%d_%H%M%S).sql"
-    
+
     # Use pg_dump via docker exec with password and host
     log_info "Dumping database '${DB_NAME}'..."
-    
+
     if docker exec -e PGPASSWORD="${DB_PASSWORD}" "${POSTGRES_CONTAINER}" pg_dump \
         -h localhost \
         -U "${DB_USER}" \
@@ -162,11 +162,11 @@ backup_postgres() {
         --create \
         --verbose \
         > "${backup_file}"; then
-        
+
         local size
         size=$(du -h "${backup_file}" | cut -f1)
         log_success "PostgreSQL backup completed: ${backup_file} (${size})"
-        
+
         # Compress if requested
         if [[ "$COMPRESS" == true ]]; then
             log_info "Compressing PostgreSQL backup..."
@@ -175,7 +175,7 @@ backup_postgres() {
             size=$(du -h "${backup_file}" | cut -f1)
             log_success "Compressed to: ${backup_file} (${size})"
         fi
-        
+
         return 0
     else
         log_error "PostgreSQL backup failed"
@@ -186,24 +186,24 @@ backup_postgres() {
 # Clean up old backups
 cleanup_old_backups() {
     log_info "Cleaning up backups older than ${RETENTION_DAYS} days..."
-    
+
     local parent_backup_dir
     parent_backup_dir=$(dirname "${BACKUP_DIR}")
-    
+
     if [[ ! -d "$parent_backup_dir" ]]; then
         log_info "No old backups to clean up"
         return 0
     fi
-    
+
     local deleted_count=0
-    
+
     # Find and delete old backup directories
     while IFS= read -r -d '' old_backup; do
         log_info "Deleting old backup: ${old_backup}"
         rm -rf "$old_backup"
         ((deleted_count++))
     done < <(find "$parent_backup_dir" -maxdepth 1 -type d -name "backup_*" -mtime "+${RETENTION_DAYS}" -print0)
-    
+
     if [[ $deleted_count -gt 0 ]]; then
         log_success "Deleted ${deleted_count} old backup(s)"
     else
@@ -214,7 +214,7 @@ cleanup_old_backups() {
 # Create backup summary
 create_summary() {
     local summary_file="${BACKUP_DIR}/backup_summary.txt"
-    
+
     {
         echo "==================================="
         echo "hybridInference Database Backup"
@@ -227,18 +227,18 @@ create_summary() {
         echo ""
         echo "--- Backup Contents ---"
         echo ""
-        
+
         find "${BACKUP_DIR}" -type f ! -name "backup_summary.txt" -exec ls -lh {} \; | \
             awk '{print "  " $9 " (" $5 ")"}'
-        
+
         echo ""
         echo "--- Total Size ---"
         du -sh "${BACKUP_DIR}" | awk '{print $1}'
-        
+
     } > "$summary_file"
-    
+
     log_success "Backup summary created: ${summary_file}"
-    
+
     # Display summary
     cat "$summary_file"
 }
@@ -249,19 +249,19 @@ main() {
     log_info "hybridInference Database Backup"
     log_info "==================================="
     echo ""
-    
+
     # Change to project root
     cd "$PROJECT_ROOT"
-    
+
     # Parse arguments
     parse_args "$@"
-    
+
     # Load environment variables
     load_env || true
-    
+
     # Setup backup directory
     setup_backup_dir
-    
+
     # Backup PostgreSQL (primary database)
     if ! backup_postgres; then
         log_error "==================================="
@@ -269,15 +269,15 @@ main() {
         log_error "==================================="
         exit 1
     fi
-    
+
     # Create summary
     echo ""
     create_summary
-    
+
     # Cleanup old backups
     echo ""
     cleanup_old_backups
-    
+
     # Final status
     echo ""
     log_success "==================================="
