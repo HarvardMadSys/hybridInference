@@ -658,22 +658,36 @@ class NimbusRouter:
     """Multi-model hybrid routing manager.
 
     Manages OutsourcingRouter instances for multiple models, each with
-    its own external queue, outsourcing engine, and SLO configuration.
+    its own external queue, outsourcing engine, SLO configuration, and TreeCache.
+
+    Each model gets its own TreeCache instance to approximate the local SGLang's
+    RadixCache for prefix cache hit estimation. This improves outsourcing decisions
+    by accounting for KV cache reuse.
 
     This is a simple wrapper that delegates to:
     - OutsourcingRouter for Nimbus-enabled models (SLO-aware hybrid routing)
     - FixedRouter for other models (weighted random routing)
     """
 
-    def __init__(self, fixed_router: FixedRouter, settings: Settings):
+    def __init__(
+        self,
+        fixed_router: FixedRouter,
+        settings: Settings,
+        tree_cache_max_size_mb: float = 100.0,
+        chars_per_token: float = 4.0,
+    ):
         """Initialize Nimbus router for multiple models.
 
         Args:
             fixed_router: The FixedRouter instance (used to extract adapters and routes)
             settings: Application settings with Nimbus configuration
+            tree_cache_max_size_mb: Maximum TreeCache size per model in MB
+            chars_per_token: Average characters per token for cache hit estimation
         """
         self.fixed_router = fixed_router
         self.settings = settings
+        self.tree_cache_max_size_mb = tree_cache_max_size_mb
+        self.chars_per_token = chars_per_token
         self.outsourcing_routers: dict[str, OutsourcingRouter] = {}
 
         self._init_routers()
@@ -712,17 +726,20 @@ class NimbusRouter:
                     prefill_slo_base_seconds=slo_seconds,
                 )
 
-                # Create OutsourcingRouter (Yiyan's implementation - keep unchanged!)
+                # Create OutsourcingRouter with TreeCache for prefix cache estimation
                 self.outsourcing_routers[model_id] = OutsourcingRouter(
                     local_adapter=local_adapter,
                     remote_adapter=remote_adapter,
                     outsourcing_engine=outsourcing_engine,
                     waiting_queue=waiting_queue,
                     model_id=model_id,
+                    tree_cache_max_size_mb=self.tree_cache_max_size_mb,
+                    chars_per_token=self.chars_per_token,
                 )
 
                 logger.info(
-                    f"Nimbus: Initialized OutsourcingRouter for {model_id} (SLO={slo_seconds}s)"
+                    f"Nimbus: Initialized OutsourcingRouter for {model_id} "
+                    f"(SLO={slo_seconds}s, TreeCache={self.tree_cache_max_size_mb}MB)"
                 )
 
             except ValueError as e:

@@ -32,6 +32,7 @@ class OutsourcingRequestInfo:
     num_prompt_tokens: int = 0  # Input/prefill tokens
     num_output_tokens: int = 0  # Expected output tokens (may be estimate)
     num_processed_tokens: int = 0  # Tokens already processed
+    num_cached_tokens: int = 0  # Tokens already in KV cache (prefix cache hit)
 
     # SLO information (optional)
     prefill_slo_seconds: float | None = None  # TTFT deadline
@@ -58,10 +59,16 @@ class OutsourcingRequestInfo:
 
     @property
     def remaining_prompt_tokens(self) -> int:
-        """Tokens left to process in prefill phase."""
+        """Tokens left to process in prefill phase.
+
+        This accounts for:
+        - Tokens already processed (num_processed_tokens)
+        - Tokens already in KV cache from prefix cache hit (num_cached_tokens)
+        """
         if self.is_prefill_complete:
             return 0
-        return max(0, self.num_prompt_tokens - self.num_processed_tokens)
+        # Subtract both processed tokens and cached tokens
+        return max(0, self.num_prompt_tokens - self.num_processed_tokens - self.num_cached_tokens)
 
     @property
     def remaining_output_tokens(self) -> int:
