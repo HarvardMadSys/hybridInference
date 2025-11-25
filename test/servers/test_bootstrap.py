@@ -106,9 +106,7 @@ class TestBootstrapShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_handles_none_services(self):
         """Test that shutdown handles None values gracefully."""
-        services = AppServices(
-            router=FixedRouter(), db_logger=None, rate_limiter=None
-        )
+        services = AppServices(router=FixedRouter(), db_logger=None, rate_limiter=None)
 
         # Should not raise any errors
         await bootstrap.shutdown(services)

@@ -55,8 +55,9 @@ class SimpleFLOPCalculator(FLOPCalculatorInterface):
 
     def compute_prefill_flops(self, request: OutsourcingRequestInfo, num_tokens: int) -> float:
         """Prefill: O(n^2 * d) attention + O(n * d^2) FFN.
-        
-        where n = sequence length, d = hidden_dim."""
+
+        where n = sequence length, d = hidden_dim.
+        """
         # Attention: 2 * n^2 * d per layer (QK^T + softmax * V)
         attn_flops = 2 * num_tokens * num_tokens * self.hidden_dim * self.num_layers
         # FFN: 4 * n * d^2 per layer (two linear projections)
@@ -73,7 +74,7 @@ class SimpleFLOPCalculator(FLOPCalculatorInterface):
 
     def compute_decode_flops(self, request: OutsourcingRequestInfo, num_tokens: int) -> float:
         """Decode: O(n * d^2) FFN + O(n * k * d) KV attention.
-        
+
         where n = number of decode tokens, k = KV cache length, d = hidden_dim.
         """
         # KV attention: O(n * k * d) where k is the KV cache length

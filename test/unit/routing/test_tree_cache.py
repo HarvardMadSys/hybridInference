@@ -282,10 +282,7 @@ class TestTreeCacheThreadSafety:
             for i in range(inserts_per_thread):
                 cache.insert(f"Thread{thread_id}_Entry{i}_" + "x" * 50)
 
-        threads = [
-            threading.Thread(target=insert_worker, args=(i,))
-            for i in range(num_threads)
-        ]
+        threads = [threading.Thread(target=insert_worker, args=(i,)) for i in range(num_threads)]
 
         for t in threads:
             t.start()
@@ -320,9 +317,7 @@ class TestTreeCacheThreadSafety:
             except Exception as e:
                 errors.append(e)
 
-        threads = [
-            threading.Thread(target=reader) for _ in range(5)
-        ] + [
+        threads = [threading.Thread(target=reader) for _ in range(5)] + [
             threading.Thread(target=writer) for _ in range(5)
         ]
 

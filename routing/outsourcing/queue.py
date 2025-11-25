@@ -10,6 +10,7 @@ class WaitingQueueInterface(ABC):
 
     Implementations wrap the serving engine's actual queue.
     """
+
     @abstractmethod
     def add_request(self, request_info: OutsourcingRequestInfo) -> None:
         """Add a request to the waiting queue."""

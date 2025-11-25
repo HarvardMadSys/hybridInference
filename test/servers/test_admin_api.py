@@ -55,7 +55,6 @@ async def admin_client(monkeypatch, mocked_db_logger):
         router=MagicMock(),
         db_logger=logger,
         rate_limiter=None,
-
     )
     app.state.services = services  # type: ignore[attr-defined]
     app.include_router(admin_router.router)

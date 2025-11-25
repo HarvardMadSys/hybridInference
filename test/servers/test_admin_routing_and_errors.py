@@ -40,9 +40,7 @@ async def test_admin_routing_status_with_and_without_manager():
 
     # Test routing status endpoint
     app = FastAPI()
-    app.state.services = AppServices(
-        router=router, db_logger=None, rate_limiter=None
-    )  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=router, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
     app.include_router(models.router)
     app.include_router(admin.router)
 

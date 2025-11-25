@@ -161,7 +161,6 @@ async def app_services(mock_router, mock_db_logger, mock_rate_limiter):
         router=mock_router,
         db_logger=mock_db_logger,
         rate_limiter=mock_rate_limiter,
-
     )
     yield services
 

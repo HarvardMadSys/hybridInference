@@ -32,6 +32,7 @@ class DummyAdapter(BaseAdapter):
 
     async def chat_completion(self, messages, **kwargs):
         import time
+
         return {
             "id": "test-id",
             "object": "chat.completion",
@@ -40,7 +41,10 @@ class DummyAdapter(BaseAdapter):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": f"Response from {self.config.provider}"},
+                    "message": {
+                        "role": "assistant",
+                        "content": f"Response from {self.config.provider}",
+                    },
                     "finish_reason": "stop",
                 }
             ],
@@ -96,10 +100,9 @@ def fixed_router():
     non_nimbus_adapter = DummyAdapter(_make_config("regular-model", "local"))
 
     # Nimbus model needs both local and remote
-    router.register_route("nimbus-model", [
-        (nimbus_local_adapter, 0.5),
-        (nimbus_remote_adapter, 0.5)
-    ])
+    router.register_route(
+        "nimbus-model", [(nimbus_local_adapter, 0.5), (nimbus_remote_adapter, 0.5)]
+    )
 
     # Regular model only has local
     router.register_route("regular-model", [(non_nimbus_adapter, 1.0)])
@@ -111,6 +114,7 @@ def fixed_router():
 def mock_outsourcing_router():
     """Create a mock OutsourcingRouter."""
     import time
+
     mock_router = MagicMock()
 
     # Mock chat_completion
@@ -139,7 +143,9 @@ def mock_outsourcing_router():
     mock_router.stream_chat_completion = AsyncMock(side_effect=mock_stream)
 
     # Mock get_stats
-    mock_router.get_stats = MagicMock(return_value={"total_requests": 10, "local_requests": 6, "outsourced_requests": 4})
+    mock_router.get_stats = MagicMock(
+        return_value={"total_requests": 10, "local_requests": 6, "outsourced_requests": 4}
+    )
 
     return mock_router
 

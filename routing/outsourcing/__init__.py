@@ -14,5 +14,5 @@ __all__ = [
     "WaitingQueueInterface",
     "OutsourcingRequestInfo",
     "RequestStatus",
-    "SGLangWaitingQueueAdapter"
+    "SGLangWaitingQueueAdapter",
 ]

@@ -146,7 +146,9 @@ class TestOutsourcingRouterWithTreeCache:
         adapter = MagicMock()
         adapter.config.provider = "sglang"
         adapter.config.base_url = "http://localhost:6000/v1"
-        adapter.chat_completion = AsyncMock(return_value={"choices": [{"message": {"content": "test"}}]})
+        adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "test"}}]}
+        )
         adapter.stream_chat_completion = AsyncMock(return_value=iter([{"chunk": "test"}]))
         return adapter
 
@@ -156,7 +158,9 @@ class TestOutsourcingRouterWithTreeCache:
         adapter = MagicMock()
         adapter.config.provider = "zhipu"
         adapter.config.base_url = "https://api.zhipuai.cn/v1"
-        adapter.chat_completion = AsyncMock(return_value={"choices": [{"message": {"content": "test"}}]})
+        adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "test"}}]}
+        )
         adapter.stream_chat_completion = AsyncMock(return_value=iter([{"chunk": "test"}]))
         return adapter
 
@@ -184,7 +188,9 @@ class TestOutsourcingRouterWithTreeCache:
         return queue
 
     @pytest.fixture
-    def router(self, mock_local_adapter, mock_remote_adapter, mock_outsourcing_engine, mock_waiting_queue):
+    def router(
+        self, mock_local_adapter, mock_remote_adapter, mock_outsourcing_engine, mock_waiting_queue
+    ):
         """Create an OutsourcingRouter with mocked dependencies."""
         return OutsourcingRouter(
             local_adapter=mock_local_adapter,
@@ -281,9 +287,7 @@ class TestOutsourcingRouterWithTreeCache:
         assert matched == 0
 
     @pytest.mark.asyncio
-    async def test_request_info_includes_cached_tokens(
-        self, router, mock_waiting_queue
-    ):
+    async def test_request_info_includes_cached_tokens(self, router, mock_waiting_queue):
         """Test that OutsourcingRequestInfo includes cached_tokens."""
         # Pre-populate cache
         router.tree_cache.insert("<|user|>Hello, how are you?")
@@ -338,14 +342,14 @@ class TestOutsourcingRouterWithTreeCache:
         assert router.tree_cache.match_prefix("Pre-populated content") > 0
 
     @pytest.mark.asyncio
-    async def test_keep_requests_removed_when_outsourcing(
-        self, mock_remote_adapter
-    ):
+    async def test_keep_requests_removed_when_outsourcing(self, mock_remote_adapter):
         """Requests marked keep should be removed from the shadow queue when outsourcing occurs."""
         local_adapter = MagicMock()
         local_adapter.config.provider = "sglang"
         local_adapter.config.base_url = "http://localhost:6000/v1"
-        local_adapter.chat_completion = AsyncMock(return_value={"choices": [{"message": {"content": "local"}}]})
+        local_adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "local"}}]}
+        )
 
         waiting_queue = MagicMock()
         waiting_queue.add_request.return_value = None
@@ -459,7 +463,9 @@ class TestOutsourcingRouterApplyDecision:
         adapter = MagicMock()
         adapter.config.provider = "sglang"
         adapter.config.base_url = "http://localhost:6000/v1"
-        adapter.chat_completion = AsyncMock(return_value={"choices": [{"message": {"content": "test"}}]})
+        adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "test"}}]}
+        )
         return adapter
 
     @pytest.fixture
@@ -468,7 +474,9 @@ class TestOutsourcingRouterApplyDecision:
         adapter = MagicMock()
         adapter.config.provider = "zhipu"
         adapter.config.base_url = "https://api.zhipuai.cn/v1"
-        adapter.chat_completion = AsyncMock(return_value={"choices": [{"message": {"content": "test"}}]})
+        adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "test"}}]}
+        )
         return adapter
 
     @pytest.fixture
@@ -520,12 +528,16 @@ class TestOutsourcingRouterApplyDecision:
                 )
 
         engine.should_outsource.side_effect = make_decision
-        engine.apply_outsourcing.return_value = [
-            OutsourcingRequestInfo(
-                request_id=request_ids[0] if request_ids else "req-1",
-                arrival_time=time.time(),
-            )
-        ] if request_ids else []
+        engine.apply_outsourcing.return_value = (
+            [
+                OutsourcingRequestInfo(
+                    request_id=request_ids[0] if request_ids else "req-1",
+                    arrival_time=time.time(),
+                )
+            ]
+            if request_ids
+            else []
+        )
 
         router = OutsourcingRouter(
             local_adapter=mock_local_adapter,
@@ -644,7 +656,5 @@ class TestOutsourcingRouterApplyDecision:
         if len(request_ids) > 1:
             # Find a call that includes the second request ID (the kept one)
             kept_id = request_ids[1]
-            found_kept_removal = any(
-                kept_id in call[0][0] for call in remove_calls
-            )
+            found_kept_removal = any(kept_id in call[0][0] for call in remove_calls)
             assert found_kept_removal, f"Kept request {kept_id} should be removed from queue"

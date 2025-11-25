@@ -36,7 +36,9 @@ def _make_adapter(adapter_id: str, provider: str = "test") -> BaseAdapter:
     )
     adapter = MagicMock(spec=BaseAdapter)
     adapter.config = config
-    adapter.chat_completion = AsyncMock(return_value={"choices": [{"message": {"content": "test"}}]})
+    adapter.chat_completion = AsyncMock(
+        return_value={"choices": [{"message": {"content": "test"}}]}
+    )
     adapter.stream_chat_completion = AsyncMock()
     return adapter
 
@@ -139,7 +141,9 @@ class TestNimbusRouterChatCompletion:
     """Test chat_completion method."""
 
     @pytest.mark.asyncio
-    async def test_chat_completion_nimbus_model(self, fixed_router, mock_settings, mock_outsourcing_router):
+    async def test_chat_completion_nimbus_model(
+        self, fixed_router, mock_settings, mock_outsourcing_router
+    ):
         """Test chat completion for Nimbus-enabled model."""
         router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
         router.outsourcing_routers["glm-4.6"] = mock_outsourcing_router
@@ -177,7 +181,9 @@ class TestNimbusRouterStreamCompletion:
     """Test stream_chat_completion method."""
 
     @pytest.mark.asyncio
-    async def test_stream_completion_nimbus_model(self, fixed_router, mock_settings, mock_outsourcing_router):
+    async def test_stream_completion_nimbus_model(
+        self, fixed_router, mock_settings, mock_outsourcing_router
+    ):
         """Test streaming for Nimbus-enabled model."""
         router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
         router.outsourcing_routers["glm-4.6"] = mock_outsourcing_router
@@ -268,7 +274,9 @@ class TestNimbusRouterEdgeCases:
         mock_outsourcing_router.chat_completion.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_params_passed_through(self, fixed_router, mock_settings, mock_outsourcing_router):
+    async def test_params_passed_through(
+        self, fixed_router, mock_settings, mock_outsourcing_router
+    ):
         """Test parameters are passed through correctly."""
         router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
         router.outsourcing_routers["glm-4.6"] = mock_outsourcing_router
@@ -326,7 +334,9 @@ class TestNimbusRouterHelpers:
         with pytest.raises(ValueError, match="requires both local and remote adapters"):
             nimbus_router._extract_adapters("local-only-model")
 
-    def test_extract_adapters_detects_local_by_openai_compat_localhost(self, fixed_router, mock_settings):
+    def test_extract_adapters_detects_local_by_openai_compat_localhost(
+        self, fixed_router, mock_settings
+    ):
         """Test that openai_compat with localhost is detected as local adapter."""
         # Create adapters
         local_adapter = MagicMock()
@@ -337,10 +347,7 @@ class TestNimbusRouterHelpers:
         remote_adapter.config.provider = "zhipu"
         remote_adapter.config.base_url = "https://open.bigmodel.cn"
 
-        fixed_router.register_route("test-model", [
-            (local_adapter, 0.5),
-            (remote_adapter, 0.5)
-        ])
+        fixed_router.register_route("test-model", [(local_adapter, 0.5), (remote_adapter, 0.5)])
 
         nimbus_router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
 
@@ -367,11 +374,9 @@ class TestNimbusRouterHelpers:
         remote.config.provider = "zhipu"
         remote.config.base_url = "https://api.zhipu.ai"
 
-        fixed_router.register_route("multi-adapter-model", [
-            (local1, 0.4),
-            (local2, 0.3),
-            (remote, 0.3)
-        ])
+        fixed_router.register_route(
+            "multi-adapter-model", [(local1, 0.4), (local2, 0.3), (remote, 0.3)]
+        )
 
         nimbus_router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
 
@@ -479,10 +484,7 @@ class TestNimbusRouterInitializationWithSettings:
         remote_adapter.config.provider = "zhipu"
         remote_adapter.config.base_url = "https://open.bigmodel.cn"
 
-        fixed_router.register_route("glm-4.6", [
-            (local_adapter, 0.5),
-            (remote_adapter, 0.5)
-        ])
+        fixed_router.register_route("glm-4.6", [(local_adapter, 0.5), (remote_adapter, 0.5)])
 
         # Create NimbusRouter (will call _init_routers)
         nimbus_router = NimbusRouter(fixed_router=fixed_router, settings=settings)
@@ -498,7 +500,9 @@ class TestNimbusRouterInitializationWithSettings:
         assert "glm-4.6" in nimbus_router.outsourcing_routers
 
     @patch("routing.routers.OutsourcingRouter")
-    def test_init_routers_skips_model_with_invalid_route(self, mock_outsourcing_router, fixed_router):
+    def test_init_routers_skips_model_with_invalid_route(
+        self, mock_outsourcing_router, fixed_router
+    ):
         """Test that _init_routers skips models with invalid routes (missing adapters)."""
         # Setup settings with a model that has invalid route
         settings = MagicMock()
@@ -521,7 +525,9 @@ class TestNimbusRouterInitializationWithSettings:
         assert "bad-model" not in nimbus_router.outsourcing_routers
 
     @patch("routing.routers.OutsourcingRouter")
-    def test_init_routers_skips_model_not_in_fixed_router(self, mock_outsourcing_router, fixed_router):
+    def test_init_routers_skips_model_not_in_fixed_router(
+        self, mock_outsourcing_router, fixed_router
+    ):
         """Test that _init_routers skips models not found in FixedRouter."""
         # Setup settings with a model that doesn't exist in FixedRouter
         settings = MagicMock()
@@ -560,10 +566,7 @@ class TestNimbusRouterInitializationWithSettings:
             remote_adapter.config.provider = "zhipu"
             remote_adapter.config.base_url = "https://api.zhipu.ai"
 
-            fixed_router.register_route(model_id, [
-                (local_adapter, 0.5),
-                (remote_adapter, 0.5)
-            ])
+            fixed_router.register_route(model_id, [(local_adapter, 0.5), (remote_adapter, 0.5)])
 
         # Create NimbusRouter
         nimbus_router = NimbusRouter(fixed_router=fixed_router, settings=settings)

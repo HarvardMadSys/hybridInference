@@ -3,7 +3,7 @@
 This module contains the SGLang adapter used by the outsourcing engine. In
 SGLang, accessing internal scheduler structures for metrics is discouraged.
 Instead, this adapter maintains its own internal waiting queue and reads
-operational metrics from SGLang's Prometheus endpoint (e.g. 
+operational metrics from SGLang's Prometheus endpoint (e.g.
 http://localhost:30000/metrics) for observability.
 """
 
@@ -14,7 +14,7 @@ from collections import deque
 import requests
 
 from routing.outsourcing.queue import WaitingQueueInterface
-from routing.outsourcing.request import OutsourcingRequestInfo, RequestStatus
+from routing.outsourcing.request import OutsourcingRequestInfo
 
 
 class SGLangWaitingQueueAdapter(WaitingQueueInterface):
@@ -25,10 +25,10 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
 
     Example usage:
         queue_adapter = SGLangWaitingQueueAdapter(metrics_url="http://localhost:30000/metrics")
-        
+
         # Add requests to the queue
         queue_adapter.add_request(request_info)
-        
+
         # Use with outsourcing engine
         engine = OutsourcingEngine(
             waiting_queue=queue_adapter,
@@ -50,56 +50,56 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         """
         self.metrics_url = metrics_url or "http://localhost:30000/metrics"
         self.http_timeout_s = http_timeout_s
-        
+
         # Internal waiting queue (FIFO)
         self._waiting_queue: deque[OutsourcingRequestInfo] = deque()
-        
+
         # Index for fast lookup by request ID
         self._request_index: dict[str, OutsourcingRequestInfo] = {}
-        
+
     def add_request(self, request: OutsourcingRequestInfo) -> None:
         """Add a new request to the waiting queue.
-        
+
         Args:
             request: Request information to add to the queue
         """
         # Update queue time to current
         current_time = time.time()
         request.queue_time = current_time - request.arrival_time
-        
+
         # Add to queue and index
         self._waiting_queue.append(request)
         self._request_index[request.request_id] = request
-        
+
     def get_all_waiting(self) -> list[OutsourcingRequestInfo]:
         """Get snapshot of all waiting requests in queue order (FCFS).
-        
+
         Returns:
             List of OutsourcingRequestInfo for all waiting requests
         """
         # Update queue times for all requests
         current_time = time.time()
         result = []
-        
+
         for req in self._waiting_queue:
             # Update queue time (in-place is fine, we return the objects)
             req.queue_time = current_time - req.arrival_time
             result.append(req)
-        
+
         return result
-    
+
     def remove_requests(self, request_ids: set[str]) -> list[OutsourcingRequestInfo]:
         """Remove specified requests from the waiting queue.
-        
+
         Args:
             request_ids: Set of request IDs to remove
-            
+
         Returns:
             List of removed OutsourcingRequestInfo objects
         """
         removed = []
         ids_to_remove = set(request_ids)
-        
+
         # Filter the queue, keeping only requests NOT in the removal set
         new_queue = deque()
         for req in self._waiting_queue:
@@ -110,21 +110,21 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
             else:
                 # Keep in queue
                 new_queue.append(req)
-        
+
         self._waiting_queue = new_queue
         return removed
-    
+
     def get_length(self) -> int:
         """Current number of waiting requests.
-        
+
         Returns:
             Number of requests in the waiting queue
         """
         return len(self._waiting_queue)
-    
+
     def peek(self) -> OutsourcingRequestInfo | None:
         """Look at the head of the queue without removing.
-        
+
         Returns:
             OutsourcingRequestInfo for the first request, or None if empty
         """
@@ -152,7 +152,7 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         try:
             text = self._fetch_metrics_text()
             return self._parse_prometheus_metrics(text)
-        except Exception as exc:  # noqa: BLE001 - we want to be resilient here
+        except Exception as exc:  # - we want to be resilient here
             if not safe:
                 raise
             print(f"Warning: failed to fetch/parse SGLang metrics: {exc}")
@@ -170,7 +170,9 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
 
         # Collect raw samples by metric name
         samples: dict[str, list[tuple[float, dict[str, str]]]] = {}
-        metric_re = re.compile(r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(\{(?P<labels>[^}]*)\})?\s+(?P<value>[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)")
+        metric_re = re.compile(
+            r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(\{(?P<labels>[^}]*)\})?\s+(?P<value>[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)"
+        )
 
         def parse_labels(lbl: str) -> dict[str, str]:
             res: dict[str, str] = {}
