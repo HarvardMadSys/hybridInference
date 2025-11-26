@@ -255,6 +255,8 @@ async def chat_completions(
             tool_calls_map: dict[int, dict[str, Any]] = {}
             # Track TTFT: time to first token
             ttft_ms: int | None = None
+            # Track provider from request context (fallback when routing_info is not available)
+            provider_from_ctx: str | None = None
             try:
                 # Emit initial assistant role chunk for client compatibility (e.g., Cursor)
                 from serving.stream import make_role_chunk
@@ -266,6 +268,16 @@ async def chat_completions(
                 logger.debug(f"Starting to consume adapter stream for model: {model}")
                 async for chunk in router_exec.stream_chat_completion(model, messages, **params):
                     chunk_count += 1
+
+                    # Extract provider from request context on first chunk (context is active during streaming)
+                    if provider_from_ctx is None:
+                        from serving.utils import context as req_ctx
+
+                        ctx = req_ctx.get()
+                        if ctx and "provider" in ctx:
+                            provider_from_ctx = ctx["provider"]
+                            logger.debug(f"Extracted provider from context: {provider_from_ctx}")
+
                     # Forward adapter SSE chunks with sanitization. Adapters may emit final usage chunk.
                     if chunk_count <= 10 or chunk_count % 10 == 0:
                         logger.debug(f"Chunk {chunk_count} received from adapter: {chunk[:200]}")
@@ -422,6 +434,7 @@ async def chat_completions(
                     response_for_db["usage"] = normalize_usage(usage_data) or usage_data
 
                 # Get pricing from actual provider used
+                # Fallback to provider from request context if routing_info is not available
                 provider = "router"
                 pricing = None
                 if routing_info:
@@ -430,6 +443,11 @@ async def chat_completions(
                     pricing = get_pricing_for_provider(provider, base_url)
                     if routing_info:
                         metadata.update(routing_info)
+                elif provider_from_ctx:
+                    # Fallback: use provider extracted from request context during streaming
+                    provider = provider_from_ctx
+                    pricing = get_pricing_for_provider(provider, None)
+                    logger.debug(f"Using provider from context for DB logging: {provider}")
 
                 # Prepare data for background database logging (don't await here!)
                 if db_logger:
@@ -480,6 +498,12 @@ async def chat_completions(
 
             except Exception as exc:
                 # Prepare error data for background logging
+                # Try to get actual provider from context even in error case
+                from serving.utils import context as req_ctx
+
+                ctx = req_ctx.get()
+                provider_for_error = ctx.get("provider", "router") if ctx else "router"
+
                 if db_logger:
                     _schedule_db_log_task(
                         db_logger,
@@ -487,7 +511,7 @@ async def chat_completions(
                         {
                             "request_id": request_id,
                             "model_id": model,
-                            "provider": "router",
+                            "provider": provider_for_error,
                             "prompt": messages,
                             "response": None,
                             "usage": None,
@@ -538,6 +562,16 @@ async def chat_completions(
             # Never leak internal routing details to clients
             with suppress(Exception):
                 del response["_routing"]
+        else:
+            # Fallback: get provider from request context when _routing is not available
+            from serving.utils import context as req_ctx
+
+            ctx = req_ctx.get()
+            if ctx and "provider" in ctx:
+                provider = ctx["provider"]
+                logger.debug(
+                    f"Using provider from context for non-streaming DB logging: {provider}"
+                )
 
         # Move db_logger.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
@@ -658,6 +692,12 @@ async def chat_completions(
     except Exception as exc:
         # Move db_logger.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
+        # Try to get actual provider from context even in error case
+        from serving.utils import context as req_ctx
+
+        ctx = req_ctx.get()
+        provider_for_error = ctx.get("provider", "router") if ctx else "router"
+
         if db_logger:
             _schedule_db_log_task(
                 db_logger,
@@ -665,7 +705,7 @@ async def chat_completions(
                 {
                     "request_id": request_id,
                     "model_id": model,
-                    "provider": "router",
+                    "provider": provider_for_error,
                     "prompt": messages,
                     "response": None,
                     "usage": None,
