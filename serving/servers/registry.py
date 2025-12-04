@@ -29,6 +29,38 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
 
 
+def _make_provider_id(kind: str, base_url: str) -> str:
+    """Generate a unique provider identifier from kind and base_url.
+
+    This ensures each endpoint (even of the same kind) has independent
+    availability tracking and circuit breaker state.
+
+    Examples:
+        - sglang + http://localhost:12003 -> "sglang:localhost:12003"
+        - zhipu + https://api.z.ai/v4/ -> "zhipu:api.z.ai"
+        - chutes + https://llm.chutes.ai -> "chutes:llm.chutes.ai"
+
+    Args:
+        kind: Adapter kind (e.g., "sglang", "zhipu", "chutes").
+        base_url: The base URL of the endpoint.
+
+    Returns:
+        A unique provider identifier string.
+    """
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base_url)
+        host = parsed.hostname or "unknown"
+        port = parsed.port
+        if port and port not in (80, 443):
+            return f"{kind}:{host}:{port}"
+        return f"{kind}:{host}"
+    except Exception:
+        # Fallback to kind only if URL parsing fails
+        return kind
+
+
 def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
@@ -157,6 +189,8 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
             adapter_cfg["base_url"] = base_url
             adapter_cfg["api_key"] = api_key
             adapter_cfg["provider"] = kind
+            # Generate unique endpoint_id for availability tracking and circuit breaker
+            adapter_cfg["endpoint_id"] = _make_provider_id(kind, base_url)
 
             route_provider_model_id = r.get("provider_model_id")
             if route_provider_model_id is not None:

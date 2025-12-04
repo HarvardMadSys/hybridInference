@@ -29,6 +29,14 @@ from serving.observability.metrics import (
 from serving.utils import context as req_ctx
 
 
+def _get_endpoint_id(adapter: BaseAdapter) -> str:
+    """Get the unique endpoint identifier for health tracking.
+
+    Uses endpoint_id if set, otherwise falls back to provider.
+    """
+    return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
+
+
 @dataclass
 class RouteConfig:
     """Weighted adapter list for a model."""
@@ -87,10 +95,10 @@ class RouteExecutor:
         with self._lock:
             snapshot: list[tuple[BaseAdapter, float, _CircuitBreaker]] = []
             for adapter, weight in route.adapters:
-                provider = adapter.config.provider
-                cb = self._circuits.get(provider)
+                endpoint_id = _get_endpoint_id(adapter)
+                cb = self._circuits.get(endpoint_id)
                 if not cb:
-                    cb = self._circuits[provider] = _CircuitBreaker(provider)
+                    cb = self._circuits[endpoint_id] = _CircuitBreaker(endpoint_id)
                 snapshot.append((adapter, weight, cb))
 
         allowed: list[tuple[BaseAdapter, float]] = [
@@ -128,38 +136,40 @@ class RouteExecutor:
             raise ValueError(f"No route configured for model {model_id}")
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
-                provider = primary.config.provider
-                self._ensure_health(provider)
+                endpoint_id = _get_endpoint_id(primary)
+                self._ensure_health(endpoint_id)
                 started = time.perf_counter()
                 resp = await primary.chat_completion(messages, **params)
                 PROVIDER_LATENCY.labels(
-                    provider=normalize_provider_label(provider),
+                    provider=normalize_provider_label(endpoint_id),
                     model=normalize_model_label(model_id),
                     operation="chat_completion",
                 ).observe(time.perf_counter() - started)
-                self._on_success(provider)
+                self._on_success(endpoint_id)
             resp["_routing"] = {
                 "provider": primary.config.provider,
                 "base_url": primary.config.base_url,
             }
             return resp
         except Exception as primary_error:
+            # Record failure for primary endpoint before attempting fallback
+            self._on_failure(_get_endpoint_id(primary), reason="chat_exception")
             route = self.routes[model_id]
             for adapter, _ in route.adapters:
                 if adapter == primary:
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        provider = adapter.config.provider
-                        self._ensure_health(provider)
+                        endpoint_id = _get_endpoint_id(adapter)
+                        self._ensure_health(endpoint_id)
                         started = time.perf_counter()
                         resp = await adapter.chat_completion(messages, **params)
                         PROVIDER_LATENCY.labels(
-                            provider=normalize_provider_label(provider),
+                            provider=normalize_provider_label(endpoint_id),
                             model=normalize_model_label(model_id),
                             operation="chat_completion",
                         ).observe(time.perf_counter() - started)
-                        self._on_success(provider)
+                        self._on_success(endpoint_id)
                     resp["_routing"] = {
                         "provider": adapter.config.provider,
                         "base_url": adapter.config.base_url,
@@ -172,7 +182,7 @@ class RouteExecutor:
                     ).inc()
                     return resp
                 except Exception:
-                    self._on_failure(adapter.config.provider, reason="chat_exception")
+                    self._on_failure(endpoint_id, reason="chat_exception")
                     continue
             raise primary_error
 
@@ -199,17 +209,18 @@ class RouteExecutor:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
                 first = True
                 started = time.perf_counter()
+                primary_endpoint_id = _get_endpoint_id(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
                     if first and _has_non_empty_content(chunk):
                         # Observe TTFT only when the first non-empty content arrives.
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
                         API_TTFT.labels(
-                            provider=normalize_provider_label(primary.config.provider),
+                            provider=normalize_provider_label(primary_endpoint_id),
                             model=normalize_model_label(model_id),
                         ).observe(time.perf_counter() - started)
                         # Consider first non-empty token as a success signal for availability.
-                        self._on_success(primary.config.provider)
+                        self._on_success(primary_endpoint_id)
                     yield chunk
             return
         except Exception as primary_error:
@@ -219,7 +230,7 @@ class RouteExecutor:
                 provider=primary.config.provider,
                 stage="adapter_stream",
             ).inc()
-            self._on_failure(primary.config.provider, reason="stream_exception")
+            self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
             route = self.routes[model_id]
             for adapter, _ in route.adapters:
                 if adapter == primary:
@@ -228,14 +239,15 @@ class RouteExecutor:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
                         first = True
                         started = time.perf_counter()
+                        adapter_endpoint_id = _get_endpoint_id(adapter)
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and _has_non_empty_content(chunk):
                                 first = False
                                 API_TTFT.labels(
-                                    provider=normalize_provider_label(adapter.config.provider),
+                                    provider=normalize_provider_label(adapter_endpoint_id),
                                     model=normalize_model_label(model_id),
                                 ).observe(time.perf_counter() - started)
-                                self._on_success(adapter.config.provider)
+                                self._on_success(adapter_endpoint_id)
                             yield chunk
                     API_FALLBACKS.labels(
                         from_provider=primary.config.provider,
@@ -249,7 +261,7 @@ class RouteExecutor:
                         provider=adapter.config.provider,
                         stage="adapter_stream",
                     ).inc()
-                    self._on_failure(adapter.config.provider, reason="stream_exception")
+                    self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
                     continue
             raise primary_error
 
