@@ -413,10 +413,6 @@ __all__ = [
     "CIRCUIT_STATE",
     # Database metrics
     "DATABASE_CONNECTED",
-    # User statistics metrics
-    "USERS_TOTAL",
-    "USERS_ACTIVE_DAILY",
-    "USERS_ACTIVE_MONTHLY",
     # Provider metrics
     "PROVIDER_AVAILABILITY",
     "PROVIDER_LATENCY",
@@ -426,6 +422,10 @@ __all__ = [
     "RATE_LIMIT_QUEUE_WAIT",
     # Streaming metrics
     "STREAMING_INTERRUPTION",
+    "USERS_ACTIVE_DAILY",
+    "USERS_ACTIVE_MONTHLY",
+    # User statistics metrics
+    "USERS_TOTAL",
     # Helper functions
     "latency_timer",
     "normalize_model_label",

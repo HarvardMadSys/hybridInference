@@ -54,6 +54,10 @@ class ModelConfig:
     # Provider-specific model identifier to send to upstream. If not set,
     # `id` is used.
     provider_model_id: str | None = None
+    # Unique endpoint identifier for availability tracking and circuit breaker.
+    # Format: "{provider}:{host}:{port}" or "{provider}:{host}".
+    # If not set, falls back to `provider`.
+    endpoint_id: str | None = None
     quantization: str = "bf16"
     input_modalities: list[str] = field(default_factory=lambda: ["text"])
     output_modalities: list[str] = field(default_factory=lambda: ["text"])
