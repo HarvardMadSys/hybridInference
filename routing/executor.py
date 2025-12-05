@@ -176,8 +176,8 @@ class RouteExecutor:
                         "fallback": True,
                     }
                     API_FALLBACKS.labels(
-                        from_provider=primary.config.provider,
-                        to_provider=adapter.config.provider,
+                        from_provider=normalize_provider_label(_get_endpoint_id(primary)),
+                        to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
                         reason=primary_error.__class__.__name__,
                     ).inc()
                     return resp
@@ -227,7 +227,7 @@ class RouteExecutor:
             # record streaming interruption for primary provider
             STREAMING_INTERRUPTION.labels(
                 model=model_id,
-                provider=primary.config.provider,
+                provider=normalize_provider_label(_get_endpoint_id(primary)),
                 stage="adapter_stream",
             ).inc()
             self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
@@ -250,18 +250,18 @@ class RouteExecutor:
                                 self._on_success(adapter_endpoint_id)
                             yield chunk
                     API_FALLBACKS.labels(
-                        from_provider=primary.config.provider,
-                        to_provider=adapter.config.provider,
+                        from_provider=normalize_provider_label(_get_endpoint_id(primary)),
+                        to_provider=normalize_provider_label(adapter_endpoint_id),
                         reason=primary_error.__class__.__name__,
                     ).inc()
                     return
                 except Exception:
                     STREAMING_INTERRUPTION.labels(
                         model=model_id,
-                        provider=adapter.config.provider,
+                        provider=normalize_provider_label(adapter_endpoint_id),
                         stage="adapter_stream",
                     ).inc()
-                    self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
+                    self._on_failure(adapter_endpoint_id, reason="stream_exception")
                     continue
             raise primary_error
 
