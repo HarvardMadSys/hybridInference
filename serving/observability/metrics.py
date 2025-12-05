@@ -155,6 +155,13 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    API_MODEL_REQUESTS = Counter(
+        "api_model_requests_total",
+        "HTTP response status distribution by model and provider",
+        labelnames=("model", "provider", "status_code"),
+        registry=REGISTRY,
+    )
+
     API_CONCURRENCY = Gauge(
         "api_concurrent_requests",
         "Number of in-flight API requests",
@@ -350,6 +357,9 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     RATE_LIMIT_HITS = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
+    API_MODEL_REQUESTS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
     API_CONCURRENCY = type("NoopGauge", (), {"inc": _noop, "dec": _noop})()
     RATE_LIMIT_QUEUE_SIZE = type(
         "NoopGauge", (), {"labels": lambda *a, **k: type("L", (), {"set": _noop})()}
@@ -402,6 +412,7 @@ __all__ = [
     # Core API metrics
     "API_CONCURRENCY",
     "API_FALLBACKS",
+    "API_MODEL_REQUESTS",
     "API_REQUESTS",
     "API_REQUEST_LATENCY",
     "API_RETRIES",
