@@ -755,10 +755,30 @@ async def chat_completions(
             await rate_limiter.release_tokens(model, estimated_tokens)
 
         # Best-effort extraction of status code from exception
-        # Some SDK exceptions (e.g., OpenAI, Anthropic) carry status_code attribute
-        exc_status_code = getattr(exc, "status_code", None) or getattr(
-            getattr(exc, "response", None), "status_code", None
-        )
+        # Different HTTP client libraries store status codes in different places:
+        # - OpenAI/Anthropic SDK: exc.status_code
+        # - httpx: exc.response.status_code
+        # - aiohttp: exc.status
+        # - requests: exc.response.status_code
+        exc_status_code = None
+
+        # Try direct status_code attribute (OpenAI, Anthropic SDKs)
+        if hasattr(exc, "status_code") and exc.status_code is not None:
+            exc_status_code = exc.status_code
+        # Try response.status_code (httpx, requests)
+        elif hasattr(exc, "response") and exc.response is not None:
+            if hasattr(exc.response, "status_code"):
+                exc_status_code = exc.response.status_code
+            elif hasattr(exc.response, "status"):
+                exc_status_code = exc.response.status
+        # Try direct status attribute (aiohttp)
+        elif hasattr(exc, "status") and exc.status is not None:
+            exc_status_code = exc.status
+        # Try code attribute (some custom exceptions)
+        elif hasattr(exc, "code") and exc.code is not None:
+            exc_status_code = exc.code
+
+        # Default to 500 if we couldn't extract status code
         if exc_status_code is None:
             exc_status_code = 500
 
