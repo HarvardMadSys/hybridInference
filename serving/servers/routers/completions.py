@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from serving.observability.metrics import (
+    API_MODEL_REQUESTS,
     API_TOKEN_ANOMALIES,
     API_TOKENS,
     normalize_model_label,
@@ -86,6 +87,12 @@ async def chat_completions(
         body = await request.json()
         payload = ChatCompletionRequest.model_validate(body)
     except Exception as e:
+        # Record 400 error for request parsing failures
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label("unknown"),
+            provider=normalize_provider_label("router"),
+            status_code="400",
+        ).inc()
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     model = payload.model
@@ -105,6 +112,12 @@ async def chat_completions(
 
     # Check if model has routing configured
     if model not in router_exec.routes:
+        # Record 404 error for model not found
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label("router"),
+            status_code="404",
+        ).inc()
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Extract parameters
@@ -176,6 +189,12 @@ async def chat_completions(
                     }
                 )
 
+            # Record 429 rate limit error
+            API_MODEL_REQUESTS.labels(
+                model=normalize_model_label(model),
+                provider=normalize_provider_label("router"),
+                status_code="429",
+            ).inc()
             raise HTTPException(status_code=429, detail=error_detail, headers=headers)
 
     # Generate request ID and metadata
@@ -537,6 +556,13 @@ async def chat_completions(
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
 
+        # Record 200 for streaming response (HTTP layer success)
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label(provider),
+            status_code="200",
+        ).inc()
+
         return StreamingResponse(
             stream_generator(),
             media_type="text/event-stream",
@@ -687,6 +713,13 @@ async def chat_completions(
                         f"Token estimation variance for {model}: estimated {estimated}, actual {actual_tokens}"
                     )
 
+        # Record 200 for non-streaming response
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label(provider),
+            status_code="200",
+        ).inc()
+
         return response
 
     except Exception as exc:
@@ -720,4 +753,40 @@ async def chat_completions(
         if rate_limiter:
             estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
             await rate_limiter.release_tokens(model, estimated_tokens)
+
+        # Best-effort extraction of status code from exception
+        # Different HTTP client libraries store status codes in different places:
+        # - OpenAI/Anthropic SDK: exc.status_code
+        # - httpx: exc.response.status_code
+        # - aiohttp: exc.status
+        # - requests: exc.response.status_code
+        exc_status_code = None
+
+        # Try direct status_code attribute (OpenAI, Anthropic SDKs)
+        if hasattr(exc, "status_code") and exc.status_code is not None:
+            exc_status_code = exc.status_code
+        # Try response.status_code (httpx, requests)
+        elif hasattr(exc, "response") and exc.response is not None:
+            if hasattr(exc.response, "status_code"):
+                exc_status_code = exc.response.status_code
+            elif hasattr(exc.response, "status"):
+                exc_status_code = exc.response.status
+        # Try direct status attribute (aiohttp)
+        elif hasattr(exc, "status") and exc.status is not None:
+            exc_status_code = exc.status
+        # Try code attribute (some custom exceptions)
+        elif hasattr(exc, "code") and exc.code is not None:
+            exc_status_code = exc.code
+
+        # Default to 500 if we couldn't extract status code
+        if exc_status_code is None:
+            exc_status_code = 500
+
+        # Record error status code
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label(provider_for_error),
+            status_code=str(exc_status_code),
+        ).inc()
+
         raise HTTPException(500, str(exc)) from exc
