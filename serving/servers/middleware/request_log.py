@@ -1,3 +1,5 @@
+"""HTTP request logging middleware."""
+
 from __future__ import annotations
 
 import time
@@ -20,8 +22,26 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
     """Emit a concise structured log per HTTP request."""
 
     async def dispatch(self, request: Request, call_next: Callable):  # type: ignore[override]
+        """Process request and emit structured log with status code and timing."""
         start = time.perf_counter()
-        response: Response = await call_next(request)
+        status_code = 500  # Default to 500 if we never get a response
+        response: Response | None = None
+        exc_to_raise: Exception | None = None
+
+        try:
+            response = await call_next(request)
+            status_code = getattr(response, "status_code", 0)
+        except Exception as e:
+            # Capture exception info for logging, but still re-raise
+            exc_to_raise = e
+            # Try to determine status code from exception
+            if hasattr(e, "status_code"):
+                status_code = e.status_code
+            elif "timeout" in str(type(e).__name__).lower():
+                status_code = 504
+            else:
+                status_code = 500
+
         duration_ms = int((time.perf_counter() - start) * 1000)
         ctx = req_ctx.get()
         # Enrich logs to help identify misrouted or unexpected callers.
@@ -36,23 +56,27 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
         # Extract canonical session_id for logs (same as DB metadata).
         canonical_session_id = request.headers.get("X-Session-ID")
 
-        logger.info(
-            "http_request",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": getattr(response, "status_code", 0),
-                "duration_ms": duration_ms,
-                "model": ctx.get("model"),
-                "provider": ctx.get("provider"),
-                "remote_ip": remote_ip,
-                "x_forwarded_for": xff,
-                "user_agent": user_agent,
-                "host": host,
-                "request_id": request_id,
-                "session_id": canonical_session_id,
-            },
-        )
+        log_extra = {
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": status_code,
+            "duration_ms": duration_ms,
+            "model": ctx.get("model"),
+            "provider": ctx.get("provider"),
+            "remote_ip": remote_ip,
+            "x_forwarded_for": xff,
+            "user_agent": user_agent,
+            "host": host,
+            "request_id": request_id,
+            "session_id": canonical_session_id,
+        }
+
+        if exc_to_raise:
+            log_extra["error"] = str(exc_to_raise)
+            log_extra["error_type"] = type(exc_to_raise).__name__
+            logger.error("http_request", extra=log_extra)
+        else:
+            logger.info("http_request", extra=log_extra)
 
         # Debug-only: emit a compact headers snapshot with sensitive fields masked.
         # This helps diagnose whether upstream clients (e.g., Cursor) include
@@ -68,4 +92,9 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
                     val = v if v is not None else ""
                     masked_headers[k] = (val[:256] + "…") if len(val) > 256 else val
             logger.debug("http_request_headers", extra={"headers": masked_headers})
-        return response
+
+        # Re-raise the exception after logging
+        if exc_to_raise:
+            raise exc_to_raise
+
+        return response  # type: ignore[return-value]
