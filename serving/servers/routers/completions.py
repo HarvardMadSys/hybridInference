@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from contextlib import suppress
@@ -236,16 +237,18 @@ async def chat_completions(
     if payload.stream:
 
         async def stream_generator():
+            # State for DB logging (captured in finally)
             usage_data = None
             routing_info = None
             chunk_count = 0
-            # Accumulate streamed content for DB logging
             final_text = ""
             finish_reason_for_db = "stop"
-            # Properly handle tool_calls delta merging by index
             tool_calls_map: dict[int, dict[str, Any]] = {}
-            # Track TTFT: time to first token
             ttft_ms: int | None = None
+            status_code = 200
+            error_msg_for_db: str | None = None
+            stream_provider = "router"
+
             try:
                 # Emit initial assistant role chunk for client compatibility (e.g., Cursor)
                 from serving.stream import make_role_chunk
@@ -377,99 +380,24 @@ async def chat_completions(
 
                 logger.info(f"Stream complete: total_chunks={chunk_count}")
 
-                # Reconstruct a complete response object for DB logging
-                response_for_db: dict[str, Any] = {
-                    "id": request_id,
-                    "object": "chat.completion",
-                    "created": int(time.time()),
-                    "model": model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": final_text if final_text else None,
-                            },
-                            "finish_reason": finish_reason_for_db,
-                        }
-                    ],
-                }
-
-                # Add tool_calls if any were accumulated
-                if tool_calls_map:
-                    # Convert map to list, sorted by index
-                    tool_calls_list = [tc for _, tc in sorted(tool_calls_map.items())]
-                    response_for_db["choices"][0]["message"]["tool_calls"] = tool_calls_list
-
-                # Add usage if available
-                if usage_data:
-                    response_for_db["usage"] = normalize_usage(usage_data) or usage_data
-
-                # Get pricing from actual provider used
-                provider = "router"
-                pricing = None
-                if routing_info:
-                    provider = routing_info.get("provider", "router")
-                    base_url = routing_info.get("base_url")
-                    pricing = get_pricing_for_provider(provider, base_url)
-                    if routing_info:
-                        metadata.update(routing_info)
-
-                if db_logger:
-                    await db_logger.log_request(
-                        request_id=request_id,
-                        model_id=model,
-                        provider=provider,
-                        prompt=messages,
-                        response=response_for_db,
-                        usage=response_for_db.get("usage") if response_for_db else usage_data,
-                        latency_ms=int((time.time() - start_time) * 1000),
-                        status_code=200,
-                        params=(
-                            (
-                                lambda p: (
-                                    p.update(
-                                        {
-                                            "max_tokens": p.get("max_tokens")
-                                            if p.get("max_tokens") is not None
-                                            else (
-                                                getattr(
-                                                    get_adapter_config_for_provider(
-                                                        provider,
-                                                        routing_info.get("base_url")
-                                                        if routing_info
-                                                        else None,
-                                                    ),
-                                                    "max_output_length",
-                                                    None,
-                                                )
-                                            )
-                                        }
-                                    )
-                                    or p
-                                )
-                            )(dict(params))
-                        ),
-                        metadata=metadata,
-                        ttft_ms=ttft_ms,
-                        pricing=pricing,
+            except asyncio.CancelledError:
+                # Client disconnected or request was cancelled
+                status_code = 499  # Client Closed Request (nginx convention)
+                error_msg_for_db = "Client disconnected"
+                finish_reason_for_db = "cancelled"
+                logger.warning(f"Stream cancelled for request {request_id}")
+                if rate_limiter:
+                    estimated_tokens = TokenCounter.estimate_tokens(
+                        messages, params.get("max_tokens")
                     )
+                    await rate_limiter.release_tokens(model, estimated_tokens)
+                # Don't yield anything - client is gone
+                # Re-raise to properly signal cancellation
+                raise
+
             except Exception as exc:
-                if db_logger:
-                    await db_logger.log_request(
-                        request_id=request_id,
-                        model_id=model,
-                        provider="router",
-                        prompt=messages,
-                        response=None,
-                        usage=None,
-                        latency_ms=int((time.time() - start_time) * 1000),
-                        status_code=500,
-                        error=str(exc),
-                        params=params,
-                        metadata=metadata,
-                        pricing=None,  # Error case - no pricing available
-                    )
+                status_code = 500
+                error_msg_for_db = str(exc)
                 if rate_limiter:
                     estimated_tokens = TokenCounter.estimate_tokens(
                         messages, params.get("max_tokens")
@@ -480,6 +408,61 @@ async def chat_completions(
                 error_msg = f"data: {json.dumps(error_chunk)}\n\n"
                 logger.error(f"Yielding error chunk: {error_msg}")
                 yield error_msg
+
+            finally:
+                # Always log to DB using UPSERT with asyncio.shield to prevent cancellation
+                if db_logger:
+                    # Get pricing from actual provider used
+                    pricing = None
+                    if routing_info:
+                        stream_provider = routing_info.get("provider", "router")
+                        base_url = routing_info.get("base_url")
+                        pricing = get_pricing_for_provider(stream_provider, base_url)
+                        metadata.update(routing_info)
+
+                    # Reconstruct response for DB logging
+                    response_for_db: dict[str, Any] = {
+                        "id": request_id,
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": final_text if final_text else None,
+                                },
+                                "finish_reason": finish_reason_for_db,
+                            }
+                        ],
+                    }
+                    if tool_calls_map:
+                        tool_calls_list = [tc for _, tc in sorted(tool_calls_map.items())]
+                        response_for_db["choices"][0]["message"]["tool_calls"] = tool_calls_list
+                    if usage_data:
+                        response_for_db["usage"] = normalize_usage(usage_data) or usage_data
+
+                    try:
+                        await asyncio.shield(
+                            db_logger.upsert_request(
+                                request_id=request_id,
+                                model_id=model,
+                                provider=stream_provider,
+                                prompt=messages,
+                                response=response_for_db if status_code == 200 else None,
+                                usage=response_for_db.get("usage") if status_code == 200 else None,
+                                latency_ms=int((time.time() - start_time) * 1000),
+                                status_code=status_code,
+                                error=error_msg_for_db,
+                                params=params,
+                                metadata=metadata,
+                                ttft_ms=ttft_ms,
+                                pricing=pricing,
+                            )
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to upsert request {request_id}: {e}")
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
         return StreamingResponse(
@@ -511,13 +494,14 @@ async def chat_completions(
             with suppress(Exception):
                 del response["_routing"]
 
+        # Log request to DB using UPSERT
         if db_logger:
             pricing = get_pricing_for_provider(provider, base_url)
 
             # Normalize usage to extract reasoning_tokens from nested locations
             normalized_usage = normalize_usage(response.get("usage"))
 
-            await db_logger.log_request(
+            await db_logger.upsert_request(
                 request_id=request_id,
                 model_id=model,
                 provider=provider,
@@ -526,26 +510,7 @@ async def chat_completions(
                 usage=normalized_usage,
                 latency_ms=int((time.time() - start_time) * 1000),
                 status_code=200,
-                params=(
-                    (
-                        lambda p: (
-                            p.update(
-                                {
-                                    "max_tokens": p.get("max_tokens")
-                                    if p.get("max_tokens") is not None
-                                    else (
-                                        getattr(
-                                            get_adapter_config_for_provider(provider, base_url),
-                                            "max_output_length",
-                                            None,
-                                        )
-                                    )
-                                }
-                            )
-                            or p
-                        )
-                    )(dict(params))
-                ),
+                params=params,
                 metadata=metadata,
                 pricing=pricing,
             )
@@ -623,15 +588,43 @@ async def chat_completions(
 
         return response
 
-    except Exception as exc:
+    except asyncio.CancelledError:
+        # Client disconnected or request was cancelled
+        logger.warning(f"Non-streaming request cancelled: {request_id}")
         if rate_limiter:
             estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
             await rate_limiter.release_tokens(model, estimated_tokens)
         if db_logger:
-            await db_logger.log_request(
+            try:
+                await asyncio.shield(
+                    db_logger.upsert_request(
+                        request_id=request_id,
+                        model_id=model,
+                        provider=provider,
+                        prompt=messages,
+                        response=None,
+                        usage=None,
+                        latency_ms=int((time.time() - start_time) * 1000),
+                        status_code=499,
+                        error="Client disconnected",
+                        params=params,
+                        metadata=metadata,
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Failed to upsert cancelled request {request_id}: {e}")
+        raise
+
+    except Exception as exc:
+        if rate_limiter:
+            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
+            await rate_limiter.release_tokens(model, estimated_tokens)
+        # Log failed request to DB using UPSERT
+        if db_logger:
+            await db_logger.upsert_request(
                 request_id=request_id,
                 model_id=model,
-                provider="router",
+                provider=provider,
                 prompt=messages,
                 response=None,
                 usage=None,
@@ -640,6 +633,5 @@ async def chat_completions(
                 error=str(exc),
                 params=params,
                 metadata=metadata,
-                pricing=None,  # Error case - no pricing available
             )
         raise HTTPException(500, str(exc)) from exc
