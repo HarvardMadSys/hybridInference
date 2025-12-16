@@ -10,8 +10,13 @@ http://localhost:30000/metrics) for observability.
 import re
 import time
 from collections import deque
+from typing import Callable
 
 import requests
+
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 from routing.outsourcing.queue import WaitingQueueInterface
 from routing.outsourcing.request import OutsourcingRequestInfo
@@ -57,6 +62,15 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         # Index for fast lookup by request ID
         self._request_index: dict[str, OutsourcingRequestInfo] = {}
 
+        # Optional hook to refresh request snapshots before returning them
+        self._request_update_hook: Callable[[OutsourcingRequestInfo], None] | None = None
+
+    def set_request_update_hook(
+        self, hook: Callable[[OutsourcingRequestInfo], None] | None
+    ) -> None:
+        """Install a callback that can refresh request metrics in-place."""
+        self._request_update_hook = hook
+
     def add_request(self, request: OutsourcingRequestInfo) -> None:
         """Add a new request to the waiting queue.
 
@@ -84,6 +98,15 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         for req in self._waiting_queue:
             # Update queue time (in-place is fine, we return the objects)
             req.queue_time = current_time - req.arrival_time
+            if self._request_update_hook is not None:
+                try:
+                    self._request_update_hook(req)
+                except Exception as exc:  # keep queue resilient to hook failures
+                    logger.warning(
+                        "Request update hook failed for %s: %s",
+                        req.request_id,
+                        exc,
+                    )
             result.append(req)
 
         return result

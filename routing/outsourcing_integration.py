@@ -20,6 +20,7 @@ from serving.utils.logging import get_logger
 if TYPE_CHECKING:
     from routing.outsourcing.adapters import SGLangWaitingQueueAdapter
     from routing.outsourcing.decision import OutsourcingEngine
+    from routing.outsourcing.request import OutsourcingRequestInfo
     from serving.adapters.base import BaseAdapter
     from serving.schemas import ChatMessage
 
@@ -138,6 +139,9 @@ class OutsourcingRouter:
         # Track prompt texts for requests (needed for TreeCache updates)
         self._request_prompts: dict[str, str] = {}
 
+        if hasattr(self.waiting_queue, "set_request_update_hook"):
+            self.waiting_queue.set_request_update_hook(self._refresh_request_snapshot)
+
         # Statistics for monitoring
         self.stats = {
             "total_requests": 0,
@@ -148,6 +152,22 @@ class OutsourcingRouter:
             "cache_hit_requests": 0,  # Requests with any prefix cache hit
             "other_requests_outsourced": 0,  # Requests outsourced due to other requests' decisions
         }
+
+    def _refresh_request_snapshot(self, request: "OutsourcingRequestInfo") -> None:
+        """Refresh cached-token estimates before the engine reads the queue."""
+        prompt_text = self._request_prompts.get(request.request_id)
+        if not prompt_text:
+            prompt_text = request.metadata.get("prompt_text") if request.metadata else None
+        if not prompt_text:
+            return
+
+        cached_tokens = self.tree_cache.estimate_cached_tokens(
+            prompt_text, update_access_time=False
+        )
+        # Clamp cached tokens to avoid overstating remaining work
+        request.num_cached_tokens = max(
+            0, min(cached_tokens, request.num_prompt_tokens)
+        )
 
     async def chat_completion(
         self,
@@ -207,6 +227,7 @@ class OutsourcingRouter:
                 num_output_tokens=num_output_tokens,
                 num_cached_tokens=cached_tokens,  # Pass cached tokens for FLOP adjustment
                 prefill_slo_seconds=prefill_slo_seconds,
+                metadata={"prompt_text": prompt_text},
             )
         )
 
@@ -351,6 +372,7 @@ class OutsourcingRouter:
                 num_output_tokens=num_output_tokens,
                 num_cached_tokens=cached_tokens,  # Pass cached tokens
                 prefill_slo_seconds=prefill_slo_seconds,
+                metadata={"prompt_text": prompt_text},
             )
         )
 
