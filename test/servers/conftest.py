@@ -115,6 +115,7 @@ def mock_db_logger():
     logger.initialize = AsyncMock()
     logger.cleanup = AsyncMock()
     logger.log_request = AsyncMock()
+    logger.upsert_request = AsyncMock()
     logger.get_stats = AsyncMock(return_value=[])
 
     # Mock the pool and connection context managers

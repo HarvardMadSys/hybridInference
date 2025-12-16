@@ -109,7 +109,7 @@ async def tracking_client(tracking_app: FastAPI):
 @pytest.mark.asyncio
 async def test_non_streaming_logs_pricing_and_usage(tracking_client, mock_db_logger):
     client, _app = tracking_client
-    mock_db_logger.log_request.reset_mock()
+    mock_db_logger.upsert_request.reset_mock()
 
     response = await client.post(
         "/v1/chat/completions",
@@ -120,8 +120,8 @@ async def test_non_streaming_logs_pricing_and_usage(tracking_client, mock_db_log
     )
 
     assert response.status_code == 200
-    mock_db_logger.log_request.assert_awaited_once()
-    call = mock_db_logger.log_request.await_args
+    mock_db_logger.upsert_request.assert_awaited_once()
+    call = mock_db_logger.upsert_request.await_args
     kwargs = call.kwargs
     assert kwargs["provider"] == "gemini"
     assert kwargs["pricing"]["prompt"] == "0.15"
@@ -132,7 +132,7 @@ async def test_non_streaming_logs_pricing_and_usage(tracking_client, mock_db_log
 @pytest.mark.asyncio
 async def test_streaming_logs_usage(tracking_client, mock_db_logger):
     client, _app = tracking_client
-    mock_db_logger.log_request.reset_mock()
+    mock_db_logger.upsert_request.reset_mock()
 
     async with client.stream(
         "POST",
@@ -147,8 +147,8 @@ async def test_streaming_logs_usage(tracking_client, mock_db_logger):
         async for _line in resp.aiter_lines():
             pass
 
-    mock_db_logger.log_request.assert_awaited_once()
-    kwargs = mock_db_logger.log_request.await_args.kwargs
+    mock_db_logger.upsert_request.assert_awaited_once()
+    kwargs = mock_db_logger.upsert_request.await_args.kwargs
     assert kwargs["usage"]["completion_tokens"] == 30
     assert kwargs["usage"]["prompt_tokens"] == 120
 
