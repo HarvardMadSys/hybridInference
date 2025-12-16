@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from routing.tree_cache import TreeCache, create_tree_cache
+from routing.outsourcing.decision import OutsourcingDecision
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -138,6 +139,10 @@ class OutsourcingRouter:
 
         # Track prompt texts for requests (needed for TreeCache updates)
         self._request_prompts: dict[str, str] = {}
+        # Track full payloads so we can re-dispatch requests if needed
+        self._request_payloads: dict[str, dict[str, Any]] = {}
+        # Cache the latest SGLang metrics to avoid duplicate fetches where possible
+        self._last_sglang_metrics: dict[str, Any] = {}
 
         if hasattr(self.waiting_queue, "set_request_update_hook"):
             self.waiting_queue.set_request_update_hook(self._refresh_request_snapshot)
@@ -167,6 +172,36 @@ class OutsourcingRouter:
         # Clamp cached tokens to avoid overstating remaining work
         request.num_cached_tokens = max(
             0, min(cached_tokens, request.num_prompt_tokens)
+        )
+
+    def _assess_sglang_capacity(self) -> tuple[bool, float | None]:
+        """Check SGLang queue depth and decide if we should force local dispatch."""
+        metrics = self.waiting_queue.get_metrics(safe=True)
+        if metrics:
+            self._last_sglang_metrics = metrics
+
+        queue_raw = (metrics or {}).get("request_queue")
+        try:
+            queue_depth = float(queue_raw)
+        except (TypeError, ValueError):
+            queue_depth = None
+
+        if queue_depth is not None and queue_depth < 1:
+            return True, queue_depth
+        return False, queue_depth
+
+    def _make_forced_local_decision(self, queue_depth: float | None) -> OutsourcingDecision:
+        """Construct a placeholder decision when we skip outsourcing due to idle SGLang."""
+        depth_str = "unknown" if queue_depth is None else f"{queue_depth:.2f}"
+        return OutsourcingDecision(
+            should_outsource=False,
+            requests_to_outsource=[],
+            requests_to_keep=[],
+            reason=f"SGLang idle (request_queue={depth_str}), dispatching shadow request locally",
+            metrics={
+                "forced_local": True,
+                "sglang_request_queue": queue_depth,
+            },
         )
 
     async def chat_completion(
@@ -215,6 +250,12 @@ class OutsourcingRouter:
 
         # Store prompt text for potential TreeCache update later
         self._request_prompts[request_id] = prompt_text
+        self._request_payloads[request_id] = {
+            "messages": messages_dict,
+            "params": dict(params),
+            "prefill_slo_seconds": prefill_slo_seconds,
+            "stream": False,
+        }
 
         # Add request to waiting queue for outsourcing consideration
         from routing.outsourcing import OutsourcingRequestInfo
@@ -233,7 +274,16 @@ class OutsourcingRouter:
 
         # Make outsourcing decision
         current_time = time.time()
-        decision = self.outsourcing_engine.should_outsource(current_time)
+        force_local, queue_depth = self._assess_sglang_capacity()
+        if force_local:
+            decision = self._make_forced_local_decision(queue_depth)
+            logger.info(
+                "[Outsourcing] SGLang idle (queue_depth=%s); forcing local dispatch for %s",
+                f"{queue_depth:.2f}" if queue_depth is not None else "unknown",
+                request_id,
+            )
+        else:
+            decision = self.outsourcing_engine.should_outsource(current_time)
 
         # Always apply outsourcing decision to handle ALL requests marked for outsourcing
         # This ensures requests other than the current one are also properly handled
@@ -262,10 +312,19 @@ class OutsourcingRouter:
                 if kept_id in self._request_prompts:
                     self.tree_cache.insert(self._request_prompts[kept_id])
                     del self._request_prompts[kept_id]
+                self._request_payloads.pop(kept_id, None)
 
             # Clean up prompt texts for outsourced requests (they won't update local cache)
             for req in outsourced_requests:
                 self._request_prompts.pop(req.request_id, None)
+                self._request_payloads.pop(req.request_id, None)
+
+            # Iterative mode removes requests upstream; ensure bookkeeping is cleared
+            outsourced_ids = {req.request_id for req in outsourced_requests}
+            for req_id in decision.requests_to_outsource:
+                if req_id not in outsourced_ids:
+                    self._request_prompts.pop(req_id, None)
+                    self._request_payloads.pop(req_id, None)
 
         # Determine routing for THIS request
         if decision.should_outsource and request_id in decision.requests_to_outsource:
@@ -292,6 +351,7 @@ class OutsourcingRouter:
                 self.waiting_queue.remove_requests({request_id})
                 self.tree_cache.insert(prompt_text)
                 self._request_prompts.pop(request_id, None)
+                self._request_payloads.pop(request_id, None)
 
             logger.info(
                 f"[Outsourcing] Request {request_id} kept local. "
@@ -306,7 +366,9 @@ class OutsourcingRouter:
         response["_outsourcing"] = {
             "decision": routing_decision,
             "request_id": request_id,
-            "reason": decision.reason if decision.should_outsource else "no_slo_violations",
+            "reason": (
+                decision.reason if decision.should_outsource else decision.reason or "no_slo_violations"
+            ),
             "queue_length": self.waiting_queue.get_length(),
             "model_id": self.model_id,
             "cached_tokens": cached_tokens,
@@ -360,6 +422,12 @@ class OutsourcingRouter:
 
         # Store prompt text for potential TreeCache update later
         self._request_prompts[request_id] = prompt_text
+        self._request_payloads[request_id] = {
+            "messages": messages_dict,
+            "params": dict(params),
+            "prefill_slo_seconds": prefill_slo_seconds,
+            "stream": True,
+        }
 
         # Add to queue
         from routing.outsourcing import OutsourcingRequestInfo
@@ -378,7 +446,16 @@ class OutsourcingRouter:
 
         # Make outsourcing decision
         current_time = time.time()
-        decision = self.outsourcing_engine.should_outsource(current_time)
+        force_local, queue_depth = self._assess_sglang_capacity()
+        if force_local:
+            decision = self._make_forced_local_decision(queue_depth)
+            logger.info(
+                "[Outsourcing Stream] SGLang idle (queue_depth=%s); forcing local dispatch for %s",
+                f"{queue_depth:.2f}" if queue_depth is not None else "unknown",
+                request_id,
+            )
+        else:
+            decision = self.outsourcing_engine.should_outsource(current_time)
 
         # Always apply outsourcing decision to handle ALL requests marked for outsourcing
         if decision.should_outsource:
@@ -401,10 +478,18 @@ class OutsourcingRouter:
                 if kept_id in self._request_prompts:
                     self.tree_cache.insert(self._request_prompts[kept_id])
                     del self._request_prompts[kept_id]
+                self._request_payloads.pop(kept_id, None)
 
             # Clean up outsourced request prompts
             for req in outsourced_requests:
                 self._request_prompts.pop(req.request_id, None)
+                self._request_payloads.pop(req.request_id, None)
+
+            outsourced_ids = {req.request_id for req in outsourced_requests}
+            for req_id in decision.requests_to_outsource:
+                if req_id not in outsourced_ids:
+                    self._request_prompts.pop(req_id, None)
+                    self._request_payloads.pop(req_id, None)
 
         # Determine routing for THIS request
         if decision.should_outsource and request_id in decision.requests_to_outsource:
@@ -420,6 +505,7 @@ class OutsourcingRouter:
                 self.waiting_queue.remove_requests({request_id})
                 self.tree_cache.insert(prompt_text)
                 self._request_prompts.pop(request_id, None)
+                self._request_payloads.pop(request_id, None)
 
             logger.info(
                 f"[Outsourcing Stream] Request {request_id} kept local, "
