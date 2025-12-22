@@ -19,13 +19,22 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def _clean_message(message: dict[str, Any]) -> dict[str, Any]:
-    """Remove None values from message dict to ensure API compatibility.
+def _normalize_text_content(content: Any) -> Any:
+    """Normalize structured content blocks into plain text when needed."""
+    if not isinstance(content, list):
+        return content
 
-    Some APIs (like Featherless) reject messages with null/None fields,
-    so we strip them before sending.
-    """
-    return {k: v for k, v in message.items() if v is not None}
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append(part)
+            continue
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(p for p in parts if p)
 
 
 class OpenAICompatAdapter(BaseAdapter):
@@ -53,6 +62,14 @@ class OpenAICompatAdapter(BaseAdapter):
         model_id = config.provider_model_id or config.id
         self.processor = get_processor(model_id)
         logger.debug(f"[OpenAICompat] Using processor: {self.processor.__class__.__name__}")
+
+    def _clean_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Remove None values and normalize text content for API compatibility."""
+        cleaned = {k: v for k, v in message.items() if v is not None}
+        if "image" not in (self.config.input_modalities or []):
+            if "content" in cleaned:
+                cleaned["content"] = _normalize_text_content(cleaned["content"])
+        return cleaned
 
     def _build_headers(self) -> dict[str, str]:
         """Build HTTP headers for request."""
@@ -108,7 +125,7 @@ class OpenAICompatAdapter(BaseAdapter):
         validated = self.validate_params(params)
 
         # Clean messages to remove None fields (some APIs reject them)
-        cleaned_messages = [_clean_message(msg) for msg in messages]
+        cleaned_messages = [self._clean_message(msg) for msg in messages]
 
         # Build request payload
         payload = {
@@ -163,7 +180,7 @@ class OpenAICompatAdapter(BaseAdapter):
         validated = self.validate_params(params)
 
         # Clean messages to remove None fields (some APIs reject them)
-        cleaned_messages = [_clean_message(msg) for msg in messages]
+        cleaned_messages = [self._clean_message(msg) for msg in messages]
 
         payload = {
             "model": self._get_model_identifier(),
