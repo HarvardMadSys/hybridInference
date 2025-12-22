@@ -723,37 +723,6 @@ async def chat_completions(
         return response
 
     except Exception as exc:
-        # Move db_logger.log_request() out of the stream_generator
-        # and into a background task that runs after the response is sent.
-        # Try to get actual provider from context even in error case
-        from serving.utils import context as req_ctx
-
-        ctx = req_ctx.get()
-        provider_for_error = ctx.get("provider", "router") if ctx else "router"
-
-        if db_logger:
-            _schedule_db_log_task(
-                db_logger,
-                request_id,
-                {
-                    "request_id": request_id,
-                    "model_id": model,
-                    "provider": provider_for_error,
-                    "prompt": messages,
-                    "response": None,
-                    "usage": None,
-                    "latency_ms": int((time.time() - start_time) * 1000),
-                    "status_code": 500,
-                    "error": str(exc),
-                    "params": params,
-                    "metadata": metadata,
-                    "pricing": None,  # Error case - no pricing available
-                },
-            )
-        if rate_limiter:
-            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-            await rate_limiter.release_tokens(model, estimated_tokens)
-
         # Best-effort extraction of status code from exception
         # Different HTTP client libraries store status codes in different places:
         # - OpenAI/Anthropic SDK: exc.status_code
@@ -782,6 +751,37 @@ async def chat_completions(
         if exc_status_code is None:
             exc_status_code = 500
 
+        # Move db_logger.log_request() out of the stream_generator
+        # and into a background task that runs after the response is sent.
+        # Try to get actual provider from context even in error case
+        from serving.utils import context as req_ctx
+
+        ctx = req_ctx.get()
+        provider_for_error = ctx.get("provider", "router") if ctx else "router"
+
+        if db_logger:
+            _schedule_db_log_task(
+                db_logger,
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": provider_for_error,
+                    "prompt": messages,
+                    "response": None,
+                    "usage": None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": exc_status_code,
+                    "error": str(exc),
+                    "params": params,
+                    "metadata": metadata,
+                    "pricing": None,  # Error case - no pricing available
+                },
+            )
+        if rate_limiter:
+            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
+            await rate_limiter.release_tokens(model, estimated_tokens)
+
         # Record error status code
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label(model),
@@ -789,4 +789,4 @@ async def chat_completions(
             status_code=str(exc_status_code),
         ).inc()
 
-        raise HTTPException(500, str(exc)) from exc
+        raise HTTPException(exc_status_code, str(exc)) from exc
