@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
@@ -26,7 +25,6 @@ if TYPE_CHECKING:
 from serving.stream import done_sentinel, make_final_usage_chunk
 
 from .base import BaseAdapter, UsageInfo
-
 
 # Supported image MIME types for Claude (canonical types)
 SUPPORTED_IMAGE_TYPES = {
@@ -90,11 +88,8 @@ class ClaudeAdapter(BaseAdapter):
         # Convert OpenAI image_url to Claude image format
         if block_type == "image_url":
             image_url_obj = block.get("image_url", {})
-            if isinstance(image_url_obj, str):
-                # Handle case where image_url is just a string
-                url = image_url_obj
-            else:
-                url = image_url_obj.get("url", "")
+            # Handle case where image_url is just a string or a dict with 'url' key
+            url = image_url_obj if isinstance(image_url_obj, str) else image_url_obj.get("url", "")
 
             if not url:
                 return {"type": "text", "text": "[Invalid image: no URL provided]"}
@@ -104,8 +99,7 @@ class ClaudeAdapter(BaseAdapter):
                 return self._parse_data_url(url)
             else:
                 # It's a regular URL - Claude supports URL source type
-                # Try to infer media type from URL
-                media_type = self._infer_media_type_from_url(url)
+                # Note: Claude API infers media type from URL, no need to specify
                 return {
                     "type": "image",
                     "source": {
@@ -159,10 +153,7 @@ class ClaudeAdapter(BaseAdapter):
         is_base64 = ";base64" in metadata.lower()
 
         # Extract the MIME type (first part before any semicolon, or the whole thing if no params)
-        if ";" in metadata:
-            media_type = metadata.split(";")[0].strip()
-        else:
-            media_type = metadata.strip()
+        media_type = metadata.split(";")[0].strip() if ";" in metadata else metadata.strip()
 
         # Default to image/jpeg if no media type specified
         if not media_type:
@@ -224,9 +215,7 @@ class ClaudeAdapter(BaseAdapter):
         # Default to JPEG if unknown
         return "image/jpeg"
 
-    def _convert_content_blocks(
-        self, content: str | list[Any] | Any
-    ) -> list[dict[str, Any]]:
+    def _convert_content_blocks(self, content: str | list[Any] | Any) -> list[dict[str, Any]]:
         """Convert content from OpenAI format to Claude format.
 
         Args:
