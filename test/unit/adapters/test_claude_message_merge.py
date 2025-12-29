@@ -221,3 +221,126 @@ def test_text_before_tool_use_in_assistant_messages(claude_adapter):
         f"Text blocks must come before tool_use blocks. "
         f"Last text at index {max_text_index}, first tool at {min_tool_index}"
     )
+
+
+def test_tool_result_follows_tool_use_with_interleaved_messages(claude_adapter):
+    """Test that tool_result immediately follows tool_use even with interleaved messages.
+
+    This tests the scenario where the client sends:
+    - assistant (with tool_use)
+    - user (text only, no tool_result)
+    - assistant (text only)
+    - tool (tool_result)
+
+    Claude API requires tool_result to immediately follow tool_use.
+    The adapter should reorder messages to satisfy this constraint.
+    """
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {
+            "role": "assistant",
+            "content": "I'll use a tool",
+            "tool_calls": [
+                {
+                    "id": "toolu_123",
+                    "type": "function",
+                    "function": {"name": "get_info", "arguments": '{"query": "test"}'},
+                }
+            ],
+        },
+        # User message without tool_result (interleaved)
+        {"role": "user", "content": "Additional context"},
+        # Another assistant message
+        {"role": "assistant", "content": "Processing..."},
+        # Tool result comes later
+        {"role": "tool", "content": "Tool output here", "tool_call_id": "toolu_123"},
+    ]
+
+    converted = claude_adapter._convert_messages(messages)
+
+    # Find the assistant message with tool_use
+    tool_use_msg_idx = None
+    for i, msg in enumerate(converted):
+        if msg["role"] == "assistant":
+            for block in msg["content"]:
+                if block.get("type") == "tool_use":
+                    tool_use_msg_idx = i
+                    break
+        if tool_use_msg_idx is not None:
+            break
+
+    assert tool_use_msg_idx is not None, "Should have an assistant message with tool_use"
+
+    # The next message must be a user message containing the tool_result
+    next_msg = converted[tool_use_msg_idx + 1]
+    assert next_msg["role"] == "user", (
+        f"Message after tool_use should be user, got {next_msg['role']}"
+    )
+
+    # Check that tool_result is in the next message
+    tool_result_found = False
+    for block in next_msg["content"]:
+        if block.get("type") == "tool_result":
+            assert block.get("tool_use_id") == "toolu_123", "tool_result should match tool_use id"
+            tool_result_found = True
+            break
+
+    assert tool_result_found, "tool_result must be in the message immediately after tool_use"
+
+
+def test_multiple_tool_uses_with_interleaved_messages(claude_adapter):
+    """Test handling of multiple tool_uses with interleaved non-tool messages.
+
+    Scenario:
+    - assistant (tool_use A, tool_use B)
+    - user (text)
+    - tool (result A)
+    - tool (result B)
+
+    Both tool_results should be placed immediately after the tool_uses.
+    """
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {
+            "role": "assistant",
+            "content": "Using two tools",
+            "tool_calls": [
+                {
+                    "id": "tool_a",
+                    "type": "function",
+                    "function": {"name": "tool_a", "arguments": "{}"},
+                },
+                {
+                    "id": "tool_b",
+                    "type": "function",
+                    "function": {"name": "tool_b", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "user", "content": "Some user text"},
+        {"role": "tool", "content": "Result A", "tool_call_id": "tool_a"},
+        {"role": "tool", "content": "Result B", "tool_call_id": "tool_b"},
+    ]
+
+    converted = claude_adapter._convert_messages(messages)
+
+    # Find the assistant message with tool_uses
+    tool_use_msg_idx = None
+    for i, msg in enumerate(converted):
+        if msg["role"] == "assistant":
+            tool_uses = [b for b in msg["content"] if b.get("type") == "tool_use"]
+            if tool_uses:
+                tool_use_msg_idx = i
+                break
+
+    assert tool_use_msg_idx is not None, "Should have an assistant message with tool_uses"
+
+    # The next message must contain both tool_results
+    next_msg = converted[tool_use_msg_idx + 1]
+    assert next_msg["role"] == "user", "Message after tool_uses should be user"
+
+    tool_results = [b for b in next_msg["content"] if b.get("type") == "tool_result"]
+    tool_result_ids = {b.get("tool_use_id") for b in tool_results}
+
+    assert "tool_a" in tool_result_ids, "Should have tool_result for tool_a"
+    assert "tool_b" in tool_result_ids, "Should have tool_result for tool_b"

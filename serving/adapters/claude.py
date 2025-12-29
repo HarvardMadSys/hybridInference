@@ -814,12 +814,17 @@ class ClaudeAdapter(BaseAdapter):
         Claude doesn't use a separate 'system' role in messages array.
         System messages should be extracted and passed as 'system' parameter.
 
-        IMPORTANT: Claude API requires alternating user/assistant roles.
-        This method merges consecutive messages with the same role.
+        IMPORTANT: Claude API requires:
+        1. Alternating user/assistant roles
+        2. Each tool_use block must have a corresponding tool_result in the NEXT message
 
-        This method also converts OpenAI image_url blocks to Claude image blocks.
+        This method:
+        - Merges consecutive messages with the same role
+        - Ensures tool_result blocks immediately follow their corresponding tool_use
+        - Converts OpenAI image_url blocks to Claude image blocks
         """
-        converted: list[dict[str, Any]] = []
+        # Phase 1: Convert all messages to Claude format, tracking tool_use IDs
+        raw_converted: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content")
@@ -830,14 +835,14 @@ class ClaudeAdapter(BaseAdapter):
 
             # Map user role and normalize content to Claude blocks
             if role == "user":
-                # Use _convert_content_blocks to handle image_url conversion
                 content_blocks = self._convert_content_blocks(content)
-
-                # Merge with previous user message if exists
-                if converted and converted[-1]["role"] == "user":
-                    converted[-1]["content"].extend(content_blocks)
-                else:
-                    converted.append({"role": "user", "content": content_blocks})
+                raw_converted.append(
+                    {
+                        "role": "user",
+                        "content": content_blocks,
+                        "_type": "user",
+                    }
+                )
 
             # Assistant role: either tool_calls (OpenAI) -> tool_use (Claude), or plain text
             elif role == "assistant":
@@ -845,21 +850,19 @@ class ClaudeAdapter(BaseAdapter):
                 tool_use_blocks: list[dict[str, Any]] = []
 
                 # Preserve assistant text content if present
-                # Use _convert_content_blocks for consistency
                 if isinstance(content, str) and content.strip():
                     text_blocks.append({"type": "text", "text": content})
                 elif isinstance(content, list):
-                    # Convert structured blocks (handles text and potential images)
                     for b in content:
                         converted_block = self._convert_content_block(b)
                         text_blocks.append(converted_block)
                 elif content:
-                    # Fallback: dump unknown content to text
                     with suppress(Exception):
                         text_blocks.append({"type": "text", "text": json.dumps(content)})
 
                 # Append tool_use blocks if tool_calls provided
                 tool_calls = msg.get("tool_calls")
+                tool_use_ids: list[str] = []
                 if isinstance(tool_calls, list) and tool_calls:
                     for tc in tool_calls:
                         func = (tc or {}).get("function", {})
@@ -869,33 +872,31 @@ class ClaudeAdapter(BaseAdapter):
                             args_obj = json.loads(args_raw)
                         except Exception:
                             args_obj = {}
+                        tool_id = tc.get("id")
                         tool_use_blocks.append(
                             {
                                 "type": "tool_use",
-                                "id": tc.get("id"),
+                                "id": tool_id,
                                 "name": name,
                                 "input": args_obj,
                             }
                         )
+                        if tool_id:
+                            tool_use_ids.append(tool_id)
 
                 # IMPORTANT: Claude requires text blocks BEFORE tool_use blocks
-                # Combine in the correct order: text first, then tool_use
                 blocks = text_blocks + tool_use_blocks
 
                 if blocks:
-                    # Merge with previous assistant message if exists
-                    if converted and converted[-1]["role"] == "assistant":
-                        # When merging, maintain the order: existing text, new text, existing tools, new tools
-                        existing_content = converted[-1]["content"]
-                        existing_text = [b for b in existing_content if b.get("type") != "tool_use"]
-                        existing_tools = [
-                            b for b in existing_content if b.get("type") == "tool_use"
-                        ]
-                        converted[-1]["content"] = (
-                            existing_text + text_blocks + existing_tools + tool_use_blocks
-                        )
-                    else:
-                        converted.append({"role": "assistant", "content": blocks})
+                    raw_converted.append(
+                        {
+                            "role": "assistant",
+                            "content": blocks,
+                            "_type": "assistant",
+                            "_tool_use_ids": tool_use_ids,
+                        }
+                    )
+
             elif role == "tool":
                 # Convert OpenAI-style tool result to Claude's tool_result block.
                 tool_use_id = msg.get("tool_call_id") or msg.get("id")
@@ -907,7 +908,6 @@ class ClaudeAdapter(BaseAdapter):
                 if isinstance(content, str):
                     tool_result_block["content"] = [{"type": "text", "text": content}]
                 elif isinstance(content, list):
-                    # Convert image_url blocks in tool results to Claude format
                     converted_tool_content = []
                     for item in content:
                         converted_item = self._convert_content_block(item)
@@ -918,16 +918,130 @@ class ClaudeAdapter(BaseAdapter):
                         {"type": "text", "text": json.dumps(content or "")}
                     ]
 
-                # Merge with previous user message if exists (tool results are sent as user messages)
+                raw_converted.append(
+                    {
+                        "role": "user",
+                        "content": [tool_result_block],
+                        "_type": "tool_result",
+                        "_tool_use_id": tool_use_id,
+                    }
+                )
+
+        # Phase 2: Reorder to ensure tool_result immediately follows tool_use
+        # Build a map of tool_use_id -> tool_result for quick lookup
+        tool_result_map: dict[str, dict[str, Any]] = {}
+        for msg in raw_converted:
+            if msg.get("_type") == "tool_result":
+                tool_use_id = msg.get("_tool_use_id")
+                if tool_use_id:
+                    tool_result_map[tool_use_id] = msg
+
+        # Phase 3: Build final message list with correct ordering
+        converted: list[dict[str, Any]] = []
+        pending_tool_use_ids: list[str] = []  # Track tool_use IDs waiting for results
+        used_tool_result_ids: set[str] = set()  # Track which tool_results we've already inserted
+
+        for msg in raw_converted:
+            msg_type = msg.get("_type")
+            role = msg["role"]
+            content = msg["content"]
+
+            if msg_type == "tool_result":
+                # Skip if already inserted
+                tool_use_id = msg.get("_tool_use_id")
+                if tool_use_id in used_tool_result_ids:
+                    continue
+                # If not yet inserted, it will be handled when we encounter a non-assistant message
+                # after the corresponding tool_use
+                # For now, just merge with previous user message if exists
                 if converted and converted[-1]["role"] == "user":
-                    converted[-1]["content"].append(tool_result_block)
+                    converted[-1]["content"].extend(content)
                 else:
-                    converted.append(
-                        {
-                            "role": "user",
-                            "content": [tool_result_block],
-                        }
-                    )
+                    converted.append({"role": "user", "content": list(content)})
+                used_tool_result_ids.add(tool_use_id)
+                continue
+
+            if role == "assistant":
+                tool_use_ids = msg.get("_tool_use_ids", [])
+
+                # Merge with previous assistant message if exists
+                if converted and converted[-1]["role"] == "assistant":
+                    existing_content = converted[-1]["content"]
+                    existing_text = [b for b in existing_content if b.get("type") != "tool_use"]
+                    existing_tools = [b for b in existing_content if b.get("type") == "tool_use"]
+                    new_text = [b for b in content if b.get("type") != "tool_use"]
+                    new_tools = [b for b in content if b.get("type") == "tool_use"]
+                    # Text before tool_use: existing_text + new_text + existing_tools + new_tools
+                    converted[-1]["content"] = existing_text + new_text + existing_tools + new_tools
+                    pending_tool_use_ids.extend(tool_use_ids)
+                else:
+                    # Before adding a new assistant message, check if we need to insert tool_results
+                    # for any pending tool_use IDs
+                    if pending_tool_use_ids:
+                        tool_result_blocks = []
+                        for tid in pending_tool_use_ids:
+                            if tid in tool_result_map and tid not in used_tool_result_ids:
+                                result_msg = tool_result_map[tid]
+                                tool_result_blocks.extend(result_msg["content"])
+                                used_tool_result_ids.add(tid)
+
+                        if tool_result_blocks:
+                            if converted and converted[-1]["role"] == "user":
+                                converted[-1]["content"].extend(tool_result_blocks)
+                            else:
+                                converted.append({"role": "user", "content": tool_result_blocks})
+
+                        pending_tool_use_ids.clear()
+
+                    converted.append({"role": "assistant", "content": list(content)})
+                    pending_tool_use_ids.extend(tool_use_ids)
+
+            elif role == "user":
+                # Before adding user content, insert any pending tool_results
+                if pending_tool_use_ids:
+                    tool_result_blocks = []
+                    for tid in pending_tool_use_ids:
+                        if tid in tool_result_map and tid not in used_tool_result_ids:
+                            result_msg = tool_result_map[tid]
+                            tool_result_blocks.extend(result_msg["content"])
+                            used_tool_result_ids.add(tid)
+
+                    if tool_result_blocks:
+                        # Insert tool_results first, then user content
+                        if converted and converted[-1]["role"] == "user":
+                            converted[-1]["content"].extend(tool_result_blocks)
+                            converted[-1]["content"].extend(content)
+                        else:
+                            converted.append(
+                                {"role": "user", "content": tool_result_blocks + list(content)}
+                            )
+                        pending_tool_use_ids.clear()
+                    else:
+                        pending_tool_use_ids.clear()
+                        if converted and converted[-1]["role"] == "user":
+                            converted[-1]["content"].extend(content)
+                        else:
+                            converted.append({"role": "user", "content": list(content)})
+                else:
+                    if converted and converted[-1]["role"] == "user":
+                        converted[-1]["content"].extend(content)
+                    else:
+                        converted.append({"role": "user", "content": list(content)})
+
+        # Handle any remaining pending tool_results at the end
+        if pending_tool_use_ids:
+            tool_result_blocks = []
+            for tid in pending_tool_use_ids:
+                if tid in tool_result_map and tid not in used_tool_result_ids:
+                    result_msg = tool_result_map[tid]
+                    tool_result_blocks.extend(result_msg["content"])
+                    used_tool_result_ids.add(tid)
+
+            if tool_result_blocks:
+                if converted and converted[-1]["role"] == "user":
+                    converted[-1]["content"].extend(tool_result_blocks)
+                else:
+                    converted.append({"role": "user", "content": tool_result_blocks})
 
         return converted
 
