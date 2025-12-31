@@ -36,6 +36,71 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
     response_format when declared supported by the model configuration.
     """
 
+    def _fix_tool_call_message_order(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Fix message ordering for OpenAI API compatibility.
+
+        Some clients (e.g., Codex CLI) send interleaved assistant messages where a
+        preamble/thinking message appears between the tool_calls assistant message
+        and the corresponding tool response. OpenAI API requires that tool messages
+        immediately follow the assistant message containing tool_calls.
+
+        This function merges consecutive assistant messages where the first has
+        tool_calls and the second has only content (preamble text).
+
+        Example problematic sequence:
+            assistant (tool_calls) -> assistant (content only) -> tool
+        Fixed sequence:
+            assistant (tool_calls + content) -> tool
+        """
+        from serving.utils.logging import get_logger
+
+        logger = get_logger(__name__)
+
+        if not messages or len(messages) < 2:
+            return messages
+
+        result: list[dict[str, Any]] = []
+        i = 0
+
+        while i < len(messages):
+            msg = messages[i]
+
+            # Check if this is an assistant message with tool_calls
+            if msg.get("role") == "assistant" and msg.get("tool_calls") and i + 1 < len(messages):
+                next_msg = messages[i + 1]
+
+                # Check if next message is assistant with content but no tool_calls
+                # (this is the preamble that needs to be merged)
+                if (
+                    next_msg.get("role") == "assistant"
+                    and not next_msg.get("tool_calls")
+                    and next_msg.get("content")
+                ):
+                    # Merge: combine content from both messages
+                    merged_msg = msg.copy()
+                    existing_content = msg.get("content") or ""
+                    preamble_content = next_msg.get("content") or ""
+
+                    # Append preamble content to existing content
+                    if existing_content and preamble_content:
+                        merged_msg["content"] = f"{existing_content}\n{preamble_content}"
+                    elif preamble_content:
+                        merged_msg["content"] = preamble_content
+                    # else: keep existing content as is
+
+                    result.append(merged_msg)
+                    logger.debug(
+                        "[Azure OpenAI] Merged consecutive assistant messages: "
+                        "tool_calls msg + preamble content"
+                    )
+                    i += 2  # Skip both messages
+                    continue
+
+            result.append(msg)
+            i += 1
+
+        return result
+
     async def chat_completion(
         self, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
@@ -56,13 +121,16 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         logger = get_logger(__name__)
 
+        # Fix message ordering for OpenAI API compatibility
+        fixed_messages = self._fix_tool_call_message_order(messages)
+
         # Build Azure OpenAI endpoint with api-version
         base_url = self.config.base_url.rstrip("/")
         endpoint = f"{base_url}/chat/completions?api-version=2024-12-01-preview"
 
         # Build payload - Azure OpenAI does not require 'model' field (determined by deployment)
         payload: dict[str, Any] = {
-            "messages": messages,
+            "messages": fixed_messages,
             **validated_params,
         }
 
@@ -180,13 +248,16 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         logger = get_logger(__name__)
 
+        # Fix message ordering for OpenAI API compatibility
+        fixed_messages = self._fix_tool_call_message_order(messages)
+
         # Build Azure OpenAI endpoint with api-version
         base_url = self.config.base_url.rstrip("/")
         endpoint = f"{base_url}/chat/completions?api-version=2024-12-01-preview"
 
         # Build payload - Azure OpenAI does not require 'model' field (determined by deployment)
         payload: dict[str, Any] = {
-            "messages": messages,
+            "messages": fixed_messages,
             "stream": True,
             **validated_params,
         }
