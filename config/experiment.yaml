@@ -43,7 +43,7 @@ strategies:
   # - name: two_step
   #   enabled: false
 
-# Dataset configuration - SINGLE MODEL ONLY
+# Dataset configuration
 dataset:
   path: "data/community_logs.csv"
   timestamp_unit: "seconds"    # Timestamp unit in CSV
@@ -51,16 +51,41 @@ dataset:
   # Filter to only load requests for this model (set to null for all models)
   filter_model: null           # Options: specific model name, or null for all models
 
-  # Mapping: Model names to provider IDs
-  model_mapping:
-    "llama-3.3-70b-instruct": "openai-chatgpt"
-    "llama-4-scout": "openai-chatgpt"
-    "llama-4-maverick": "openai-chatgpt"
-    "gemini-2.5-flash": "openai-chatgpt"
-    "gemini-2.5-flash-preview-09-2025": "openai-chatgpt"
-    "glm-4.5": "openai-chatgpt"
-    "glm-4.6": "openai-chatgpt"
-    "deepseek-chat": "openai-chatgpt"
+# Multi-model API pricing (per 1M tokens)
+# Used when calculating API cost for different models
+model_pricing:
+  # Llama models (Meta) - free tier via Llama API
+  llama-3.3-70b-instruct:
+    input: 0.0
+    output: 0.0
+  llama-4-scout:
+    input: 0.0
+    output: 0.0
+  llama-4-maverick:
+    input: 0.0
+    output: 0.0
+  # Gemini models (Google)
+  gemini-2.5-flash:
+    input: 0.15
+    output: 0.60
+  gemini-2.5-flash-preview-09-2025:
+    input: 0.15
+    output: 0.60
+  # GLM models (Zhipu)
+  glm-4.5:
+    input: 0.60
+    output: 2.20
+  glm-4.6:
+    input: 0.60
+    output: 2.20
+  # DeepSeek models
+  deepseek-chat:
+    input: 0.28
+    output: 1.10
+  # Default fallback for unknown models
+  default:
+    input: 1.50
+    output: 2.00
 
 # Output settings
 output:

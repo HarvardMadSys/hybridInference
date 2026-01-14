@@ -7,20 +7,47 @@ from experiment.data.schema import ProviderConfig, Request
 logger = logging.getLogger(__name__)
 
 
+# Default model pricing (per 1M tokens) for multi-model scenarios
+DEFAULT_MODEL_PRICING = {
+    # Llama models (Meta) - free tier
+    "llama-3.3-70b-instruct": {"input": 0.0, "output": 0.0},
+    "llama-4-scout": {"input": 0.0, "output": 0.0},
+    "llama-4-maverick": {"input": 0.0, "output": 0.0},
+    # Gemini models (Google)
+    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
+    "gemini-2.5-flash-preview-09-2025": {"input": 0.15, "output": 0.60},
+    # GLM models (Zhipu)
+    "glm-4.5": {"input": 0.60, "output": 2.20},
+    "glm-4.6": {"input": 0.60, "output": 2.20},
+    # DeepSeek models
+    "deepseek-chat": {"input": 0.28, "output": 1.10},
+    # Default fallback
+    "default": {"input": 1.50, "output": 2.00},
+}
+
+
 class CostCalculator:
     """Calculate request costs for different providers.
 
     Attributes:
         providers: Dictionary mapping provider ID to ProviderConfig
+        model_pricing: Dictionary mapping model name to pricing (per 1M tokens)
     """
 
-    def __init__(self, providers: dict[str, ProviderConfig]):
+    def __init__(
+        self,
+        providers: dict[str, ProviderConfig],
+        model_pricing: dict[str, dict[str, float]] | None = None,
+    ):
         """Initialize cost calculator.
 
         Args:
             providers: Dictionary of provider configurations
+            model_pricing: Optional per-model pricing (per 1M tokens).
+                          Format: {"model_name": {"input": price, "output": price}}
         """
         self.providers = providers
+        self.model_pricing = model_pricing or DEFAULT_MODEL_PRICING
 
     def calculate_api_cost(self, request: Request, provider_name: str) -> float:
         """Calculate API cost for a request.
@@ -99,3 +126,39 @@ class CostCalculator:
         costs = [(name, self.calculate_api_cost(request, name)) for name, _ in api_providers]
 
         return min(costs, key=lambda x: x[1])
+
+    def calculate_cost_by_model(self, request: Request) -> float:
+        """Calculate API cost based on request's model.
+
+        Uses per-model pricing from model_pricing dictionary.
+        Falls back to 'default' pricing if model not found.
+
+        Args:
+            request: The request to price (must have model field)
+
+        Returns:
+            Cost in dollars
+        """
+        model = request.model or "default"
+        pricing = self.model_pricing.get(model, self.model_pricing.get("default", {}))
+
+        # Pricing is per 1M tokens, convert to actual cost
+        input_price_per_1m = pricing.get("input", 1.5)
+        output_price_per_1m = pricing.get("output", 2.0)
+
+        input_cost = request.request_tokens / 1_000_000.0 * input_price_per_1m
+        output_cost = request.response_tokens / 1_000_000.0 * output_price_per_1m
+
+        return input_cost + output_cost
+
+    def get_model_pricing(self, model: str) -> tuple[float, float]:
+        """Get pricing for a specific model.
+
+        Args:
+            model: Model name
+
+        Returns:
+            Tuple of (input_price_per_1m, output_price_per_1m)
+        """
+        pricing = self.model_pricing.get(model, self.model_pricing.get("default", {}))
+        return (pricing.get("input", 1.5), pricing.get("output", 2.0))

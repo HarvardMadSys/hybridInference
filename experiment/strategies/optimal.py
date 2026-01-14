@@ -35,6 +35,7 @@ class OptimalStrategy(RoutingStrategy):
         super().__init__(*args, **kwargs)
         self.assignments: dict[int, str] = {}
 
+    @property
     def name(self) -> str:
         """Return strategy name.
 
@@ -62,9 +63,10 @@ class OptimalStrategy(RoutingStrategy):
         days = np.array([r.day for r in requests])
         request_tokens = np.array([r.request_tokens for r in requests])
         response_tokens = np.array([r.response_tokens for r in requests])
+        models = [r.model for r in requests]
 
-        # Vectorized cost calculation
-        costs = self._calculate_costs_vectorized(request_tokens, response_tokens)
+        # Calculate costs (supports multi-model pricing)
+        costs = self._calculate_costs_vectorized(request_tokens, response_tokens, models)
 
         # Process each day independently
         unique_days = np.unique(days)
@@ -110,31 +112,60 @@ class OptimalStrategy(RoutingStrategy):
         )
 
     def _calculate_costs_vectorized(
-        self, request_tokens: np.ndarray, response_tokens: np.ndarray
+        self,
+        request_tokens: np.ndarray,
+        response_tokens: np.ndarray,
+        models: list[str | None] | None = None,
     ) -> np.ndarray:
         """Vectorized cost calculation using NumPy.
 
-        Calculates API cost for all requests in one operation.
+        Calculates API cost for all requests. Supports multi-model pricing
+        when model_pricing is configured and models are provided.
 
         Args:
             request_tokens: Array of input token counts
             response_tokens: Array of output token counts
+            models: Optional list of model names for per-model pricing
 
         Returns:
             Array of API costs
         """
-        # Get default API provider pricing
-        api_provider_id = self.config["simulation"].get("default_api_fallback", "openai-chatgpt")
-        provider = self.config["providers"][api_provider_id]
+        n = len(request_tokens)
+        costs = np.zeros(n)
 
-        input_price = provider.input_price_per_1k
-        output_price = provider.output_price_per_1k
+        # Check if multi-model pricing is available
+        model_pricing = self.config.get("model_pricing", {})
 
-        # Vectorized calculation (all requests at once)
-        input_costs = request_tokens / 1000.0 * input_price
-        output_costs = response_tokens / 1000.0 * output_price
+        if model_pricing and models:
+            # Multi-model pricing: calculate cost per model
+            default_pricing = model_pricing.get("default", {"input": 1.5, "output": 2.0})
 
-        return input_costs + output_costs
+            for i in range(n):
+                model = models[i] or "default"
+                pricing = model_pricing.get(model, default_pricing)
+
+                # Pricing is per 1M tokens
+                input_price = pricing.get("input", default_pricing["input"])
+                output_price = pricing.get("output", default_pricing["output"])
+
+                costs[i] = (
+                    request_tokens[i] / 1_000_000.0 * input_price
+                    + response_tokens[i] / 1_000_000.0 * output_price
+                )
+        else:
+            # Single-model pricing: use default API provider
+            api_provider_id = self.config["simulation"].get(
+                "default_api_fallback", "openai-chatgpt"
+            )
+            provider = self.config["providers"][api_provider_id]
+
+            input_price = provider.input_price_per_1k
+            output_price = provider.output_price_per_1k
+
+            # Vectorized calculation (all requests at once)
+            costs = request_tokens / 1000.0 * input_price + response_tokens / 1000.0 * output_price
+
+        return costs
 
     def route(self, request: Request) -> RoutingDecision:
         """Route request using precomputed assignment.
@@ -164,8 +195,13 @@ class OptimalStrategy(RoutingStrategy):
                 timestamp=request.timestamp,
             )
         else:
-            # Use cheapest API
-            provider, cost = self.cost_calculator.get_cheapest_api_provider(request)
+            # Use API with model-specific pricing
+            model_pricing = self.config.get("model_pricing", {})
+            if model_pricing and request.model:
+                cost = self.cost_calculator.calculate_cost_by_model(request)
+                provider = "api"
+            else:
+                provider, cost = self.cost_calculator.get_cheapest_api_provider(request)
             self.api_used += 1
 
             return RoutingDecision(

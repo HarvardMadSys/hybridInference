@@ -38,30 +38,34 @@ class AllAPIStrategy(RoutingStrategy):
         Returns:
             Routing decision (always API, never subscription)
         """
-        # For single model, there's only one API provider
-        # Get the default API provider from config
-        api_provider = self.config.get("simulation", {}).get("default_api_fallback")
+        # Check if multi-model pricing is enabled
+        model_pricing = self.config.get("model_pricing", {})
+        if model_pricing and request.model:
+            # Multi-model: calculate cost based on request's model
+            cost = self.cost_calculator.calculate_cost_by_model(request)
+            provider = "api"
+        else:
+            # Single model: use configured API provider
+            api_provider = self.config.get("simulation", {}).get("default_api_fallback")
 
-        if not api_provider:
-            # Fallback: find first API provider
-            api_providers = [
-                name
-                for name, provider in self.cost_calculator.providers.items()
-                if provider.is_api()
-            ]
-            if not api_providers:
-                raise ValueError("No API provider configured")
-            api_provider = api_providers[0]
+            if not api_provider:
+                # Fallback: find first API provider
+                api_providers = [
+                    name for name, p in self.cost_calculator.providers.items() if p.is_api()
+                ]
+                if not api_providers:
+                    raise ValueError("No API provider configured")
+                api_provider = api_providers[0]
 
-        # Calculate API cost
-        cost = self.cost_calculator.calculate_api_cost(request, api_provider)
+            cost = self.cost_calculator.calculate_api_cost(request, api_provider)
+            provider = api_provider
 
         # Update statistics
         self.api_used += 1
 
         return RoutingDecision(
             request=request,
-            provider=api_provider,
+            provider=provider,
             cost=cost,
             quota_used=0,  # Never use subscription quota
             timestamp=request.timestamp,
