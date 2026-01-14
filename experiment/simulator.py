@@ -86,7 +86,7 @@ class OfflineSimulator:
             Simulation results
         """
         logger.info(
-            f"Starting simulation with {self.strategy.name()} strategy "
+            f"Starting simulation with {self.strategy.name} strategy "
             f"on {len(self.requests)} requests"
         )
 
@@ -139,7 +139,7 @@ class OfflineSimulator:
         quota_utilization = quota_stats.get("avg_utilization", 0.0)
 
         result = SimulationResult(
-            strategy_name=self.strategy.name(),
+            strategy_name=self.strategy.name,
             total_cost=subscription_cost + api_cost,
             subscription_cost=subscription_cost,
             api_cost=api_cost,

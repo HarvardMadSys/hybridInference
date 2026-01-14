@@ -2,9 +2,13 @@
 
 import csv
 import logging
+import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+
+# Increase CSV field size limit for large log entries
+csv.field_size_limit(sys.maxsize)
 
 import numpy as np
 
@@ -170,6 +174,10 @@ class DataLoader:
                 provider = row.get("provider")
                 actual_cost = float(row.get("cost_usd", 0)) if row.get("cost_usd") else None
 
+                # Parse latency fields for Phase 2
+                latency_ms = int(row.get("latency_ms", 0)) if row.get("latency_ms") else None
+                ttft_ms = int(row.get("ttft_ms", 0)) if row.get("ttft_ms") else None
+
             else:
                 # Standard experiment format
                 request_tokens = int(row["Request tokens"])
@@ -181,6 +189,8 @@ class DataLoader:
                 model = row.get("Model")
                 provider = row.get("Provider") if has_provider else None
                 actual_cost = float(row.get("Actual Cost", 0)) if has_actual_cost else None
+                latency_ms = None
+                ttft_ms = None
 
             # Skip rows with zero tokens (likely errors)
             if total_tokens == 0:
@@ -194,6 +204,8 @@ class DataLoader:
                 model=model,
                 provider=provider,
                 actual_cost=actual_cost,
+                latency_ms=latency_ms,
+                ttft_ms=ttft_ms,
             )
         except (KeyError, ValueError) as e:
             logger.debug(f"Skipping invalid row: {e}")
@@ -219,7 +231,7 @@ class DataLoader:
 
         stats = {
             "total_requests": len(requests),
-            "num_days": requests[-1].day + 1,
+            "num_days": requests[-1].day - requests[0].day + 1,  # Actual span of days
             "avg_request_tokens": np.mean([r.request_tokens for r in requests]),
             "avg_response_tokens": np.mean([r.response_tokens for r in requests]),
             "total_tokens": sum(r.total_tokens for r in requests),

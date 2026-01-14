@@ -59,25 +59,33 @@ class GreedyStrategy(RoutingStrategy):
             )
         else:
             # Quota exhausted, use API
-            api_provider = self.config.get("simulation", {}).get("default_api_fallback")
+            # Check if multi-model pricing is enabled
+            model_pricing = self.config.get("model_pricing", {})
+            if model_pricing and request.model:
+                cost = self.cost_calculator.calculate_cost_by_model(request)
+                provider = "api"
+            else:
+                api_provider = self.config.get("simulation", {}).get("default_api_fallback")
 
-            if not api_provider:
-                # Fallback: find first API provider
-                api_providers = [
-                    name
-                    for name, provider in self.cost_calculator.providers.items()
-                    if provider.is_api()
-                ]
-                if not api_providers:
-                    raise ValueError("No API provider configured")
-                api_provider = api_providers[0]
+                if not api_provider:
+                    # Fallback: find first API provider
+                    api_providers = [
+                        name
+                        for name, provider in self.cost_calculator.providers.items()
+                        if provider.is_api()
+                    ]
+                    if not api_providers:
+                        raise ValueError("No API provider configured")
+                    api_provider = api_providers[0]
 
-            cost = self.cost_calculator.calculate_api_cost(request, api_provider)
+                cost = self.cost_calculator.calculate_api_cost(request, api_provider)
+                provider = api_provider
+
             self.api_used += 1
 
             return RoutingDecision(
                 request=request,
-                provider=api_provider,
+                provider=provider,
                 cost=cost,
                 quota_used=0,
                 timestamp=request.timestamp,

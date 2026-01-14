@@ -44,6 +44,7 @@ class ExperimentConfig:
         self.strategies = self.raw_config.get("strategies", [])
         self.dataset = self.raw_config.get("dataset", {})
         self.output = self.raw_config.get("output", {})
+        self.model_pricing = self.raw_config.get("model_pricing", {})
 
         logger.info(f"Loaded configuration from {self.config_path}")
         logger.info(f"  Providers: {len(self.providers)}")
@@ -154,4 +155,5 @@ class ExperimentConfig:
             "simulation": self.simulation,
             "dataset": self.dataset,
             "output": self.output,
+            "model_pricing": self.model_pricing,
         }
