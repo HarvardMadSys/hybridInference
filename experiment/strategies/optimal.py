@@ -28,7 +28,7 @@ class OptimalStrategy(RoutingStrategy):
     - Value = API cost savings
 
     Attributes:
-        assignments: Precomputed routing assignments (timestamp -> provider)
+        assignments: Precomputed routing assignments (request_id -> provider)
     """
 
     def __init__(self, *args, **kwargs):
@@ -59,7 +59,7 @@ class OptimalStrategy(RoutingStrategy):
         logger.info(f"Precomputing optimal routing for {len(requests)} requests")
 
         # Extract data to NumPy arrays for vectorized operations
-        timestamps = np.array([r.timestamp for r in requests])
+        request_ids = np.array([r.id for r in requests])
         days = np.array([r.day for r in requests])
         request_tokens = np.array([r.request_tokens for r in requests])
         response_tokens = np.array([r.response_tokens for r in requests])
@@ -76,7 +76,7 @@ class OptimalStrategy(RoutingStrategy):
             # Use boolean indexing to filter requests for this day
             day_mask = days == day
             day_costs = costs[day_mask]
-            day_timestamps = timestamps[day_mask]
+            day_request_ids = request_ids[day_mask]
 
             # Key optimization: use argpartition instead of full sort
             # argpartition is O(n), sort is O(n log n)
@@ -94,15 +94,15 @@ class OptimalStrategy(RoutingStrategy):
 
             # Assign subscription to top K requests
             for idx in top_k_indices:
-                timestamp = day_timestamps[idx]
-                self.assignments[int(timestamp)] = "subscription"
+                req_id = day_request_ids[idx]
+                self.assignments[int(req_id)] = "subscription"
 
             # Assign API to remaining requests
             all_indices = set(range(len(day_costs)))
             api_indices = all_indices - set(top_k_indices)
             for idx in api_indices:
-                timestamp = day_timestamps[idx]
-                self.assignments[int(timestamp)] = "api"
+                req_id = day_request_ids[idx]
+                self.assignments[int(req_id)] = "api"
 
         logger.info(
             f"Precomputation complete: "
@@ -179,8 +179,8 @@ class OptimalStrategy(RoutingStrategy):
         # Reset quota if entering new day
         self.quota_manager.reset_if_new_day(request.day)
 
-        # Use precomputed assignment
-        provider_type = self.assignments.get(request.timestamp, "api")
+        # Use precomputed assignment (keyed by request.id for uniqueness)
+        provider_type = self.assignments.get(request.id, "api")
 
         if provider_type == "subscription":
             # Use subscription

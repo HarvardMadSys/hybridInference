@@ -104,7 +104,7 @@ class DataLoader:
             reader = csv.DictReader(f)
 
             for i, row in enumerate(reader):
-                request = self._parse_row(row, format_type, has_provider, has_actual_cost)
+                request = self._parse_row(row, format_type, i, has_provider, has_actual_cost)
                 if request:
                     # Apply model filter if specified
                     if filter_model and request.model != filter_model:
@@ -135,13 +135,19 @@ class DataLoader:
         return requests
 
     def _parse_row(
-        self, row: dict, format_type: str, has_provider: bool = False, has_actual_cost: bool = False
+        self,
+        row: dict,
+        format_type: str,
+        request_id: int,
+        has_provider: bool = False,
+        has_actual_cost: bool = False,
     ) -> Request | None:
         """Parse a single CSV row into Request object.
 
         Args:
             row: Dictionary from CSV reader
             format_type: Format type ("hybridinference" or "experiment")
+            request_id: Unique identifier to assign to this request
             has_provider: Whether Provider column exists
             has_actual_cost: Whether Actual Cost column exists
 
@@ -197,6 +203,7 @@ class DataLoader:
                 return None
 
             return Request(
+                id=request_id,
                 timestamp=timestamp,
                 request_tokens=request_tokens,
                 response_tokens=response_tokens,

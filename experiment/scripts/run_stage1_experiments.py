@@ -22,14 +22,17 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from experiment.config import ExperimentConfig
 from experiment.cost.calculator import CostCalculator
 from experiment.data.loader import DataLoader
-from experiment.data.schema import ProviderConfig, ProviderType
 from experiment.quota.manager import QuotaManager
 from experiment.simulator import OfflineSimulator
 from experiment.strategies.all_api import AllAPIStrategy
 from experiment.strategies.greedy import GreedyStrategy
 from experiment.strategies.optimal import OptimalStrategy
+
+# Default config path
+DEFAULT_CONFIG_PATH = "config/experiment.yaml"
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -41,66 +44,41 @@ def setup_logging(level: str = "INFO") -> None:
     )
 
 
-def create_config(
-    daily_quota: int = 5000,
-    monthly_fee: float = 20.0,
+def load_config(
+    config_path: str = DEFAULT_CONFIG_PATH,
+    daily_quota: int | None = None,
     multimodel: bool = False,
 ) -> dict:
-    """Create experiment configuration.
+    """Load experiment configuration from YAML file.
 
     Args:
-        daily_quota: Daily quota for subscription
-        monthly_fee: Monthly subscription fee
-        multimodel: Enable multi-model pricing
+        config_path: Path to experiment.yaml
+        daily_quota: Override daily quota (optional)
+        multimodel: Enable multi-model pricing from config
 
     Returns:
         Configuration dictionary
     """
-    providers = {
-        "chutes-subscription": ProviderConfig(
-            name="Chutes Subscription",
-            type=ProviderType.SUBSCRIPTION,
-            monthly_fee=monthly_fee,
-            daily_quota=daily_quota,
-        ),
-        "openai-chatgpt": ProviderConfig(
-            name="OpenAI ChatGPT",
-            type=ProviderType.API,
-            input_price_per_1k=0.0015,  # $1.5 per 1M = $0.0015 per 1K
-            output_price_per_1k=0.002,  # $2.0 per 1M = $0.002 per 1K
-        ),
-    }
+    # Load from YAML
+    exp_config = ExperimentConfig(config_path)
+    config = exp_config.to_dict()
 
-    config = {
-        "providers": providers,
-        "simulation": {
-            "num_subscriptions": 1,
-            "default_subscription": "chutes-subscription",
-            "default_api_fallback": "openai-chatgpt",
-            "subscription_provider": "chutes-subscription",
-        },
-        "dataset": {},
-        "output": {},
-    }
+    # Override daily quota if specified
+    if daily_quota is not None:
+        sub_provider = config["simulation"].get("default_subscription", "chutes-subscription")
+        if sub_provider in config["providers"]:
+            # Create new ProviderConfig with updated quota
+            old_provider = config["providers"][sub_provider]
+            config["providers"][sub_provider] = type(old_provider)(
+                name=old_provider.name,
+                type=old_provider.type,
+                monthly_fee=old_provider.monthly_fee,
+                daily_quota=daily_quota,
+            )
 
-    # Add multi-model pricing if enabled
-    if multimodel:
-        config["model_pricing"] = {
-            # Llama models (Meta) - free tier
-            "llama-3.3-70b-instruct": {"input": 0.0, "output": 0.0},
-            "llama-4-scout": {"input": 0.0, "output": 0.0},
-            "llama-4-maverick": {"input": 0.0, "output": 0.0},
-            # Gemini models (Google)
-            "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
-            "gemini-2.5-flash-preview-09-2025": {"input": 0.15, "output": 0.60},
-            # GLM models (Zhipu)
-            "glm-4.5": {"input": 0.60, "output": 2.20},
-            "glm-4.6": {"input": 0.60, "output": 2.20},
-            # DeepSeek models
-            "deepseek-chat": {"input": 0.28, "output": 1.10},
-            # Default fallback
-            "default": {"input": 1.50, "output": 2.00},
-        }
+    # Remove model_pricing if not using multi-model
+    if not multimodel:
+        config.pop("model_pricing", None)
 
     return config
 
@@ -126,9 +104,10 @@ def run_single_experiment(
     logger.info(f"Running {strategy_name}...")
 
     # Create components
-    calculator = CostCalculator(config["providers"])
+    calculator = CostCalculator(config["providers"], config.get("model_pricing"))
+    sub_provider = config["simulation"].get("default_subscription", "chutes-subscription")
     quota_manager = QuotaManager(
-        daily_quota=config["providers"]["chutes-subscription"].daily_quota,
+        daily_quota=config["providers"][sub_provider].daily_quota,
         num_subscriptions=config["simulation"]["num_subscriptions"],
     )
 
@@ -207,7 +186,7 @@ def run_fig2_experiment(requests: list, base_config: dict, multimodel: bool = Fa
         logger.info(f"\n--- Q = {q} ---")
 
         # Update config with new Q
-        config = create_config(daily_quota=q, multimodel=multimodel)
+        config = load_config(daily_quota=q, multimodel=multimodel)
 
         # Run all three strategies
         all_api_result = run_single_experiment(requests, AllAPIStrategy, config, f"All-API (Q={q})")
@@ -316,7 +295,7 @@ def main():
             logger.info("Multi-model pricing ENABLED")
 
         # Load data
-        config = create_config(multimodel=use_multimodel)
+        config = load_config(multimodel=use_multimodel)
         loader = DataLoader(config)
 
         try:

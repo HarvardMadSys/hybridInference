@@ -7,25 +7,6 @@ from experiment.data.schema import ProviderConfig, Request
 logger = logging.getLogger(__name__)
 
 
-# Default model pricing (per 1M tokens) for multi-model scenarios
-DEFAULT_MODEL_PRICING = {
-    # Llama models (Meta) - free tier
-    "llama-3.3-70b-instruct": {"input": 0.0, "output": 0.0},
-    "llama-4-scout": {"input": 0.0, "output": 0.0},
-    "llama-4-maverick": {"input": 0.0, "output": 0.0},
-    # Gemini models (Google)
-    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
-    "gemini-2.5-flash-preview-09-2025": {"input": 0.15, "output": 0.60},
-    # GLM models (Zhipu)
-    "glm-4.5": {"input": 0.60, "output": 2.20},
-    "glm-4.6": {"input": 0.60, "output": 2.20},
-    # DeepSeek models
-    "deepseek-chat": {"input": 0.28, "output": 1.10},
-    # Default fallback
-    "default": {"input": 1.50, "output": 2.00},
-}
-
-
 class CostCalculator:
     """Calculate request costs for different providers.
 
@@ -43,11 +24,11 @@ class CostCalculator:
 
         Args:
             providers: Dictionary of provider configurations
-            model_pricing: Optional per-model pricing (per 1M tokens).
+            model_pricing: Per-model pricing (per 1M tokens) from config/experiment.yaml.
                           Format: {"model_name": {"input": price, "output": price}}
         """
         self.providers = providers
-        self.model_pricing = model_pricing or DEFAULT_MODEL_PRICING
+        self.model_pricing = model_pricing or {}
 
     def calculate_api_cost(self, request: Request, provider_name: str) -> float:
         """Calculate API cost for a request.
