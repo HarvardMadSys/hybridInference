@@ -21,6 +21,7 @@ class Request:
     2. HybridInference logs: has provider, actual_cost (real routing data)
 
     Attributes:
+        id: Unique identifier for this request (assigned during loading)
         timestamp: Seconds from epoch
         request_tokens: Input tokens
         response_tokens: Output tokens
@@ -32,6 +33,7 @@ class Request:
         ttft_ms: Optional time to first token in milliseconds
     """
 
+    id: int
     timestamp: int
     request_tokens: int
     response_tokens: int

@@ -53,35 +53,40 @@ dataset:
 
 # Multi-model API pricing (per 1M tokens)
 # Used when calculating API cost for different models
+# Prices updated: 2025-01
 model_pricing:
-  # Llama models (Meta) - free tier via Llama API
+  # Llama models (Meta) - OpenRouter pricing
+  # Source: https://openrouter.ai/
   llama-3.3-70b-instruct:
-    input: 0.0
-    output: 0.0
+    input: 0.10
+    output: 0.32
   llama-4-scout:
-    input: 0.0
-    output: 0.0
+    input: 0.10
+    output: 0.32
   llama-4-maverick:
-    input: 0.0
-    output: 0.0
-  # Gemini models (Google)
+    input: 0.10
+    output: 0.32
+  # Gemini models (Google) - unified pricing after 2025 update
+  # Source: https://ai.google.dev/gemini-api/docs/pricing
   gemini-2.5-flash:
-    input: 0.15
-    output: 0.60
+    input: 0.30
+    output: 2.50
   gemini-2.5-flash-preview-09-2025:
-    input: 0.15
-    output: 0.60
+    input: 0.30
+    output: 2.50
   # GLM models (Zhipu)
+  # Source: https://bigmodel.cn/pricing
   glm-4.5:
-    input: 0.60
-    output: 2.20
+    input: 0.35
+    output: 1.55
   glm-4.6:
-    input: 0.60
-    output: 2.20
+    input: 0.35
+    output: 1.55
   # DeepSeek models
+  # Source: https://api-docs.deepseek.com/quick_start/pricing
   deepseek-chat:
     input: 0.28
-    output: 1.10
+    output: 0.42
   # Default fallback for unknown models
   default:
     input: 1.50
