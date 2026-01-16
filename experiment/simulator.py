@@ -4,6 +4,8 @@ import logging
 import time
 from dataclasses import dataclass
 
+from tqdm import tqdm
+
 from experiment.data.schema import Request, RoutingDecision
 from experiment.strategies.base import RoutingStrategy
 
@@ -102,15 +104,17 @@ class OfflineSimulator:
         api_cost = 0.0
         decisions: list[RoutingDecision] = []
 
-        # Simulate each request
-        for i, request in enumerate(self.requests):
+        # Simulate each request with progress bar
+        for request in tqdm(
+            self.requests,
+            desc=f"Routing ({self.strategy.name})",
+            unit="req",
+            leave=True,
+            ncols=100,
+        ):
             decision = self.strategy.route(request)
             decisions.append(decision)
             api_cost += decision.cost
-
-            # Progress logging
-            if (i + 1) % 100000 == 0:
-                logger.info(f"Processed {i + 1}/{len(self.requests)} requests")
 
         runtime = time.time() - start_time
 
