@@ -156,4 +156,5 @@ class ExperimentConfig:
             "dataset": self.dataset,
             "output": self.output,
             "model_pricing": self.model_pricing,
+            "subscriptions": self.raw_config.get("subscriptions", {}),
         }
