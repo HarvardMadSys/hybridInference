@@ -134,7 +134,8 @@ class OfflineSimulator:
             subscription_provider.monthly_fee * num_subscriptions * (num_days / 30.0)
         )
 
-        # Calculate quota utilization
+        # Finalize quota tracking (record last day) and calculate utilization
+        self.strategy.quota_manager.finalize()
         quota_stats = self.strategy.quota_manager.get_statistics()
         quota_utilization = quota_stats.get("avg_utilization", 0.0)
 

@@ -2,9 +2,9 @@
 
 from abc import ABC, abstractmethod
 
-from experiment.cost.calculator import CostCalculator
+from experiment.cost import CostCalculator
 from experiment.data.schema import Request, RoutingDecision
-from experiment.quota.manager import QuotaManager
+from experiment.quota import QuotaManager
 
 
 class RoutingStrategy(ABC):

@@ -23,13 +23,13 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from experiment.config import ExperimentConfig
-from experiment.cost.calculator import CostCalculator
+from experiment.cost import CostCalculator
 from experiment.data.loader import DataLoader
-from experiment.quota.manager import QuotaManager
+from experiment.quota import QuotaManager
 from experiment.simulator import OfflineSimulator
 from experiment.strategies.all_api import AllAPIStrategy
 from experiment.strategies.greedy import GreedyStrategy
-from experiment.strategies.optimal import OptimalStrategy
+from experiment.strategies.stage1_optimal import OptimalStrategy
 
 # Default config path
 DEFAULT_CONFIG_PATH = "config/experiment.yaml"
@@ -48,6 +48,7 @@ def load_config(
     config_path: str = DEFAULT_CONFIG_PATH,
     daily_quota: int | None = None,
     multimodel: bool = False,
+    target_model: str | None = None,
 ) -> dict:
     """Load experiment configuration from YAML file.
 
@@ -55,6 +56,7 @@ def load_config(
         config_path: Path to experiment.yaml
         daily_quota: Override daily quota (optional)
         multimodel: Enable multi-model pricing from config
+        target_model: Target model name for pricing (maps "default" to this model)
 
     Returns:
         Configuration dictionary
@@ -76,8 +78,21 @@ def load_config(
                 daily_quota=daily_quota,
             )
 
-    # Remove model_pricing if not using multi-model
-    if not multimodel:
+    # Handle model pricing
+    if target_model:
+        # Use specified model's pricing, map "default" to it
+        model_pricing = config.get("model_pricing", {})
+        if target_model in model_pricing:
+            # Map "default" to the target model's pricing
+            model_pricing["default"] = model_pricing[target_model]
+            config["model_pricing"] = model_pricing
+        else:
+            raise ValueError(
+                f"Model '{target_model}' not found in model_pricing. "
+                f"Available models: {list(model_pricing.keys())}"
+            )
+    elif not multimodel:
+        # Remove model_pricing if not using multi-model
         config.pop("model_pricing", None)
 
     return config
@@ -161,13 +176,19 @@ def run_fig1_experiment(requests: list, config: dict) -> dict:
     return results
 
 
-def run_fig2_experiment(requests: list, base_config: dict, multimodel: bool = False) -> dict:
+def run_fig2_experiment(
+    requests: list,
+    base_config: dict,
+    multimodel: bool = False,
+    target_model: str | None = None,
+) -> dict:
     """Run Fig 2 experiment: Parameter sensitivity (Q sweep).
 
     Args:
         requests: List of requests
         base_config: Base configuration dictionary
         multimodel: Enable multi-model pricing
+        target_model: Target model for pricing
 
     Returns:
         Results for different Q values
@@ -186,7 +207,7 @@ def run_fig2_experiment(requests: list, base_config: dict, multimodel: bool = Fa
         logger.info(f"\n--- Q = {q} ---")
 
         # Update config with new Q
-        config = load_config(daily_quota=q, multimodel=multimodel)
+        config = load_config(daily_quota=q, multimodel=multimodel, target_model=target_model)
 
         # Run all three strategies
         all_api_result = run_single_experiment(requests, AllAPIStrategy, config, f"All-API (Q={q})")
@@ -241,14 +262,21 @@ def main():
     parser.add_argument(
         "--data",
         type=str,
-        choices=["sharegpt", "community", "both", "jan7", "jan9"],
+        choices=["sharegpt", "freeinference", "rednote", "all"],
         default="sharegpt",
-        help="Dataset to use",
+        help="Dataset to use: sharegpt (single-model), freeinference/rednote (multi-model), all",
     )
     parser.add_argument(
         "--multimodel",
         action="store_true",
-        help="Enable multi-model pricing (for community_logs)",
+        help="Enable multi-model pricing (uses each request's model field)",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Target model for pricing (e.g., 'llama-3.3-70b-instruct', 'deepseek-chat'). "
+        "Use this for single-model datasets like sharegpt.",
     )
     parser.add_argument(
         "--output-dir",
@@ -274,14 +302,12 @@ def main():
 
     # Define datasets
     datasets = {}
-    if args.data in ["sharegpt", "both"]:
+    if args.data in ["sharegpt", "all"]:
         datasets["sharegpt"] = "data/sharegpt_burstgpt/converted.csv"
-    if args.data in ["community", "both"]:
-        datasets["community"] = "data/community_logs.csv"
-    if args.data == "jan7":
-        datasets["jan7"] = "data/jan7_logs.csv"
-    if args.data == "jan9":
-        datasets["jan9"] = "data/jan9_logs.csv"
+    if args.data in ["freeinference", "all"]:
+        datasets["freeinference"] = "data/freeinference_logs.csv"
+    if args.data in ["rednote", "all"]:
+        datasets["rednote"] = "data/rednote_logs.csv"
 
     # Run experiments for each dataset
     for dataset_name, dataset_path in datasets.items():
@@ -289,13 +315,17 @@ def main():
         logger.info(f"Dataset: {dataset_name}")
         logger.info(f"{'#' * 60}")
 
-        # Enable multimodel for community dataset or if explicitly requested
-        use_multimodel = args.multimodel or dataset_name in ["community", "jan7", "jan9"]
-        if use_multimodel:
-            logger.info("Multi-model pricing ENABLED")
+        # Determine pricing mode
+        use_multimodel = args.multimodel or dataset_name in ["freeinference", "rednote"]
+        target_model = args.model
+
+        if target_model:
+            logger.info(f"Using model pricing: {target_model}")
+        elif use_multimodel:
+            logger.info("Multi-model pricing ENABLED (per-request model)")
 
         # Load data
-        config = load_config(multimodel=use_multimodel)
+        config = load_config(multimodel=use_multimodel, target_model=target_model)
         loader = DataLoader(config)
 
         try:
@@ -308,7 +338,7 @@ def main():
 
         # Run experiments
         fig1_results = run_fig1_experiment(requests, config)
-        fig2_results = run_fig2_experiment(requests, config, use_multimodel)
+        fig2_results = run_fig2_experiment(requests, config, use_multimodel, target_model)
         fig3_results = run_fig3_experiment(fig2_results)
 
         # Combine results (convert any non-serializable objects)
@@ -326,14 +356,18 @@ def main():
             {
                 "dataset": dataset_name,
                 "num_requests": len(requests),
+                "pricing_model": target_model or ("multimodel" if use_multimodel else "default"),
                 "fig1_cost_comparison": fig1_results,
                 "fig2_parameter_sensitivity": fig2_results,
                 "fig3_competitive_ratio": fig3_results,
             }
         )
 
-        # Save results
-        output_file = output_dir / f"{dataset_name}_results.json"
+        # Save results (include model name in filename if specified)
+        if target_model:
+            output_file = output_dir / f"{dataset_name}_{target_model}_results.json"
+        else:
+            output_file = output_dir / f"{dataset_name}_results.json"
         with open(output_file, "w") as f:
             json.dump(all_results, f, indent=2)
 

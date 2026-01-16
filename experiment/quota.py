@@ -92,6 +92,14 @@ class QuotaManager:
             return 0.0
         return self.used_today / self.total_daily_quota
 
+    def finalize(self) -> None:
+        """Finalize quota tracking by recording the last day's usage.
+
+        Call this at the end of simulation to ensure the last day is recorded.
+        """
+        if self.used_today > 0 or self.current_day not in self.daily_usage:
+            self.daily_usage[self.current_day] = self.used_today
+
     def get_statistics(self) -> dict:
         """Get quota usage statistics.
 
