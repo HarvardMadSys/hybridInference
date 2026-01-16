@@ -243,6 +243,19 @@ def main():
         "--concurrency", type=int, default=4, help="Concurrency limit for S_C (Featherless plan)"
     )
     parser.add_argument("--limit", type=int, default=None, help="Limit number of requests")
+    parser.add_argument(
+        "--delta",
+        type=float,
+        default=300.0,
+        help="Time slot size in seconds for ILP (default: 300s = 5min)",
+    )
+    parser.add_argument(
+        "--solver",
+        type=str,
+        choices=["cbc", "gurobi"],
+        default="gurobi",
+        help="ILP solver to use (default: gurobi)",
+    )
 
     args = parser.parse_args()
     setup_logging()
@@ -303,15 +316,16 @@ def main():
     # We'll use a larger delta (e.g. 60s) to make it faster for testing, or 1.0s for accuracy.
     # Warning: 1.0s on 30 days of data will be very slow.
     # Let's default to a safe delta or warn.
-    logger.info("Running ILP Optimal Strategy (this may take time)...")
+    logger.info(f"Running ILP Optimal Strategy (delta={args.delta}s, solver={args.solver})...")
     results["ilp_optimal"] = run_single_experiment(
         requests,
         ILPOptimalStrategy,
         config,
         "ILP-Optimal",
-        delta=60.0,  # Reduced precision for speed (1 min slots)
+        delta=args.delta,
         daily_quota=args.daily_quota,
         concurrency_limit=args.concurrency,
+        solver=args.solver,
     )
 
     # 2. Baselines
