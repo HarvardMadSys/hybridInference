@@ -137,16 +137,25 @@ class OptimalStrategy(RoutingStrategy):
         model_pricing = self.config.get("model_pricing", {})
 
         if model_pricing and models:
-            # Multi-model pricing: calculate cost per model
-            default_pricing = model_pricing.get("default", {"input": 1.5, "output": 2.0})
-
+            # Multi-model pricing: calculate cost per model (no default fallback)
             for i in range(n):
-                model = models[i] or "default"
-                pricing = model_pricing.get(model, default_pricing)
+                model = models[i]
+                if not model:
+                    raise ValueError(f"Request at index {i} has no model specified")
+
+                pricing = model_pricing.get(model)
+                if pricing is None:
+                    raise ValueError(
+                        f"Model '{model}' not found in model_pricing. "
+                        f"Please add pricing in config/experiment.yaml. "
+                        f"Available: {list(model_pricing.keys())}"
+                    )
 
                 # Pricing is per 1M tokens
-                input_price = pricing.get("input", default_pricing["input"])
-                output_price = pricing.get("output", default_pricing["output"])
+                input_price = pricing.get("input")
+                output_price = pricing.get("output")
+                if input_price is None or output_price is None:
+                    raise ValueError(f"Model '{model}' has incomplete pricing")
 
                 costs[i] = (
                     request_tokens[i] / 1_000_000.0 * input_price

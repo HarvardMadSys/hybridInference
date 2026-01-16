@@ -112,20 +112,35 @@ class CostCalculator:
         """Calculate API cost based on request's model.
 
         Uses per-model pricing from model_pricing dictionary.
-        Falls back to 'default' pricing if model not found.
+        Raises error if model not found (no silent fallback).
 
         Args:
             request: The request to price (must have model field)
 
         Returns:
             Cost in dollars
+
+        Raises:
+            ValueError: If model pricing is not configured
         """
-        model = request.model or "default"
-        pricing = self.model_pricing.get(model, self.model_pricing.get("default", {}))
+        model = request.model
+        if not model:
+            raise ValueError(f"Request {request.id} has no model specified")
+
+        pricing = self.model_pricing.get(model)
+        if pricing is None:
+            raise ValueError(
+                f"Model '{model}' not found in model_pricing. "
+                f"Please add pricing for this model in config/experiment.yaml. "
+                f"Available models: {list(self.model_pricing.keys())}"
+            )
 
         # Pricing is per 1M tokens, convert to actual cost
-        input_price_per_1m = pricing.get("input", 1.5)
-        output_price_per_1m = pricing.get("output", 2.0)
+        input_price_per_1m = pricing.get("input")
+        output_price_per_1m = pricing.get("output")
+
+        if input_price_per_1m is None or output_price_per_1m is None:
+            raise ValueError(f"Model '{model}' has incomplete pricing (need both input and output)")
 
         input_cost = request.request_tokens / 1_000_000.0 * input_price_per_1m
         output_cost = request.response_tokens / 1_000_000.0 * output_price_per_1m
@@ -140,6 +155,15 @@ class CostCalculator:
 
         Returns:
             Tuple of (input_price_per_1m, output_price_per_1m)
+
+        Raises:
+            ValueError: If model pricing is not configured
         """
-        pricing = self.model_pricing.get(model, self.model_pricing.get("default", {}))
-        return (pricing.get("input", 1.5), pricing.get("output", 2.0))
+        pricing = self.model_pricing.get(model)
+        if pricing is None:
+            raise ValueError(
+                f"Model '{model}' not found in model_pricing. "
+                f"Please add pricing for this model in config/experiment.yaml. "
+                f"Available models: {list(self.model_pricing.keys())}"
+            )
+        return (pricing.get("input"), pricing.get("output"))

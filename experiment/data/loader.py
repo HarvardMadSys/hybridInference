@@ -16,6 +16,41 @@ from experiment.data.schema import Request
 
 logger = logging.getLogger(__name__)
 
+# Model name normalization mapping
+# Maps custom/variant model names to canonical names for consistent pricing
+# Naming convention: {provider}-{version}-{tier} (e.g., claude-4.5-opus)
+MODEL_NAME_MAPPING = {
+    # Custom wrappers -> canonical models
+    "custom-4.5-sonnet": "claude-4.5-sonnet",
+    "custom-model-opus": "claude-4.5-opus",
+    "custom-model-alpha": "gpt-5",  # Per user specification
+    "custom-model-beta": "claude-4.1-opus",  # Per user specification (opus 4.1)
+    "custom-glm-4.6": "glm-4.6",
+    "custom-gemini-3-pro": "gemini-3-pro",
+    "custom-gpt-5": "gpt-5",
+    # Normalize claude naming variants (use claude-{version}-{tier} format)
+    "claude-opus-4.1": "claude-4.1-opus",
+    # DeepSeek variants
+    "deepseek-chat": "deepseek-r1",
+    # Freeinference specific -> canonical
+    "freeinference-glm-4.6": "glm-4.6",
+    # Add more mappings as needed
+}
+
+
+def normalize_model_name(model: str | None) -> str | None:
+    """Normalize model name using the mapping table.
+
+    Args:
+        model: Original model name
+
+    Returns:
+        Normalized model name, or original if no mapping exists
+    """
+    if model is None:
+        return None
+    return MODEL_NAME_MAPPING.get(model, model)
+
 
 class DataLoader:
     """Load historical request data from CSV files.
@@ -175,8 +210,8 @@ class DataLoader:
                 else:
                     timestamp = int(timestamp_str)
 
-                # Parse optional fields
-                model = row.get("model_id")
+                # Parse optional fields and normalize model name
+                model = normalize_model_name(row.get("model_id"))
                 provider = row.get("provider")
                 actual_cost = float(row.get("cost_usd", 0)) if row.get("cost_usd") else None
 
@@ -191,8 +226,8 @@ class DataLoader:
                 total_tokens = int(row["Total tokens"])
                 timestamp = int(row["Timestamp"])
 
-                # Parse optional fields
-                model = row.get("Model")
+                # Parse optional fields and normalize model name
+                model = normalize_model_name(row.get("Model"))
                 provider = row.get("Provider") if has_provider else None
                 actual_cost = float(row.get("Actual Cost", 0)) if has_actual_cost else None
                 latency_ms = None
