@@ -3,6 +3,6 @@
 from experiment.strategies.all_api import AllAPIStrategy
 from experiment.strategies.base import RoutingStrategy
 from experiment.strategies.greedy import GreedyStrategy
-from experiment.strategies.optimal import OptimalStrategy
+from experiment.strategies.stage1_optimal import OptimalStrategy
 
 __all__ = ["RoutingStrategy", "OptimalStrategy", "AllAPIStrategy", "GreedyStrategy"]
