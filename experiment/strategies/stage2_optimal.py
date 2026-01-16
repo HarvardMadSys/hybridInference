@@ -18,6 +18,7 @@ import numpy as np
 import pulp
 from tqdm import tqdm
 
+from experiment.cache import get_ilp_cache_key, load_cached_ilp_result, save_ilp_cache
 from experiment.data.schema import Request, RoutingDecision
 from experiment.strategies.base import RoutingStrategy
 
@@ -177,18 +178,23 @@ def _solve_day_ilp_worker(
             <= params.concurrency_limit
         )
 
-    # Select solver based on configuration
+    # Select solver based on configuration (no fallback in worker - detection done in main process)
     if params.solver_name.lower() == "gurobi":
-        try:
-            # Use GUROBI (Python API) instead of GUROBI_CMD (command line)
-            solver = pulp.GUROBI(msg=0, timeLimit=params.solver_time_limit)
-        except Exception:
-            # Fallback to CBC if Gurobi not available
-            solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=params.solver_time_limit)
+        solver = pulp.GUROBI(msg=0, timeLimit=params.solver_time_limit)
     else:
         solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=params.solver_time_limit)
 
-    prob.solve(solver)
+    # Solve with explicit error handling for Gurobi runtime errors
+    try:
+        prob.solve(solver)
+    except Exception as e:
+        error_msg = str(e)
+        if "gurobi" in error_msg.lower() or "license" in error_msg.lower():
+            raise RuntimeError(
+                f"Gurobi solver failed for day {day_idx}: {error_msg}\n"
+                f"Try using CBC solver instead: --solver cbc"
+            ) from e
+        raise
 
     if prob.status != pulp.LpStatusOptimal:
         raise RuntimeError(
@@ -248,6 +254,8 @@ class ILPOptimalStrategy(RoutingStrategy):
         max_start_delay_slots: int | None = None,
         solver: str = "cbc",
         solver_time_limit: int | None = None,
+        dataset_name: str | None = None,
+        use_cache: bool = True,
         **kwargs,
     ):
         """Initialize ILP optimal strategy.
@@ -259,6 +267,8 @@ class ILPOptimalStrategy(RoutingStrategy):
             max_start_delay_slots: Maximum delay slots for request start time
             solver: Solver to use ("cbc" or "gurobi")
             solver_time_limit: Time limit per day in seconds (None = no limit)
+            dataset_name: Dataset name for caching (e.g., "freeinference")
+            use_cache: Whether to use ILP result caching
         """
         super().__init__(*args, **kwargs)
         self.delta = delta
@@ -269,6 +279,8 @@ class ILPOptimalStrategy(RoutingStrategy):
         self.max_start_delay_slots = max_start_delay_slots
         self.solver = solver.lower()
         self.solver_time_limit = solver_time_limit
+        self.dataset_name = dataset_name
+        self.use_cache = use_cache
 
         # Load model compatibility from config
         self._load_subscription_config()
@@ -314,6 +326,19 @@ class ILPOptimalStrategy(RoutingStrategy):
         """Return strategy name."""
         return "ILP-Optimal"
 
+    def _check_solver_availability(self) -> None:
+        """Check if requested solver is available, fallback to CBC if not."""
+        if self.solver == "gurobi":
+            try:
+                # Try to create a Gurobi solver instance
+                pulp.GUROBI(msg=0)
+            except Exception as e:
+                logger.warning(
+                    f"Gurobi solver not available ({e}), falling back to CBC. "
+                    f"To suppress this warning, use --solver cbc"
+                )
+                self.solver = "cbc"
+
     def precompute(self, requests: list[Request]) -> None:
         """Precompute optimal routing using ILP with parallel processing.
 
@@ -322,6 +347,35 @@ class ILPOptimalStrategy(RoutingStrategy):
         """
         if not requests:
             return
+
+        # Check solver availability before computing cache key
+        self._check_solver_availability()
+
+        # Try loading from cache first
+        cache_key = None
+        if self.use_cache and self.dataset_name:
+            cache_key = get_ilp_cache_key(
+                dataset_name=self.dataset_name,
+                num_requests=len(requests),
+                delta=self.delta,
+                daily_quota=self.daily_quota,
+                concurrency_limit=self.concurrency_limit,
+                solver=self.solver,
+                max_start_delay_slots=self.max_start_delay_slots,
+                model_pricing=self.config.get("model_pricing"),
+                subscriptions=self.config.get("subscriptions"),
+            )
+            cached = load_cached_ilp_result(cache_key)
+            if cached:
+                self.assignments = cached["assignments"]
+                self.schedules = cached["schedules"]
+                logger.info(
+                    f"Loaded from cache: "
+                    f"{sum(1 for v in self.assignments.values() if v == 'daily')} daily quota, "
+                    f"{sum(1 for v in self.assignments.values() if v == 'concurrency')} concurrency, "
+                    f"{sum(1 for v in self.assignments.values() if v == 'api')} API"
+                )
+                return
 
         # Determine number of workers
         max_workers = os.cpu_count() or 4
@@ -380,6 +434,10 @@ class ILPOptimalStrategy(RoutingStrategy):
                 _day_idx, day_assignments, day_schedules = future.result()
                 self.assignments.update(day_assignments)
                 self.schedules.update(day_schedules)
+
+        # Save to cache
+        if cache_key:
+            save_ilp_cache(cache_key, self.assignments, self.schedules)
 
         logger.info(
             f"ILP optimization complete: "
