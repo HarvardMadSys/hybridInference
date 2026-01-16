@@ -23,6 +23,10 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from experiment.cache import (
+    load_cached_dataset,
+    save_dataset_cache,
+)
 from experiment.config import ExperimentConfig
 from experiment.cost import CostCalculator
 from experiment.data.loader import DataLoader
@@ -256,6 +260,11 @@ def main():
         default="gurobi",
         help="ILP solver to use (default: gurobi)",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable dataset caching (force reload from CSV)",
+    )
 
     args = parser.parse_args()
     setup_logging()
@@ -293,9 +302,21 @@ def main():
         "rednote": "data/rednote_logs.csv",
     }
 
+    # Load dataset (with caching)
     try:
-        dataset_path = dataset_paths.get(args.data, args.data)
-        requests = loader.load(dataset_path)
+        # Try loading from cache first (unless --no-cache)
+        requests = None
+        if not args.no_cache:
+            requests = load_cached_dataset(args.data)
+
+        if requests is None:
+            # Load from CSV
+            dataset_path = dataset_paths.get(args.data, args.data)
+            requests = loader.load(dataset_path)
+
+            # Save to cache for next time
+            if not args.no_cache:
+                save_dataset_cache(args.data, requests)
 
         # Apply limit if specified
         if args.limit:
@@ -326,6 +347,8 @@ def main():
         daily_quota=args.daily_quota,
         concurrency_limit=args.concurrency,
         solver=args.solver,
+        dataset_name=args.data,
+        use_cache=not args.no_cache,
     )
 
     # 2. Baselines
