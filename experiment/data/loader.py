@@ -73,7 +73,12 @@ class DataLoader:
         self.config = config
         self.dataset_config = config.get("dataset", {})
 
-    def load(self, filepath: str | Path, filter_model: str | None = None) -> list[Request]:
+    def load(
+        self,
+        filepath: str | Path,
+        filter_model: str | None = None,
+        model_override: str | None = None,
+    ) -> list[Request]:
         """Load requests from CSV file.
 
         Auto-detects format based on available columns.
@@ -82,6 +87,10 @@ class DataLoader:
             filepath: Path to CSV file
             filter_model: Optional model name to filter (e.g., "ChatGPT", "GPT-4").
                          If provided, only requests for this model are loaded.
+            model_override: Optional model name to use for ALL requests.
+                           Use this to treat a dataset as single-model workload.
+                           E.g., model_override="deepseek-r1" maps all BurstGPT
+                           requests to deepseek-r1 for pricing.
 
         Returns:
             List of Request objects, sorted by timestamp
@@ -98,6 +107,8 @@ class DataLoader:
         logger.info(f"Loading dataset from {filepath}")
         if filter_model:
             logger.info(f"Filtering for model: {filter_model}")
+        if model_override:
+            logger.info(f"Model override: all requests will use model '{model_override}'")
 
         # Detect format by reading first row
         with open(filepath) as f:
@@ -139,7 +150,9 @@ class DataLoader:
             reader = csv.DictReader(f)
 
             for i, row in enumerate(reader):
-                request = self._parse_row(row, format_type, i, has_provider, has_actual_cost)
+                request = self._parse_row(
+                    row, format_type, i, has_provider, has_actual_cost, model_override
+                )
                 if request:
                     # Apply model filter if specified
                     if filter_model and request.model != filter_model:
@@ -176,6 +189,7 @@ class DataLoader:
         request_id: int,
         has_provider: bool = False,
         has_actual_cost: bool = False,
+        model_override: str | None = None,
     ) -> Request | None:
         """Parse a single CSV row into Request object.
 
@@ -185,6 +199,7 @@ class DataLoader:
             request_id: Unique identifier to assign to this request
             has_provider: Whether Provider column exists
             has_actual_cost: Whether Actual Cost column exists
+            model_override: If set, use this model instead of the row's model
 
         Returns:
             Request object or None if row is invalid
@@ -236,6 +251,10 @@ class DataLoader:
             # Skip rows with zero tokens (likely errors)
             if total_tokens == 0:
                 return None
+
+            # Apply model override if specified (treat dataset as single-model)
+            if model_override:
+                model = model_override
 
             return Request(
                 id=request_id,
