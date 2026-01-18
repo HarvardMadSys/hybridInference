@@ -41,6 +41,7 @@ class ILPParams:
     api_provider_output_price: float
     solver_name: str = "cbc"  # "cbc" or "gurobi"
     solver_time_limit: int | None = None  # Time limit in seconds (None = no limit)
+    gurobi_license_file: str | None = None  # Path to Gurobi license file
 
 
 def _solve_day_ilp_worker(
@@ -58,6 +59,10 @@ def _solve_day_ilp_worker(
     Returns:
         Tuple of (day_idx, assignments dict, schedules dict)
     """
+    # Set Gurobi license file in subprocess (env vars not inherited from parent)
+    if params.gurobi_license_file:
+        os.environ["GRB_LICENSE_FILE"] = params.gurobi_license_file
+
     assignments: dict[int, str] = {}
     schedules: dict[int, tuple[int, int]] = {}
 
@@ -411,6 +416,7 @@ class ILPOptimalStrategy(RoutingStrategy):
             api_provider_output_price=api_provider.output_price_per_1k,
             solver_name=self.solver,
             solver_time_limit=self.solver_time_limit,
+            gurobi_license_file=os.environ.get("GRB_LICENSE_FILE"),
         )
 
         # Submit all days to process pool
