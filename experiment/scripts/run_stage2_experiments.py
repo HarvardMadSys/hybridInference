@@ -271,6 +271,12 @@ def main():
         default=None,
         help="Max parallel workers for ILP solving (default: auto = cpu_count)",
     )
+    parser.add_argument(
+        "--latency-slo",
+        type=int,
+        default=0,
+        help="Latency SLO in slots: max queueing delay (0=zero-wait/loss system, -1=unlimited)",
+    )
 
     args = parser.parse_args()
     setup_logging()
@@ -343,7 +349,12 @@ def main():
     # We'll use a larger delta (e.g. 60s) to make it faster for testing, or 1.0s for accuracy.
     # Warning: 1.0s on 30 days of data will be very slow.
     # Let's default to a safe delta or warn.
-    logger.info(f"Running ILP Optimal Strategy (delta={args.delta}s, solver={args.solver})...")
+    # Convert --latency-slo: -1 means unlimited (None), 0+ means that many slots
+    latency_slo = None if args.latency_slo < 0 else args.latency_slo
+    logger.info(
+        f"Running ILP Optimal Strategy (delta={args.delta}s, solver={args.solver}, "
+        f"latency_slo={'unlimited' if latency_slo is None else latency_slo})..."
+    )
     results["ilp_optimal"] = run_single_experiment(
         requests,
         ILPOptimalStrategy,
@@ -356,6 +367,7 @@ def main():
         dataset_name=args.data,
         use_cache=not args.no_cache,
         max_workers=args.workers,
+        latency_slo=latency_slo,
     )
 
     # 2. Baselines

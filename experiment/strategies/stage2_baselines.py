@@ -5,9 +5,14 @@ This module implements baseline strategies:
 - B3: Concurrency-Only (Offline Optimal via ILP) - best possible with only S_C
 - B4: Greedy-Online (FCFS) - practical online approach with both
 
+System Semantics (Zero-wait / Loss system):
+- All strategies use zero-wait semantics: requests cannot be queued.
+- For S_C: if concurrency is full at arrival, request goes to API immediately.
+- B3 uses latency_slo=0 to enforce this constraint in ILP.
+
 Design rationale:
 - B2 uses greedy selection (top-Q by cost) which is provably optimal for S_Q
-- B3 uses ILP with daily_quota=0 to get true S_C-only optimal
+- B3 uses ILP with daily_quota=0 and latency_slo=0 (zero-wait)
 - B4 uses FCFS to show practical dual-subscription without optimization
 - This allows clean comparisons:
   - ILP vs B2: value of adding S_C
@@ -220,7 +225,7 @@ class ConcurrencyOnlyStrategy(RoutingStrategy):
         from experiment.strategies.stage2_optimal import ILPOptimalStrategy
 
         # Create ILP strategy with daily_quota=0 (S_Q disabled)
-        # max_start_delay_slots=0: no queueing, must start immediately or go to API
+        # latency_slo=0: no queueing, must start immediately or go to API
         self._ilp_strategy = ILPOptimalStrategy(
             self.cost_calculator,
             self.quota_manager,
@@ -231,7 +236,7 @@ class ConcurrencyOnlyStrategy(RoutingStrategy):
             dataset_name=f"{self.dataset_name}_conconly" if self.dataset_name else None,
             use_cache=self.use_cache,
             max_workers=self.max_workers,
-            max_start_delay_slots=0,  # Zero-wait: no queueing allowed
+            latency_slo=0,  # Zero-wait: no queueing allowed
         )
 
         # Run ILP optimization
