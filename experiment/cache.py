@@ -97,7 +97,7 @@ def get_ilp_cache_key(
     daily_quota: int,
     concurrency_limit: int,
     solver: str,
-    max_start_delay_slots: int | None = None,
+    latency_slo: int | None = None,
     model_pricing: dict | None = None,
     subscriptions: dict | None = None,
 ) -> str:
@@ -110,7 +110,7 @@ def get_ilp_cache_key(
         daily_quota: Daily quota limit (Q)
         concurrency_limit: Concurrency limit (C)
         solver: Solver name ("cbc" or "gurobi")
-        max_start_delay_slots: Maximum delay slots
+        latency_slo: Latency SLO in slots (0=zero-wait, None=unlimited)
         model_pricing: Model pricing dict (hashed)
         subscriptions: Subscription config (hashed)
 
@@ -119,9 +119,9 @@ def get_ilp_cache_key(
     """
     pricing_hash = _hash_dict(model_pricing)
     sub_hash = _hash_dict(subscriptions)
-    delay_str = str(max_start_delay_slots) if max_start_delay_slots else "none"
+    slo_str = str(latency_slo) if latency_slo is not None else "none"
 
-    return f"{dataset_name}_n{num_requests}_d{delta}_Q{daily_quota}_C{concurrency_limit}_{solver}_delay{delay_str}_p{pricing_hash}_s{sub_hash}"
+    return f"{dataset_name}_n{num_requests}_d{delta}_Q{daily_quota}_C{concurrency_limit}_{solver}_slo{slo_str}_p{pricing_hash}_s{sub_hash}"
 
 
 def get_ilp_cache_path(cache_key: str) -> Path:

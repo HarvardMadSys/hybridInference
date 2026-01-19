@@ -7,6 +7,14 @@ This module implements the offline optimal solution for routing requests across:
 
 The optimization is formulated as a Mixed Integer Linear Program (MILP) that
 jointly optimizes assignment and scheduling to minimize total API cost.
+
+System Semantics:
+- Default: Zero-wait / Loss system (latency_slo=0)
+  Requests must start immediately upon arrival or be routed to API.
+  This models real-world systems where queueing is not allowed.
+- Optional: Queueing allowed (latency_slo>0 or None for unlimited)
+  Requests can be delayed up to latency_slo slots before starting.
+  Use --latency-slo=-1 for sensitivity analysis with unlimited queueing.
 """
 
 import logging
@@ -32,7 +40,7 @@ class ILPParams:
     delta: float
     daily_quota: int
     concurrency_limit: int
-    max_start_delay_slots: int | None
+    latency_slo: int | None  # Max queueing delay in slots (0=zero-wait, None=unlimited)
     sq_supported_models: set[str]
     sc_supported_models: set[str]
     sc_multipliers: dict[str, int]
@@ -137,8 +145,8 @@ def _solve_day_ilp_worker(
 
     for i in range(n):
         latest_start = T - slots_needed[i]
-        if params.max_start_delay_slots is not None:
-            latest_start = min(latest_start, arrival_slots[i] + params.max_start_delay_slots)
+        if params.latency_slo is not None:
+            latest_start = min(latest_start, arrival_slots[i] + params.latency_slo)
         if latest_start < arrival_slots[i]:
             start_windows[i] = range(0, 0)
             active_windows[i] = range(0, 0)
@@ -256,7 +264,7 @@ class ILPOptimalStrategy(RoutingStrategy):
         delta: float = 1.0,
         daily_quota: int = 5000,
         concurrency_limit: int = 8,
-        max_start_delay_slots: int | None = None,
+        latency_slo: int | None = 0,  # Max queueing delay in slots (0=zero-wait, None=unlimited)
         solver: str = "cbc",
         solver_time_limit: int | None = None,
         dataset_name: str | None = None,
@@ -270,7 +278,7 @@ class ILPOptimalStrategy(RoutingStrategy):
             delta: Time slot size in seconds
             daily_quota: Daily quota limit
             concurrency_limit: Maximum concurrent requests (total slots)
-            max_start_delay_slots: Maximum delay slots for request start time
+            latency_slo: Max queueing delay in slots (0=zero-wait/loss system, None=unlimited)
             solver: Solver to use ("cbc" or "gurobi")
             solver_time_limit: Time limit per day in seconds (None = no limit)
             dataset_name: Dataset name for caching (e.g., "freeinference")
@@ -283,7 +291,7 @@ class ILPOptimalStrategy(RoutingStrategy):
         self.concurrency_limit = concurrency_limit
         self.assignments: dict[int, str] = {}  # request_id -> provider type
         self.schedules: dict[int, tuple[int, int]] = {}  # request_id -> (start_time, finish_time)
-        self.max_start_delay_slots = max_start_delay_slots
+        self.latency_slo = latency_slo
         self.solver = solver.lower()
         self.solver_time_limit = solver_time_limit
         self.dataset_name = dataset_name
@@ -369,7 +377,7 @@ class ILPOptimalStrategy(RoutingStrategy):
                 daily_quota=self.daily_quota,
                 concurrency_limit=self.concurrency_limit,
                 solver=self.solver,
-                max_start_delay_slots=self.max_start_delay_slots,
+                latency_slo=self.latency_slo,
                 model_pricing=self.config.get("model_pricing"),
                 subscriptions=self.config.get("subscriptions"),
             )
@@ -410,7 +418,7 @@ class ILPOptimalStrategy(RoutingStrategy):
             delta=self.delta,
             daily_quota=self.daily_quota,
             concurrency_limit=self.concurrency_limit,
-            max_start_delay_slots=self.max_start_delay_slots,
+            latency_slo=self.latency_slo,
             sq_supported_models=self.sq_supported_models,
             sc_supported_models=self.sc_supported_models,
             sc_multipliers=self.sc_multipliers,
