@@ -185,10 +185,20 @@ class ConcurrencyOnlyStrategy(RoutingStrategy):
     Allows clean comparison: ILP vs B3 = value of adding S_Q.
     """
 
-    def __init__(self, *args, concurrency_limit: int = 8, delta: float = 60.0, **kwargs):
+    def __init__(
+        self,
+        *args,
+        concurrency_limit: int = 8,
+        delta: float = 60.0,
+        dataset_name: str | None = None,
+        use_cache: bool = True,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.concurrency_limit = concurrency_limit
         self.delta = delta
+        self.dataset_name = dataset_name
+        self.use_cache = use_cache
         self.assignments: dict[int, str] = {}
         self._ilp_strategy = None
 
@@ -215,6 +225,8 @@ class ConcurrencyOnlyStrategy(RoutingStrategy):
             delta=self.delta,
             daily_quota=0,  # Disable S_Q
             concurrency_limit=self.concurrency_limit,
+            dataset_name=f"{self.dataset_name}_conconly" if self.dataset_name else None,
+            use_cache=self.use_cache,
         )
 
         # Run ILP optimization
