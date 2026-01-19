@@ -261,6 +261,7 @@ class ILPOptimalStrategy(RoutingStrategy):
         solver_time_limit: int | None = None,
         dataset_name: str | None = None,
         use_cache: bool = True,
+        max_workers: int | None = None,
         **kwargs,
     ):
         """Initialize ILP optimal strategy.
@@ -274,6 +275,7 @@ class ILPOptimalStrategy(RoutingStrategy):
             solver_time_limit: Time limit per day in seconds (None = no limit)
             dataset_name: Dataset name for caching (e.g., "freeinference")
             use_cache: Whether to use ILP result caching
+            max_workers: Max parallel workers for ILP solving (None = auto)
         """
         super().__init__(*args, **kwargs)
         self.delta = delta
@@ -285,6 +287,7 @@ class ILPOptimalStrategy(RoutingStrategy):
         self.solver = solver.lower()
         self.solver_time_limit = solver_time_limit
         self.dataset_name = dataset_name
+        self.max_workers = max_workers
         self.use_cache = use_cache
 
         # Load model compatibility from config
@@ -383,7 +386,7 @@ class ILPOptimalStrategy(RoutingStrategy):
                 return
 
         # Determine number of workers
-        max_workers = os.cpu_count() or 4
+        max_workers = self.max_workers if self.max_workers else (os.cpu_count() or 4)
         logger.info(f"Precomputing ILP-optimal routing for {len(requests)} requests")
         logger.info(
             f"Parameters: Q={self.daily_quota}, C={self.concurrency_limit}, "

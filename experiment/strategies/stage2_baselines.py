@@ -192,6 +192,7 @@ class ConcurrencyOnlyStrategy(RoutingStrategy):
         delta: float = 60.0,
         dataset_name: str | None = None,
         use_cache: bool = True,
+        max_workers: int | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -199,6 +200,7 @@ class ConcurrencyOnlyStrategy(RoutingStrategy):
         self.delta = delta
         self.dataset_name = dataset_name
         self.use_cache = use_cache
+        self.max_workers = max_workers
         self.assignments: dict[int, str] = {}
         self._ilp_strategy = None
 
@@ -218,6 +220,7 @@ class ConcurrencyOnlyStrategy(RoutingStrategy):
         from experiment.strategies.stage2_optimal import ILPOptimalStrategy
 
         # Create ILP strategy with daily_quota=0 (S_Q disabled)
+        # max_start_delay_slots=0: no queueing, must start immediately or go to API
         self._ilp_strategy = ILPOptimalStrategy(
             self.cost_calculator,
             self.quota_manager,
@@ -227,6 +230,8 @@ class ConcurrencyOnlyStrategy(RoutingStrategy):
             concurrency_limit=self.concurrency_limit,
             dataset_name=f"{self.dataset_name}_conconly" if self.dataset_name else None,
             use_cache=self.use_cache,
+            max_workers=self.max_workers,
+            max_start_delay_slots=0,  # Zero-wait: no queueing allowed
         )
 
         # Run ILP optimization

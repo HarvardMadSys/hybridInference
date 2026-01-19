@@ -265,6 +265,12 @@ def main():
         action="store_true",
         help="Disable dataset caching (force reload from CSV)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Max parallel workers for ILP solving (default: auto = cpu_count)",
+    )
 
     args = parser.parse_args()
     setup_logging()
@@ -349,6 +355,7 @@ def main():
         solver=args.solver,
         dataset_name=args.data,
         use_cache=not args.no_cache,
+        max_workers=args.workers,
     )
 
     # 2. Baselines
@@ -368,6 +375,7 @@ def main():
         concurrency_limit=args.concurrency,
         delta=args.delta,
         dataset_name=args.data,
+        max_workers=args.workers,
     )
 
     # B4: Greedy Online (no future knowledge)
