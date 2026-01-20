@@ -58,8 +58,8 @@ model_pricing:
   # Llama models (Meta) - OpenRouter pricing
   # Source: https://openrouter.ai/
   llama-3.3-70b-instruct:
-    input: 0.10
-    output: 0.32
+    input: 0.25
+    output: 0.75
   llama-4-scout: # together ai api pricing
     input: 0.18
     output: 0.59
@@ -149,21 +149,37 @@ subscriptions:
       - qwen3-coder-30b
       - minimax-m2
 
-  # S_C: Concurrency Subscription (Featherless)
-  # https://featherless.ai/
-  # Note: Different models consume different concurrency slots (multiplier)
-  # With plan C=4 and multiplier=4, effective concurrency = 1
+  # S_C: Featherless Premium ($25/mo) OR Local GPU (sunk cost $0)
+  # Using $0 to model local GPU deployment
+  # Concurrency cost based on model size: 7B-15B=1, 24B-34B=2, 70B+=4
   featherless:
     type: concurrency
-    monthly_fee: 25.0
-    concurrency_limit: 4  # Total concurrency slots in plan
+    monthly_fee: 0.0       # Local GPU: sunk cost
+    concurrency_limit: 8   # 8 concurrent slots
     supported_models:
+      # 70B+ models (cost=4)
       llama-3.3-70b-instruct:
-        multiplier: 4  # 70B model uses 4 slots
+        multiplier: 4
+      llama-4-maverick:
+        multiplier: 4  # Assuming 70B class
       glm-4.6:
         multiplier: 4
-      minimax-m2:
+      glm-4.5:
         multiplier: 4
+      glm-4.7:
+        multiplier: 4
+      deepseek-r1:
+        multiplier: 4
+      # 30B models (cost=2)
+      qwen3-coder-30b:
+        multiplier: 2
+      minimax-m2:
+        multiplier: 2  # Assuming 30B class
+      # Small models (cost=1)
+      llama-4-scout:
+        multiplier: 1  # Assuming 8B class
+      glm-4.5-air:
+        multiplier: 1
 
 # Output settings
 output:

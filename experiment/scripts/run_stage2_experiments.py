@@ -5,12 +5,10 @@ This script runs the "Phase 2" experiments involving two types of subscriptions:
 1. Daily Quota Subscription (S_Q): Fixed daily quota (e.g., Chutes)
 2. Concurrency Subscription (S_C): Fixed concurrency limit (e.g., Featherless)
 
-Algorithms:
-- ILP Optimal: Jointly optimizes assignment and scheduling (Offline Optimal)
-- Baselines from stage2_baselines.py:
-    - Daily-Quota-Only (B2): Offline optimal for S_Q only
-    - Concurrency-Only (B3): Offline optimal for S_C only
-    - Greedy-Online (B4): Online decision without future knowledge
+All strategies are OFFLINE (have perfect future knowledge):
+- ILP Optimal: Jointly optimizes assignment and scheduling
+- Daily-Quota-Only (B2): Offline optimal for S_Q only
+- Concurrency-Only (B3): Offline optimal for S_C only
 """
 
 import argparse
@@ -36,7 +34,6 @@ from experiment.simulator import OfflineSimulator, SimulationResult
 from experiment.strategies.stage2_baselines import (
     ConcurrencyOnlyStrategy,
     DailyQuotaOnlyStrategy,
-    GreedyOnlineStrategy,
 )
 from experiment.strategies.stage2_optimal import ILPOptimalStrategy
 
@@ -69,7 +66,7 @@ def create_dual_config(
     daily_quota: int = 5000,
     concurrency_limit: int = 4,
     sq_monthly_fee: float = 20.0,  # S_Q fee (Chutes $20/mo)
-    sc_monthly_fee: float = 25.0,  # S_C fee (Featherless $25/mo)
+    sc_monthly_fee: float = 0.0,  # S_C fee (Local GPU, sunk cost)
     model_pricing: dict | None = None,
     subscriptions: dict | None = None,
 ) -> dict:
@@ -244,7 +241,7 @@ def main():
     )
     parser.add_argument("--daily-quota", type=int, default=5000, help="Daily quota for S_Q")
     parser.add_argument(
-        "--concurrency", type=int, default=4, help="Concurrency limit for S_C (Featherless plan)"
+        "--concurrency", type=int, default=8, help="Concurrency limit for S_C (Local GPU: 8)"
     )
     parser.add_argument("--limit", type=int, default=None, help="Limit number of requests")
     parser.add_argument(
@@ -298,10 +295,24 @@ def main():
     if subscriptions:
         logger.info(f"Model compatibility loaded: {len(subscriptions)} subscription types")
 
+    # Read S_Q and S_C monthly fees from config
+    sq_monthly_fee = 20.0  # Default Chutes
+    sc_monthly_fee = 0.0   # Default Local GPU
+    if subscriptions:
+        chutes_config = subscriptions.get("chutes", {})
+        featherless_config = subscriptions.get("featherless", {})
+        sq_monthly_fee = chutes_config.get("monthly_fee", 20.0)
+        sc_monthly_fee = featherless_config.get("monthly_fee", 0.0)
+        # Also get concurrency from config if not overridden
+        if args.concurrency == 8:  # Default value, use config
+            args.concurrency = featherless_config.get("concurrency_limit", 8)
+
     # Create config
     config = create_dual_config(
         daily_quota=args.daily_quota,
         concurrency_limit=args.concurrency,
+        sq_monthly_fee=sq_monthly_fee,
+        sc_monthly_fee=sc_monthly_fee,
         model_pricing=model_pricing,
         subscriptions=subscriptions,
     )
@@ -388,16 +399,6 @@ def main():
         delta=args.delta,
         dataset_name=args.data,
         max_workers=args.workers,
-    )
-
-    # B4: Greedy Online (no future knowledge)
-    results["greedy_online"] = run_single_experiment(
-        requests,
-        GreedyOnlineStrategy,
-        config,
-        "Greedy-Online",
-        daily_quota=args.daily_quota,
-        concurrency_limit=args.concurrency,
     )
 
     # Save Results (per dataset)
