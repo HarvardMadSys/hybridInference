@@ -1,0 +1,75 @@
+nohup: ignoring input
+==========================================
+Running Stage 2 Experiments (delta=60s)
+==========================================
+Set GRB_LICENSE_FILE=/home/murphy/gurobi.lic
+
+==========================================
+[1/2] Running RedNote dataset...
+==========================================
+01:00:30 - INFO - Loaded configuration from config/experiment.yaml
+01:00:30 - INFO -   Providers: 2
+01:00:30 - INFO -   Strategies: 1
+01:00:30 - INFO - Multi-model pricing ENABLED (loaded from experiment.yaml)
+01:00:30 - INFO - Model compatibility loaded: 2 subscription types
+01:00:30 - INFO - Loading cached dataset from experiment/cache/dataset/rednote.pkl (cached at 2026-01-18 06:16:14)
+01:00:31 - INFO - Loaded 54599 requests from cache
+01:00:31 - INFO - Loaded 54,599 requests
+01:00:31 - INFO - Running ILP Optimal Strategy (delta=60.0s, solver=gurobi)...
+01:00:31 - INFO - Running ILP-Optimal...
+01:00:31 - INFO - Model compatibility loaded:
+01:00:31 - INFO -   S_Q (Chutes): 10 models
+01:00:31 - INFO -   S_C (Featherless): 3 models, multipliers: {'llama-3.3-70b-instruct': 4, 'glm-4.6': 4, 'minimax-m2': 4}
+01:00:31 - INFO - Starting simulation with ILP-Optimal strategy on 54599 requests
+01:00:31 - INFO - Loading cached ILP result from experiment/cache/ilp/rednote_n54599_d60.0_Q5000_C4_gurobi_delaynone_p160da990_s12d176df.json
+01:00:31 - INFO - Loaded ILP cache: 54599 assignments, 667 schedules
+01:00:31 - INFO - Loaded from cache: 6727 daily quota, 667 concurrency, 47205 API
+Routing (ILP-Optimal):   0%|                                             | 0/54599 [00:00<?, ?req/s]Routing (ILP-Optimal): 100%|█████████████████████████████| 54599/54599 [00:00<00:00, 597201.83req/s]
+01:00:31 - INFO - Simulation complete: Total cost $8382.78 (subscription $56.00, API $8326.78), Quota utilization 2.4%, Runtime 0.11s
+01:00:31 - INFO - Corrected Cost for ILP-Optimal: $126.00 (S_Q: $56.00, S_C: $70.00)
+01:00:31 - INFO - Total Cost: $8452.78
+01:00:31 - INFO - Running Baselines...
+01:00:31 - INFO - Running Daily-Quota-Only...
+01:00:31 - INFO - Starting simulation with Daily-Quota-Only strategy on 54599 requests
+01:00:31 - INFO - Precomputing Daily-Quota-Only (Optimal) for 54599 requests
+01:00:31 - INFO -   Model compatibility: 9862/54599 for S_Q
+01:00:31 - INFO - Daily-Quota-Only: 6731 daily, 47868 API
+Routing (Daily-Quota-Only):   0%|                                        | 0/54599 [00:00<?, ?req/s]Routing (Daily-Quota-Only): 100%|████████████████████████| 54599/54599 [00:00<00:00, 636780.69req/s]
+01:00:31 - INFO - Simulation complete: Total cost $8393.74 (subscription $56.00, API $8337.74), Quota utilization 2.4%, Runtime 0.22s
+01:00:31 - INFO - Corrected Cost for Daily-Quota-Only: $56.00 (S_Q: $56.00, S_C: $0.00)
+01:00:31 - INFO - Total Cost: $8393.74
+01:00:31 - INFO - Running Concurrency-Only...
+01:00:31 - INFO - Starting simulation with Concurrency-Only strategy on 54599 requests
+01:00:31 - INFO - Precomputing Concurrency-Only (ILP Optimal) for 54599 requests
+01:00:31 - INFO - Model compatibility loaded:
+01:00:31 - INFO -   S_Q (Chutes): 10 models
+01:00:31 - INFO -   S_C (Featherless): 3 models, multipliers: {'llama-3.3-70b-instruct': 4, 'glm-4.6': 4, 'minimax-m2': 4}
+01:00:31 - INFO - Precomputing ILP-optimal routing for 54599 requests
+01:00:31 - INFO - Parameters: Q=0, C=4, delta=60.0s, workers=64
+01:00:31 - INFO - Solving ILP for 54 days in parallel
+ILP solving days:   0%|                                                     | 0/54 [00:00<?, ?day/s]ILP solving days:  20%|████████▊                                  | 11/54 [00:00<00:00, 104.42day/s]ILP solving days:  41%|█████████████████▉                          | 22/54 [00:01<00:03, 10.24day/s]ILP solving days:  50%|██████████████████████                      | 27/54 [00:02<00:02,  9.09day/s]ILP solving days:  56%|████████████████████████▍                   | 30/54 [00:03<00:03,  6.22day/s]ILP solving days:  59%|██████████████████████████                  | 32/54 [00:04<00:05,  4.32day/s]ILP solving days:  63%|███████████████████████████▋                | 34/54 [00:05<00:05,  3.54day/s]ILP solving days:  65%|████████████████████████████▌               | 35/54 [00:06<00:05,  3.50day/s]ILP solving days:  67%|█████████████████████████████▎              | 36/54 [00:08<00:09,  1.98day/s]ILP solving days:  69%|██████████████████████████████▏             | 37/54 [00:08<00:08,  1.94day/s]ILP solving days:  70%|██████████████████████████████▉             | 38/54 [00:08<00:07,  2.14day/s]ILP solving days:  72%|███████████████████████████████▊            | 39/54 [00:09<00:07,  2.00day/s]ILP solving days:  74%|████████████████████████████████▌           | 40/54 [00:09<00:06,  2.10day/s]ILP solving days:  76%|█████████████████████████████████▍          | 41/54 [00:10<00:05,  2.34day/s]ILP solving days:  80%|███████████████████████████████████         | 43/54 [00:12<00:06,  1.60day/s]ILP solving days:  81%|███████████████████████████████████▊        | 44/54 [00:12<00:05,  1.81day/s]ILP solving days:  83%|████████████████████████████████████▋       | 45/54 [00:17<00:15,  1.67s/day]ILP solving days:  85%|█████████████████████████████████████▍      | 46/54 [00:21<00:17,  2.18s/day]ILP solving days:  87%|██████████████████████████████████████▎     | 47/54 [00:30<00:28,  4.03s/day]ILP solving days:  89%|███████████████████████████████████████     | 48/54 [00:30<00:18,  3.07s/day]ILP solving days:  91%|███████████████████████████████████████▉    | 49/54 [01:03<00:58, 11.71s/day]ILP solving days:  93%|████████████████████████████████████████▋   | 50/54 [01:11<00:42, 10.62s/day]ILP solving days:  94%|█████████████████████████████████████████▌  | 51/54 [02:04<01:08, 22.97s/day]ILP solving days:  96%|██████████████████████████████████████████▎ | 52/54 [02:16<00:39, 19.67s/day]ILP solving days:  98%|██████████████████████████████████████████▏| 53/54 [08:48<02:09, 129.96s/day]ILP solving days: 100%|████████████████████████████████████████| 54/54 [2:01:31<00:00, 2103.02s/day]ILP solving days: 100%|█████████████████████████████████████████| 54/54 [2:01:31<00:00, 135.03s/day]
+03:02:03 - INFO - Saving ILP cache to experiment/cache/ilp/rednote_conconly_n54599_d60.0_Q0_C4_cbc_delaynone_p160da990_s12d176df.json
+03:02:03 - INFO - Cached 54599 assignments, 2014 schedules
+03:02:03 - INFO - ILP optimization complete: 0 daily quota, 2014 concurrency, 52585 API
+03:02:03 - INFO - Concurrency-Only: 2014 concurrency, 52585 API
+Routing (Concurrency-Only):   0%|                                        | 0/54599 [00:00<?, ?req/s]Routing (Concurrency-Only): 100%|████████████████████████| 54599/54599 [00:00<00:00, 647169.48req/s]
+03:02:03 - INFO - Simulation complete: Total cost $8520.85 (subscription $56.00, API $8464.85), Quota utilization 0.0%, Runtime 7292.05s
+03:02:03 - INFO - Corrected Cost for Concurrency-Only: $70.00 (S_Q: $0.00, S_C: $70.00)
+03:02:03 - INFO - Total Cost: $8534.85
+03:02:03 - INFO - Running Greedy-Online...
+03:02:03 - INFO - Starting simulation with Greedy-Online strategy on 54599 requests
+03:02:03 - INFO - Greedy-Online: no precomputation (online strategy)
+03:02:03 - INFO -   S_Q models: 10, S_C models: 3
+Routing (Greedy-Online):   0%|                                           | 0/54599 [00:00<?, ?req/s]Routing (Greedy-Online):  90%|████████████████████████▎  | 49223/54599 [00:00<00:00, 428533.35req/s]Routing (Greedy-Online): 100%|███████████████████████████| 54599/54599 [00:00<00:00, 436092.47req/s]
+03:02:03 - INFO - Simulation complete: Total cost $8416.88 (subscription $56.00, API $8360.88), Quota utilization 2.4%, Runtime 0.13s
+03:02:03 - INFO - Corrected Cost for Greedy-Online: $126.00 (S_Q: $56.00, S_C: $70.00)
+03:02:03 - INFO - Total Cost: $8486.88
+03:02:03 - INFO - Results saved to experiment/results/stage2/stage2_results_rednote.json
+
+============================================================
+STAGE 2 EXPERIMENT SUMMARY
+============================================================
+ilp_optimal                   : $8452.78
+daily_quota_only              : $8393.74
+concurrency_only              : $8534.85
+greedy_online                 : $8486.88

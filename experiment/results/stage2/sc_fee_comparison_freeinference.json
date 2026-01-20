@@ -1,0 +1,152 @@
+{
+  "Local GPU ($0/mo, C=8)": {
+    "ilp_optimal": {
+      "strategy": "ILP-Optimal",
+      "costs": {
+        "total": 27.7827,
+        "subscription": 14.6667,
+        "api": 13.116
+      },
+      "requests": {
+        "total": 100000,
+        "subscription": 61723,
+        "api": 38277
+      },
+      "quota_utilization": 0.1789,
+      "num_days": 22,
+      "runtime_seconds": 87.13
+    },
+    "daily_quota_only": {
+      "strategy": "Daily-Quota-Only",
+      "costs": {
+        "total": 30.7103,
+        "subscription": 14.6667,
+        "api": 16.0436
+      },
+      "requests": {
+        "total": 100000,
+        "subscription": 34716,
+        "api": 65284
+      },
+      "quota_utilization": 0.3857,
+      "num_days": 22,
+      "runtime_seconds": 0.5
+    },
+    "concurrency_only": {
+      "strategy": "Concurrency-Only",
+      "costs": {
+        "total": 17.1103,
+        "subscription": 0.0,
+        "api": 17.1103
+      },
+      "requests": {
+        "total": 100000,
+        "subscription": 48898,
+        "api": 51102
+      },
+      "quota_utilization": 0.0,
+      "num_days": 22,
+      "runtime_seconds": 78.62
+    }
+  },
+  "Featherless Premium ($25/mo, C=4)": {
+    "ilp_optimal": {
+      "strategy": "ILP-Optimal",
+      "costs": {
+        "total": 46.6869,
+        "subscription": 33.0,
+        "api": 13.6869
+      },
+      "requests": {
+        "total": 100000,
+        "subscription": 55818,
+        "api": 44182
+      },
+      "quota_utilization": 0.3411,
+      "num_days": 22,
+      "runtime_seconds": 44.99
+    },
+    "daily_quota_only": {
+      "strategy": "Daily-Quota-Only",
+      "costs": {
+        "total": 30.7103,
+        "subscription": 14.6667,
+        "api": 16.0436
+      },
+      "requests": {
+        "total": 100000,
+        "subscription": 34716,
+        "api": 65284
+      },
+      "quota_utilization": 0.3857,
+      "num_days": 22,
+      "runtime_seconds": 0.49
+    },
+    "concurrency_only": {
+      "strategy": "Concurrency-Only",
+      "costs": {
+        "total": 38.9633,
+        "subscription": 18.3333,
+        "api": 20.63
+      },
+      "requests": {
+        "total": 100000,
+        "subscription": 33873,
+        "api": 66127
+      },
+      "quota_utilization": 0.0,
+      "num_days": 22,
+      "runtime_seconds": 47.91
+    }
+  },
+  "Featherless Scale ($75/mo, C=8)": {
+    "ilp_optimal": {
+      "strategy": "ILP-Optimal",
+      "costs": {
+        "total": 82.7827,
+        "subscription": 69.6667,
+        "api": 13.116
+      },
+      "requests": {
+        "total": 100000,
+        "subscription": 61723,
+        "api": 38277
+      },
+      "quota_utilization": 0.1789,
+      "num_days": 22,
+      "runtime_seconds": 87.49
+    },
+    "daily_quota_only": {
+      "strategy": "Daily-Quota-Only",
+      "costs": {
+        "total": 30.7103,
+        "subscription": 14.6667,
+        "api": 16.0436
+      },
+      "requests": {
+        "total": 100000,
+        "subscription": 34716,
+        "api": 65284
+      },
+      "quota_utilization": 0.3857,
+      "num_days": 22,
+      "runtime_seconds": 0.49
+    },
+    "concurrency_only": {
+      "strategy": "Concurrency-Only",
+      "costs": {
+        "total": 72.1103,
+        "subscription": 55.0,
+        "api": 17.1103
+      },
+      "requests": {
+        "total": 100000,
+        "subscription": 48898,
+        "api": 51102
+      },
+      "quota_utilization": 0.0,
+      "num_days": 22,
+      "runtime_seconds": 78.73
+    }
+  }
+}

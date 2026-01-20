@@ -1,0 +1,119 @@
+nohup: ignoring input
+05:40:35 - INFO - Loaded configuration from config/experiment.yaml
+05:40:35 - INFO -   Providers: 2
+05:40:35 - INFO -   Strategies: 1
+05:40:35 - INFO - Multi-model pricing ENABLED (loaded from experiment.yaml)
+05:40:35 - INFO - Model compatibility loaded: 2 subscription types
+05:40:35 - INFO - Loading cached dataset from experiment/cache/dataset/freeinference.pkl (cached at 2026-01-18 07:53:06)
+05:40:36 - INFO - Loaded 371214 requests from cache
+05:40:36 - INFO - Loaded 371,214 requests
+05:40:36 - INFO - Running ILP Optimal Strategy (delta=60.0s, solver=gurobi, latency_slo=0)...
+05:40:36 - INFO - Running ILP-Optimal...
+05:40:36 - INFO - Model compatibility loaded:
+05:40:36 - INFO -   S_Q (Chutes): 10 models
+05:40:36 - INFO -   S_C (Featherless): 3 models, multipliers: {'llama-3.3-70b-instruct': 4, 'glm-4.6': 4, 'minimax-m2': 4}
+05:40:36 - INFO - Starting simulation with ILP-Optimal strategy on 371214 requests
+05:40:36 - INFO - Precomputing ILP-optimal routing for 371214 requests
+05:40:36 - INFO - Parameters: Q=5000, C=4, delta=60.0s, workers=8
+05:40:36 - INFO - Solving ILP for 63 days in parallel
+ILP solving days:   0%|                                                     | 0/63 [00:00<?, ?day/s]Set parameter Username
+05:40:36 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+05:40:36 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+05:40:36 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+05:40:36 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+05:40:36 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+05:40:36 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+05:40:36 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+05:40:36 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+05:40:36 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+05:40:36 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+05:40:36 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+05:40:36 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+05:40:36 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+05:40:36 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+05:40:36 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:   8%|███▌                                         | 5/63 [00:00<00:01, 34.79day/s]Set parameter Username
+05:40:36 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+05:40:36 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+05:40:36 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  14%|██████▍                                      | 9/63 [00:00<00:02, 24.47day/s]Set parameter Username
+05:40:37 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+05:40:37 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+05:40:37 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  19%|████████▍                                   | 12/63 [00:01<00:06,  8.09day/s]Set parameter Username
+05:40:37 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+05:40:37 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+05:40:37 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  22%|█████████▊                                  | 14/63 [00:02<00:12,  4.08day/s]ILP solving days:  25%|███████████▏                                | 16/63 [00:02<00:09,  4.71day/s]ILP solving days:  27%|███████████▊                                | 17/63 [00:02<00:09,  4.86day/s]ILP solving days:  29%|████████████▌                               | 18/63 [00:03<00:15,  2.86day/s]ILP solving days:  30%|█████████████▎                              | 19/63 [00:05<00:26,  1.69day/s]ILP solving days:  32%|█████████████▉                              | 20/63 [00:05<00:24,  1.75day/s]ILP solving days:  44%|███████████████████▌                        | 28/63 [00:05<00:05,  6.01day/s]ILP solving days:  56%|████████████████████████▍                   | 35/63 [00:05<00:02, 10.56day/s]ILP solving days:  65%|████████████████████████████▋               | 41/63 [00:06<00:01, 14.86day/s]ILP solving days:  81%|███████████████████████████████████▌        | 51/63 [00:06<00:00, 23.85day/s]ILP solving days:  92%|████████████████████████████████████████▌   | 58/63 [00:06<00:00, 21.66day/s]ILP solving days: 100%|████████████████████████████████████████████| 63/63 [00:13<00:00,  2.53day/s]ILP solving days: 100%|████████████████████████████████████████████| 63/63 [00:13<00:00,  4.52day/s]
+05:40:50 - INFO - Saving ILP cache to experiment/cache/ilp/freeinference_n371214_d60.0_Q5000_C4_gurobi_slo0_p160da990_s12d176df.json
+05:40:50 - INFO - Cached 371214 assignments, 4948 schedules
+05:40:50 - INFO - ILP optimization complete: 88180 daily quota, 4948 concurrency, 278086 API
+Routing (ILP-Optimal):   0%|                                            | 0/371214 [00:00<?, ?req/s]Routing (ILP-Optimal):  12%|███▍                        | 45279/371214 [00:00<00:00, 452769.92req/s]Routing (ILP-Optimal):  24%|██████▊                     | 90556/371214 [00:00<00:00, 435542.03req/s]Routing (ILP-Optimal):  36%|█████████▊                 | 134155/371214 [00:00<00:00, 404935.49req/s]Routing (ILP-Optimal):  54%|██████████████▌            | 200818/371214 [00:00<00:00, 502392.01req/s]Routing (ILP-Optimal):  68%|██████████████████▎        | 251770/371214 [00:00<00:00, 436679.95req/s]Routing (ILP-Optimal):  85%|███████████████████████    | 317184/371214 [00:00<00:00, 501969.60req/s]Routing (ILP-Optimal):  99%|██████████████████████████▊| 369291/371214 [00:00<00:00, 417635.62req/s]Routing (ILP-Optimal): 100%|███████████████████████████| 371214/371214 [00:00<00:00, 440228.89req/s]
+05:40:51 - INFO - Simulation complete: Total cost $97.43 (subscription $60.00, API $37.43), Quota utilization 27.6%, Runtime 15.27s
+05:40:51 - INFO - Corrected Cost for ILP-Optimal: $135.00 (S_Q: $60.00, S_C: $75.00)
+05:40:51 - INFO - Total Cost: $172.43
+05:40:51 - INFO - Running Baselines...
+05:40:51 - INFO - Running Daily-Quota-Only...
+05:40:51 - INFO - Starting simulation with Daily-Quota-Only strategy on 371214 requests
+05:40:51 - INFO - Precomputing Daily-Quota-Only (Optimal) for 371214 requests
+05:40:51 - INFO -   Model compatibility: 335666/371214 for S_Q
+05:40:52 - INFO - Daily-Quota-Only: 88286 daily, 282928 API
+Routing (Daily-Quota-Only):   0%|                                       | 0/371214 [00:00<?, ?req/s]Routing (Daily-Quota-Only):  19%|████▎                  | 69628/371214 [00:00<00:00, 696255.76req/s]Routing (Daily-Quota-Only):  38%|████████▎             | 139254/371214 [00:00<00:00, 550729.35req/s]Routing (Daily-Quota-Only):  53%|███████████▋          | 196185/371214 [00:00<00:00, 482994.38req/s]Routing (Daily-Quota-Only):  67%|██████████████▊       | 250232/371214 [00:00<00:00, 421725.52req/s]Routing (Daily-Quota-Only):  86%|██████████████████▊   | 318397/371214 [00:00<00:00, 495537.46req/s]Routing (Daily-Quota-Only): 100%|█████████████████████▉| 370844/371214 [00:00<00:00, 410085.62req/s]Routing (Daily-Quota-Only): 100%|██████████████████████| 371214/371214 [00:00<00:00, 451899.07req/s]
+05:40:53 - INFO - Simulation complete: Total cost $98.04 (subscription $60.00, API $38.04), Quota utilization 27.6%, Runtime 1.83s
+05:40:53 - INFO - Corrected Cost for Daily-Quota-Only: $60.00 (S_Q: $60.00, S_C: $0.00)
+05:40:53 - INFO - Total Cost: $98.04
+05:40:53 - INFO - Running Concurrency-Only...
+05:40:53 - INFO - Starting simulation with Concurrency-Only strategy on 371214 requests
+05:40:53 - INFO - Precomputing Concurrency-Only (ILP Optimal) for 371214 requests
+05:40:53 - INFO - Model compatibility loaded:
+05:40:53 - INFO -   S_Q (Chutes): 10 models
+05:40:53 - INFO -   S_C (Featherless): 3 models, multipliers: {'llama-3.3-70b-instruct': 4, 'glm-4.6': 4, 'minimax-m2': 4}
+05:40:53 - INFO - Precomputing ILP-optimal routing for 371214 requests
+05:40:53 - INFO - Parameters: Q=0, C=4, delta=60.0s, workers=8
+05:40:53 - INFO - Solving ILP for 63 days in parallel
+ILP solving days:   0%|                                                     | 0/63 [00:00<?, ?day/s]ILP solving days:  10%|████▎                                        | 6/63 [00:00<00:01, 47.67day/s]ILP solving days:  17%|███████▋                                    | 11/63 [00:01<00:05,  9.20day/s]ILP solving days:  22%|█████████▊                                  | 14/63 [00:02<00:08,  5.47day/s]ILP solving days:  25%|███████████▏                                | 16/63 [00:02<00:09,  4.90day/s]ILP solving days:  27%|███████████▊                                | 17/63 [00:02<00:08,  5.15day/s]ILP solving days:  29%|████████████▌                               | 18/63 [00:03<00:11,  3.97day/s]ILP solving days:  30%|█████████████▎                              | 19/63 [00:04<00:21,  2.09day/s]ILP solving days:  41%|██████████████████▏                         | 26/63 [00:04<00:06,  5.79day/s]ILP solving days:  46%|████████████████████▎                       | 29/63 [00:04<00:04,  7.13day/s]ILP solving days:  54%|███████████████████████▋                    | 34/63 [00:05<00:02, 10.85day/s]ILP solving days:  62%|███████████████████████████▏                | 39/63 [00:05<00:01, 14.93day/s]ILP solving days:  68%|██████████████████████████████              | 43/63 [00:05<00:01, 14.97day/s]ILP solving days:  73%|████████████████████████████████▏           | 46/63 [00:05<00:01, 15.42day/s]ILP solving days:  81%|███████████████████████████████████▌        | 51/63 [00:05<00:00, 19.26day/s]ILP solving days:  90%|███████████████████████████████████████▊    | 57/63 [00:05<00:00, 25.90day/s]ILP solving days:  97%|██████████████████████████████████████████▌ | 61/63 [00:11<00:00,  2.55day/s]ILP solving days: 100%|████████████████████████████████████████████| 63/63 [00:15<00:00,  3.98day/s]
+05:41:09 - INFO - Saving ILP cache to experiment/cache/ilp/freeinference_conconly_n371214_d60.0_Q0_C4_cbc_slo0_p160da990_s12d176df.json
+05:41:09 - INFO - Cached 371214 assignments, 5943 schedules
+05:41:09 - INFO - ILP optimization complete: 0 daily quota, 5943 concurrency, 365271 API
+05:41:09 - INFO - Concurrency-Only: 5943 concurrency, 365271 API
+Routing (Concurrency-Only):   0%|                                       | 0/371214 [00:00<?, ?req/s]Routing (Concurrency-Only):  22%|█████                  | 82394/371214 [00:00<00:00, 823911.32req/s]Routing (Concurrency-Only):  44%|█████████▊            | 164786/371214 [00:00<00:00, 622798.02req/s]Routing (Concurrency-Only):  62%|█████████████▋        | 230001/371214 [00:00<00:00, 524068.89req/s]Routing (Concurrency-Only):  85%|██████████████████▋   | 314700/371214 [00:00<00:00, 625585.33req/s]Routing (Concurrency-Only): 100%|██████████████████████| 371214/371214 [00:00<00:00, 545475.63req/s]
+05:41:10 - INFO - Simulation complete: Total cost $202.98 (subscription $60.00, API $142.98), Quota utilization 0.0%, Runtime 16.99s
+05:41:10 - INFO - Corrected Cost for Concurrency-Only: $75.00 (S_Q: $0.00, S_C: $75.00)
+05:41:10 - INFO - Total Cost: $217.98
+05:41:10 - INFO - Running Greedy-Online...
+05:41:10 - INFO - Starting simulation with Greedy-Online strategy on 371214 requests
+05:41:10 - INFO - Greedy-Online: no precomputation (online strategy)
+05:41:10 - INFO -   S_Q models: 10, S_C models: 3
+Routing (Greedy-Online):   0%|                                          | 0/371214 [00:00<?, ?req/s]Routing (Greedy-Online):  15%|███▉                      | 56869/371214 [00:00<00:00, 568671.56req/s]Routing (Greedy-Online):  31%|███████▋                 | 113737/371214 [00:00<00:00, 457844.91req/s]Routing (Greedy-Online):  45%|███████████▎             | 168337/371214 [00:00<00:00, 493412.79req/s]Routing (Greedy-Online):  59%|██████████████▋          | 218869/371214 [00:00<00:00, 411357.23req/s]Routing (Greedy-Online):  74%|██████████████████▍      | 274428/371214 [00:00<00:00, 454843.36req/s]Routing (Greedy-Online):  87%|█████████████████████▋   | 322119/371214 [00:00<00:00, 378024.78req/s]Routing (Greedy-Online): 100%|█████████████████████████| 371214/371214 [00:00<00:00, 433985.31req/s]
+05:41:11 - INFO - Simulation complete: Total cost $108.85 (subscription $60.00, API $48.85), Quota utilization 27.6%, Runtime 0.86s
+05:41:11 - INFO - Corrected Cost for Greedy-Online: $135.00 (S_Q: $60.00, S_C: $75.00)
+05:41:11 - INFO - Total Cost: $183.85
+05:41:11 - INFO - Results saved to experiment/results/stage2/stage2_results_freeinference.json
+
+============================================================
+STAGE 2 EXPERIMENT SUMMARY
+============================================================
+ilp_optimal                   : $172.43
+daily_quota_only              : $98.04
+concurrency_only              : $217.98
+greedy_online                 : $183.85

@@ -1,0 +1,66 @@
+2{
+  "ilp_optimal": {
+    "strategy": "ILP-Optimal",
+    "costs": {
+      "total": 8452.7793,
+      "subscription": 126.0,
+      "api": 8326.7793
+    },
+    "requests": {
+      "total": 54599,
+      "subscription": 7394,
+      "api": 47205
+    },
+    "quota_utilization": 0.0245,
+    "num_days": 84,
+    "runtime_seconds": 248.71
+  },
+  "daily_quota_only": {
+    "strategy": "Daily-Quota-Only",
+    "costs": {
+      "total": 8393.7408,
+      "subscription": 56.0,
+      "api": 8337.7408
+    },
+    "requests": {
+      "total": 54599,
+      "subscription": 6731,
+      "api": 47868
+    },
+    "quota_utilization": 0.0245,
+    "num_days": 84,
+    "runtime_seconds": 0.26
+  },
+  "concurrency_only": {
+    "strategy": "Concurrency-Only",
+    "costs": {
+      "total": 8534.8511,
+      "subscription": 70.0,
+      "api": 8464.8511
+    },
+    "requests": {
+      "total": 54599,
+      "subscription": 2014,
+      "api": 52585
+    },
+    "quota_utilization": 0.0,
+    "num_days": 84,
+    "runtime_seconds": 7315.7
+  },
+  "greedy_online": {
+    "strategy": "Greedy-Online",
+    "costs": {
+      "total": 8486.8807,
+      "subscription": 126.0,
+      "api": 8360.8807
+    },
+    "requests": {
+      "total": 54599,
+      "subscription": 7616,
+      "api": 46983
+    },
+    "quota_utilization": 0.0245,
+    "num_days": 84,
+    "runtime_seconds": 0.12
+  }
+}
