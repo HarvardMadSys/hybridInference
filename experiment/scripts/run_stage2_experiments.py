@@ -241,7 +241,14 @@ def main():
     )
     parser.add_argument("--daily-quota", type=int, default=5000, help="Daily quota for S_Q")
     parser.add_argument(
-        "--concurrency", type=int, default=8, help="Concurrency limit for S_C (Local GPU: 8)"
+        "--sc-config",
+        type=str,
+        choices=["local_gpu", "featherless_premium", "featherless_scale"],
+        default="local_gpu",
+        help="S_C configuration: local_gpu ($0, C=8), featherless_premium ($25, C=4), featherless_scale ($75, C=8)",
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=None, help="Override concurrency limit (default: from --sc-config)"
     )
     parser.add_argument("--limit", type=int, default=None, help="Limit number of requests")
     parser.add_argument(
@@ -295,17 +302,25 @@ def main():
     if subscriptions:
         logger.info(f"Model compatibility loaded: {len(subscriptions)} subscription types")
 
-    # Read S_Q and S_C monthly fees from config
+    # Read S_Q and S_C configuration
     sq_monthly_fee = 20.0  # Default Chutes
     sc_monthly_fee = 0.0   # Default Local GPU
+    sc_concurrency = 8     # Default concurrency
     if subscriptions:
+        # S_Q config (Chutes)
         chutes_config = subscriptions.get("chutes", {})
-        featherless_config = subscriptions.get("featherless", {})
         sq_monthly_fee = chutes_config.get("monthly_fee", 20.0)
-        sc_monthly_fee = featherless_config.get("monthly_fee", 0.0)
-        # Also get concurrency from config if not overridden
-        if args.concurrency == 8:  # Default value, use config
-            args.concurrency = featherless_config.get("concurrency_limit", 8)
+
+        # S_C config (from --sc-config parameter)
+        sc_config = subscriptions.get(args.sc_config, {})
+        sc_monthly_fee = sc_config.get("monthly_fee", 0.0)
+        sc_concurrency = sc_config.get("concurrency_limit", 8)
+        logger.info(f"S_C config: {args.sc_config} (${sc_monthly_fee}/mo, C={sc_concurrency})")
+
+    # Allow command-line override of concurrency
+    if args.concurrency is not None:
+        sc_concurrency = args.concurrency
+    args.concurrency = sc_concurrency
 
     # Create config
     config = create_dual_config(

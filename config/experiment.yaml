@@ -1,90 +1,33 @@
 # Experiment Configuration
-# Main configuration for offline routing experiments
-# Currently configured for single model (ChatGPT) experiments
+# Stage 2: Dual-subscription routing optimization
 
-models:
-  # Subscription provider (Chutes) - assumes it can serve ChatGPT
-  - id: chutes-subscription
-    name: "Chutes Subscription"
-    provider: chutes
-    type: subscription
-    pricing:
-      monthly_fee: "20.0"      # $20/month
-      daily_quota: 5000        # 5000 requests per day
-
-  # API provider - ChatGPT pricing
-  - id: openai-chatgpt
-    name: "OpenAI ChatGPT"
-    provider: openai
-    provider_model_id: "gpt-3.5-turbo"
-    type: api
-    pricing:
-      prompt: "1.5"            # $1.5 per 1M input tokens
-      completion: "2.0"        # $2.0 per 1M output tokens
-
-# Simulation settings
-simulation:
-  num_subscriptions: 1         # Number of subscription accounts
-  days_per_month: 30           # Days per month for cost calculation
-  default_subscription: "chutes-subscription"
-  default_api_fallback: "openai-chatgpt"
-
-# Strategy configurations
-strategies:
-  # Phase 1: Optimal strategy
-  - name: optimal
-    enabled: true
-
-  # Phase 2: Greedy (to be implemented)
-  # - name: greedy
-  #   enabled: false
-
-  # Phase 3: TwoStep (to be implemented)
-  # - name: two_step
-  #   enabled: false
-
-# Dataset configuration
-dataset:
-  path: "data/community_logs.csv"
-  timestamp_unit: "seconds"    # Timestamp unit in CSV
-
-  # Filter to only load requests for this model (set to null for all models)
-  filter_model: null           # Options: specific model name, or null for all models
-
-# Multi-model API pricing (per 1M tokens)
-# Used when calculating API cost for different models
-# Prices updated: 2025-01
+# API pricing per 1M tokens
+# Used for calculating pay-as-you-go API costs
 model_pricing:
-  # Llama models (Meta) - OpenRouter pricing
-  # Source: https://openrouter.ai/
+  # Llama models - OpenRouter pricing
   llama-3.3-70b-instruct:
     input: 0.25
     output: 0.75
-  llama-4-scout: # together ai api pricing
+  llama-4-scout:
     input: 0.18
     output: 0.59
   llama-4-maverick:
     input: 0.27
     output: 0.85
-  # Gemini models (Google) - unified pricing after 2025 update
-  # Source: https://ai.google.dev/gemini-api/docs/pricing
-  gemini-2.5-flash:
-    input: 0.30
-    output: 2.50
-  gemini-2.5-flash-preview-09-2025:
-    input: 0.30
-    output: 2.50
-  # GLM models (Zhipu)
-  # Source: https://bigmodel.cn/pricing
+  # GLM models - Zhipu pricing
   glm-4.5:
     input: 0.6
     output: 2.2
   glm-4.6:
     input: 0.6
     output: 2.2
+  glm-4.5-air:
+    input: 0.20
+    output: 1.1
+  glm-4.7:
+    input: 0.6
+    output: 2.2
   # DeepSeek models
-  # Source: https://api-docs.deepseek.com/quick_start/pricing
-  # Note: deepseek-chat is mapped to deepseek-r1 in loader.py
   deepseek-r1:
     input: 0.55
     output: 2.19
@@ -96,43 +39,15 @@ model_pricing:
   minimax-m2:
     input: 0.30
     output: 1.20
-  # OpenAI models (hypothetical future pricing)
-  gpt-5:
-    input: 1.25
-    output: 10.00
-  gpt-5.1:
-    input: 1.25
-    output: 10.00
-  # Anthropic Claude models (hypothetical future pricing)
-  # Naming: claude-{version}-{tier}
-  claude-4.5-opus:
-    input: 5.00
-    output: 25.00
-  claude-4.5-sonnet:
-    input: 3.00
-    output: 15.00
-  claude-4.1-opus:
-    input: 15.00
-    output: 75.00
-  # Google Gemini models
-  # Source: https://ai.google.dev/gemini-api/docs/pricing
-  # Gemini 3 Pro: $2/$4 input (<=/>200K), $12/$18 output (<=/>200K)
-  gemini-3-pro:
-    input: 2.00
-    output: 12.00
-  glm-4.5-air:
-    input: 0.20
-    output: 1.1
-  glm-4.7:
-    input: 0.6
-    output: 2.2
-  # NOTE: No default fallback - unknown models will raise an error
+  # Gemini models
+  gemini-2.5-flash:
+    input: 0.30
+    output: 2.50
 
-# Stage 2: Subscription Provider Configurations
-# Defines model compatibility and pricing for dual-subscription routing
+# Subscription configurations for Stage 2 routing
 subscriptions:
   # S_Q: Daily Quota Subscription (Chutes)
-  # https://chutes.ai/
+  # https://chutes.ai/ - $20/mo for 5000 requests/day
   chutes:
     type: daily_quota
     monthly_fee: 20.0
@@ -149,19 +64,48 @@ subscriptions:
       - qwen3-coder-30b
       - minimax-m2
 
-  # S_C: Featherless Premium ($25/mo) OR Local GPU (sunk cost $0)
-  # Using $0 to model local GPU deployment
-  # Concurrency cost based on model size: 7B-15B=1, 24B-34B=2, 70B+=4
-  featherless:
+  # S_C Options: Concurrency-limited subscriptions
+  # Choose one via --sc-config parameter
+
+  # Option 1: Featherless AI Premium ($25/mo, C=4)
+  # https://featherless.ai/docs/model-compatibility
+  featherless_premium:
     type: concurrency
-    monthly_fee: 0.0       # Local GPU: sunk cost
-    concurrency_limit: 8   # 8 concurrent slots
+    monthly_fee: 25.0
+    concurrency_limit: 4
     supported_models:
-      # 70B+ models (cost=4)
+      llama-3.3-70b-instruct:
+        multiplier: 4
+      glm-4.6:
+        multiplier: 4
+      deepseek-r1:
+        multiplier: 4
+
+  # Option 2: Featherless AI Scale ($75/mo, C=8)
+  featherless_scale:
+    type: concurrency
+    monthly_fee: 75.0
+    concurrency_limit: 8
+    supported_models:
+      llama-3.3-70b-instruct:
+        multiplier: 4
+      glm-4.6:
+        multiplier: 4
+      deepseek-r1:
+        multiplier: 4
+
+  # Option 3: Local GPU (sunk cost $0, C=8)
+  # Hardware already purchased, marginal cost = $0
+  local_gpu:
+    type: concurrency
+    monthly_fee: 0.0
+    concurrency_limit: 8
+    supported_models:
+      # 70B+ models (multiplier=4)
       llama-3.3-70b-instruct:
         multiplier: 4
       llama-4-maverick:
-        multiplier: 4  # Assuming 70B class
+        multiplier: 4
       glm-4.6:
         multiplier: 4
       glm-4.5:
@@ -170,20 +114,13 @@ subscriptions:
         multiplier: 4
       deepseek-r1:
         multiplier: 4
-      # 30B models (cost=2)
+      # 30B models (multiplier=2)
       qwen3-coder-30b:
         multiplier: 2
       minimax-m2:
-        multiplier: 2  # Assuming 30B class
-      # Small models (cost=1)
+        multiplier: 2
+      # Small models (multiplier=1)
       llama-4-scout:
-        multiplier: 1  # Assuming 8B class
+        multiplier: 1
       glm-4.5-air:
         multiplier: 1
-
-# Output settings
-output:
-  results_dir: "experiment/results"
-  save_decisions: false        # Save individual routing decisions (large file)
-  generate_plots: false        # Generate visualization plots
-  log_level: "INFO"            # Logging level: DEBUG, INFO, WARNING, ERROR
