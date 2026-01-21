@@ -110,9 +110,13 @@ def main():
     parser.add_argument("--delta", type=float, default=1.0, help="Time discretization")
     parser.add_argument("--solver", default="gurobi", choices=["cbc", "gurobi"])
     parser.add_argument("--daily-quota", type=int, default=5000)
-    parser.add_argument("--concurrency", type=int, default=8)
-    parser.add_argument("--sc-fee", type=float, default=75.0,
-                        help="S_C monthly fee (default: 75 for Featherless Scale)")
+    parser.add_argument(
+        "--sc-config",
+        type=str,
+        choices=["local_gpu", "featherless_premium", "featherless_scale"],
+        default="local_gpu",
+        help="S_C configuration from experiment.yaml",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -125,20 +129,21 @@ def main():
     # Models to test: (model_name, multiplier, description)
     # Different multipliers = different effective concurrency
     test_models = [
-        ("llama-4-scout", 1, "Small model (mult=1, eff_C=8)"),
-        ("qwen3-coder-30b", 2, "Medium model (mult=2, eff_C=4)"),
-        ("llama-3.3-70b-instruct", 4, "Large model (mult=4, eff_C=2)"),
+        ("llama-4-scout", 1, "Small model (mult=1)"),
+        ("qwen3-coder-30b", 2, "Medium model (mult=2)"),
+        ("llama-3.3-70b-instruct", 4, "Large model (mult=4)"),
     ]
 
     all_results = {}
 
-    # S_C config: Featherless AI pricing
-    # Premium: $25/mo, C=4 | Scale: $75/mo, C=8
-    sc_monthly_fee = args.sc_fee
-    sq_monthly_fee = 20.0  # Chutes
+    # Read S_C config from experiment.yaml
+    sc_config = subscriptions.get(args.sc_config, {})
+    sc_monthly_fee = sc_config.get("monthly_fee", 0.0)
+    sc_concurrency = sc_config.get("concurrency_limit", 8)
+    sq_monthly_fee = subscriptions.get("chutes", {}).get("monthly_fee", 20.0)
 
     print(f"S_Q (Chutes): ${sq_monthly_fee}/mo, Q={args.daily_quota}/day")
-    print(f"S_C (Featherless Scale): ${sc_monthly_fee}/mo, C={args.concurrency}")
+    print(f"S_C ({args.sc_config}): ${sc_monthly_fee}/mo, C={sc_concurrency}")
 
     for model_name, multiplier, desc in test_models:
         print(f"\n{'='*70}")
@@ -155,7 +160,7 @@ def main():
         # Create config
         config = create_dual_config(
             daily_quota=args.daily_quota,
-            concurrency_limit=args.concurrency,
+            concurrency_limit=sc_concurrency,
             sq_monthly_fee=sq_monthly_fee,
             sc_monthly_fee=sc_monthly_fee,
             model_pricing=model_pricing,
@@ -169,7 +174,7 @@ def main():
             config=config,
             delta=args.delta,
             daily_quota=args.daily_quota,
-            concurrency=args.concurrency,
+            concurrency=sc_concurrency,
             solver=args.solver,
             sc_monthly_fee=sc_monthly_fee,
         )
@@ -177,7 +182,7 @@ def main():
         all_results[model_name] = {
             "description": desc,
             "multiplier": multiplier,
-            "effective_concurrency": args.concurrency // multiplier,
+            "effective_concurrency": sc_concurrency // multiplier,
             "results": results,
         }
 
