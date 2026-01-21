@@ -19,7 +19,8 @@ class OptimalStrategy(RoutingStrategy):
 
     The algorithm:
     1. For each day, calculate the API cost for each request
-    2. Select the top K requests with highest API cost to use subscription
+    2. Select the top K eligible requests with highest API cost to use subscription
+       (eligibility is determined by the subscription provider's supported_models list)
     3. Route remaining requests to the cheapest API
 
     This is essentially solving a daily knapsack problem where:
@@ -65,6 +66,19 @@ class OptimalStrategy(RoutingStrategy):
         response_tokens = np.array([r.response_tokens for r in requests])
         models = [r.model for r in requests]
 
+        # Respect subscription model compatibility if configured.
+        # If supported_models is empty, treat all models as eligible.
+        subscriptions = self.config.get("subscriptions", {})
+        chutes_config = subscriptions.get("chutes", {})
+        supported_models_list = chutes_config.get("supported_models", [])
+        supported_models = set(supported_models_list) if supported_models_list else None
+        if supported_models:
+            eligible_mask = np.array(
+                [(m in supported_models) if m else False for m in models], dtype=bool
+            )
+        else:
+            eligible_mask = np.ones(len(models), dtype=bool)
+
         # Calculate costs (supports multi-model pricing)
         costs = self._calculate_costs_vectorized(request_tokens, response_tokens, models)
 
@@ -75,34 +89,37 @@ class OptimalStrategy(RoutingStrategy):
         for day in unique_days:
             # Use boolean indexing to filter requests for this day
             day_mask = days == day
-            day_costs = costs[day_mask]
             day_request_ids = request_ids[day_mask]
+
+            # Default: all requests route to API.
+            for req_id in day_request_ids:
+                self.assignments[int(req_id)] = "api"
+
+            # Only eligible requests can be routed to subscription.
+            eligible_day_mask = day_mask & eligible_mask
+            eligible_costs = costs[eligible_day_mask]
+            eligible_request_ids = request_ids[eligible_day_mask]
+            if eligible_request_ids.size == 0:
+                continue
 
             # Key optimization: use argpartition instead of full sort
             # argpartition is O(n), sort is O(n log n)
             quota = self.quota_manager.total_daily_quota
 
-            if len(day_costs) <= quota:
-                # All requests can use subscription
-                top_k_indices = np.arange(len(day_costs))
+            if len(eligible_costs) <= quota:
+                # All eligible requests can use subscription
+                top_k_indices = np.arange(len(eligible_costs))
             else:
                 # Find top K requests with highest cost
                 # argpartition partitions array into two parts:
                 # - First K elements are the largest (but not sorted)
                 # - Remaining elements are smaller
-                top_k_indices = np.argpartition(day_costs, -quota)[-quota:]
+                top_k_indices = np.argpartition(eligible_costs, -quota)[-quota:]
 
             # Assign subscription to top K requests
             for idx in top_k_indices:
-                req_id = day_request_ids[idx]
+                req_id = eligible_request_ids[idx]
                 self.assignments[int(req_id)] = "subscription"
-
-            # Assign API to remaining requests
-            all_indices = set(range(len(day_costs)))
-            api_indices = all_indices - set(top_k_indices)
-            for idx in api_indices:
-                req_id = day_request_ids[idx]
-                self.assignments[int(req_id)] = "api"
 
         logger.info(
             f"Precomputation complete: "

@@ -7,6 +7,12 @@ Components:
 - PrimalDualQuotaManager: Manages S_Q (daily quota) with exponential threshold
 - CAPQConcurrencyManager: Manages S_C (concurrency) with value-density based eviction
 - PrimalDualOnlineStrategy: Unified router using both managers
+
+IMPORTANT: All value/duration estimation must use PREDICTORS, not ground truth.
+The route() method must NOT access request.response_tokens or request.latency_seconds
+for decision making. Ground truth is only used for:
+1. Post-decision predictor updates
+2. Final cost calculation when actually routing to API
 """
 
 import logging
@@ -14,9 +20,122 @@ import math
 from dataclasses import dataclass, field
 
 from experiment.data.schema import Request, RoutingDecision
+from experiment.predictors import EMAOutputPredictor, OutputTokenPredictor
 from experiment.strategies.online.base import OnlineStrategy
 
 logger = logging.getLogger(__name__)
+
+
+def _calculate_predicted_api_cost(
+    config: dict,
+    request: Request,
+    predicted_output_tokens: float,
+) -> float:
+    """Calculate predicted API cost using only arrival-time information.
+
+    This helper MUST NOT access request.response_tokens. It supports:
+    - model_pricing (per 1M tokens), if configured for request.model.
+    - providers (per 1K tokens) as a fallback, choosing the cheapest API provider.
+
+    Args:
+        config: Experiment configuration dictionary.
+        request: Incoming request.
+        predicted_output_tokens: Predicted output token count.
+
+    Returns:
+        Predicted API cost in dollars.
+    """
+    predicted_output_tokens = max(float(predicted_output_tokens), 0.0)
+
+    model_pricing = config.get("model_pricing", {})
+    if model_pricing and request.model and request.model in model_pricing:
+        pricing = model_pricing[request.model]
+        input_price_per_1m = float(pricing.get("input") or 0.0)
+        output_price_per_1m = float(pricing.get("output") or 0.0)
+        return (
+            request.request_tokens / 1_000_000.0 * input_price_per_1m
+            + predicted_output_tokens / 1_000_000.0 * output_price_per_1m
+        )
+
+    # Fallback to providers config (ProviderConfig objects)
+    providers = config.get("providers", {})
+    api_providers = [p for p in providers.values() if hasattr(p, "is_api") and p.is_api()]
+    if api_providers:
+        return min(
+            request.request_tokens / 1000.0 * p.input_price_per_1k
+            + predicted_output_tokens / 1000.0 * p.output_price_per_1k
+            for p in api_providers
+        )
+
+    return 0.0
+
+
+class EMADurationEstimator:
+    """Simple EMA-based duration estimator for Stage 2.
+
+    Estimates request processing duration using exponential moving average
+    of historical durations, stratified by model.
+    """
+
+    def __init__(self, alpha: float = 0.1, default_duration: float = 5.0):
+        """Initialize duration estimator.
+
+        Args:
+            alpha: EMA smoothing factor (higher = more weight on recent)
+            default_duration: Default duration before warmup
+        """
+        self.alpha = alpha
+        self.default_duration = default_duration
+        self._ema_by_model: dict[str, float] = {}
+        self._global_ema: float = default_duration
+        self._count: int = 0
+
+    def reset(self) -> None:
+        """Reset estimator state."""
+        self._ema_by_model = {}
+        self._global_ema = self.default_duration
+        self._count = 0
+
+    def estimate(self, request: Request) -> float:
+        """Estimate duration for request (before seeing actual duration).
+
+        Args:
+            request: Incoming request
+
+        Returns:
+            Estimated duration in seconds
+        """
+        if request.model and request.model in self._ema_by_model:
+            return self._ema_by_model[request.model]
+        if self._count > 0:
+            return self._global_ema
+        return self.default_duration
+
+    def update(self, request: Request) -> None:
+        """Update estimator with actual duration (post-decision).
+
+        Args:
+            request: Completed request with actual latency
+        """
+        actual = request.latency_seconds
+        if actual <= 0:
+            return
+
+        # Update global EMA
+        if self._count == 0:
+            self._global_ema = actual
+        else:
+            self._global_ema = self.alpha * actual + (1 - self.alpha) * self._global_ema
+        self._count += 1
+
+        # Update per-model EMA
+        if request.model:
+            if request.model in self._ema_by_model:
+                self._ema_by_model[request.model] = (
+                    self.alpha * actual + (1 - self.alpha) * self._ema_by_model[request.model]
+                )
+            else:
+                self._ema_by_model[request.model] = actual
 
 
 # =============================================================================
@@ -406,6 +525,8 @@ class PrimalDualOnlineStrategy(OnlineStrategy):
         # Subscription costs (for reference, not used in threshold calculation)
         sq_monthly_fee: float = 20.0,
         sc_monthly_fee: float = 25.0,
+        # Optional custom predictor for ablation studies
+        output_predictor: OutputTokenPredictor | None = None,
     ):
         """Initialize Primal-Dual strategy.
 
@@ -420,6 +541,9 @@ class PrimalDualOnlineStrategy(OnlineStrategy):
             queue_capacity: Queue size K for S_C CAPQ
             sq_monthly_fee: Monthly fee for S_Q (informational)
             sc_monthly_fee: Monthly fee for S_C (informational)
+            output_predictor: Custom predictor (uses EMAOutputPredictor if None).
+                When using a QuantilePrediction-compatible predictor (e.g.,
+                HistogramOutputPredictor), q50 is used as the point estimate.
         """
         super().__init__(
             cost_calculator,
@@ -450,63 +574,74 @@ class PrimalDualOnlineStrategy(OnlineStrategy):
                 supported_models=self.sc_multipliers if self.sc_multipliers else None,
             )
 
+        # Initialize predictors for online estimation (no data leakage)
+        # Custom predictor for ablation studies (e.g., HistogramOutputPredictor)
+        self.output_predictor = output_predictor or EMAOutputPredictor()
+        self._use_custom_predictor = output_predictor is not None
+        # EMA for duration estimation (always needed)
+        self.ema_duration_estimator = EMADurationEstimator()
+
         # Track evicted request costs
         self._evicted_cost = 0.0
 
+        predictor_name = type(self.output_predictor).__name__
         logger.info(
             f"PrimalDualOnlineStrategy initialized: "
             f"S_Q={'enabled' if self.sq_manager else 'disabled'}, "
-            f"S_C={'enabled' if self.sc_manager else 'disabled'}"
+            f"S_C={'enabled' if self.sc_manager else 'disabled'}, "
+            f"predictor={predictor_name}"
         )
 
     @property
     def name(self) -> str:
         """Return strategy name with stage indicator."""
+        # Determine predictor suffix for ablation identification
+        predictor_suffix = ""
+        if self._use_custom_predictor:
+            predictor_name = type(self.output_predictor).__name__
+            if "Histogram" in predictor_name:
+                predictor_suffix = "-Hist"
+            elif "EMA" not in predictor_name:
+                predictor_suffix = f"-{predictor_name}"
+
         if self.sc_manager:
-            return "PrimalDual-Online-Stage2"
+            return f"PrimalDual-Online-Stage2{predictor_suffix}"
         elif self.sq_manager:
-            return "PrimalDual-Online-Stage1"
-        return "PrimalDual-Online-APIOnly"
+            return f"PrimalDual-Online-Stage1{predictor_suffix}"
+        return f"PrimalDual-Online-APIOnly{predictor_suffix}"
 
     def precompute(self, requests: list[Request]) -> None:
-        """Reset state for new simulation run."""
+        """Reset state for new simulation run.
+
+        Note: L/U bounds are passed in at construction time from the runner,
+        which computes them from historical data. We do NOT re-estimate L/U
+        inside the strategy to avoid information leakage (using ground truth
+        response_tokens before decisions are made).
+        """
         super().precompute(requests)
 
         # Reset evicted cost tracking
         self._evicted_cost = 0.0
+
+        # Reset predictors
+        self.output_predictor.reset()
+        self.ema_duration_estimator.reset()
 
         if self.sq_manager:
             self.sq_manager.reset()
         if self.sc_manager:
             self.sc_manager.reset()
 
-        # Optionally: estimate L/U from first day's data
-        if self.sq_manager and requests:
-            self._estimate_initial_bounds(requests)
-
-    def _estimate_initial_bounds(self, requests: list[Request]) -> None:
-        """Estimate initial L/U bounds from request data."""
-        # Calculate costs for first day
-        first_day = requests[0].day
-        first_day_requests = [r for r in requests if r.day == first_day]
-
-        if len(first_day_requests) < 10:
-            return
-
-        costs = [self._calculate_api_cost(r) for r in first_day_requests[:1000]]
-        costs.sort()
-        n = len(costs)
-
-        new_L = costs[max(0, int(n * 0.05))]
-        new_U = costs[min(n - 1, int(n * 0.95))]
-
-        if new_L > 0 and new_U > new_L:
-            self.sq_manager.L = new_L
-            self.sq_manager.U = new_U
-            logger.info(f"Estimated initial bounds: L={new_L:.6f}, U={new_U:.6f}")
+        # L/U bounds are set at construction time, no re-estimation here
+        # to avoid information leakage from ground truth response_tokens
 
     def route(self, request: Request) -> RoutingDecision:
         """Route request using Primal-Dual unified decision.
+
+        IMPORTANT: Decision is made using PREDICTED values only.
+        Ground truth (response_tokens, latency) is only used for:
+        1. Post-decision predictor updates
+        2. Final cost calculation when actually routing to API
 
         Args:
             request: Incoming request
@@ -525,9 +660,18 @@ class PrimalDualOnlineStrategy(OnlineStrategy):
                 # Schedule queued requests when slots become free
                 self._schedule_from_queue(current_time)
 
-        # 1. Estimate value (API cost)
-        value = self._calculate_api_cost(request)
-        duration = request.latency_seconds  # For S_C
+        # 1. Estimate value using predictor (NO DATA LEAKAGE)
+        # MUST NOT use request.response_tokens here
+        # Use q50 as point estimate for all predictors:
+        # - HistogramOutputPredictor: q50 from histogram bins
+        # - EMAOutputPredictor: q50 = mean (normal approximation)
+        # When not warmed up, predict() returns a reasonable default q50.
+        prediction = self.output_predictor.predict(request)
+        value = _calculate_predicted_api_cost(self.config, request, prediction.q50)
+
+        # For S_C: estimate duration using EMA (NO DATA LEAKAGE)
+        # MUST NOT use request.latency_seconds here
+        duration = self.ema_duration_estimator.estimate(request)
 
         # 2. Calculate net gains for each option
 
@@ -552,7 +696,12 @@ class PrimalDualOnlineStrategy(OnlineStrategy):
         # 3. Select best option
         best_gain = max(gain_q, gain_c, gain_a)
 
-        # 4. Execute decision
+        # 4. Update predictors AFTER decision (post-decision update)
+        # This is where we can use ground truth
+        self.output_predictor.update(request)
+        self.ema_duration_estimator.update(request)
+
+        # 5. Execute decision
         if best_gain == gain_q and gain_q > float("-inf"):
             # Route to S_Q
             self.sq_manager.consume_quota(value)
@@ -572,9 +721,10 @@ class PrimalDualOnlineStrategy(OnlineStrategy):
             if status in ("immediate", "queued"):
                 self.subscription_used += 1
 
-                # Handle evicted request - route to API and count cost
+                # Handle evicted request - route to API and count ACTUAL cost
                 evicted_cost = 0.0
                 if evicted is not None:
+                    # Here we use actual cost because this is a real API call
                     evicted_cost = self._calculate_api_cost(evicted)
                     self.api_used += 1
                     self._evicted_cost += evicted_cost
@@ -592,12 +742,13 @@ class PrimalDualOnlineStrategy(OnlineStrategy):
                 )
             # If rejected (shouldn't happen if gain_c was valid), fall through to API
 
-        # Route to API
+        # Route to API - use ACTUAL cost for billing
+        actual_cost = self._calculate_api_cost(request)
         self.api_used += 1
         return RoutingDecision(
             request=request,
             provider="api",
-            cost=value,
+            cost=actual_cost,
             quota_used=0,
             timestamp=request.timestamp,
         )

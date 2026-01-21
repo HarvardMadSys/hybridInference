@@ -10,12 +10,18 @@ configuration-based strict gating.
 Algorithms:
 - Greedy: FCFS baseline, uses subscription whenever available
 - PrimalDual: Threshold-based with competitive ratio guarantees
+- LearningAugmented: ML-enhanced Primal-Dual with quantile prediction
 """
 
 from experiment.strategies.online.base import OnlineStrategy
 from experiment.strategies.online.greedy import (
     GreedyCostAwareStrategy,
     GreedyOnlineStrategy,
+)
+from experiment.strategies.online.learning_augmented import (
+    LAPDConfig,
+    LearningAugmentedPrimalDualStrategy,
+    LearningAugmentedUnifiedStrategy,
 )
 from experiment.strategies.online.primal_dual import (
     CAPQConcurrencyManager,
@@ -33,4 +39,8 @@ __all__ = [
     "PrimalDualQuotaManager",
     "CAPQConcurrencyManager",
     "PrimalDualOnlineStrategy",
+    # Learning-Augmented strategies
+    "LAPDConfig",
+    "LearningAugmentedPrimalDualStrategy",
+    "LearningAugmentedUnifiedStrategy",
 ]

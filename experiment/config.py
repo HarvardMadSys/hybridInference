@@ -157,4 +157,6 @@ class ExperimentConfig:
             "output": self.output,
             "model_pricing": self.model_pricing,
             "subscriptions": self.raw_config.get("subscriptions", {}),
+            "plans": self.raw_config.get("plans", {}),
+            "active_plans": self.raw_config.get("active_plans"),
         }
