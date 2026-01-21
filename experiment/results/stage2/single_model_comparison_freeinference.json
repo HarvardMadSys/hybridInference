@@ -7,50 +7,50 @@
       "ilp_optimal": {
         "strategy": "ILP-Optimal",
         "costs": {
-          "total": 18.8536,
-          "subscription": 18.0,
+          "total": 135.8536,
+          "subscription": 135.0,
           "api": 0.8536
         },
         "requests": {
-          "total": 200000,
-          "subscription": 189243,
+          "total": 371214,
+          "subscription": 360457,
           "api": 10757
         },
-        "quota_utilization": 0.2364,
-        "num_days": 27,
-        "runtime_seconds": 166.85
+        "quota_utilization": 0.0967,
+        "num_days": 90,
+        "runtime_seconds": 201.5
       },
       "daily_quota_only": {
         "strategy": "Daily-Quota-Only",
         "costs": {
-          "total": 35.9695,
-          "subscription": 18.0,
-          "api": 17.9695
+          "total": 90.7803,
+          "subscription": 60.0,
+          "api": 30.7803
         },
         "requests": {
-          "total": 200000,
-          "subscription": 66165,
-          "api": 133835
+          "total": 371214,
+          "subscription": 96710,
+          "api": 274504
         },
-        "quota_utilization": 0.5753,
-        "num_days": 27,
-        "runtime_seconds": 0.91
+        "quota_utilization": 0.3022,
+        "num_days": 90,
+        "runtime_seconds": 1.71
       },
       "concurrency_only": {
         "strategy": "Concurrency-Only",
         "costs": {
-          "total": 5.6354,
-          "subscription": 0.0,
-          "api": 5.6354
+          "total": 80.6644,
+          "subscription": 75.0,
+          "api": 5.6644
         },
         "requests": {
-          "total": 200000,
-          "subscription": 173868,
-          "api": 26132
+          "total": 371214,
+          "subscription": 344288,
+          "api": 26926
         },
         "quota_utilization": 0.0,
-        "num_days": 27,
-        "runtime_seconds": 214.43
+        "num_days": 90,
+        "runtime_seconds": 1.19
       }
     }
   },
@@ -62,50 +62,50 @@
       "ilp_optimal": {
         "strategy": "ILP-Optimal",
         "costs": {
-          "total": 19.0321,
-          "subscription": 18.0,
-          "api": 1.0321
+          "total": 136.0322,
+          "subscription": 135.0,
+          "api": 1.0322
         },
         "requests": {
-          "total": 200000,
-          "subscription": 176127,
-          "api": 23873
+          "total": 371214,
+          "subscription": 347296,
+          "api": 23918
         },
-        "quota_utilization": 0.2756,
-        "num_days": 27,
-        "runtime_seconds": 168.18
+        "quota_utilization": 0.1499,
+        "num_days": 90,
+        "runtime_seconds": 187.78
       },
       "daily_quota_only": {
         "strategy": "Daily-Quota-Only",
         "costs": {
-          "total": 25.7864,
-          "subscription": 18.0,
-          "api": 7.7864
+          "total": 72.9278,
+          "subscription": 60.0,
+          "api": 12.9278
         },
         "requests": {
-          "total": 200000,
-          "subscription": 66165,
-          "api": 133835
+          "total": 371214,
+          "subscription": 96710,
+          "api": 274504
         },
-        "quota_utilization": 0.5753,
-        "num_days": 27,
-        "runtime_seconds": 0.96
+        "quota_utilization": 0.3022,
+        "num_days": 90,
+        "runtime_seconds": 2.24
       },
       "concurrency_only": {
         "strategy": "Concurrency-Only",
         "costs": {
-          "total": 6.6766,
-          "subscription": 0.0,
-          "api": 6.6766
+          "total": 82.2357,
+          "subscription": 75.0,
+          "api": 7.2357
         },
         "requests": {
-          "total": 200000,
-          "subscription": 149388,
-          "api": 50612
+          "total": 371214,
+          "subscription": 307731,
+          "api": 63483
         },
         "quota_utilization": 0.0,
-        "num_days": 27,
-        "runtime_seconds": 252.95
+        "num_days": 90,
+        "runtime_seconds": 1.24
       }
     }
   },
@@ -117,50 +117,50 @@
       "ilp_optimal": {
         "strategy": "ILP-Optimal",
         "costs": {
-          "total": 25.7188,
-          "subscription": 18.0,
-          "api": 7.7188
+          "total": 145.9223,
+          "subscription": 135.0,
+          "api": 10.9223
         },
         "requests": {
-          "total": 200000,
-          "subscription": 152522,
-          "api": 47478
+          "total": 371214,
+          "subscription": 293902,
+          "api": 77312
         },
-        "quota_utilization": 0.3457,
-        "num_days": 27,
-        "runtime_seconds": 171.57
+        "quota_utilization": 0.1874,
+        "num_days": 90,
+        "runtime_seconds": 188.58
       },
       "daily_quota_only": {
         "strategy": "Daily-Quota-Only",
         "costs": {
-          "total": 41.588,
-          "subscription": 18.0,
-          "api": 23.588
+          "total": 101.1068,
+          "subscription": 60.0,
+          "api": 41.1068
         },
         "requests": {
-          "total": 200000,
-          "subscription": 66165,
-          "api": 133835
+          "total": 371214,
+          "subscription": 96710,
+          "api": 274504
         },
-        "quota_utilization": 0.5753,
-        "num_days": 27,
-        "runtime_seconds": 1.11
+        "quota_utilization": 0.3022,
+        "num_days": 90,
+        "runtime_seconds": 1.96
       },
       "concurrency_only": {
         "strategy": "Concurrency-Only",
         "costs": {
-          "total": 35.8415,
-          "subscription": 0.0,
-          "api": 35.8415
+          "total": 119.9087,
+          "subscription": 75.0,
+          "api": 44.9087
         },
         "requests": {
-          "total": 200000,
-          "subscription": 117380,
-          "api": 82620
+          "total": 371214,
+          "subscription": 233354,
+          "api": 137860
         },
         "quota_utilization": 0.0,
-        "num_days": 27,
-        "runtime_seconds": 227.88
+        "num_days": 90,
+        "runtime_seconds": 1.3
       }
     }
   }
