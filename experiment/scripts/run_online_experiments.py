@@ -6,11 +6,11 @@ This script evaluates online routing strategies against offline optimal baseline
 Experiments:
 1. Stage 1 (S_Q + S_A): Daily quota optimization
    - Dataset: BurstGPT (no latency required)
-   - Strategies: Greedy, PrimalDual, Offline-Optimal
+   - Strategies: Greedy, PrimalDual, LA-PD (P10/P20/P50), Offline-Optimal
 
 2. Stage 2 (S_Q + S_C + S_A): Joint optimization
    - Dataset: rednote/freeinference (latency required)
-   - Strategies: Greedy, PrimalDual, Offline-Optimal (ILP)
+   - Strategies: Greedy, PrimalDual, LA-PD-Unified, Offline-Optimal (ILP)
 
 Usage:
     python experiment/scripts/run_online_experiments.py --stage 1
@@ -30,12 +30,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from experiment.config import ExperimentConfig
 from experiment.cost import CostCalculator
 from experiment.data.loader import DataLoader
+from experiment.predictors import EMAOutputPredictor, HistogramOutputPredictor
 from experiment.quota import QuotaManager
 from experiment.simulator import OfflineSimulator
 
 # Strategies
 from experiment.strategies.all_api import AllAPIStrategy
-from experiment.strategies.online import GreedyOnlineStrategy, PrimalDualOnlineStrategy
+from experiment.strategies.online import (
+    GreedyOnlineStrategy,
+    LAPDConfig,
+    LearningAugmentedPrimalDualStrategy,
+    LearningAugmentedUnifiedStrategy,
+    PrimalDualOnlineStrategy,
+)
 from experiment.strategies.stage1_optimal import OptimalStrategy
 
 logging.basicConfig(
@@ -43,6 +50,66 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _validate_model_pricing_coverage(
+    requests,
+    model_pricing: dict[str, dict[str, float]] | None,
+    model_override: str | None,
+) -> None:
+    """Validate that all request models are priced when model_pricing is enabled.
+
+    Args:
+        requests: List of requests.
+        model_pricing: Per-model pricing dictionary (per 1M tokens).
+        model_override: Optional model override passed to the loader.
+
+    Raises:
+        ValueError: If model_pricing is enabled but required models are missing.
+    """
+    if not model_pricing:
+        return
+
+    if model_override:
+        if model_override not in model_pricing:
+            raise ValueError(
+                f"--model '{model_override}' is not found in model_pricing. "
+                "Please use a model name that exists in config/experiment.yaml:model_pricing, "
+                "or add pricing for it."
+            )
+        return
+
+    models = {r.model for r in requests if getattr(r, "model", None)}
+    missing = sorted(m for m in models if m not in model_pricing)
+    if missing:
+        raise ValueError(
+            "Missing model_pricing entries for dataset models: "
+            f"{missing}. Either add pricing in config/experiment.yaml:model_pricing, "
+            "or run with --model <target_model> to map all requests to a single priced model."
+        )
+
+
+def _safe_get_request_cost(cost_calculator: CostCalculator, request) -> float:
+    """Get request cost with graceful fallback.
+
+    Prefer per-model pricing when available; fall back to cheapest API provider
+    pricing when the model is missing in model_pricing.
+
+    Args:
+        cost_calculator: Cost calculator.
+        request: Request object.
+
+    Returns:
+        Cost in dollars.
+    """
+    try:
+        return cost_calculator.calculate_cost_by_model(request)
+    except Exception:
+        try:
+            _, cost = cost_calculator.get_cheapest_api_provider(request)
+            return cost
+        except Exception:
+            return 0.0
 
 
 def run_stage1_experiments(
@@ -80,9 +147,11 @@ def run_stage1_experiments(
 
     logger.info(f"Daily quota: {daily_quota}")
 
+    _validate_model_pricing_coverage(requests, config_dict.get("model_pricing"), model_override)
+
     # Calculate cost statistics for L/U estimation
     cost_calculator = CostCalculator(config_dict["providers"], config_dict.get("model_pricing"))
-    costs = [cost_calculator.calculate_cost_by_model(r) for r in requests[:10000]]
+    costs = [_safe_get_request_cost(cost_calculator, r) for r in requests[:10000]]
     costs.sort()
     L = costs[int(len(costs) * 0.05)] if costs else 0.0001
     U = costs[int(len(costs) * 0.95)] if costs else 0.01
@@ -110,8 +179,8 @@ def run_stage1_experiments(
     simulator = OfflineSimulator(requests, strategy, config_dict)
     results["Greedy-Online"] = simulator.run().to_dict()
 
-    # 3. Primal-Dual Online
-    logger.info("\n--- Running Primal-Dual Online ---")
+    # 3. Primal-Dual Online (EMA baseline)
+    logger.info("\n--- Running Primal-Dual Online (EMA) ---")
     quota_mgr = QuotaManager(daily_quota)
     strategy = PrimalDualOnlineStrategy(
         cost_calculator,
@@ -125,15 +194,112 @@ def run_stage1_experiments(
     simulator = OfflineSimulator(requests, strategy, config_dict)
     results["PrimalDual-Online"] = simulator.run().to_dict()
 
-    # 4. Offline Optimal
+    # 3b. PD-Hist (Ablation: PD decision rule with Histogram predictor)
+    logger.info("\n--- Running PD-Hist (Ablation) ---")
+    quota_mgr = QuotaManager(daily_quota)
+    strategy = PrimalDualOnlineStrategy(
+        cost_calculator,
+        quota_mgr,
+        config_dict,
+        daily_quota=daily_quota,
+        sq_min_value=L,
+        sq_max_value=U,
+        concurrency_limit=0,  # Stage 1: no S_C
+        output_predictor=HistogramOutputPredictor(),  # Use Histogram instead of EMA
+    )
+    simulator = OfflineSimulator(requests, strategy, config_dict)
+    results["PD-Hist"] = simulator.run().to_dict()
+
+    # 4. LA-PD (P10) - Learning-Augmented with conservative quantile
+    logger.info("\n--- Running LA-PD (P10) ---")
+    quota_mgr = QuotaManager(daily_quota)
+    lapd_config_p10 = LAPDConfig(quantile_for_lcb=0.10)
+    strategy = LearningAugmentedPrimalDualStrategy(
+        cost_calculator,
+        quota_mgr,
+        config_dict,
+        daily_quota=daily_quota,
+        sq_min_value=L,
+        sq_max_value=U,
+        lapd_config=lapd_config_p10,
+    )
+    simulator = OfflineSimulator(requests, strategy, config_dict)
+    result = simulator.run()
+    results["LA-PD-P10"] = result.to_dict()
+    # Add calibration stats
+    if hasattr(strategy, "get_stats"):
+        results["LA-PD-P10"]["strategy_stats"] = strategy.get_stats()
+
+    # 5. LA-PD (P20) - Ablation with moderate quantile
+    logger.info("\n--- Running LA-PD (P20) ---")
+    quota_mgr = QuotaManager(daily_quota)
+    lapd_config_p20 = LAPDConfig(quantile_for_lcb=0.20)
+    strategy = LearningAugmentedPrimalDualStrategy(
+        cost_calculator,
+        quota_mgr,
+        config_dict,
+        daily_quota=daily_quota,
+        sq_min_value=L,
+        sq_max_value=U,
+        lapd_config=lapd_config_p20,
+    )
+    simulator = OfflineSimulator(requests, strategy, config_dict)
+    result = simulator.run()
+    results["LA-PD-P20"] = result.to_dict()
+    if hasattr(strategy, "get_stats"):
+        results["LA-PD-P20"]["strategy_stats"] = strategy.get_stats()
+
+    # 6. LA-PD (P50) - Ablation with aggressive quantile
+    logger.info("\n--- Running LA-PD (P50) ---")
+    quota_mgr = QuotaManager(daily_quota)
+    lapd_config_p50 = LAPDConfig(quantile_for_lcb=0.50)
+    strategy = LearningAugmentedPrimalDualStrategy(
+        cost_calculator,
+        quota_mgr,
+        config_dict,
+        daily_quota=daily_quota,
+        sq_min_value=L,
+        sq_max_value=U,
+        lapd_config=lapd_config_p50,
+    )
+    simulator = OfflineSimulator(requests, strategy, config_dict)
+    result = simulator.run()
+    results["LA-PD-P50"] = result.to_dict()
+    if hasattr(strategy, "get_stats"):
+        results["LA-PD-P50"]["strategy_stats"] = strategy.get_stats()
+
+    # 7. LA-EMA (Ablation: LA-PD decision rule with EMA predictor)
+    logger.info("\n--- Running LA-EMA (Ablation) ---")
+    quota_mgr = QuotaManager(daily_quota)
+    lapd_config_ema = LAPDConfig(quantile_for_lcb=0.10)
+    strategy = LearningAugmentedPrimalDualStrategy(
+        cost_calculator,
+        quota_mgr,
+        config_dict,
+        daily_quota=daily_quota,
+        sq_min_value=L,
+        sq_max_value=U,
+        lapd_config=lapd_config_ema,
+        output_predictor=EMAOutputPredictor(),  # Use EMA instead of Histogram
+    )
+    simulator = OfflineSimulator(requests, strategy, config_dict)
+    result = simulator.run()
+    results["LA-EMA"] = result.to_dict()
+    if hasattr(strategy, "get_stats"):
+        results["LA-EMA"]["strategy_stats"] = strategy.get_stats()
+
+    # 8. Offline Optimal
     logger.info("\n--- Running Offline Optimal ---")
     quota_mgr = QuotaManager(daily_quota)
     strategy = OptimalStrategy(cost_calculator, quota_mgr, config_dict)
     simulator = OfflineSimulator(requests, strategy, config_dict)
     results["Offline-Optimal"] = simulator.run().to_dict()
 
-    # Calculate competitive ratios
+    # Calculate competitive ratios and savings
     optimal_cost = results["Offline-Optimal"]["costs"]["total"]
+    all_api_cost = results["All-API"]["costs"]["total"]
+    optimal_savings = all_api_cost - optimal_cost
+
     logger.info("\n" + "=" * 60)
     logger.info("Stage 1 Results Summary")
     logger.info("=" * 60)
@@ -142,10 +308,25 @@ def run_stage1_experiments(
         total_cost = res["costs"]["total"]
         api_cost = res["costs"]["api"]
         ratio = total_cost / optimal_cost if optimal_cost > 0 else float("inf")
+        savings = all_api_cost - total_cost
+        savings_ratio = savings / optimal_savings if optimal_savings > 0 else 0.0
         logger.info(
             f"{name:20s}: Total=${total_cost:8.2f}, API=${api_cost:8.2f}, "
-            f"Ratio={ratio:.4f}, Quota={res['quota_utilization']:.1%}"
+            f"Ratio={ratio:.4f}, Savings={savings_ratio:.1%}, Quota={res['quota_utilization']:.1%}"
         )
+
+    # Print calibration stats for LA-PD strategies
+    logger.info("\n" + "-" * 60)
+    logger.info("Prediction Calibration (LA-PD strategies)")
+    logger.info("-" * 60)
+    for name, res in results.items():
+        if "strategy_stats" in res and "predictor_calibration" in res["strategy_stats"]:
+            cal = res["strategy_stats"]["predictor_calibration"]
+            logger.info(
+                f"{name:20s}: q10_cov={cal['q10_coverage']:.1%}, "
+                f"q50_cov={cal['q50_coverage']:.1%}, q90_cov={cal['q90_coverage']:.1%}, "
+                f"samples={cal['total']}"
+            )
 
     # Save results
     output_file = output_dir / "stage1_online_results.json"
@@ -208,9 +389,11 @@ def run_stage2_experiments(
     logger.info(f"Daily quota (S_Q): {daily_quota}")
     logger.info(f"Concurrency limit (S_C): {concurrency_limit}")
 
+    _validate_model_pricing_coverage(requests, config_dict.get("model_pricing"), model_override)
+
     # Calculate cost statistics
     cost_calculator = CostCalculator(config_dict["providers"], config_dict.get("model_pricing"))
-    costs = [cost_calculator.calculate_cost_by_model(r) for r in requests[:10000]]
+    costs = [_safe_get_request_cost(cost_calculator, r) for r in requests[:10000]]
     costs.sort()
     L = costs[int(len(costs) * 0.05)] if costs else 0.0001
     U = costs[int(len(costs) * 0.95)] if costs else 0.01
@@ -254,7 +437,28 @@ def run_stage2_experiments(
     simulator = OfflineSimulator(requests, strategy, config_dict)
     results["PrimalDual-Online-Stage2"] = simulator.run().to_dict()
 
-    # 4. Offline Optimal (ILP) - if available
+    # 4. LA-PD Unified (S_Q + S_C with learning)
+    logger.info("\n--- Running LA-PD Unified (Stage 2) ---")
+    quota_mgr = QuotaManager(daily_quota)
+    lapd_config = LAPDConfig(quantile_for_lcb=0.10)
+    strategy = LearningAugmentedUnifiedStrategy(
+        cost_calculator,
+        quota_mgr,
+        config_dict,
+        daily_quota=daily_quota,
+        sq_min_value=L,
+        sq_max_value=U,
+        concurrency_limit=concurrency_limit,
+        queue_capacity=concurrency_limit * 2,
+        lapd_config=lapd_config,
+    )
+    simulator = OfflineSimulator(requests, strategy, config_dict)
+    result = simulator.run()
+    results["LA-PD-Unified-Stage2"] = result.to_dict()
+    if hasattr(strategy, "get_stats"):
+        results["LA-PD-Unified-Stage2"]["strategy_stats"] = strategy.get_stats()
+
+    # 5. Offline Optimal (ILP) - if available
     try:
         from experiment.strategies.stage2_optimal import ILPOptimalStrategy
 
@@ -274,9 +478,11 @@ def run_stage2_experiments(
     except Exception as e:
         logger.warning(f"ILP optimization failed: {e}")
 
-    # Calculate competitive ratios
+    # Calculate competitive ratios and savings
     optimal_key = "Offline-Optimal-ILP" if "Offline-Optimal-ILP" in results else "All-API"
     optimal_cost = results[optimal_key]["costs"]["total"]
+    all_api_cost = results["All-API"]["costs"]["total"]
+    optimal_savings = all_api_cost - optimal_cost if optimal_key != "All-API" else 0.0
 
     logger.info("\n" + "=" * 60)
     logger.info("Stage 2 Results Summary")
@@ -286,9 +492,24 @@ def run_stage2_experiments(
         total_cost = res["costs"]["total"]
         api_cost = res["costs"]["api"]
         ratio = total_cost / optimal_cost if optimal_cost > 0 else float("inf")
+        savings = all_api_cost - total_cost
+        savings_ratio = savings / optimal_savings if optimal_savings > 0 else 0.0
         logger.info(
-            f"{name:25s}: Total=${total_cost:8.2f}, API=${api_cost:8.2f}, " f"Ratio={ratio:.4f}"
+            f"{name:25s}: Total=${total_cost:8.2f}, API=${api_cost:8.2f}, "
+            f"Ratio={ratio:.4f}, Savings={savings_ratio:.1%}"
         )
+
+    # Print calibration stats for LA-PD strategies
+    logger.info("\n" + "-" * 60)
+    logger.info("Prediction Calibration (LA-PD strategies)")
+    logger.info("-" * 60)
+    for name, res in results.items():
+        if "strategy_stats" in res and "output_calibration" in res["strategy_stats"]:
+            cal = res["strategy_stats"]["output_calibration"]
+            logger.info(
+                f"{name:25s}: q10_cov={cal['q10_coverage']:.1%}, "
+                f"q50_cov={cal['q50_coverage']:.1%}, q90_cov={cal['q90_coverage']:.1%}"
+            )
 
     # Save results
     output_file = output_dir / "stage2_online_results.json"
@@ -351,17 +572,21 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Run experiments
-    if args.stage in ["1", "both"]:
-        if Path(args.stage1_data).exists():
-            run_stage1_experiments(config, args.stage1_data, output_dir, args.model)
-        else:
-            logger.error(f"Stage 1 data not found: {args.stage1_data}")
+    try:
+        if args.stage in ["1", "both"]:
+            if Path(args.stage1_data).exists():
+                run_stage1_experiments(config, args.stage1_data, output_dir, args.model)
+            else:
+                logger.error(f"Stage 1 data not found: {args.stage1_data}")
 
-    if args.stage in ["2", "both"]:
-        if Path(args.stage2_data).exists():
-            run_stage2_experiments(config, args.stage2_data, output_dir, args.model)
-        else:
-            logger.error(f"Stage 2 data not found: {args.stage2_data}")
+        if args.stage in ["2", "both"]:
+            if Path(args.stage2_data).exists():
+                run_stage2_experiments(config, args.stage2_data, output_dir, args.model)
+            else:
+                logger.error(f"Stage 2 data not found: {args.stage2_data}")
+    except ValueError as e:
+        logger.error(str(e))
+        raise SystemExit(1) from e
 
 
 if __name__ == "__main__":

@@ -117,6 +117,17 @@ class QuotaManager:
             }
 
         usages = list(self.daily_usage.values())
+        # Edge case: quota disabled (e.g., All-API baseline).
+        # Avoid division-by-zero and report utilization as 0.
+        if self.total_daily_quota <= 0:
+            return {
+                "total_used": self.total_used,
+                "avg_daily_usage": float(np.mean(usages)) if usages else 0,
+                "max_daily_usage": max(usages) if usages else 0,
+                "min_daily_usage": min(usages) if usages else 0,
+                "avg_utilization": 0,
+                "days_quota_exhausted": 0,
+            }
         return {
             "total_used": self.total_used,
             "avg_daily_usage": float(np.mean(usages)),
