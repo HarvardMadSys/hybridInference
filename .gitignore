@@ -188,6 +188,10 @@ tmp_run/run_cmds.log
 results/*
 .claude/*
 
+# Experiment cache and results
+experiment/cache/
+experiment/results/
+
 # Runtime data directories (var/)
 var/**
 !var/.gitkeep
@@ -227,6 +231,19 @@ AGENTS.md
 *.tmp
 *.bak
 *~
+
+# LaTeX temporary files
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+missfont.log
+texput.log
 
 # IDE specific
 .idea/
