@@ -1,0 +1,1277 @@
+02:46:38 - INFO - Loaded configuration from config/experiment.yaml
+02:46:38 - INFO -   Providers: 2
+02:46:38 - INFO -   Strategies: 1
+02:46:40 - INFO - Running ILP-Optimal...
+02:46:40 - INFO - Model compatibility loaded:
+02:46:40 - INFO -   S_Q (Chutes): 10 models
+02:46:40 - INFO -   S_C (Featherless): 10 models, multipliers: {'llama-3.3-70b-instruct': 4, 'llama-4-maverick': 4, 'glm-4.6': 4, 'glm-4.5': 4, 'glm-4.7': 4, 'deepseek-r1': 4, 'qwen3-coder-30b': 2, 'minimax-m2': 2, 'llama-4-scout': 1, 'glm-4.5-air': 1}
+02:46:40 - INFO - Starting simulation with ILP-Optimal strategy on 371214 requests
+02:46:40 - INFO - Precomputing ILP-optimal routing for 371214 requests
+02:46:40 - INFO - Parameters: Q=5000, C=8, delta=1.0s, workers=64
+02:46:40 - INFO - Solving ILP for 63 days in parallel
+S_Q (Chutes): $20.0/mo, Q=5000/day
+S_C (Featherless Scale): $75.0/mo, C=8
+
+======================================================================
+Testing: llama-4-scout
+  Small model (mult=1, eff_C=8)
+  API pricing: input=$0.18, output=$0.59
+======================================================================
+Converted 371214 requests to llama-4-scout
+ILP solving days:   0%|                                                     | 0/63 [00:00<?, ?day/s]Set parameter Username
+02:46:41 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:41 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:41 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:41 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:41 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:41 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:41 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:41 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:41 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:41 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:41 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:41 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:41 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:41 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:41 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:   3%|█▍                                           | 2/63 [00:00<00:14,  4.16day/s]Set parameter Username
+02:46:41 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:41 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:41 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  10%|████▎                                        | 6/63 [00:00<00:04, 11.61day/s]Set parameter Username
+02:46:41 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:41 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:41 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  14%|██████▍                                      | 9/63 [00:01<00:06,  8.78day/s]Set parameter Username
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  22%|█████████▊                                  | 14/63 [00:01<00:03, 15.07day/s]Set parameter Username
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  30%|█████████████▎                              | 19/63 [00:01<00:02, 21.05day/s]Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  37%|████████████████                            | 23/63 [00:01<00:01, 21.41day/s]Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+ILP solving days:  41%|██████████████████▏                         | 26/63 [00:01<00:01, 20.19day/s]Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:42 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:42 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:42 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:43 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:43 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:43 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:43 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:43 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:43 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  46%|████████████████████▎                       | 29/63 [00:02<00:02, 12.03day/s]ILP solving days:  49%|█████████████████████▋                      | 31/63 [00:02<00:02, 12.48day/s]Set parameter Username
+02:46:43 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:43 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:43 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:43 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:43 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:43 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:43 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:43 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:43 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  52%|███████████████████████                     | 33/63 [00:02<00:02, 12.04day/s]Set parameter Username
+02:46:43 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:43 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:43 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:43 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:43 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:43 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  56%|████████████████████████▍                   | 35/63 [00:02<00:02, 10.13day/s]Set parameter Username
+02:46:43 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:43 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:43 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  59%|█████████████████████████▊                  | 37/63 [00:02<00:02, 11.57day/s]Set parameter Username
+02:46:44 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:44 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:44 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:44 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:44 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:44 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  62%|███████████████████████████▏                | 39/63 [00:03<00:02,  8.04day/s]Set parameter Username
+02:46:44 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:44 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:44 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:44 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:44 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:44 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:44 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:44 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:44 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  65%|████████████████████████████▋               | 41/63 [00:03<00:03,  6.01day/s]ILP solving days:  68%|██████████████████████████████              | 43/63 [00:04<00:03,  6.31day/s]Set parameter Username
+02:46:45 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:45 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:45 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  71%|███████████████████████████████▍            | 45/63 [00:04<00:03,  5.13day/s]Set parameter Username
+02:46:45 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:45 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:45 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  73%|████████████████████████████████▏           | 46/63 [00:05<00:04,  3.85day/s]Set parameter Username
+02:46:46 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:46 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:46 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  75%|████████████████████████████████▊           | 47/63 [00:06<00:06,  2.62day/s]Set parameter Username
+02:46:47 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:47 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:47 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  76%|█████████████████████████████████▌          | 48/63 [00:06<00:07,  2.13day/s]ILP solving days:  78%|██████████████████████████████████▏         | 49/63 [00:13<00:25,  1.82s/day]Set parameter Username
+02:46:55 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:55 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:55 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:46:56 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:46:56 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:46:56 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  79%|██████████████████████████████████▉         | 50/63 [00:15<00:24,  1.91s/day]ILP solving days:  81%|███████████████████████████████████▌        | 51/63 [00:15<00:18,  1.53s/day]Set parameter Username
+02:47:02 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:47:02 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:47:02 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  83%|████████████████████████████████████▎       | 52/63 [00:22<00:33,  3.09s/day]Set parameter Username
+02:47:07 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:47:07 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:47:07 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  84%|█████████████████████████████████████       | 53/63 [00:27<00:35,  3.54s/day]Set parameter Username
+02:47:08 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:47:08 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:47:08 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  86%|█████████████████████████████████████▋      | 54/63 [00:28<00:25,  2.86s/day]Set parameter Username
+02:47:19 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:47:19 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:47:19 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  87%|██████████████████████████████████████▍     | 55/63 [00:39<00:41,  5.20s/day]Set parameter Username
+02:47:23 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:47:23 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:47:23 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  89%|███████████████████████████████████████     | 56/63 [00:44<00:34,  4.95s/day]Set parameter Username
+02:47:26 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:47:26 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:47:26 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  90%|███████████████████████████████████████▊    | 57/63 [00:47<00:26,  4.36s/day]Set parameter Username
+02:47:30 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:47:30 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:47:30 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  92%|████████████████████████████████████████▌   | 58/63 [00:51<00:21,  4.34s/day]Set parameter Username
+02:48:31 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:48:31 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:48:31 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:48:33 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:48:33 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:48:33 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  94%|█████████████████████████████████████████▏  | 59/63 [01:53<01:26, 21.59s/day]ILP solving days:  95%|█████████████████████████████████████████▉  | 60/63 [02:00<00:51, 17.13s/day]Set parameter Username
+02:49:06 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:49:06 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:49:06 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  97%|██████████████████████████████████████████▌ | 61/63 [02:29<00:41, 20.74s/day]Set parameter Username
+02:49:25 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:49:25 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:49:25 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  98%|███████████████████████████████████████████▎| 62/63 [02:49<00:20, 20.48s/day]Set parameter Username
+02:49:51 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:49:51 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:49:51 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days: 100%|████████████████████████████████████████████| 63/63 [03:15<00:00, 22.17s/day]ILP solving days: 100%|████████████████████████████████████████████| 63/63 [03:15<00:00,  3.10s/day]
+02:49:56 - INFO - ILP optimization complete: 30935 daily quota, 329522 concurrency, 10757 API
+Routing (ILP-Optimal):   0%|                                            | 0/371214 [00:00<?, ?req/s]Routing (ILP-Optimal):   9%|██▌                         | 34098/371214 [00:00<00:00, 340970.57req/s]Routing (ILP-Optimal):  21%|█████▉                      | 79232/371214 [00:00<00:00, 374146.60req/s]Routing (ILP-Optimal):  40%|██████████▊                | 148557/371214 [00:00<00:00, 513425.26req/s]Routing (ILP-Optimal):  54%|██████████████▌            | 200448/371214 [00:00<00:00, 469268.04req/s]Routing (ILP-Optimal):  67%|██████████████████         | 248155/371214 [00:00<00:00, 421320.43req/s]Routing (ILP-Optimal):  86%|███████████████████████▏   | 319569/371214 [00:00<00:00, 508624.57req/s]Routing (ILP-Optimal): 100%|███████████████████████████| 371214/371214 [00:00<00:00, 433439.47req/s]
+02:49:57 - INFO - Simulation complete: Total cost $60.85 (subscription $60.00, API $0.85), Quota utilization 9.7%, Runtime 197.49s
+02:49:57 - INFO - Corrected Cost for ILP-Optimal: $285.00 (S_Q: $60.00, S_C: $225.00)
+02:49:57 - INFO - Total Cost: $285.85
+02:49:57 - INFO - Running Daily-Quota-Only...
+02:49:57 - INFO - Starting simulation with Daily-Quota-Only strategy on 371214 requests
+02:49:57 - INFO - Precomputing Daily-Quota-Only (Optimal) for 371214 requests
+02:49:57 - INFO -   Model compatibility: 371214/371214 for S_Q
+02:49:58 - INFO - Daily-Quota-Only: 96710 daily, 274504 API
+Routing (Daily-Quota-Only):   0%|                                       | 0/371214 [00:00<?, ?req/s]Routing (Daily-Quota-Only):  18%|████▏                  | 67877/371214 [00:00<00:00, 678752.85req/s]Routing (Daily-Quota-Only):  37%|████████              | 135753/371214 [00:00<00:00, 527507.21req/s]Routing (Daily-Quota-Only):  55%|████████████▏         | 205200/371214 [00:00<00:00, 593461.57req/s]Routing (Daily-Quota-Only):  72%|███████████████▊      | 266683/371214 [00:00<00:00, 499481.16req/s]Routing (Daily-Quota-Only):  86%|██████████████████▉   | 319410/371214 [00:00<00:00, 424548.56req/s]Routing (Daily-Quota-Only): 100%|██████████████████████| 371214/371214 [00:00<00:00, 496921.85req/s]
+02:49:59 - INFO - Simulation complete: Total cost $90.78 (subscription $60.00, API $30.78), Quota utilization 30.2%, Runtime 1.72s
+02:49:59 - INFO - Corrected Cost for Daily-Quota-Only: $60.00 (S_Q: $60.00, S_C: $0.00)
+02:49:59 - INFO - Total Cost: $90.78
+02:49:59 - INFO - Running Concurrency-Only...
+02:49:59 - INFO - Starting simulation with Concurrency-Only strategy on 371214 requests
+02:49:59 - INFO - Precomputing Concurrency-Only (ILP Optimal) for 371214 requests
+02:49:59 - INFO - Model compatibility loaded:
+02:49:59 - INFO -   S_Q (Chutes): 10 models
+02:49:59 - INFO -   S_C (Featherless): 10 models, multipliers: {'llama-3.3-70b-instruct': 4, 'llama-4-maverick': 4, 'glm-4.6': 4, 'glm-4.5': 4, 'glm-4.7': 4, 'deepseek-r1': 4, 'qwen3-coder-30b': 2, 'minimax-m2': 2, 'llama-4-scout': 1, 'glm-4.5-air': 1}
+02:49:59 - INFO - Loading cached ILP result from experiment/cache/ilp/singlemodel_llama-4-scout_conconly_n371214_d1.0_Q0_C8_cbc_slo0_pe4f3b39d_s2f31be19.json
+02:49:59 - INFO - Loaded ILP cache: 371214 assignments, 344288 schedules
+02:49:59 - INFO - Loaded from cache: 0 daily quota, 344288 concurrency, 26926 API
+02:49:59 - INFO - Concurrency-Only: 344288 concurrency, 26926 API
+Routing (Concurrency-Only):   0%|                                       | 0/371214 [00:00<?, ?req/s]Routing (Concurrency-Only):  17%|███▉                   | 64126/371214 [00:00<00:00, 602442.21req/s]Routing (Concurrency-Only):  35%|███████▊              | 131770/371214 [00:00<00:00, 551290.05req/s]Routing (Concurrency-Only):  58%|████████████▊         | 216238/371214 [00:00<00:00, 513613.61req/s]Routing (Concurrency-Only):  82%|█████████████████▉    | 303595/371214 [00:00<00:00, 625227.50req/s]Routing (Concurrency-Only): 100%|█████████████████████▉| 369679/371214 [00:00<00:00, 500427.01req/s]Routing (Concurrency-Only): 100%|██████████████████████| 371214/371214 [00:00<00:00, 529222.72req/s]
+02:50:00 - INFO - Simulation complete: Total cost $65.66 (subscription $60.00, API $5.66), Quota utilization 0.0%, Runtime 1.19s
+02:50:00 - INFO - Corrected Cost for Concurrency-Only: $225.00 (S_Q: $0.00, S_C: $225.00)
+02:50:00 - INFO - Total Cost: $230.66
+02:50:01 - INFO - Running ILP-Optimal...
+02:50:01 - INFO - Model compatibility loaded:
+02:50:01 - INFO -   S_Q (Chutes): 10 models
+02:50:01 - INFO -   S_C (Featherless): 10 models, multipliers: {'llama-3.3-70b-instruct': 4, 'llama-4-maverick': 4, 'glm-4.6': 4, 'glm-4.5': 4, 'glm-4.7': 4, 'deepseek-r1': 4, 'qwen3-coder-30b': 2, 'minimax-m2': 2, 'llama-4-scout': 1, 'glm-4.5-air': 1}
+02:50:01 - INFO - Starting simulation with ILP-Optimal strategy on 371214 requests
+02:50:01 - INFO - Precomputing ILP-optimal routing for 371214 requests
+02:50:01 - INFO - Parameters: Q=5000, C=8, delta=1.0s, workers=64
+02:50:02 - INFO - Solving ILP for 63 days in parallel
+
+Results:
+  ILP-Optimal:    $285.85
+  Daily-Only:     $90.78
+  Concurrency-Only: $230.66
+  -> ILP saves $-195.07 vs Daily-Only (-214.9%)
+
+======================================================================
+Testing: qwen3-coder-30b
+  Medium model (mult=2, eff_C=4)
+  API pricing: input=$0.07, output=$0.27
+======================================================================
+Converted 371214 requests to qwen3-coder-30b
+ILP solving days:   0%|                                                     | 0/63 [00:00<?, ?day/s]Set parameter Username
+02:50:02 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:02 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:02 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:   3%|█▍                                           | 2/63 [00:00<00:05, 11.31day/s]Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  11%|█████                                        | 7/63 [00:00<00:03, 14.98day/s]Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  33%|██████████████▋                             | 21/63 [00:00<00:00, 44.33day/s]Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  44%|███████████████████▌                        | 28/63 [00:00<00:00, 38.18day/s]Set parameter Username
+02:50:03 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:03 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:03 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  52%|███████████████████████                     | 33/63 [00:01<00:01, 22.81day/s]Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  59%|█████████████████████████▊                  | 37/63 [00:01<00:01, 23.32day/s]Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:04 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:04 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:04 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  65%|████████████████████████████▋               | 41/63 [00:02<00:01, 12.17day/s]Set parameter Username
+02:50:06 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:06 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:06 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:06 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:06 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:06 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:06 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:06 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:06 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  70%|██████████████████████████████▋             | 44/63 [00:03<00:03,  5.98day/s]Set parameter Username
+02:50:06 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:06 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:06 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  73%|████████████████████████████████▏           | 46/63 [00:03<00:02,  6.14day/s]Set parameter Username
+02:50:07 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:07 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:07 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  76%|█████████████████████████████████▌          | 48/63 [00:04<00:03,  4.84day/s]Set parameter Username
+02:50:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:50:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  79%|██████████████████████████████████▉         | 50/63 [00:10<00:10,  1.25day/s]Set parameter Username
+02:50:16 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:16 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:16 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  81%|███████████████████████████████████▌        | 51/63 [00:13<00:13,  1.13s/day]Set parameter Username
+02:50:21 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:21 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:21 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  83%|████████████████████████████████████▎       | 52/63 [00:19<00:20,  1.90s/day]Set parameter Username
+02:50:25 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:25 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:25 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  84%|█████████████████████████████████████       | 53/63 [00:23<00:21,  2.19s/day]Set parameter Username
+02:50:30 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:30 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:30 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  86%|█████████████████████████████████████▋      | 54/63 [00:29<00:26,  2.93s/day]Set parameter Username
+02:50:38 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:38 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:38 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  87%|██████████████████████████████████████▍     | 55/63 [00:36<00:31,  3.99s/day]Set parameter Username
+02:50:43 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:43 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:43 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  89%|███████████████████████████████████████     | 56/63 [00:41<00:30,  4.32s/day]Set parameter Username
+02:50:44 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:44 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:44 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  90%|███████████████████████████████████████▊    | 57/63 [00:43<00:21,  3.66s/day]Set parameter Username
+02:50:48 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:50:48 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:50:48 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  92%|████████████████████████████████████████▌   | 58/63 [00:47<00:17,  3.57s/day]Set parameter Username
+02:51:45 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:51:45 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:51:45 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:51:47 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:51:47 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:51:47 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  94%|█████████████████████████████████████████▏  | 59/63 [01:47<01:17, 19.40s/day]ILP solving days:  95%|█████████████████████████████████████████▉  | 60/63 [01:49<00:43, 14.61s/day]Set parameter Username
+02:52:20 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:52:20 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:52:20 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  97%|██████████████████████████████████████████▌ | 61/63 [02:21<00:39, 19.70s/day]Set parameter Username
+02:52:39 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:52:39 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:52:39 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  98%|███████████████████████████████████████████▎| 62/63 [02:41<00:19, 19.70s/day]Set parameter Username
+02:52:56 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:52:56 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:52:56 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days: 100%|████████████████████████████████████████████| 63/63 [03:01<00:00, 19.79s/day]ILP solving days: 100%|████████████████████████████████████████████| 63/63 [03:01<00:00,  2.88s/day]
+02:53:04 - INFO - ILP optimization complete: 47952 daily quota, 299344 concurrency, 23918 API
+Routing (ILP-Optimal):   0%|                                            | 0/371214 [00:00<?, ?req/s]Routing (ILP-Optimal):  19%|█████▎                      | 70543/371214 [00:00<00:00, 705408.81req/s]Routing (ILP-Optimal):  38%|██████████▎                | 141084/371214 [00:00<00:00, 510849.52req/s]Routing (ILP-Optimal):  58%|███████████████▌           | 213716/371214 [00:00<00:00, 592360.92req/s]Routing (ILP-Optimal):  74%|████████████████████       | 276350/371214 [00:00<00:00, 509480.05req/s]Routing (ILP-Optimal):  89%|████████████████████████   | 330415/371214 [00:00<00:00, 431937.24req/s]Routing (ILP-Optimal): 100%|███████████████████████████| 371214/371214 [00:00<00:00, 499731.15req/s]
+02:53:05 - INFO - Simulation complete: Total cost $61.03 (subscription $60.00, API $1.03), Quota utilization 15.0%, Runtime 183.74s
+02:53:05 - INFO - Corrected Cost for ILP-Optimal: $285.00 (S_Q: $60.00, S_C: $225.00)
+02:53:05 - INFO - Total Cost: $286.03
+02:53:05 - INFO - Running Daily-Quota-Only...
+02:53:05 - INFO - Starting simulation with Daily-Quota-Only strategy on 371214 requests
+02:53:05 - INFO - Precomputing Daily-Quota-Only (Optimal) for 371214 requests
+02:53:05 - INFO -   Model compatibility: 371214/371214 for S_Q
+02:53:06 - INFO - Daily-Quota-Only: 96710 daily, 274504 API
+Routing (Daily-Quota-Only):   0%|                                       | 0/371214 [00:00<?, ?req/s]Routing (Daily-Quota-Only):  17%|███▊                   | 62378/371214 [00:00<00:00, 622942.93req/s]Routing (Daily-Quota-Only):  34%|███████▍              | 124673/371214 [00:00<00:00, 479595.10req/s]Routing (Daily-Quota-Only):  47%|██████████▎           | 174617/371214 [00:00<00:00, 411347.87req/s]Routing (Daily-Quota-Only):  64%|██████████████        | 237623/371214 [00:00<00:00, 481611.50req/s]Routing (Daily-Quota-Only):  78%|█████████████████     | 288304/371214 [00:00<00:00, 404426.74req/s]Routing (Daily-Quota-Only):  95%|████████████████████▉ | 353636/371214 [00:00<00:00, 471747.40req/s]Routing (Daily-Quota-Only): 100%|██████████████████████| 371214/371214 [00:00<00:00, 410787.80req/s]
+02:53:07 - INFO - Simulation complete: Total cost $72.93 (subscription $60.00, API $12.93), Quota utilization 30.2%, Runtime 2.02s
+02:53:07 - INFO - Corrected Cost for Daily-Quota-Only: $60.00 (S_Q: $60.00, S_C: $0.00)
+02:53:07 - INFO - Total Cost: $72.93
+02:53:07 - INFO - Running Concurrency-Only...
+02:53:07 - INFO - Starting simulation with Concurrency-Only strategy on 371214 requests
+02:53:07 - INFO - Precomputing Concurrency-Only (ILP Optimal) for 371214 requests
+02:53:07 - INFO - Model compatibility loaded:
+02:53:07 - INFO -   S_Q (Chutes): 10 models
+02:53:07 - INFO -   S_C (Featherless): 10 models, multipliers: {'llama-3.3-70b-instruct': 4, 'llama-4-maverick': 4, 'glm-4.6': 4, 'glm-4.5': 4, 'glm-4.7': 4, 'deepseek-r1': 4, 'qwen3-coder-30b': 2, 'minimax-m2': 2, 'llama-4-scout': 1, 'glm-4.5-air': 1}
+02:53:07 - INFO - Loading cached ILP result from experiment/cache/ilp/singlemodel_qwen3-coder-30b_conconly_n371214_d1.0_Q0_C8_cbc_slo0_pe4f3b39d_s2f31be19.json
+02:53:08 - INFO - Loaded ILP cache: 371214 assignments, 307731 schedules
+02:53:08 - INFO - Loaded from cache: 0 daily quota, 307731 concurrency, 63483 API
+02:53:08 - INFO - Concurrency-Only: 307731 concurrency, 63483 API
+Routing (Concurrency-Only):   0%|                                       | 0/371214 [00:00<?, ?req/s]Routing (Concurrency-Only):  18%|████▏                  | 66932/371214 [00:00<00:00, 506109.11req/s]Routing (Concurrency-Only):  36%|███████▉              | 134576/371214 [00:00<00:00, 471006.49req/s]Routing (Concurrency-Only):  59%|████████████▉         | 219044/371214 [00:00<00:00, 477256.83req/s]Routing (Concurrency-Only):  82%|██████████████████    | 304151/371214 [00:00<00:00, 586731.31req/s]Routing (Concurrency-Only):  99%|█████████████████████▋| 366654/371214 [00:00<00:00, 482898.91req/s]Routing (Concurrency-Only): 100%|██████████████████████| 371214/371214 [00:00<00:00, 499241.47req/s]
+02:53:09 - INFO - Simulation complete: Total cost $67.24 (subscription $60.00, API $7.24), Quota utilization 0.0%, Runtime 1.26s
+02:53:09 - INFO - Corrected Cost for Concurrency-Only: $225.00 (S_Q: $0.00, S_C: $225.00)
+02:53:09 - INFO - Total Cost: $232.24
+02:53:10 - INFO - Running ILP-Optimal...
+02:53:10 - INFO - Model compatibility loaded:
+02:53:10 - INFO -   S_Q (Chutes): 10 models
+02:53:10 - INFO -   S_C (Featherless): 10 models, multipliers: {'llama-3.3-70b-instruct': 4, 'llama-4-maverick': 4, 'glm-4.6': 4, 'glm-4.5': 4, 'glm-4.7': 4, 'deepseek-r1': 4, 'qwen3-coder-30b': 2, 'minimax-m2': 2, 'llama-4-scout': 1, 'glm-4.5-air': 1}
+02:53:10 - INFO - Starting simulation with ILP-Optimal strategy on 371214 requests
+02:53:10 - INFO - Precomputing ILP-optimal routing for 371214 requests
+02:53:10 - INFO - Parameters: Q=5000, C=8, delta=1.0s, workers=64
+02:53:10 - INFO - Solving ILP for 63 days in parallel
+
+Results:
+  ILP-Optimal:    $286.03
+  Daily-Only:     $72.93
+  Concurrency-Only: $232.24
+  -> ILP saves $-213.10 vs Daily-Only (-292.2%)
+
+======================================================================
+Testing: llama-3.3-70b-instruct
+  Large model (mult=4, eff_C=2)
+  API pricing: input=$0.25, output=$0.75
+======================================================================
+Converted 371214 requests to llama-3.3-70b-instruct
+ILP solving days:   0%|                                                     | 0/63 [00:00<?, ?day/s]Set parameter Username
+02:53:11 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:11 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:11 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:11 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:11 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:11 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:11 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:11 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:11 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:11 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:11 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:11 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:   3%|█▍                                           | 2/63 [00:00<00:04, 12.89day/s]Set parameter Username
+02:53:11 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:11 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:11 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:11 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:11 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:11 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  10%|████▎                                        | 6/63 [00:00<00:02, 23.63day/s]Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  14%|██████▍                                      | 9/63 [00:00<00:03, 16.17day/s]Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Set parameter Username
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  33%|██████████████▋                             | 21/63 [00:00<00:01, 41.19day/s]Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  43%|██████████████████▊                         | 27/63 [00:00<00:00, 40.22day/s]Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  51%|██████████████████████▎                     | 32/63 [00:01<00:01, 24.11day/s]Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:12 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:12 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:12 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  57%|█████████████████████████▏                  | 36/63 [00:01<00:01, 22.81day/s]Set parameter Username
+02:53:13 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:13 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:13 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:13 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:13 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:13 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:13 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:13 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:13 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:13 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:13 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:13 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  63%|███████████████████████████▉                | 40/63 [00:02<00:01, 13.61day/s]Set parameter Username
+02:53:14 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:14 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:14 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:14 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:14 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:14 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:14 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:14 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:14 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  68%|██████████████████████████████              | 43/63 [00:02<00:02,  9.22day/s]Set parameter Username
+02:53:14 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:14 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:14 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  71%|███████████████████████████████▍            | 45/63 [00:03<00:02,  8.54day/s]Set parameter Username
+02:53:14 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:14 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:14 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:14 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:14 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:14 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  75%|████████████████████████████████▊           | 47/63 [00:03<00:02,  7.07day/s]Set parameter Username
+02:53:20 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:20 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:21 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:53:21 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:21 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:21 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  78%|██████████████████████████████████▏         | 49/63 [00:10<00:12,  1.15day/s]ILP solving days:  79%|██████████████████████████████████▉         | 50/63 [00:10<00:10,  1.26day/s]Set parameter Username
+02:53:25 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:25 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:25 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  81%|███████████████████████████████████▌        | 51/63 [00:14<00:16,  1.35s/day]Set parameter Username
+02:53:30 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:30 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:30 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  83%|████████████████████████████████████▎       | 52/63 [00:21<00:25,  2.36s/day]Set parameter Username
+02:53:33 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:33 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:33 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  84%|█████████████████████████████████████       | 53/63 [00:23<00:22,  2.21s/day]Set parameter Username
+02:53:37 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:37 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:37 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  86%|█████████████████████████████████████▋      | 54/63 [00:27<00:23,  2.57s/day]Set parameter Username
+02:53:46 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:46 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:46 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  87%|██████████████████████████████████████▍     | 55/63 [00:36<00:33,  4.21s/day]Set parameter Username
+02:53:50 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:50 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:50 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  89%|███████████████████████████████████████     | 56/63 [00:40<00:29,  4.20s/day]Set parameter Username
+02:53:52 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:52 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:52 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  90%|███████████████████████████████████████▊    | 57/63 [00:43<00:23,  3.84s/day]Set parameter Username
+02:53:55 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:53:55 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:53:55 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  92%|████████████████████████████████████████▌   | 58/63 [00:47<00:19,  3.80s/day]Set parameter Username
+02:54:53 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:54:53 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:54:53 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+Set parameter Username
+02:54:57 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:54:57 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:54:57 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  94%|█████████████████████████████████████████▏  | 59/63 [01:48<01:21, 20.33s/day]ILP solving days:  95%|█████████████████████████████████████████▉  | 60/63 [01:50<00:45, 15.08s/day]Set parameter Username
+02:55:29 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:55:29 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:55:29 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  97%|██████████████████████████████████████████▌ | 61/63 [02:23<00:40, 20.19s/day]Set parameter Username
+02:55:49 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:55:49 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:55:49 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days:  98%|███████████████████████████████████████████▎| 62/63 [02:43<00:20, 20.11s/day]Set parameter Username
+02:56:09 - INFO - Set parameter Username
+Set parameter LicenseID to value 2766923
+02:56:09 - INFO - Set parameter LicenseID to value 2766923
+Academic license - for non-commercial use only - expires 2027-01-17
+02:56:09 - INFO - Academic license - for non-commercial use only - expires 2027-01-17
+ILP solving days: 100%|████████████████████████████████████████████| 63/63 [03:04<00:00, 20.56s/day]ILP solving days: 100%|████████████████████████████████████████████| 63/63 [03:04<00:00,  2.93s/day]
+02:56:16 - INFO - ILP optimization complete: 59982 daily quota, 233920 concurrency, 77312 API
+Routing (ILP-Optimal):   0%|                                            | 0/371214 [00:00<?, ?req/s]Routing (ILP-Optimal):  18%|█████▏                      | 68090/371214 [00:00<00:00, 680874.68req/s]Routing (ILP-Optimal):  37%|█████████▉                 | 136178/371214 [00:00<00:00, 456031.08req/s]Routing (ILP-Optimal):  56%|██████████████▉            | 206090/371214 [00:00<00:00, 543570.74req/s]Routing (ILP-Optimal):  71%|███████████████████▎       | 265087/371214 [00:00<00:00, 453439.86req/s]Routing (ILP-Optimal):  87%|███████████████████████▍   | 321778/371214 [00:00<00:00, 391659.93req/s]Routing (ILP-Optimal): 100%|███████████████████████████| 371214/371214 [00:00<00:00, 459856.21req/s]
+02:56:17 - INFO - Simulation complete: Total cost $70.92 (subscription $60.00, API $10.92), Quota utilization 18.7%, Runtime 186.99s
+02:56:17 - INFO - Corrected Cost for ILP-Optimal: $285.00 (S_Q: $60.00, S_C: $225.00)
+02:56:17 - INFO - Total Cost: $295.92
+02:56:17 - INFO - Running Daily-Quota-Only...
+02:56:17 - INFO - Starting simulation with Daily-Quota-Only strategy on 371214 requests
+02:56:17 - INFO - Precomputing Daily-Quota-Only (Optimal) for 371214 requests
+02:56:17 - INFO -   Model compatibility: 371214/371214 for S_Q
+02:56:18 - INFO - Daily-Quota-Only: 96710 daily, 274504 API
+Routing (Daily-Quota-Only):   0%|                                       | 0/371214 [00:00<?, ?req/s]Routing (Daily-Quota-Only):  18%|████                   | 65795/371214 [00:00<00:00, 657927.10req/s]Routing (Daily-Quota-Only):  35%|███████▊              | 131588/371214 [00:00<00:00, 494671.43req/s]Routing (Daily-Quota-Only):  49%|██████████▊           | 183472/371214 [00:00<00:00, 424457.08req/s]Routing (Daily-Quota-Only):  67%|██████████████▊       | 250240/371214 [00:00<00:00, 388986.06req/s]Routing (Daily-Quota-Only):  86%|██████████████████▉   | 320125/371214 [00:00<00:00, 469646.28req/s]Routing (Daily-Quota-Only): 100%|██████████████████████| 371214/371214 [00:00<00:00, 416383.58req/s]
+02:56:19 - INFO - Simulation complete: Total cost $101.11 (subscription $60.00, API $41.11), Quota utilization 30.2%, Runtime 2.02s
+02:56:19 - INFO - Corrected Cost for Daily-Quota-Only: $60.00 (S_Q: $60.00, S_C: $0.00)
+02:56:19 - INFO - Total Cost: $101.11
+02:56:19 - INFO - Running Concurrency-Only...
+02:56:19 - INFO - Starting simulation with Concurrency-Only strategy on 371214 requests
+02:56:19 - INFO - Precomputing Concurrency-Only (ILP Optimal) for 371214 requests
+02:56:19 - INFO - Model compatibility loaded:
+02:56:19 - INFO -   S_Q (Chutes): 10 models
+02:56:19 - INFO -   S_C (Featherless): 10 models, multipliers: {'llama-3.3-70b-instruct': 4, 'llama-4-maverick': 4, 'glm-4.6': 4, 'glm-4.5': 4, 'glm-4.7': 4, 'deepseek-r1': 4, 'qwen3-coder-30b': 2, 'minimax-m2': 2, 'llama-4-scout': 1, 'glm-4.5-air': 1}
+02:56:19 - INFO - Loading cached ILP result from experiment/cache/ilp/singlemodel_llama-3.3-70b-instruct_conconly_n371214_d1.0_Q0_C8_cbc_slo0_pe4f3b39d_s2f31be19.json
+02:56:19 - INFO - Loaded ILP cache: 371214 assignments, 233354 schedules
+02:56:20 - INFO - Loaded from cache: 0 daily quota, 233354 concurrency, 137860 API
+02:56:20 - INFO - Concurrency-Only: 233354 concurrency, 137860 API
+Routing (Concurrency-Only):   0%|                                       | 0/371214 [00:00<?, ?req/s]Routing (Concurrency-Only):  11%|██▍                    | 39094/371214 [00:00<00:00, 390930.12req/s]Routing (Concurrency-Only):  22%|████▉                  | 80279/371214 [00:00<00:00, 358824.70req/s]Routing (Concurrency-Only):  41%|█████████             | 152129/371214 [00:00<00:00, 367916.26req/s]Routing (Concurrency-Only):  63%|█████████████▊        | 232217/371214 [00:00<00:00, 499913.93req/s]Routing (Concurrency-Only):  77%|████████████████▉     | 286053/371214 [00:00<00:00, 401092.03req/s]Routing (Concurrency-Only):  96%|█████████████████████ | 354713/371214 [00:00<00:00, 334526.16req/s]Routing (Concurrency-Only): 100%|██████████████████████| 371214/371214 [00:00<00:00, 375802.51req/s]
+02:56:21 - INFO - Simulation complete: Total cost $104.91 (subscription $60.00, API $44.91), Quota utilization 0.0%, Runtime 1.43s
+02:56:21 - INFO - Corrected Cost for Concurrency-Only: $225.00 (S_Q: $0.00, S_C: $225.00)
+02:56:21 - INFO - Total Cost: $269.91
+
+Results:
+  ILP-Optimal:    $295.92
+  Daily-Only:     $101.11
+  Concurrency-Only: $269.91
+  -> ILP saves $-194.82 vs Daily-Only (-192.7%)
+
+==========================================================================================
+SINGLE-MODEL COMPARISON SUMMARY (S_Q=$20.0/mo, S_C=$75.0/mo)
+==========================================================================================
+Model                          Mult Eff_C        ILP      Daily       Conc       Best
+------------------------------------------------------------------------------------------
+llama-4-scout                     1     8 $   285.85 $    90.78 $   230.66      Daily
+qwen3-coder-30b                   2     4 $   286.03 $    72.93 $   232.24      Daily
+llama-3.3-70b-instruct            4     2 $   295.92 $   101.11 $   269.91      Daily
+==========================================================================================
+
+Results saved to experiment/results/stage2/single_model_comparison_freeinference.json

@@ -1,0 +1,167 @@
+{
+  "llama-4-scout": {
+    "description": "Small model (mult=1, eff_C=8)",
+    "multiplier": 1,
+    "effective_concurrency": 8,
+    "results": {
+      "ilp_optimal": {
+        "strategy": "ILP-Optimal",
+        "costs": {
+          "total": 266.0,
+          "subscription": 266.0,
+          "api": 0.0
+        },
+        "requests": {
+          "total": 54599,
+          "subscription": 54599,
+          "api": 0
+        },
+        "quota_utilization": 0.05,
+        "num_days": 84,
+        "runtime_seconds": 20.57
+      },
+      "daily_quota_only": {
+        "strategy": "Daily-Quota-Only",
+        "costs": {
+          "total": 73.4064,
+          "subscription": 56.0,
+          "api": 17.4064
+        },
+        "requests": {
+          "total": 54599,
+          "subscription": 43571,
+          "api": 11028
+        },
+        "quota_utilization": 0.1584,
+        "num_days": 84,
+        "runtime_seconds": 0.29
+      },
+      "concurrency_only": {
+        "strategy": "Concurrency-Only",
+        "costs": {
+          "total": 213.0132,
+          "subscription": 210.0,
+          "api": 3.0132
+        },
+        "requests": {
+          "total": 54599,
+          "subscription": 53572,
+          "api": 1027
+        },
+        "quota_utilization": 0.0,
+        "num_days": 84,
+        "runtime_seconds": 0.14
+      }
+    }
+  },
+  "qwen3-coder-30b": {
+    "description": "Medium model (mult=2, eff_C=4)",
+    "multiplier": 2,
+    "effective_concurrency": 4,
+    "results": {
+      "ilp_optimal": {
+        "strategy": "ILP-Optimal",
+        "costs": {
+          "total": 266.0,
+          "subscription": 266.0,
+          "api": 0.0
+        },
+        "requests": {
+          "total": 54599,
+          "subscription": 54597,
+          "api": 2
+        },
+        "quota_utilization": 0.0861,
+        "num_days": 84,
+        "runtime_seconds": 21.13
+      },
+      "daily_quota_only": {
+        "strategy": "Daily-Quota-Only",
+        "costs": {
+          "total": 62.8528,
+          "subscription": 56.0,
+          "api": 6.8528
+        },
+        "requests": {
+          "total": 54599,
+          "subscription": 43571,
+          "api": 11028
+        },
+        "quota_utilization": 0.1584,
+        "num_days": 84,
+        "runtime_seconds": 0.31
+      },
+      "concurrency_only": {
+        "strategy": "Concurrency-Only",
+        "costs": {
+          "total": 222.4794,
+          "subscription": 210.0,
+          "api": 12.4794
+        },
+        "requests": {
+          "total": 54599,
+          "subscription": 47798,
+          "api": 6801
+        },
+        "quota_utilization": 0.0,
+        "num_days": 84,
+        "runtime_seconds": 0.15
+      }
+    }
+  },
+  "llama-3.3-70b-instruct": {
+    "description": "Large model (mult=4, eff_C=2)",
+    "multiplier": 4,
+    "effective_concurrency": 2,
+    "results": {
+      "ilp_optimal": {
+        "strategy": "ILP-Optimal",
+        "costs": {
+          "total": 266.0,
+          "subscription": 266.0,
+          "api": 0.0
+        },
+        "requests": {
+          "total": 54599,
+          "subscription": 54599,
+          "api": 0
+        },
+        "quota_utilization": 0.1092,
+        "num_days": 84,
+        "runtime_seconds": 20.41
+      },
+      "daily_quota_only": {
+        "strategy": "Daily-Quota-Only",
+        "costs": {
+          "total": 80.0269,
+          "subscription": 56.0,
+          "api": 24.0269
+        },
+        "requests": {
+          "total": 54599,
+          "subscription": 43571,
+          "api": 11028
+        },
+        "quota_utilization": 0.1584,
+        "num_days": 84,
+        "runtime_seconds": 0.28
+      },
+      "concurrency_only": {
+        "strategy": "Concurrency-Only",
+        "costs": {
+          "total": 343.8279,
+          "subscription": 210.0,
+          "api": 133.8279
+        },
+        "requests": {
+          "total": 54599,
+          "subscription": 36775,
+          "api": 17824
+        },
+        "quota_utilization": 0.0,
+        "num_days": 84,
+        "runtime_seconds": 0.13
+      }
+    }
+  }
+}
