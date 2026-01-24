@@ -1,0 +1,42 @@
+\newpage
+\appendix
+\onecolumn
+\section{Appendix}
+
+\subsection{Real-World Subscription Plans}
+\label{app:plans}
+
+Our Stage 1 model assumes a generic fixed-window quota. Here we map real-world subscription plans to our framework.
+
+\textbf{OpenAI / Anthropic (Tier-based).} These providers typically use rolling-window rate limits (e.g., "500 requests per minute", "40,000 tokens per minute").
+\begin{itemize}
+    \item \textbf{Mapping:} We approximate rolling windows with fixed windows of the same duration. This is a standard relaxation in online algorithms that provides a lower bound on cost (since fixed windows are less restrictive than rolling ones).
+\end{itemize}
+
+\textbf{Chutes.ai / Dedicated Endpoints.} These providers offer "throughput-based" pricing, which maps directly to our Stage 2 ($S_C$) concurrency constraint.
+\begin{itemize}
+    \item \textbf{Mapping:} A dedicated GPU instance (e.g., H100) provides a fixed number of concurrent slots $C$. The "quota" is effectively infinite, but throughput is bounded.
+\end{itemize}
+
+\textbf{Coding Copilots (e.g., Cursor, GitHub Copilot).} These often have "fast" and "slow" pools.
+\begin{itemize}
+    \item \textbf{Mapping:} The "fast pool" corresponds to our $S_Q$ (limited high-priority quota). The "slow pool" can be modeled as a high-latency fallback or a separate $S_C$ with lower priority.
+\end{itemize}
+
+\subsection{Multi-Model Routing}
+\label{app:multimodel}
+
+Our framework naturally extends to multi-model scenarios where a single subscription covers multiple models (e.g., an "All-Access" plan).
+
+\textbf{Shared Quota.} If multiple models $m_1, m_2$ share a single quota $Q$, the Primal-Dual algorithm works unchanged. The shadow price $\psi(z)$ reflects the opportunity cost of the \textit{shared} resource. A request for $m_1$ is routed to subscription if its specific avoided cost $v_{t, m_1}$ exceeds $\psi(z)$. This automatically prioritizes expensive models (e.g., GPT-4) over cheap ones (e.g., GPT-3.5) for the shared quota.
+
+\textbf{Separate Quotas.} If models have independent quotas $Q_1, Q_2$, we simply maintain separate state variables $z_1, z_2$ and thresholds $\psi_1(z_1), \psi_2(z_2)$.
+
+\subsection{Latency-Constrained Optimization}
+\label{app:latency}
+
+While our main formulation focuses on cost, latency is a critical constraint. We can extend our ILP and Online algorithms to handle hard deadlines.
+
+\textbf{Hard Deadlines.} In Stage 2 ILP, we enforce $s_i + p_i \le d_i$. If a request cannot be scheduled on $S_C$ by its deadline, it must be routed to $S_A$ (assuming $S_A$ meets the SLO).
+
+\textbf{Soft Deadlines (Hedging).} For online routing, we can employ a hedging strategy: send a request to $S_C$ first, and if it is not completed by time $t_{hedge}$, speculatively send a backup request to $S_A$. The cost function then becomes the expected cost of the combined policy.

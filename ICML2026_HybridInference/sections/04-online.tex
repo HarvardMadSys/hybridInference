@@ -1,0 +1,69 @@
+\section{Online Routing Algorithms}
+\label{sec:online}
+
+In the online setting, we must make irrevocable routing decisions without knowledge of future arrivals or exact output lengths. We propose a unified framework that combines primal-dual algorithm design with learning-augmented predictions.
+
+\subsection{Primal-Dual Framework}
+
+We treat the subscription capacity as a scarce resource and assign it a dynamic \textit{shadow price}. This price represents the opportunity cost of using a subscription slot.
+
+\textbf{Quota Shadow Price ($\psi$).}
+For the daily quota constraint ($S_Q$), let $z = k/Q$ be the fraction of quota consumed. We define an exponential threshold function $\psi(z)$:
+\begin{equation}
+    \psi(z) = L \cdot \left( \frac{U}{L} \right)^z
+\end{equation}
+where $L$ and $U$ are estimated lower and upper bounds on the request value (avoided API cost). A request is routed to $S_Q$ only if its value exceeds this threshold. This function is known to achieve optimal competitive ratios for the online knapsack problem.
+
+\textbf{Concurrency Shadow Price ($\lambda$).}
+For the concurrency constraint ($S_C$), we define a congestion price $\lambda_t$ based on the current utilization of the concurrency slots. When the system is saturated (queue full or utilization high), $\lambda_t$ increases, admitting only requests with high \textit{value density} (value per unit time).
+\begin{equation}
+    \lambda_t = \begin{cases}
+    0 & \text{if capacity available} \\
+    \min_{r \in \text{Queue}} \frac{v(r)}{p(r)} & \text{if saturated}
+    \end{cases}
+\end{equation}
+
+\subsection{Learning-Augmented Decision Making}
+
+A key challenge is that the ``value'' of a request (its output token count $n_i^{\text{out}}$) is unknown at arrival time. Standard estimators (e.g., historical averages) can be risky: over-estimating value leads to wasting scarce quota on cheap requests.
+
+We employ a \textbf{Learning-Augmented} approach:
+\begin{enumerate}
+    \item \textbf{Quantile Regression:} We train a lightweight model to predict the distribution of output tokens. Specifically, we predict the 10th percentile (P10) $\hat{L}^{(10)}_t$ and the median (P50) $\hat{L}^{(50)}_t$.
+    \item \textbf{Conservative Value Estimation (LCB):} We use the Lower Confidence Bound (P10) to estimate the request value:
+    \begin{equation}
+        \hat{v}_t^{\text{LCB}} = p_{\text{in}} \cdot n_t^{\text{in}} + p_{\text{out}} \cdot \hat{L}^{(10)}_t
+    \end{equation}
+    This conservative estimate ensures we are "90\% confident" that the request is worth at least this much before spending quota on it.
+\end{enumerate}
+
+\subsection{Unified Risk-Aware Routing Algorithm}
+
+We combine the shadow prices and the conservative value estimate into a single unified decision rule. For each incoming request $r_t$, we calculate the net gain of routing to the subscription:
+
+\begin{equation}
+    G_t = \hat{v}_t^{\text{LCB}} - \psi(z_t) - \lambda_t \cdot \hat{p}_t
+\end{equation}
+
+where $\hat{p}_t$ is the estimated duration.
+
+\begin{algorithm}[tb]
+   \caption{Unified Risk-Aware Routing (LA-PD)}
+   \label{alg:lapd}
+\begin{algorithmic}
+   \STATE {\bfseries Input:} Request $r_t$, quota usage $k_t$, system state
+   \STATE {\bfseries Parameters:} Quota $Q$, value bounds $[L, U]$
+   \STATE 1. Predict quantiles $\hat{L}^{(10)}_t \gets \mathcal{M}(r_t)$
+   \STATE 2. Estimate conservative value $\hat{v}^{\text{LCB}}_t$
+   \STATE 3. Get shadow prices $\psi(z_t)$ and $\lambda_t$
+   \STATE 4. Calculate Net Gain $G_t = \hat{v}^{\text{LCB}}_t - \psi(z_t) - \lambda_t \hat{p}_t$
+   \IF{$G_t > 0$ \AND Capacity Available}
+       \STATE Route to Subscription ($S_Q$ or $S_C$)
+       \STATE Update usage $k_{t+1} \gets k_t + 1$
+   \ELSE
+       \STATE Route to API ($S_A$)
+   \ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+This algorithm unifies the economic and physical constraints. When concurrency is not a bottleneck ($\lambda_t \approx 0$), it reduces to the optimal online knapsack policy. When concurrency is tight, it naturally shifts to prioritizing short, high-value jobs.

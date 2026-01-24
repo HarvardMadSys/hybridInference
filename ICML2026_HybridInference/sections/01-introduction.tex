@@ -1,0 +1,15 @@
+\section{Introduction}
+\label{sec:intro}
+
+The landscape of Large Language Model (LLM) inference is shifting from a monolithic API model to a hybrid ecosystem. Developers can now access state-of-the-art models (e.g., Llama-3, DeepSeek-R1) through a variety of billing paradigms. On one end, pay-per-token APIs (e.g., OpenAI, Anthropic) offer unlimited elasticity but high marginal costs. On the other, subscription-based services (e.g., reserved GPU instances, Chutes.ai) provide ``zero marginal cost'' inference up to certain capacity limits---typically defined by daily request quotas ($S_Q$) or instantaneous concurrency limits ($S_C$).
+
+This hybrid pricing landscape presents a classic resource allocation challenge: how to route a stream of heterogeneous requests to minimize total cost without violating service level objectives (SLOs). A naive greedy strategy---sending every request to a subscription until it is full---is often suboptimal. It fails to account for the \textit{opportunity cost} of consuming a scarce subscription slot with a low-value (short) request, forcing a subsequent high-value (long) request to the expensive pay-per-token API.
+
+We address this challenge by formalizing the \textbf{Latency--Cost Optimization} problem for hybrid LLM routing. Our contributions are:
+
+\begin{enumerate}
+    \item \textbf{Formal Problem Definition:} We model the routing problem under two distinct constraint types: fixed-window quotas (Stage 1) and concurrency limits (Stage 2), incorporating latency deadlines.
+    \item \textbf{Offline Oracles:} We derive optimal offline algorithms for these settings. For Stage 1, we prove that a greedy-by-value strategy is optimal. For Stage 2, we formulate a time-indexed Integer Linear Program (ILP) to handle the NP-hard scheduling problem.
+    \item \textbf{Online Algorithm:} We propose a Learning-Augmented Primal-Dual (LA-PD) algorithm. It uses a shadow price mechanism to value scarce resources and integrates a quantile regression model to conservatively estimate request costs under uncertainty.
+    \item \textbf{Empirical Results:} Using traces from ShareGPT and RedNote, we demonstrate that our approach achieves near-optimal costs (within 1.18x of the offline oracle) and significantly outperforms standard greedy baselines.
+\end{enumerate}

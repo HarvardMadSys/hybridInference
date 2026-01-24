@@ -1,0 +1,18 @@
+\section{System Model}
+\label{sec:system_model}
+
+We consider a stream of inference requests $\mathcal{R} = \{r_1, r_2, \dots, r_T\}$ arriving over time. Each request $r_i$ is characterized by its arrival time $a_i$, model type $m_i$, input token count $n_i^{\text{in}}$, and (unknown at arrival) output token count $n_i^{\text{out}}$.
+
+\subsection{Providers and Cost Models}
+
+We model three types of inference providers:
+
+\begin{itemize}
+    \item \textbf{Pay-per-Token API ($S_A$):} Offers unlimited capacity but charges per token. The cost of request $r_i$ is $c_i = p_{\text{in}} \cdot n_i^{\text{in}} + p_{\text{out}} \cdot n_i^{\text{out}}$.
+    \item \textbf{Quota Subscription ($S_Q$):} Allows up to $Q$ requests per fixed time window (e.g., daily). The marginal cost is zero, but the capacity is hard-limited: $\sum x_i^Q \le Q$.
+    \item \textbf{Concurrency Subscription ($S_C$):} Allows up to $C$ concurrent requests. A request occupies a slot for duration $p_i$. The constraint is $\sum \mathbb{I}(t \in [s_i, s_i+p_i]) \le C$ for all $t$.
+\end{itemize}
+
+\subsection{Objective}
+
+The goal is to minimize the total API cost $\sum_{i} x_i^A c_i$ subject to the constraints of $S_Q$ and $S_C$, where $x_i^A, x_i^Q, x_i^C \in \{0, 1\}$ are binary decision variables indicating where request $r_i$ is routed.
