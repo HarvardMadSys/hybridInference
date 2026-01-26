@@ -448,7 +448,7 @@ class SWRRSampler:
 
         self.providers = list(weights.keys())
         self.weights = weights.copy()
-        self.current_weights = {p: 0.0 for p in self.providers}
+        self.current_weights = dict.fromkeys(self.providers, 0.0)
 
     def next(self) -> str | None:
         """Select next provider using SWRR algorithm.
