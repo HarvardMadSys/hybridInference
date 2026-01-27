@@ -1,18 +1,26 @@
-\section{System Model}
+\section{Problem Formulation}
 \label{sec:system_model}
 
 We consider a stream of inference requests $\mathcal{R} = \{r_1, r_2, \dots, r_T\}$ arriving over time. Each request $r_i$ is characterized by its arrival time $a_i$, model type $m_i$, input token count $n_i^{\text{in}}$, and (unknown at arrival) output token count $n_i^{\text{out}}$.
 
 \subsection{Providers and Cost Models}
+\jason{we can combine provider descriptions from intro and following into sec 2, and ideally show a table}
+We model three types of inference providers, each reflecting real-world pricing structures.
 
-We model three types of inference providers:
+\paragraph{Pay-per-Token API ($S_A$).} This provider offers unlimited capacity but charges per token. The cost of request $r_i$ is $c_i = p_{\text{in}} \cdot n_i^{\text{in}} + p_{\text{out}} \cdot n_i^{\text{out}}$. Real-world examples include OpenAI API (GPT-4 at \$30/\$60 per 1M input/output tokens), Anthropic API (Claude-3 at \$15/\$75 per 1M tokens), and DeepSeek API (\$0.55/\$2.19 per 1M tokens for R1)\jason{we should avoid proprietary models}.
 
-\begin{itemize}
-    \item \textbf{Pay-per-Token API ($S_A$):} Offers unlimited capacity but charges per token. The cost of request $r_i$ is $c_i = p_{\text{in}} \cdot n_i^{\text{in}} + p_{\text{out}} \cdot n_i^{\text{out}}$.
-    \item \textbf{Quota Subscription ($S_Q$):} Allows up to $Q$ requests per fixed time window (e.g., daily). The marginal cost is zero, but the capacity is hard-limited: $\sum x_i^Q \le Q$.
-    \item \textbf{Concurrency Subscription ($S_C$):} Allows up to $C$ concurrent requests. A request occupies a slot for duration $p_i$. The constraint is $\sum \mathbb{I}(t \in [s_i, s_i+p_i]) \le C$ for all $t$.
-\end{itemize}
+\paragraph{Quota Subscription ($S_Q$).} This provider allows up to $Q$ requests per fixed time window at zero marginal cost, but capacity is hard-limited: $\sum x_i^Q \le Q$. Examples include ChatGPT Plus (\$20/month for 80 messages per 3-hour window), Claude Pro (\$20/month with usage limits), and Cursor Pro (500 ``fast'' requests per month with unlimited ``slow'' requests).
+
+\paragraph{Concurrency Subscription ($S_C$).} This provider allows up to $C$ concurrent requests, where each request occupies a slot for its processing duration $p_i$. The constraint is $\sum \mathbb{I}(t \in [s_i, s_i+p_i]) \le C$ for all $t$. Examples include dedicated GPU endpoints (Chutes.ai, RunPod), reserved instances on cloud providers, and self-hosted vLLM deployments with fixed replica counts\jason{add featureless and other explict providers}.
+
+\paragraph{Subscription Amortization.}
+In our experiments, we assume the subscription fee is a sunk cost (already paid). The optimization objective is to minimize additional API spending given the available subscription capacity. This models the realistic scenario where an organization has already committed to subscriptions and seeks to maximize their utilization while minimizing overflow to expensive APIs.
 
 \subsection{Objective}
 
 The goal is to minimize the total API cost $\sum_{i} x_i^A c_i$ subject to the constraints of $S_Q$ and $S_C$, where $x_i^A, x_i^Q, x_i^C \in \{0, 1\}$ are binary decision variables indicating where request $r_i$ is routed.
+
+\subsection{Key Assumptions}
+
+We make three simplifying assumptions. First, we assume \textbf{homogeneous quality}: all providers serve the same model, so routing decisions affect only cost, not output quality. This assumption holds for open-weight models (Llama, Mistral, DeepSeek) available across multiple providers. Second, we assume all providers meet \textbf{latency SLOs}\jason{will remove this}; Section~\ref{sec:offline-stage2} relaxes this by incorporating deadline constraints. Third, the \textbf{output token count} $n_i^{\text{out}}$ is unknown at routing time\jason{not sure whether we need this}. This is the key source of uncertainty that motivates our learning-augmented approach.
+\jason{just a note do not need to add we assume providers have infinite capacity in the first part}

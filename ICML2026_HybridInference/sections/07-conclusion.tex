@@ -1,4 +1,16 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-We presented a unified framework for optimizing LLM inference costs in a hybrid pricing environment. By modeling both quota and concurrency constraints, and solving the online problem with a learning-augmented primal-dual approach, we achieve near-optimal cost savings. Our analysis reveals that while quota is often the dominant constraint for current workloads, concurrency management becomes critical for larger models. Future work includes extending this framework to hierarchical quotas and handling soft latency SLOs.
+We presented a unified framework for optimizing LLM inference costs in a hybrid pricing environment that combines pay-per-token APIs with quota-limited and concurrency-limited subscriptions. Our framework applies broadly---from routing across third-party API providers to scheduling within enterprise GPU clusters with gutter pools for high availability.
+
+\paragraph{Summary of Contributions.}
+We formalized the hybrid routing problem in two stages: Stage 1 considers quota constraints alone (yielding an economic lower bound), while Stage 2 incorporates concurrency constraints (yielding the physical lower bound). For Stage 1, we proved that a simple greedy-by-value strategy is optimal. For Stage 2, we formulated a time-indexed ILP that jointly optimizes quota allocation and concurrent scheduling. For online routing, we proposed the Learning-Augmented Primal-Dual (LA-PD) algorithm that combines shadow pricing with conservative value estimation via quantile regression.
+
+\paragraph{Key Findings.}
+Our experiments on real-world traces revealed several insights: (1) Naive greedy routing leaves significant cost savings on the table---up to 4x worse than optimal on high-variance workloads. (2) Our online algorithm achieves a competitive ratio of 1.18x, approaching theoretical limits. (3) Predictor quality matters more than decision rule complexity; a simple EMA predictor outperforms more sophisticated histogram-based quantile estimation. (4) Under zero-wait semantics, quota constraints dominate concurrency constraints for current model sizes, but this balance shifts as models grow larger and effective concurrency decreases.
+
+\paragraph{Practical Implications.}
+For practitioners, our results suggest that even simple threshold-based routing policies can capture most of the potential savings, provided they account for opportunity cost. The exponential threshold function $\psi(z) = L(U/L)^z$ is easy to implement and requires only estimates of value bounds $[L, U]$ and current quota usage $z$.
+
+\paragraph{Limitations and Future Work.}
+Our current formulation assumes requests are independent and ignores potential correlations (e.g., conversation sessions). Future work includes: (1) extending to hierarchical quotas (e.g., hourly + daily + weekly limits common in coding assistants), (2) handling soft latency SLOs with hedging strategies, (3) incorporating request preemption and migration in concurrency-limited settings, and (4) adapting to non-stationary workloads with online learning of value distributions.

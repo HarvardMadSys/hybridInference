@@ -1,15 +1,34 @@
 \section{Introduction}
 \label{sec:intro}
 
-The landscape of Large Language Model (LLM) inference is shifting from a monolithic API model to a hybrid ecosystem. Developers can now access state-of-the-art models (e.g., Llama-3, DeepSeek-R1) through a variety of billing paradigms. On one end, pay-per-token APIs (e.g., OpenAI, Anthropic) offer unlimited elasticity but high marginal costs. On the other, subscription-based services (e.g., reserved GPU instances, Chutes.ai) provide ``zero marginal cost'' inference up to certain capacity limits---typically defined by daily request quotas ($S_Q$) or instantaneous concurrency limits ($S_C$).
+% Hook: The cost problem is real and urgent
+LLM inference costs have emerged as a critical barrier to AI adoption. For startups, API bills can rival engineering salaries; for universities, limited research credits constrain student projects and coursework; for independent developers, a single viral side-project can result in unexpected bills. Industry surveys report that inference costs rank among the top three concerns for organizations deploying LLMs in production. Yet the common remedy---switching to cheaper, smaller models---sacrifices the quality that makes LLMs valuable in the first place.
 
+\paragraph{The Rise of Hybrid Pricing.}
+Fortunately, the LLM marketplace has evolved beyond simple pay-per-token APIs. The commoditization of open-weight models (Llama-3, Mistral, DeepSeek-R1) means the \textit{same model} is now accessible through radically different pricing structures across 10+ providers. On one end, pay-per-token APIs (OpenAI, Anthropic, Together) offer unlimited elasticity but high marginal costs. On the other, subscription-based services have proliferated with two distinct constraint types: ChatGPT Plus (\$20/month for 80 GPT-4 messages per 3 hours), Claude Pro (\$20/month), and dedicated GPU endpoints (Chutes.ai, RunPod). These subscriptions provide ``zero marginal cost'' inference up to capacity limits---typically defined by request quotas ($S_Q$) or concurrency limits ($S_C$)
+% \jason{we did not list concurrency-based provider here}.
+
+\jason{need a paragraph on latency}
+
+This pricing diversity creates an opportunity: \textbf{intelligent routing can reduce costs without sacrificing model quality}. Unlike model distillation or quantization, which trade accuracy for efficiency, our approach achieves \textit{pure efficiency gains} by exploiting pricing arbitrage across providers serving identical models.
+
+\paragraph{A Unified Abstraction Beyond APIs.}
+\jason{I think it should go into its own section and make it stronger}
+While the API marketplace motivates our formulation, the same resource categories arise in \textit{local GPU deployments} within enterprises and research institutions. Concurrency-limited resources ($S_C$) map directly to a dedicated GPU cluster with a fixed number of serving replicas, where the concurrency limit $C$ corresponds to the maximum parallel requests across all GPUs. Quota-limited resources ($S_Q$) map to what infrastructure engineers call the \textit{gutter pool}: a set of spare GPU nodes maintained for high availability. In large-scale ML infrastructure, GPU reliability is a critical concern, as nodes fail frequently due to hardware errors, thermal throttling, or network partitions. To ensure service continuity, operators provision hot-standby nodes that can absorb traffic when primary nodes fail. These spare nodes sit idle most of the time but represent sunk cost. Routing inference requests to gutter nodes during idle periods extracts additional value from already-provisioned capacity, subject to availability constraints that naturally map to our quota model. This unified view significantly broadens the applicability of our framework: the same algorithms that optimize API routing costs also apply to internal resource scheduling within GPU clusters.
+
+\paragraph{The Challenge of Opportunity Cost.}
 This hybrid pricing landscape presents a classic resource allocation challenge: how to route a stream of heterogeneous requests to minimize total cost without violating service level objectives (SLOs). A naive greedy strategy---sending every request to a subscription until it is full---is often suboptimal. It fails to account for the \textit{opportunity cost} of consuming a scarce subscription slot with a low-value (short) request, forcing a subsequent high-value (long) request to the expensive pay-per-token API.
 
-We address this challenge by formalizing the \textbf{Latency--Cost Optimization} problem for hybrid LLM routing. Our contributions are:
+Consider a concrete example: a ChatGPT Plus subscription provides 80 messages per 3-hour window for \$20/month. If a user sends a trivial ``Hello'' query that would cost \$0.001 via API, that slot is no longer available for a complex coding request that would cost \$0.50 via API. The naive greedy policy wastes 500x potential savings. Our experiments show that such opportunity cost losses are not merely theoretical---on real workloads, greedy routing achieves only 17--81\% of the optimal savings (Table~\ref{tab:stage1_savings}).
+
+We address this challenge by formalizing the \textbf{Latency--Cost Optimization} problem for multi-provider LLM routing. Our contributions are:
 
 \begin{enumerate}
+    \jason{add one on we categorize existing LLM inference providers into three categories, merge the first two into one}
     \item \textbf{Formal Problem Definition:} We model the routing problem under two distinct constraint types: fixed-window quotas (Stage 1) and concurrency limits (Stage 2), incorporating latency deadlines.
     \item \textbf{Offline Oracles:} We derive optimal offline algorithms for these settings. For Stage 1, we prove that a greedy-by-value strategy is optimal. For Stage 2, we formulate a time-indexed Integer Linear Program (ILP) to handle the NP-hard scheduling problem.
     \item \textbf{Online Algorithm:} We propose a Learning-Augmented Primal-Dual (LA-PD) algorithm. It uses a shadow price mechanism to value scarce resources and integrates a quantile regression model to conservatively estimate request costs under uncertainty.
     \item \textbf{Empirical Results:} Using traces from ShareGPT and RedNote, we demonstrate that our approach achieves near-optimal costs (within 1.18x of the offline oracle) and significantly outperforms standard greedy baselines.
 \end{enumerate}
+
+\section{Categorizing LLM Inference Provider Pricing Models}

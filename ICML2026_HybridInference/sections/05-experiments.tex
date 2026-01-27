@@ -1,30 +1,36 @@
 \section{Experiments}
 \label{sec:experiments}
 
-We evaluate our proposed algorithms using real-world request traces to answer three key questions:
-\begin{enumerate}
-    \item \textbf{Economic Potential:} How much cost can be saved by optimal routing compared to naive baselines? (Stage 1)
-    \item \textbf{Physical Constraints:} When does concurrency become a bottleneck, and what is the "cost of concurrency"? (Stage 2)
-    \item \textbf{Online Efficacy:} Can our learning-augmented algorithm approach the offline optimal performance under uncertainty?
-\end{enumerate}
+We evaluate our proposed algorithms using real-world request traces to answer three key questions. First, what is the \textbf{economic potential} of optimal routing compared to naive baselines (Stage 1)? Second, when does \textbf{concurrency become a bottleneck}, and what is the ``cost of concurrency'' (Stage 2)? Third, can our learning-augmented algorithm approach the \textbf{offline optimal} performance under uncertainty?
 
 \subsection{Experimental Setup}
 
-\textbf{Datasets.} We use three datasets with distinct characteristics:
-\begin{itemize}
-    \item \textbf{ShareGPT:} 201K requests, single-turn conversations. Represents a standard chatbot workload.
-    \item \textbf{FreeInference:} 371K requests, multi-model mix. Represents a diverse API gateway workload.
-    \item \textbf{RedNote:} 55K requests, RAG-heavy (long context). Represents an enterprise workload with high variance in output length.
-\end{itemize}
+\paragraph{Datasets.} We use four datasets with distinct characteristics, summarized in Table~\ref{tab:datasets}. \textbf{ShareGPT} contains 201K requests from single-turn conversations, representing a standard chatbot workload with moderate output lengths. \textbf{FreeInference} contains 371K requests with a multi-model mix, representing a diverse API gateway workload with high variance in both input and output. \textbf{RedNote} contains 55K requests from RAG-heavy applications with long contexts, representing an enterprise workload with the highest cost variance (coefficient of variation $> 2$). \textbf{BurstGPT} is a large-scale trace with 1.4M requests used specifically for online algorithm evaluation.
 
-\textbf{Baselines.}
-\begin{itemize}
-    \item \textbf{All-API:} Routes all requests to the pay-per-token API. Serves as the cost upper bound.
-    \item \textbf{Greedy (FCFS):} Routes to subscription whenever capacity is available, regardless of request value.
-    \item \textbf{Optimal (Offline):} The theoretical lower bound computed via our Stage 1/2 oracles.
-\end{itemize}
+\begin{table}[h]
+\caption{Dataset Statistics}
+\label{tab:datasets}
+\vskip 0.1in
+\begin{center}
+\begin{small}
+\begin{tabular}{lccccc}
+\toprule
+Dataset & Requests & Days & Models & Avg In & Avg Out \\
+\midrule
+ShareGPT & 201K & 7 & 1 & 156 & 423 \\
+FreeInference & 371K & 90 & 12 & 892 & 1,247 \\
+RedNote & 55K & 84 & 8 & 2,341 & 3,892 \\
+BurstGPT & 1.4M & 61 & 1 & 234 & 512 \\
+\bottomrule
+\end{tabular}
+\end{small}
+\end{center}
+\vskip -0.1in
+\end{table}
 
-\textbf{Pricing Model.} We use the pricing of DeepSeek-R1 as a representative model: \$0.55/1M input tokens and \$2.19/1M output tokens. The subscription cost is amortized to define the break-even point.
+\paragraph{Baselines.} We compare against three baselines. \textbf{All-API} routes all requests to the pay-per-token API, serving as the cost upper bound. \textbf{Greedy (FCFS)} routes to subscription whenever capacity is available, regardless of request value. \textbf{Optimal (Offline)} computes the theoretical lower bound via our Stage 1/2 oracles.
+
+\paragraph{Pricing Model.} We use the pricing of DeepSeek-R1 as a representative model: \$0.55/1M input tokens and \$2.19/1M output tokens. The subscription cost is amortized to define the break-even point.
 
 \subsection{Stage 1 Results: The Economic Potential}
 
@@ -54,6 +60,23 @@ RedNote & 81\% & \textbf{98\%} & 4.36x \\
 
 \textbf{Key Finding 1: Naive routing leaves money on the table.}
 While Greedy routing provides some savings, it is significantly suboptimal compared to the Offline Optimal. For the high-variance RedNote dataset, Greedy achieves 81\% savings while Optimal achieves 98\%---a difference that translates to a 4.36x Competitive Ratio (CR). This confirms that \textit{opportunity cost} matters: wasting quota on short requests is expensive.
+
+\paragraph{Sensitivity Analysis.}
+Figure~\ref{fig:sensitivity} shows how the gap between Greedy and Optimal varies with quota size across two workloads. For ShareGPT (single-model), the gap remains relatively stable as quota increases. However, for FreeInference (multi-model), the gap widens significantly: when quota is small, both strategies are constrained and perform similarly; as quota increases, Optimal can be more selective while Greedy continues to waste slots on low-value requests. The shaded area represents the potential savings from optimal routing that Greedy fails to capture.
+
+\begin{figure}[ht]
+\vskip 0.1in
+\begin{center}
+\begin{tabular}{cc}
+\includegraphics[width=0.48\columnwidth]{images/fig2_sensitivity_sharegpt.png} &
+\includegraphics[width=0.48\columnwidth]{images/fig2_sensitivity_freeinference.png} \\
+\small (a) ShareGPT (single-model) & \small (b) FreeInference (multi-model)
+\end{tabular}
+\caption{Sensitivity analysis: API cost vs quota size. The gap between Greedy and Optimal widens as quota increases, especially for multi-model workloads. Shaded area shows potential savings from optimal routing.}
+\label{fig:sensitivity}
+\end{center}
+\vskip -0.2in
+\end{figure}
 
 \subsection{Stage 2 Results: The Cost of Concurrency}
 
@@ -88,8 +111,8 @@ We evaluate our LA-PD algorithm on the BurstGPT dataset (1.4M requests).
 Strategy & Cost (\$) & CR \\
 \midrule
 Greedy & \$691 & 1.30x \\
-PD-EMA (Baseline) & \$633 & 1.19x \\
-\textbf{LA-PD (Ours)} & \textbf{\$629} & \textbf{1.18x} \\
+LA-PD (P10) & \$633 & 1.19x \\
+\textbf{PD-EMA (Ours)} & \textbf{\$629} & \textbf{1.18x} \\
 Optimal & \$532 & 1.00x \\
 \bottomrule
 \end{tabular}
@@ -99,5 +122,100 @@ Optimal & \$532 & 1.00x \\
 \vskip -0.1in
 \end{table}
 
-\textbf{Key Finding 3: Risk-aware routing works.}
-Our LA-PD algorithm achieves a Competitive Ratio of 1.18x, approaching the theoretical limit. By using the conservative P10 prediction, it avoids the "winner's curse" of over-estimating request values, a common failure mode for standard EMA-based predictors in high-variance workloads.
+\textbf{Key Finding 3: Simple predictors with primal-dual work best.}
+Our PD-EMA algorithm achieves a Competitive Ratio of 1.18x, approaching the theoretical limit. The simple EMA predictor combined with the primal-dual threshold outperforms the more complex learning-augmented approach with quantile regression, demonstrating that responsiveness to distribution shifts matters more than sophisticated uncertainty quantification.
+
+\subsection{Ablation Study: Predictor vs Decision Rule}
+
+To disentangle the contributions of the predictor and the decision rule, we conduct a 2$\times$2 ablation study crossing two predictors (EMA vs Histogram) with two decision rules (standard Primal-Dual vs Learning-Augmented P10). Table~\ref{tab:ablation} shows the results.
+
+\begin{table}[h]
+\caption{2$\times$2 Ablation: Competitive Ratio (lower is better)}
+\label{tab:ablation}
+\vskip 0.1in
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{lcc}
+\toprule
+ & EMA & Histogram \\
+\midrule
+Primal-Dual & \textbf{1.18} & 1.19 \\
+LA-PD (P10) & 1.19 & 1.19 \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\vskip -0.1in
+\end{table}
+
+\textbf{Key Finding 4: Predictor responsiveness dominates calibration.} The simple EMA predictor with standard Primal-Dual achieves the best competitive ratio (1.18), slightly outperforming all other combinations (1.19). This result suggests that for routing decisions, a responsive point estimate is more valuable than calibrated quantiles when the underlying distribution shifts frequently. The EMA predictor's ability to quickly adapt to non-stationary arrivals outweighs the histogram's better calibration on stationary data.
+
+\subsection{Predictor Calibration Analysis}
+
+To understand why the simpler EMA predictor outperforms the histogram-based quantile predictor, we analyze their calibration properties. For a well-calibrated quantile predictor, the coverage at quantile $\tau$ should equal $\tau$: i.e., $P(\text{actual} \leq \hat{q}_\tau) = \tau$.
+
+\begin{figure}[ht]
+\vskip 0.1in
+\begin{center}
+\centerline{\includegraphics[width=0.85\columnwidth]{images/online_calibration.png}}
+\caption{Predictor calibration analysis. The histogram predictor achieves better calibration (closer to the diagonal), while EMA systematically over-estimates output length. Despite worse calibration, EMA achieves better routing performance.}
+\label{fig:calibration}
+\end{center}
+\vskip -0.2in
+\end{figure}
+
+Figure~\ref{fig:calibration} reveals a surprising paradox. The histogram predictor is better calibrated: its q50 coverage is 56\% (close to the ideal 50\%), while EMA's q50 coverage is 72\% (significant over-estimation). Yet EMA achieves better routing performance (CR 1.18 vs 1.19).
+
+\textbf{Key Finding 5: Better calibration does not imply better routing.} This paradox resolves when we consider the dynamics of online routing. EMA's over-estimation is actually beneficial: it sets a higher bar for routing to subscription, naturally implementing a conservative policy. More importantly, EMA adapts quickly to distribution shifts (common in real workloads), while histogram requires many samples per bin to update. For routing decisions, responsiveness trumps calibration.
+
+\subsection{Extension: Latency-Aware Routing}
+
+While the preceding analysis focuses on cost optimization, practical deployments must also satisfy latency Service Level Objectives (SLOs). We extend our framework to incorporate latency constraints using real measurements from two providers serving GLM-4.6.
+
+\textbf{Setup.} We collect latency samples from a Local GPU deployment (sglang, $n=157$) and a Subscription service (Chutes, $n=365$). Table~\ref{tab:latency_stats} summarizes the latency distributions.
+
+\begin{table}[h]
+\caption{Provider Latency Profiles (GLM-4.6)}
+\label{tab:latency_stats}
+\vskip 0.1in
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{lccccc}
+\toprule
+Provider & N & P50 & P90 & P99 & Cost \\
+\midrule
+Local GPU & 157 & 5.8s & 22.9s & 52.9s & \$0 \\
+Subscription & 365 & 14.0s & 31.2s & 49.1s & \$0.13/1K \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\vskip -0.1in
+\end{table}
+
+Interestingly, the Local GPU has better median latency (5.8s vs 14.0s) but worse tail latency (P99: 52.9s vs 49.1s), suggesting it experiences occasional queuing delays under load.
+
+\textbf{LP Formulation.} Given a P99 SLO constraint $L$, we solve for the optimal routing fractions $\pi_j$ that minimize cost while ensuring the mixture CDF satisfies the SLO:
+\begin{align}
+\min_{\pi} \quad & \sum_j \pi_j c_j \nonumber \\
+\text{s.t.} \quad & \sum_j \pi_j F_j(L) \geq 0.99 \label{eq:slo_constraint} \\
+& \sum_j \pi_j = 1, \quad \pi_j \geq 0 \nonumber
+\end{align}
+where $F_j(L)$ is the empirical CDF of provider $j$ at latency $L$. This LP yields the cost-latency Pareto frontier.
+
+\begin{figure}[ht]
+\vskip 0.1in
+\begin{center}
+\centerline{\includegraphics[width=\columnwidth]{images/latency_pareto.png}}
+\caption{Latency-aware routing for GLM-4.6. (a) Latency CDFs show Local GPU is faster on average but has longer tail. (b) LP routing achieves costs between the single-provider baselines. (c) At tight SLOs ($<$53s), the optimal mix uses 60\% Subscription to meet P99; as SLO relaxes, traffic shifts to free Local GPU.}
+\label{fig:latency_pareto}
+\end{center}
+\vskip -0.2in
+\end{figure}
+
+\textbf{Key Finding 6: Provider mixing improves cost-latency tradeoffs.}
+Figure~\ref{fig:latency_pareto} shows the Pareto frontier. At tight SLOs (e.g., 50s P99), the optimal routing uses 61\% Subscription and 39\% Local GPU, achieving a cost of \$0.08/1K requests---lower than Subscription-only (\$0.13/1K) while meeting the latency target. As the SLO relaxes beyond the Local GPU's P99 (53s), traffic shifts entirely to the free Local GPU.

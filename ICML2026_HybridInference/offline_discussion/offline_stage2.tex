@@ -10,7 +10,7 @@
 \label{sec:offline-stage2}
 
 This section formalizes Stage~2, which augments Stage~1 by adding a
-concurrency-limited subscription \(S_C\) alongside a fixed-window quota subscription
+concurrency-limited subscription \(S_C\) alongside the daily-quota subscription
 \(S_Q\) and the pay-per-token API \(S_A\). The objective remains to minimize the
 marginal API cost given full knowledge of the request trace, but routing and
 scheduling decisions now interact through concurrency.
@@ -21,11 +21,6 @@ optimal solution because each request consumes one unit of quota. Stage~2 adds
 \(S_C\), where requests consume time on a limited number of concurrent slots.
 This coupling between count-limited and time-limited resources makes the problem
 substantially more complex.
-
-As in Stage~1, real-world subscriptions only cover subsets of models. This can be
-captured via a compatibility predicate (or plan index) that restricts which requests
-may be routed to \(S_Q\) and/or \(S_C\); for clarity we present a single \(S_Q\) and a
-single \(S_C\).
 
 \subsection{System Model}
 We consider a set of requests \(\mathcal{R} = \{1,\dots,n\}\). Each request \(i\) has:
@@ -39,11 +34,7 @@ We consider a set of requests \(\mathcal{R} = \{1,\dots,n\}\). Each request \(i\
 
 Providers:
 \begin{itemize}
-  \item Fixed-window quota subscription \(S_Q\): at most \(Q_{\text{win}}\) requests per window of length \(W\) (aligned at \(t_0\)); zero marginal cost. Define
-        \[
-          \operatorname{win}(t) = \left\lfloor \frac{t - t_0}{W} \right\rfloor.
-        \]
-        A daily quota is the special case \(W=24\) hours with \(t_0\) aligned to midnight (in a chosen timezone).
+  \item Daily-quota subscription \(S_Q\): at most \(Q\) requests per calendar day; zero marginal cost.
   \item Concurrency-limited subscription \(S_C\): at most \(C\) requests executing simultaneously; zero marginal cost. Requests assigned here occupy one slot for \(p_i\) seconds.
   \item API \(S_A\): unlimited capacity with fixed per-token prices per model; request \(i\) costs
         \[
@@ -54,7 +45,7 @@ Providers:
 Assumptions:
 \begin{itemize}
   \item Subscription fees are sunk and excluded from the objective.
-  \item \(S_Q\) is modeled purely as a per-window counter (concurrency is not the bottleneck).
+  \item \(S_Q\) is modeled purely as a daily counter (concurrency is not the bottleneck).
   \item \(S_C\) is modeled purely as instantaneous concurrency (no daily cap).
   \item Requests are independent; no preemption on \(S_C\) (once started, a job runs for \(p_i\)).
   \item Deadlines are hard constraints (a schedule violating \(d_i\) is infeasible).
@@ -71,7 +62,7 @@ Objective:
 \]
 Subject to:
 \begin{align}
-  &\text{(Quota)} && \sum_{i: \operatorname{win}(a_i)=k} x_i^Q \le Q_{\text{win}}, \quad \forall k, \\
+  &\text{(Quota)} && \sum_{i: \operatorname{day}(a_i)=d} x_i^Q \le Q, \quad \forall d, \\
   &\text{(Concurrency)} && \sum_{i\in\mathcal{R}} \mathbf{1}[s_i \le t < s_i + p_i] \cdot x_i^C \le C, \quad \forall t, \\
   &\text{(Arrival)} && s_i \ge a_i \quad \text{whenever } x_i^C=1, \\
   &\text{(Deadline)} && s_i + p_i \le d_i \quad \text{whenever } x_i^C=1 \text{ and } d_i \text{ exists}.
@@ -95,7 +86,7 @@ We adopt a time-indexed formulation by discretizing the time horizon into slots 
     \item Earliest start slot: $\alpha_i = \lceil a_i/\Delta \rceil$
     \item Latest valid start slot: $\beta_i = \lfloor d_i/\Delta \rfloor - \hat{p}_i$
 \end{itemize}
-If a request $i$ has no hard deadline, we set $d_i$ to a sufficiently large value (e.g., trace end time). If $\alpha_i > \beta_i$, the request cannot be scheduled on $S_C$.
+If a request $i$ has no hard deadline, we set $d_i$ to a sufficiently large value (e.g., end of day). If $\alpha_i > \beta_i$, the request cannot be scheduled on $S_C$.
 
 \textbf{Variables.} We retain the routing variables $x_i^Q, x_i^C, x_i^A \in \{0,1\}$ from the original problem. Additionally, we introduce binary scheduling variables $z_{i,t}$ for $S_C$, defined only within the valid window $[\alpha_i, \beta_i]$:
 \begin{equation}
@@ -106,9 +97,9 @@ Here, $z_{i,t}=1$ implies request $i$ starts processing on $S_C$ exactly at time
 \textbf{Optimization Problem.} The ILP formulation is:
 
 \begin{align}
-    \text{Minimize} \quad & \sum_{i \in \mathcal{R}} x_i^A c_i^{\text{API}} \label{eq:obj} \\
+    \text{Minimize} \quad & \sum_{i \in \mathcal{R}} x_i^A c_i^{API} \label{eq:obj} \\
     \text{Subject to} \quad & x_i^Q + x_i^C + x_i^A = 1, \quad \forall i \in \mathcal{R} \label{eq:assign} \\
-    & \sum_{i: \operatorname{win}(a_i)=k} x_i^Q \le Q_{\text{win}}, \quad \forall k \label{eq:quota} \\
+    & \sum_{i: \text{day}(a_i)=d} x_i^Q \le Q, \quad \forall d \label{eq:quota} \\
     & \sum_{t=\alpha_i}^{\beta_i} z_{i,t} = x_i^C, \quad \forall i \in \mathcal{R} \label{eq:consistency} \\
     & \sum_{i \in \mathcal{R}} \sum_{\tau=\max(\alpha_i, t-\hat{p}_i+1)}^{\min(\beta_i, t)} z_{i,\tau} \le C, \quad \forall t \in \{0, \dots, T\} \label{eq:concurrency}
 \end{align}

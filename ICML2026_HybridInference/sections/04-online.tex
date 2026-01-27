@@ -12,14 +12,20 @@ For the daily quota constraint ($S_Q$), let $z = k/Q$ be the fraction of quota c
 \begin{equation}
     \psi(z) = L \cdot \left( \frac{U}{L} \right)^z
 \end{equation}
-where $L$ and $U$ are estimated lower and upper bounds on the request value (avoided API cost). A request is routed to $S_Q$ only if its value exceeds this threshold. This function is known to achieve optimal competitive ratios for the online knapsack problem.
+where $L$ and $U$ are estimated lower and upper bounds on the request value (avoided API cost). A request is routed to $S_Q$ only if its value exceeds this threshold.
+
+\begin{theorem}[Competitive Ratio]
+The primal-dual algorithm with threshold $\psi(z)$ achieves a competitive ratio of $O(\ln(U/L))$ for the online knapsack problem with known values.
+\end{theorem}
+
+The exponential threshold ensures that the opportunity cost of quota grows smoothly from $L$ (when quota is abundant) to $U$ (when quota is nearly exhausted). Early requests with moderate value are accepted; late requests must have high value to justify consuming scarce quota. This logarithmic competitive ratio is known to be optimal for the online knapsack problem.
 
 \textbf{Concurrency Shadow Price ($\lambda$).}
 For the concurrency constraint ($S_C$), we define a congestion price $\lambda_t$ based on the current utilization of the concurrency slots. When the system is saturated (queue full or utilization high), $\lambda_t$ increases, admitting only requests with high \textit{value density} (value per unit time).
 \begin{equation}
     \lambda_t = \begin{cases}
     0 & \text{if capacity available} \\
-    \min_{r \in \text{Queue}} \frac{v(r)}{p(r)} & \text{if saturated}
+    \min_{r \in \text{Queue}} \frac{v(r)}{w(r) \cdot p(r)} & \text{if saturated}
     \end{cases}
 \end{equation}
 
@@ -27,25 +33,21 @@ For the concurrency constraint ($S_C$), we define a congestion price $\lambda_t$
 
 A key challenge is that the ``value'' of a request (its output token count $n_i^{\text{out}}$) is unknown at arrival time. Standard estimators (e.g., historical averages) can be risky: over-estimating value leads to wasting scarce quota on cheap requests.
 
-We employ a \textbf{Learning-Augmented} approach:
-\begin{enumerate}
-    \item \textbf{Quantile Regression:} We train a lightweight model to predict the distribution of output tokens. Specifically, we predict the 10th percentile (P10) $\hat{L}^{(10)}_t$ and the median (P50) $\hat{L}^{(50)}_t$.
-    \item \textbf{Conservative Value Estimation (LCB):} We use the Lower Confidence Bound (P10) to estimate the request value:
-    \begin{equation}
-        \hat{v}_t^{\text{LCB}} = p_{\text{in}} \cdot n_t^{\text{in}} + p_{\text{out}} \cdot \hat{L}^{(10)}_t
-    \end{equation}
-    This conservative estimate ensures we are "90\% confident" that the request is worth at least this much before spending quota on it.
-\end{enumerate}
+We employ a \textbf{Learning-Augmented} approach with two components. First, we use \textbf{quantile regression} to train a lightweight model that predicts the distribution of output tokens. Specifically, we predict the 10th percentile (P10) $\hat{L}^{(10)}_t$ and the median (P50) $\hat{L}^{(50)}_t$. Second, we use \textbf{conservative value estimation} via the Lower Confidence Bound (LCB). We estimate the request value using the P10 prediction:
+\begin{equation}
+    \hat{v}_t^{\text{LCB}} = p_{\text{in}} \cdot n_t^{\text{in}} + p_{\text{out}} \cdot \hat{L}^{(10)}_t
+\end{equation}
+This conservative estimate ensures we are ``90\% confident'' that the request is worth at least this much before spending quota on it. The intuition is simple: if even the pessimistic estimate of a request's value exceeds the opportunity cost threshold, we can confidently route it to the subscription.
 
 \subsection{Unified Risk-Aware Routing Algorithm}
 
 We combine the shadow prices and the conservative value estimate into a single unified decision rule. For each incoming request $r_t$, we calculate the net gain of routing to the subscription:
 
 \begin{equation}
-    G_t = \hat{v}_t^{\text{LCB}} - \psi(z_t) - \lambda_t \cdot \hat{p}_t
+    G_t = \hat{v}_t^{\text{LCB}} - \psi(z_t) - \lambda_t \cdot w_t \cdot \hat{p}_t
 \end{equation}
 
-where $\hat{p}_t$ is the estimated duration.
+where $\hat{p}_t$ is the estimated duration and $w_t$ is the concurrency weight (typically 1, but larger for models requiring more GPU memory).
 
 \begin{algorithm}[tb]
    \caption{Unified Risk-Aware Routing (LA-PD)}
@@ -56,7 +58,7 @@ where $\hat{p}_t$ is the estimated duration.
    \STATE 1. Predict quantiles $\hat{L}^{(10)}_t \gets \mathcal{M}(r_t)$
    \STATE 2. Estimate conservative value $\hat{v}^{\text{LCB}}_t$
    \STATE 3. Get shadow prices $\psi(z_t)$ and $\lambda_t$
-   \STATE 4. Calculate Net Gain $G_t = \hat{v}^{\text{LCB}}_t - \psi(z_t) - \lambda_t \hat{p}_t$
+   \STATE 4. Calculate Net Gain $G_t = \hat{v}^{\text{LCB}}_t - \psi(z_t) - \lambda_t \cdot w_t \cdot \hat{p}_t$
    \IF{$G_t > 0$ \AND Capacity Available}
        \STATE Route to Subscription ($S_Q$ or $S_C$)
        \STATE Update usage $k_{t+1} \gets k_t + 1$
