@@ -16,7 +16,6 @@ Usage:
 import argparse
 import json
 import logging
-import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -24,9 +23,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Add project root to path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+from experiment.scripts.plot.common import add_light_grid, apply_style
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -52,36 +49,6 @@ DATASET_NAMES = {
 }
 
 VALID_DATASETS = ["sharegpt", "freeinference", "rednote"]
-
-
-def setup_style():
-    """Configure matplotlib for publication-quality figures."""
-    plt.rcParams.update(
-        {
-            "font.family": "serif",
-            "font.serif": ["Times New Roman", "DejaVu Serif", "serif"],
-            "font.size": 11,
-            "axes.labelsize": 12,
-            "axes.titlesize": 12,
-            "legend.fontsize": 10,
-            "xtick.labelsize": 10,
-            "ytick.labelsize": 10,
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-            "axes.linewidth": 0.8,
-            "figure.dpi": 150,
-            "savefig.dpi": 300,
-            "savefig.bbox": "tight",
-        }
-    )
-
-
-def add_light_grid(ax, axis="y"):
-    """Add subtle grid lines."""
-    if axis in ("y", "both"):
-        ax.yaxis.grid(True, linestyle="--", alpha=0.3, linewidth=0.5)
-    if axis in ("x", "both"):
-        ax.xaxis.grid(True, linestyle="--", alpha=0.3, linewidth=0.5)
 
 
 # =============================================================================
@@ -884,7 +851,7 @@ def main():
     parser.add_argument("--ablation", action="store_true", help="Generate ablation figures only")
     args = parser.parse_args()
 
-    setup_style()
+    apply_style("paper")
 
     results_dir = Path("experiment/results/stage1")
     output_dir = results_dir / "plots_icml"
