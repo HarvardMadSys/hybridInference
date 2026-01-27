@@ -24,6 +24,8 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
+from experiment.scripts.plot.common import add_light_grid, apply_style
+
 # =============================================================================
 # Style Configuration (consistent with plot_stage1.py)
 # =============================================================================
@@ -52,44 +54,6 @@ STRATEGY_NAMES = {
 }
 
 STRATEGY_ORDER = ["daily_quota_only", "concurrency_only", "greedy_online", "ilp_optimal"]
-
-
-def setup_style():
-    """Configure matplotlib for publication-quality figures."""
-    plt.rcParams.update(
-        {
-            "font.family": "serif",
-            "font.serif": ["Times New Roman", "DejaVu Serif", "serif"],
-            "font.size": 12,
-            "axes.labelsize": 14,
-            "axes.titlesize": 14,
-            "legend.fontsize": 11,
-            "xtick.labelsize": 11,
-            "ytick.labelsize": 11,
-            "lines.linewidth": 1.5,
-            "lines.markersize": 6,
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-            "axes.linewidth": 0.8,
-            "axes.labelpad": 8,
-            "axes.grid": False,
-            "figure.dpi": 150,
-            "savefig.dpi": 300,
-            "savefig.bbox": "tight",
-            "savefig.pad_inches": 0.05,
-            "legend.frameon": True,
-            "legend.framealpha": 0.9,
-            "legend.edgecolor": "0.8",
-        }
-    )
-
-
-def add_light_grid(ax, axis="y"):
-    """Add subtle grid lines to an axis."""
-    if axis in ("y", "both"):
-        ax.yaxis.grid(True, linestyle="--", alpha=0.3, linewidth=0.5)
-    if axis in ("x", "both"):
-        ax.xaxis.grid(True, linestyle="--", alpha=0.3, linewidth=0.5)
 
 
 # =============================================================================
@@ -610,7 +574,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, help="Output directory for plots")
     args = parser.parse_args()
 
-    setup_style()
+    apply_style("paper")
 
     results_dir = args.results_dir
     output_dir = args.output_dir or results_dir / "plots"

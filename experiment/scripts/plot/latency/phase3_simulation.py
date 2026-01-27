@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Plot Phase 3 simulation results.
+r"""Plot Phase 3 simulation results.
 
 Generates visualizations for:
 1. Cost vs SLO violation rate across different SLOs
 2. Latency distribution comparison
 3. LP-Mix routing weights over time
+
+Usage:
+    python -m experiment.scripts.plot.latency.phase3_simulation \
+        --results-dir experiment/results/latency_phase3/
 """
 
 import argparse
@@ -15,15 +19,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Style settings
-plt.style.use("seaborn-v0_8-whitegrid")
-plt.rcParams["font.family"] = "DejaVu Sans"
-plt.rcParams["font.size"] = 11
-plt.rcParams["axes.labelsize"] = 12
-plt.rcParams["axes.titlesize"] = 13
-plt.rcParams["legend.fontsize"] = 10
+from experiment.scripts.plot.common import (
+    apply_style,
+)
 
-# Color palette
+# Apply default style
+apply_style("paper")
+
+# Phase 3 specific colors and labels
 COLORS = {
     "single_best": "#1f77b4",
     "cheapest": "#ff7f0e",

@@ -1,24 +1,15 @@
 #!/usr/bin/env python3
-"""Latency Experiment Visualization Tool.
+r"""Phase 1 Latency Profiling Visualization.
 
-This script generates figures for all latency experiment phases:
-- phase1: Latency profiling analysis (CDF/CCDF, rolling P99, variance)
-- phase2: Offline ILP with latency constraints (Pareto frontier)
-- phase3: Online latency-aware routing results
-- phase4: Smart hedging analysis
-- phase5: OpenRouter evaluation comparison
+Generates figures for latency profiling analysis:
+- CDF/CCDF plots for all providers
+- Rolling P99 drift analysis
+- Provider variance comparison
+- Percentile heatmaps
 
 Usage:
-    # Phase 1: Profiling analysis
-    python plot_latency.py phase1 --input data/latency_profile.csv --output results/phase1/
-
-    # Phase 2: Offline ILP analysis
-    python plot_latency.py phase2 --input data/offline_results.csv --output results/phase2/
-
-    # Phase 5: OpenRouter comparison
-    python plot_latency.py phase5 --input data/evaluation_results.csv --output results/phase5/
-
-Author: HybridInference Team
+    python -m experiment.scripts.plot.latency.phase1_profiling \
+        --input data/latency_profile.csv --output results/phase1/
 """
 
 import argparse
@@ -31,34 +22,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from experiment.scripts.plot.common import (
+    compute_ccdf,
+    get_provider_color,
+)
 
+# Project root for default output paths
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent
 
 # =============================================================================
 # Configuration
 # =============================================================================
-
-# Provider color palette (consistent across all figures)
-PROVIDER_COLORS = {
-    "Groq": "#2ecc71",  # Green (fast)
-    "SambaNova": "#27ae60",  # Dark green (fast)
-    "Together": "#3498db",  # Blue
-    "Fireworks": "#9b59b6",  # Purple
-    "Hyperbolic": "#e74c3c",  # Red
-    "Novita": "#f39c12",  # Orange
-    "Parasail": "#1abc9c",  # Teal
-    "Cloudflare": "#f1c40f",  # Yellow
-    "Friendli": "#e67e22",  # Dark orange
-    "Nebius": "#95a5a6",  # Gray
-    "Crusoe": "#34495e",  # Dark gray
-    "Cerebras": "#c0392b",  # Dark red (variable)
-    # Additional providers
-    "DeepInfra": "#8e44ad",
-    "Avian": "#16a085",
-    "OpenRouter": "#2c3e50",
-}
 
 # Default workload type (we focus on base probing requests)
 # The script can handle data with 'workload' column, but assumes 'base' if not specified
@@ -93,11 +67,6 @@ setup_plot_style()
 # =============================================================================
 
 
-def get_provider_color(provider: str) -> str:
-    """Get color for provider, with fallback."""
-    return PROVIDER_COLORS.get(provider, "#7f8c8d")
-
-
 def compute_percentiles(latencies: np.ndarray) -> dict[str, float]:
     """Compute key percentile statistics."""
     return {
@@ -118,13 +87,6 @@ def compute_cdf(latencies: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     sorted_data = np.sort(latencies)
     cdf = np.arange(1, len(sorted_data) + 1) / len(sorted_data)
     return sorted_data, cdf
-
-
-def compute_ccdf(latencies: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Compute complementary CDF (survival function)."""
-    sorted_data = np.sort(latencies)
-    ccdf = 1 - np.arange(1, len(sorted_data) + 1) / len(sorted_data)
-    return sorted_data, ccdf
 
 
 def ensure_output_dir(output_dir: str) -> None:

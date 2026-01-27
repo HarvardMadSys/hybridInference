@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot Phase 4 Smart Hedging Results.
+r"""Plot Phase 4 Smart Hedging Results.
 
 Generates visualization figures for hedging strategy evaluation:
 1. P99 latency vs SLO for different strategies
@@ -9,7 +9,8 @@ Generates visualization figures for hedging strategy evaluation:
 5. Cost vs Violation Pareto frontier
 
 Usage:
-    python plot_phase4_results.py --results-dir experiment/results/latency_phase4/
+    python -m experiment.scripts.plot.latency.phase4_hedging \
+        --results-dir experiment/results/latency_phase4/
 """
 
 import argparse
@@ -20,39 +21,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Style configuration
-plt.rcParams.update(
-    {
-        "font.size": 11,
-        "axes.labelsize": 12,
-        "axes.titlesize": 13,
-        "legend.fontsize": 10,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "figure.figsize": (8, 6),
-        "figure.dpi": 150,
-        "savefig.dpi": 150,
-        "savefig.bbox": "tight",
-    }
+from experiment.scripts.plot.common import (
+    STRATEGY_COLORS,
+    STRATEGY_LABELS,
+    apply_style,
 )
 
-# Color palette for strategies
-STRATEGY_COLORS = {
-    "never": "#1f77b4",  # Blue
-    "always": "#2ca02c",  # Green
-    "fixed_timeout": "#ff7f0e",  # Orange
-    "smart_survival": "#d62728",  # Red
-    "smart_residual": "#9467bd",  # Purple
-}
+# Apply default style
+apply_style("paper")
 
-STRATEGY_LABELS = {
-    "never": "Never Hedge (Baseline)",
-    "always": "Always Hedge",
-    "fixed_timeout": "Fixed Timeout",
-    "smart_survival": "Smart (Survival)",
-    "smart_residual": "Smart (Residual)",
-}
-
+# Backup method markers
 BACKUP_MARKERS = {
     "fastest": "o",
     "lp_other": "s",
