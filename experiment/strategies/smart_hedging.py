@@ -28,6 +28,7 @@ class HedgingStrategy(Enum):
     FIXED_TIMEOUT = "fixed_timeout"
     SMART_SURVIVAL = "smart_survival"
     SMART_RESIDUAL = "smart_residual"
+    PERCENTILE_BASED = "percentile_based"  # Hedge at primary's P-alpha percentile
 
 
 class BackupSelectionMethod(Enum):
@@ -45,6 +46,7 @@ class HedgingParams:
     strategy: HedgingStrategy
     slo_sec: float
     alpha: float = 0.7  # For fixed-timeout: hedge at alpha * slo_sec
+    alpha_percentile: float = 90.0  # For percentile-based: hedge at P-alpha of primary
     dispatch_overhead_sec: float = 0.05  # Backup launch overhead
     backup_method: BackupSelectionMethod = BackupSelectionMethod.FASTEST
     min_viable_cdf: float = 0.90  # For cheapest_viable selection
@@ -96,8 +98,7 @@ def get_survival_for_hedging(
     Returns:
         S(t) = P(T > t | success) in [0, 1].
     """
-    # Use long-window for stability
-    samples = profile.get_samples_before(now, use_short=False)
+    samples = profile.get_samples_before(now)
     if not samples:
         return 1.0  # No data, assume high latency
 
@@ -144,8 +145,7 @@ def compute_conditional_expectation(
     Returns:
         Conditional expected remaining time in seconds.
     """
-    # Use long-window for stability
-    samples = profile.get_samples_before(now, use_short=False)
+    samples = profile.get_samples_before(now)
     survived = [s for s in samples if s > elapsed_sec]
 
     # Protection 1: Minimum sample threshold
@@ -177,7 +177,7 @@ def compute_expected_latency(
     Returns:
         Expected latency in seconds.
     """
-    samples = profile.get_samples_before(now, use_short=False)
+    samples = profile.get_samples_before(now)
     if not samples:
         return max_latency_sec
 
@@ -359,6 +359,35 @@ def find_optimal_hedge_time_residual(
     return slo_sec  # Never hedge if condition never met
 
 
+def find_percentile_hedge_time(
+    primary: str,
+    profiles: dict[str, ProviderProfile],
+    now: float,
+    percentile: float = 90.0,
+) -> float:
+    """Find hedge time based on primary provider's latency percentile.
+
+    Hedge at the P-percentile of primary's latency distribution.
+    This is useful for reducing tail latency (P99) by hedging at P90.
+
+    Args:
+        primary: Primary provider name.
+        profiles: Provider profiles.
+        now: Decision timestamp.
+        percentile: Percentile to use for hedge time (default: 90).
+
+    Returns:
+        Hedge time in seconds (P-percentile of primary's latency).
+    """
+    samples = profiles[primary].get_samples_before(now)
+    if not samples:
+        return float("inf")  # No data, don't hedge
+
+    # samples are already in seconds (get_samples_before converts from ms)
+    p_value = float(np.percentile(samples, percentile))
+    return p_value
+
+
 # -----------------------------------------------------------------------------
 # Backup Provider Selection
 # -----------------------------------------------------------------------------
@@ -369,7 +398,7 @@ def get_fastest_provider(
     now: float,
     exclude: str | None = None,
 ) -> str | None:
-    """Select provider with lowest P50 TTFT in long-window.
+    """Select provider with lowest P50 TTFT.
 
     Args:
         profiles: Provider profiles.
@@ -384,7 +413,7 @@ def get_fastest_provider(
         return None
 
     def get_p50(provider: str) -> float:
-        samples = profiles[provider].get_samples_before(now, use_short=False)
+        samples = profiles[provider].get_samples_before(now)
         if not samples:
             return float("inf")
         return float(np.percentile(samples, 50))
@@ -573,6 +602,14 @@ class SmartHedger:
                 now=now,
                 slo_sec=self.params.slo_sec,
                 dispatch_overhead_sec=self.params.dispatch_overhead_sec,
+            )
+
+        elif strategy == HedgingStrategy.PERCENTILE_BASED:
+            return find_percentile_hedge_time(
+                primary,
+                profiles,
+                now=now,
+                percentile=self.params.alpha_percentile,
             )
 
         else:

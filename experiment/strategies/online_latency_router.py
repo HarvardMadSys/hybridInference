@@ -1,7 +1,7 @@
 """Online latency-aware provider router for OpenRouter.
 
 This module implements Phase 3 of the latency routing system:
-- Moving window profiler with adaptive shrinkage
+- Single moving window profiler (refreshed by periodic probing)
 - LP-based optimal provider mixing
 - Smooth Weighted Round-Robin (SWRR) sampler
 
@@ -40,26 +40,23 @@ class FailureMode(Enum):
 class ProviderProfile:
     """Real-time latency profile for a provider.
 
-    Maintains time-based moving windows for latency samples and error tracking.
-    Computes mixed-window CDF with adaptive shrinkage for stable estimation.
+    Maintains a single time-based moving window for latency samples and error tracking.
+    Uses periodic probing to keep profiles fresh.
     """
 
     provider: str
 
     # Latency samples: list of (timestamp, ttft_ms)
     # Only successful requests are stored here
-    short_window_samples: list[tuple[float, float]] = field(default_factory=list)
-    long_window_samples: list[tuple[float, float]] = field(default_factory=list)
+    samples: list[tuple[float, float]] = field(default_factory=list)
 
     # Error tracking: list of (timestamp, error_type)
     # error_type: "timeout" | "rate_limit" | "server_error" | None (success)
     error_samples: list[tuple[float, str | None]] = field(default_factory=list)
 
     # Configuration
-    prior_strength: float = 10.0  # lambda for shrinkage
     failure_mode: FailureMode = FailureMode.INFINITY
-    short_window_sec: float = 15 * 60  # 15 minutes
-    long_window_sec: float = 3 * 60 * 60  # 3 hours
+    window_sec: float = 15 * 60  # 15 minutes
 
     def add_sample(
         self,
@@ -77,48 +74,41 @@ class ProviderProfile:
         # Record error/success status
         self.error_samples.append((timestamp, error_type))
 
-        # Only add to latency windows if successful
+        # Only add to latency window if successful
         if error_type is None and ttft_ms > 0:
-            self.short_window_samples.append((timestamp, ttft_ms))
-            self.long_window_samples.append((timestamp, ttft_ms))
+            self.samples.append((timestamp, ttft_ms))
 
-    def _prune_windows(self, current_time: float) -> None:
-        """Remove samples outside the time windows."""
-        short_cutoff = current_time - self.short_window_sec
-        long_cutoff = current_time - self.long_window_sec
+    def _prune_window(self, current_time: float) -> None:
+        """Remove samples outside the time window."""
+        cutoff = current_time - self.window_sec
+        self.samples = [(t, v) for t, v in self.samples if t >= cutoff]
+        self.error_samples = [(t, e) for t, e in self.error_samples if t >= cutoff]
 
-        self.short_window_samples = [
-            (t, v) for t, v in self.short_window_samples if t >= short_cutoff
-        ]
-        self.long_window_samples = [(t, v) for t, v in self.long_window_samples if t >= long_cutoff]
-        self.error_samples = [(t, e) for t, e in self.error_samples if t >= long_cutoff]
-
-    def get_samples_before(self, cutoff_time: float, use_short: bool = True) -> list[float]:
+    def get_samples_before(self, cutoff_time: float) -> list[float]:
         """Get latency samples (in seconds) before a cutoff time.
 
         Used for time-causal evaluation: only use data with timestamp < t
         when making decisions at time t.
         """
-        window = self.short_window_samples if use_short else self.long_window_samples
-        window_duration = self.short_window_sec if use_short else self.long_window_sec
-
         # Filter by time window and cutoff
-        min_time = cutoff_time - window_duration
-        samples_ms = [v for t, v in window if min_time <= t < cutoff_time]
+        min_time = cutoff_time - self.window_sec
+        samples_ms = [v for t, v in self.samples if min_time <= t < cutoff_time]
 
         # Convert to seconds
         return [v / 1000.0 for v in samples_ms]
 
-    def get_error_rate_before(self, cutoff_time: float, window_sec: float = 900) -> float:
+    def get_error_rate_before(self, cutoff_time: float, window_sec: float | None = None) -> float:
         """Get error rate in the window before cutoff_time.
 
         Args:
             cutoff_time: Only consider samples before this time.
-            window_sec: Window duration in seconds (default 15 min).
+            window_sec: Window duration in seconds. If None, uses self.window_sec.
 
         Returns:
             Error rate (fraction of failed requests).
         """
+        if window_sec is None:
+            window_sec = self.window_sec
         min_time = cutoff_time - window_sec
         samples = [(t, e) for t, e in self.error_samples if min_time <= t < cutoff_time]
 
@@ -133,93 +123,45 @@ class ProviderProfile:
         L_sec: float,
         current_time: float | None = None,
     ) -> float:
-        """Compute mixed-window CDF with adaptive shrinkage.
-
-        F_hat(L) = beta * F_short(L) + (1 - beta) * F_long(L)
-
-        where beta = N_eff / (N_eff + prior_strength)
+        """Compute empirical CDF at latency threshold L.
 
         Args:
             L_sec: Latency threshold in seconds.
             current_time: Reference time for window pruning. If None, uses time.time().
 
         Returns:
-            CDF value F_hat(L) in [0, 1].
+            CDF value F(L) in [0, 1].
         """
         if current_time is None:
             current_time = time.time()
 
-        self._prune_windows(current_time)
+        self._prune_window(current_time)
 
-        # Get samples for both windows
-        short_samples = self.get_samples_before(current_time, use_short=True)
-        long_samples = self.get_samples_before(current_time, use_short=False)
-
-        # Compute empirical CDFs
-        F_short = self._compute_empirical_cdf(
-            short_samples,
-            L_sec,
-            current_time,
-            window_sec=self.short_window_sec,
-        )
-        F_long = self._compute_empirical_cdf(
-            long_samples,
-            L_sec,
-            current_time,
-            window_sec=self.long_window_sec,
-        )
-
-        # Adaptive shrinkage
-        N_eff = len(short_samples)
-        if N_eff == 0:
-            # No short-window data, use long window only
-            return F_long
-
-        beta = N_eff / (N_eff + self.prior_strength)
-        F_hat = beta * F_short + (1 - beta) * F_long
-
-        return F_hat
-
-    def _compute_empirical_cdf(
-        self,
-        samples_sec: list[float],
-        L_sec: float,
-        current_time: float,
-        window_sec: float,
-    ) -> float:
-        """Compute empirical CDF at L, handling failures per failure_mode.
-
-        Args:
-            samples_sec: Latency samples in seconds (success only).
-            L_sec: Latency threshold in seconds.
-            current_time: Reference time for error rate computation.
-            window_sec: Window duration used for error-rate computation.
-
-        Returns:
-            CDF value P(latency <= L).
-        """
-        if not samples_sec:
+        samples = self.get_samples_before(current_time)
+        if not samples:
             return 0.0
 
-        F_success = sum(1 for s in samples_sec if s <= L_sec) / len(samples_sec)
+        F_success = sum(1 for s in samples if s <= L_sec) / len(samples)
 
         if self.failure_mode == FailureMode.SEPARATE:
             return F_success
 
-        error_rate = self.get_error_rate_before(current_time, window_sec)
+        error_rate = self.get_error_rate_before(current_time)
         success_rate = 1.0 - error_rate
         return success_rate * F_success
 
-    def get_error_rates(self, window_sec: float = 900) -> dict[str, float]:
+    def get_error_rates(self, window_sec: float | None = None) -> dict[str, float]:
         """Return error rates by type for the recent window.
 
         Args:
-            window_sec: Window duration in seconds (default 15 min).
+            window_sec: Window duration in seconds. If None, uses self.window_sec.
 
         Returns:
             Dict with keys "timeout", "rate_limit", "server_error" and their rates.
         """
         current_time = time.time()
+        if window_sec is None:
+            window_sec = self.window_sec
         min_time = current_time - window_sec
         samples = [(t, e) for t, e in self.error_samples if t >= min_time]
 
@@ -234,12 +176,11 @@ class ProviderProfile:
         total = len(samples)
         return {k: v / total for k, v in counts.items()}
 
-    def get_p99(self, current_time: float | None = None, use_short: bool = True) -> float:
+    def get_p99(self, current_time: float | None = None) -> float:
         """Return P99 latency in seconds (for reporting).
 
         Args:
             current_time: Reference time. If None, uses time.time().
-            use_short: Whether to use short window (True) or long window.
 
         Returns:
             P99 latency in seconds, or inf if no samples.
@@ -247,12 +188,12 @@ class ProviderProfile:
         if current_time is None:
             current_time = time.time()
 
-        samples = self.get_samples_before(current_time, use_short=use_short)
+        samples = self.get_samples_before(current_time)
 
         if not samples:
             return float("inf")
 
-        return np.percentile(samples, 99)
+        return float(np.percentile(samples, 99))
 
 
 def pre_filter(
@@ -367,12 +308,13 @@ def solve_lp(
         weights = {}
         for i, p in enumerate(providers):
             if result.x[i] > 1e-6:  # Threshold for numerical noise
-                weights[p] = result.x[i]
+                # Ensure JSON-serializable Python floats (avoid numpy scalar types).
+                weights[p] = float(result.x[i])
 
         # Normalize to sum to 1
         total = sum(weights.values())
         if total > 0:
-            weights = {p: w / total for p, w in weights.items()}
+            weights = {p: float(w / total) for p, w in weights.items()}
 
         return weights
 
@@ -527,7 +469,7 @@ class OnlineLatencyRouter:
         self,
         costs: dict[str, float],
         slo_sec: float = 3.0,
-        prior_strength: float = 10.0,
+        window_sec: float = 15 * 60,  # 15 minutes
         failure_mode: FailureMode = FailureMode.INFINITY,
         kappa: float = 0.0,
         weight_smoothing: float = 0.3,
@@ -539,7 +481,7 @@ class OnlineLatencyRouter:
         Args:
             costs: Provider name -> cost per request.
             slo_sec: SLO latency in seconds.
-            prior_strength: Lambda for mixed-window shrinkage.
+            window_sec: Moving window duration in seconds (default 15 min).
             failure_mode: How to handle failures in CDF.
             kappa: Error penalty coefficient.
             weight_smoothing: Smoothing factor for weight updates.
@@ -548,7 +490,7 @@ class OnlineLatencyRouter:
         """
         self.costs = costs
         self.slo_sec = slo_sec
-        self.prior_strength = prior_strength
+        self.window_sec = window_sec
         self.failure_mode = failure_mode
         self.kappa = kappa
         self.weight_smoothing = weight_smoothing
@@ -562,7 +504,7 @@ class OnlineLatencyRouter:
         for provider in costs:
             self.profiles[provider] = ProviderProfile(
                 provider=provider,
-                prior_strength=prior_strength,
+                window_sec=window_sec,
                 failure_mode=failure_mode,
             )
 
@@ -592,7 +534,7 @@ class OnlineLatencyRouter:
         if provider not in self.profiles:
             self.profiles[provider] = ProviderProfile(
                 provider=provider,
-                prior_strength=self.prior_strength,
+                window_sec=self.window_sec,
                 failure_mode=self.failure_mode,
             )
 
