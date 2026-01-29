@@ -13,17 +13,13 @@ Given a set of providers $\mathcal{P} = \{1, \ldots, n\}$ serving the same model
 
 The goal is to find routing probabilities $\pi = (\pi_1, \ldots, \pi_n)$ that minimize expected cost while satisfying a tail latency constraint (e.g., P99 $\leq L$).
 
-\textbf{Why TTFT?}
-We focus on \textit{Time-To-First-Token} (TTFT) rather than total end-to-end latency. TTFT captures queuing delays and prefill computation, which dominate cross-provider variability and directly affect user-perceived responsiveness.
-
 \subsection{Online Latency Profiling}
 
 Provider latencies exhibit high variance and temporal drift due to changing queue depths. We maintain per-provider latency profiles using a \textbf{mixed-window estimator}:
 \begin{equation}
     \hat{F}_j(L) = \beta \cdot F_j^{\text{short}}(L) + (1 - \beta) \cdot F_j^{\text{long}}(L)
 \end{equation}
-where $F_j^{\text{short}}$ is the empirical CDF from a 15-minute window (responsive to drift), $F_j^{\text{long}}$ is from a 3-hour window (stable prior), and $\beta = N_{\text{short}} / (N_{\text{short}} + \lambda)$ is an adaptive shrinkage weight. Profiles are updated via lightweight probing requests sent every 45 seconds per provider.
-Timeouts and HTTP errors are treated as missed deadlines (TTFT $=\infty$), so $F_j(L)$ captures both latency and reliability.
+where $F_j^{\text{short}}$ is the empirical CDF from a 15-minute window (responsive to drift), $F_j^{\text{long}}$ is from a 3-hour window (stable prior), and $\beta$ is an adaptive shrinkage weight. Profiles are updated via lightweight probing every 45 seconds per provider.
 
 \subsection{LP-Based Provider Mixing}
 
@@ -54,7 +50,7 @@ Let $t$ be the elapsed time since a request was sent. Define the survival functi
     \frac{S_{\text{primary}}(L)}{S_{\text{primary}}(t)} > S_{\text{backup}}(L - t - \delta)
     \label{eq:hedge_survival}
 \end{equation}
-where $\delta$ is the dispatch overhead for the backup request. The left side is $P(T_{\text{primary}} > L \mid T_{\text{primary}} > t)$, the conditional violation probability if we continue waiting. The right side is $P(T_{\text{backup}} > L - t - \delta)$, the violation probability if we hedge now. This SLO-first rule triggers hedging only when it is predicted to reduce the violation probability.
+where $\delta$ is the dispatch overhead. This triggers hedging only when it reduces the expected violation probability.
 
 \textbf{Implementation.}
 We compute a hedge threshold $h^*$ as the smallest $t$ satisfying~\eqref{eq:hedge_survival} under the current online profiles. If the primary request has not completed by $h^*$, we dispatch a backup request and return the first response.

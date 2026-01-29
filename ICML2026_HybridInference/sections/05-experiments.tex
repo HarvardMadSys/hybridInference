@@ -1,11 +1,11 @@
 \section{Experiments}
 \label{sec:experiments}
 
-We evaluate our proposed algorithms using real-world request traces to answer three key questions. First, what is the \textbf{economic potential} of optimal routing compared to naive baselines (Stage 1)? Second, when does \textbf{concurrency become a bottleneck}, and what is the ``cost of concurrency'' (Stage 2)? Third, can our learning-augmented algorithm approach the \textbf{offline optimal} performance under uncertainty?
+We evaluate our proposed algorithms on real-world traces to answer three questions: (1) What is the economic potential of optimal routing? (2) Can our online algorithms approach offline optimal under uncertainty? (3) Does latency-aware routing with hedging reduce SLO violations in production?
 
-\subsection{Experimental Setup}
+\subsection{Setup}
 
-\paragraph{Datasets.} We use three real-world datasets with distinct characteristics, plus one synthetic trace for scalability evaluation, summarized in Table~\ref{tab:datasets}. \textbf{ShareGPT} contains 201K requests from single-turn conversations, representing a standard chatbot workload with moderate output lengths. \textbf{FreeInference} contains 371K requests with a multi-model mix, representing a diverse API gateway workload with high variance in both input and output. \textbf{Enterprise} is an anonymized workload collected from a production coding assistant deployment, exhibiting long contexts and the highest cost variance (coefficient of variation $> 2$). \textbf{BurstGPT} is a synthetic trace combining arrival timestamps from BurstGPT with prompt distributions from ShareGPT, yielding 1.4M requests for online algorithm evaluation at scale.
+\paragraph{Datasets.} We use three real-world datasets plus one synthetic trace (Table~\ref{tab:datasets}). \textbf{ShareGPT} (201K requests) represents standard chatbot workloads. \textbf{FreeInference} (371K requests) represents diverse API gateway traffic with high variance. \textbf{Enterprise} (55K requests) is an anonymized production coding assistant with long contexts and the highest cost variance (CV $> 2$). \textbf{BurstGPT} (1.4M requests) combines BurstGPT arrival timestamps with ShareGPT prompts for online evaluation.
 
 \begin{table}[h]
 \caption{Dataset Statistics}
@@ -13,13 +13,13 @@ We evaluate our proposed algorithms using real-world request traces to answer th
 \vskip 0.1in
 \begin{center}
 \begin{small}
-\begin{tabular}{lccccc}
+\begin{tabular}{@{}lrrrrr@{}}
 \toprule
-Dataset & Requests & Days & Models & Avg In & Avg Out \\
+Dataset & Reqs & Days & Models & In & Out \\
 \midrule
 ShareGPT & 201K & 7 & 1 & 156 & 423 \\
-FreeInference & 371K & 90 & 12 & 892 & 1,247 \\
-Enterprise & 55K & 84 & 8 & 2,341 & 3,892 \\
+FreeInference & 371K & 90 & 12 & 892 & 1247 \\
+Enterprise & 55K & 84 & 8 & 2341 & 3892 \\
 BurstGPT & 1.4M & 61 & 1 & 234 & 512 \\
 \bottomrule
 \end{tabular}
@@ -28,305 +28,91 @@ BurstGPT & 1.4M & 61 & 1 & 234 & 512 \\
 \vskip -0.1in
 \end{table}
 
-\paragraph{Baselines.} We compare against three baselines. \textbf{All-API} routes all requests to the pay-per-token API, serving as the cost upper bound. \textbf{Greedy (FCFS)} routes to subscription whenever capacity is available, regardless of request value. \textbf{Optimal (Offline)} computes the theoretical lower bound via our Stage 1/2 oracles.
+\paragraph{Baselines and Pricing.} We compare against \textbf{All-API} (cost upper bound), \textbf{Greedy} (FCFS to subscription), and \textbf{Offline Optimal} (Stage 1/2 oracles). Pricing follows DeepSeek-R1: \$0.55/1M input, \$2.19/1M output tokens.
 
-\paragraph{Pricing Model.} We use the pricing of DeepSeek-R1 as a representative model: \$0.55/1M input tokens and \$2.19/1M output tokens. The subscription cost is amortized to define the break-even point.
+\subsection{Cost Efficiency}
 
-\subsection{Stage 1 Results: The Economic Potential}
+\paragraph{Quota-Based Routing (Stage 1).}
+With quota constraints alone, Greedy routing saves 17--81\% across datasets, while Optimal achieves 35--98\%---Greedy captures only 49--83\% of optimal savings. The gap is largest on high-variance workloads (Enterprise: CR 4.36$\times$), confirming that opportunity cost matters. Figure~\ref{fig:sensitivity} shows this gap widens with quota size: as quota increases, Optimal becomes more selective while Greedy continues wasting slots on low-value requests.
 
-Table \ref{tab:stage1_savings} shows the cost savings of different strategies relative to the All-API baseline.
-
-\begin{table}[h]
-\caption{API Cost Savings vs All-API (Quota-Only)}
-\label{tab:stage1_savings}
-\vskip 0.15in
+\begin{figure*}[t]
+\vskip 0.1in
 \begin{center}
-\begin{small}
-\begin{sc}
-\begin{tabular}{lccc}
-\toprule
-Dataset & Greedy & Optimal & CR \\
-\midrule
-ShareGPT & 17\% & \textbf{35\%} & 1.43x \\
-FreeInference & 63\% & \textbf{82\%} & 1.36x \\
-Enterprise & 81\% & \textbf{98\%} & 4.36x \\
-\bottomrule
-\end{tabular}
-\end{sc}
-\end{small}
+\centerline{\includegraphics[width=0.95\textwidth]{images/fig2_sensitivity_combined.png}}
+\caption{API cost vs quota size. The gap between Greedy and Optimal widens as quota increases, especially for multi-model workloads. The shaded area represents the opportunity cost that Greedy fails to capture.}
+\label{fig:sensitivity}
 \end{center}
-\vskip -0.1in
-\end{table}
+\vskip -0.2in
+\end{figure*}
 
-\textbf{Key Finding 1: Naive routing leaves money on the table.}
-While Greedy routing provides some savings, it is significantly suboptimal compared to the Offline Optimal. For the high-variance Enterprise dataset, Greedy achieves 81\% savings while Optimal achieves 98\%---a difference that translates to a 4.36x Competitive Ratio (CR). This confirms that \textit{opportunity cost} matters: wasting quota on short requests is expensive.
-
-\paragraph{Sensitivity Analysis.}
-Figure~\ref{fig:sensitivity} shows how the gap between Greedy and Optimal varies with quota size across two workloads. For ShareGPT (single-model), the gap remains relatively stable as quota increases. However, for FreeInference (multi-model), the gap widens significantly: when quota is small, both strategies are constrained and perform similarly; as quota increases, Optimal can be more selective while Greedy continues to waste slots on low-value requests. The shaded area represents the potential savings from optimal routing that Greedy fails to capture.
+\paragraph{Concurrency Constraints (Stage 2).}
+For small models (e.g., Llama-3-8B), concurrency limits rarely bind before quota exhaustion. However, for larger models (70B+) with low effective concurrency ($C_{\text{eff}}=2$), physical constraints become binding (Figure~\ref{fig:concurrency_impact}). The ILP-based Stage 2 routing becomes essential.
 
 \begin{figure}[ht]
 \vskip 0.1in
 \begin{center}
-\begin{tabular}{cc}
-\includegraphics[width=0.48\columnwidth]{images/fig2_sensitivity_sharegpt.png} &
-\includegraphics[width=0.48\columnwidth]{images/fig2_sensitivity_freeinference.png} \\
-\small (a) ShareGPT (single-model) & \small (b) FreeInference (multi-model)
-\end{tabular}
-\caption{Sensitivity analysis: API cost vs quota size. The gap between Greedy and Optimal widens as quota increases, especially for multi-model workloads. Shaded area shows potential savings from optimal routing.}
-\label{fig:sensitivity}
-\end{center}
-\vskip -0.2in
-\end{figure}
-
-\subsection{Stage 2 Results: The Cost of Concurrency}
-
-We compare the Stage 1 (Quota-Only) and Stage 2 (Quota+Concurrency) lower bounds to quantify the impact of physical constraints.
-
-\begin{figure}[ht]
-\vskip 0.2in
-\begin{center}
 \centerline{\includegraphics[width=\columnwidth]{images/single_model_comparison_rednote.png}}
-\caption{Impact of Model Size (Concurrency Limit) on Cost. As model size increases (reducing effective concurrency $C_{\text{eff}}$), the gap between Quota-Only and ILP-Optimal widens.}
+\caption{Impact of model size on cost. As effective concurrency decreases, the gap between Quota-Only and ILP-Optimal widens.}
 \label{fig:concurrency_impact}
 \end{center}
 \vskip -0.2in
 \end{figure}
 
-\textbf{Key Finding 2: Concurrency matters for large models.}
-For standard models (e.g., Llama-3-8B), the concurrency limit is rarely hit before the daily quota is exhausted. However, as shown in Figure \ref{fig:concurrency_impact}, for larger models (e.g., 70B+) where effective concurrency is low (e.g., $C_{\text{eff}}=2$), the physical constraint becomes binding. The ILP-based routing (Stage 2) becomes essential to maintain efficiency, whereas Quota-Only logic would overestimate the achievable savings.
+\paragraph{Online Joint Optimization.}
+On Enterprise (54K requests, $C=8$), our PrimalDual algorithm achieves 99\% savings with CR 0.57$\times$---\textit{surpassing} the ILP-Optimal (1.0$\times$). This counterintuitive result arises because ILP discretizes time into 1-second slots, causing capacity fragmentation. PrimalDual's continuous-time event-driven admission captures opportunities that batch optimization misses. For comparison, $S_Q$-Only saves only 2\% (quota insufficient when costs vary), $S_C$-Only saves 68\% (powerful but scheduling-limited), and Greedy achieves 98\%.
 
-\subsection{Online Performance: Learning Augmentation}
+\subsection{Robustness Under Uncertainty}
 
-We evaluate our LA-PD algorithm on the BurstGPT dataset (1.4M requests).
+\paragraph{Online Performance.}
+On BurstGPT (1.4M requests), our PD-EMA algorithm achieves CR 1.18$\times$, approaching the theoretical limit and outperforming Greedy (1.30$\times$). The learning-augmented variant LA-PD achieves 1.19$\times$---slightly worse than the simpler EMA approach.
 
-\begin{table}[h]
-\caption{Online Routing Performance (BurstGPT)}
-\label{tab:online_results}
-\vskip 0.15in
-\begin{center}
-\begin{small}
-\begin{sc}
-\begin{tabular}{lcc}
-\toprule
-Strategy & Cost (\$) & CR \\
-\midrule
-Greedy & \$691 & 1.30x \\
-LA-PD (P10) & \$633 & 1.19x \\
-\textbf{PD-EMA (Ours)} & \textbf{\$629} & \textbf{1.18x} \\
-Optimal & \$532 & 1.00x \\
-\bottomrule
-\end{tabular}
-\end{sc}
-\end{small}
-\end{center}
-\vskip -0.1in
-\end{table}
-
-\textbf{Key Finding 3: Simple predictors with primal-dual work best.}
-Our PD-EMA algorithm achieves a Competitive Ratio of 1.18x, approaching the theoretical limit. The simple EMA predictor combined with the primal-dual threshold outperforms the more complex learning-augmented approach with quantile regression, demonstrating that responsiveness to distribution shifts matters more than sophisticated uncertainty quantification.
-
-\subsection{Joint Online Optimization (Stage 2)}
-
-We now evaluate online algorithms that jointly optimize daily quota ($S_Q$) and concurrency-limited subscription ($S_C$) on the Enterprise dataset (54K requests over 84 days). Table~\ref{tab:online_stage2} compares baselines and online strategies.
-
-\begin{table}[h]
-\caption{Online Stage 2 Performance (Enterprise, $C=8$)}
-\label{tab:online_stage2}
-\vskip 0.1in
-\begin{center}
-\begin{small}
-\begin{sc}
-\begin{tabular}{lcccc}
-\toprule
-Strategy & Cost (\$) & Savings & CR & Sub. \\
-\midrule
-All-API & 8,567 & -- & 76.5$\times$ & 0\% \\
-$S_Q$-Only & 8,394 & 2\% & 74.9$\times$ & 12\% \\
-$S_C$-Only & 2,718 & 68\% & 24.3$\times$ & 53\% \\
-Greedy & 185 & 98\% & 1.65$\times$ & 98\% \\
-\textbf{PD (Ours)} & \textbf{63} & \textbf{99\%} & \textbf{0.57$\times$} & \textbf{99.7\%} \\
-ILP-Optimal & 112 & 99\% & 1.00$\times$ & 98\% \\
-\bottomrule
-\end{tabular}
-\end{sc}
-\end{small}
-\end{center}
-\vskip -0.1in
-\end{table}
-
-\textbf{Key Finding: PrimalDual outperforms ILP-Optimal due to finer-grained scheduling.} Our event-driven PrimalDual algorithm achieves a competitive ratio of 0.57$\times$, \textit{surpassing} the ILP-based offline optimal (1.0$\times$). This counterintuitive result occurs because ILP discretizes time into 1-second slots, leading to capacity fragmentation. PrimalDual's continuous-time admission/eviction captures opportunities that ILP's discrete formulation misses. The result highlights that for concurrency-constrained systems, online event-driven algorithms can outperform batch-optimized solutions.
-
-\begin{figure}[ht]
-\vskip 0.1in
-\begin{center}
-\centerline{\includegraphics[width=\columnwidth]{images/online_stage2_combined.png}}
-\caption{Online Stage 2 results. (a) Cost savings relative to All-API baseline. (b) Competitive ratios---PrimalDual achieves the best ratio, even outperforming the ILP-Optimal due to finer-grained scheduling.}
-\label{fig:online_stage2}
-\end{center}
-\vskip -0.2in
-\end{figure}
-
-\textbf{Ablation: Joint optimization is essential.} The $S_Q$-Only baseline saves only 2\% (quota alone is insufficient when request costs vary), while $S_C$-Only saves 68\% (concurrency is powerful but limited by scheduling). Combining both resources via Greedy achieves 98\% savings, and PrimalDual's threshold-based admission further reduces API spillover to just 0.1\%.
-
-\subsection{Ablation Study: Predictor vs Decision Rule}
-
-To disentangle the contributions of the predictor and the decision rule, we conduct a 2$\times$2 ablation study crossing two predictors (EMA vs Histogram) with two decision rules (standard Primal-Dual vs Learning-Augmented P10). Table~\ref{tab:ablation} shows the results.
-
-\begin{table}[h]
-\caption{2$\times$2 Ablation: Competitive Ratio (lower is better)}
-\label{tab:ablation}
-\vskip 0.1in
-\begin{center}
-\begin{small}
-\begin{sc}
-\begin{tabular}{lcc}
-\toprule
- & EMA & Histogram \\
-\midrule
-Primal-Dual & \textbf{1.18} & 1.19 \\
-LA-PD (P10) & 1.19 & 1.19 \\
-\bottomrule
-\end{tabular}
-\end{sc}
-\end{small}
-\end{center}
-\vskip -0.1in
-\end{table}
-
-\textbf{Key Finding 4: Predictor responsiveness dominates calibration.} The simple EMA predictor with standard Primal-Dual achieves the best competitive ratio (1.18), slightly outperforming all other combinations (1.19). This result suggests that for routing decisions, a responsive point estimate is more valuable than calibrated quantiles when the underlying distribution shifts frequently. The EMA predictor's ability to quickly adapt to non-stationary arrivals outweighs the histogram's better calibration on stationary data.
-
-\subsection{Predictor Calibration Analysis}
-
-To understand why the simpler EMA predictor outperforms the histogram-based quantile predictor, we analyze their calibration properties. For a well-calibrated quantile predictor, the coverage at quantile $\tau$ should equal $\tau$: i.e., $P(\text{actual} \leq \hat{q}_\tau) = \tau$.
+\paragraph{Predictor Analysis.}
+A 2$\times$2 ablation crossing predictors (EMA vs Histogram) with decision rules (Primal-Dual vs LA-PD) reveals that EMA + Primal-Dual achieves the best CR (1.18), while all other combinations achieve 1.19. Calibration analysis (Figure~\ref{fig:calibration}) explains this paradox: EMA's q50 coverage is 72\% (over-estimation), while Histogram achieves 56\% (near-ideal). Yet EMA performs better because its over-estimation naturally implements a conservative policy, and it adapts quickly to distribution shifts. For routing, \textbf{responsiveness trumps calibration}.
 
 \begin{figure}[ht]
 \vskip 0.1in
 \begin{center}
 \centerline{\includegraphics[width=0.85\columnwidth]{images/online_calibration.png}}
-\caption{Predictor calibration analysis. The histogram predictor achieves better calibration (closer to the diagonal), while EMA systematically over-estimates output length. Despite worse calibration, EMA achieves better routing performance.}
+\caption{Predictor calibration. Histogram is better calibrated (closer to diagonal), but EMA achieves better routing due to faster adaptation to distribution shifts.}
 \label{fig:calibration}
 \end{center}
 \vskip -0.2in
 \end{figure}
 
-Figure~\ref{fig:calibration} reveals a surprising paradox. The histogram predictor is better calibrated: its q50 coverage is 56\% (close to the ideal 50\%), while EMA's q50 coverage is 72\% (significant over-estimation). Yet EMA achieves better routing performance (CR 1.18 vs 1.19).
+\subsection{Latency-Aware Routing}
 
-\textbf{Key Finding 5: Better calibration does not imply better routing.} This paradox resolves when we consider the dynamics of online routing. EMA's over-estimation is actually beneficial: it sets a higher bar for routing to subscription, naturally implementing a conservative policy. More importantly, EMA adapts quickly to distribution shifts (common in real workloads), while histogram requires many samples per bin to update. For routing decisions, responsiveness trumps calibration.
+We evaluate latency-aware routing on OpenRouter, serving Llama-3.3-70B-Instruct across 12+ providers.
 
-\subsection{Latency-Aware Provider Selection}
+\paragraph{Provider Heterogeneity.}
+Probing 12 providers over 24 hours ($n \approx 11$K samples each) reveals P99 latencies ranging from 796ms (Groq) to 16,149ms (Hyperbolic)---a 20$\times$ variation. Even providers with similar medians differ substantially in tail behavior (CV ranges 0.60--4.75), motivating online profiling over static configuration.
 
-While the preceding analysis focuses on cost optimization, practical deployments must also satisfy latency service level objectives (SLOs). We now evaluate our latency-aware routing framework using real measurements from OpenRouter, a multi-provider platform serving identical models across 12+ providers.
+\paragraph{LP-Based Mixing.}
+We solve for routing fractions $\pi_j$ minimizing cost subject to $\sum_j \pi_j F_j(L) \geq 0.99$ (P99 SLO at threshold $L$). At tight SLOs (2s), optimal mix favors Groq (fast, expensive); as SLO relaxes to 5s, traffic shifts to cheaper providers, reducing cost by 3$\times$ (see Figure~\ref{fig:latency_pareto} in Appendix).
 
-\subsubsection{Latency Characterization}
+\paragraph{Smart Hedging.}
+To guarantee tail latency without over-provisioning, we trigger backup requests when elapsed time exceeds the primary provider's P90 threshold. Simulation shows residual-based hedging eliminates SLO violations with only 3\% cost overhead, while always-hedging costs 3.3$\times$ more.
 
-\textbf{Setup.} We collect Time-To-First-Token (TTFT) latency samples from 12 providers serving Llama-3.3-70B-Instruct via OpenRouter over 24 hours, with probing requests sent every 45 seconds per provider ($n \approx 11,000$ samples per provider). Table~\ref{tab:latency_stats} summarizes the latency distributions.
-
-\begin{table}[h]
-\caption{Provider Latency Profiles (Llama-3.3-70B, OpenRouter)}
-\label{tab:latency_stats}
-\vskip 0.1in
-\begin{center}
-\begin{small}
-\begin{sc}
-\begin{tabular}{lcccc}
-\toprule
-Provider & P50 (ms) & P99 (ms) & CV & Rank \\
-\midrule
-Groq & 382 & 796 & 0.86 & 1 \\
-SambaNova & 378 & 1,405 & 0.60 & 2 \\
-Cloudflare & 475 & 2,168 & 0.73 & 3 \\
-Nebius & 514 & 5,545 & 1.00 & 5 \\
-Fireworks & 754 & 6,999 & 1.04 & 7 \\
-Hyperbolic & 828 & 16,149 & 3.23 & 12 \\
-\bottomrule
-\end{tabular}
-\end{sc}
-\end{small}
-\end{center}
-\vskip -0.1in
-\end{table}
-
-\textbf{Key Finding 6: Provider latency varies dramatically.} P99 latencies range from 796ms (Groq) to 16,149ms (Hyperbolic)---a 20$\times$ variation. Even providers with similar median latency (e.g., Groq vs SambaNova) differ substantially in tail behavior. The coefficient of variation (CV) ranges from 0.60 to 4.75, indicating high within-provider variance that motivates online profiling rather than static configuration.
-
-\subsubsection{LP-Based Provider Mixing}
-
-Given latency profiles, we solve for optimal routing fractions $\pi_j$ that minimize cost while satisfying a P99 SLO constraint $L$:
-\begin{align}
-\min_{\pi} \quad & \sum_j \pi_j c_j \nonumber \\
-\text{s.t.} \quad & \sum_j \pi_j F_j(L) \geq 0.99 \label{eq:slo_constraint},\; \sum_j \pi_j = 1, \quad \pi_j \geq 0 \nonumber
-\end{align}
-where $F_j(L)$ is the empirical CDF of provider $j$ at latency $L$. By the simplex property, this LP yields at most 2 non-zero providers.
-
-\begin{figure}[ht]
-\vskip 0.1in
-\begin{center}
-\centerline{\includegraphics[width=\columnwidth]{images/latency_pareto_openrouter.png}}
-\caption{Cost-latency Pareto frontier for Llama-3.3-70B on OpenRouter. (Left) As SLO relaxes from 2s to 10s, optimal cost drops from \$0.0006 to \$0.0002 per request. (Right) Provider mix shifts from expensive fast providers (Groq) to cheaper slower ones (Together, Parasail) as SLO relaxes.}
-\label{fig:latency_pareto}
-\end{center}
-\vskip -0.2in
-\end{figure}
-
-\textbf{Key Finding 7: LP mixing achieves optimal cost-latency tradeoffs.}
-Figure~\ref{fig:latency_pareto} shows the Pareto frontier. At tight SLOs (2s), the optimal mix uses primarily Groq (fast but expensive). As SLO relaxes to 5s, traffic shifts to cheaper providers like Together and Parasail, reducing cost by 3$\times$ while still meeting the latency target.
-
-\subsubsection{Smart Hedging for Tail Latency}
-
-To provide tail latency guarantees without over-provisioning, we implement a \textit{smart hedging} mechanism. When a request's elapsed time exceeds a threshold where the expected remaining latency plus the fastest provider's expected latency would violate the SLO, we cancel the original request and retry on the fastest available provider.
-
-\begin{table}[h]
-\caption{Hedging Strategy Comparison (SLO = 5s)}
-\label{tab:hedging}
-\vskip 0.1in
-\begin{center}
-\begin{small}
-\begin{sc}
-\begin{tabular}{lccc}
-\toprule
-Strategy & P99 (ms) & Violation & Cost \\
-\midrule
-Never Hedge & 2,107 & 0.6\% & 1.00$\times$ \\
-Smart (Residual) & 1,874 & 0.0\% & 1.03$\times$ \\
-Smart (Survival) & 739 & 0.0\% & 3.02$\times$ \\
-Always Hedge & 523 & 0.0\% & 3.34$\times$ \\
-\bottomrule
-\end{tabular}
-\end{sc}
-\end{small}
-\end{center}
-\vskip -0.1in
-\end{table}
-
-\textbf{Key Finding 8: Smart hedging eliminates SLO violations with minimal overhead.}
-Table~\ref{tab:hedging} compares hedging strategies. The \textit{Smart (Residual)} strategy achieves zero SLO violations with only 3\% cost overhead by hedging only when necessary. In contrast, \textit{Always Hedge} reduces P99 by 75\% but at 3.3$\times$ cost. The choice depends on application requirements: latency-critical applications may prefer aggressive hedging, while cost-sensitive applications can use residual-based hedging.
-
-\subsubsection{Comparison with OpenRouter Default Routing}
-
-Finally, we evaluate our complete system against OpenRouter's default routing strategy using live API calls with real billing.
-
-\textbf{Setup.} We replay a 24-hour trace combining BurstGPT arrival timestamps with ShareGPT prompts, with interleaved policy assignment to ensure fair comparison under identical network conditions. Policies compared: (1) \textbf{OpenRouter Auto}: OpenRouter's default provider selection; (2) \textbf{LP-Mix}: Our LP-based optimal routing; (3) \textbf{Smart Hedge}: LP-Mix with percentile-based hedging that triggers backup requests when elapsed time exceeds the primary provider's P90 latency.
+\paragraph{Production Evaluation.}
+We replay a 24-hour trace (BurstGPT timestamps + ShareGPT prompts) against the live OpenRouter API, sending each request to all policies simultaneously for fair comparison. Table~\ref{tab:openrouter_comparison} shows results.
 
 \begin{table}[ht]
-\caption{Online Evaluation vs OpenRouter (Llama-3.3-70B)}
+\caption{24-Hour Evaluation vs OpenRouter (SLO = 2s)}
 \label{tab:openrouter_comparison}
 \vskip 0.1in
 \begin{center}
 \begin{small}
-\begin{sc}
-\begin{tabular}{lcccc}
+\begin{tabular}{@{}lrrrr@{}}
 \toprule
 Policy & P50 & P99 & Viol. & Cost \\
 \midrule
-OpenRouter Auto & 820ms & 7825ms & 23.8\% & \$1.81 \\
-LP-Mix & 418ms & 3640ms & 5.3\% & \$0.98 \\
+OpenRouter Auto & 820ms & 7828ms & 23.8\% & \$1.81 \\
+LP-Mix & 418ms & 3659ms & 5.3\% & \$0.98 \\
 Smart Hedge & 419ms & 1431ms & 0.8\% & \$1.15 \\
 \bottomrule
 \end{tabular}
-\end{sc}
 \end{small}
 \end{center}
 \vskip -0.1in
 \end{table}
 
-\textbf{Key Finding 9: Smart hedging achieves 31$\times$ lower SLO violations than OpenRouter.}
-Table~\ref{tab:openrouter_comparison} shows that Smart Hedge reduces SLO violations by 31$\times$ (0.8\% vs 23.8\%) and P99 latency by 5.5$\times$ (1.4s vs 7.8s) while saving 37\% cost (\$1.15 vs \$1.81). Hedging was triggered in 15.6\% of requests, demonstrating that our percentile-based strategy hedges only when necessary. LP-Mix alone achieves 46\% cost savings but has higher tail latency; adding smart hedging trades some cost savings for dramatically better tail latency guarantees.
+Smart Hedge reduces SLO violations by \textbf{31$\times$} (0.8\% vs 23.8\%) and P99 latency by \textbf{5.5$\times$} (1.4s vs 7.8s) compared to OpenRouter's default routing, while saving \textbf{37\%} cost (\$1.15 vs \$1.81). Hedging triggered on 15.6\% of requests, demonstrating selective activation. LP-Mix alone achieves 46\% cost savings but higher tail latency; smart hedging trades modest cost for dramatically better latency guarantees.

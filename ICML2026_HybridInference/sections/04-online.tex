@@ -18,8 +18,6 @@ where $L$ and $U$ are estimated lower and upper bounds on the request value (avo
 The primal-dual algorithm with threshold $\psi(z)$ achieves a competitive ratio of $O(\ln(U/L))$ for the online knapsack problem with known values.
 \end{theorem}
 
-The exponential threshold ensures that the opportunity cost of quota grows smoothly from $L$ (when quota is abundant) to $U$ (when quota is nearly exhausted). Early requests with moderate value are accepted; late requests must have high value to justify consuming scarce quota. This logarithmic competitive ratio is known to be optimal for the online knapsack problem.
-
 \textbf{Remark.} The theorem assumes exact request values are known at arrival. In practice, we use predicted values $\hat{v}_t$, so the guarantee applies to the \emph{estimated} value sequence. Actual performance depends on prediction quality; we validate this empirically in Section~\ref{sec:experiments}.
 
 \textbf{Concurrency Shadow Price ($\lambda$).}
@@ -39,7 +37,7 @@ We employ a \textbf{Learning-Augmented} approach with two components. First, we 
 \begin{equation}
     \hat{v}_t^{\text{LCB}} = p_{\text{in}} \cdot n_t^{\text{in}} + p_{\text{out}} \cdot \hat{L}^{(10)}_t
 \end{equation}
-This conservative estimate ensures that with high empirical coverage, the request is worth at least this much before spending quota on it. The intuition is simple: if even the pessimistic estimate of a request's value exceeds the opportunity cost threshold, we can confidently route it to the subscription.
+This conservative estimate ensures that the request is worth at least this much before spending quota on it.
 
 \textbf{Duration Estimation.}
 For concurrency-aware routing, we also need to estimate the processing time $\hat{p}_t$. We decompose this as $\hat{p}_t \approx \widehat{\text{TTFT}} + \hat{n}_t^{\text{out}} / \widehat{\text{TPS}}$, where TTFT is time-to-first-token and TPS is decode throughput. To avoid underestimating slot occupancy, we use upper confidence bounds (90th percentile for TTFT and output length, 10th percentile for TPS). Details are in Appendix~\ref{app:duration}.
@@ -73,5 +71,3 @@ where $w_t$ is the concurrency weight (typically 1, but larger for models requir
    \ENDIF
 \end{algorithmic}
 \end{algorithm}
-
-This algorithm treats $S_Q$, $S_C$, and $S_A$ as three competing options, each with its own opportunity cost. When concurrency is not a bottleneck ($\lambda_t \approx 0$), the algorithm reduces to the optimal online knapsack policy for $S_Q$. When concurrency is tight, it naturally shifts to prioritizing short, high-value jobs via $S_C$. When both subscriptions are costly, requests spill to API.

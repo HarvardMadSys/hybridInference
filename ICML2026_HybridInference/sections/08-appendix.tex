@@ -1,6 +1,7 @@
 \newpage
 \appendix
 \onecolumn
+\raggedbottom
 \section{Appendix}
 
 % =============================================================================
@@ -476,6 +477,14 @@ While our main formulation focuses on cost, latency is a critical constraint. We
 
 \textbf{Soft Deadlines (Hedging).} For online routing, we can employ a hedging strategy: send a request to $S_C$ first, and if it is not completed by time $t_{hedge}$, speculatively send a backup request to $S_A$. The cost function then becomes the expected cost of the combined policy.
 
+\begin{figure}[h]
+\begin{center}
+\includegraphics[width=0.9\textwidth]{images/latency_pareto_openrouter.png}
+\caption{Provider latency profiles on OpenRouter (Llama-3.3-70B-Instruct). (a) P50 vs P99 latency showing provider reliability. (b) Cost-latency tradeoff---fast providers (Groq, SambaNova) meet tight SLOs but cost more; slower providers offer savings when SLOs are relaxed.}
+\label{fig:latency_pareto}
+\end{center}
+\end{figure}
+
 \paragraph{Online Latency Evaluation Setup.}
 \label{app:latency_eval_setup}
 
@@ -605,6 +614,9 @@ If the LP is infeasible (no provider mix achieves the target CDF), we progressiv
 
 \paragraph{Smooth Weighted Round-Robin (SWRR).}
 The LP outputs routing probabilities $\pi^*$, but we need to convert these to actual routing decisions. Rather than sampling randomly (which has high short-term variance), we use SWRR:
+\begin{algorithm}[H]
+\caption{Smooth Weighted Round-Robin (SWRR)}
+\label{alg:swrr}
 \begin{algorithmic}
 \STATE Initialize: $\text{cw}[j] \gets 0$ for all $j$
 \FOR{each request}
@@ -614,6 +626,7 @@ The LP outputs routing probabilities $\pi^*$, but we need to convert these to ac
     \STATE Route to $j^*$
 \ENDFOR
 \end{algorithmic}
+\end{algorithm}
 SWRR produces deterministic interleaving (e.g., $\pi = [0.7, 0.3]$ yields ``AABABAA...'' rather than random bursts), reducing short-term latency variance.
 
 % =============================================================================
@@ -810,6 +823,29 @@ All experiments were run on a server with Intel Xeon E5-2680 v4 (28 cores), 256G
 \subsection{Extended Experimental Results}
 \label{app:extended_results}
 
+\paragraph{Stage 1 Cost Savings.}
+Table~\ref{tab:stage1_savings} summarizes the cost savings of different strategies relative to the All-API baseline across all datasets.
+
+\begin{table}[h]
+\caption{API Cost Savings vs All-API (Quota-Only)}
+\label{tab:stage1_savings}
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{lccc}
+\toprule
+Dataset & Greedy & Optimal & CR \\
+\midrule
+ShareGPT & 17\% & \textbf{35\%} & 1.43x \\
+FreeInference & 63\% & \textbf{82\%} & 1.36x \\
+Enterprise & 81\% & \textbf{98\%} & 4.36x \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\end{table}
+
 \paragraph{Per-Day Breakdown (ShareGPT).}
 Table~\ref{tab:perday_sharegpt} shows daily results for the first 7 days of ShareGPT.
 
@@ -857,7 +893,7 @@ Overall & 371,214 & \$0.31 & 63\% & 82\% \\
 \end{center}
 \end{table}
 
-\textbf{Finding:} The gap between Greedy and Optimal is larger for expensive models (GPT-4: 18\% gap) than cheap models (Mistral-7B: 19\% gap). This is because the opportunity cost of wasting quota is higher when the avoided API cost is large.
+\textbf{Finding:} The gap between Greedy and Optimal is consistent across models (18--19\%), but the absolute savings are larger for expensive models. GPT-4 requests save \$0.85 $\times$ 89\% = \$0.76 per request under optimal routing, compared to \$0.08 $\times$ 61\% = \$0.05 for Mistral-7B.
 
 \paragraph{Output Length Distribution.}
 Table~\ref{tab:output_stats} shows the output length statistics for each dataset, explaining why Enterprise has the highest cost variance.

@@ -47,7 +47,7 @@ If request $i$ starts at time $s_i$ and occupies the server for processing time 
 \[
 \sum_i \mathbb{I}\!\left(t \in [s_i,\, s_i+p_i]\right) \;\le\; C \quad \forall t.
 \]
-This captures dedicated inference endpoints with reserved capacity (e.g., Featherless.ai, Arli AI),\cite{featherless_pricing,arli_pricing}
+This captures dedicated inference endpoints with reserved capacity (e.g., Featherless.ai, Arli AI),\cite{featherless-plans,arli-pricing}
 as well as self-hosted deployments in which the number of replicas bounds the number of concurrent requests.\cite{vllm_pagedattention}
 Compared to $S_Q$, $S_C$ introduces scheduling structure because the resource is blocked for the request duration.
 
