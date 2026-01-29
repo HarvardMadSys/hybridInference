@@ -38,6 +38,7 @@ import csv
 import importlib.util
 import json
 import os
+import pickle
 import sys
 import threading
 import time
@@ -112,7 +113,14 @@ class BudgetConfig:
     max_requests: int = 500
     cost_cap_usd: float = 5.0
     max_tokens: int = 16
-    policies: tuple[str, ...] = ("openrouter_auto", "lp_mix", "smart_hedge")
+    # Include more baselines for comprehensive ICML evaluation
+    policies: tuple[str, ...] = (
+        "openrouter_auto",  # OpenRouter default (baseline)
+        "lp_mix",  # LP optimal mixing (our method)
+        "smart_hedge",  # LP + hedging (our method)
+        "cheapest_fixed",  # Always cheapest provider (cost baseline)
+        "fastest_fixed",  # Always fastest provider (latency baseline)
+    )
 
 
 @dataclass
@@ -124,6 +132,43 @@ class TraceRequest:
     max_tokens: int = DEFAULT_MAX_TOKENS
     original_prompt_tokens: int = 0
     original_completion_tokens: int = 0
+    use_real_prompt: bool = False  # P1 mode: use real prompt from trace
+
+
+@dataclass
+class Checkpoint:
+    """Checkpoint for resuming trace replay."""
+
+    completed_requests: int  # Number of requests fully processed
+    total_cost: float  # Cumulative cost
+    router_samples: dict[str, list[tuple[float, float]]]  # provider -> [(timestamp, ttft_ms)]
+    router_errors: dict[str, list[tuple[float, str | None]]]  # provider -> [(timestamp, error)]
+    policy_costs: dict[str, float]  # policy -> total_cost
+    policy_errors: dict[str, int]  # policy -> error_count
+    policy_results: dict[str, list[dict]]  # policy -> list of result dicts for analysis
+    last_save_time: float  # Unix timestamp of checkpoint
+
+    def save(self, path: Path) -> None:
+        """Save checkpoint to file."""
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+        print(f"  [Checkpoint] Saved at request {self.completed_requests}")
+
+    @classmethod
+    def load(cls, path: Path) -> "Checkpoint | None":
+        """Load checkpoint from file, returns None if not found."""
+        if not path.exists():
+            return None
+        try:
+            with open(path, "rb") as f:
+                checkpoint = pickle.load(f)
+            print(f"  [Checkpoint] Loaded from {path}")
+            print(f"    Completed requests: {checkpoint.completed_requests}")
+            print(f"    Total cost: ${checkpoint.total_cost:.4f}")
+            return checkpoint
+        except Exception as e:
+            print(f"  [Checkpoint] Failed to load: {e}")
+            return None
 
 
 def load_trace_from_csv(
@@ -170,6 +215,71 @@ def load_trace_from_csv(
         # Apply max_requests limit
         if max_requests is not None and len(trace) >= max_requests:
             break
+
+    return trace
+
+
+def load_trace_from_jsonl(
+    filepath: str,
+    max_requests: int | None = None,
+    time_limit_sec: float | None = None,
+    use_real_prompts: bool = True,
+) -> list[TraceRequest]:
+    """Load trace from JSONL file with real prompts (P1 mode).
+
+    Args:
+        filepath: Path to JSONL file (sharegpt_prompts_burstgpt_timestamps.jsonl).
+        max_requests: Maximum number of requests to load.
+        time_limit_sec: Only load requests within this time window.
+        use_real_prompts: If True, use real prompt_text from trace.
+
+    Returns:
+        List of TraceRequest objects with real prompts.
+    """
+    trace = []
+    first_timestamp = None
+
+    with open(filepath) as f:
+        for line in f:
+            if not line.strip():
+                continue
+
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            timestamp = record.get("arrived_at", 0)
+            if first_timestamp is None:
+                first_timestamp = timestamp
+
+            arrival_time_sec = float(timestamp - first_timestamp)
+
+            # Apply time limit
+            if time_limit_sec is not None and arrival_time_sec > time_limit_sec:
+                break
+
+            prompt_text = record.get("prompt_text", PROBE_PROMPT)
+            num_decode_tokens = record.get("num_decode_tokens", DEFAULT_MAX_TOKENS)
+            num_prefill_tokens = record.get("num_prefill_tokens", 0)
+
+            # Cap max_tokens to avoid extremely long responses
+            # Most providers have limits, and we want reasonable costs
+            max_tokens = min(num_decode_tokens, 512)
+
+            trace_req = TraceRequest(
+                arrival_time_sec=arrival_time_sec,
+                prompt=prompt_text if use_real_prompts else PROBE_PROMPT,
+                max_tokens=max_tokens if use_real_prompts else DEFAULT_MAX_TOKENS,
+                original_prompt_tokens=num_prefill_tokens,
+                original_completion_tokens=num_decode_tokens,
+                use_real_prompt=use_real_prompts,
+            )
+            trace.append(trace_req)
+
+            # Apply max_requests limit
+            if max_requests is not None and len(trace) >= max_requests:
+                break
 
     return trace
 
@@ -279,9 +389,10 @@ class EvaluationConfig:
     error_window: int = 50  # Window for error rate calculation
     max_tokens: int = DEFAULT_MAX_TOKENS
     lp_update_interval: float = 300.0  # 5 minutes
-    prior_strength: float = 10.0
+    window_sec: float = 15 * 60  # 15 minutes - single moving window
     dispatch_overhead_sec: float = 0.05
     policy_backoff_sec: float = 60.0  # Backoff when error rate is high.
+    probing_interval_sec: float = 300.0  # 5 minutes - periodic probing of all providers
 
 
 @dataclass
@@ -351,7 +462,7 @@ class Phase5OnlineEvaluator:
         self.router = OnlineLatencyRouter(
             costs=pricing,
             slo_sec=config.slo_sec,
-            prior_strength=config.prior_strength,
+            window_sec=config.window_sec,
             failure_mode=FailureMode.INFINITY,
             kappa=0.0,
             weight_smoothing=0.3,
@@ -359,9 +470,12 @@ class Phase5OnlineEvaluator:
         )
 
         # Initialize hedger for smart_hedge policy
+        # Use PERCENTILE_BASED strategy: hedge at P90 of primary's latency
+        # This reduces P99 by sending backup when primary is in the tail
         hedging_params = HedgingParams(
-            strategy=HedgingStrategy.SMART_SURVIVAL,
+            strategy=HedgingStrategy.PERCENTILE_BASED,
             slo_sec=config.slo_sec,
+            alpha_percentile=90.0,  # Hedge at P90 of primary
             dispatch_overhead_sec=config.dispatch_overhead_sec,
             backup_method=BackupSelectionMethod.FASTEST,
         )
@@ -391,10 +505,15 @@ class Phase5OnlineEvaluator:
 
         # CSV log file
         self.csv_path = output_dir / "evaluation_log.csv"
+        self._csv_lock = threading.Lock()  # Thread-safe CSV writing
         self._init_csv_log()
 
         # Total cost tracking
         self.total_cost = 0.0
+        self.probing_cost = 0.0  # Track probing cost separately
+
+        # Router lock for thread-safe access
+        self._router_lock = threading.Lock()
 
     def _get_session(self) -> requests.Session:
         """Return a per-thread requests session.
@@ -435,8 +554,8 @@ class Phase5OnlineEvaluator:
             )
 
     def _log_result(self, result: RequestResult) -> None:
-        """Append result to CSV log."""
-        with open(self.csv_path, "a", newline="") as f:
+        """Append result to CSV log (thread-safe)."""
+        with self._csv_lock, open(self.csv_path, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(
                 [
@@ -466,16 +585,25 @@ class Phase5OnlineEvaluator:
         timeout: int = 60,
         ttft_event: threading.Event | None = None,
         ttft_info: dict[str, Any] | None = None,
+        prompt: str | None = None,
+        max_tokens: int | None = None,
     ) -> SingleRequestResult:
         """Send a single request to OpenRouter API with streaming.
 
         Args:
             provider: Provider to use (None for OpenRouter auto).
             timeout: Request timeout in seconds.
+            prompt: Custom prompt text (default: PROBE_PROMPT).
+            max_tokens: Custom max tokens (default: config.max_tokens).
 
         Returns:
             SingleRequestResult with TTFT, status, provider, and token usage.
         """
+        if prompt is None:
+            prompt = PROBE_PROMPT
+        if max_tokens is None:
+            max_tokens = self.config.max_tokens
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {API_KEY}",
@@ -485,8 +613,8 @@ class Phase5OnlineEvaluator:
 
         payload: dict[str, Any] = {
             "model": self.config.model,
-            "messages": [{"role": "user", "content": PROBE_PROMPT}],
-            "max_tokens": self.config.max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -497,7 +625,9 @@ class Phase5OnlineEvaluator:
                 "allow_fallbacks": False,
             }
 
-        start_time = time.time()
+        # Use perf_counter for precise timing, time.time() for absolute timestamps
+        start_perf = time.perf_counter()
+        start_time = time.time()  # For absolute timestamp (logging, hedging)
         actual_provider = provider or "unknown"
         ttft_ms = -1.0
         e2e_ms = -1.0
@@ -507,6 +637,7 @@ class Phase5OnlineEvaluator:
         completion_tokens = 0
         cost = 0.0  # Actual cost from OpenRouter
         first_token_ts: float | None = None
+        first_token_perf: float | None = None  # perf_counter value at first token
 
         if ttft_info is not None:
             ttft_info.setdefault("ttft_ms", -1.0)
@@ -607,8 +738,11 @@ class Phase5OnlineEvaluator:
                 if first_token_ts is None:
                     choices = chunk.get("choices", [])
                     if choices and choices[0].get("delta", {}).get("content"):
-                        first_token_ts = time.time()
-                        ttft_ms = (first_token_ts - start_time) * 1000
+                        first_token_perf = time.perf_counter()
+                        first_token_ts = time.time()  # For hedging comparison
+                        ttft_ms = (
+                            first_token_perf - start_perf
+                        ) * 1000  # Use perf_counter for precision
                         if ttft_info is not None:
                             ttft_info["ttft_ms"] = ttft_ms
                             ttft_info["first_token_ts"] = first_token_ts
@@ -632,8 +766,8 @@ class Phase5OnlineEvaluator:
                     # OpenRouter returns actual billed cost directly
                     cost = float(usage.get("cost", cost) or 0.0)
 
-            end_time = time.time()
-            e2e_ms = (end_time - start_time) * 1000
+            end_perf = time.perf_counter()
+            e2e_ms = (end_perf - start_perf) * 1000  # Use perf_counter for precision
 
             # Handle case where no first token was detected.
             if ttft_ms < 0 and e2e_ms > 0:
@@ -705,6 +839,8 @@ class Phase5OnlineEvaluator:
         primary_provider: str,
         backup_provider: str,
         hedge_time_sec: float,
+        prompt: str | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[SingleRequestResult, SingleRequestResult | None, str, bool]:
         """Send hedged request with delayed backup dispatch.
 
@@ -718,6 +854,8 @@ class Phase5OnlineEvaluator:
             primary_provider: Primary provider to try first.
             backup_provider: Backup provider for hedging.
             hedge_time_sec: Time threshold to trigger backup (seconds).
+            prompt: Custom prompt text.
+            max_tokens: Custom max tokens.
 
         Returns:
             (primary_result, backup_result, winner, hedge_triggered)
@@ -728,6 +866,8 @@ class Phase5OnlineEvaluator:
             primary_result = self._send_request(
                 provider=primary_provider,
                 timeout=DEFAULT_TIMEOUT_SEC,
+                prompt=prompt,
+                max_tokens=max_tokens,
             )
             return primary_result, None, "primary", False
 
@@ -748,6 +888,8 @@ class Phase5OnlineEvaluator:
                 timeout=DEFAULT_TIMEOUT_SEC,
                 ttft_event=primary_ttft,
                 ttft_info=primary_ttft_info,
+                prompt=prompt,
+                max_tokens=max_tokens,
             )
 
         def run_backup():
@@ -757,6 +899,8 @@ class Phase5OnlineEvaluator:
                 timeout=DEFAULT_TIMEOUT_SEC,
                 ttft_event=backup_ttft,
                 ttft_info=backup_ttft_info,
+                prompt=prompt,
+                max_tokens=max_tokens,
             )
 
         # Start primary request
@@ -824,12 +968,16 @@ class Phase5OnlineEvaluator:
         self,
         policy: str,
         now: float,
+        prompt: str | None = None,
+        max_tokens: int | None = None,
     ) -> RequestResult:
         """Execute a single request for a policy.
 
         Args:
             policy: Policy name.
             now: Current timestamp.
+            prompt: Custom prompt text (P1 mode).
+            max_tokens: Custom max tokens (P1 mode).
 
         Returns:
             RequestResult with metrics.
@@ -871,6 +1019,8 @@ class Phase5OnlineEvaluator:
                     primary_provider=selected_provider,
                     backup_provider=backup,
                     hedge_time_sec=h,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
                 )
 
                 hedge_winner = winner
@@ -925,6 +1075,8 @@ class Phase5OnlineEvaluator:
                 result = self._send_request(
                     provider=selected_provider,
                     timeout=DEFAULT_TIMEOUT_SEC,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
                 )
                 ttft_ms = result.ttft_ms
                 e2e_ms = result.e2e_ms
@@ -940,6 +1092,163 @@ class Phase5OnlineEvaluator:
             result = self._send_request(
                 provider=selected_provider,
                 timeout=DEFAULT_TIMEOUT_SEC,
+                prompt=prompt,
+                max_tokens=max_tokens,
+            )
+            ttft_ms = result.ttft_ms
+            e2e_ms = result.e2e_ms
+            status = result.status
+            actual_provider = result.actual_provider
+            error_msg = result.error_message
+            prompt_tokens = result.prompt_tokens
+            completion_tokens = result.completion_tokens
+
+            # Use actual cost from OpenRouter
+            cost = result.cost
+            cost_is_estimated = cost <= 0
+
+        # Check SLO violation
+        slo_violated = (status != "success") or (ttft_ms / 1000.0 > self.config.slo_sec)
+
+        return RequestResult(
+            request_id=request_id,
+            timestamp=now,
+            policy=policy,
+            selected_provider=selected_provider,
+            actual_provider=actual_provider,
+            ttft_ms=ttft_ms,
+            e2e_ms=e2e_ms,
+            status=status,
+            slo_violated=slo_violated,
+            cost_usd=cost,
+            hedge_triggered=hedge_triggered,
+            hedge_provider=hedge_provider,
+            hedge_winner=hedge_winner,
+            error_message=error_msg,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_is_estimated=cost_is_estimated,
+        )
+
+    def _execute_policy_request_with_provider(
+        self,
+        policy: str,
+        selected_provider: str | None,
+        hedge_info: tuple[str | None, float] | None,
+        now: float,
+        prompt: str | None = None,
+        max_tokens: int | None = None,
+    ) -> RequestResult:
+        """Execute a policy request with pre-computed provider selection.
+
+        This is the thread-safe version that accepts pre-computed provider
+        and hedge info, avoiding concurrent access to the router.
+
+        Args:
+            policy: Policy name.
+            selected_provider: Pre-computed provider selection.
+            hedge_info: Pre-computed (backup_provider, hedge_time) for smart_hedge.
+            now: Current timestamp.
+            prompt: Custom prompt text (P1 mode).
+            max_tokens: Custom max tokens (P1 mode).
+
+        Returns:
+            RequestResult with metrics.
+        """
+        request_id = str(uuid.uuid4())[:8]
+        hedge_triggered = False
+        hedge_provider = None
+        hedge_winner = None
+        prompt_tokens = 0
+        completion_tokens = 0
+        cost_is_estimated = False
+
+        # Execute request based on policy
+        if policy == "smart_hedge" and selected_provider is not None and hedge_info is not None:
+            backup, hedge_time = hedge_info
+            hedge_provider = backup
+
+            if backup is not None and backup != selected_provider:
+                # Execute hedged request with true concurrency
+                primary_result, backup_result, winner, hedge_triggered = self._send_hedged_request(
+                    primary_provider=selected_provider,
+                    backup_provider=backup,
+                    hedge_time_sec=hedge_time,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                )
+
+                hedge_winner = winner
+
+                # Determine final result based on winner
+                if winner == "primary" or backup_result is None:
+                    result = primary_result
+                    actual_provider = result.actual_provider
+                else:
+                    result = backup_result
+                    actual_provider = result.actual_provider
+
+                overall_start = primary_result.start_ts if primary_result else now
+                if result and result.first_token_ts is not None and result.status == "success":
+                    ttft_ms = (result.first_token_ts - overall_start) * 1000
+                else:
+                    ttft_ms = result.ttft_ms if result else -1.0
+
+                if result and result.e2e_ms > 0:
+                    end_ts = result.start_ts + (result.e2e_ms / 1000.0)
+                    e2e_ms = (end_ts - overall_start) * 1000
+                else:
+                    e2e_ms = result.e2e_ms if result else -1.0
+                status = result.status
+                error_msg = result.error_message
+
+                # Log total token usage (both requests if hedged).
+                prompt_tokens = 0
+                completion_tokens = 0
+                if primary_result is not None:
+                    prompt_tokens += primary_result.prompt_tokens
+                    completion_tokens += primary_result.completion_tokens
+                if hedge_triggered and backup_result is not None:
+                    prompt_tokens += backup_result.prompt_tokens
+                    completion_tokens += backup_result.completion_tokens
+
+                # Use actual cost from OpenRouter (both requests billed if hedged)
+                cost = 0.0
+                cost_is_estimated = False
+                if primary_result:
+                    if primary_result.cost > 0:
+                        cost += primary_result.cost
+                    else:
+                        cost_is_estimated = True
+                if hedge_triggered and backup_result:
+                    if backup_result.cost > 0:
+                        cost += backup_result.cost
+                    else:
+                        cost_is_estimated = True
+            else:
+                # No valid backup, just send primary
+                result = self._send_request(
+                    provider=selected_provider,
+                    timeout=DEFAULT_TIMEOUT_SEC,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                )
+                ttft_ms = result.ttft_ms
+                e2e_ms = result.e2e_ms
+                status = result.status
+                actual_provider = result.actual_provider
+                error_msg = result.error_message
+                prompt_tokens = result.prompt_tokens
+                completion_tokens = result.completion_tokens
+                cost = result.cost
+                cost_is_estimated = cost <= 0
+        else:
+            # Non-hedging policies: single request
+            result = self._send_request(
+                provider=selected_provider,
+                timeout=DEFAULT_TIMEOUT_SEC,
+                prompt=prompt,
+                max_tokens=max_tokens,
             )
             ttft_ms = result.ttft_ms
             e2e_ms = result.e2e_ms
@@ -977,7 +1286,7 @@ class Phase5OnlineEvaluator:
         )
 
     def _update_router_from_result(self, result: RequestResult) -> None:
-        """Update router profiles from a request result.
+        """Update router profiles from a request result (thread-safe).
 
         Args:
             result: Request result to learn from.
@@ -990,12 +1299,80 @@ class Phase5OnlineEvaluator:
         error_type = None if result.status == "success" else "server_error"
         ttft_ms = result.ttft_ms if result.status == "success" else -1.0
 
-        self.router.add_sample(
-            provider=result.actual_provider,
-            timestamp=result.timestamp,
-            ttft_ms=ttft_ms,
-            error_type=error_type,
-        )
+        with self._router_lock:
+            self.router.add_sample(
+                provider=result.actual_provider,
+                timestamp=result.timestamp,
+                ttft_ms=ttft_ms,
+                error_type=error_type,
+            )
+
+    def _run_probing_round(self, log_to_csv: bool = True) -> dict[str, float]:
+        """Run a probing round to refresh all provider profiles.
+
+        Sends one probe request to each provider to keep profiles fresh.
+        This prevents provider profiles from going stale during long evaluations.
+
+        Args:
+            log_to_csv: Whether to log probing results to CSV (default: True).
+
+        Returns:
+            Dict of provider -> latency_ms (-1 if failed).
+        """
+        results = {}
+        for provider in self.eval_providers:
+            # Check cost cap
+            if self.total_cost > self.config.cost_cap_usd:
+                break
+
+            now = time.time()
+            result = self._send_request(
+                provider=provider,
+                timeout=DEFAULT_TIMEOUT_SEC,
+            )
+
+            # Update router (thread-safe)
+            error_type = None if result.status == "success" else "server_error"
+            ttft_ms = result.ttft_ms if result.status == "success" else -1.0
+            with self._router_lock:
+                self.router.add_sample(
+                    provider=result.actual_provider,
+                    timestamp=now,
+                    ttft_ms=ttft_ms,
+                    error_type=error_type,
+                )
+
+            # Track cost (both total and probing-specific)
+            probe_cost = result.cost if result.cost > 0 else self.avg_cost_estimate
+            self.total_cost += probe_cost
+            self.probing_cost += probe_cost
+
+            # Log probing result to CSV for cost accountability
+            if log_to_csv:
+                probe_result = RequestResult(
+                    request_id=f"probe_{provider[:8]}",
+                    timestamp=now,
+                    policy="_probing",  # Special policy tag for probing
+                    selected_provider=provider,
+                    actual_provider=result.actual_provider,
+                    ttft_ms=ttft_ms,
+                    e2e_ms=result.e2e_ms,
+                    status=result.status,
+                    slo_violated=False,  # Probing doesn't count for SLO
+                    cost_usd=probe_cost,
+                    cost_is_estimated=(result.cost <= 0),
+                    prompt_tokens=result.prompt_tokens,
+                    completion_tokens=result.completion_tokens,
+                    error_message=result.error_message,
+                )
+                self._log_result(probe_result)
+
+            results[provider] = ttft_ms
+
+            # Small delay between probes to avoid rate limiting
+            time.sleep(0.5)
+
+        return results
 
     def warmup(self, duration_sec: float | None = None) -> None:
         """Run warmup phase to seed router profiles.
@@ -1242,6 +1619,16 @@ class Phase5OnlineEvaluator:
         print("Phase 5: Evaluation Summary")
         print(f"{'='*60}")
 
+        # Cost breakdown
+        print("\nCost Breakdown:")
+        print(f"  Total cost: ${self.total_cost:.4f}")
+        print(
+            f"  Probing cost: ${self.probing_cost:.4f} ({self.probing_cost/self.total_cost*100:.1f}%)"
+            if self.total_cost > 0
+            else f"  Probing cost: ${self.probing_cost:.4f}"
+        )
+        print(f"  Experiment cost: ${self.total_cost - self.probing_cost:.4f}")
+
         for policy_name, s in stats.items():
             print(f"\n{policy_name}:")
             print(f"  Requests: {s['total_requests']}")
@@ -1370,6 +1757,7 @@ class TraceReplayEvaluator(Phase5OnlineEvaluator):
         pricing: dict[str, float],
         output_dir: Path,
         budget_config: BudgetConfig | None = None,
+        checkpoint_interval: int = 100,  # Save checkpoint every N requests
     ):
         """Initialize trace replay evaluator.
 
@@ -1378,32 +1766,168 @@ class TraceReplayEvaluator(Phase5OnlineEvaluator):
             pricing: Provider -> cost per request.
             output_dir: Directory for output files.
             budget_config: Budget configuration for cost guardrails.
+            checkpoint_interval: Save checkpoint every N requests.
         """
+        # Check if checkpoint exists BEFORE calling parent init (which creates CSV)
+        self._pending_checkpoint_path = output_dir / "checkpoint.pkl"
+        self._has_checkpoint = self._pending_checkpoint_path.exists()
+
         super().__init__(config, pricing, output_dir)
         self.budget_config = budget_config or BudgetConfig()
+        self.checkpoint_interval = checkpoint_interval
+        self.checkpoint_path = self._pending_checkpoint_path
 
         # Override policies to only use the configured ones
         self.policies = {name: PolicyState(name=name) for name in self.budget_config.policies}
+
+    def _init_csv_log(self) -> None:
+        """Initialize CSV log file with headers.
+
+        If resuming from checkpoint, append to existing file instead of overwriting.
+        """
+        # Check if we're resuming with existing checkpoint
+        if getattr(self, "_has_checkpoint", False) and self.csv_path.exists():
+            # Don't overwrite - we'll append to existing file
+            print(f"  [CSV] Appending to existing log: {self.csv_path}")
+            return
+
+        # Create new CSV with headers
+        with open(self.csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "timestamp",
+                    "request_id",
+                    "policy",
+                    "selected_provider",
+                    "actual_provider",
+                    "ttft_ms",
+                    "e2e_ms",
+                    "status",
+                    "slo_violated",
+                    "cost_usd",
+                    "cost_is_estimated",
+                    "hedge_triggered",
+                    "hedge_provider",
+                    "hedge_winner",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "error_message",
+                ]
+            )
+
+    def _create_checkpoint(self, completed: int) -> Checkpoint:
+        """Create a checkpoint from current state."""
+        router_samples = {}
+        router_errors = {}
+        for provider, profile in self.router.profiles.items():
+            router_samples[provider] = list(profile.samples)
+            router_errors[provider] = list(profile.error_samples)
+
+        policy_costs = {p: self.policies[p].total_cost for p in self.policies}
+        policy_errors = {p: self.policies[p].error_count for p in self.policies}
+
+        # Serialize results for analysis (include fields for provider_distribution)
+        policy_results = {}
+        for p, state in self.policies.items():
+            policy_results[p] = [
+                {
+                    "ttft_ms": r.ttft_ms,
+                    "e2e_ms": r.e2e_ms,
+                    "status": r.status,
+                    "slo_violated": r.slo_violated,
+                    "cost_usd": r.cost_usd,
+                    "cost_is_estimated": r.cost_is_estimated,
+                    "actual_provider": r.actual_provider,
+                    "hedge_triggered": r.hedge_triggered,
+                }
+                for r in state.results
+            ]
+
+        return Checkpoint(
+            completed_requests=completed,
+            total_cost=self.total_cost,
+            router_samples=router_samples,
+            router_errors=router_errors,
+            policy_costs=policy_costs,
+            policy_errors=policy_errors,
+            policy_results=policy_results,
+            last_save_time=time.time(),
+        )
+
+    def _restore_from_checkpoint(self, checkpoint: Checkpoint) -> None:
+        """Restore state from checkpoint."""
+        self.total_cost = checkpoint.total_cost
+
+        # Restore router profiles
+        for provider, samples in checkpoint.router_samples.items():
+            if provider in self.router.profiles:
+                self.router.profiles[provider].samples = list(samples)
+        for provider, errors in checkpoint.router_errors.items():
+            if provider in self.router.profiles:
+                self.router.profiles[provider].error_samples = list(errors)
+
+        # Restore policy states
+        for policy, cost in checkpoint.policy_costs.items():
+            if policy in self.policies:
+                self.policies[policy].total_cost = cost
+        for policy, errors in checkpoint.policy_errors.items():
+            if policy in self.policies:
+                self.policies[policy].error_count = errors
+
+        # Restore results for analysis (minimal RequestResult objects)
+        if hasattr(checkpoint, "policy_results") and checkpoint.policy_results:
+            for policy, results in checkpoint.policy_results.items():
+                if policy in self.policies:
+                    self.policies[policy].results = [
+                        RequestResult(
+                            request_id="restored",
+                            timestamp=0.0,
+                            policy=policy,
+                            selected_provider=None,
+                            actual_provider=r.get("actual_provider", "unknown"),
+                            ttft_ms=r["ttft_ms"],
+                            e2e_ms=r.get("e2e_ms", r.get("ttft_ms", 0.0)),
+                            status=r["status"],
+                            slo_violated=r["slo_violated"],
+                            cost_usd=r["cost_usd"],
+                            cost_is_estimated=r.get("cost_is_estimated", False),
+                            hedge_triggered=r.get("hedge_triggered", False),
+                        )
+                        for r in results
+                    ]
+
+        # Force LP update with restored data
+        self.router.update_lp(force=True)
+        print(
+            f"  [Checkpoint] Restored state, resuming from request {checkpoint.completed_requests}"
+        )
 
     def run_trace_replay(
         self,
         trace: list[TraceRequest],
         policies: list[str] | None = None,
         speedup: float = 1.0,
+        resume: bool = True,
     ) -> dict[str, PolicyState]:
-        """Replay trace with round-robin policy assignment.
+        """Replay trace with all policies receiving each request.
 
-        N-way interleaving: Each request goes to exactly one policy.
-        - Request 0 -> policy[0]
-        - Request 1 -> policy[1]
-        - Request 2 -> policy[2]
-        - Request 3 -> policy[0] (repeat)
+        Fair comparison: Each request goes to ALL policies simultaneously.
+        - Request 0 -> [openrouter_auto, lp_mix, smart_hedge] in parallel
+        - Request 1 -> [openrouter_auto, lp_mix, smart_hedge] in parallel
         ...
+
+        This uses shared router/probing (1x probing overhead) and allows
+        direct comparison of the same request across different policies.
+
+        Supports checkpoint/resume: saves progress periodically and can resume
+        from the last checkpoint if the process was interrupted.
 
         Args:
             trace: List of trace requests with arrival times.
-            policies: Policies to interleave. If None, uses budget_config.policies.
+            policies: Policies to evaluate. If None, uses budget_config.policies.
             speedup: Time compression factor (1.0 = real-time).
+            resume: Whether to resume from checkpoint if available.
 
         Returns:
             Policy states with results.
@@ -1414,18 +1938,36 @@ class TraceReplayEvaluator(Phase5OnlineEvaluator):
         n_policies = len(policies)
         n_requests = len(trace)
 
-        # Pre-flight checks
-        lower_cost, upper_cost = estimate_cost_bounds(n_requests, n_policies, self.pricing)
-        duration_sec = estimate_trace_duration(trace, speedup)
+        # Check for existing checkpoint
+        start_from = 0
+        if resume:
+            checkpoint = Checkpoint.load(self.checkpoint_path)
+            if checkpoint is not None:
+                self._restore_from_checkpoint(checkpoint)
+                start_from = checkpoint.completed_requests
+                print(f"  [Checkpoint] Resuming from request {start_from}/{n_requests}")
+
+        # Pre-flight checks (cost is now n_policies x higher)
+        remaining_requests = n_requests - start_from
+        lower_cost, upper_cost = estimate_cost_bounds(
+            remaining_requests * n_policies, n_policies, self.pricing
+        )
+        duration_sec = (
+            estimate_trace_duration(trace[start_from:], speedup) if start_from < n_requests else 0
+        )
 
         print(f"\n{'='*60}")
-        print("Phase 5: Trace Replay Evaluation")
+        print("Phase 5: Trace Replay Evaluation (All Policies Per Request)")
         print(f"{'='*60}")
         print(f"Trace: {n_requests} requests over {duration_sec/60:.1f} min (speedup={speedup}x)")
+        if start_from > 0:
+            print(f"Resuming from request {start_from} ({remaining_requests} remaining)")
         print(f"Policies: {policies}")
-        print(f"Cost estimate: ${lower_cost:.2f} - ${upper_cost:.2f}")
+        print(f"Each request -> all {n_policies} policies (fair comparison)")
+        print(f"Cost estimate: ${lower_cost:.2f} - ${upper_cost:.2f} (remaining)")
         print(f"Cost cap: ${self.budget_config.cost_cap_usd:.2f}")
         print(f"Max tokens: {self.budget_config.max_tokens}")
+        print(f"Checkpoint interval: every {self.checkpoint_interval} requests")
 
         if upper_cost > self.budget_config.cost_cap_usd * 2:
             print(f"\nWARNING: Upper cost estimate (${upper_cost:.2f}) exceeds 2x cost cap!")
@@ -1436,13 +1978,12 @@ class TraceReplayEvaluator(Phase5OnlineEvaluator):
         print(f"{'='*60}")
 
         start_time = time.time()
-        trace_start = trace[0].arrival_time_sec if trace else 0.0
+        trace_start = trace[start_from].arrival_time_sec if start_from < n_requests else 0.0
+        last_probe_time = start_time  # Track last probing round
+        probing_interval = self.config.probing_interval_sec
 
-        completed = 0
-        for i, req in enumerate(trace):
-            # Round-robin policy assignment
-            policy = policies[i % n_policies]
-
+        completed = start_from
+        for i, req in enumerate(trace[start_from:], start=start_from):
             # Wait until scheduled arrival time
             target_time = (req.arrival_time_sec - trace_start) / speedup
             elapsed = time.time() - start_time
@@ -1456,49 +1997,129 @@ class TraceReplayEvaluator(Phase5OnlineEvaluator):
                 print(f"\nCost cap exceeded (${self.total_cost:.2f}). Stopping at request {i}.")
                 break
 
-            # Execute request
+            # Execute request for ALL policies in parallel
             now = time.time()
-            result = self._execute_policy_request(policy, now)
+            results: dict[str, RequestResult] = {}
+            threads: list[threading.Thread] = []
 
-            # Record result
-            self.policies[policy].results.append(result)
-            self.policies[policy].total_cost += result.cost_usd
-            if result.status != "success":
-                self.policies[policy].error_count += 1
+            # Use real prompt from trace if available (P1 mode)
+            req_prompt = req.prompt if req.use_real_prompt else None
+            req_max_tokens = req.max_tokens if req.use_real_prompt else None
 
-            self.total_cost += result.cost_usd
+            # Pre-compute provider selections BEFORE spawning threads (thread-safety)
+            # This ensures router.route() is called sequentially, avoiding race conditions
+            with self._router_lock:
+                provider_selections: dict[str, str | None] = {}
+                hedge_selections: dict[str, tuple[str | None, float]] = {}  # (backup, hedge_time)
+                for policy in policies:
+                    provider = self._select_provider_for_policy(policy, now)
+                    provider_selections[policy] = provider
+                    # Pre-compute hedge info for smart_hedge
+                    if policy == "smart_hedge" and provider is not None:
+                        backup = select_backup(
+                            method=BackupSelectionMethod.FASTEST,
+                            profiles=self.router.profiles,
+                            costs=self.pricing,
+                            primary=provider,
+                            slo_sec=self.config.slo_sec,
+                            now=now,
+                            lp_weights=self.router.last_lp_weights,
+                        )
+                        if backup is not None and backup != provider:
+                            h = self.hedger.compute_hedge_time(
+                                provider, backup, self.router.profiles, now
+                            )
+                            hedge_selections[policy] = (backup, h)
+                        else:
+                            hedge_selections[policy] = (None, float("inf"))
 
-            # Update router from result
-            self._update_router_from_result(result)
+            def execute_policy(
+                policy: str,
+                provider: str | None,
+                hedge_info: tuple[str | None, float] | None,
+                prompt: str | None,
+                max_tokens: int | None,
+                results: dict = results,
+                now: float = now,
+            ):
+                results[policy] = self._execute_policy_request_with_provider(
+                    policy=policy,
+                    selected_provider=provider,
+                    hedge_info=hedge_info,
+                    now=now,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                )
 
-            # Log result
-            self._log_result(result)
+            for policy in policies:
+                provider = provider_selections[policy]
+                hedge_info = hedge_selections.get(policy)
+                t = threading.Thread(
+                    target=execute_policy,
+                    args=(policy, provider, hedge_info, req_prompt, req_max_tokens),
+                )
+                threads.append(t)
+                t.start()
+
+            for t in threads:
+                t.join()
+
+            # Record results for all policies
+            for policy in policies:
+                result = results[policy]
+                self.policies[policy].results.append(result)
+                self.policies[policy].total_cost += result.cost_usd
+                if result.status != "success":
+                    self.policies[policy].error_count += 1
+                self.total_cost += result.cost_usd
+                self._update_router_from_result(result)
+                self._log_result(result)
 
             completed += 1
 
-            # Progress output (every 10 requests or on error)
-            if completed % 10 == 0 or result.status != "success":
-                status_str = (
-                    f"TTFT={result.ttft_ms:.0f}ms" if result.status == "success" else result.status
-                )
-                slo_str = " [SLO VIOLATED]" if result.slo_violated else ""
+            # Periodic probing to keep all provider profiles fresh (shared, 1x)
+            now = time.time()
+            if probing_interval > 0 and (now - last_probe_time) >= probing_interval:
+                print("\n  [Probing] Refreshing all provider profiles...")
+                probe_results = self._run_probing_round()
+                n_success = sum(1 for v in probe_results.values() if v > 0)
+                print(f"  [Probing] {n_success}/{len(probe_results)} providers responded")
+                last_probe_time = now
+                # Force LP update after probing
+                self.router.update_lp(force=True)
+
+            # Progress output (every 10 requests)
+            if completed % 10 == 0:
                 elapsed_min = (time.time() - start_time) / 60
+                summary_parts = []
+                for policy in policies:
+                    r = results[policy]
+                    if r.status == "success":
+                        summary_parts.append(f"{policy}={r.ttft_ms:.0f}ms")
+                    else:
+                        summary_parts.append(f"{policy}=ERR")
                 print(
-                    f"[{completed}/{n_requests}] {policy}: {result.actual_provider} "
-                    f"{status_str}{slo_str} (${self.total_cost:.3f}, {elapsed_min:.1f}min)"
+                    f"[{completed}/{n_requests}] {', '.join(summary_parts)} "
+                    f"(${self.total_cost:.3f}, {elapsed_min:.1f}min)"
                 )
 
-        # Check interleaving balance
+            # Save checkpoint periodically
+            if self.checkpoint_interval > 0 and completed % self.checkpoint_interval == 0:
+                checkpoint = self._create_checkpoint(completed)
+                checkpoint.save(self.checkpoint_path)
+
+        # Save final checkpoint
+        if self.checkpoint_interval > 0:
+            checkpoint = self._create_checkpoint(completed)
+            checkpoint.save(self.checkpoint_path)
+
+        # Summary per policy
         counts = {p: len(self.policies[p].results) for p in policies}
-        total = sum(counts.values())
-        if total > 0:
-            imbalances = [abs(c - total / n_policies) / total for c in counts.values()]
-            max_imbalance = max(imbalances)
-            if max_imbalance > 0.05:
-                print(f"\nWARNING: Interleaving imbalance > 5%: {counts}")
 
         print(f"\n{'='*60}")
-        print(f"Replay complete: {completed} requests")
+        print(
+            f"Replay complete: {completed} requests x {n_policies} policies = {sum(counts.values())} total"
+        )
         print(f"Total cost: ${self.total_cost:.4f}")
         print(f"Duration: {(time.time() - start_time)/60:.1f} min")
         print(f"{'='*60}")
@@ -1526,6 +2147,12 @@ def main():
         type=float,
         default=1800,
         help="Warmup duration in seconds (default: 1800 = 30 min)",
+    )
+    parser.add_argument(
+        "--probing-interval",
+        type=float,
+        default=300,
+        help="Periodic probing interval in seconds (default: 300 = 5 min, 0 to disable)",
     )
     parser.add_argument(
         "--duration",
@@ -1556,7 +2183,7 @@ def main():
         type=str,
         nargs="+",
         default=None,
-        help="Policies to evaluate (default: openrouter_auto, lp_mix, smart_hedge)",
+        help="Policies to evaluate (default: openrouter_auto, lp_mix, smart_hedge, cheapest_fixed, fastest_fixed)",
     )
     parser.add_argument(
         "--skip-warmup",
@@ -1593,6 +2220,35 @@ def main():
         default=None,
         help="Only replay requests within this time window (seconds)",
     )
+    parser.add_argument(
+        "--real-prompts",
+        action="store_true",
+        help="Use real prompts from trace (P1 mode). Requires JSONL trace file with prompt_text field.",
+    )
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=512,
+        help="Maximum output tokens per request when using real prompts (default: 512)",
+    )
+    # Checkpoint arguments
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=100,
+        help="Save checkpoint every N requests (default: 100, 0 to disable)",
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Start fresh, ignoring any existing checkpoint",
+    )
+    parser.add_argument(
+        "--resume-dir",
+        type=str,
+        default=None,
+        help="Resume from existing run directory (use this instead of --output to continue a run)",
+    )
 
     args = parser.parse_args()
 
@@ -1610,11 +2266,17 @@ def main():
     pricing = load_pricing(args.pricing)
     print(f"  Loaded pricing for {len(pricing)} providers")
 
-    # Determine policies
+    # Determine policies (default includes all baselines for ICML evaluation)
     if args.policies:
         policies = tuple(args.policies)
     else:
-        policies = ("openrouter_auto", "lp_mix", "smart_hedge")
+        policies = (
+            "openrouter_auto",  # OpenRouter default (baseline)
+            "lp_mix",  # LP optimal mixing (our method)
+            "smart_hedge",  # LP + hedging (our method)
+            "cheapest_fixed",  # Always cheapest provider (cost baseline)
+            "fastest_fixed",  # Always fastest provider (latency baseline)
+        )
 
     # Create config
     config = EvaluationConfig(
@@ -1623,11 +2285,21 @@ def main():
         warmup_sec=args.warmup,
         duration_sec=args.duration,
         cost_cap_usd=args.cost_cap,
+        probing_interval_sec=args.probing_interval,
     )
 
-    # Create output directory with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(args.output) / f"run_{timestamp}"
+    # Create output directory with timestamp (or use resume-dir)
+    if args.resume_dir:
+        output_dir = Path(args.resume_dir)
+        if not output_dir.exists():
+            print(f"Error: Resume directory not found: {args.resume_dir}")
+            sys.exit(1)
+        print(f"Resuming from: {output_dir}")
+        resume_from_checkpoint = not args.no_resume
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = Path(args.output) / f"run_{timestamp}"
+        resume_from_checkpoint = False  # New run, no checkpoint to resume from
 
     # Trace replay mode
     if args.trace:
@@ -1638,22 +2310,42 @@ def main():
             print(f"Error: Trace file not found at {args.trace}")
             sys.exit(1)
 
-        trace = load_trace_from_csv(
-            args.trace,
-            max_requests=args.max_requests,
-            time_limit_sec=args.time_limit,
-        )
+        # Determine if we should use real prompts (P1 mode)
+        use_real_prompts = args.real_prompts or args.trace.endswith(".jsonl")
+
+        if use_real_prompts:
+            print("  Mode: P1 (real prompts from trace)")
+            trace = load_trace_from_jsonl(
+                args.trace,
+                max_requests=args.max_requests,
+                time_limit_sec=args.time_limit,
+                use_real_prompts=True,
+            )
+        else:
+            print("  Mode: P0 (fixed short prompt, arrival times only)")
+            trace = load_trace_from_csv(
+                args.trace,
+                max_requests=args.max_requests,
+                time_limit_sec=args.time_limit,
+            )
         print(f"  Loaded {len(trace)} requests")
 
         if not trace:
             print("Error: No requests in trace")
             sys.exit(1)
 
+        # Show sample prompt info for P1 mode
+        if use_real_prompts and trace:
+            sample = trace[0]
+            print(f"  Sample prompt tokens: {sample.original_prompt_tokens}")
+            print(f"  Sample max output tokens: {sample.max_tokens}")
+            print(f"  Sample prompt preview: {sample.prompt[:80]}...")
+
         # Create budget config
         budget_config = BudgetConfig(
             max_requests=args.max_requests or len(trace),
             cost_cap_usd=args.cost_cap,
-            max_tokens=config.max_tokens,
+            max_tokens=args.max_output_tokens if use_real_prompts else config.max_tokens,
             policies=policies,
         )
 
@@ -1663,6 +2355,7 @@ def main():
             pricing=pricing,
             output_dir=output_dir,
             budget_config=budget_config,
+            checkpoint_interval=args.checkpoint_interval,
         )
 
         print("\nConfiguration:")
@@ -1671,15 +2364,19 @@ def main():
         print(f"  Policies: {policies}")
         print(f"  Cost cap: ${budget_config.cost_cap_usd}")
         print(f"  Max requests: {budget_config.max_requests}")
+        print(f"  Real prompts (P1 mode): {use_real_prompts}")
+        print(f"  Max output tokens: {budget_config.max_tokens}")
         print(f"  Speedup: {args.speedup}x")
+        print(f"  Checkpoint interval: {args.checkpoint_interval} requests")
+        print(f"  Resume from checkpoint: {resume_from_checkpoint}")
         print(f"  Output: {output_dir}")
 
         if args.dry_run:
             print("\n[DRY RUN] Skipping actual API calls")
             return
 
-        # Run warmup (optional but recommended)
-        if not args.skip_warmup and args.warmup > 0:
+        # Run warmup (optional but recommended) - skip if resuming
+        if not args.skip_warmup and args.warmup > 0 and not resume_from_checkpoint:
             evaluator.warmup(
                 duration_sec=min(args.warmup, 300)
             )  # Cap warmup at 5 min for trace replay
@@ -1689,6 +2386,7 @@ def main():
             trace=trace,
             policies=list(policies),
             speedup=args.speedup,
+            resume=resume_from_checkpoint,
         )
 
     else:
