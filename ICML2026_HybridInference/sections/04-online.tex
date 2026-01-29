@@ -20,6 +20,8 @@ The primal-dual algorithm with threshold $\psi(z)$ achieves a competitive ratio 
 
 The exponential threshold ensures that the opportunity cost of quota grows smoothly from $L$ (when quota is abundant) to $U$ (when quota is nearly exhausted). Early requests with moderate value are accepted; late requests must have high value to justify consuming scarce quota. This logarithmic competitive ratio is known to be optimal for the online knapsack problem.
 
+\textbf{Remark.} The theorem assumes exact request values are known at arrival. In practice, we use predicted values $\hat{v}_t$, so the guarantee applies to the \emph{estimated} value sequence. Actual performance depends on prediction quality; we validate this empirically in Section~\ref{sec:experiments}.
+
 \textbf{Concurrency Shadow Price ($\lambda$).}
 For the concurrency constraint ($S_C$), we define a congestion price $\lambda_t$ based on the current utilization of the concurrency slots. When the system is saturated (queue full or utilization high), $\lambda_t$ increases, admitting only requests with high \textit{value density} (value per unit time).
 \begin{equation}
@@ -37,35 +39,39 @@ We employ a \textbf{Learning-Augmented} approach with two components. First, we 
 \begin{equation}
     \hat{v}_t^{\text{LCB}} = p_{\text{in}} \cdot n_t^{\text{in}} + p_{\text{out}} \cdot \hat{L}^{(10)}_t
 \end{equation}
-This conservative estimate ensures we are ``90\% confident'' that the request is worth at least this much before spending quota on it. The intuition is simple: if even the pessimistic estimate of a request's value exceeds the opportunity cost threshold, we can confidently route it to the subscription.
+This conservative estimate ensures that with high empirical coverage, the request is worth at least this much before spending quota on it. The intuition is simple: if even the pessimistic estimate of a request's value exceeds the opportunity cost threshold, we can confidently route it to the subscription.
+
+\textbf{Duration Estimation.}
+For concurrency-aware routing, we also need to estimate the processing time $\hat{p}_t$. We decompose this as $\hat{p}_t \approx \widehat{\text{TTFT}} + \hat{n}_t^{\text{out}} / \widehat{\text{TPS}}$, where TTFT is time-to-first-token and TPS is decode throughput. To avoid underestimating slot occupancy, we use upper confidence bounds (90th percentile for TTFT and output length, 10th percentile for TPS). Details are in Appendix~\ref{app:duration}.
 
 \subsection{Unified Risk-Aware Routing Algorithm}
 
-We combine the shadow prices and the conservative value estimate into a single unified decision rule. For each incoming request $r_t$, we calculate the net gain of routing to the subscription:
-
-\begin{equation}
-    G_t = \hat{v}_t^{\text{LCB}} - \psi(z_t) - \lambda_t \cdot w_t \cdot \hat{p}_t
-\end{equation}
-
-where $\hat{p}_t$ is the estimated duration and $w_t$ is the concurrency weight (typically 1, but larger for models requiring more GPU memory).
+We combine the shadow prices and the conservative value estimate into a unified decision rule. For each incoming request $r_t$, we calculate the \textbf{net gain} of each routing option separately:
+\begin{align}
+    G_Q &= \hat{v}_t^{\text{LCB}} - \psi(z_t) \label{eq:gain_q} \\
+    G_C &= \hat{v}_t^{\text{LCB}} - \lambda_t \cdot w_t \cdot \hat{p}_t \label{eq:gain_c} \\
+    G_A &= 0 \quad \text{(baseline)} \label{eq:gain_a}
+\end{align}
+where $w_t$ is the concurrency weight (typically 1, but larger for models requiring more GPU memory). The router selects $\arg\max\{G_Q, G_C, G_A\}$, subject to capacity constraints.
 
 \begin{algorithm}[tb]
    \caption{Unified Risk-Aware Routing (LA-PD)}
    \label{alg:lapd}
 \begin{algorithmic}
-   \STATE {\bfseries Input:} Request $r_t$, quota usage $k_t$, system state
-   \STATE {\bfseries Parameters:} Quota $Q$, value bounds $[L, U]$
-   \STATE 1. Predict quantiles $\hat{L}^{(10)}_t \gets \mathcal{M}(r_t)$
-   \STATE 2. Estimate conservative value $\hat{v}^{\text{LCB}}_t$
-   \STATE 3. Get shadow prices $\psi(z_t)$ and $\lambda_t$
-   \STATE 4. Calculate Net Gain $G_t = \hat{v}^{\text{LCB}}_t - \psi(z_t) - \lambda_t \cdot w_t \cdot \hat{p}_t$
-   \IF{$G_t > 0$ \AND Capacity Available}
-       \STATE Route to Subscription ($S_Q$ or $S_C$)
-       \STATE Update usage $k_{t+1} \gets k_t + 1$
+   \STATE {\bfseries Input:} Request $r_t$, quota usage $k_t$, concurrency state
+   \STATE {\bfseries Parameters:} Quota $Q$, concurrency $C$, value bounds $[L, U]$
+   \STATE 1. Predict $\hat{n}_t^{\text{out}} \gets \mathcal{M}(r_t)$; estimate $\hat{v}_t^{\text{LCB}}$, $\hat{p}_t$
+   \STATE 2. Compute shadow prices: $\psi(z_t) \gets L \cdot (U/L)^{k_t/Q}$, $\lambda_t$
+   \STATE 3. Compute net gains: $G_Q$, $G_C$, $G_A$ via Eq.~\eqref{eq:gain_q}--\eqref{eq:gain_a}
+   \STATE 4. Set $G_Q \gets -\infty$ if $k_t \geq Q$; $G_C \gets -\infty$ if incompatible
+   \IF{$G_Q \geq G_C$ \AND $G_Q > 0$}
+       \STATE Route to $S_Q$; update $k_{t+1} \gets k_t + 1$
+   \ELSIF{$G_C > 0$}
+       \STATE Route to $S_C$; update concurrency state
    \ELSE
        \STATE Route to API ($S_A$)
    \ENDIF
 \end{algorithmic}
 \end{algorithm}
 
-This algorithm unifies the economic and physical constraints. When concurrency is not a bottleneck ($\lambda_t \approx 0$), it reduces to the optimal online knapsack policy. When concurrency is tight, it naturally shifts to prioritizing short, high-value jobs.
+This algorithm treats $S_Q$, $S_C$, and $S_A$ as three competing options, each with its own opportunity cost. When concurrency is not a bottleneck ($\lambda_t \approx 0$), the algorithm reduces to the optimal online knapsack policy for $S_Q$. When concurrency is tight, it naturally shifts to prioritizing short, high-value jobs via $S_C$. When both subscriptions are costly, requests spill to API.

@@ -226,24 +226,33 @@ In practice, request values are not known exactly at arrival time (output tokens
 \caption{Learning-Augmented Primal-Dual Routing (LA-PD)}
 \label{alg:app_lapd}
 \begin{algorithmic}[1]
-\STATE \textbf{Input:} Request $r_t$ with features $\mathbf{x}_t$, current quota usage $k_t$
-\STATE \textbf{Parameters:} Quota $Q$, value bounds $[L, U]$, predictor $\mathcal{M}$
+\STATE \textbf{Input:} Request $r_t$ with features $\mathbf{x}_t$, quota usage $k_t$, concurrency state
+\STATE \textbf{Parameters:} Quota $Q$, concurrency $C$, value bounds $[L, U]$, predictor $\mathcal{M}$
 \STATE \textcolor{gray}{// Step 1: Get quantile predictions for output length}
 \STATE $\hat{L}_t^{(10)}, \hat{L}_t^{(50)}, \hat{L}_t^{(90)} \gets \mathcal{M}.\text{predict}(\mathbf{x}_t)$
 \STATE \textcolor{gray}{// Step 2: Compute conservative value estimate (LCB)}
 \STATE $\hat{v}_t^{\text{LCB}} \gets (n_t^{\text{in}} \cdot p^{\text{in}} + \hat{L}_t^{(10)} \cdot p^{\text{out}}) / 1000$
-\STATE \textcolor{gray}{// Step 3: Compute threshold}
-\STATE $z_t \gets k_t / Q$
-\STATE $\theta_t \gets L \cdot (U/L)^{z_t}$
-\STATE \textcolor{gray}{// Step 4: Safeguard for suspicious predictions}
-\IF{$\hat{v}_t^{\text{LCB}} < \epsilon$}
-    \STATE $\hat{v}_t^{\text{LCB}} \gets \text{EMA\_estimate}(r_t)$ \textcolor{gray}{// Fallback}
+\STATE \textcolor{gray}{// Step 3: Estimate processing duration (UCB)}
+\STATE $\hat{p}_t \gets \widehat{\text{TTFT}}^{(90)} + \hat{L}_t^{(90)} / \widehat{\text{TPS}}^{(10)}$
+\STATE \textcolor{gray}{// Step 4: Compute shadow prices}
+\STATE $z_t \gets k_t / Q$; \quad $\psi_t \gets L \cdot (U/L)^{z_t}$
+\STATE $\lambda_t \gets$ CongestionPrice(concurrency state) \textcolor{gray}{// See Eq.~(2) in main text}
+\STATE \textcolor{gray}{// Step 5: Compute net gains for each option}
+\STATE $G_Q \gets \hat{v}_t^{\text{LCB}} - \psi_t$; \quad $G_C \gets \hat{v}_t^{\text{LCB}} - \lambda_t \cdot w_t \cdot \hat{p}_t$; \quad $G_A \gets 0$
+\STATE \textcolor{gray}{// Step 6: Apply capacity constraints}
+\IF{$k_t \geq Q$}
+    \STATE $G_Q \gets -\infty$
 \ENDIF
-\STATE \textcolor{gray}{// Step 5: Risk-aware routing decision}
-\IF{$k_t < Q$ \AND $\hat{v}_t^{\text{LCB}} > \theta_t$}
-    \STATE \textbf{return} Subscription
+\IF{model $m_t$ not supported by $S_C$}
+    \STATE $G_C \gets -\infty$
+\ENDIF
+\STATE \textcolor{gray}{// Step 7: Risk-aware routing decision}
+\IF{$G_Q \geq G_C$ \AND $G_Q > 0$}
+    \STATE \textbf{return} $S_Q$; update $k_{t+1} \gets k_t + 1$
+\ELSIF{$G_C > 0$}
+    \STATE \textbf{return} $S_C$; update concurrency state
 \ELSE
-    \STATE \textbf{return} API
+    \STATE \textbf{return} $S_A$ (API)
 \ENDIF
 \end{algorithmic}
 \end{algorithm}
@@ -320,6 +329,34 @@ The histogram predictor maintains empirical quantiles of output length, bucketed
 \ENDIF
 \end{algorithmic}
 \end{algorithm}
+
+% =============================================================================
+\subsection{Duration Estimation Details}
+\label{app:duration}
+
+For concurrency-aware routing ($S_C$), we need to estimate the processing time $\hat{p}_t$ of each request to compute the occupancy cost $\lambda_t \cdot w_t \cdot \hat{p}_t$. Underestimating duration leads to optimistic slot occupancy assumptions, causing over-admission and queue buildup.
+
+\paragraph{Decomposition.} We decompose the total latency into time-to-first-token (TTFT) and decode time:
+\begin{equation}
+    p_t = \text{TTFT}_t + \frac{n_t^{\text{out}}}{\text{TPS}_t}
+\end{equation}
+where TPS is the decode throughput (tokens per second). Both TTFT and TPS vary with server load, model, and request complexity.
+
+\paragraph{Upper Confidence Bound (UCB) Estimation.} To avoid underestimating slot occupancy, we use conservative (pessimistic) estimates:
+\begin{itemize}
+    \item \textbf{TTFT:} Use the 90th percentile from recent history, $\widehat{\text{TTFT}}^{(90)}$
+    \item \textbf{Output length:} Use the 90th percentile prediction, $\hat{L}_t^{(90)}$
+    \item \textbf{TPS:} Use the 10th percentile from recent history, $\widehat{\text{TPS}}^{(10)}$ (lower TPS = longer decode time)
+\end{itemize}
+
+The UCB duration estimate is:
+\begin{equation}
+    \hat{p}_t^{\text{UCB}} = \widehat{\text{TTFT}}^{(90)} + \frac{\hat{L}_t^{(90)}}{\widehat{\text{TPS}}^{(10)}}
+\end{equation}
+
+\paragraph{Practical Implementation.} We maintain rolling windows (last 100 requests) for TTFT and TPS statistics, stratified by model. For new models with insufficient history, we use conservative defaults (TTFT = 2s, TPS = 20 tokens/s for 70B models).
+
+\paragraph{Calibration Analysis.} On our Enterprise dataset, the UCB estimate achieves 92\% coverage (actual duration $\leq$ estimate in 92\% of cases), compared to 48\% coverage for point estimates. This conservative bias is intentional: it is better to occasionally route to API than to over-commit $S_C$ capacity.
 
 % =============================================================================
 \subsection{Dataset Statistics}
@@ -439,6 +476,26 @@ While our main formulation focuses on cost, latency is a critical constraint. We
 
 \textbf{Soft Deadlines (Hedging).} For online routing, we can employ a hedging strategy: send a request to $S_C$ first, and if it is not completed by time $t_{hedge}$, speculatively send a backup request to $S_A$. The cost function then becomes the expected cost of the combined policy.
 
+\paragraph{Online Latency Evaluation Setup.}
+\label{app:latency_eval_setup}
+
+We evaluate our latency-aware routing on the OpenRouter platform, which provides access to the same model (Llama-3.3-70B-Instruct) across 12+ providers with different latency and cost profiles.
+
+\textbf{Model and Workload.} We use \texttt{meta-llama/llama-3.3-70b-instruct} served via OpenRouter. The workload combines BurstGPT arrival timestamps (realistic request patterns) with ShareGPT prompts (real user queries), replayed over 24 hours.
+
+\textbf{Policies Compared.} We evaluate the following routing strategies:
+\begin{itemize}
+    \item \textbf{OpenRouter Auto}: OpenRouter's default routing (baseline). We do not specify a provider, allowing OpenRouter to select automatically.
+    \item \textbf{Fastest Fixed}: Always route to the fastest provider (Groq) regardless of cost.
+    \item \textbf{Cheapest Fixed}: Always route to the cheapest provider (Parasail) regardless of latency.
+    \item \textbf{LP-Mix}: Our LP-based provider mixing (Section~\ref{sec:latency}) that constructs a cost-latency Pareto-optimal distribution over providers.
+    \item \textbf{Smart Hedge}: LP-Mix as primary routing, with survival-analysis-based hedging (Eq.~\ref{eq:hedge_survival}) that triggers a backup request to the fastest provider when the primary exceeds its P90 latency threshold.
+\end{itemize}
+
+\textbf{Fairness Protocol.} To ensure fair comparison, each trace request is sent to \emph{all} policies simultaneously. This guarantees that all policies experience identical network conditions and provider load for the same request, enabling direct comparison of routing decisions.
+
+\textbf{SLO Definition.} We define the latency SLO as Time-To-First-Token (TTFT) $\le$ 2 seconds. A request violates the SLO if TTFT exceeds 2s or the request fails.
+
 \paragraph{Cancel-Aware Cost Analysis.}
 \label{app:cancel_aware}
 When hedging triggers, both the primary and backup requests are in flight. If we wait for whichever completes first, the naive cost is $c_{\text{primary}} + c_{\text{backup}}$. However, major LLM providers support request cancellation by closing the HTTP connection, which stops token generation and billing.
@@ -452,19 +509,37 @@ where $c_{\text{winner}}$ is the cost of whichever request completes first. With
     C_{\text{no\text{-}cancel}} = (1 - p_{\text{hedge}}) \cdot c_{\text{primary}} + p_{\text{hedge}} \cdot (c_{\text{primary}} + c_{\text{backup}})
 \end{equation}
 
-\textbf{Empirical results.} On our latency benchmark (Llama-3.3-70B, 6,076 requests, SLO = 2s P99):
-\begin{center}
-\begin{tabular}{lcccc}
+\paragraph{24-Hour Evaluation Results.}
+
+We ran a 24-hour online evaluation with 7,299 requests per policy. Table~\ref{tab:latency_full_results} shows the complete results.
+
+\begin{table}[h]
+\centering
+\caption{24-Hour Online Evaluation Results (Llama-3.3-70B-Instruct, SLO = 2s TTFT)}
+\label{tab:latency_full_results}
+\begin{tabular}{lccccc}
 \toprule
-Strategy & P99 (ms) & SLO Viol. & Cost (no-cancel) & Cost (cancel) \\
+Strategy & P50 (ms) & P99 (ms) & SLO Viol. & Cost \\
 \midrule
-OpenRouter Auto & 7,753 & 23.7\% & \$1.49 & -- \\
-Smart Hedge (Ours) & 1,459 & 0.7\% & \$1.06 & \$0.91 \\
+OpenRouter Auto & 820 & 7,828 & 23.8\% & \$1.81 \\
+Fastest Fixed (Groq) & 307 & 1,078 & 2.2\% & \$1.82 \\
+Cheapest Fixed (Parasail) & 564 & 125,156 & 56.2\% & \$0.42 \\
+LP-Mix & 418 & 3,659 & 5.3\% & \$0.98 \\
+Smart Hedge (Ours) & 419 & 1,431 & 0.8\% & \$1.15$^\dagger$ \\
 \bottomrule
 \end{tabular}
-\end{center}
+\vspace{0.5em}
+\raggedright
+\small{$^\dagger$ Cancel-aware cost. Without cancellation: \$1.32. Hedge triggered on 15.6\% of requests.}
+\end{table}
 
-Our smart hedging achieves 5.3$\times$ lower P99 latency and 33$\times$ fewer SLO violations. Without cancellation, cost savings are 29\%; with cancellation, savings increase to 39\%. The hedge rate is 15.7\% (953/6,076 requests), meaning the cancellation benefit is $(c_{\text{primary}} + c_{\text{backup}} - c_{\text{winner}}) \times 0.157 \approx 14\%$ additional savings.
+\textbf{Key findings:}
+\begin{itemize}
+    \item Smart Hedge reduces SLO violations by 31$\times$ (0.8\% vs 23.8\%) and P99 latency by 5.5$\times$ (1.4s vs 7.8s) compared to OpenRouter Auto.
+    \item With cancel-aware cost accounting, Smart Hedge saves 37\% cost (\$1.15 vs \$1.81) while dramatically improving latency.
+    \item LP-Mix alone (without hedging) reduces cost to \$0.98 but has higher SLO violations (5.3\%) due to occasional provider slowdowns.
+    \item The hedge rate of 15.6\% indicates that hedging is triggered selectively, only when the primary provider shows signs of delay.
+\end{itemize}
 
 \textbf{Implementation note.} Not all providers support mid-stream cancellation uniformly. We recommend implementing a timeout-based fallback: if cancellation fails, the backup request runs to completion but its output is discarded.
 

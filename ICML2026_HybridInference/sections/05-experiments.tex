@@ -125,6 +125,49 @@ Optimal & \$532 & 1.00x \\
 \textbf{Key Finding 3: Simple predictors with primal-dual work best.}
 Our PD-EMA algorithm achieves a Competitive Ratio of 1.18x, approaching the theoretical limit. The simple EMA predictor combined with the primal-dual threshold outperforms the more complex learning-augmented approach with quantile regression, demonstrating that responsiveness to distribution shifts matters more than sophisticated uncertainty quantification.
 
+\subsection{Joint Online Optimization (Stage 2)}
+
+We now evaluate online algorithms that jointly optimize daily quota ($S_Q$) and concurrency-limited subscription ($S_C$) on the Enterprise dataset (54K requests over 84 days). Table~\ref{tab:online_stage2} compares baselines and online strategies.
+
+\begin{table}[h]
+\caption{Online Stage 2 Performance (Enterprise, $C=8$)}
+\label{tab:online_stage2}
+\vskip 0.1in
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{lcccc}
+\toprule
+Strategy & Cost (\$) & Savings & CR & Sub. \\
+\midrule
+All-API & 8,567 & -- & 76.5$\times$ & 0\% \\
+$S_Q$-Only & 8,394 & 2\% & 74.9$\times$ & 12\% \\
+$S_C$-Only & 2,718 & 68\% & 24.3$\times$ & 53\% \\
+Greedy & 185 & 98\% & 1.65$\times$ & 98\% \\
+\textbf{PD (Ours)} & \textbf{63} & \textbf{99\%} & \textbf{0.57$\times$} & \textbf{99.7\%} \\
+ILP-Optimal & 112 & 99\% & 1.00$\times$ & 98\% \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\vskip -0.1in
+\end{table}
+
+\textbf{Key Finding: PrimalDual outperforms ILP-Optimal due to finer-grained scheduling.} Our event-driven PrimalDual algorithm achieves a competitive ratio of 0.57$\times$, \textit{surpassing} the ILP-based offline optimal (1.0$\times$). This counterintuitive result occurs because ILP discretizes time into 1-second slots, leading to capacity fragmentation. PrimalDual's continuous-time admission/eviction captures opportunities that ILP's discrete formulation misses. The result highlights that for concurrency-constrained systems, online event-driven algorithms can outperform batch-optimized solutions.
+
+\begin{figure}[ht]
+\vskip 0.1in
+\begin{center}
+\centerline{\includegraphics[width=\columnwidth]{images/online_stage2_combined.png}}
+\caption{Online Stage 2 results. (a) Cost savings relative to All-API baseline. (b) Competitive ratios---PrimalDual achieves the best ratio, even outperforming the ILP-Optimal due to finer-grained scheduling.}
+\label{fig:online_stage2}
+\end{center}
+\vskip -0.2in
+\end{figure}
+
+\textbf{Ablation: Joint optimization is essential.} The $S_Q$-Only baseline saves only 2\% (quota alone is insufficient when request costs vary), while $S_C$-Only saves 68\% (concurrency is powerful but limited by scheduling). Combining both resources via Greedy achieves 98\% savings, and PrimalDual's threshold-based admission further reduces API spillover to just 0.1\%.
+
 \subsection{Ablation Study: Predictor vs Decision Rule}
 
 To disentangle the contributions of the predictor and the decision rule, we conduct a 2$\times$2 ablation study crossing two predictors (EMA vs Histogram) with two decision rules (standard Primal-Dual vs Learning-Augmented P10). Table~\ref{tab:ablation} shows the results.
@@ -172,7 +215,7 @@ Figure~\ref{fig:calibration} reveals a surprising paradox. The histogram predict
 
 \subsection{Latency-Aware Provider Selection}
 
-While the preceding analysis focuses on cost optimization, practical deployments must also satisfy latency Service Level Objectives (SLOs). We now evaluate our latency-aware routing framework using real measurements from OpenRouter, a multi-provider platform serving identical models across 12+ providers.
+While the preceding analysis focuses on cost optimization, practical deployments must also satisfy latency service level objectives (SLOs). We now evaluate our latency-aware routing framework using real measurements from OpenRouter, a multi-provider platform serving identical models across 12+ providers.
 
 \subsubsection{Latency Characterization}
 
@@ -210,8 +253,7 @@ Hyperbolic & 828 & 16,149 & 3.23 & 12 \\
 Given latency profiles, we solve for optimal routing fractions $\pi_j$ that minimize cost while satisfying a P99 SLO constraint $L$:
 \begin{align}
 \min_{\pi} \quad & \sum_j \pi_j c_j \nonumber \\
-\text{s.t.} \quad & \sum_j \pi_j F_j(L) \geq 0.99 \label{eq:slo_constraint} \\
-& \sum_j \pi_j = 1, \quad \pi_j \geq 0 \nonumber
+\text{s.t.} \quad & \sum_j \pi_j F_j(L) \geq 0.99 \label{eq:slo_constraint},\; \sum_j \pi_j = 1, \quad \pi_j \geq 0 \nonumber
 \end{align}
 where $F_j(L)$ is the empirical CDF of provider $j$ at latency $L$. By the simplex property, this LP yields at most 2 non-zero providers.
 
@@ -262,7 +304,7 @@ Table~\ref{tab:hedging} compares hedging strategies. The \textit{Smart (Residual
 
 Finally, we evaluate our complete system against OpenRouter's default routing strategy using live API calls with real billing.
 
-\textbf{Setup.} We replay 150 requests (50 per policy) with interleaved assignment to ensure fair comparison under identical network conditions. Policies compared: (1) \textbf{OpenRouter Auto}: OpenRouter's default provider selection; (2) \textbf{LP-Mix}: Our LP-based optimal routing; (3) \textbf{Smart Hedge}: LP-Mix with survival-based hedging.
+\textbf{Setup.} We replay a 24-hour trace combining BurstGPT arrival timestamps with ShareGPT prompts, with interleaved policy assignment to ensure fair comparison under identical network conditions. Policies compared: (1) \textbf{OpenRouter Auto}: OpenRouter's default provider selection; (2) \textbf{LP-Mix}: Our LP-based optimal routing; (3) \textbf{Smart Hedge}: LP-Mix with percentile-based hedging that triggers backup requests when elapsed time exceeds the primary provider's P90 latency.
 
 \begin{table}[ht]
 \caption{Online Evaluation vs OpenRouter (Llama-3.3-70B)}
@@ -275,9 +317,9 @@ Finally, we evaluate our complete system against OpenRouter's default routing st
 \toprule
 Policy & P50 & P99 & Viol. & Cost \\
 \midrule
-OpenRouter & 1111ms & 4586ms & 22\% & \$10.4 \\
-LP-Mix & 431ms & 1379ms & 0\% & \$9.5 \\
-Smart Hedge & 427ms & 1586ms & 0\% & \$10.9 \\
+OpenRouter Auto & 820ms & 7825ms & 23.8\% & \$1.81 \\
+LP-Mix & 418ms & 3640ms & 5.3\% & \$0.98 \\
+Smart Hedge & 419ms & 1431ms & 0.8\% & \$1.15 \\
 \bottomrule
 \end{tabular}
 \end{sc}
@@ -286,5 +328,5 @@ Smart Hedge & 427ms & 1586ms & 0\% & \$10.9 \\
 \vskip -0.1in
 \end{table}
 
-\textbf{Key Finding 9: Our routing achieves both lower latency and lower cost than OpenRouter.}
-Table~\ref{tab:openrouter_comparison} shows that LP-Mix reduces P99 latency by 70\% (4,586ms $\to$ 1,379ms) while simultaneously reducing cost by 8\% (\$10.4 $\to$ \$9.5 per million requests). OpenRouter's default routing selected slower providers (Crusoe 38\%, Fireworks 22\%) while our LP solver identified Nebius as the Pareto-optimal choice for the given SLO. This demonstrates that intelligent routing based on online latency profiling can outperform production heuristics on both dimensions.
+\textbf{Key Finding 9: Smart hedging achieves 31$\times$ lower SLO violations than OpenRouter.}
+Table~\ref{tab:openrouter_comparison} shows that Smart Hedge reduces SLO violations by 31$\times$ (0.8\% vs 23.8\%) and P99 latency by 5.5$\times$ (1.4s vs 7.8s) while saving 37\% cost (\$1.15 vs \$1.81). Hedging was triggered in 15.6\% of requests, demonstrating that our percentile-based strategy hedges only when necessary. LP-Mix alone achieves 46\% cost savings but has higher tail latency; adding smart hedging trades some cost savings for dramatically better tail latency guarantees.
