@@ -5,7 +5,7 @@ We evaluate our proposed algorithms using real-world request traces to answer th
 
 \subsection{Experimental Setup}
 
-\paragraph{Datasets.} We use four datasets with distinct characteristics, summarized in Table~\ref{tab:datasets}. \textbf{ShareGPT} contains 201K requests from single-turn conversations, representing a standard chatbot workload with moderate output lengths. \textbf{FreeInference} contains 371K requests with a multi-model mix, representing a diverse API gateway workload with high variance in both input and output. \textbf{RedNote} contains 55K requests from RAG-heavy applications with long contexts, representing an enterprise workload with the highest cost variance (coefficient of variation $> 2$). \textbf{BurstGPT} is a large-scale trace with 1.4M requests used specifically for online algorithm evaluation.
+\paragraph{Datasets.} We use three real-world datasets with distinct characteristics, plus one synthetic trace for scalability evaluation, summarized in Table~\ref{tab:datasets}. \textbf{ShareGPT} contains 201K requests from single-turn conversations, representing a standard chatbot workload with moderate output lengths. \textbf{FreeInference} contains 371K requests with a multi-model mix, representing a diverse API gateway workload with high variance in both input and output. \textbf{Enterprise} is an anonymized workload collected from a production coding assistant deployment, exhibiting long contexts and the highest cost variance (coefficient of variation $> 2$). \textbf{BurstGPT} is a synthetic trace combining arrival timestamps from BurstGPT with prompt distributions from ShareGPT, yielding 1.4M requests for online algorithm evaluation at scale.
 
 \begin{table}[h]
 \caption{Dataset Statistics}
@@ -19,7 +19,7 @@ Dataset & Requests & Days & Models & Avg In & Avg Out \\
 \midrule
 ShareGPT & 201K & 7 & 1 & 156 & 423 \\
 FreeInference & 371K & 90 & 12 & 892 & 1,247 \\
-RedNote & 55K & 84 & 8 & 2,341 & 3,892 \\
+Enterprise & 55K & 84 & 8 & 2,341 & 3,892 \\
 BurstGPT & 1.4M & 61 & 1 & 234 & 512 \\
 \bottomrule
 \end{tabular}
@@ -49,7 +49,7 @@ Dataset & Greedy & Optimal & CR \\
 \midrule
 ShareGPT & 17\% & \textbf{35\%} & 1.43x \\
 FreeInference & 63\% & \textbf{82\%} & 1.36x \\
-RedNote & 81\% & \textbf{98\%} & 4.36x \\
+Enterprise & 81\% & \textbf{98\%} & 4.36x \\
 \bottomrule
 \end{tabular}
 \end{sc}
@@ -59,7 +59,7 @@ RedNote & 81\% & \textbf{98\%} & 4.36x \\
 \end{table}
 
 \textbf{Key Finding 1: Naive routing leaves money on the table.}
-While Greedy routing provides some savings, it is significantly suboptimal compared to the Offline Optimal. For the high-variance RedNote dataset, Greedy achieves 81\% savings while Optimal achieves 98\%---a difference that translates to a 4.36x Competitive Ratio (CR). This confirms that \textit{opportunity cost} matters: wasting quota on short requests is expensive.
+While Greedy routing provides some savings, it is significantly suboptimal compared to the Offline Optimal. For the high-variance Enterprise dataset, Greedy achieves 81\% savings while Optimal achieves 98\%---a difference that translates to a 4.36x Competitive Ratio (CR). This confirms that \textit{opportunity cost} matters: wasting quota on short requests is expensive.
 
 \paragraph{Sensitivity Analysis.}
 Figure~\ref{fig:sensitivity} shows how the gap between Greedy and Optimal varies with quota size across two workloads. For ShareGPT (single-model), the gap remains relatively stable as quota increases. However, for FreeInference (multi-model), the gap widens significantly: when quota is small, both strategies are constrained and perform similarly; as quota increases, Optimal can be more selective while Greedy continues to waste slots on low-value requests. The shaded area represents the potential savings from optimal routing that Greedy fails to capture.
@@ -170,25 +170,31 @@ Figure~\ref{fig:calibration} reveals a surprising paradox. The histogram predict
 
 \textbf{Key Finding 5: Better calibration does not imply better routing.} This paradox resolves when we consider the dynamics of online routing. EMA's over-estimation is actually beneficial: it sets a higher bar for routing to subscription, naturally implementing a conservative policy. More importantly, EMA adapts quickly to distribution shifts (common in real workloads), while histogram requires many samples per bin to update. For routing decisions, responsiveness trumps calibration.
 
-\subsection{Extension: Latency-Aware Routing}
+\subsection{Latency-Aware Provider Selection}
 
-While the preceding analysis focuses on cost optimization, practical deployments must also satisfy latency Service Level Objectives (SLOs). We extend our framework to incorporate latency constraints using real measurements from two providers serving GLM-4.6.
+While the preceding analysis focuses on cost optimization, practical deployments must also satisfy latency Service Level Objectives (SLOs). We now evaluate our latency-aware routing framework using real measurements from OpenRouter, a multi-provider platform serving identical models across 12+ providers.
 
-\textbf{Setup.} We collect latency samples from a Local GPU deployment (sglang, $n=157$) and a Subscription service (Chutes, $n=365$). Table~\ref{tab:latency_stats} summarizes the latency distributions.
+\subsubsection{Latency Characterization}
+
+\textbf{Setup.} We collect Time-To-First-Token (TTFT) latency samples from 12 providers serving Llama-3.3-70B-Instruct via OpenRouter over 24 hours, with probing requests sent every 45 seconds per provider ($n \approx 11,000$ samples per provider). Table~\ref{tab:latency_stats} summarizes the latency distributions.
 
 \begin{table}[h]
-\caption{Provider Latency Profiles (GLM-4.6)}
+\caption{Provider Latency Profiles (Llama-3.3-70B, OpenRouter)}
 \label{tab:latency_stats}
 \vskip 0.1in
 \begin{center}
 \begin{small}
 \begin{sc}
-\begin{tabular}{lccccc}
+\begin{tabular}{lcccc}
 \toprule
-Provider & N & P50 & P90 & P99 & Cost \\
+Provider & P50 (ms) & P99 (ms) & CV & Rank \\
 \midrule
-Local GPU & 157 & 5.8s & 22.9s & 52.9s & \$0 \\
-Subscription & 365 & 14.0s & 31.2s & 49.1s & \$0.13/1K \\
+Groq & 382 & 796 & 0.86 & 1 \\
+SambaNova & 378 & 1,405 & 0.60 & 2 \\
+Cloudflare & 475 & 2,168 & 0.73 & 3 \\
+Nebius & 514 & 5,545 & 1.00 & 5 \\
+Fireworks & 754 & 6,999 & 1.04 & 7 \\
+Hyperbolic & 828 & 16,149 & 3.23 & 12 \\
 \bottomrule
 \end{tabular}
 \end{sc}
@@ -197,25 +203,88 @@ Subscription & 365 & 14.0s & 31.2s & 49.1s & \$0.13/1K \\
 \vskip -0.1in
 \end{table}
 
-Interestingly, the Local GPU has better median latency (5.8s vs 14.0s) but worse tail latency (P99: 52.9s vs 49.1s), suggesting it experiences occasional queuing delays under load.
+\textbf{Key Finding 6: Provider latency varies dramatically.} P99 latencies range from 796ms (Groq) to 16,149ms (Hyperbolic)---a 20$\times$ variation. Even providers with similar median latency (e.g., Groq vs SambaNova) differ substantially in tail behavior. The coefficient of variation (CV) ranges from 0.60 to 4.75, indicating high within-provider variance that motivates online profiling rather than static configuration.
 
-\textbf{LP Formulation.} Given a P99 SLO constraint $L$, we solve for the optimal routing fractions $\pi_j$ that minimize cost while ensuring the mixture CDF satisfies the SLO:
+\subsubsection{LP-Based Provider Mixing}
+
+Given latency profiles, we solve for optimal routing fractions $\pi_j$ that minimize cost while satisfying a P99 SLO constraint $L$:
 \begin{align}
 \min_{\pi} \quad & \sum_j \pi_j c_j \nonumber \\
 \text{s.t.} \quad & \sum_j \pi_j F_j(L) \geq 0.99 \label{eq:slo_constraint} \\
 & \sum_j \pi_j = 1, \quad \pi_j \geq 0 \nonumber
 \end{align}
-where $F_j(L)$ is the empirical CDF of provider $j$ at latency $L$. This LP yields the cost-latency Pareto frontier.
+where $F_j(L)$ is the empirical CDF of provider $j$ at latency $L$. By the simplex property, this LP yields at most 2 non-zero providers.
 
 \begin{figure}[ht]
 \vskip 0.1in
 \begin{center}
-\centerline{\includegraphics[width=\columnwidth]{images/latency_pareto.png}}
-\caption{Latency-aware routing for GLM-4.6. (a) Latency CDFs show Local GPU is faster on average but has longer tail. (b) LP routing achieves costs between the single-provider baselines. (c) At tight SLOs ($<$53s), the optimal mix uses 60\% Subscription to meet P99; as SLO relaxes, traffic shifts to free Local GPU.}
+\centerline{\includegraphics[width=\columnwidth]{images/latency_pareto_openrouter.png}}
+\caption{Cost-latency Pareto frontier for Llama-3.3-70B on OpenRouter. (Left) As SLO relaxes from 2s to 10s, optimal cost drops from \$0.0006 to \$0.0002 per request. (Right) Provider mix shifts from expensive fast providers (Groq) to cheaper slower ones (Together, Parasail) as SLO relaxes.}
 \label{fig:latency_pareto}
 \end{center}
 \vskip -0.2in
 \end{figure}
 
-\textbf{Key Finding 6: Provider mixing improves cost-latency tradeoffs.}
-Figure~\ref{fig:latency_pareto} shows the Pareto frontier. At tight SLOs (e.g., 50s P99), the optimal routing uses 61\% Subscription and 39\% Local GPU, achieving a cost of \$0.08/1K requests---lower than Subscription-only (\$0.13/1K) while meeting the latency target. As the SLO relaxes beyond the Local GPU's P99 (53s), traffic shifts entirely to the free Local GPU.
+\textbf{Key Finding 7: LP mixing achieves optimal cost-latency tradeoffs.}
+Figure~\ref{fig:latency_pareto} shows the Pareto frontier. At tight SLOs (2s), the optimal mix uses primarily Groq (fast but expensive). As SLO relaxes to 5s, traffic shifts to cheaper providers like Together and Parasail, reducing cost by 3$\times$ while still meeting the latency target.
+
+\subsubsection{Smart Hedging for Tail Latency}
+
+To provide tail latency guarantees without over-provisioning, we implement a \textit{smart hedging} mechanism. When a request's elapsed time exceeds a threshold where the expected remaining latency plus the fastest provider's expected latency would violate the SLO, we cancel the original request and retry on the fastest available provider.
+
+\begin{table}[h]
+\caption{Hedging Strategy Comparison (SLO = 5s)}
+\label{tab:hedging}
+\vskip 0.1in
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{lccc}
+\toprule
+Strategy & P99 (ms) & Violation & Cost \\
+\midrule
+Never Hedge & 2,107 & 0.6\% & 1.00$\times$ \\
+Smart (Residual) & 1,874 & 0.0\% & 1.03$\times$ \\
+Smart (Survival) & 739 & 0.0\% & 3.02$\times$ \\
+Always Hedge & 523 & 0.0\% & 3.34$\times$ \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\vskip -0.1in
+\end{table}
+
+\textbf{Key Finding 8: Smart hedging eliminates SLO violations with minimal overhead.}
+Table~\ref{tab:hedging} compares hedging strategies. The \textit{Smart (Residual)} strategy achieves zero SLO violations with only 3\% cost overhead by hedging only when necessary. In contrast, \textit{Always Hedge} reduces P99 by 75\% but at 3.3$\times$ cost. The choice depends on application requirements: latency-critical applications may prefer aggressive hedging, while cost-sensitive applications can use residual-based hedging.
+
+\subsubsection{Comparison with OpenRouter Default Routing}
+
+Finally, we evaluate our complete system against OpenRouter's default routing strategy using live API calls with real billing.
+
+\textbf{Setup.} We replay 150 requests (50 per policy) with interleaved assignment to ensure fair comparison under identical network conditions. Policies compared: (1) \textbf{OpenRouter Auto}: OpenRouter's default provider selection; (2) \textbf{LP-Mix}: Our LP-based optimal routing; (3) \textbf{Smart Hedge}: LP-Mix with survival-based hedging.
+
+\begin{table}[ht]
+\caption{Online Evaluation vs OpenRouter (Llama-3.3-70B)}
+\label{tab:openrouter_comparison}
+\vskip 0.1in
+\begin{center}
+\begin{small}
+\begin{sc}
+\begin{tabular}{lcccc}
+\toprule
+Policy & P50 & P99 & Viol. & Cost \\
+\midrule
+OpenRouter & 1111ms & 4586ms & 22\% & \$10.4 \\
+LP-Mix & 431ms & 1379ms & 0\% & \$9.5 \\
+Smart Hedge & 427ms & 1586ms & 0\% & \$10.9 \\
+\bottomrule
+\end{tabular}
+\end{sc}
+\end{small}
+\end{center}
+\vskip -0.1in
+\end{table}
+
+\textbf{Key Finding 9: Our routing achieves both lower latency and lower cost than OpenRouter.}
+Table~\ref{tab:openrouter_comparison} shows that LP-Mix reduces P99 latency by 70\% (4,586ms $\to$ 1,379ms) while simultaneously reducing cost by 8\% (\$10.4 $\to$ \$9.5 per million requests). OpenRouter's default routing selected slower providers (Crusoe 38\%, Fireworks 22\%) while our LP solver identified Nebius as the Pareto-optimal choice for the given SLO. This demonstrates that intelligent routing based on online latency profiling can outperform production heuristics on both dimensions.

@@ -5,6 +5,7 @@
 \usepackage{graphicx}
 \usepackage{subfigure}
 \usepackage{booktabs} % for professional tables
+\usepackage{needspace}
 
 % hyperref makes hyperlinks in the resulting PDF.
 % If your build breaks (sometimes temporarily if a hyperlink spans a page)
@@ -83,7 +84,7 @@
 
 \newcommand*\jason[1]{{\textcolor{orange}{Juncheng: #1}}}
 \newcommand*\murphy[1]{{\textcolor{blue}{Murphy: #1}}}
-
+\newcommand*\yiyan[1]{{\textcolor{teal}{Yiyan: #1}}}
 
 % this must go after the closing bracket ] following \twocolumn[ ...
 
@@ -96,12 +97,18 @@
 
 \input{sections/00-abstract}
 \input{sections/01-introduction}
-\input{sections/02-problem}
+\input{sections/new2-provider}
+% \input{sections/02-problem}  % merged into new2-provider
 \input{sections/03-offline}
 \input{sections/04-online}
+\input{sections/04b-latency}
 \input{sections/05-experiments}
 \input{sections/06-related}
 \input{sections/07-conclusion}
+
+
+\section*{Impact Statement}
+This paper presents work whose goal is to advance the field of machine learning. There are many potential societal consequences of our work, none of which we believe need to be highlighted here.
 
 % ============================================================================
 % BIBLIOGRAPHY

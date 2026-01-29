@@ -1,15 +1,15 @@
 \section{Optimal Offline Analysis}
 \label{sec:offline}
 
-To understand the theoretical limits of cost savings, we analyze the offline setting where the entire request sequence $\mathcal{R} = \{r_1, \dots, r_n\}$ is known in advance. We present two stages of analysis: Stage 1 considers only the economic quota constraint (a relaxation), while Stage 2 incorporates the physical concurrency constraint (the exact problem).\jason{I thought stage 1 considers two cat, but stage 2 is for all three categories}
+To understand the theoretical limits of cost savings, we analyze the offline setting where the entire request sequence $\mathcal{R} = \{r_1, \dots, r_n\}$ is known in advance. We present two stages: Stage 1 considers routing between $S_Q$ and $S_A$ (quota-only), while Stage 2 incorporates the concurrency-limited subscription $S_C$, routing among all three provider types.
 
-\subsection{Stage 1: The Economic Lower Bound (Quota-Only)}
+\subsection{Stage 1: Quota-Only Routing ($S_Q + S_A$)}
 \label{sec:offline-stage1}
 
-We first consider a relaxed problem where only the fixed-window quota constraint exists (i.e., $C \to \infty$). This corresponds to the \textit{Economic Lower Bound}, as it ignores physical concurrency limitations.
+We first consider a simplified problem with only the quota subscription $S_Q$ and the pay-per-token API $S_A$. This provides an \textit{Economic Lower Bound}, as it ignores the concurrency-limited resource.
 
 \textbf{Problem Formulation.}
-Let $x_i^Q \in \{0,1\}$ be the decision to route request $i$ to the subscription $S_Q$. The objective is to maximize the total avoided API cost (savings):
+Let $x_i^Q \in \{0,1\}$ indicate whether request $i$ is routed to $S_Q$. The objective is to maximize total avoided API cost:
 \begin{equation}
     \max \sum_{i \in \mathcal{R}} x_i^Q \cdot c_i^{\text{API}}
 \end{equation}
@@ -19,25 +19,23 @@ subject to the quota constraint for each window $k$:
 \end{equation}
 
 \textbf{Optimal Solution.}
-Since each request consumes exactly one unit of quota, this problem decomposes into independent Knapsack problems (one per window) where all item weights are 1. The optimal strategy is simply to route the $Q_{\text{win}}$ requests with the highest API costs ($c_i^{\text{API}}$) to the subscription in each window.
+Since each request consumes exactly one unit of quota, this problem decomposes into independent selection problems (one per window) where all item weights are 1. The optimal strategy is to route the $Q_{\text{win}}$ requests with the highest API costs to $S_Q$ in each window.
 
 \begin{theorem}
 For the Quota-Only problem, the Greedy-by-Value strategy is optimal and can be computed in $\mathcal{O}(n \log n)$ time.
 \end{theorem}
 
-This oracle provides an optimistic lower bound on the API cost. Any valid solution to the full problem (Stage 2) must have a cost at least this high.
-
-\subsection{Stage 2: The Physical Lower Bound (Quota + Concurrency)}
+\subsection{Stage 2: Full Routing ($S_Q + S_C + S_A$)}
 \label{sec:offline-stage2}
 
-When we reintroduce the concurrency constraint $C$, the problem becomes NP-hard. It couples the knapsack-like quota constraint with a parallel machine scheduling problem.
+When we add the concurrency-limited subscription $S_C$, requests can be routed to any of the three providers. The problem becomes NP-hard, coupling quota allocation with parallel machine scheduling.
 
 \textbf{ILP Formulation.}
-We formulate this as a time-indexed Integer Linear Program (ILP). We discretize time into slots $t \in \{0, \dots, T\}$ of width $\Delta$. Let $z_{i,t} \in \{0,1\}$ be a binary variable indicating if request $i$ starts processing at time slot $t$ on $S_C$.
+We formulate this as a time-indexed Integer Linear Program (ILP). We discretize time into slots $t \in \{0, \dots, T\}$ of width $\Delta$. Let $\alpha_i$ and $\beta_i$ denote the earliest and latest feasible start slots for request $i$, and let $\hat{p}_i = \lceil p_i / \Delta \rceil$ be its processing time in slots. Define $z_{i,t} \in \{0,1\}$ to indicate if request $i$ starts on $S_C$ at slot $t$.
 
 The objective is to minimize total API cost:
 \begin{equation}
-    \min \sum_{i \in \mathcal{R}} x_i^A c_i^{\text{API}}
+    \min \sum_{i \in \mathcal{R}} x_i^A \cdot c_i^{\text{API}}
 \end{equation}
 
 Subject to:
@@ -48,6 +46,6 @@ Subject to:
     & \sum_{i \in \mathcal{R}} \sum_{\tau=\max(\alpha_i, t-\hat{p}_i+1)}^{\min(\beta_i, t)} z_{i,\tau} \le C, \quad \forall t \label{eq:concurrency}
 \end{align}
 
-Constraint (\ref{eq:assign}) ensures each request is served. Constraint (\ref{eq:quota}) enforces the quota limit. Constraint (\ref{eq:consistency}) links the routing decision $x_i^C$ to the scheduling variables $z_{i,t}$. Constraint (\ref{eq:concurrency}) enforces the instantaneous concurrency limit $C$.
+Constraint~(\ref{eq:assign}) ensures each request is routed to exactly one provider. Constraint~(\ref{eq:quota}) enforces the quota limit per window. Constraint~(\ref{eq:consistency}) links routing decisions to scheduling variables. Constraint~(\ref{eq:concurrency}) enforces the instantaneous concurrency limit. Full details including deadline handling are in Appendix~\ref{app:stage2_ilp}.
 
-This ILP provides the true \textit{Physical Lower Bound} for the system. The gap between Stage 1 and Stage 2 costs represents the \textit{Cost of Concurrency}---the economic efficiency lost due to physical resource contention.
+This ILP provides the \textit{Physical Lower Bound}. The gap between Stage 1 and Stage 2 costs quantifies the \textit{Cost of Concurrency}---efficiency lost due to physical resource contention when $S_C$ cannot absorb all high-value requests.

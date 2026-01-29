@@ -193,63 +193,52 @@ start immediately upon arrival.
 \subsection{Primal-Dual Algorithm Analysis}
 \label{app:primal_dual}
 
-\paragraph{Threshold Function.}
+\textbf{Threshold Function.}
 The shadow price (threshold) function for the quota constraint is:
 \[
 \psi(z) = L \cdot \left(\frac{U}{L}\right)^z
 \]
-where:
-\begin{itemize}
-    \item $z = k/Q$ is the fraction of quota consumed
-    \item $L$ is the lower bound on request values (e.g., 5th percentile)
-    \item $U$ is the upper bound on request values (e.g., 95th percentile)
-\end{itemize}
+where $z = k/Q$ is the fraction of quota consumed, $L$ is the lower bound on request values (e.g., 5th percentile), and $U$ is the upper bound on request values (e.g., 95th percentile).
 
-\paragraph{Intuition.} The threshold starts at $L$ (low bar when quota is abundant) and grows exponentially to $U$ as quota depletes. This ensures:
-\begin{itemize}
-    \item Early requests with moderate value are accepted
-    \item Late requests must have high value to justify consuming scarce quota
-\end{itemize}
+\textbf{Intuition.} The threshold starts at $L$ (low bar when quota is abundant) and grows exponentially to $U$ as quota depletes. This ensures that early requests with moderate value are accepted, while late requests must have high value to justify consuming scarce quota.
 
-\paragraph{Competitive Ratio.}
+\textbf{Competitive Ratio.}
+\begin{samepage}
 \begin{theorem}
 The primal-dual algorithm achieves a competitive ratio of $O(\ln(U/L))$ for the online knapsack problem with known values.
 \end{theorem}
-
 \begin{proof}[Proof Sketch]
 The proof follows from the online primal-dual framework. The threshold function $\psi(z)$ corresponds to the dual variable for the capacity constraint. The exponential form ensures that the total dual cost grows proportionally to the primal objective, yielding the logarithmic competitive ratio.
 \end{proof}
+\end{samepage}
 
-\paragraph{Practical Considerations.}
+\textbf{Practical Considerations.}
 In practice, request values are not known exactly at arrival time (output tokens are unknown). We use EMA-based estimates, which introduces prediction error. The competitive ratio guarantee holds for the estimated values; actual performance depends on prediction quality.
 
 % =============================================================================
+\Needspace{24\baselineskip}
 \subsection{Learning-Augmented Algorithm (LA-PD)}
 \label{app:lapd}
 
-\paragraph{Algorithm Pseudocode.}
+\noindent\textbf{Algorithm Pseudocode.} Algorithm~\ref{alg:app_lapd} provides the pseudocode for the learning-augmented primal-dual (LA-PD) rule.
 
 \begin{algorithm}[H]
 \caption{Learning-Augmented Primal-Dual Routing (LA-PD)}
+\label{alg:app_lapd}
 \begin{algorithmic}[1]
 \STATE \textbf{Input:} Request $r_t$ with features $\mathbf{x}_t$, current quota usage $k_t$
 \STATE \textbf{Parameters:} Quota $Q$, value bounds $[L, U]$, predictor $\mathcal{M}$
-\STATE
 \STATE \textcolor{gray}{// Step 1: Get quantile predictions for output length}
 \STATE $\hat{L}_t^{(10)}, \hat{L}_t^{(50)}, \hat{L}_t^{(90)} \gets \mathcal{M}.\text{predict}(\mathbf{x}_t)$
-\STATE
 \STATE \textcolor{gray}{// Step 2: Compute conservative value estimate (LCB)}
 \STATE $\hat{v}_t^{\text{LCB}} \gets (n_t^{\text{in}} \cdot p^{\text{in}} + \hat{L}_t^{(10)} \cdot p^{\text{out}}) / 1000$
-\STATE
 \STATE \textcolor{gray}{// Step 3: Compute threshold}
 \STATE $z_t \gets k_t / Q$
 \STATE $\theta_t \gets L \cdot (U/L)^{z_t}$
-\STATE
 \STATE \textcolor{gray}{// Step 4: Safeguard for suspicious predictions}
 \IF{$\hat{v}_t^{\text{LCB}} < \epsilon$}
     \STATE $\hat{v}_t^{\text{LCB}} \gets \text{EMA\_estimate}(r_t)$ \textcolor{gray}{// Fallback}
 \ENDIF
-\STATE
 \STATE \textcolor{gray}{// Step 5: Risk-aware routing decision}
 \IF{$k_t < Q$ \AND $\hat{v}_t^{\text{LCB}} > \theta_t$}
     \STATE \textbf{return} Subscription
@@ -291,38 +280,38 @@ The histogram predictor maintains empirical quantiles of output length, bucketed
 \textbf{Pros:} Provides calibrated quantile estimates, captures input-output correlation.\\
 \textbf{Cons:} Requires sufficient samples per bin, may lag during distribution shift.
 
-\paragraph{EMA Predictor Pseudocode.}
+\Needspace{18\baselineskip}
+\noindent\textbf{EMA Predictor Pseudocode.} Algorithm~\ref{alg:app_ema_predictor} summarizes the EMA baseline used in our experiments.
 
 \begin{algorithm}[H]
 \caption{Exponential Moving Average (EMA) Predictor}
+\label{alg:app_ema_predictor}
 \begin{algorithmic}
 \STATE \textbf{Initialize:} $\hat{L} \gets L_{\text{default}}$ (e.g., 500 tokens)
 \STATE \textbf{Parameter:} $\alpha = 0.1$ (smoothing factor)
-\STATE
 \STATE \textbf{function} Predict($r_t$):
 \STATE \quad \textbf{return} $\hat{L}$
-\STATE
 \STATE \textbf{function} Update($r_t$, $L_t^{\text{actual}}$):
 \STATE \quad $\hat{L} \gets \alpha \cdot L_t^{\text{actual}} + (1 - \alpha) \cdot \hat{L}$
 \end{algorithmic}
 \end{algorithm}
 
-\paragraph{Histogram Predictor Pseudocode.}
+\Needspace{22\baselineskip}
+\noindent\textbf{Histogram Predictor Pseudocode.} Algorithm~\ref{alg:app_hist_predictor} summarizes the histogram-based quantile predictor baseline.
 
 \begin{algorithm}[H]
 \caption{Histogram-based Quantile Predictor}
+\label{alg:app_hist_predictor}
 \begin{algorithmic}
 \STATE \textbf{Initialize:} Bins $\mathcal{B} = \{[0, 100), [100, 500), [500, 2000), [2000, \infty)\}$
 \STATE \textbf{Initialize:} For each bin $b$, history $H_b \gets []$ (max size 1000)
 \STATE \textbf{Parameter:} Quantile $\tau$ (e.g., 0.10 for P10)
-\STATE
 \STATE \textbf{function} Predict($r_t$):
 \STATE \quad $b \gets \text{GetBin}(n_t^{\text{in}})$
 \IF{$|H_b| < 10$}
     \STATE \quad \textbf{return} $L_{\text{default}}$
 \ENDIF
 \STATE \quad Sort $H_b$ and \textbf{return} $\tau$-th percentile
-\STATE
 \STATE \textbf{function} Update($r_t$, $L_t^{\text{actual}}$):
 \STATE \quad $b \gets \text{GetBin}(n_t^{\text{in}})$
 \STATE \quad Append $L_t^{\text{actual}}$ to $H_b$
@@ -346,7 +335,7 @@ Dataset & Requests & Days & Models & Avg In & Avg Out \\
 \midrule
 ShareGPT & 201,318 & 7 & 1 & 156 & 423 \\
 FreeInference & 371,214 & 90 & 12 & 892 & 1,247 \\
-RedNote & 54,599 & 84 & 8 & 2,341 & 3,892 \\
+Enterprise & 54,599 & 84 & 8 & 2,341 & 3,892 \\
 BurstGPT & 1,423,847 & 61 & 1 & 234 & 512 \\
 \bottomrule
 \end{tabular}
@@ -357,7 +346,7 @@ BurstGPT & 1,423,847 & 61 & 1 & 234 & 512 \\
 \begin{itemize}
     \item \textbf{ShareGPT:} Standard chatbot workload with moderate output lengths.
     \item \textbf{FreeInference:} Diverse API gateway with multi-model mix. High variance in both input and output.
-    \item \textbf{RedNote:} Enterprise RAG workload with long contexts. Highest cost variance (CV > 2).
+    \item \textbf{Enterprise:} Anonymized workload from a coding assistant deployment with long contexts. Highest cost variance (CV > 2).
     \item \textbf{BurstGPT:} Large-scale synthetic trace for online algorithm evaluation.
 \end{itemize}
 
@@ -449,6 +438,108 @@ While our main formulation focuses on cost, latency is a critical constraint. We
 \textbf{Hard Deadlines.} In Stage 2 ILP, we enforce $s_i + p_i \le d_i$. If a request cannot be scheduled on $S_C$ by its deadline, it must be routed to $S_A$ (assuming $S_A$ meets the SLO).
 
 \textbf{Soft Deadlines (Hedging).} For online routing, we can employ a hedging strategy: send a request to $S_C$ first, and if it is not completed by time $t_{hedge}$, speculatively send a backup request to $S_A$. The cost function then becomes the expected cost of the combined policy.
+
+\paragraph{Cancel-Aware Cost Analysis.}
+\label{app:cancel_aware}
+When hedging triggers, both the primary and backup requests are in flight. If we wait for whichever completes first, the naive cost is $c_{\text{primary}} + c_{\text{backup}}$. However, major LLM providers support request cancellation by closing the HTTP connection, which stops token generation and billing.
+
+\textbf{Cancel-aware cost model.} When the first response arrives, we cancel the other request. Let $p_{\text{hedge}}$ be the hedge rate (fraction of requests that trigger hedging). The cancel-aware cost is:
+\begin{equation}
+    C_{\text{cancel}} = (1 - p_{\text{hedge}}) \cdot c_{\text{primary}} + p_{\text{hedge}} \cdot c_{\text{winner}}
+\end{equation}
+where $c_{\text{winner}}$ is the cost of whichever request completes first. Without cancellation:
+\begin{equation}
+    C_{\text{no\text{-}cancel}} = (1 - p_{\text{hedge}}) \cdot c_{\text{primary}} + p_{\text{hedge}} \cdot (c_{\text{primary}} + c_{\text{backup}})
+\end{equation}
+
+\textbf{Empirical results.} On our latency benchmark (Llama-3.3-70B, 6,076 requests, SLO = 2s P99):
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+Strategy & P99 (ms) & SLO Viol. & Cost (no-cancel) & Cost (cancel) \\
+\midrule
+OpenRouter Auto & 7,753 & 23.7\% & \$1.49 & -- \\
+Smart Hedge (Ours) & 1,459 & 0.7\% & \$1.06 & \$0.91 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Our smart hedging achieves 5.3$\times$ lower P99 latency and 33$\times$ fewer SLO violations. Without cancellation, cost savings are 29\%; with cancellation, savings increase to 39\%. The hedge rate is 15.7\% (953/6,076 requests), meaning the cancellation benefit is $(c_{\text{primary}} + c_{\text{backup}} - c_{\text{winner}}) \times 0.157 \approx 14\%$ additional savings.
+
+\textbf{Implementation note.} Not all providers support mid-stream cancellation uniformly. We recommend implementing a timeout-based fallback: if cancellation fails, the backup request runs to completion but its output is discarded.
+
+\paragraph{Proof of Proposition~\ref{prop:lp_sparsity}.}
+\label{app:lp_sparsity_proof}
+We provide a short proof of the sparsity claim in Section~\ref{sec:latency}.
+\begin{proof}
+Consider the linear program~\eqref{eq:lp_obj}--\eqref{eq:lp_slo}. Introduce a slack variable $s \ge 0$ to rewrite the SLO constraint as an equality:
+\[
+\sum_{j \in \mathcal{P}} \pi_j F_j(L) - s = 1 - \alpha.
+\]
+Together with $\sum_{j \in \mathcal{P}} \pi_j = 1$, the problem has two equality constraints in the variables $(\pi_1, \ldots, \pi_n, s)$, plus nonnegativity constraints.
+
+Any extreme point (basic feasible solution) therefore has at most two basic variables. If $s > 0$ (the SLO constraint is slack), then at most one $\pi_j$ can be positive, yielding a single-provider solution. Otherwise $s = 0$ and at most two $\pi_j$ can be positive. In all cases, the optimal solution can be chosen to have at most two non-zero components.
+\end{proof}
+
+\paragraph{Alternative: Residual Life Decision Rule.}
+An alternative to the survival-based hedging rule~\eqref{eq:hedge_survival} is based on expected residual life. Given elapsed time $t$, we compute:
+\[
+\mathbb{E}[\text{Remaining} \mid T > t] = \frac{\int_t^\infty (s - t) f(s) ds}{1 - F(t)}
+\]
+and hedge when:
+\[
+t + \mathbb{E}[\text{Remaining} \mid T > t] + \delta + \mathbb{E}[T_{\text{backup}}] > L_{\text{SLO}}
+\]
+This rule hedges when the expected completion time exceeds the SLO. In practice, the survival-based rule~\eqref{eq:hedge_survival} performs slightly better as it directly optimizes violation probability rather than expected latency.
+
+\paragraph{Hedging Strategy Comparison.}
+Table~\ref{tab:hedging_strategies} compares different hedging strategies:
+\begin{table}[h]
+\caption{Hedging Strategy Comparison}
+\label{tab:hedging_strategies}
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Strategy & Cost Overhead & P99 Reduction & Description \\
+\midrule
+Never & 1.0$\times$ & 0\% & LP-mix only \\
+Always & 2.0$\times$ & Optimal & Send two requests always \\
+Fixed-$\alpha$ & 1.2--1.5$\times$ & Good & Hedge at $t = \alpha \cdot L_{\text{SLO}}$ \\
+Smart (Ours) & 1.1--1.3$\times$ & Near-optimal & Hedge via~\eqref{eq:hedge_survival} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\paragraph{Pre-filtering for Robustness.}
+Before solving the LP, we filter out clearly unusable providers:
+\begin{enumerate}
+    \item Error rate $> 5\%$ in the recent window (clearly broken)
+    \item $F_j(L_{\min}) < 80\%$ where $L_{\min} = 1$s (cannot meet basic SLO)
+\end{enumerate}
+This prevents the LP from routing to unreliable providers even if they are cheap.
+
+\paragraph{LP Relaxation Fallback.}
+If the LP is infeasible (no provider mix achieves the target CDF), we progressively relax the SLO:
+\begin{enumerate}
+    \item Try $1.2 \times L_{\text{SLO}}$
+    \item Try $1.5 \times L_{\text{SLO}}$
+    \item Try $2.0 \times L_{\text{SLO}}$
+    \item Best-effort: select the provider with highest $F_j(L_{\text{SLO}})$
+\end{enumerate}
+
+\paragraph{Smooth Weighted Round-Robin (SWRR).}
+The LP outputs routing probabilities $\pi^*$, but we need to convert these to actual routing decisions. Rather than sampling randomly (which has high short-term variance), we use SWRR:
+\begin{algorithmic}
+\STATE Initialize: $\text{cw}[j] \gets 0$ for all $j$
+\FOR{each request}
+    \STATE $\text{cw}[j] \gets \text{cw}[j] + \pi_j$ for all $j$
+    \STATE Select $j^* = \arg\max_j \text{cw}[j]$
+    \STATE $\text{cw}[j^*] \gets \text{cw}[j^*] - 1$
+    \STATE Route to $j^*$
+\ENDFOR
+\end{algorithmic}
+SWRR produces deterministic interleaving (e.g., $\pi = [0.7, 0.3]$ yields ``AABABAA...'' rather than random bursts), reducing short-term latency variance.
 
 % =============================================================================
 \subsection{Hyperparameter Sensitivity Analysis}
@@ -694,7 +785,7 @@ Overall & 371,214 & \$0.31 & 63\% & 82\% \\
 \textbf{Finding:} The gap between Greedy and Optimal is larger for expensive models (GPT-4: 18\% gap) than cheap models (Mistral-7B: 19\% gap). This is because the opportunity cost of wasting quota is higher when the avoided API cost is large.
 
 \paragraph{Output Length Distribution.}
-Table~\ref{tab:output_stats} shows the output length statistics for each dataset, explaining why RedNote has the highest cost variance.
+Table~\ref{tab:output_stats} shows the output length statistics for each dataset, explaining why Enterprise has the highest cost variance.
 
 \begin{table}[h]
 \caption{Output Length Statistics by Dataset}
@@ -706,7 +797,7 @@ Dataset & P10 & P50 & P90 & Mean & CV \\
 \midrule
 ShareGPT & 45 & 312 & 1,024 & 423 & 1.2 \\
 FreeInference & 89 & 756 & 3,521 & 1,247 & 1.8 \\
-RedNote & 234 & 2,145 & 12,456 & 3,892 & 2.4 \\
+Enterprise & 234 & 2,145 & 12,456 & 3,892 & 2.4 \\
 BurstGPT & 67 & 389 & 1,234 & 512 & 1.1 \\
 \bottomrule
 \end{tabular}

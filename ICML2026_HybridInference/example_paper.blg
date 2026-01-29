@@ -1,0 +1,54 @@
+This is BibTeX, Version 0.99d (TeX Live 2023/Debian)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: example_paper.aux
+The style file: icml2025.bst
+Database file #1: example_paper.bib
+Warning--I didn't find a database entry for "anonymous"
+Warning--I didn't find a database entry for "Samuel59"
+Warning--I didn't find a database entry for "kearns89"
+Warning--I didn't find a database entry for "mitchell80"
+Warning--I didn't find a database entry for "MachineLearningI"
+Warning--I didn't find a database entry for "Newell81"
+Warning--I didn't find a database entry for "DudaHart2nd"
+You've used 1 entry,
+            2773 wiz_defined-function locations,
+            612 strings with 5138 characters,
+and the built_in function-call counts, 615 in all, are:
+= -- 61
+> -- 14
+< -- 2
++ -- 5
+- -- 4
+* -- 36
+:= -- 89
+add.period$ -- 4
+call.type$ -- 1
+change.case$ -- 4
+chr.to.int$ -- 1
+cite$ -- 2
+duplicate$ -- 34
+empty$ -- 56
+format.name$ -- 5
+if$ -- 137
+int.to.chr$ -- 1
+int.to.str$ -- 1
+missing$ -- 1
+newline$ -- 13
+num.names$ -- 6
+pop$ -- 11
+preamble$ -- 1
+purify$ -- 3
+quote$ -- 0
+skip$ -- 28
+stack$ -- 0
+substring$ -- 42
+swap$ -- 12
+text.length$ -- 1
+text.prefix$ -- 0
+top$ -- 0
+type$ -- 11
+warning$ -- 0
+while$ -- 7
+width$ -- 0
+write$ -- 22
+(There were 7 warnings)
