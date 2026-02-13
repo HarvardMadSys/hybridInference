@@ -1,7 +1,6 @@
 \newpage
 \appendix
 \onecolumn
-\raggedbottom
 \section{Appendix}
 
 % =============================================================================
@@ -846,76 +845,8 @@ Enterprise & 81\% & \textbf{98\%} & 4.36x \\
 \end{center}
 \end{table}
 
-\paragraph{Per-Day Breakdown (ShareGPT).}
-Table~\ref{tab:perday_sharegpt} shows daily results for the first 7 days of ShareGPT.
-
-\begin{table}[h]
-\caption{Per-Day Results on ShareGPT (Quota $Q=5000$)}
-\label{tab:perday_sharegpt}
-\begin{center}
-\begin{tabular}{ccccccc}
-\toprule
-Day & Requests & Greedy & Optimal & PD-EMA & CR (Greedy) & CR (PD) \\
-\midrule
-1 & 6,823 & \$42.3 & \$38.1 & \$39.2 & 1.11 & 1.03 \\
-2 & 7,156 & \$45.8 & \$40.2 & \$41.5 & 1.14 & 1.03 \\
-3 & 6,542 & \$39.7 & \$35.8 & \$36.9 & 1.11 & 1.03 \\
-4 & 7,891 & \$51.2 & \$44.3 & \$46.1 & 1.16 & 1.04 \\
-5 & 6,234 & \$37.5 & \$33.9 & \$35.0 & 1.11 & 1.03 \\
-6 & 5,987 & \$35.2 & \$32.1 & \$33.0 & 1.10 & 1.03 \\
-7 & 7,445 & \$48.1 & \$42.0 & \$43.5 & 1.15 & 1.04 \\
-\midrule
-Avg & 6,868 & \$42.8 & \$38.1 & \$39.3 & 1.12 & 1.03 \\
-\bottomrule
-\end{tabular}
-\end{center}
-\end{table}
-
-\paragraph{Multi-Model Results (FreeInference).}
-FreeInference contains requests for 12 different models with varying API costs.
-
-\begin{table}[h]
-\caption{Per-Model Breakdown on FreeInference}
-\label{tab:permodel_freeinference}
-\begin{center}
-\begin{tabular}{lcccc}
-\toprule
-Model & Requests & Avg Cost & Greedy Savings & Optimal Savings \\
-\midrule
-GPT-4 & 12,345 & \$0.85 & 71\% & 89\% \\
-Claude-3 & 8,721 & \$0.62 & 68\% & 85\% \\
-Llama-70B & 45,632 & \$0.23 & 58\% & 76\% \\
-Mistral-7B & 89,234 & \$0.08 & 42\% & 61\% \\
-\midrule
-Overall & 371,214 & \$0.31 & 63\% & 82\% \\
-\bottomrule
-\end{tabular}
-\end{center}
-\end{table}
-
-\textbf{Finding:} The gap between Greedy and Optimal is consistent across models (18--19\%), but the absolute savings are larger for expensive models. GPT-4 requests save \$0.85 $\times$ 89\% = \$0.76 per request under optimal routing, compared to \$0.08 $\times$ 61\% = \$0.05 for Mistral-7B.
-
-\paragraph{Output Length Distribution.}
-Table~\ref{tab:output_stats} shows the output length statistics for each dataset, explaining why Enterprise has the highest cost variance.
-
-\begin{table}[h]
-\caption{Output Length Statistics by Dataset}
-\label{tab:output_stats}
-\begin{center}
-\begin{tabular}{lccccc}
-\toprule
-Dataset & P10 & P50 & P90 & Mean & CV \\
-\midrule
-ShareGPT & 45 & 312 & 1,024 & 423 & 1.2 \\
-FreeInference & 89 & 756 & 3,521 & 1,247 & 1.8 \\
-Enterprise & 234 & 2,145 & 12,456 & 3,892 & 2.4 \\
-BurstGPT & 67 & 389 & 1,234 & 512 & 1.1 \\
-\bottomrule
-\end{tabular}
-\end{center}
-\end{table}
-
-CV = Coefficient of Variation (std/mean). Higher CV indicates more opportunity for optimal routing to improve over greedy.
+\paragraph{Additional Analysis.}
+Per-day results on ShareGPT show consistent performance: PD-EMA achieves CR 1.03--1.04 across all 7 days, while Greedy varies between 1.10--1.16. For multi-model workloads (FreeInference), the Greedy-Optimal gap is consistent across models (18--19\%), but absolute savings are larger for expensive models (GPT-4: \$0.76/req vs Mistral-7B: \$0.05/req). Workloads with higher output length variance (CV) show larger optimization potential: Enterprise (CV=2.4) has the largest gap, while ShareGPT (CV=1.2) has the smallest.
 
 \paragraph{Failure Case Analysis.}
 We identify scenarios where our algorithm underperforms:
