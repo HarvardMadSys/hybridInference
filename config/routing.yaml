@@ -1,6 +1,6 @@
 routing_strategy: fixed
 routing_parameter:
-  local_fraction: 0.6
+  local_fraction: 1
 timeout: 2
 health_check: 30
 logging:
@@ -22,6 +22,9 @@ remote_deployment:
   - endpoint: https://api.minimax.io/v1
     models:
       - minimax-m2
+      - minimax-m2.5
   - endpoint: https://api.z.ai/api/coding/paas/v4/
     models:
-      - glm-4.6
+      - glm-4.7
+      - glm-4.7-flash
+      - glm-5
