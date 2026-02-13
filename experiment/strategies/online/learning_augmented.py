@@ -479,8 +479,7 @@ class LearningAugmentedUnifiedStrategy(OnlineStrategy):
         }
 
         logger.info(
-            f"LearningAugmentedUnifiedStrategy initialized: "
-            f"Q={daily_quota}, C={concurrency_limit}"
+            f"LearningAugmentedUnifiedStrategy initialized: Q={daily_quota}, C={concurrency_limit}"
         )
 
     @property

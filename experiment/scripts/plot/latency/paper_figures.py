@@ -179,7 +179,7 @@ def main():
         print(f"  P50 = {np.percentile(lat, 50):.1f}s")
         print(f"  P90 = {np.percentile(lat, 90):.1f}s")
         print(f"  P99 = {np.percentile(lat, 99):.1f}s")
-        print(f"  Cost = ${p['cost']*1000:.2f}/1000 req")
+        print(f"  Cost = ${p['cost'] * 1000:.2f}/1000 req")
 
     print("\n" + "=" * 60)
     print("Key SLO Points")
@@ -188,10 +188,10 @@ def main():
         for slo, cost, pi in pareto:
             if abs(slo - target) < 0.5:
                 print(f"\nSLO = {target}s:")
-                print(f"  Cost = ${cost*1000:.3f}/1000 req")
+                print(f"  Cost = ${cost * 1000:.3f}/1000 req")
                 for i, frac in enumerate(pi):
                     if frac > 0.01:
-                        print(f"  {profiles[i]['name']}: {frac*100:.0f}%")
+                        print(f"  {profiles[i]['name']}: {frac * 100:.0f}%")
                 break
 
 

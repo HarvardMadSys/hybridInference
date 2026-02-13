@@ -384,7 +384,7 @@ def run_stage2_experiments(
     # Verify latency data
     has_latency = sum(1 for r in requests if r.latency_ms is not None)
     logger.info(
-        f"Requests with latency: {has_latency}/{len(requests)} ({100*has_latency/len(requests):.1f}%)"
+        f"Requests with latency: {has_latency}/{len(requests)} ({100 * has_latency / len(requests):.1f}%)"
     )
 
     if has_latency < len(requests) * 0.9:

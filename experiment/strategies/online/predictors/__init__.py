@@ -24,16 +24,16 @@ from experiment.strategies.online.predictors.histogram import (
 )
 
 __all__ = [
-    # Base interfaces
-    "OutputTokenPredictor",
-    "DurationPredictor",
     "CombinedPredictor",
-    # Data classes
-    "QuantilePrediction",
     "DurationPrediction",
-    "PredictionContext",
+    "DurationPredictor",
+    "EMAOutputPredictor",
+    "HistogramDurationPredictor",
     # Implementations
     "HistogramOutputPredictor",
-    "HistogramDurationPredictor",
-    "EMAOutputPredictor",
+    # Base interfaces
+    "OutputTokenPredictor",
+    "PredictionContext",
+    # Data classes
+    "QuantilePrediction",
 ]

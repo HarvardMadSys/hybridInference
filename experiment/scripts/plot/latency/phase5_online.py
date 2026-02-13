@@ -370,8 +370,8 @@ def plot_summary_table(summary: dict, output_dir: Path) -> None:
             [
                 label,
                 stats["total_requests"],
-                f"{stats['error_rate']*100:.1f}",
-                f"{stats['slo_violation_rate']*100:.1f}",
+                f"{stats['error_rate'] * 100:.1f}",
+                f"{stats['slo_violation_rate'] * 100:.1f}",
                 f"{stats['avg_cost']:.6f}",
                 f"{stats['p50_ms']:.0f}",
                 f"{stats['p90_ms']:.0f}",

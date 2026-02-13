@@ -190,7 +190,7 @@ def save_figure(
 def format_latency(ms: float) -> str:
     """Format latency value for display."""
     if ms >= 1000:
-        return f"{ms/1000:.1f}s"
+        return f"{ms / 1000:.1f}s"
     return f"{ms:.0f}ms"
 
 

@@ -6,4 +6,4 @@ for hybrid inference systems with subscription and API providers.
 
 __version__ = "0.1.0"
 
-__all__ = ["simulator", "config", "strategies"]
+__all__ = ["config", "simulator", "strategies"]

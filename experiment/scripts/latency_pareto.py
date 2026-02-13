@@ -378,7 +378,7 @@ def print_summary_table(
                 print("  Routing Mix:")
                 for i, prob in enumerate(pi):
                     if prob > 0.01:  # Only show providers with >1% traffic
-                        print(f"    {profiles[i].display_name}: {prob*100:.1f}%")
+                        print(f"    {profiles[i].display_name}: {prob * 100:.1f}%")
 
                 # Compare with baselines
                 baselines = compute_baseline_costs(profiles, target_slo)

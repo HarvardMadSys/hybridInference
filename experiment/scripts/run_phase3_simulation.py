@@ -300,7 +300,7 @@ def run_policy_simulation(
     profiles = simulator.build_profiles_until(eval_times[0])
 
     # Track which data points have been added to profiles
-    profile_indices = {p: 0 for p in simulator.providers}
+    profile_indices = dict.fromkeys(simulator.providers, 0)
     for provider in simulator.providers:
         timestamps = simulator._provider_timestamps[provider]
         profile_indices[provider] = np.searchsorted(timestamps, eval_times[0])

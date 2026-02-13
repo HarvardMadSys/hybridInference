@@ -9,9 +9,9 @@ from experiment.data.schema import (
 )
 
 __all__ = [
-    "Request",
+    "DataLoader",
     "ProviderConfig",
     "ProviderType",
+    "Request",
     "RoutingDecision",
-    "DataLoader",
 ]

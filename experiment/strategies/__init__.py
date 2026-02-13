@@ -13,14 +13,14 @@ from experiment.strategies.online import (
 from experiment.strategies.stage1_optimal import OptimalStrategy
 
 __all__ = [
-    # Base
-    "RoutingStrategy",
-    # Offline strategies
-    "OptimalStrategy",
     "AllAPIStrategy",
+    "GreedyOnlineStrategy",
     "GreedyStrategy",
     # Online strategies
     "OnlineStrategy",
-    "GreedyOnlineStrategy",
+    # Offline strategies
+    "OptimalStrategy",
     "PrimalDualOnlineStrategy",
+    # Base
+    "RoutingStrategy",
 ]

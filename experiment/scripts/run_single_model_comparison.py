@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Compare Stage 2 results with different single-model configurations.
+"""Compare Stage 2 results with different single-model configurations.
 
 Converts all requests to a single model to isolate the routing optimization value.
 Tests different models with varying API prices and S_C multipliers.
@@ -104,6 +103,7 @@ def run_single_model_experiment(
 
 
 def main():
+    """Run single-model comparison experiments."""
     parser = argparse.ArgumentParser(description="Compare single-model configurations")
     parser.add_argument("--data", default="freeinference", choices=["freeinference", "rednote"])
     parser.add_argument("--limit", type=int, default=None, help="Limit requests")
@@ -146,12 +146,14 @@ def main():
     print(f"S_C ({args.sc_config}): ${sc_monthly_fee}/mo, C={sc_concurrency}")
 
     for model_name, multiplier, desc in test_models:
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"Testing: {model_name}")
         print(f"  {desc}")
-        print(f"  API pricing: input=${model_pricing.get(model_name, {}).get('input', 'N/A')}, "
-              f"output=${model_pricing.get(model_name, {}).get('output', 'N/A')}")
-        print(f"{'='*70}")
+        print(
+            f"  API pricing: input=${model_pricing.get(model_name, {}).get('input', 'N/A')}, "
+            f"output=${model_pricing.get(model_name, {}).get('output', 'N/A')}"
+        )
+        print(f"{'=' * 70}")
 
         # Load and convert requests
         requests = load_and_convert_requests(args.data, model_name, args.limit)
@@ -190,7 +192,7 @@ def main():
         ilp = results["ilp_optimal"]["costs"]["total"]
         daily = results["daily_quota_only"]["costs"]["total"]
         conc = results["concurrency_only"]["costs"]["total"]
-        print(f"\nResults:")
+        print("\nResults:")
         print(f"  ILP-Optimal:    ${ilp:.2f}")
         print(f"  Daily-Only:     ${daily:.2f}")
         print(f"  Concurrency-Only: ${conc:.2f}")
@@ -198,16 +200,20 @@ def main():
         # Calculate savings
         best = min(ilp, daily, conc)
         if ilp == best:
-            print(f"  -> ILP is best!")
+            print("  -> ILP is best!")
         if daily < ilp:
-            print(f"  -> ILP saves ${daily - ilp:.2f} vs Daily-Only ({(daily-ilp)/daily*100:.1f}%)")
+            print(
+                f"  -> ILP saves ${daily - ilp:.2f} vs Daily-Only ({(daily - ilp) / daily * 100:.1f}%)"
+            )
 
     # Final comparison
-    print("\n" + "="*90)
+    print("\n" + "=" * 90)
     print(f"SINGLE-MODEL COMPARISON SUMMARY (S_Q=${sq_monthly_fee}/mo, S_C=${sc_monthly_fee}/mo)")
-    print("="*90)
-    print(f"{'Model':<30} {'Mult':>4} {'Eff_C':>5} {'ILP':>10} {'Daily':>10} {'Conc':>10} {'Best':>10}")
-    print("-"*90)
+    print("=" * 90)
+    print(
+        f"{'Model':<30} {'Mult':>4} {'Eff_C':>5} {'ILP':>10} {'Daily':>10} {'Conc':>10} {'Best':>10}"
+    )
+    print("-" * 90)
 
     for model_name, data in all_results.items():
         mult = data["multiplier"]
@@ -218,9 +224,11 @@ def main():
         best = min(ilp, daily, conc)
         best_name = "ILP" if ilp == best else ("Daily" if daily == best else "Conc")
 
-        print(f"{model_name:<30} {mult:>4} {eff_c:>5} ${ilp:>9.2f} ${daily:>9.2f} ${conc:>9.2f} {best_name:>10}")
+        print(
+            f"{model_name:<30} {mult:>4} {eff_c:>5} ${ilp:>9.2f} ${daily:>9.2f} ${conc:>9.2f} {best_name:>10}"
+        )
 
-    print("="*90)
+    print("=" * 90)
 
     # Save results
     output_path = Path(f"experiment/results/stage2/single_model_comparison_{args.data}.json")

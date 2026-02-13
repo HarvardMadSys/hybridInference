@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Compare Stage 2 experiment results with different S_C monthly fees.
+"""Compare Stage 2 experiment results with different S_C monthly fees.
 
 Tests S_C at $0 (local GPU), $25 (Featherless Premium), and $75 (Featherless Scale).
 """
@@ -9,7 +8,6 @@ import argparse
 import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import yaml
@@ -17,7 +15,7 @@ import yaml
 
 def update_config(config_path: Path, sc_monthly_fee: float, sc_concurrency: int) -> None:
     """Update the S_C monthly fee and concurrency in config file."""
-    with open(config_path, "r") as f:
+    with open(config_path) as f:
         config = yaml.safe_load(f)
 
     config["subscriptions"]["featherless"]["monthly_fee"] = sc_monthly_fee
@@ -37,12 +35,19 @@ def run_experiment(
 ) -> dict:
     """Run the stage 2 experiment and return results."""
     cmd = [
-        sys.executable, "-m", "experiment.scripts.run_stage2_experiments",
-        "--data", data,
-        "--delta", str(delta),
-        "--solver", solver,
-        "--latency-slo", str(latency_slo),
-        "--concurrency", str(concurrency),
+        sys.executable,
+        "-m",
+        "experiment.scripts.run_stage2_experiments",
+        "--data",
+        data,
+        "--delta",
+        str(delta),
+        "--solver",
+        solver,
+        "--latency-slo",
+        str(latency_slo),
+        "--concurrency",
+        str(concurrency),
         "--no-cache",  # Force recalculation with new S_C config
     ]
     if limit:
@@ -51,7 +56,7 @@ def run_experiment(
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     # Parse the summary from output
-    output = result.stdout + result.stderr
+    result.stdout + result.stderr
 
     # Read results from file
     results_path = Path(f"experiment/results/stage2/stage2_results_{data}.json")
@@ -62,9 +67,12 @@ def run_experiment(
 
 
 def main():
+    """Run S_C fee comparison experiments."""
     parser = argparse.ArgumentParser(description="Compare S_C monthly fee impact")
     parser.add_argument("--data", default="freeinference", choices=["freeinference", "rednote"])
-    parser.add_argument("--delta", type=float, default=1.0, help="Time discretization (default: 1s)")
+    parser.add_argument(
+        "--delta", type=float, default=1.0, help="Time discretization (default: 1s)"
+    )
     parser.add_argument("--solver", default="gurobi", choices=["cbc", "gurobi"])
     parser.add_argument("--limit", type=int, default=None, help="Limit requests for faster testing")
     parser.add_argument("--latency-slo", type=int, default=0)
@@ -73,7 +81,7 @@ def main():
     config_path = Path("config/experiment.yaml")
 
     # Backup original config
-    with open(config_path, "r") as f:
+    with open(config_path) as f:
         original_config = f.read()
 
     # Test configurations: (monthly_fee, concurrency_limit, label)
@@ -87,9 +95,9 @@ def main():
 
     try:
         for sc_fee, sc_concurrency, label in test_configs:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Testing: {label}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             # Update config
             update_config(config_path, sc_fee, sc_concurrency)
@@ -114,7 +122,11 @@ def main():
                 print(f"\nResults for {label}:")
                 for strategy, result_data in results.items():
                     cost = result_data.get("costs", {}).get("total", "N/A")
-                    print(f"  {strategy}: ${cost:.2f}" if isinstance(cost, (int, float)) else f"  {strategy}: {cost}")
+                    print(
+                        f"  {strategy}: ${cost:.2f}"
+                        if isinstance(cost, int | float)
+                        else f"  {strategy}: {cost}"
+                    )
 
     finally:
         # Restore original config
@@ -123,24 +135,24 @@ def main():
         print("\n[Config restored to original]")
 
     # Final comparison table
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("COMPARISON SUMMARY (Offline Strategies)")
-    print("="*70)
+    print("=" * 70)
     print(f"{'S_C Configuration':<35} {'ILP-Optimal':>12} {'Daily-Only':>12} {'Conc-Only':>12}")
-    print("-"*70)
+    print("-" * 70)
 
     for label, results in all_results.items():
         ilp = results.get("ilp_optimal", {}).get("costs", {}).get("total", "-")
         daily = results.get("daily_quota_only", {}).get("costs", {}).get("total", "-")
         conc = results.get("concurrency_only", {}).get("costs", {}).get("total", "-")
 
-        ilp_str = f"${ilp:.2f}" if isinstance(ilp, (int, float)) else str(ilp)
-        daily_str = f"${daily:.2f}" if isinstance(daily, (int, float)) else str(daily)
-        conc_str = f"${conc:.2f}" if isinstance(conc, (int, float)) else str(conc)
+        ilp_str = f"${ilp:.2f}" if isinstance(ilp, int | float) else str(ilp)
+        daily_str = f"${daily:.2f}" if isinstance(daily, int | float) else str(daily)
+        conc_str = f"${conc:.2f}" if isinstance(conc, int | float) else str(conc)
 
         print(f"{label:<35} {ilp_str:>12} {daily_str:>12} {conc_str:>12}")
 
-    print("="*70)
+    print("=" * 70)
 
     # Save comparison results
     output_path = Path(f"experiment/results/stage2/sc_fee_comparison_{args.data}.json")

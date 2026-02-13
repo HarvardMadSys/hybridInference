@@ -543,11 +543,11 @@ def run_single_strategy(
     )
 
     # Print summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Strategy: {strategy.value}")
     print(f"Backup method: {backup_method.value}")
     print(f"SLO: {config.slo_sec}s")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Total requests: {result.total_requests}")
     print(f"Successful requests: {result.successful_requests}")
     print(f"Error rate: {result.error_rate:.2%}")

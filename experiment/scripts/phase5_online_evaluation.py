@@ -1385,9 +1385,9 @@ class Phase5OnlineEvaluator:
         if duration_sec is None:
             duration_sec = self.config.warmup_sec
 
-        print(f"\n{'='*60}")
-        print(f"Phase 5: Warmup Phase ({duration_sec/60:.1f} minutes)")
-        print(f"{'='*60}")
+        print(f"\n{'=' * 60}")
+        print(f"Phase 5: Warmup Phase ({duration_sec / 60:.1f} minutes)")
+        print(f"{'=' * 60}")
 
         start_time = time.time()
         probe_count = 0
@@ -1436,7 +1436,7 @@ class Phase5OnlineEvaluator:
                 print(
                     f"  [Warmup {probe_count}] {provider}: {status_str} "
                     f"(tokens: {result.prompt_tokens}+{result.completion_tokens}) "
-                    f"({elapsed/60:.1f}/{duration_sec/60:.1f} min)"
+                    f"({elapsed / 60:.1f}/{duration_sec / 60:.1f} min)"
                 )
 
                 time.sleep(1.0)  # Rate limiting
@@ -1468,10 +1468,10 @@ class Phase5OnlineEvaluator:
         if policies is None:
             policies = list(self.policies.keys())
 
-        print(f"\n{'='*60}")
-        print(f"Phase 5: Evaluation Phase ({duration_sec/60:.1f} minutes)")
+        print(f"\n{'=' * 60}")
+        print(f"Phase 5: Evaluation Phase ({duration_sec / 60:.1f} minutes)")
         print(f"Policies: {policies}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         start_time = time.time()
         cycle_count = 0
@@ -1526,7 +1526,7 @@ class Phase5OnlineEvaluator:
                 slo_str = " [SLO VIOLATED]" if result.slo_violated else ""
                 elapsed = now - start_time
                 print(
-                    f"[{elapsed/60:.1f}/{duration_sec/60:.1f} min] "
+                    f"[{elapsed / 60:.1f}/{duration_sec / 60:.1f} min] "
                     f"{policy}: {result.actual_provider} {status_str}{slo_str}"
                 )
 
@@ -1615,15 +1615,15 @@ class Phase5OnlineEvaluator:
 
     def print_summary(self, stats: dict[str, dict]) -> None:
         """Print summary of evaluation results."""
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("Phase 5: Evaluation Summary")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         # Cost breakdown
         print("\nCost Breakdown:")
         print(f"  Total cost: ${self.total_cost:.4f}")
         print(
-            f"  Probing cost: ${self.probing_cost:.4f} ({self.probing_cost/self.total_cost*100:.1f}%)"
+            f"  Probing cost: ${self.probing_cost:.4f} ({self.probing_cost / self.total_cost * 100:.1f}%)"
             if self.total_cost > 0
             else f"  Probing cost: ${self.probing_cost:.4f}"
         )
@@ -1648,9 +1648,9 @@ class Phase5OnlineEvaluator:
             baseline = stats["openrouter_auto"]
             lp_mix = stats["lp_mix"]
 
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print("Comparison: lp_mix vs openrouter_auto")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             if baseline["avg_cost"] > 0:
                 cost_reduction = (baseline["avg_cost"] - lp_mix["avg_cost"]) / baseline["avg_cost"]
@@ -1956,10 +1956,10 @@ class TraceReplayEvaluator(Phase5OnlineEvaluator):
             estimate_trace_duration(trace[start_from:], speedup) if start_from < n_requests else 0
         )
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("Phase 5: Trace Replay Evaluation (All Policies Per Request)")
-        print(f"{'='*60}")
-        print(f"Trace: {n_requests} requests over {duration_sec/60:.1f} min (speedup={speedup}x)")
+        print(f"{'=' * 60}")
+        print(f"Trace: {n_requests} requests over {duration_sec / 60:.1f} min (speedup={speedup}x)")
         if start_from > 0:
             print(f"Resuming from request {start_from} ({remaining_requests} remaining)")
         print(f"Policies: {policies}")
@@ -1973,9 +1973,9 @@ class TraceReplayEvaluator(Phase5OnlineEvaluator):
             print(f"\nWARNING: Upper cost estimate (${upper_cost:.2f}) exceeds 2x cost cap!")
             print("Consider reducing --max-requests or increasing --cost-cap.")
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("Starting replay...")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         start_time = time.time()
         trace_start = trace[start_from].arrival_time_sec if start_from < n_requests else 0.0
@@ -2116,13 +2116,13 @@ class TraceReplayEvaluator(Phase5OnlineEvaluator):
         # Summary per policy
         counts = {p: len(self.policies[p].results) for p in policies}
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(
             f"Replay complete: {completed} requests x {n_policies} policies = {sum(counts.values())} total"
         )
         print(f"Total cost: ${self.total_cost:.4f}")
-        print(f"Duration: {(time.time() - start_time)/60:.1f} min")
-        print(f"{'='*60}")
+        print(f"Duration: {(time.time() - start_time) / 60:.1f} min")
+        print(f"{'=' * 60}")
 
         return self.policies
 
@@ -2400,8 +2400,8 @@ def main():
         print("\nConfiguration:")
         print(f"  Model: {config.model}")
         print(f"  SLO: {config.slo_sec}s")
-        print(f"  Warmup: {config.warmup_sec/60:.1f} min")
-        print(f"  Duration: {config.duration_sec/60:.1f} min")
+        print(f"  Warmup: {config.warmup_sec / 60:.1f} min")
+        print(f"  Duration: {config.duration_sec / 60:.1f} min")
         print(f"  Cost cap: ${config.cost_cap_usd}")
         print(f"  Output: {output_dir}")
 

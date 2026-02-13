@@ -248,7 +248,10 @@ def main():
         help="S_C configuration: local_gpu ($0, C=8), featherless_premium ($25, C=4), featherless_scale ($75, C=8)",
     )
     parser.add_argument(
-        "--concurrency", type=int, default=None, help="Override concurrency limit (default: from --sc-config)"
+        "--concurrency",
+        type=int,
+        default=None,
+        help="Override concurrency limit (default: from --sc-config)",
     )
     parser.add_argument("--limit", type=int, default=None, help="Limit number of requests")
     parser.add_argument(
@@ -304,8 +307,8 @@ def main():
 
     # Read S_Q and S_C configuration
     sq_monthly_fee = 20.0  # Default Chutes
-    sc_monthly_fee = 0.0   # Default Local GPU
-    sc_concurrency = 8     # Default concurrency
+    sc_monthly_fee = 0.0  # Default Local GPU
+    sc_concurrency = 8  # Default concurrency
     if subscriptions:
         # S_Q config (Chutes)
         chutes_config = subscriptions.get("chutes", {})

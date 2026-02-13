@@ -124,7 +124,7 @@ def load_profiling_data(filepath: str) -> pd.DataFrame:
     if "status" in df.columns:
         success_count = (df["status"] == "success").sum()
         df = df[df["status"] == "success"].copy()
-        print(f"  Successful requests: {success_count:,} ({success_count/len(df)*100:.1f}%)")
+        print(f"  Successful requests: {success_count:,} ({success_count / len(df) * 100:.1f}%)")
 
     # Parse request_id to extract workload type and round number
     def parse_request_id(req_id: str) -> tuple[str, int, int]:
@@ -711,7 +711,7 @@ def plot_ttft_vs_e2e(
         ax2.text(
             ratio * 100 + 1,
             bar.get_y() + bar.get_height() / 2,
-            f"{ratio*100:.1f}%",
+            f"{ratio * 100:.1f}%",
             va="center",
             fontsize=10,
         )
@@ -886,7 +886,7 @@ def run_phase1(args):
         print("\nNo 'workload' column found, using all data")
         df_filtered = df
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("Generating figures...")
     print("=" * 60)
 
@@ -914,7 +914,7 @@ def run_phase1(args):
             df_filtered, workload, args.output, title_suffix=args.title_suffix
         )
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("Phase 1 complete!")
     print(f"All outputs saved to: {args.output}")
     print("=" * 60)

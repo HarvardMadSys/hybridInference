@@ -30,17 +30,17 @@ from experiment.strategies.online.primal_dual import (
 )
 
 __all__ = [
-    # Base
-    "OnlineStrategy",
+    "CAPQConcurrencyManager",
+    "GreedyCostAwareStrategy",
     # Greedy strategies
     "GreedyOnlineStrategy",
-    "GreedyCostAwareStrategy",
-    # Primal-Dual strategies
-    "PrimalDualQuotaManager",
-    "CAPQConcurrencyManager",
-    "PrimalDualOnlineStrategy",
     # Learning-Augmented strategies
     "LAPDConfig",
     "LearningAugmentedPrimalDualStrategy",
     "LearningAugmentedUnifiedStrategy",
+    # Base
+    "OnlineStrategy",
+    "PrimalDualOnlineStrategy",
+    # Primal-Dual strategies
+    "PrimalDualQuotaManager",
 ]
