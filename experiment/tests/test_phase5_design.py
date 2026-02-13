@@ -56,9 +56,9 @@ class TestSingleWindowDesign:
         assert hasattr(profile, "window_sec"), "Should have 'window_sec' field"
 
         # Should NOT have dual window fields
-        assert not hasattr(
-            profile, "short_window_samples"
-        ), "Should not have 'short_window_samples'"
+        assert not hasattr(profile, "short_window_samples"), (
+            "Should not have 'short_window_samples'"
+        )
         assert not hasattr(profile, "long_window_samples"), "Should not have 'long_window_samples'"
         assert not hasattr(profile, "short_window_sec"), "Should not have 'short_window_sec'"
         assert not hasattr(profile, "long_window_sec"), "Should not have 'long_window_sec'"
