@@ -257,6 +257,123 @@ class GLMProcessor(BaseProcessor):
         return response
 
 
+class ThinkBlockProcessor(BaseProcessor):
+    """Processor that strips entire <think>...</think> blocks (tags + content).
+
+    Used for models (e.g. MiniMax) where thinking output should be fully hidden
+    from the client, unlike GLMProcessor which only strips the tags.
+
+    Chunks containing native tool_calls are passed through unmodified.
+    """
+
+    _THINK_RE = re.compile(r"<think>[\s\S]*?</think>")
+
+    def __init__(self) -> None:
+        self.buffer = ""
+        self.in_think = False
+        self.model_id = "unknown"
+
+    def process_stream_chunk(self, chunk: dict[str, Any]) -> list[dict[str, Any]]:
+        """Strip <think> blocks from streaming chunks, pass through tool_calls."""
+        choices = chunk.get("choices", [])
+        if not choices:
+            return [chunk]
+
+        delta = choices[0].get("delta", {})
+
+        # Pass through tool_calls chunks untouched
+        if "tool_calls" in delta:
+            return [chunk]
+
+        content = delta.get("content", "")
+
+        if content is None:
+            return [chunk]
+
+        self.buffer += content
+        self.model_id = chunk.get("model", self.model_id)
+
+        to_yield: list[dict[str, Any]] = []
+
+        while True:
+            if self.in_think:
+                end_idx = self.buffer.find("</think>")
+                if end_idx != -1:
+                    # Discard everything up to and including </think>
+                    self.buffer = self.buffer[end_idx + 8 :]
+                    self.in_think = False
+                else:
+                    # Keep tail for partial </think> detection
+                    if len(self.buffer) > 8:
+                        self.buffer = self.buffer[-8:]
+                    break
+            else:
+                start_idx = self.buffer.find("<think>")
+                if start_idx != -1:
+                    # Emit text before <think>
+                    text_before = self.buffer[:start_idx]
+                    if text_before:
+                        new_chunk = _clone_chunk(chunk)
+                        new_chunk["choices"][0]["delta"]["content"] = text_before
+                        to_yield.append(new_chunk)
+                    self.buffer = self.buffer[start_idx + 7 :]
+                    self.in_think = True
+                else:
+                    # No <think> tag found — emit safe portion
+                    safe_index = len(self.buffer)
+                    last_open = self.buffer.rfind("<")
+                    if last_open != -1 and last_open > len(self.buffer) - 8:
+                        safe_index = last_open
+
+                    text_to_emit = self.buffer[:safe_index]
+                    self.buffer = self.buffer[safe_index:]
+
+                    if text_to_emit:
+                        new_chunk = _clone_chunk(chunk)
+                        new_chunk["choices"][0]["delta"]["content"] = text_to_emit
+                        to_yield.append(new_chunk)
+                    break
+
+        return to_yield
+
+    def flush(self) -> list[dict[str, Any]]:
+        """Flush remaining buffer, discarding any incomplete think blocks."""
+        if not self.buffer or self.in_think:
+            self.buffer = ""
+            self.in_think = False
+            return []
+
+        text = self._THINK_RE.sub("", self.buffer).strip()
+        self.buffer = ""
+
+        if not text:
+            return []
+
+        return [
+            {
+                "id": f"chatcmpl-{int(time.time())}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": self.model_id,
+                "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+            }
+        ]
+
+    def process_response(self, response: dict[str, Any]) -> dict[str, Any]:
+        """Strip <think> blocks from non-streaming response content."""
+        choices = response.get("choices", [])
+        if not choices:
+            return response
+
+        message = choices[0].get("message", {})
+        content = message.get("content", "")
+
+        if content:
+            message["content"] = self._THINK_RE.sub("", content).strip()
+
+        return response
+
+
 def _clone_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
     """Deep copy structure of a chunk for modification."""
     new_chunk = chunk.copy()
@@ -278,5 +395,7 @@ def get_processor(model_id: str | None) -> BaseProcessor:
     # Auto-detect GLM models
     if "glm-4" in model_id_lower or "glm4" in model_id_lower:
         return GLMProcessor()
+    if "minimax" in model_id_lower:
+        return ThinkBlockProcessor()
 
     return DefaultProcessor()
