@@ -21,6 +21,7 @@ Usage:
 import argparse
 import json
 import logging
+import random
 import sys
 from pathlib import Path
 
@@ -44,6 +45,10 @@ from experiment.strategies.online import (
     PrimalDualOnlineStrategy,
 )
 from experiment.strategies.stage1_optimal import OptimalStrategy
+from experiment.strategies.stage2_baselines import (
+    ConcurrencyOnlyStrategy,
+    DailyQuotaOnlyStrategy,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -342,6 +347,8 @@ def run_stage2_experiments(
     data_path: str,
     output_dir: Path,
     model_override: str | None = None,
+    sc_config_name: str = "local_gpu",
+    sample_size: int | None = None,
 ):
     """Run Stage 2 experiments: S_Q + S_C + S_A (joint optimization).
 
@@ -350,14 +357,24 @@ def run_stage2_experiments(
         data_path: Path to dataset (rednote/freeinference with latency)
         output_dir: Output directory for results
         model_override: If set, map all requests to this model for pricing
+        sc_config_name: Name of S_C configuration in YAML (local_gpu, featherless_premium, featherless_scale)
+        sample_size: If set, sample N requests for faster testing
     """
     logger.info("=" * 60)
     logger.info("Stage 2 Experiments: Joint Optimization (S_Q + S_C + S_A)")
+    logger.info(f"S_C Configuration: {sc_config_name}")
     logger.info("=" * 60)
 
     # Load data
     loader = DataLoader(config.to_dict())
     requests = loader.load(data_path, model_override=model_override)
+
+    # Sample if requested (for faster testing)
+    if sample_size is not None and sample_size < len(requests):
+        logger.info(f"Sampling {sample_size} requests from {len(requests)} total")
+        random.seed(42)  # For reproducibility
+        requests = sorted(random.sample(requests, sample_size), key=lambda r: r.timestamp)
+
     stats = loader.get_statistics(requests)
 
     if model_override:
@@ -381,13 +398,18 @@ def run_stage2_experiments(
     subscription_provider = config.get_subscription_provider()
     daily_quota = subscription_provider.daily_quota * num_subscriptions
 
-    # S_C configuration (from config or defaults)
+    # S_C configuration from YAML by name
     subscriptions = config_dict.get("subscriptions", {})
-    featherless_config = subscriptions.get("featherless", {})
-    concurrency_limit = featherless_config.get("concurrency_limit", 8)
+    sc_config = subscriptions.get(sc_config_name, {})
+    concurrency_limit = sc_config.get("concurrency_limit", 8)
+    sc_monthly_fee = sc_config.get("monthly_fee", 0.0)
+    sc_supported_models = sc_config.get("supported_models", {})
 
     logger.info(f"Daily quota (S_Q): {daily_quota}")
-    logger.info(f"Concurrency limit (S_C): {concurrency_limit}")
+    logger.info(f"S_C config: {sc_config_name}")
+    logger.info(f"  - Concurrency limit: {concurrency_limit}")
+    logger.info(f"  - Monthly fee: ${sc_monthly_fee:.2f}")
+    logger.info(f"  - Supported models: {len(sc_supported_models)}")
 
     _validate_model_pricing_coverage(requests, config_dict.get("model_pricing"), model_override)
 
@@ -401,14 +423,55 @@ def run_stage2_experiments(
 
     results = {}
 
-    # 1. All-API Baseline
-    logger.info("\n--- Running All-API Baseline ---")
+    # Store experiment configuration in results
+    experiment_config = {
+        "dataset": Path(data_path).stem,
+        "sc_config": sc_config_name,
+        "daily_quota": daily_quota,
+        "concurrency_limit": concurrency_limit,
+        "sc_monthly_fee": sc_monthly_fee,
+        "num_days": stats["num_days"],
+        "total_requests": len(requests),
+        "sample_size": sample_size,
+    }
+
+    # 1. All-API Baseline (B1)
+    logger.info("\n--- Running All-API Baseline (B1) ---")
     quota_mgr = QuotaManager(daily_quota)
     strategy = AllAPIStrategy(cost_calculator, quota_mgr, config_dict)
     simulator = OfflineSimulator(requests, strategy, config_dict)
     results["All-API"] = simulator.run().to_dict()
 
-    # 2. Greedy Online (S_Q + S_C)
+    # 2. S_Q-Only Baseline (B2) - Daily quota only, no concurrency
+    logger.info("\n--- Running S_Q-Only Baseline (B2) ---")
+    quota_mgr = QuotaManager(daily_quota)
+    strategy = DailyQuotaOnlyStrategy(
+        cost_calculator,
+        quota_mgr,
+        config_dict,
+        daily_quota=daily_quota,
+    )
+    simulator = OfflineSimulator(requests, strategy, config_dict)
+    results["SQ-Only"] = simulator.run().to_dict()
+
+    # 3. S_C-Only Baseline (B3) - Concurrency only, no daily quota
+    logger.info("\n--- Running S_C-Only Baseline (B3) ---")
+    quota_mgr = QuotaManager(daily_quota)
+    try:
+        strategy = ConcurrencyOnlyStrategy(
+            cost_calculator,
+            quota_mgr,
+            config_dict,
+            concurrency_limit=concurrency_limit,
+            dataset_name=f"stage2_online_{sc_config_name}",
+            use_cache=True,
+        )
+        simulator = OfflineSimulator(requests, strategy, config_dict)
+        results["SC-Only"] = simulator.run().to_dict()
+    except Exception as e:
+        logger.warning(f"S_C-Only baseline failed (requires ILP solver): {e}")
+
+    # 4. Greedy Online (S_Q + S_C)
     logger.info("\n--- Running Greedy Online (Stage 2) ---")
     quota_mgr = QuotaManager(daily_quota)
     strategy = GreedyOnlineStrategy(
@@ -421,7 +484,7 @@ def run_stage2_experiments(
     simulator = OfflineSimulator(requests, strategy, config_dict)
     results["Greedy-Online-Stage2"] = simulator.run().to_dict()
 
-    # 3. Primal-Dual Online (S_Q + S_C)
+    # 5. Primal-Dual Online (S_Q + S_C)
     logger.info("\n--- Running Primal-Dual Online (Stage 2) ---")
     quota_mgr = QuotaManager(daily_quota)
     strategy = PrimalDualOnlineStrategy(
@@ -437,7 +500,7 @@ def run_stage2_experiments(
     simulator = OfflineSimulator(requests, strategy, config_dict)
     results["PrimalDual-Online-Stage2"] = simulator.run().to_dict()
 
-    # 4. LA-PD Unified (S_Q + S_C with learning)
+    # 6. LA-PD Unified (S_Q + S_C with learning)
     logger.info("\n--- Running LA-PD Unified (Stage 2) ---")
     quota_mgr = QuotaManager(daily_quota)
     lapd_config = LAPDConfig(quantile_for_lcb=0.10)
@@ -458,7 +521,7 @@ def run_stage2_experiments(
     if hasattr(strategy, "get_stats"):
         results["LA-PD-Unified-Stage2"]["strategy_stats"] = strategy.get_stats()
 
-    # 5. Offline Optimal (ILP) - if available
+    # 7. Offline Optimal (ILP) - if available
     try:
         from experiment.strategies.stage2_optimal import ILPOptimalStrategy
 
@@ -470,6 +533,8 @@ def run_stage2_experiments(
             config_dict,
             daily_quota=daily_quota,
             concurrency_limit=concurrency_limit,
+            dataset_name=f"stage2_online_{sc_config_name}",
+            use_cache=True,
         )
         simulator = OfflineSimulator(requests, strategy, config_dict)
         results["Offline-Optimal-ILP"] = simulator.run().to_dict()
@@ -484,19 +549,33 @@ def run_stage2_experiments(
     all_api_cost = results["All-API"]["costs"]["total"]
     optimal_savings = all_api_cost - optimal_cost if optimal_key != "All-API" else 0.0
 
+    # Add competitive ratios to each result
+    for _name, res in results.items():
+        total_cost = res["costs"]["total"]
+        res["competitive_ratio"] = round(total_cost / optimal_cost, 4) if optimal_cost > 0 else None
+
     logger.info("\n" + "=" * 60)
     logger.info("Stage 2 Results Summary")
+    logger.info(
+        f"S_C Config: {sc_config_name} (C={concurrency_limit}, fee=${sc_monthly_fee:.2f}/mo)"
+    )
     logger.info("=" * 60)
+
+    logger.info(
+        f"{'Strategy':<25} {'Total':>10} {'API':>10} {'Ratio':>8} {'Savings':>10} {'SubReqs':>10}"
+    )
+    logger.info("-" * 85)
 
     for name, res in results.items():
         total_cost = res["costs"]["total"]
         api_cost = res["costs"]["api"]
-        ratio = total_cost / optimal_cost if optimal_cost > 0 else float("inf")
+        ratio = res.get("competitive_ratio", float("inf"))
         savings = all_api_cost - total_cost
         savings_ratio = savings / optimal_savings if optimal_savings > 0 else 0.0
+        sub_reqs = res["requests"]["subscription"]
         logger.info(
-            f"{name:25s}: Total=${total_cost:8.2f}, API=${api_cost:8.2f}, "
-            f"Ratio={ratio:.4f}, Savings={savings_ratio:.1%}"
+            f"{name:<25} ${total_cost:>9.2f} ${api_cost:>9.2f} {ratio:>8.4f} "
+            f"{savings_ratio:>9.1%} {sub_reqs:>10}"
         )
 
     # Print calibration stats for LA-PD strategies
@@ -511,13 +590,19 @@ def run_stage2_experiments(
                 f"q50_cov={cal['q50_coverage']:.1%}, q90_cov={cal['q90_coverage']:.1%}"
             )
 
-    # Save results
-    output_file = output_dir / "stage2_online_results.json"
+    # Wrap results with experiment config
+    output_data = {
+        "experiment_config": experiment_config,
+        "strategies": results,
+    }
+
+    # Save results with S_C config name in filename
+    output_file = output_dir / f"stage2_online_results_{sc_config_name}.json"
     with open(output_file, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(output_data, f, indent=2)
     logger.info(f"\nResults saved to {output_file}")
 
-    return results
+    return output_data
 
 
 def main():
@@ -561,6 +646,19 @@ def main():
         help="Target model for pricing. Use this to treat a dataset as single-model workload. "
         "E.g., '--model deepseek-r1' maps all BurstGPT requests to deepseek-r1 pricing.",
     )
+    parser.add_argument(
+        "--sc-config",
+        type=str,
+        choices=["local_gpu", "featherless_premium", "featherless_scale"],
+        default="local_gpu",
+        help="S_C (concurrency) configuration to use for Stage 2 (default: local_gpu)",
+    )
+    parser.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        help="Sample N requests for faster testing (useful for large datasets)",
+    )
 
     args = parser.parse_args()
 
@@ -581,7 +679,14 @@ def main():
 
         if args.stage in ["2", "both"]:
             if Path(args.stage2_data).exists():
-                run_stage2_experiments(config, args.stage2_data, output_dir, args.model)
+                run_stage2_experiments(
+                    config,
+                    args.stage2_data,
+                    output_dir,
+                    args.model,
+                    sc_config_name=args.sc_config,
+                    sample_size=args.sample,
+                )
             else:
                 logger.error(f"Stage 2 data not found: {args.stage2_data}")
     except ValueError as e:
