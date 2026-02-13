@@ -118,14 +118,17 @@ class StreamingHistogram:
                 low = mid + 1
         return low
 
-    def quantile(self, q: float) -> float:
+    def quantile(self, q: float, conservative: bool = True) -> float:
         """Get quantile value.
 
         Args:
             q: Quantile (0.0 to 1.0)
+            conservative: If True, use bin lower bound for low quantiles (q < 0.5)
+                         and upper bound for high quantiles (q > 0.5) to ensure
+                         proper LCB/UCB semantics. If False, always use midpoint.
 
         Returns:
-            Estimated quantile value (bin midpoint)
+            Estimated quantile value
         """
         if self.total_count == 0:
             # Return geometric mean of range as default
@@ -137,9 +140,22 @@ class StreamingHistogram:
         for bin in self.bins:
             cumulative += bin.count
             if cumulative >= target_count:
-                return bin.midpoint
+                if not conservative:
+                    return bin.midpoint
+                # Conservative estimation for proper LCB/UCB semantics:
+                # - Low quantiles (e.g., P10): use lower bound for true LCB
+                # - High quantiles (e.g., P90): use upper bound for true UCB
+                # - Middle quantiles (around P50): use midpoint
+                if q < 0.3:
+                    return bin.low
+                elif q > 0.7:
+                    return bin.high
+                else:
+                    return bin.midpoint
 
-        # Should not reach here, but return last bin midpoint
+        # Should not reach here, but return last bin value
+        if conservative and q > 0.7:
+            return self.bins[-1].high
         return self.bins[-1].midpoint
 
     def mean(self) -> float:
@@ -211,7 +227,9 @@ class HierarchicalStats:
 
         self.global_hist.add(value)
 
-    def quantile(self, model: str | None, input_bin: int, hour_bin: int, q: float) -> float:
+    def quantile(
+        self, model: str | None, input_bin: int, hour_bin: int, q: float, conservative: bool = True
+    ) -> float:
         """Get quantile with backoff.
 
         Args:
@@ -219,6 +237,7 @@ class HierarchicalStats:
             input_bin: Binned input token count
             hour_bin: Hour of day bin
             q: Quantile (0.0 to 1.0)
+            conservative: If True, use bin bounds for LCB/UCB semantics
 
         Returns:
             Quantile estimate from the most specific level with sufficient data
@@ -228,19 +247,19 @@ class HierarchicalStats:
         # Try level 0 (most specific)
         key0 = (model_key, input_bin, hour_bin)
         if key0 in self.level0 and self.level0[key0].total_count >= self.min_samples_l0:
-            return self.level0[key0].quantile(q)
+            return self.level0[key0].quantile(q, conservative)
 
         # Backoff to level 1
         key1 = (model_key, input_bin)
         if key1 in self.level1 and self.level1[key1].total_count >= self.min_samples_l1:
-            return self.level1[key1].quantile(q)
+            return self.level1[key1].quantile(q, conservative)
 
         # Backoff to level 2
         if model_key in self.level2 and self.level2[model_key].total_count >= self.min_samples_l2:
-            return self.level2[model_key].quantile(q)
+            return self.level2[model_key].quantile(q, conservative)
 
         # Backoff to global
-        return self.global_hist.quantile(q)
+        return self.global_hist.quantile(q, conservative)
 
     def get_best_level(self, model: str | None, input_bin: int, hour_bin: int) -> int:
         """Get the most specific level with sufficient data.
@@ -308,14 +327,20 @@ class HistogramOutputPredictor(OutputTokenPredictor):
             request: The incoming request
 
         Returns:
-            QuantilePrediction with q10, q50, q90 estimates
+            QuantilePrediction with q10, q50, q90 estimates.
+            Uses conservative bounds: q10 returns bin lower bound (LCB),
+            q90 returns bin upper bound (UCB), q50 returns midpoint.
         """
         ctx = PredictionContext.from_request(request)
         hour_bin = ctx.hour_of_day // self.hour_bin_size
 
-        q10 = self.stats.quantile(ctx.model, ctx.input_bin, hour_bin, 0.10)
-        q50 = self.stats.quantile(ctx.model, ctx.input_bin, hour_bin, 0.50)
-        q90 = self.stats.quantile(ctx.model, ctx.input_bin, hour_bin, 0.90)
+        # Use conservative=True for proper LCB/UCB semantics:
+        # - q10: bin lower bound (ensures LCB is truly conservative)
+        # - q50: bin midpoint (balanced estimate)
+        # - q90: bin upper bound (ensures UCB is truly conservative)
+        q10 = self.stats.quantile(ctx.model, ctx.input_bin, hour_bin, 0.10, conservative=True)
+        q50 = self.stats.quantile(ctx.model, ctx.input_bin, hour_bin, 0.50, conservative=True)
+        q90 = self.stats.quantile(ctx.model, ctx.input_bin, hour_bin, 0.90, conservative=True)
 
         return QuantilePrediction(
             q10=q10,

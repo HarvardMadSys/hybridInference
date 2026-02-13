@@ -110,6 +110,7 @@ add-ignore = [
   "D104",  # missing docstring in public package
   "D105",  # magic method docstring not required
   "D107",  # __init__ docstring not required
+  "D202",  # conflicts with ruff-format (blank line after docstring)
 ]
 match = ".+\\.py"
 match-dir = "(?!tests|test|.venv|data).*"

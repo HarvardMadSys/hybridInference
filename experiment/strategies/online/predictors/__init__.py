@@ -9,7 +9,7 @@ Predictors:
 - HistogramDurationPredictor: Duration predictor for Stage 2
 """
 
-from experiment.predictors.base import (
+from experiment.strategies.online.predictors.base import (
     CombinedPredictor,
     DurationPrediction,
     DurationPredictor,
@@ -17,8 +17,8 @@ from experiment.predictors.base import (
     PredictionContext,
     QuantilePrediction,
 )
-from experiment.predictors.ema import EMAOutputPredictor
-from experiment.predictors.histogram import (
+from experiment.strategies.online.predictors.ema import EMAOutputPredictor
+from experiment.strategies.online.predictors.histogram import (
     HistogramDurationPredictor,
     HistogramOutputPredictor,
 )
