@@ -9,6 +9,20 @@ from __future__ import annotations
 from typing import Any
 
 
+def _get_tiktoken_encoding():
+    """Get tiktoken encoding, with fallback handling.
+
+    Returns:
+        tiktoken.Encoding object or None if tiktoken is not available.
+    """
+    try:
+        import tiktoken
+
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        return None
+
+
 def _count_with_tiktoken(text: str) -> int:
     """Count tokens for a string using tiktoken when available.
 
@@ -21,14 +35,43 @@ def _count_with_tiktoken(text: str) -> int:
     Returns:
       Estimated token count (>= 1 for non-empty strings).
     """
-    try:
-        import tiktoken
-
-        encoding = tiktoken.get_encoding("cl100k_base")
+    encoding = _get_tiktoken_encoding()
+    if encoding:
         return len(encoding.encode(text))
-    except Exception:
+    else:
         # 4 characters ≈ 1 token (rough heuristic)
         return max(1, len(text) // 4)
+
+
+def tokenize_text(text: str) -> list[int]:
+    """Tokenize text into token IDs using tiktoken.
+
+    Falls back to character-based chunking if tiktoken is not available.
+
+    Args:
+        text: Input string to tokenize.
+
+    Returns:
+        List of token IDs. If tiktoken is unavailable, returns character codes
+        grouped by 4 (simulating tokens).
+    """
+    if not text:
+        return []
+
+    encoding = _get_tiktoken_encoding()
+    if encoding:
+        return encoding.encode(text)
+    else:
+        # Fallback: use character codes grouped by 4 as pseudo-tokens
+        # This ensures consistent behavior even without tiktoken
+        chars = text.encode("utf-8")
+        tokens = []
+        for i in range(0, len(chars), 4):
+            # Combine 4 bytes into a single "token" ID
+            chunk = chars[i : i + 4]
+            token_id = int.from_bytes(chunk, byteorder="big", signed=False)
+            tokens.append(token_id)
+        return tokens
 
 
 def estimate_text_tokens(text: str) -> int:
@@ -96,4 +139,5 @@ __all__ = [
     "estimate_prompt_tokens",
     "estimate_text_tokens",
     "estimate_total_tokens",
+    "tokenize_text",
 ]

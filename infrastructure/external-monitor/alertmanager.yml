@@ -1,0 +1,20 @@
+route:
+  receiver: slack-default
+  group_by: ['alertname']
+  group_wait: 1m
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: slack-default
+    slack_configs:
+      - send_resolved: true
+        api_url: ${SLACK_WEBHOOK_URL}  # replace with actual Slack webhook URL at deploy time
+        channel: '#free-inference-alert'
+        title: '{{ if eq .Status "resolved" }}[RESOLVED] {{ end }}[EXT-ALERT] {{ .CommonAnnotations.summary }}'
+        text: >-
+          {{ range .Alerts }}
+          {{ if eq .Status "resolved" }}:white_check_mark:{{ else }}:rotating_light:{{ end }}
+          *{{ .Labels.alertname }}* ({{ .Labels.severity }})
+            {{ .Annotations.description }}
+          {{ end }}

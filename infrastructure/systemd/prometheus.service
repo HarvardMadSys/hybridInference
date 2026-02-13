@@ -10,7 +10,8 @@ Type=simple
 ExecStart=/home/murphy/hybridInference/prometheus \
   --config.file=/home/murphy/hybridInference/infrastructure/prometheus/prometheus.yml \
   --storage.tsdb.path=/home/murphy/hybridInference/var/prometheus \
-  --web.listen-address=0.0.0.0:9090
+  --web.listen-address=0.0.0.0:9090 \
+  --web.enable-lifecycle
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
@@ -18,9 +19,7 @@ LimitNOFILE=65536
 
 NoNewPrivileges=true
 ProtectSystem=full
-ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/home/murphy/hybridInference/var/prometheus /home/murphy/hybridInference/infrastructure/prometheus
 
 [Install]
 WantedBy=multi-user.target

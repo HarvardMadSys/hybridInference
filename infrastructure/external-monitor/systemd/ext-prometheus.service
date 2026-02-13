@@ -1,0 +1,18 @@
+[Unit]
+Description=Prometheus (External Probe)
+After=network-online.target ext-blackbox-exporter.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/prometheus \
+    --config.file=/etc/external-monitor/prometheus.yml \
+    --storage.tsdb.path=/var/lib/ext-prometheus \
+    --storage.tsdb.retention.time=30d \
+    --web.listen-address=127.0.0.1:9090 \
+    --web.enable-lifecycle
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

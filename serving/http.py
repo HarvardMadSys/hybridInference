@@ -147,27 +147,45 @@ class AsyncHTTPClient:
         timeout: aiohttp.ClientTimeout | None = None,
         mode: str = "sse",
     ) -> AsyncIterator[str]:
-        """Yield streaming lines using SSE or NDJSON parsing.
+        """Stream a POST request line-by-line.
 
         Args:
             url: Target URL.
-            json: Optional JSON payload for the POST request body.
-            headers: Optional request headers to include.
-            timeout: Optional overall timeout for the request.
-            mode: Parsing mode, either "sse" for Server-Sent Events or
-                "ndjson" for newline-delimited JSON.
+            json: JSON payload.
+            headers: Optional headers.
+            timeout: Optional timeout override.
+            mode: Streaming mode - "sse" for Server-Sent Events, "ndjson" for
+                  newline-delimited JSON, or "auto" to detect from Content-Type.
 
         Yields:
-            str: For mode="sse", yields lines prefixed with "data: " and a
-            terminal "data: [DONE]". For mode="ndjson", yields complete JSON
-            lines without SSE prefix.
+            Lines from the response (SSE format or raw lines).
 
         Raises:
-            aiohttp.ClientError: If the HTTP request fails.
+            aiohttp.ClientResponseError: If the response status is not 2xx.
         """
         session = await self._ensure_session()
         async with session.post(url, json=json, headers=headers, timeout=timeout) as resp:
-            resp.raise_for_status()
+            # Check status and read error body if present before raising
+            if resp.status >= 400:
+                error_body = ""
+                from contextlib import suppress
+
+                with suppress(Exception):
+                    error_body = await resp.text()
+
+                # Create a more informative error
+                error = aiohttp.ClientResponseError(
+                    request_info=resp.request_info,
+                    history=resp.history,
+                    status=resp.status,
+                    message=resp.reason or "Unknown error",
+                    headers=resp.headers,
+                )
+                # Attach error body for logging
+                if error_body:
+                    error.error_body = error_body  # type: ignore[attr-defined]
+                raise error
+
             # Detect content type for streaming mode if requested
             content_type = str(resp.headers.get("Content-Type", "")).lower()
             detected_mode = mode

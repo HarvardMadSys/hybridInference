@@ -11,6 +11,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
+from .processors import get_processor
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -18,13 +19,22 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def _clean_message(message: dict[str, Any]) -> dict[str, Any]:
-    """Remove None values from message dict to ensure API compatibility.
+def _normalize_text_content(content: Any) -> Any:
+    """Normalize structured content blocks into plain text when needed."""
+    if not isinstance(content, list):
+        return content
 
-    Some APIs (like Featherless) reject messages with null/None fields,
-    so we strip them before sending.
-    """
-    return {k: v for k, v in message.items() if v is not None}
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append(part)
+            continue
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(p for p in parts if p)
 
 
 class OpenAICompatAdapter(BaseAdapter):
@@ -47,6 +57,19 @@ class OpenAICompatAdapter(BaseAdapter):
         super().__init__(config)
 
         logger.info(f"[OpenAICompat] Initialized for {config.id} at {config.base_url}")
+
+        # Initialize output processor strategy based on model ID
+        model_id = config.provider_model_id or config.id
+        self.processor = get_processor(model_id)
+        logger.debug(f"[OpenAICompat] Using processor: {self.processor.__class__.__name__}")
+
+    def _clean_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Remove None values and normalize text content for API compatibility."""
+        cleaned = {k: v for k, v in message.items() if v is not None}
+        if "image" not in (self.config.input_modalities or []):
+            if "content" in cleaned:
+                cleaned["content"] = _normalize_text_content(cleaned["content"])
+        return cleaned
 
     def _build_headers(self) -> dict[str, str]:
         """Build HTTP headers for request."""
@@ -102,7 +125,7 @@ class OpenAICompatAdapter(BaseAdapter):
         validated = self.validate_params(params)
 
         # Clean messages to remove None fields (some APIs reject them)
-        cleaned_messages = [_clean_message(msg) for msg in messages]
+        cleaned_messages = [self._clean_message(msg) for msg in messages]
 
         # Build request payload
         payload = {
@@ -136,8 +159,11 @@ class OpenAICompatAdapter(BaseAdapter):
             retries=2,
         )
 
+        # Process output format (e.g. remove XML tags)
+        processed_response = self.processor.process_response(response)
+
         # Parse response
-        return self._parse_completion_response(response)
+        return self._parse_completion_response(processed_response)
 
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params: Any
@@ -154,7 +180,7 @@ class OpenAICompatAdapter(BaseAdapter):
         validated = self.validate_params(params)
 
         # Clean messages to remove None fields (some APIs reject them)
-        cleaned_messages = [_clean_message(msg) for msg in messages]
+        cleaned_messages = [self._clean_message(msg) for msg in messages]
 
         payload = {
             "model": self._get_model_identifier(),
@@ -183,6 +209,48 @@ class OpenAICompatAdapter(BaseAdapter):
         upstream_usage: dict[str, Any] | None = None
         prompt_tokens_override: int | None = None
 
+        # Helper to yield formatted chunks from processed data
+        def format_and_yield(processed_chunk: dict[str, Any]) -> str | None:
+            nonlocal total_content, finish_reason, upstream_usage, prompt_tokens_override
+
+            choices = processed_chunk.get("choices") or []
+
+            # Capture usage if present
+            if processed_chunk.get("usage"):
+                upstream_usage = processed_chunk["usage"]
+                pt = upstream_usage.get("prompt_tokens")
+                if isinstance(pt, int):
+                    prompt_tokens_override = pt
+
+            if not choices:
+                return None
+
+            delta = choices[0].get("delta", {})
+
+            # Capture finish_reason FIRST (before any early returns)
+            fr = choices[0].get("finish_reason")
+            if fr:
+                finish_reason = fr
+
+            # Handle content
+            if "content" in delta:
+                content = delta["content"]
+                if isinstance(content, str) and content:
+                    total_content += content
+                    return self.format_stream_chunk(
+                        content=content,
+                        model=self.config.id,
+                    )
+
+            # Handle tool calls
+            if "tool_calls" in delta and isinstance(delta.get("tool_calls"), list):
+                return self.format_tool_chunk(
+                    tool_calls=delta["tool_calls"],
+                    model=self.config.id,
+                )
+
+            return None
+
         # Stream response
         async for chunk in self.http.stream_post(url=url, json=payload, headers=headers):
             if not chunk.strip():
@@ -192,61 +260,42 @@ class OpenAICompatAdapter(BaseAdapter):
                 data_str = chunk[6:]
 
                 if data_str.strip() == "[DONE]":
-                    final_usage = upstream_usage or self._build_fallback_usage(
-                        messages=messages,
-                        total_content=total_content,
-                        prompt_tokens_override=prompt_tokens_override,
-                    )
-                    final_chunk = self._build_final_chunk(
-                        usage=final_usage,
-                        finish_reason=finish_reason,
-                    )
-                    yield final_chunk
-                    yield done_sentinel()
                     break
 
                 try:
                     data = json.loads(data_str)
-                    choices = data.get("choices") or []
 
-                    # Capture usage payload when provided (usually final chunk before [DONE])
-                    if data.get("usage"):
-                        upstream_usage = data["usage"]
-                        pt = upstream_usage.get("prompt_tokens")
-                        if isinstance(pt, int):
-                            prompt_tokens_override = pt
+                    # Process output format (returns a list of chunks)
+                    processed_chunks = self.processor.process_stream_chunk(data)
 
-                    if not choices:
-                        # Nothing to emit (likely a usage-only frame); continue consuming.
-                        continue
-
-                    delta = choices[0].get("delta", {})
-
-                    # Handle content chunks
-                    if "content" in delta:
-                        content = delta["content"]
-                        if isinstance(content, str):
-                            total_content += content
-                            if content:
-                                yield self.format_stream_chunk(
-                                    content=content,
-                                    model=self.config.id,
-                                )
-
-                    # Handle tool calls
-                    if "tool_calls" in delta and isinstance(delta.get("tool_calls"), list):
-                        yield self.format_tool_chunk(
-                            tool_calls=delta["tool_calls"],
-                            model=self.config.id,
-                        )
-
-                    # Track finish reason
-                    fr = data["choices"][0].get("finish_reason")
-                    if fr:
-                        finish_reason = fr
+                    for p_chunk in processed_chunks:
+                        formatted = format_and_yield(p_chunk)
+                        if formatted:
+                            yield formatted
 
                 except json.JSONDecodeError:
                     logger.warning(f"[OpenAICompat] Failed to parse chunk: {data_str[:100]}")
+
+        # Flush processor buffer at end of stream
+        # This is crucial for buffered tool calls
+        final_chunks = self.processor.flush()
+        for p_chunk in final_chunks:
+            formatted = format_and_yield(p_chunk)
+            if formatted:
+                yield formatted
+
+        # Final usage and done sentinel
+        final_usage = upstream_usage or self._build_fallback_usage(
+            messages=messages,
+            total_content=total_content,
+            prompt_tokens_override=prompt_tokens_override,
+        )
+        final_chunk_str = self._build_final_chunk(
+            usage=final_usage,
+            finish_reason=finish_reason,
+        )
+        yield final_chunk_str
+        yield done_sentinel()
 
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""

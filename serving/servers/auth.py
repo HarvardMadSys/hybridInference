@@ -9,6 +9,12 @@ from typing import Any
 
 from fastapi import Depends, Header, HTTPException, Request
 
+from serving.observability.metrics import (
+    API_MODEL_REQUESTS,
+    DATABASE_CONNECTED,
+    normalize_model_label,
+    normalize_provider_label,
+)
 from serving.servers.deps import get_db_logger
 
 
@@ -55,6 +61,11 @@ async def verify_api_key(
         api_key = x_api_key
 
     if not api_key:
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label("unknown"),
+            provider=normalize_provider_label("system"),
+            status_code="401",
+        ).inc()
         raise HTTPException(
             status_code=401,
             detail="Missing API key. Use 'Authorization: Bearer hyi-xxx' or 'X-API-Key: hyi-xxx'",
@@ -63,9 +74,12 @@ async def verify_api_key(
     # Validate key against database
     if not db_logger or not db_logger.pool:
         # Update metric to reflect database unavailability
-        from serving.observability.metrics import DATABASE_CONNECTED
-
         DATABASE_CONNECTED.set(0)
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label("unknown"),
+            provider=normalize_provider_label("system"),
+            status_code="500",
+        ).inc()
         raise HTTPException(status_code=500, detail="Database not available for authentication")
 
     key_hash = hash_api_key(api_key)
@@ -86,19 +100,25 @@ async def verify_api_key(
             )
 
         # Database query succeeded - mark as healthy for faster recovery detection
-        from serving.observability.metrics import DATABASE_CONNECTED
-
         DATABASE_CONNECTED.set(1)
 
     except asyncpg.PostgresError:
         # Database-specific error (connection failure, timeout, query error, etc.)
         # Update metric and re-raise
-        from serving.observability.metrics import DATABASE_CONNECTED
-
         DATABASE_CONNECTED.set(0)
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label("unknown"),
+            provider=normalize_provider_label("system"),
+            status_code="500",
+        ).inc()
         raise
 
     if not user_row:
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label("unknown"),
+            provider=normalize_provider_label("system"),
+            status_code="401",
+        ).inc()
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired API key",
@@ -133,6 +153,11 @@ async def verify_api_key(
     # Check cost quota
     if cost_spent + estimated_cost > quota_daily_cost_usd:
         seconds_until_midnight_utc = _seconds_until_utc_midnight()
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label("unknown"),
+            provider=normalize_provider_label("system"),
+            status_code="429",
+        ).inc()
         raise HTTPException(
             status_code=429,
             detail={

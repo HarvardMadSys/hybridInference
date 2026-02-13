@@ -155,6 +155,13 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    API_MODEL_REQUESTS = Counter(
+        "api_model_requests_total",
+        "HTTP response status distribution by model and provider",
+        labelnames=("model", "provider", "status_code"),
+        registry=REGISTRY,
+    )
+
     API_CONCURRENCY = Gauge(
         "api_concurrent_requests",
         "Number of in-flight API requests",
@@ -192,6 +199,25 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
     DATABASE_CONNECTED = Gauge(
         "database_connected",
         "Database connection status (1=connected, 0=disconnected)",
+        registry=REGISTRY,
+    )
+
+    # User statistics metrics
+    USERS_TOTAL = Gauge(
+        "users_total",
+        "Total number of registered users",
+        registry=REGISTRY,
+    )
+
+    USERS_ACTIVE_DAILY = Gauge(
+        "users_active_daily",
+        "Number of daily active users (last 24 hours)",
+        registry=REGISTRY,
+    )
+
+    USERS_ACTIVE_MONTHLY = Gauge(
+        "users_active_monthly",
+        "Number of monthly active users (last 30 days)",
         registry=REGISTRY,
     )
 
@@ -331,6 +357,9 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     RATE_LIMIT_HITS = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
+    API_MODEL_REQUESTS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
     API_CONCURRENCY = type("NoopGauge", (), {"inc": _noop, "dec": _noop})()
     RATE_LIMIT_QUEUE_SIZE = type(
         "NoopGauge", (), {"labels": lambda *a, **k: type("L", (), {"set": _noop})()}
@@ -343,6 +372,9 @@ else:  # No-op fallbacks to avoid hard dependency during tests
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
     DATABASE_CONNECTED = type("NoopGauge", (), {"set": _noop})()
+    USERS_TOTAL = type("NoopGauge", (), {"set": _noop})()
+    USERS_ACTIVE_DAILY = type("NoopGauge", (), {"set": _noop})()
+    USERS_ACTIVE_MONTHLY = type("NoopGauge", (), {"set": _noop})()
 
     def render_latest() -> bytes:  # pragma: no cover
         """Return a minimal body when metrics are disabled."""
@@ -380,6 +412,7 @@ __all__ = [
     # Core API metrics
     "API_CONCURRENCY",
     "API_FALLBACKS",
+    "API_MODEL_REQUESTS",
     "API_REQUESTS",
     "API_REQUEST_LATENCY",
     "API_RETRIES",
@@ -400,6 +433,10 @@ __all__ = [
     "RATE_LIMIT_QUEUE_WAIT",
     # Streaming metrics
     "STREAMING_INTERRUPTION",
+    "USERS_ACTIVE_DAILY",
+    "USERS_ACTIVE_MONTHLY",
+    # User statistics metrics
+    "USERS_TOTAL",
     # Helper functions
     "latency_timer",
     "normalize_model_label",

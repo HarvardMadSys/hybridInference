@@ -52,6 +52,35 @@ class FailingAdapter(BaseAdapter):
         raise RuntimeError("Primary adapter failed")
 
 
+class AdapterWithReasoningContent(BaseAdapter):
+    """Adapter that emits reasoning_content field like Zhipu GLM-4.6."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        content = params.get("content", "Test response")
+        resp = self.format_response(content=content, model=self.config.id)
+        return resp
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        # Emit a chunk with reasoning_content (non-standard field)
+        chunk_with_reasoning = (
+            'data: {"id": "test-123", "object": "chat.completion.chunk", '
+            '"created": 1234567890, "model": "' + self.config.id + '", '
+            '"choices": [{"index": 0, "delta": {"role": "assistant", "content": "", '
+            '"reasoning_content": "\\n"}, "finish_reason": null}]}\n\n'
+        )
+        yield chunk_with_reasoning
+
+        # Emit normal content chunks
+        yield self.format_stream_chunk(model=self.config.id, content="Test ")
+        yield self.format_stream_chunk(model=self.config.id, content="response")
+        yield make_final_usage_chunk(
+            model=self.config.id, messages=messages, total_content="Test response"
+        )
+        yield done_sentinel()
+
+
 def _mk_cfg(model_id: str) -> ModelConfig:
     return ModelConfig(
         id=model_id,
@@ -197,3 +226,65 @@ async def test_rate_limit_rejection(completions_app: FastAPI, mock_rate_limiter)
         assert resp.headers.get("X-RateLimit-RetryAfter") == "1"
         data = resp.json()
         assert data["error"]["type"] == "rate_limit_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_content_filtered_in_streaming(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Test that non-standard reasoning_content field is filtered from streaming responses."""
+    # Disable auth for routing-focused tests
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    # Create router with adapter that emits reasoning_content
+    router = RouteExecutor()
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
+
+    app = FastAPI(title="Test Reasoning Content Filter")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "glm-4.6",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp,
+    ):
+        assert resp.status_code == status.HTTP_200_OK
+        lines: list[str] = []
+        async for line in resp.aiter_lines():
+            if line.startswith("data: "):
+                lines.append(line)
+
+        # Verify that no chunk contains reasoning_content
+        for line in lines:
+            if line != "data: [DONE]" and line != "data: {}":
+                try:
+                    chunk = json.loads(line[6:])
+                    if chunk.get("choices"):
+                        delta = chunk["choices"][0].get("delta", {})
+                        # Assert that reasoning_content is NOT present
+                        assert "reasoning_content" not in delta, (
+                            f"reasoning_content should be filtered out, but found in: {line}"
+                        )
+                except json.JSONDecodeError:
+                    pass  # Skip malformed lines
+
+        # Verify content is still present
+        content = "".join(
+            json.loads(line[6:])["choices"][0]["delta"].get("content", "")
+            for line in lines
+            if line != "data: [DONE]" and line != "data: {}"
+        )
+        assert content == "Test response"

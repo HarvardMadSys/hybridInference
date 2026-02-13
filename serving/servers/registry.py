@@ -29,6 +29,54 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
 
 
+def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
+    """Generate a unique, user-friendly endpoint identifier.
+
+    This ensures each endpoint has independent availability tracking
+    and circuit breaker state, while being easy to understand at a glance.
+
+    Format: "{model}:{location}"
+
+    Examples:
+        - glm-4.6 + sglang + http://localhost:12003 -> "glm-4.6:local"
+        - glm-4.6 + zhipu + https://api.z.ai/v4/    -> "glm-4.6:zhipu-api"
+        - qwen3-coder + sglang + http://localhost:8003 -> "qwen3-coder:local"
+        - qwen3-coder + chutes + https://llm.chutes.ai -> "qwen3-coder:chutes-api"
+        - minimax-m2 + openai_compat + https://api.minimax.io -> "minimax-m2:minimax-api"
+
+    Args:
+        model_id: The model identifier (e.g., "glm-4.6", "qwen3-coder").
+        kind: Adapter kind (e.g., "sglang", "zhipu", "chutes").
+        base_url: The base URL of the endpoint.
+
+    Returns:
+        A unique, human-readable endpoint identifier string.
+    """
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base_url)
+        host = parsed.hostname or "unknown"
+
+        # Local endpoints: use "{model}:local" format
+        if host in ("localhost", "127.0.0.1", "0.0.0.0"):
+            return f"{model_id}:local"
+
+        # For generic adapters, extract service name from hostname
+        if kind in ("openai_compat", "vllm", "sglang"):
+            # Extract service name: "api.minimax.io" -> "minimax"
+            # Remove common prefixes and get the main domain part
+            name = host.replace("api.", "").replace("llm.", "").split(".")[0]
+            if name and name not in ("com", "io", "ai", "org", "net", "xyz"):
+                return f"{model_id}:{name}-api"
+
+        # Remote APIs: use "{model}:{kind}-api" format
+        return f"{model_id}:{kind}-api"
+    except Exception:
+        # Fallback if URL parsing fails
+        return f"{model_id}:{kind}"
+
+
 def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
@@ -157,6 +205,8 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
             adapter_cfg["base_url"] = base_url
             adapter_cfg["api_key"] = api_key
             adapter_cfg["provider"] = kind
+            # Generate unique endpoint_id for availability tracking and circuit breaker
+            adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)
 
             route_provider_model_id = r.get("provider_model_id")
             if route_provider_model_id is not None:

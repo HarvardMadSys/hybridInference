@@ -5,17 +5,17 @@ groups:
       # Instance is down (up==0) - process crashed or unreachable
       - alert: ServiceDown
         expr: up{job="app"} == 0
-        for: 30s
+        for: 2m
         labels:
           severity: critical
         annotations:
           summary: "API Service is Down"
-          description: "Instance {{ $labels.instance }} is down (up==0) for >30s."
+          description: "Instance {{ $labels.instance }} is down (up==0) for >2m."
 
       # No up series at all - Prometheus cannot scrape the job
       - alert: ServiceUnreachable
-        expr: count(up{job="app"}) == 0
-        for: 30s
+        expr: absent(up{job="app"})
+        for: 2m
         labels:
           severity: critical
         annotations:
@@ -26,27 +26,27 @@ groups:
       # Uses min_over_time to reduce false positives from transient failures
       - alert: DatabaseDisconnected
         expr: (min_over_time(database_connected{job="app"}[30s]) == 0) or absent(database_connected{job="app"})
-        for: 30s
+        for: 2m
         labels:
           severity: critical
         annotations:
           summary: "Database Connection Lost"
-          description: "DB disconnected or metric missing on {{ $labels.instance }} for >30s. Users will receive 500 errors for authenticated requests."
+          description: "DB disconnected or metric missing on {{ $labels.instance }} for >2m. Users will receive 500 errors for authenticated requests."
 
-      # Overall service health - high 5xx error rate
-      # Catches issues that health checks might miss (e.g., partial failures)
-      - alert: HighErrorRate
-        expr: |
-          (
-            sum by (job) (rate(api_requests_total{job="app",status_class="5xx"}[5m]))
-            /
-            sum by (job) (rate(api_requests_total{job="app"}[5m]))
-          ) > 0.05
-          and
-          sum by (job) (rate(api_requests_total{job="app"}[5m])) > 0.1
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High 5xx Error Rate"
-          description: "5xx error rate >5% for 5m on job=app. Indicates degraded service quality."
+      # --- Commented out: noisy due to bot/scanner traffic inflating 5xx rates.
+      # --- Re-enable after route normalization is implemented.
+      # - alert: HighErrorRate
+      #   expr: |
+      #     (
+      #       sum by (job) (rate(api_requests_total{job="app",status_class="5xx"}[5m]))
+      #       /
+      #       sum by (job) (rate(api_requests_total{job="app"}[5m]))
+      #     ) > 0.05
+      #     and
+      #     sum by (job) (rate(api_requests_total{job="app"}[5m])) > 0.1
+      #   for: 5m
+      #   labels:
+      #     severity: warning
+      #   annotations:
+      #     summary: "High 5xx Error Rate"
+      #     description: "5xx error rate >5% for 5m on job=app. Indicates degraded service quality."

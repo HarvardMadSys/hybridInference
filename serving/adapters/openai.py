@@ -36,6 +36,152 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
     response_format when declared supported by the model configuration.
     """
 
+    def _fix_tool_call_message_order(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Fix message ordering for OpenAI API compatibility.
+
+        Some clients (e.g., Codex CLI) send interleaved messages where:
+        1. Preamble assistant messages appear between tool_calls and tool response
+        2. User messages appear between tool_calls and tool response
+
+        OpenAI/Azure OpenAI requires that ``role="tool"`` messages immediately follow the
+        assistant message containing ``tool_calls``.
+
+        This function:
+        1. Merges consecutive assistant messages without tool_calls into the preceding one
+        2. Reorders tool messages to immediately follow their corresponding assistant(tool_calls)
+        """
+        from serving.utils.logging import get_logger
+
+        logger = get_logger(__name__)
+
+        if not messages or len(messages) < 2:
+            return messages
+
+        def _merge_content(existing: Any | None, preamble: Any | None) -> Any | None:
+            """Merge assistant ``content`` fields conservatively."""
+            if preamble is None:
+                return existing
+            if isinstance(preamble, str) and not preamble.strip():
+                return existing
+            if isinstance(preamble, list) and not preamble:
+                return existing
+
+            if existing is None:
+                return preamble
+            if isinstance(existing, str) and not existing.strip():
+                existing = ""
+            if isinstance(existing, list) and not existing:
+                existing = []
+
+            if isinstance(existing, str) and isinstance(preamble, str):
+                if existing and preamble:
+                    return f"{existing}\n{preamble}"
+                return preamble or existing
+
+            if isinstance(existing, list) and isinstance(preamble, list):
+                return [*existing, *preamble]
+
+            if isinstance(existing, list) and isinstance(preamble, str):
+                return [*existing, {"type": "text", "text": preamble}]
+
+            if isinstance(existing, str) and isinstance(preamble, list):
+                if not existing:
+                    return preamble
+                return [{"type": "text", "text": existing}, *preamble]
+
+            try:
+                existing_str = json.dumps(existing, ensure_ascii=False)
+            except TypeError:
+                existing_str = str(existing)
+            try:
+                preamble_str = json.dumps(preamble, ensure_ascii=False)
+            except TypeError:
+                preamble_str = str(preamble)
+
+            if existing_str and preamble_str:
+                return f"{existing_str}\n{preamble_str}"
+            return preamble_str or existing_str
+
+        # Phase 1: Build tool_call_id -> tool_message mapping
+        tool_msg_map: dict[str, dict[str, Any]] = {}
+        for msg in messages:
+            if msg.get("role") == "tool":
+                tool_call_id = msg.get("tool_call_id")
+                if tool_call_id:
+                    tool_msg_map[tool_call_id] = msg
+
+        # Phase 2: Process messages, merging assistant preambles and reordering tool messages
+        result: list[dict[str, Any]] = []
+        used_tool_ids: set[str] = set()
+        i = 0
+
+        while i < len(messages):
+            msg = messages[i]
+            role = msg.get("role")
+
+            # Skip tool messages here - they'll be inserted after their corresponding assistant
+            if role == "tool":
+                i += 1
+                continue
+
+            if role == "assistant" and msg.get("tool_calls"):
+                # Merge any following assistant preambles
+                merged_msg = msg.copy()
+                merged_count = 0
+                j = i + 1
+                while j < len(messages):
+                    next_msg = messages[j]
+                    next_role = next_msg.get("role")
+                    # Stop if we hit a non-assistant or an assistant with tool_calls
+                    if next_role != "assistant" or next_msg.get("tool_calls"):
+                        break
+                    merged_msg["content"] = _merge_content(
+                        merged_msg.get("content"), next_msg.get("content")
+                    )
+                    merged_count += 1
+                    j += 1
+
+                if merged_count > 0:
+                    logger.debug(
+                        "[Azure OpenAI] Merged %d assistant preamble message(s) into tool_calls message",
+                        merged_count,
+                    )
+
+                result.append(merged_msg)
+
+                # Insert corresponding tool messages immediately after
+                tool_calls = merged_msg.get("tool_calls", [])
+                inserted_count = 0
+                for tc in tool_calls:
+                    tc_id = tc.get("id")
+                    if tc_id and tc_id in tool_msg_map and tc_id not in used_tool_ids:
+                        result.append(tool_msg_map[tc_id])
+                        used_tool_ids.add(tc_id)
+                        inserted_count += 1
+
+                if inserted_count > 0:
+                    logger.debug(
+                        "[Azure OpenAI] Reordered %d tool message(s) to follow tool_calls",
+                        inserted_count,
+                    )
+
+                i = j if merged_count > 0 else i + 1
+                continue
+
+            result.append(msg)
+            i += 1
+
+        # Phase 3: Append any orphaned tool messages at the end (shouldn't happen normally)
+        for tool_id, tool_msg in tool_msg_map.items():
+            if tool_id not in used_tool_ids:
+                logger.warning(
+                    "[Azure OpenAI] Orphaned tool message with id=%s appended at end",
+                    tool_id,
+                )
+                result.append(tool_msg)
+
+        return result
+
     async def chat_completion(
         self, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
@@ -56,13 +202,16 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         logger = get_logger(__name__)
 
+        # Fix message ordering for OpenAI API compatibility
+        fixed_messages = self._fix_tool_call_message_order(messages)
+
         # Build Azure OpenAI endpoint with api-version
         base_url = self.config.base_url.rstrip("/")
         endpoint = f"{base_url}/chat/completions?api-version=2024-12-01-preview"
 
         # Build payload - Azure OpenAI does not require 'model' field (determined by deployment)
         payload: dict[str, Any] = {
-            "messages": messages,
+            "messages": fixed_messages,
             **validated_params,
         }
 
@@ -148,7 +297,7 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 cache_read_tokens=cached_tokens,
             )
         else:
-            prompt_tokens = int(estimate_prompt_tokens(messages))
+            prompt_tokens = int(estimate_prompt_tokens(fixed_messages))
             completion_tokens = int(estimate_text_tokens(content))
             usage = UsageInfo(
                 prompt_tokens=prompt_tokens,
@@ -180,13 +329,16 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         logger = get_logger(__name__)
 
+        # Fix message ordering for OpenAI API compatibility
+        fixed_messages = self._fix_tool_call_message_order(messages)
+
         # Build Azure OpenAI endpoint with api-version
         base_url = self.config.base_url.rstrip("/")
         endpoint = f"{base_url}/chat/completions?api-version=2024-12-01-preview"
 
         # Build payload - Azure OpenAI does not require 'model' field (determined by deployment)
         payload: dict[str, Any] = {
-            "messages": messages,
+            "messages": fixed_messages,
             "stream": True,
             **validated_params,
         }
@@ -273,7 +425,7 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
                     final_usage = make_final_usage_chunk(
                         model=self.config.id,
-                        messages=messages,
+                        messages=fixed_messages,
                         total_content=total_content,
                         prompt_tokens_override=prompt_tokens_non_cached,
                         completion_tokens_override=completion_tokens_total,
@@ -286,7 +438,7 @@ class OpenAIAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                 else:
                     final_usage = make_final_usage_chunk(
                         model=self.config.id,
-                        messages=messages,
+                        messages=fixed_messages,
                         total_content=total_content,
                         prompt_tokens_override=prompt_tokens_override,
                         finish_reason=finish_reason,

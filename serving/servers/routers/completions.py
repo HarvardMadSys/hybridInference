@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from contextlib import suppress
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from serving.observability.metrics import (
+    API_MODEL_REQUESTS,
     API_TOKEN_ANOMALIES,
     API_TOKENS,
     normalize_model_label,
@@ -29,6 +31,32 @@ from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) -> None:
+    """Schedule a background task to log request to database without blocking HTTP response.
+
+    Args:
+        db_logger: Database logger instance
+        request_id: Request identifier for logging
+        log_data: Dictionary containing all log request parameters
+    """
+
+    async def log_to_db_background():
+        """Background task to log request to database."""
+        try:
+            await db_logger.log_request(**log_data)
+            logger.debug(f"Background DB logging completed for request {request_id}")
+        except Exception as e:
+            # Log error but don't fail the request - it's already sent to client
+            logger.error(
+                f"Background DB logging failed for request {request_id}: {e}",
+                exc_info=True,
+            )
+
+    # Fire-and-forget background task for non-blocking DB logging
+    # We intentionally don't store the reference as we don't need to await it
+    asyncio.create_task(log_to_db_background())  # noqa: RUF006
 
 
 @router.post(
@@ -59,6 +87,12 @@ async def chat_completions(
         body = await request.json()
         payload = ChatCompletionRequest.model_validate(body)
     except Exception as e:
+        # Record 400 error for request parsing failures
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label("unknown"),
+            provider=normalize_provider_label("router"),
+            status_code="400",
+        ).inc()
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     model = payload.model
@@ -78,6 +112,12 @@ async def chat_completions(
 
     # Check if model has routing configured
     if model not in router_exec.routes:
+        # Record 404 error for model not found
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label("router"),
+            status_code="404",
+        ).inc()
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Extract parameters
@@ -149,6 +189,12 @@ async def chat_completions(
                     }
                 )
 
+            # Record 429 rate limit error
+            API_MODEL_REQUESTS.labels(
+                model=normalize_model_label(model),
+                provider=normalize_provider_label("router"),
+                status_code="429",
+            ).inc()
             raise HTTPException(status_code=429, detail=error_detail, headers=headers)
 
     # Generate request ID and metadata
@@ -228,6 +274,8 @@ async def chat_completions(
             tool_calls_map: dict[int, dict[str, Any]] = {}
             # Track TTFT: time to first token
             ttft_ms: int | None = None
+            # Track provider from request context (fallback when routing_info is not available)
+            provider_from_ctx: str | None = None
             try:
                 # Emit initial assistant role chunk for client compatibility (e.g., Cursor)
                 from serving.stream import make_role_chunk
@@ -239,6 +287,16 @@ async def chat_completions(
                 logger.debug(f"Starting to consume adapter stream for model: {model}")
                 async for chunk in router_exec.stream_chat_completion(model, messages, **params):
                     chunk_count += 1
+
+                    # Extract provider from request context on first chunk (context is active during streaming)
+                    if provider_from_ctx is None:
+                        from serving.utils import context as req_ctx
+
+                        ctx = req_ctx.get()
+                        if ctx and "provider" in ctx:
+                            provider_from_ctx = ctx["provider"]
+                            logger.debug(f"Extracted provider from context: {provider_from_ctx}")
+
                     # Forward adapter SSE chunks with sanitization. Adapters may emit final usage chunk.
                     if chunk_count <= 10 or chunk_count % 10 == 0:
                         logger.debug(f"Chunk {chunk_count} received from adapter: {chunk[:200]}")
@@ -333,6 +391,22 @@ async def chat_completions(
                                 if fr:
                                     finish_reason_for_db = fr
 
+                                # Filter out non-standard fields from delta for OpenAI compatibility
+                                # Some providers (e.g., Zhipu GLM-4.6) return reasoning_content which
+                                # is not part of the OpenAI API spec and may break clients like Codex
+                                if "reasoning_content" in delta:
+                                    # Create a sanitized copy of the chunk without reasoning_content
+                                    chunk_json = json.loads(json.dumps(chunk_json))  # Deep copy
+                                    if chunk_json.get("choices") and chunk_json["choices"]:
+                                        sanitized_delta = {
+                                            k: v
+                                            for k, v in chunk_json["choices"][0]
+                                            .get("delta", {})
+                                            .items()
+                                            if k != "reasoning_content"
+                                        }
+                                        chunk_json["choices"][0]["delta"] = sanitized_delta
+
                             # Yield sanitized chunk to client
                             sanitized_chunk = f"data: {json.dumps(chunk_json)}\n\n"
                             logger.debug(
@@ -379,6 +453,7 @@ async def chat_completions(
                     response_for_db["usage"] = normalize_usage(usage_data) or usage_data
 
                 # Get pricing from actual provider used
+                # Fallback to provider from request context if routing_info is not available
                 provider = "router"
                 pricing = None
                 if routing_info:
@@ -387,62 +462,87 @@ async def chat_completions(
                     pricing = get_pricing_for_provider(provider, base_url)
                     if routing_info:
                         metadata.update(routing_info)
+                elif provider_from_ctx:
+                    # Fallback: use provider extracted from request context during streaming
+                    provider = provider_from_ctx
+                    pricing = get_pricing_for_provider(provider, None)
+                    logger.debug(f"Using provider from context for DB logging: {provider}")
+
+                # Prepare data for background database logging (don't await here!)
+                if db_logger:
+                    _schedule_db_log_task(
+                        db_logger,
+                        request_id,
+                        {
+                            "request_id": request_id,
+                            "model_id": model,
+                            "provider": provider,
+                            "prompt": messages,
+                            "response": response_for_db,
+                            "usage": response_for_db.get("usage")
+                            if response_for_db
+                            else usage_data,
+                            "latency_ms": int((time.time() - start_time) * 1000),
+                            "status_code": 200,
+                            "params": (
+                                (
+                                    lambda p: (
+                                        p.update(
+                                            {
+                                                "max_tokens": p.get("max_tokens")
+                                                if p.get("max_tokens") is not None
+                                                else (
+                                                    getattr(
+                                                        get_adapter_config_for_provider(
+                                                            provider,
+                                                            routing_info.get("base_url")
+                                                            if routing_info
+                                                            else None,
+                                                        ),
+                                                        "max_output_length",
+                                                        None,
+                                                    )
+                                                )
+                                            }
+                                        )
+                                        or p
+                                    )
+                                )(dict(params))
+                            ),
+                            "metadata": metadata,
+                            "ttft_ms": ttft_ms,
+                            "pricing": pricing,
+                        },
+                    )
+
+            except Exception as exc:
+                # Prepare error data for background logging
+                # Try to get actual provider from context even in error case
+                from serving.utils import context as req_ctx
+
+                ctx = req_ctx.get()
+                provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
                 if db_logger:
-                    await db_logger.log_request(
-                        request_id=request_id,
-                        model_id=model,
-                        provider=provider,
-                        prompt=messages,
-                        response=response_for_db,
-                        usage=response_for_db.get("usage") if response_for_db else usage_data,
-                        latency_ms=int((time.time() - start_time) * 1000),
-                        status_code=200,
-                        params=(
-                            (
-                                lambda p: (
-                                    p.update(
-                                        {
-                                            "max_tokens": p.get("max_tokens")
-                                            if p.get("max_tokens") is not None
-                                            else (
-                                                getattr(
-                                                    get_adapter_config_for_provider(
-                                                        provider,
-                                                        routing_info.get("base_url")
-                                                        if routing_info
-                                                        else None,
-                                                    ),
-                                                    "max_output_length",
-                                                    None,
-                                                )
-                                            )
-                                        }
-                                    )
-                                    or p
-                                )
-                            )(dict(params))
-                        ),
-                        metadata=metadata,
-                        ttft_ms=ttft_ms,
-                        pricing=pricing,
+                    _schedule_db_log_task(
+                        db_logger,
+                        request_id,
+                        {
+                            "request_id": request_id,
+                            "model_id": model,
+                            "provider": provider_for_error,
+                            "prompt": messages,
+                            "response": None,
+                            "usage": None,
+                            "latency_ms": int((time.time() - start_time) * 1000),
+                            "status_code": 500,
+                            "error": str(exc),
+                            "params": params,
+                            "metadata": metadata,
+                            "pricing": None,  # Error case - no pricing available
+                        },
                     )
-            except Exception as exc:
-                if db_logger:
-                    await db_logger.log_request(
-                        request_id=request_id,
-                        model_id=model,
-                        provider="router",
-                        prompt=messages,
-                        response=None,
-                        usage=None,
-                        latency_ms=int((time.time() - start_time) * 1000),
-                        status_code=500,
-                        error=str(exc),
-                        params=params,
-                        metadata=metadata,
-                        pricing=None,  # Error case - no pricing available
-                    )
+
                 if rate_limiter:
                     estimated_tokens = TokenCounter.estimate_tokens(
                         messages, params.get("max_tokens")
@@ -455,6 +555,14 @@ async def chat_completions(
                 yield error_msg
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
+
+        # Record 200 for streaming response (HTTP layer success)
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label(provider),
+            status_code="200",
+        ).inc()
+
         return StreamingResponse(
             stream_generator(),
             media_type="text/event-stream",
@@ -480,44 +588,58 @@ async def chat_completions(
             # Never leak internal routing details to clients
             with suppress(Exception):
                 del response["_routing"]
+        else:
+            # Fallback: get provider from request context when _routing is not available
+            from serving.utils import context as req_ctx
 
+            ctx = req_ctx.get()
+            if ctx and "provider" in ctx:
+                provider = ctx["provider"]
+                logger.debug(
+                    f"Using provider from context for non-streaming DB logging: {provider}"
+                )
+
+        # Move db_logger.log_request() out of the stream_generator
+        # and into a background task that runs after the response is sent.
         if db_logger:
             pricing = get_pricing_for_provider(provider, base_url)
-
-            # Normalize usage to extract reasoning_tokens from nested locations
-            normalized_usage = normalize_usage(response.get("usage"))
-
-            await db_logger.log_request(
-                request_id=request_id,
-                model_id=model,
-                provider=provider,
-                prompt=messages,
-                response=response,
-                usage=normalized_usage,
-                latency_ms=int((time.time() - start_time) * 1000),
-                status_code=200,
-                params=(
-                    (
-                        lambda p: (
-                            p.update(
-                                {
-                                    "max_tokens": p.get("max_tokens")
-                                    if p.get("max_tokens") is not None
-                                    else (
-                                        getattr(
-                                            get_adapter_config_for_provider(provider, base_url),
-                                            "max_output_length",
-                                            None,
+            _schedule_db_log_task(
+                db_logger,
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": provider,
+                    "prompt": messages,
+                    "response": response,
+                    "usage": normalize_usage(response.get("usage"))
+                    if isinstance(response, dict)
+                    else None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": 200,
+                    "params": (
+                        (
+                            lambda p: (
+                                p.update(
+                                    {
+                                        "max_tokens": p.get("max_tokens")
+                                        if p.get("max_tokens") is not None
+                                        else (
+                                            getattr(
+                                                get_adapter_config_for_provider(provider, base_url),
+                                                "max_output_length",
+                                                None,
+                                            )
                                         )
-                                    )
-                                }
+                                    }
+                                )
+                                or p
                             )
-                            or p
-                        )
-                    )(dict(params))
-                ),
-                metadata=metadata,
-                pricing=pricing,
+                        )(dict(params))
+                    ),
+                    "metadata": metadata,
+                    "pricing": pricing,
+                },
             )
 
         # Emit token counters when usage is available, with anomaly checks
@@ -591,25 +713,80 @@ async def chat_completions(
                         f"Token estimation variance for {model}: estimated {estimated}, actual {actual_tokens}"
                     )
 
+        # Record 200 for non-streaming response
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label(provider),
+            status_code="200",
+        ).inc()
+
         return response
 
     except Exception as exc:
+        # Best-effort extraction of status code from exception
+        # Different HTTP client libraries store status codes in different places:
+        # - OpenAI/Anthropic SDK: exc.status_code
+        # - httpx: exc.response.status_code
+        # - aiohttp: exc.status
+        # - requests: exc.response.status_code
+        exc_status_code = None
+
+        # Try direct status_code attribute (OpenAI, Anthropic SDKs)
+        if hasattr(exc, "status_code") and exc.status_code is not None:
+            exc_status_code = exc.status_code
+        # Try response.status_code (httpx, requests)
+        elif hasattr(exc, "response") and exc.response is not None:
+            if hasattr(exc.response, "status_code"):
+                exc_status_code = exc.response.status_code
+            elif hasattr(exc.response, "status"):
+                exc_status_code = exc.response.status
+        # Try direct status attribute (aiohttp)
+        elif hasattr(exc, "status") and exc.status is not None:
+            exc_status_code = exc.status
+        # Try code attribute (some custom exceptions)
+        elif hasattr(exc, "code") and exc.code is not None:
+            exc_status_code = exc.code
+
+        # Default to 500 if we couldn't extract status code
+        if exc_status_code is None:
+            exc_status_code = 500
+
+        # Move db_logger.log_request() out of the stream_generator
+        # and into a background task that runs after the response is sent.
+        # Try to get actual provider from context even in error case
+        from serving.utils import context as req_ctx
+
+        ctx = req_ctx.get()
+        provider_for_error = ctx.get("provider", "router") if ctx else "router"
+
+        if db_logger:
+            _schedule_db_log_task(
+                db_logger,
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": provider_for_error,
+                    "prompt": messages,
+                    "response": None,
+                    "usage": None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": exc_status_code,
+                    "error": str(exc),
+                    "params": params,
+                    "metadata": metadata,
+                    "pricing": None,  # Error case - no pricing available
+                },
+            )
         if rate_limiter:
             estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
             await rate_limiter.release_tokens(model, estimated_tokens)
-        if db_logger:
-            await db_logger.log_request(
-                request_id=request_id,
-                model_id=model,
-                provider="router",
-                prompt=messages,
-                response=None,
-                usage=None,
-                latency_ms=int((time.time() - start_time) * 1000),
-                status_code=500,
-                error=str(exc),
-                params=params,
-                metadata=metadata,
-                pricing=None,  # Error case - no pricing available
-            )
-        raise HTTPException(500, str(exc)) from exc
+
+        # Record error status code
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label(provider_for_error),
+            status_code=str(exc_status_code),
+        ).inc()
+
+        raise HTTPException(exc_status_code, str(exc)) from exc

@@ -22,13 +22,71 @@ def compute_prompt_hash(prompt: list[dict[str, Any]] | str) -> str:
         Hex-encoded SHA256 hash (64 characters).
     """
     # Normalize to JSON string for consistent hashing
-    if isinstance(prompt, list):
+    if isinstance(prompt, list | dict):
         # Sort keys for deterministic JSON output
-        prompt_str = json.dumps(prompt, sort_keys=True, ensure_ascii=False)
+        # Use consistent separators for cross-version compatibility
+        prompt_str = json.dumps(prompt, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     else:
         prompt_str = str(prompt)
 
     return hashlib.sha256(prompt_str.encode("utf-8")).hexdigest()
+
+
+def compute_prompt_hash_chunked(
+    prompt: list[dict[str, Any]] | str,
+    chunk_size: int = 4,
+) -> str:
+    """Compute hash of prompt using 4-token chunks for privacy protection.
+
+    This function tokenizes the prompt and computes a hash for every N tokens
+    (default 4), then combines all chunk hashes into a final hash. This approach
+    provides the same privacy guarantees as full-prompt hashing while enabling
+    potential future optimizations like prefix matching.
+
+    Args:
+        prompt: Prompt messages (list of dicts) or string.
+        chunk_size: Number of tokens per chunk (default: 4).
+
+    Returns:
+        Hex-encoded SHA256 hash of all chunk hashes combined.
+
+    Raises:
+        ValueError: If chunk_size is <= 0.
+    """
+    # Validate chunk_size
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+
+    # Import here to avoid circular dependency
+    from serving.utils.tokens import tokenize_text
+
+    # Normalize to JSON string for consistent hashing
+    if isinstance(prompt, list | dict):
+        prompt_str = json.dumps(prompt, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    else:
+        prompt_str = str(prompt)
+
+    # Tokenize the prompt
+    tokens = tokenize_text(prompt_str)
+
+    if not tokens:
+        # Empty prompt edge case
+        return hashlib.sha256(b"").hexdigest()
+
+    # Split into chunks and hash each chunk using streaming approach
+    # This is more memory-efficient than concatenating hex strings
+    final_hasher = hashlib.sha256()
+    for i in range(0, len(tokens), chunk_size):
+        chunk = tokens[i : i + chunk_size]
+        # Convert token IDs to bytes for hashing
+        chunk_bytes = b"".join(
+            token_id.to_bytes(4, byteorder="big", signed=False) for token_id in chunk
+        )
+        # Hash the chunk and update final hasher with the digest bytes
+        chunk_digest = hashlib.sha256(chunk_bytes).digest()
+        final_hasher.update(chunk_digest)
+
+    return final_hasher.hexdigest()
 
 
 def calculate_cost(
@@ -65,7 +123,12 @@ def calculate_cost(
 class DatabaseLogger:
     """Asynchronous PostgreSQL logger using a pooled connection."""
 
-    def __init__(self, db_config: dict[str, str], store_full_prompts: bool = True):
+    def __init__(
+        self,
+        db_config: dict[str, str],
+        store_full_prompts: bool = True,
+        use_chunked_hash: bool = False,
+    ):
         """Initialize the logger with a DSN/config mapping.
 
         Args:
@@ -73,9 +136,13 @@ class DatabaseLogger:
             store_full_prompts: If False, only store prompt_hash for privacy.
                 When disabled, prompt and response fields will be NULL and only
                 hashes are stored for analytics.
+            use_chunked_hash: If True, use 4-token chunked hashing instead of
+                full prompt hashing. Both methods provide equivalent privacy
+                protection but chunked hashing may enable future optimizations.
         """
         self.db_config = db_config
         self.store_full_prompts = store_full_prompts
+        self.use_chunked_hash = use_chunked_hash
         # Use Any to avoid mypy issues when asyncpg types are unavailable.
         self.pool: Any | None = None
 
@@ -121,6 +188,7 @@ class DatabaseLogger:
                     prompt TEXT,
                     response TEXT,
                     prompt_hash TEXT,
+                    response_hash TEXT,
 
                     -- Additional metadata (kept for compatibility)
                     status_code INTEGER,
@@ -177,6 +245,12 @@ class DatabaseLogger:
                 WHERE prompt_hash IS NOT NULL
             """)
 
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_logs_response_hash
+                ON api_logs(response_hash)
+                WHERE response_hash IS NOT NULL
+            """)
+
             # Migrations for existing databases
             await conn.execute("""
                 ALTER TABLE api_logs
@@ -196,6 +270,11 @@ class DatabaseLogger:
             await conn.execute("""
                 ALTER TABLE api_logs
                 ADD COLUMN IF NOT EXISTS prompt_hash TEXT
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS response_hash TEXT
             """)
 
             await conn.execute("""
@@ -292,6 +371,127 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS quota_monthly_cost_usd DECIMAL(10, 4)
             """)
 
+            # Add account_id column to link API keys to user accounts (self-registered users only)
+            await conn.execute("""
+                ALTER TABLE api_keys
+                ADD COLUMN IF NOT EXISTS account_id TEXT
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_keys_account
+                ON api_keys(account_id)
+            """)
+
+            # Prevent concurrent duplicate active keys per account (self-registered users)
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique
+                ON api_keys(account_id)
+                WHERE status = 'active' AND account_id IS NOT NULL
+            """)
+
+            # Users table for self-service registration
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    user_name TEXT,
+                    email_verified BOOLEAN DEFAULT FALSE,
+                    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'deleted')),
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    last_login_at TIMESTAMPTZ
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_users_email
+                ON users(email)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_users_status
+                ON users(status)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_users_created_at
+                ON users(created_at DESC)
+            """)
+
+            # Auth sessions table for refresh token management
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    refresh_token_hash TEXT NOT NULL UNIQUE,
+                    jti TEXT,
+                    sid TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    last_used_at TIMESTAMPTZ,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    revoked BOOLEAN DEFAULT FALSE,
+                    user_agent TEXT,
+                    ip_address TEXT
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_auth_sessions_user
+                ON auth_sessions(user_id, expires_at)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_auth_sessions_token
+                ON auth_sessions(refresh_token_hash) WHERE NOT revoked
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti
+                ON auth_sessions(jti)
+            """)
+
+            # Email verification tokens table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS email_verification_tokens (
+                    token TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    used_at TIMESTAMPTZ
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_email_verification_user
+                ON email_verification_tokens(user_id)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_email_verification_expires
+                ON email_verification_tokens(expires_at)
+            """)
+
+            # Password reset tokens table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    token TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    used_at TIMESTAMPTZ
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_password_reset_user
+                ON password_reset_tokens(user_id)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_password_reset_expires
+                ON password_reset_tokens(expires_at)
+            """)
+
             # Admin audit log table for tracking all admin operations
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS admin_audit_log (
@@ -337,6 +537,7 @@ class DatabaseLogger:
         metadata: dict[str, Any] | None = None,
         ttft_ms: int | None = None,
         prompt_hash: str | None = None,
+        response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
     ) -> None:
@@ -356,6 +557,7 @@ class DatabaseLogger:
             metadata: Additional metadata (user_id, session_id, etc.).
             ttft_ms: Time to first token in milliseconds.
             prompt_hash: Hash of prompt for deduplication/caching (auto-computed if None).
+            response_hash: Hash of response for deduplication/caching (auto-computed if None).
             store_full_content: Override instance default for storing full prompt/response.
                 If None, uses self.store_full_prompts. Set False for privacy mode (hash only).
             pricing: Model pricing config for cost calculation (per 1M tokens).
@@ -365,7 +567,24 @@ class DatabaseLogger:
 
         # Auto-compute prompt_hash if not provided
         if prompt_hash is None:
-            prompt_hash = compute_prompt_hash(prompt)
+            if self.use_chunked_hash:
+                prompt_hash = compute_prompt_hash_chunked(prompt)
+            else:
+                prompt_hash = compute_prompt_hash(prompt)
+
+        # Auto-compute response_hash if not provided
+        if response_hash is None and response is not None:
+            # Normalize response to string for hashing
+            # Use same normalization strategy as prompt for consistency
+            response_for_hash = (
+                json.dumps(response, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+                if isinstance(response, dict)
+                else str(response)
+            )
+            if self.use_chunked_hash:
+                response_hash = compute_prompt_hash_chunked(response_for_hash)
+            else:
+                response_hash = compute_prompt_hash(response_for_hash)
 
         # Privacy control: use per-request override or instance default
         should_store_full = (
@@ -399,7 +618,7 @@ class DatabaseLogger:
                     ttft_ms, latency_ms,
                     prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
                     cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response, prompt_hash,
+                    prompt, response, prompt_hash, response_hash,
                     status_code, error, user_id, session_id, metadata,
                     tools
                 )
@@ -409,9 +628,9 @@ class DatabaseLogger:
                     $9, $10,
                     $11, $12, $13, $14,
                     $15, $16, $17,
-                    $18, $19, $20,
-                    $21, $22, $23, $24, $25::jsonb,
-                    $26::jsonb
+                    $18, $19, $20, $21,
+                    $22, $23, $24, $25, $26::jsonb,
+                    $27::jsonb
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -440,6 +659,7 @@ class DatabaseLogger:
                 prompt_str,
                 response_str,
                 prompt_hash,
+                response_hash,
                 # Metadata
                 status_code,
                 error,

@@ -1,17 +1,30 @@
 routing_strategy: fixed
 routing_parameter:
-  local_fraction: 0.6
+  local_fraction: 1
 timeout: 2
 health_check: 30
 logging:
   output: output.log
 local_deployment:
-  - endpoint: ${LOCAL_BASE_URL:-http://localhost:8000}
+  - endpoint: http://localhost:8003
     models:
-      - llama-3.3-70b-instruct
-      - llama-4-scout
+      - qwen3-coder-30b
+  - endpoint: http://localhost:12003
+    models:
+      - glm-4.6
+  - endpoint: http://localhost:12004
+    models:
+      - minimax-m2
 remote_deployment:
-  - endpoint: ${LLAMA_BASE_URL}
+  - endpoint: ${CHUTES_BASE_URL}
     models:
-      - llama-3.3-70b-instruct
-
+      - qwen3-coder-30b
+  - endpoint: https://api.minimax.io/v1
+    models:
+      - minimax-m2
+      - minimax-m2.5
+  - endpoint: https://api.z.ai/api/coding/paas/v4/
+    models:
+      - glm-4.7
+      - glm-4.7-flash
+      - glm-5

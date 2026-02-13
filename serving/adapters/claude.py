@@ -13,6 +13,7 @@ Key differences from standard Anthropic API:
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from contextlib import suppress
@@ -25,12 +26,221 @@ from serving.stream import done_sentinel, make_final_usage_chunk
 
 from .base import BaseAdapter, UsageInfo
 
+# Supported image MIME types for Claude (canonical types)
+SUPPORTED_IMAGE_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+}
+
+# MIME type normalization mapping (common variations -> canonical)
+MIME_TYPE_ALIASES = {
+    "image/jpg": "image/jpeg",  # Common non-standard alias
+    "image/jpeg": "image/jpeg",
+    "image/png": "image/png",
+    "image/gif": "image/gif",
+    "image/webp": "image/webp",
+}
+
+# File extension to MIME type mapping
+EXTENSION_TO_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
 
 class ClaudeAdapter(BaseAdapter):
     """Adapter for Claude models via Google Vertex API."""
 
     # Anthropic API version
     ANTHROPIC_VERSION = "vertex-2023-10-16"
+
+    def _convert_content_block(self, block: dict[str, Any] | str) -> dict[str, Any]:
+        """Convert a single content block from OpenAI format to Claude format.
+
+        Handles:
+        - text blocks: pass through or wrap string
+        - image_url blocks: convert to Claude's image format with base64 or URL
+
+        Args:
+            block: A content block in OpenAI format
+
+        Returns:
+            A content block in Claude format
+        """
+        # Handle string content
+        if isinstance(block, str):
+            return {"type": "text", "text": block}
+
+        if not isinstance(block, dict):
+            return {"type": "text", "text": str(block)}
+
+        block_type = block.get("type")
+
+        # Text blocks pass through
+        if block_type == "text":
+            return {"type": "text", "text": block.get("text", "")}
+
+        # Convert OpenAI image_url to Claude image format
+        if block_type == "image_url":
+            image_url_obj = block.get("image_url", {})
+            # Handle case where image_url is just a string or a dict with 'url' key
+            url = image_url_obj if isinstance(image_url_obj, str) else image_url_obj.get("url", "")
+
+            if not url:
+                return {"type": "text", "text": "[Invalid image: no URL provided]"}
+
+            # Check if it's a base64 data URL
+            if url.startswith("data:"):
+                return self._parse_data_url(url)
+            else:
+                # It's a regular URL - Claude supports URL source type
+                # Note: Claude API infers media type from URL, no need to specify
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": url,
+                    },
+                }
+
+        # Unknown block type - try to preserve or convert to text
+        if "text" in block:
+            return {"type": "text", "text": block["text"]}
+
+        # Fallback: serialize as JSON text
+        with suppress(Exception):
+            return {"type": "text", "text": json.dumps(block)}
+        return {"type": "text", "text": str(block)}
+
+    def _parse_data_url(self, data_url: str) -> dict[str, Any]:
+        """Parse a data URL and convert to Claude image format.
+
+        Handles both base64-encoded and URL-encoded data URLs.
+        Supports data URLs with additional parameters like ;name= or ;charset=.
+
+        RFC 2397 format: data:[<mediatype>][;base64],<data>
+        where <mediatype> can include parameters: type/subtype[;param=value]*
+
+        Args:
+            data_url: A data URL like "data:image/jpeg;base64,/9j/4AAQ..."
+                      or "data:image/png;name=photo.jpg;base64,/9j/..."
+                      or "data:image/png,%89PNG..."
+
+        Returns:
+            Claude image block with base64 source
+        """
+        # RFC 2397: data:[<mediatype>][;base64],<data>
+        # <mediatype> can be: type/subtype[;param=value]*
+        # We need to:
+        # 1. Extract the base MIME type (before any ;)
+        # 2. Check if ;base64 appears anywhere in the parameters
+        # 3. Get the data after the comma
+
+        # First, find the comma that separates metadata from data
+        comma_idx = data_url.find(",")
+        if comma_idx == -1 or not data_url.startswith("data:"):
+            return {"type": "text", "text": "[Invalid data URL format]"}
+
+        metadata = data_url[5:comma_idx]  # Skip "data:" prefix
+        raw_data = data_url[comma_idx + 1 :]
+
+        # Check if base64 encoding is specified
+        is_base64 = ";base64" in metadata.lower()
+
+        # Extract the MIME type (first part before any semicolon, or the whole thing if no params)
+        media_type = metadata.split(";")[0].strip() if ";" in metadata else metadata.strip()
+
+        # Default to image/jpeg if no media type specified
+        if not media_type:
+            media_type = "image/jpeg"
+
+        # Normalize media type (handle common aliases like image/jpg)
+        normalized_media_type = media_type.lower().strip()
+        if normalized_media_type in MIME_TYPE_ALIASES:
+            media_type = MIME_TYPE_ALIASES[normalized_media_type]
+        elif normalized_media_type in SUPPORTED_IMAGE_TYPES:
+            media_type = normalized_media_type
+        else:
+            return {
+                "type": "text",
+                "text": f"[Unsupported image type: {media_type}]",
+            }
+
+        # Handle encoding: if not base64, we need to decode URL encoding and re-encode
+        if is_base64:
+            base64_data = raw_data
+        else:
+            # URL-encoded data URL - decode and re-encode as base64
+            try:
+                from urllib.parse import unquote_to_bytes
+
+                decoded_bytes = unquote_to_bytes(raw_data)
+                base64_data = base64.b64encode(decoded_bytes).decode("ascii")
+            except Exception:
+                return {
+                    "type": "text",
+                    "text": "[Failed to decode non-base64 data URL]",
+                }
+
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": base64_data,
+            },
+        }
+
+    def _infer_media_type_from_url(self, url: str) -> str:
+        """Infer media type from URL extension.
+
+        Args:
+            url: Image URL
+
+        Returns:
+            MIME type string, defaults to image/jpeg if unknown
+        """
+        # Extract path from URL (ignore query params)
+        path = url.split("?")[0].lower()
+
+        for ext, mime in EXTENSION_TO_MIME.items():
+            if path.endswith(ext):
+                return mime
+
+        # Default to JPEG if unknown
+        return "image/jpeg"
+
+    def _convert_content_blocks(self, content: str | list[Any] | Any) -> list[dict[str, Any]]:
+        """Convert content from OpenAI format to Claude format.
+
+        Args:
+            content: Message content in OpenAI format (string, list, or other)
+
+        Returns:
+            List of content blocks in Claude format
+        """
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}]
+
+        if isinstance(content, list):
+            blocks = []
+            for item in content:
+                converted = self._convert_content_block(item)
+                blocks.append(converted)
+            return blocks
+
+        # Fallback for other types
+        if content is None:
+            return []
+
+        with suppress(Exception):
+            return [{"type": "text", "text": json.dumps(content)}]
+        return [{"type": "text", "text": str(content)}]
 
     async def chat_completion(
         self, messages: list[dict[str, Any]], **params: Any
@@ -589,14 +799,12 @@ class ClaudeAdapter(BaseAdapter):
             if isinstance(e, aiohttp.ClientResponseError):
                 logger.error(f"Response status: {e.status}, message: {e.message}")
                 logger.error(f"Request info: {e.request_info}")
-                # Try to get detailed error message
-                try:
-                    error_body = (
-                        await e.response.text() if hasattr(e, "response") else "No response body"
-                    )
-                    logger.error(f"Response body: {error_body[:500]}")
-                except Exception:
-                    pass
+                # Try to get detailed error message from attached error_body
+                error_body = getattr(e, "error_body", None)
+                if error_body:
+                    logger.error(f"Response body: {error_body[:1000]}")
+                else:
+                    logger.error("Response body: No response body available")
             # Fail-fast: propagate error immediately instead of fallback
             raise
 
@@ -605,8 +813,18 @@ class ClaudeAdapter(BaseAdapter):
 
         Claude doesn't use a separate 'system' role in messages array.
         System messages should be extracted and passed as 'system' parameter.
+
+        IMPORTANT: Claude API requires:
+        1. Alternating user/assistant roles
+        2. Each tool_use block must have a corresponding tool_result in the NEXT message
+
+        This method:
+        - Merges consecutive messages with the same role
+        - Ensures tool_result blocks immediately follow their corresponding tool_use
+        - Converts OpenAI image_url blocks to Claude image blocks
         """
-        converted: list[dict[str, Any]] = []
+        # Phase 1: Convert all messages to Claude format, tracking tool_use IDs
+        raw_converted: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content")
@@ -617,30 +835,34 @@ class ClaudeAdapter(BaseAdapter):
 
             # Map user role and normalize content to Claude blocks
             if role == "user":
-                if isinstance(content, str):
-                    content_blocks = [{"type": "text", "text": content}]
-                elif isinstance(content, list):
-                    content_blocks = content
-                else:
-                    content_blocks = [{"type": "text", "text": json.dumps(content or "")}]
-                converted.append({"role": "user", "content": content_blocks})
+                content_blocks = self._convert_content_blocks(content)
+                raw_converted.append(
+                    {
+                        "role": "user",
+                        "content": content_blocks,
+                        "_type": "user",
+                    }
+                )
 
             # Assistant role: either tool_calls (OpenAI) -> tool_use (Claude), or plain text
             elif role == "assistant":
-                blocks: list[dict[str, Any]] = []
+                text_blocks: list[dict[str, Any]] = []
+                tool_use_blocks: list[dict[str, Any]] = []
+
                 # Preserve assistant text content if present
                 if isinstance(content, str) and content.strip():
-                    blocks.append({"type": "text", "text": content})
+                    text_blocks.append({"type": "text", "text": content})
                 elif isinstance(content, list):
-                    # Pass through structured blocks (e.g., text/image)
-                    blocks.extend([b for b in content if isinstance(b, dict | str)])
+                    for b in content:
+                        converted_block = self._convert_content_block(b)
+                        text_blocks.append(converted_block)
                 elif content:
-                    # Fallback: dump unknown content to text
                     with suppress(Exception):
-                        blocks.append({"type": "text", "text": json.dumps(content)})
+                        text_blocks.append({"type": "text", "text": json.dumps(content)})
 
                 # Append tool_use blocks if tool_calls provided
                 tool_calls = msg.get("tool_calls")
+                tool_use_ids: list[str] = []
                 if isinstance(tool_calls, list) and tool_calls:
                     for tc in tool_calls:
                         func = (tc or {}).get("function", {})
@@ -650,17 +872,31 @@ class ClaudeAdapter(BaseAdapter):
                             args_obj = json.loads(args_raw)
                         except Exception:
                             args_obj = {}
-                        blocks.append(
+                        tool_id = tc.get("id")
+                        tool_use_blocks.append(
                             {
                                 "type": "tool_use",
-                                "id": tc.get("id"),
+                                "id": tool_id,
                                 "name": name,
                                 "input": args_obj,
                             }
                         )
+                        if tool_id:
+                            tool_use_ids.append(tool_id)
+
+                # IMPORTANT: Claude requires text blocks BEFORE tool_use blocks
+                blocks = text_blocks + tool_use_blocks
 
                 if blocks:
-                    converted.append({"role": "assistant", "content": blocks})
+                    raw_converted.append(
+                        {
+                            "role": "assistant",
+                            "content": blocks,
+                            "_type": "assistant",
+                            "_tool_use_ids": tool_use_ids,
+                        }
+                    )
+
             elif role == "tool":
                 # Convert OpenAI-style tool result to Claude's tool_result block.
                 tool_use_id = msg.get("tool_call_id") or msg.get("id")
@@ -672,18 +908,140 @@ class ClaudeAdapter(BaseAdapter):
                 if isinstance(content, str):
                     tool_result_block["content"] = [{"type": "text", "text": content}]
                 elif isinstance(content, list):
-                    tool_result_block["content"] = content
+                    converted_tool_content = []
+                    for item in content:
+                        converted_item = self._convert_content_block(item)
+                        converted_tool_content.append(converted_item)
+                    tool_result_block["content"] = converted_tool_content
                 else:
                     tool_result_block["content"] = [
                         {"type": "text", "text": json.dumps(content or "")}
                     ]
 
-                converted.append(
+                raw_converted.append(
                     {
                         "role": "user",
                         "content": [tool_result_block],
+                        "_type": "tool_result",
+                        "_tool_use_id": tool_use_id,
                     }
                 )
+
+        # Phase 2: Reorder to ensure tool_result immediately follows tool_use
+        # Build a map of tool_use_id -> tool_result for quick lookup
+        tool_result_map: dict[str, dict[str, Any]] = {}
+        for msg in raw_converted:
+            if msg.get("_type") == "tool_result":
+                tool_use_id = msg.get("_tool_use_id")
+                if tool_use_id:
+                    tool_result_map[tool_use_id] = msg
+
+        # Phase 3: Build final message list with correct ordering
+        converted: list[dict[str, Any]] = []
+        pending_tool_use_ids: list[str] = []  # Track tool_use IDs waiting for results
+        used_tool_result_ids: set[str] = set()  # Track which tool_results we've already inserted
+
+        for msg in raw_converted:
+            msg_type = msg.get("_type")
+            role = msg["role"]
+            content = msg["content"]
+
+            if msg_type == "tool_result":
+                # Skip if already inserted
+                tool_use_id = msg.get("_tool_use_id")
+                if tool_use_id in used_tool_result_ids:
+                    continue
+                # If not yet inserted, it will be handled when we encounter a non-assistant message
+                # after the corresponding tool_use
+                # For now, just merge with previous user message if exists
+                if converted and converted[-1]["role"] == "user":
+                    converted[-1]["content"].extend(content)
+                else:
+                    converted.append({"role": "user", "content": list(content)})
+                used_tool_result_ids.add(tool_use_id)
+                continue
+
+            if role == "assistant":
+                tool_use_ids = msg.get("_tool_use_ids", [])
+
+                # Merge with previous assistant message if exists
+                if converted and converted[-1]["role"] == "assistant":
+                    existing_content = converted[-1]["content"]
+                    existing_text = [b for b in existing_content if b.get("type") != "tool_use"]
+                    existing_tools = [b for b in existing_content if b.get("type") == "tool_use"]
+                    new_text = [b for b in content if b.get("type") != "tool_use"]
+                    new_tools = [b for b in content if b.get("type") == "tool_use"]
+                    # Text before tool_use: existing_text + new_text + existing_tools + new_tools
+                    converted[-1]["content"] = existing_text + new_text + existing_tools + new_tools
+                    pending_tool_use_ids.extend(tool_use_ids)
+                else:
+                    # Before adding a new assistant message, check if we need to insert tool_results
+                    # for any pending tool_use IDs
+                    if pending_tool_use_ids:
+                        tool_result_blocks = []
+                        for tid in pending_tool_use_ids:
+                            if tid in tool_result_map and tid not in used_tool_result_ids:
+                                result_msg = tool_result_map[tid]
+                                tool_result_blocks.extend(result_msg["content"])
+                                used_tool_result_ids.add(tid)
+
+                        if tool_result_blocks:
+                            if converted and converted[-1]["role"] == "user":
+                                converted[-1]["content"].extend(tool_result_blocks)
+                            else:
+                                converted.append({"role": "user", "content": tool_result_blocks})
+
+                        pending_tool_use_ids.clear()
+
+                    converted.append({"role": "assistant", "content": list(content)})
+                    pending_tool_use_ids.extend(tool_use_ids)
+
+            elif role == "user":
+                # Before adding user content, insert any pending tool_results
+                if pending_tool_use_ids:
+                    tool_result_blocks = []
+                    for tid in pending_tool_use_ids:
+                        if tid in tool_result_map and tid not in used_tool_result_ids:
+                            result_msg = tool_result_map[tid]
+                            tool_result_blocks.extend(result_msg["content"])
+                            used_tool_result_ids.add(tid)
+
+                    if tool_result_blocks:
+                        # Insert tool_results first, then user content
+                        if converted and converted[-1]["role"] == "user":
+                            converted[-1]["content"].extend(tool_result_blocks)
+                            converted[-1]["content"].extend(content)
+                        else:
+                            converted.append(
+                                {"role": "user", "content": tool_result_blocks + list(content)}
+                            )
+                        pending_tool_use_ids.clear()
+                    else:
+                        pending_tool_use_ids.clear()
+                        if converted and converted[-1]["role"] == "user":
+                            converted[-1]["content"].extend(content)
+                        else:
+                            converted.append({"role": "user", "content": list(content)})
+                else:
+                    if converted and converted[-1]["role"] == "user":
+                        converted[-1]["content"].extend(content)
+                    else:
+                        converted.append({"role": "user", "content": list(content)})
+
+        # Handle any remaining pending tool_results at the end
+        if pending_tool_use_ids:
+            tool_result_blocks = []
+            for tid in pending_tool_use_ids:
+                if tid in tool_result_map and tid not in used_tool_result_ids:
+                    result_msg = tool_result_map[tid]
+                    tool_result_blocks.extend(result_msg["content"])
+                    used_tool_result_ids.add(tid)
+
+            if tool_result_blocks:
+                if converted and converted[-1]["role"] == "user":
+                    converted[-1]["content"].extend(tool_result_blocks)
+                else:
+                    converted.append({"role": "user", "content": tool_result_blocks})
 
         return converted
 
