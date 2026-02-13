@@ -1,3 +1,0 @@
-[submodule "llmAPI_bench"]
-	path = llmAPI_bench
-	url = https://github.com/HarvardSys/llmAPI_bench.git
