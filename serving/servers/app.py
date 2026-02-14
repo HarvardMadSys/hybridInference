@@ -97,6 +97,7 @@ def main():
         host=settings.server_host,
         port=settings.server_port,
         reload=settings.server_reload,
+        # uvicorn requires workers=1 when reload is enabled
         workers=settings.server_workers if not settings.server_reload else 1,
     )
 

@@ -1,5 +1,6 @@
 """Tests for package discoverability and entry points."""
 
+import shutil
 import subprocess
 import sys
 
@@ -53,13 +54,8 @@ def test_server_settings_exist():
 
 def test_hybrid_inference_command_exists():
     """Test that hybrid-inference command is installed."""
-    result = subprocess.run(
-        ["which", "hybrid-inference"],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, "hybrid-inference command not found"
-    assert "hybrid-inference" in result.stdout
+    path = shutil.which("hybrid-inference")
+    assert path is not None, "hybrid-inference command not found in PATH"
 
 
 def test_package_metadata_includes_routing():
