@@ -32,6 +32,9 @@ dependencies = [
     "uvloop>=0.19.0",
 ]
 
+[project.scripts]
+hybrid-inference = "serving.servers.app:main"
+
 [tool.setuptools]
 include-package-data = true
 
@@ -39,6 +42,8 @@ include-package-data = true
 include = [
   "serving",
   "serving.*",
+  "routing",
+  "routing.*",
   "client",
   "client.*",
   "utils",

@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # Trusted proxies (for real IP detection)
     trusted_proxies: list[str] = []
 
+    # Server configuration
+    server_host: str = "0.0.0.0"
+    server_port: int = 8000
+    server_reload: bool = False
+    server_workers: int = 1
+
     class Config:
         """Pydantic configuration for Settings class."""
 

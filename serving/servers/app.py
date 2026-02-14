@@ -86,3 +86,20 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+def main():
+    """Entry point for the hybrid-inference CLI command."""
+    import uvicorn
+
+    uvicorn.run(
+        "serving.servers.app:app",
+        host=settings.server_host,
+        port=settings.server_port,
+        reload=settings.server_reload,
+        workers=settings.server_workers if not settings.server_reload else 1,
+    )
+
+
+if __name__ == "__main__":
+    main()
