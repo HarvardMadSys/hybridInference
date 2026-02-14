@@ -4,6 +4,14 @@ A high-performance hybrid inference server providing local deployment and offlin
 
 **[User Documentation](https://doc.freeinference.org/)** | **[Developer Documentation](https://internaldoc.freeinference.org/)** | [Quick Start](#quick-start-with-uv-recommended)
 
+## Features
+
+- **Easy Installation**: Install via pip with `pip install -e .` or `pip install hybrid-inference`
+- **CLI Access**: Run the server with the `hybrid-inference` command
+- **Module Execution**: Execute as a Python module with `python -m serving`
+- **Discoverable Packages**: Both `serving` and `routing` modules are fully discoverable after installation
+- **Flexible Configuration**: Configure via environment variables or `.env` file
+
 ## Project Structure
 
 ```
@@ -53,6 +61,44 @@ conda activate hybrid_inference
 
 # Install dependencies from pyproject.toml
 pip install -e .
+```
+
+## Running the Server
+
+After installation, you can run the server in multiple ways:
+
+### Using the CLI Command
+
+```bash
+# Run with default settings (host: 0.0.0.0, port: 8000)
+hybrid-inference
+
+# Or configure via environment variables
+SERVER_HOST=127.0.0.1 SERVER_PORT=8080 hybrid-inference
+```
+
+### Using Python Module
+
+```bash
+# Run as a Python module
+python -m serving
+
+# Or with uvicorn directly
+uvicorn serving.servers.app:app --host 0.0.0.0 --port 8000
+```
+
+### Configuration Options
+
+Set these environment variables to customize server behavior:
+
+- `SERVER_HOST`: Server bind address (default: `0.0.0.0`)
+- `SERVER_PORT`: Server port (default: `8000`)
+- `SERVER_RELOAD`: Enable auto-reload for development (default: `False`)
+- `SERVER_WORKERS`: Number of worker processes (default: `1`)
+
+Example:
+```bash
+SERVER_HOST=localhost SERVER_PORT=8080 SERVER_RELOAD=true hybrid-inference
 ```
 
 ## Package Management
