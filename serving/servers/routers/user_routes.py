@@ -306,13 +306,16 @@ async def get_usage(
     daily_limit = float(key_row["quota_daily_cost_usd"] or 0)
     monthly_limit = None  # TODO: Add monthly quota support
 
-    # Calculate date range based on period
+    # Calculate date range based on period.
+    # Usage data in api_logs is tracked by UTC timestamps.
     if period == "today":
-        date_filter = "DATE(created_at) = CURRENT_DATE"
+        date_filter = "timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
     elif period == "week":
-        date_filter = "created_at >= CURRENT_DATE - INTERVAL '7 days'"
+        date_filter = "timestamp >= NOW() - INTERVAL '7 days'"
     elif period == "month":
-        date_filter = "created_at >= CURRENT_DATE - INTERVAL '30 days'"
+        date_filter = (
+            "timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
+        )
     else:  # all
         date_filter = "TRUE"
 
@@ -326,8 +329,8 @@ async def get_usage(
                     COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
                     COALESCE(SUM(completion_tokens), 0) as completion_tokens,
                     COALESCE(SUM(cost_usd), 0) as cost_usd
-                FROM request_logs
-                WHERE account_id = $1 AND {date_filter}
+                FROM api_logs
+                WHERE user_id = $1 AND {date_filter}
                 """,
                 current_user["user_id"],
             )
@@ -336,8 +339,9 @@ async def get_usage(
             today_row = await conn.fetchrow(
                 """
                 SELECT COALESCE(SUM(cost_usd), 0) as spent_today
-                FROM request_logs
-                WHERE account_id = $1 AND DATE(created_at) = CURRENT_DATE
+                FROM api_logs
+                WHERE user_id = $1
+                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
                 """,
                 current_user["user_id"],
             )
@@ -346,13 +350,19 @@ async def get_usage(
             month_row = await conn.fetchrow(
                 """
                 SELECT COALESCE(SUM(cost_usd), 0) as spent_month
-                FROM request_logs
-                WHERE account_id = $1 AND created_at >= CURRENT_DATE - INTERVAL '30 days'
+                FROM api_logs
+                WHERE user_id = $1
+                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
                 """,
                 current_user["user_id"],
             )
-        except Exception:
-            # Missing request_logs table or other query issues - return zeroed stats
+        except Exception as exc:
+            # Missing api_logs table or other query issues - return zeroed stats.
+            logger.warning(
+                "Failed to query usage stats for user_id=%s: %s",
+                current_user["user_id"],
+                exc,
+            )
             usage_row = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
             today_row = {"spent_today": 0.0}
             month_row = {"spent_month": 0.0}

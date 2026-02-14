@@ -172,32 +172,38 @@ class TestUsageStatistics:
         assert "daily_limit_usd" in data["quota"]
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Requires request_logs table from full logging system")
     async def test_get_usage_with_data(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
     ):
         """Test getting usage statistics with actual usage data."""
-        # Insert some usage data
+        request_id_1 = f"req-usage-{test_user_with_key['id']}-1"
+        request_id_2 = f"req-usage-{test_user_with_key['id']}-2"
+
+        # Insert usage rows into api_logs (the canonical usage source).
         async with auth_db_logger.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO request_logs (
-                    api_key_id, model, prompt_tokens, completion_tokens,
-                    total_tokens, cost_usd, status
+                INSERT INTO api_logs (
+                    request_id, model_id, provider, user_id,
+                    prompt_tokens, completion_tokens, total_tokens, cost_usd
                 )
-                SELECT id, 'test-model', 100, 50, 150, 0.01, 'success'
-                FROM api_keys
-                WHERE key_prefix = $1
+                VALUES
+                    ($1, 'test-model', 'test-provider', $2, 100, 50, 150, 0.01),
+                    ($3, 'test-model', 'test-provider', $2, 200, 80, 280, 0.02)
                 """,
-                test_user_with_key["key_prefix"],
+                request_id_1,
+                test_user_with_key["id"],
+                request_id_2,
             )
 
-        response = await auth_app_client.get("/user/usage", headers=auth_headers)
+        response = await auth_app_client.get("/user/usage?period=all", headers=auth_headers)
 
         assert response.status_code == 200
         data = response.json()
-        assert data["total_requests"] >= 1
-        assert data["total_cost_usd"] >= 0.01
+        assert data["usage"]["requests"] >= 2
+        assert data["usage"]["prompt_tokens"] >= 300
+        assert data["usage"]["completion_tokens"] >= 130
+        assert data["usage"]["cost_usd"] >= 0.03
 
 
 class TestUserProfile:
