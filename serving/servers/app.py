@@ -89,7 +89,18 @@ app = create_app()
 
 
 def main():
-    """Entry point for the hybrid-inference CLI command."""
+    """Entry point for the hybrid-inference CLI command.
+
+    Starts the FastAPI server using uvicorn with configuration from settings.
+    When reload mode is enabled, workers is forced to 1 as uvicorn does not
+    support multiple workers with auto-reload.
+
+    Configuration can be customized via environment variables:
+        - SERVER_HOST: Server bind address (default: 0.0.0.0)
+        - SERVER_PORT: Server port (default: 8000)
+        - SERVER_RELOAD: Enable auto-reload (default: False)
+        - SERVER_WORKERS: Number of workers (default: 1, forced to 1 if reload enabled)
+    """
     import uvicorn
 
     uvicorn.run(

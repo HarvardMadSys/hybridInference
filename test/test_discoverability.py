@@ -59,7 +59,13 @@ def test_hybrid_inference_command_exists():
 
 
 def test_package_metadata_includes_routing():
-    """Test that routing package is included in package metadata."""
+    """Test that routing package is included in package metadata.
+
+    Note: The package distribution name is 'hybrid-inference' (hyphenated)
+    while the Python module name is 'serving' and 'routing' (underscored).
+    This is a standard Python packaging convention where distribution names
+    on PyPI use hyphens while module names use underscores.
+    """
     # This test verifies that the routing module is properly included
     # in the setuptools configuration
     import importlib.metadata
