@@ -15,6 +15,9 @@ local_deployment:
   - endpoint: http://localhost:12004
     models:
       - minimax-m2
+  - endpoint: http://localhost:8004/v1
+    models:
+      - glm-4.7-flash
 remote_deployment:
   - endpoint: ${CHUTES_BASE_URL}
     models:

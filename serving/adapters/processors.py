@@ -257,6 +257,224 @@ class GLMProcessor(BaseProcessor):
         return response
 
 
+class QwenCoderProcessor(BaseProcessor):
+    """Processor for Qwen3-Coder models that output custom XML tool calls.
+
+    Qwen3-Coder uses a non-standard XML format:
+        <tool_call>
+        <function=function_name>
+        <parameter=param_name>value</parameter>
+        </function>
+        </tool_call>
+
+    This processor buffers and converts these to OpenAI JSON tool_calls.
+    Text before the first <tool_call> is emitted as regular content.
+    Multiple <tool_call> blocks are supported (parallel tool calls).
+    """
+
+    _TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+    _FUNCTION_RE = re.compile(r"<function=([^>]+)>(.*?)(?:</function>|$)", re.DOTALL)
+    _PARAMETER_RE = re.compile(
+        r"<parameter=([^>]+)>(.*?)(?:</parameter>|(?=<parameter=)|(?=</function>)|$)",
+        re.DOTALL,
+    )
+
+    def __init__(self) -> None:
+        self.buffer = ""
+        self.in_tool_mode = False
+        self.pre_tool_text = ""
+        self.model_id = "qwen3-coder"
+
+    def process_stream_chunk(self, chunk: dict[str, Any]) -> list[dict[str, Any]]:
+        """Process a streaming chunk from Qwen3-Coder models.
+
+        Buffers content when tool call XML is detected. Emits regular text
+        immediately (with partial-tag safety). Passes through native tool_calls
+        untouched.
+        """
+        choices = chunk.get("choices", [])
+        if not choices:
+            return [chunk]
+
+        delta = choices[0].get("delta", {})
+
+        # Pass through native tool_calls untouched (but ignore null/empty)
+        if delta.get("tool_calls"):
+            return [chunk]
+
+        content = delta.get("content")
+        if not isinstance(content, str):
+            return []
+
+        self.buffer += content
+        self.model_id = chunk.get("model", self.model_id)
+
+        # Check if we should enter tool mode
+        if "<tool_call>" in self.buffer and not self.in_tool_mode:
+            self.in_tool_mode = True
+            # Emit any text before the first <tool_call> tag
+            idx = self.buffer.index("<tool_call>")
+            pre_text = self.buffer[:idx].strip()
+            self.buffer = self.buffer[idx:]
+
+            if pre_text:
+                new_chunk = _clone_chunk(chunk)
+                new_chunk["choices"][0]["delta"]["content"] = pre_text
+                return [new_chunk]
+            return []
+
+        if self.in_tool_mode:
+            # Buffer everything until flush
+            return []
+
+        # Regular text mode — emit with partial-tag safety
+        safe_index = len(self.buffer)
+        last_open = self.buffer.rfind("<")
+        if last_open != -1 and last_open > len(self.buffer) - 20:
+            safe_index = last_open
+
+        text_to_emit = self.buffer[:safe_index]
+        self.buffer = self.buffer[safe_index:]
+
+        if text_to_emit:
+            new_chunk = _clone_chunk(chunk)
+            new_chunk["choices"][0]["delta"]["content"] = text_to_emit
+            return [new_chunk]
+
+        return []
+
+    def flush(self) -> list[dict[str, Any]]:
+        """Flush buffered content, parsing any tool call XML."""
+        if not self.buffer:
+            return []
+
+        to_yield: list[dict[str, Any]] = []
+
+        if self.in_tool_mode:
+            tool_calls = self._parse_qwen_tool_xml(self.buffer)
+            if tool_calls:
+                chunk = {
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": self.model_id,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"tool_calls": tool_calls, "content": None},
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                }
+                to_yield.append(chunk)
+            else:
+                # Parsing failed — emit raw buffer as content for debugging
+                chunk = {
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": self.model_id,
+                    "choices": [
+                        {"index": 0, "delta": {"content": self.buffer}, "finish_reason": None}
+                    ],
+                }
+                to_yield.append(chunk)
+        else:
+            text = self.buffer.strip()
+            if text:
+                chunk = {
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": self.model_id,
+                    "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+                }
+                to_yield.append(chunk)
+
+        self.buffer = ""
+        self.in_tool_mode = False
+        return to_yield
+
+    def _parse_qwen_tool_xml(self, xml_text: str) -> list[dict[str, Any]] | None:
+        """Parse Qwen3-Coder tool XML into OpenAI tool_calls format."""
+        tool_calls: list[dict[str, Any]] = []
+
+        # Find all <tool_call>...</tool_call> blocks
+        blocks = self._TOOL_CALL_RE.findall(xml_text)
+        if not blocks:
+            # Fallback: try matching unclosed blocks (stream may lack closing tag)
+            if "<function=" in xml_text:
+                blocks = [xml_text]
+            else:
+                return None
+
+        for i, block in enumerate(blocks):
+            func_match = self._FUNCTION_RE.search(block)
+            if not func_match:
+                continue
+
+            func_name = func_match.group(1).strip()
+            params_str = func_match.group(2)
+
+            # Parse parameters
+            args: dict[str, Any] = {}
+            for param_match in self._PARAMETER_RE.finditer(params_str):
+                param_name = param_match.group(1).strip()
+                param_value = param_match.group(2)
+
+                # Strip leading/trailing newlines (Qwen3-Coder adds these)
+                if param_value.startswith("\n"):
+                    param_value = param_value[1:]
+                if param_value.endswith("\n"):
+                    param_value = param_value[:-1]
+
+                # Try JSON parsing for structured values
+                if (param_value.startswith("[") and param_value.endswith("]")) or (
+                    param_value.startswith("{") and param_value.endswith("}")
+                ):
+                    try:
+                        args[param_name] = json.loads(param_value)
+                    except (json.JSONDecodeError, ValueError):
+                        args[param_name] = param_value
+                else:
+                    args[param_name] = param_value
+
+            tool_calls.append(
+                {
+                    "index": i,
+                    "id": f"call_qwen_{int(time.time())}_{i}",
+                    "type": "function",
+                    "function": {"name": func_name, "arguments": json.dumps(args)},
+                }
+            )
+
+        return tool_calls if tool_calls else None
+
+    def process_response(self, response: dict[str, Any]) -> dict[str, Any]:
+        """Process non-streaming response, converting XML tool calls to JSON."""
+        choices = response.get("choices", [])
+        if not choices:
+            return response
+
+        message = choices[0].get("message", {})
+        content = message.get("content", "")
+
+        if not content or not isinstance(content, str):
+            return response
+
+        if "<tool_call>" in content:
+            tool_calls = self._parse_qwen_tool_xml(content)
+            if tool_calls:
+                # Extract text before the first <tool_call> as content
+                first_tc = content.find("<tool_call>")
+                pre_text = content[:first_tc].strip() if first_tc > 0 else None
+                message["tool_calls"] = tool_calls
+                message["content"] = pre_text
+                choices[0]["finish_reason"] = "tool_calls"
+
+        return response
+
+
 class ThinkBlockProcessor(BaseProcessor):
     """Processor that strips entire <think>...</think> blocks (tags + content).
 
@@ -281,14 +499,14 @@ class ThinkBlockProcessor(BaseProcessor):
 
         delta = choices[0].get("delta", {})
 
-        # Pass through tool_calls chunks untouched
-        if "tool_calls" in delta:
+        # Pass through native tool_calls untouched (but ignore null/empty)
+        if delta.get("tool_calls"):
             return [chunk]
 
-        content = delta.get("content", "")
+        content = delta.get("content")
 
-        if content is None:
-            return [chunk]
+        if not isinstance(content, str):
+            return []
 
         self.buffer += content
         self.model_id = chunk.get("model", self.model_id)
@@ -392,9 +610,11 @@ def get_processor(model_id: str | None) -> BaseProcessor:
 
     model_id_lower = model_id.lower()
 
-    # Auto-detect GLM models
-    if "glm-4" in model_id_lower or "glm4" in model_id_lower:
+    # Auto-detect GLM models (glm-4.x, glm-5, etc.)
+    if model_id_lower.startswith("glm"):
         return GLMProcessor()
+    if "qwen" in model_id_lower and "coder" in model_id_lower:
+        return QwenCoderProcessor()
     if "minimax" in model_id_lower:
         return ThinkBlockProcessor()
 

@@ -1,3 +1,5 @@
+"""Routing manager that applies weight strategies to the executor."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -107,7 +109,7 @@ class RoutingManager:
                 if adapter not in seen and adapter not in weights:
                     new_adapters.append((adapter, w))
             if new_adapters:
-                self.router.routes[model_id] = type(route_cfg)(adapters=new_adapters)  # type: ignore
+                route_cfg.adapters = new_adapters  # mutate in-place to preserve alias sharing
                 updated += 1
         return updated
 

@@ -58,17 +58,16 @@ class OpenAICompatAdapter(BaseAdapter):
 
         logger.info(f"[OpenAICompat] Initialized for {config.id} at {config.base_url}")
 
-        # Initialize output processor strategy based on model ID
-        model_id = config.provider_model_id or config.id
-        self.processor = get_processor(model_id)
-        logger.debug(f"[OpenAICompat] Using processor: {self.processor.__class__.__name__}")
+        # Store model ID for per-request processor creation (avoids shared mutable state)
+        self._processor_model_id = config.provider_model_id or config.id
+        processor_name = get_processor(self._processor_model_id).__class__.__name__
+        logger.debug(f"[OpenAICompat] Processor type: {processor_name}")
 
     def _clean_message(self, message: dict[str, Any]) -> dict[str, Any]:
         """Remove None values and normalize text content for API compatibility."""
         cleaned = {k: v for k, v in message.items() if v is not None}
-        if "image" not in (self.config.input_modalities or []):
-            if "content" in cleaned:
-                cleaned["content"] = _normalize_text_content(cleaned["content"])
+        if "image" not in (self.config.input_modalities or []) and "content" in cleaned:
+            cleaned["content"] = _normalize_text_content(cleaned["content"])
         return cleaned
 
     def _build_headers(self) -> dict[str, str]:
@@ -160,7 +159,8 @@ class OpenAICompatAdapter(BaseAdapter):
         )
 
         # Process output format (e.g. remove XML tags)
-        processed_response = self.processor.process_response(response)
+        processor = get_processor(self._processor_model_id)
+        processed_response = processor.process_response(response)
 
         # Parse response
         return self._parse_completion_response(processed_response)
@@ -203,6 +203,9 @@ class OpenAICompatAdapter(BaseAdapter):
 
         url = self._build_url()
         headers = self._build_headers()
+
+        # Fresh processor per request — avoids shared mutable state across concurrent streams
+        processor = get_processor(self._processor_model_id)
 
         total_content = ""
         finish_reason = "stop"
@@ -266,7 +269,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     data = json.loads(data_str)
 
                     # Process output format (returns a list of chunks)
-                    processed_chunks = self.processor.process_stream_chunk(data)
+                    processed_chunks = processor.process_stream_chunk(data)
 
                     for p_chunk in processed_chunks:
                         formatted = format_and_yield(p_chunk)
@@ -277,8 +280,8 @@ class OpenAICompatAdapter(BaseAdapter):
                     logger.warning(f"[OpenAICompat] Failed to parse chunk: {data_str[:100]}")
 
         # Flush processor buffer at end of stream
-        # This is crucial for buffered tool calls
-        final_chunks = self.processor.flush()
+        # This is crucial for buffered tool calls (e.g. GLM XML, Qwen XML)
+        final_chunks = processor.flush()
         for p_chunk in final_chunks:
             formatted = format_and_yield(p_chunk)
             if formatted:

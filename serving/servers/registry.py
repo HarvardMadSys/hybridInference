@@ -219,11 +219,10 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
 
-        # Register canonical id and aliases
+        # Register canonical id with aliases sharing the same RouteConfig
         model_id = str(top_cfg["id"])  # type: ignore
         aliases = (top_cfg.get("aliases") or []) or []
-        for alias in [model_id, *aliases]:
-            router.register_route(alias, adapters_with_weights)
-            count += 1
+        router.register_route(model_id, adapters_with_weights, aliases=aliases)
+        count += 1 + len(aliases)
 
     return count
