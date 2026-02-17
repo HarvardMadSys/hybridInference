@@ -63,20 +63,29 @@ class RouteExecutor:
         self._lock = threading.RLock()
 
     def register_route(
-        self, model_id: str, adapters_with_weights: list[tuple[BaseAdapter, float]]
+        self,
+        model_id: str,
+        adapters_with_weights: list[tuple[BaseAdapter, float]],
+        *,
+        aliases: list[str] | None = None,
     ) -> None:
         """Register a weighted route for a model.
 
         Args:
-            model_id: Model identifier.
+            model_id: Model identifier (canonical).
             adapters_with_weights: List of (adapter, weight) tuples.
                 Weights will be normalized to sum to 1.0.
+            aliases: Optional alias model IDs that share the same RouteConfig.
+                Updates to the canonical route automatically apply to aliases.
         """
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
             return
         normalized = [(adapter, weight / total_weight) for adapter, weight in adapters_with_weights]
-        self.routes[model_id] = RouteConfig(adapters=normalized)
+        route_cfg = RouteConfig(adapters=normalized)
+        self.routes[model_id] = route_cfg
+        for alias in aliases or []:
+            self.routes[alias] = route_cfg  # shared reference, not a copy
 
     def _select_adapter(self, model_id: str) -> BaseAdapter | None:
         """Select an adapter using weighted random selection.

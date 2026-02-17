@@ -158,6 +158,25 @@ async def test_multiple_fallback_chain():
 
 
 @pytest.mark.unit
+def test_alias_shares_route_config():
+    """Aliases share the same RouteConfig; mutations affect both."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    b = _EchoAdapter(_cfg("m", provider="B"))
+    exe.register_route("m", [(a, 0.8), (b, 0.2)], aliases=["m-alias"])
+
+    # Same object reference
+    assert exe.routes["m"] is exe.routes["m-alias"]
+
+    # Mutate in-place (as RoutingManager.apply does)
+    exe.routes["m"].adapters = [(a, 1.0), (b, 0.0)]
+
+    # Alias reflects the change
+    assert exe.routes["m-alias"].adapters == [(a, 1.0), (b, 0.0)]
+    assert exe.routes["m"] is exe.routes["m-alias"]
+
+
+@pytest.mark.unit
 @pytest.mark.perf
 def test_route_selection_performance():
     """Ensure adapter selection is fast enough for basic regression budgets."""
