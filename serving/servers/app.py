@@ -21,6 +21,7 @@ from .routers import (
     auth_routes,
     compat,
     completions,
+    embeddings,
     health,
     metrics,
     models,
@@ -76,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router)
     app.include_router(models.router)
     app.include_router(completions.router)
+    app.include_router(embeddings.router)
     app.include_router(compat.router)
     app.include_router(admin.router)
     app.include_router(admin_ui.router)

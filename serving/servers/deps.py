@@ -31,6 +31,7 @@ class AppServices:
     """
 
     router: RouteExecutor
+    embedding_adapters: dict[str, Any] | None = None
     rate_limiter: PersistentRateLimiter | None = None
     db_logger: DatabaseLogger | None = None
     routing_manager: RoutingManager | None = None
@@ -45,6 +46,13 @@ def get_services(request: Request) -> AppServices:
 def get_router(services: AppServices = Depends(get_services)) -> RouteExecutor:
     """Dependency to obtain the RouteExecutor."""
     return services.router
+
+
+def get_embedding_adapters(
+    services: AppServices = Depends(get_services),
+) -> dict[str, Any]:
+    """Dependency to obtain the embedding adapters dict."""
+    return services.embedding_adapters or {}
 
 
 def get_rate_limiter(

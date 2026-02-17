@@ -49,6 +49,8 @@ class ModelConfig:
     provider: str
     base_url: str
     api_key: str | None = None
+    # Model type: "chat" for LLMs, "embedding" for embedding models.
+    model_type: str = "chat"
     # Public aliases that should also route to this adapter configuration.
     aliases: list[str] = field(default_factory=list)
     # Provider-specific model identifier to send to upstream. If not set,

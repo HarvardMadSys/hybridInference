@@ -300,6 +300,47 @@ class OpenAICompatAdapter(BaseAdapter):
         yield final_chunk_str
         yield done_sentinel()
 
+    def _build_embeddings_url(self) -> str:
+        """Build full endpoint URL for embeddings."""
+        base = (self.config.base_url or "").rstrip("/")
+        if base.endswith("/v1"):
+            return f"{base}/embeddings"
+        return f"{base}/v1/embeddings"
+
+    async def embeddings(self, input_data: str | list[str], **params: Any) -> dict[str, Any]:
+        """Execute an embedding request against the upstream API.
+
+        Args:
+            input_data: Text string or list of strings to embed.
+            **params: Optional parameters (encoding_format, dimensions).
+
+        Returns:
+            OpenAI-compatible embedding response dict.
+        """
+        payload: dict[str, Any] = {
+            "model": self._get_model_identifier(),
+            "input": input_data,
+        }
+        if params.get("encoding_format"):
+            payload["encoding_format"] = params["encoding_format"]
+        if params.get("dimensions"):
+            payload["dimensions"] = params["dimensions"]
+
+        url = self._build_embeddings_url()
+        headers = self._build_headers()
+
+        logger.debug(f"[OpenAICompat] POST {url} model={payload['model']}")
+
+        response = await self.http.json_post_with_retry(
+            url=url,
+            json=payload,
+            headers=headers,
+            timeout=30,
+            retries=2,
+        )
+
+        return response
+
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""
         choice = response["choices"][0]
