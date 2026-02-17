@@ -9,16 +9,92 @@ from openai import OpenAI
 pytestmark = pytest.mark.external
 
 
-def test_zhipu_glm45_basic():
-    """Basic GLM-4.5 call; requires network and ZAI_API_KEY."""
+# --- Retired models (commented out) ---
+
+# def test_zhipu_glm45_basic():
+#     """Basic GLM-4.5 call; requires network and ZAI_API_KEY."""
+#     load_dotenv()
+#     api_key = os.environ.get("ZAI_API_KEY")
+#     if not api_key:
+#         pytest.skip("ZAI_API_KEY not configured", allow_module_level=False)
+#
+#     client = OpenAI(api_key=api_key, base_url="https://api.z.ai/api/coding/paas/v4/")
+#     completion = client.chat.completions.create(
+#         model="glm-4.5",
+#         messages=[
+#             {
+#                 "role": "user",
+#                 "content": "Hello! Please respond with 'Hi there' to confirm you're working.",
+#             },
+#         ],
+#         temperature=0.7,
+#         max_tokens=20,
+#     )
+#     assert completion is not None
+
+
+# def test_zhipu_glm45_air_basic():
+#     """Basic GLM-4.5-Air call; requires network and ZAI_API_KEY."""
+#     load_dotenv()
+#     api_key = os.environ.get("ZAI_API_KEY")
+#     if not api_key:
+#         pytest.skip("ZAI_API_KEY not configured", allow_module_level=False)
+#
+#     client = OpenAI(api_key=api_key, base_url="https://api.z.ai/api/coding/paas/v4/")
+#     completion = client.chat.completions.create(
+#         model="glm-4.5-air",
+#         messages=[
+#             {
+#                 "role": "user",
+#                 "content": "Hello! Please respond with 'Hi there' to confirm you're working.",
+#             },
+#         ],
+#         temperature=0.7,
+#         max_tokens=20,
+#     )
+#     assert completion is not None
+#     assert completion.choices[0].message.content is not None
+
+
+# def test_zhipu_glm46_basic():
+#     """Basic GLM-4.6 call; requires network and ZAI_API_KEY."""
+#     load_dotenv()
+#     api_key = os.environ.get("ZAI_API_KEY")
+#     if not api_key:
+#         pytest.skip("ZAI_API_KEY not configured", allow_module_level=False)
+#
+#     client = OpenAI(api_key=api_key, base_url="https://api.z.ai/api/coding/paas/v4/")
+#     completion = client.chat.completions.create(
+#         model="glm-4.6",
+#         messages=[
+#             {
+#                 "role": "user",
+#                 "content": "Hello! Please respond with 'Hi there' to confirm you're working.",
+#             },
+#         ],
+#         temperature=0.7,
+#         max_tokens=20,
+#     )
+#     assert completion is not None
+#     assert completion.choices[0].message.content is not None
+
+
+# --- Active models ---
+
+
+def _get_zhipu_client():
     load_dotenv()
     api_key = os.environ.get("ZAI_API_KEY")
     if not api_key:
         pytest.skip("ZAI_API_KEY not configured", allow_module_level=False)
+    return OpenAI(api_key=api_key, base_url="https://api.z.ai/api/coding/paas/v4/")
 
-    client = OpenAI(api_key=api_key, base_url="https://api.z.ai/api/coding/paas/v4/")
+
+def test_zhipu_glm47_basic():
+    """Basic GLM-4.7 call; requires network and ZAI_API_KEY."""
+    client = _get_zhipu_client()
     completion = client.chat.completions.create(
-        model="glm-4.5",
+        model="glm-4.7",
         messages=[
             {
                 "role": "user",
@@ -26,44 +102,17 @@ def test_zhipu_glm45_basic():
             },
         ],
         temperature=0.7,
-        max_tokens=20,
-    )
-    assert completion is not None
-
-
-def test_zhipu_glm45_air_basic():
-    """Basic GLM-4.5-Air call; requires network and ZAI_API_KEY."""
-    load_dotenv()
-    api_key = os.environ.get("ZAI_API_KEY")
-    if not api_key:
-        pytest.skip("ZAI_API_KEY not configured", allow_module_level=False)
-
-    client = OpenAI(api_key=api_key, base_url="https://api.z.ai/api/coding/paas/v4/")
-    completion = client.chat.completions.create(
-        model="glm-4.5-air",
-        messages=[
-            {
-                "role": "user",
-                "content": "Hello! Please respond with 'Hi there' to confirm you're working.",
-            },
-        ],
-        temperature=0.7,
-        max_tokens=20,
+        max_tokens=64,
     )
     assert completion is not None
     assert completion.choices[0].message.content is not None
 
 
-def test_zhipu_glm46_basic():
-    """Basic GLM-4.6 call; requires network and ZAI_API_KEY."""
-    load_dotenv()
-    api_key = os.environ.get("ZAI_API_KEY")
-    if not api_key:
-        pytest.skip("ZAI_API_KEY not configured", allow_module_level=False)
-
-    client = OpenAI(api_key=api_key, base_url="https://api.z.ai/api/coding/paas/v4/")
+def test_zhipu_glm47_flash_basic():
+    """Basic GLM-4.7-Flash call; requires network and ZAI_API_KEY."""
+    client = _get_zhipu_client()
     completion = client.chat.completions.create(
-        model="glm-4.6",
+        model="glm-4.7-flash",
         messages=[
             {
                 "role": "user",
@@ -71,7 +120,25 @@ def test_zhipu_glm46_basic():
             },
         ],
         temperature=0.7,
-        max_tokens=20,
+        max_tokens=64,
+    )
+    assert completion is not None
+    assert completion.choices[0].message.content is not None
+
+
+def test_zhipu_glm5_basic():
+    """Basic GLM-5 call; requires network and ZAI_API_KEY."""
+    client = _get_zhipu_client()
+    completion = client.chat.completions.create(
+        model="glm-5",
+        messages=[
+            {
+                "role": "user",
+                "content": "Hello! Please respond with 'Hi there' to confirm you're working.",
+            },
+        ],
+        temperature=0.7,
+        max_tokens=64,
     )
     assert completion is not None
     assert completion.choices[0].message.content is not None
