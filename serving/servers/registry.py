@@ -113,7 +113,11 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     raise ValueError(f"Unknown adapter kind: {kind}")
 
 
-def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
+def register_from_models_yaml(
+    router: RouteExecutor,
+    path: Path,
+    embedding_adapters: dict[str, Any] | None = None,
+) -> int:
     """Register models and routes from a YAML configuration file.
 
     Example schema::
@@ -161,6 +165,8 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
             for k in (
                 "id",
                 "name",
+                "type",
+                "model_type",
                 "provider",
                 "base_url",
                 "api_key",
@@ -202,6 +208,8 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
 
             # Adapter config inherits from top-level model config
             adapter_cfg = dict(top_cfg)
+            # "type" is routing-only metadata, not a ModelConfig field
+            adapter_cfg.pop("type", None)
             adapter_cfg["base_url"] = base_url
             adapter_cfg["api_key"] = api_key
             adapter_cfg["provider"] = kind
@@ -219,10 +227,23 @@ def register_from_models_yaml(router: RouteExecutor, path: Path) -> int:
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
 
-        # Register canonical id with aliases sharing the same RouteConfig
+        # Determine model type: "embedding" models bypass RouteExecutor
+        model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"
+
         model_id = str(top_cfg["id"])  # type: ignore
         aliases = (top_cfg.get("aliases") or []) or []
-        router.register_route(model_id, adapters_with_weights, aliases=aliases)
-        count += 1 + len(aliases)
+
+        if model_type == "embedding" and embedding_adapters is not None:
+            # Embedding models use a simple adapter dict (no weighted routing)
+            if adapters_with_weights:
+                adapter = adapters_with_weights[0][0]
+                embedding_adapters[model_id] = adapter
+                for alias in aliases:
+                    embedding_adapters[alias] = adapter
+            count += 1 + len(aliases)
+        else:
+            # Chat models go through the full RouteExecutor
+            router.register_route(model_id, adapters_with_weights, aliases=aliases)
+            count += 1 + len(aliases)
 
     return count

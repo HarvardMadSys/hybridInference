@@ -163,6 +163,45 @@ class ErrorResponse(BaseModel):  # type: ignore[no-any-unimported]
     error: ErrorDetail
 
 
+# Embedding schemas
+
+
+class EmbeddingRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """OpenAI-compatible embeddings request payload."""
+
+    model: str
+    input: str | list[str]
+    encoding_format: Literal["float", "base64"] | None = None
+    dimensions: int | None = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class EmbeddingData(BaseModel):  # type: ignore[no-any-unimported]
+    """Single embedding result."""
+
+    object: Literal["embedding"] = "embedding"
+    index: int
+    # list[float] for default float format, str for base64 encoding_format
+    embedding: list[float] | str
+
+
+class EmbeddingUsage(BaseModel):  # type: ignore[no-any-unimported]
+    """Token usage for an embedding request."""
+
+    prompt_tokens: int
+    total_tokens: int
+
+
+class EmbeddingResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """OpenAI-compatible embeddings response payload."""
+
+    object: Literal["list"] = "list"
+    data: list[EmbeddingData]
+    model: str
+    usage: EmbeddingUsage
+
+
 # Backward-compatibility aliases for older tests referring to Choice
 # New code should import ChatCompletionChoice explicitly.
 Choice = ChatCompletionChoice

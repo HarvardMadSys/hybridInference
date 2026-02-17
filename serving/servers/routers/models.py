@@ -16,11 +16,12 @@ for example, the `created` field is frozen at import time.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from fastapi import APIRouter, Depends
 
 from serving.schemas import ModelItem, ModelList
-from serving.servers.deps import get_router
+from serving.servers.deps import get_embedding_adapters, get_router
 
 router = APIRouter()
 
@@ -34,6 +35,7 @@ CREATED_TS = int(time.time())
 @router.get("/v1/models", response_model=ModelList)
 async def list_models(
     router_exec=Depends(get_router),
+    embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
 ) -> ModelList:
     """List available models with metadata similar to OpenRouter schema.
 
@@ -94,5 +96,30 @@ async def list_models(
         if model_id != canonical_id:
             model_entry.openrouter = {"slug": model_id}
         models.append(model_entry)
+
+    # Append embedding models from the embedding_adapters dict
+    emb_seen: set[str] = set()
+    for _model_id, adapter in embedding_adapters.items():
+        cfg = getattr(adapter, "config", None)
+        if not cfg:
+            continue
+        canonical_id = cfg.id
+        if canonical_id in emb_seen or canonical_id in emitted_ids:
+            continue
+        emb_seen.add(canonical_id)
+        models.append(
+            ModelItem(
+                id=canonical_id,
+                name=cfg.name,
+                created=CREATED_TS,
+                owned_by=cfg.provider,
+                input_modalities=cfg.input_modalities,
+                output_modalities=cfg.output_modalities,
+                quantization=cfg.quantization,
+                context_length=cfg.context_length,
+                max_output_length=cfg.max_output_length,
+                pricing=cfg.pricing,
+            )
+        )
 
     return ModelList(data=models)

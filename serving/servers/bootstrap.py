@@ -127,13 +127,18 @@ def _init_db_logger() -> DatabaseLogger | None:
         return None
 
 
-async def _init_router_and_models(router: RouteExecutor) -> None:
+async def _init_router_and_models(router: RouteExecutor) -> dict:
     """Register models on the router from YAML configuration.
 
     All models should be configured via YAML for consistency and flexibility.
     Supports hybrid mode where a single model can have multiple adapters
     (e.g., local VLLM and remote API) for failover and load balancing.
+
+    Returns:
+        dict: Embedding adapters keyed by model id.
     """
+    embedding_adapters: dict = {}
+
     # Load models from YAML configuration
     try:
         models_env = os.getenv("MODELS_CONFIG")
@@ -141,9 +146,16 @@ async def _init_router_and_models(router: RouteExecutor) -> None:
         if models_env and not models_path.exists():
             logger.warning(f"Models config not found: {models_path}")
         elif models_path.exists():
-            registered = register_from_models_yaml(router, models_path)
+            registered = register_from_models_yaml(
+                router, models_path, embedding_adapters=embedding_adapters
+            )
             if registered:
                 logger.info(f"Registered {registered} routes from {models_path}")
+            if embedding_adapters:
+                logger.info(
+                    f"Registered {len(embedding_adapters)} embedding adapter(s): "
+                    f"{list(embedding_adapters.keys())}"
+                )
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
 
@@ -158,6 +170,8 @@ async def _init_router_and_models(router: RouteExecutor) -> None:
             _apply_hard_offload(router, local_base_url)
         else:
             logger.info("OFFLOAD=1 but LOCAL_BASE_URL not set; no adapters filtered")
+
+    return embedding_adapters
 
 
 def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
@@ -293,7 +307,7 @@ async def initialize() -> AppServices:
                     DATABASE_CONNECTED.set(0)
 
     # Models into router
-    await _init_router_and_models(router)
+    embedding_adapters = await _init_router_and_models(router)
 
     # Routing manager (optional)
     routing_manager = _apply_routing_manager(router)
@@ -321,6 +335,7 @@ async def initialize() -> AppServices:
 
     return AppServices(
         router=router,
+        embedding_adapters=embedding_adapters or None,
         rate_limiter=rate_limiter,
         db_logger=db_logger,
         routing_manager=routing_manager,
