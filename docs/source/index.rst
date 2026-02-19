@@ -34,7 +34,6 @@ Quick Links
    developer/installation
    developer/deployment
    developer/architecture
-   developer/shared-qdrant-service
    developer/routing
    developer/adding-models
    developer/configuration
