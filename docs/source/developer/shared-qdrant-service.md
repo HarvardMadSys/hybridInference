@@ -135,19 +135,14 @@ reject them when auth is enabled.
 Codebase indexing may send large `/points` upsert payloads. Nginx default
 `client_max_body_size` is often `1m`, which can cause `413 Request Entity Too Large`.
 
-Recommended origin configuration (higher priority block than `/v1/`):
+The checked-in config (`infrastructure/nginx/freeinference.conf`) sets `client_max_body_size 50m`
+on the `/v1/` location block, which covers all API traffic including Qdrant upserts:
 
 ```nginx
-location ^~ /v1/qdrant/ {
-    client_max_body_size 20m;
+location ^~ /v1/ {
+    client_max_body_size 50m;
     proxy_pass http://freeinference_api;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection $connection_upgrade;
+    ...
 }
 ```
 
