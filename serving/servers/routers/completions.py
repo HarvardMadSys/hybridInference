@@ -104,6 +104,8 @@ async def chat_completions(
         params["stop"] = payload.stop
     if payload.seed is not None:
         params["seed"] = payload.seed
+    if payload.ignore_eos is not None:
+        params["ignore_eos"] = payload.ignore_eos
     if payload.frequency_penalty is not None:
         params["frequency_penalty"] = payload.frequency_penalty
     if payload.presence_penalty is not None:
