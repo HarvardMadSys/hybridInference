@@ -10,7 +10,7 @@ http://localhost:30000/metrics) for observability.
 import re
 import time
 from collections import deque
-from typing import Callable
+from collections.abc import Callable
 
 import requests
 
@@ -236,6 +236,7 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
         # Throughput (tokens/sec)
         # Prefer explicit tokens_per_second gauges if present
         for key in [
+            "sglang:gen_throughput",
             "tokens_per_second",
             "throughput_tokens_per_second",
             "sglang_tokens_per_second",
@@ -246,6 +247,7 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
 
         # TTFT average (seconds)
         for prefix in [
+            "sglang:time_to_first_token_seconds",
             "time_to_first_token_seconds",
             "ttft_seconds",
             "sglang_ttft_seconds",
@@ -292,6 +294,7 @@ class SGLangWaitingQueueAdapter(WaitingQueueInterface):
 
         # Request queue length / pending requests
         for key in [
+            "sglang:num_queue_reqs",
             "pending_requests",
             "request_queue_length",
             "waiting_requests",

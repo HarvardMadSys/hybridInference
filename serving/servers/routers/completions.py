@@ -163,6 +163,8 @@ async def chat_completions(
 
     # Generate request ID and metadata
     request_id = f"req_{int(time.time() * 1000000)}"
+    # Propagate request_id so downstream routers (e.g. OutsourcingRouter) can use it
+    params["request_id"] = request_id
     start_time = time.time()
     is_authenticated = bool(user_ctx.get("authenticated"))
     # Initialize provider early to avoid UnboundLocalError in exception handlers

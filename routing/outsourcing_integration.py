@@ -14,8 +14,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
-from routing.tree_cache import TreeCache, create_tree_cache
 from routing.outsourcing.decision import OutsourcingDecision
+from routing.tree_cache import TreeCache, create_tree_cache
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -158,7 +158,7 @@ class OutsourcingRouter:
             "other_requests_outsourced": 0,  # Requests outsourced due to other requests' decisions
         }
 
-    def _refresh_request_snapshot(self, request: "OutsourcingRequestInfo") -> None:
+    def _refresh_request_snapshot(self, request: OutsourcingRequestInfo) -> None:
         """Refresh cached-token estimates before the engine reads the queue."""
         prompt_text = self._request_prompts.get(request.request_id)
         if not prompt_text:
@@ -170,9 +170,7 @@ class OutsourcingRouter:
             prompt_text, update_access_time=False
         )
         # Clamp cached tokens to avoid overstating remaining work
-        request.num_cached_tokens = max(
-            0, min(cached_tokens, request.num_prompt_tokens)
-        )
+        request.num_cached_tokens = max(0, min(cached_tokens, request.num_prompt_tokens))
 
     def _assess_sglang_capacity(self) -> tuple[bool, float | None]:
         """Check SGLang queue depth and decide if we should force local dispatch."""
@@ -204,196 +202,32 @@ class OutsourcingRouter:
             },
         )
 
-    async def chat_completion(
+    def decide(
         self,
-        messages: list[ChatMessage] | list[dict[str, Any]],
+        messages: list[dict[str, Any]] | list[Any],
         request_id: str | None = None,
         prefill_slo_seconds: float | None = None,
-        **params: Any,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Route a chat completion request with outsourcing logic.
+        """Pure decision: determine adapter and routing metadata without executing.
+
+        This extracts the decision logic from chat_completion() so that
+        NimbusRouter (inheriting BaseRouter) can call it from _select_adapter()
+        and attach the metadata later.
 
         Args:
             messages: Chat messages in OpenAI format
             request_id: Optional request ID for tracking
-            prefill_slo_seconds: Optional SLO requirement for time-to-first-token
-            **params: Additional parameters (temperature, max_tokens, etc.)
+            prefill_slo_seconds: Optional TTFT SLO
+            params: Request parameters (temperature, max_tokens, etc.)
 
         Returns:
-            Chat completion response
+            Dict with 'adapter', 'routing_decision', 'request_id', 'reason',
+            'cached_tokens', 'model_id', 'queue_length', and 'decision' object.
         """
-        self.stats["total_requests"] += 1
+        if params is None:
+            params = {}
 
-        # Convert messages to dict format if needed
-        messages_dict = [
-            msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in messages
-        ]
-
-        # Extract prompt text for TreeCache
-        prompt_text = extract_prompt_text(messages_dict)
-
-        # Estimate prefix cache hit using TreeCache
-        cached_tokens = self.tree_cache.estimate_cached_tokens(prompt_text, update_access_time=True)
-        if cached_tokens > 0:
-            self.stats["cache_hit_requests"] += 1
-            self.stats["total_cached_tokens"] += cached_tokens
-
-        # Estimate token counts for the request
-        from serving.utils.tokens import estimate_prompt_tokens
-
-        num_prompt_tokens = estimate_prompt_tokens(messages_dict)
-        num_output_tokens = _get_max_output_tokens(params)
-
-        # Generate request ID if not provided
-        if request_id is None:
-            request_id = f"req-{int(time.time() * 1000)}-{self.stats['total_requests']}"
-
-        # Store prompt text for potential TreeCache update later
-        self._request_prompts[request_id] = prompt_text
-        self._request_payloads[request_id] = {
-            "messages": messages_dict,
-            "params": dict(params),
-            "prefill_slo_seconds": prefill_slo_seconds,
-            "stream": False,
-        }
-
-        # Add request to waiting queue for outsourcing consideration
-        from routing.outsourcing import OutsourcingRequestInfo
-
-        self.waiting_queue.add_request(
-            OutsourcingRequestInfo(
-                request_id=request_id,
-                arrival_time=time.time(),
-                num_prompt_tokens=num_prompt_tokens,
-                num_output_tokens=num_output_tokens,
-                num_cached_tokens=cached_tokens,  # Pass cached tokens for FLOP adjustment
-                prefill_slo_seconds=prefill_slo_seconds,
-                metadata={"prompt_text": prompt_text},
-            )
-        )
-
-        # Make outsourcing decision
-        current_time = time.time()
-        force_local, queue_depth = self._assess_sglang_capacity()
-        if force_local:
-            decision = self._make_forced_local_decision(queue_depth)
-            logger.info(
-                "[Outsourcing] SGLang idle (queue_depth=%s); forcing local dispatch for %s",
-                f"{queue_depth:.2f}" if queue_depth is not None else "unknown",
-                request_id,
-            )
-        else:
-            decision = self.outsourcing_engine.should_outsource(current_time)
-
-        # Always apply outsourcing decision to handle ALL requests marked for outsourcing
-        # This ensures requests other than the current one are also properly handled
-        if decision.should_outsource:
-            self.stats["outsourcing_decisions"] += 1
-
-            # Apply the decision - this removes outsourced requests from the queue
-            outsourced_requests = self.outsourcing_engine.apply_outsourcing(decision)
-
-            # Count how many OTHER requests were outsourced (not the current one)
-            other_outsourced = len([r for r in outsourced_requests if r.request_id != request_id])
-            if other_outsourced > 0:
-                self.stats["other_requests_outsourced"] += other_outsourced
-                logger.info(
-                    f"[Outsourcing] {other_outsourced} other request(s) also marked for outsourcing"
-                )
-
-            # CRITICAL: Remove kept requests from the waiting queue to prevent queue leak
-            # The outsourced requests are already removed by apply_outsourcing()
-            # But kept requests must also be removed - they will be processed locally
-            if decision.requests_to_keep:
-                self.waiting_queue.remove_requests(set(decision.requests_to_keep))
-
-            # Update TreeCache for requests that will stay local
-            for kept_id in decision.requests_to_keep:
-                if kept_id in self._request_prompts:
-                    self.tree_cache.insert(self._request_prompts[kept_id])
-                    del self._request_prompts[kept_id]
-                self._request_payloads.pop(kept_id, None)
-
-            # Clean up prompt texts for outsourced requests (they won't update local cache)
-            for req in outsourced_requests:
-                self._request_prompts.pop(req.request_id, None)
-                self._request_payloads.pop(req.request_id, None)
-
-            # Iterative mode removes requests upstream; ensure bookkeeping is cleared
-            outsourced_ids = {req.request_id for req in outsourced_requests}
-            for req_id in decision.requests_to_outsource:
-                if req_id not in outsourced_ids:
-                    self._request_prompts.pop(req_id, None)
-                    self._request_payloads.pop(req_id, None)
-
-        # Determine routing for THIS request
-        if decision.should_outsource and request_id in decision.requests_to_outsource:
-            # This request should be outsourced
-            target_adapter = self.remote_adapter
-            routing_decision = "outsourced"
-            self.stats["outsourced_requests"] += 1
-
-            logger.info(
-                f"[Outsourcing] Request {request_id} outsourced to remote API. "
-                f"Reason: {decision.reason}. "
-                f"Queue metrics: {decision.metrics}"
-            )
-        else:
-            # Keep local
-            target_adapter = self.local_adapter
-            routing_decision = "local"
-            self.stats["local_requests"] += 1
-
-            # If no outsourcing decision was made, we still need to:
-            # 1. Remove this request from the queue (it will be processed locally)
-            # 2. Update TreeCache
-            if not decision.should_outsource:
-                self.waiting_queue.remove_requests({request_id})
-                self.tree_cache.insert(prompt_text)
-                self._request_prompts.pop(request_id, None)
-                self._request_payloads.pop(request_id, None)
-
-            logger.info(
-                f"[Outsourcing] Request {request_id} kept local. "
-                f"Queue length: {self.waiting_queue.get_length()}, "
-                f"cached_tokens: {cached_tokens}"
-            )
-
-        # Execute the request through the selected adapter
-        response = await target_adapter.chat_completion(messages_dict, **params)
-
-        # Add routing metadata
-        response["_outsourcing"] = {
-            "decision": routing_decision,
-            "request_id": request_id,
-            "reason": (
-                decision.reason if decision.should_outsource else decision.reason or "no_slo_violations"
-            ),
-            "queue_length": self.waiting_queue.get_length(),
-            "model_id": self.model_id,
-            "cached_tokens": cached_tokens,
-        }
-
-        return response
-
-    async def stream_chat_completion(
-        self,
-        messages: list[ChatMessage] | list[dict[str, Any]],
-        request_id: str | None = None,
-        prefill_slo_seconds: float | None = None,
-        **params: Any,
-    ):
-        """Route a streaming chat completion request with outsourcing logic.
-
-        Args:
-            messages: Chat messages in OpenAI format
-            request_id: Optional request ID for tracking
-            prefill_slo_seconds: Optional SLO requirement for time-to-first-token
-            **params: Additional parameters
-
-        Yields:
-            SSE chunks from the adapter
-        """
         self.stats["total_requests"] += 1
 
         # Convert messages to dict format if needed
@@ -416,7 +250,7 @@ class OutsourcingRouter:
         num_prompt_tokens = estimate_prompt_tokens(messages_dict)
         num_output_tokens = _get_max_output_tokens(params)
 
-        # Generate request ID
+        # Generate request ID if not provided
         if request_id is None:
             request_id = f"req-{int(time.time() * 1000)}-{self.stats['total_requests']}"
 
@@ -426,10 +260,9 @@ class OutsourcingRouter:
             "messages": messages_dict,
             "params": dict(params),
             "prefill_slo_seconds": prefill_slo_seconds,
-            "stream": True,
         }
 
-        # Add to queue
+        # Add request to waiting queue for outsourcing consideration
         from routing.outsourcing import OutsourcingRequestInfo
 
         self.waiting_queue.add_request(
@@ -438,49 +271,51 @@ class OutsourcingRouter:
                 arrival_time=time.time(),
                 num_prompt_tokens=num_prompt_tokens,
                 num_output_tokens=num_output_tokens,
-                num_cached_tokens=cached_tokens,  # Pass cached tokens
+                num_cached_tokens=cached_tokens,
                 prefill_slo_seconds=prefill_slo_seconds,
                 metadata={"prompt_text": prompt_text},
             )
         )
 
-        # Make outsourcing decision
+        # Make outsourcing decision.
+        # _assess_sglang_capacity() does a single get_metrics() call; we pass the
+        # cached result to should_outsource() so the engine skips its own HTTP fetch.
         current_time = time.time()
         force_local, queue_depth = self._assess_sglang_capacity()
         if force_local:
             decision = self._make_forced_local_decision(queue_depth)
             logger.info(
-                "[Outsourcing Stream] SGLang idle (queue_depth=%s); forcing local dispatch for %s",
+                "[Outsourcing] SGLang idle (queue_depth=%s); forcing local dispatch for %s",
                 f"{queue_depth:.2f}" if queue_depth is not None else "unknown",
                 request_id,
             )
         else:
-            decision = self.outsourcing_engine.should_outsource(current_time)
+            decision = self.outsourcing_engine.should_outsource(
+                current_time,
+                prefetched_metrics=self._last_sglang_metrics,
+            )
 
-        # Always apply outsourcing decision to handle ALL requests marked for outsourcing
+        # Apply outsourcing decision
         if decision.should_outsource:
             self.stats["outsourcing_decisions"] += 1
-
-            # Apply the decision
             outsourced_requests = self.outsourcing_engine.apply_outsourcing(decision)
 
-            # Count other outsourced requests
             other_outsourced = len([r for r in outsourced_requests if r.request_id != request_id])
             if other_outsourced > 0:
                 self.stats["other_requests_outsourced"] += other_outsourced
+                logger.info(
+                    f"[Outsourcing] {other_outsourced} other request(s) also marked for outsourcing"
+                )
 
-            # CRITICAL: Remove kept requests from the waiting queue to prevent queue leak
             if decision.requests_to_keep:
                 self.waiting_queue.remove_requests(set(decision.requests_to_keep))
 
-            # Update TreeCache for kept requests
             for kept_id in decision.requests_to_keep:
                 if kept_id in self._request_prompts:
                     self.tree_cache.insert(self._request_prompts[kept_id])
                     del self._request_prompts[kept_id]
                 self._request_payloads.pop(kept_id, None)
 
-            # Clean up outsourced request prompts
             for req in outsourced_requests:
                 self._request_prompts.pop(req.request_id, None)
                 self._request_payloads.pop(req.request_id, None)
@@ -494,13 +329,17 @@ class OutsourcingRouter:
         # Determine routing for THIS request
         if decision.should_outsource and request_id in decision.requests_to_outsource:
             target_adapter = self.remote_adapter
+            routing_decision = "outsourced"
             self.stats["outsourced_requests"] += 1
-            logger.info(f"[Outsourcing Stream] Request {request_id} outsourced to remote API")
+            logger.info(
+                f"[Outsourcing] Request {request_id} outsourced to remote API. "
+                f"Reason: {decision.reason}. Metrics: {decision.metrics}"
+            )
         else:
             target_adapter = self.local_adapter
+            routing_decision = "local"
             self.stats["local_requests"] += 1
 
-            # Handle case where no outsourcing decision was made
             if not decision.should_outsource:
                 self.waiting_queue.remove_requests({request_id})
                 self.tree_cache.insert(prompt_text)
@@ -508,9 +347,98 @@ class OutsourcingRouter:
                 self._request_payloads.pop(request_id, None)
 
             logger.info(
-                f"[Outsourcing Stream] Request {request_id} kept local, "
+                f"[Outsourcing] Request {request_id} kept local. "
+                f"Queue length: {self.waiting_queue.get_length()}, "
                 f"cached_tokens: {cached_tokens}"
             )
+
+        return {
+            "adapter": target_adapter,
+            "routing_decision": routing_decision,
+            "request_id": request_id,
+            "reason": decision.reason,
+            "cached_tokens": cached_tokens,
+            "model_id": self.model_id,
+            "queue_length": self.waiting_queue.get_length(),
+            "decision": decision,
+        }
+
+    async def chat_completion(
+        self,
+        messages: list[ChatMessage] | list[dict[str, Any]],
+        request_id: str | None = None,
+        prefill_slo_seconds: float | None = None,
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Route a chat completion request with outsourcing logic.
+
+        This is the standalone entry point. When used via NimbusRouter (BaseRouter),
+        the decide() + adapter execution path is used instead.
+
+        Args:
+            messages: Chat messages in OpenAI format
+            request_id: Optional request ID for tracking
+            prefill_slo_seconds: Optional SLO requirement for time-to-first-token
+            **params: Additional parameters (temperature, max_tokens, etc.)
+
+        Returns:
+            Chat completion response with _routing metadata
+        """
+        result = self.decide(messages, request_id, prefill_slo_seconds, params)
+        target_adapter = result["adapter"]
+
+        # Convert messages to dict format for adapter
+        messages_dict = [
+            msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in messages
+        ]
+
+        # Execute the request through the selected adapter
+        response = await target_adapter.chat_completion(messages_dict, **params)
+
+        # Add routing metadata
+        response["_routing"] = {
+            "provider": target_adapter.config.provider,
+            "base_url": target_adapter.config.base_url,
+            "outsourcing": {
+                "decision": result["routing_decision"],
+                "request_id": result["request_id"],
+                "reason": result["reason"],
+                "queue_length": result["queue_length"],
+                "model_id": result["model_id"],
+                "cached_tokens": result["cached_tokens"],
+            },
+        }
+
+        return response
+
+    async def stream_chat_completion(
+        self,
+        messages: list[ChatMessage] | list[dict[str, Any]],
+        request_id: str | None = None,
+        prefill_slo_seconds: float | None = None,
+        **params: Any,
+    ):
+        """Route a streaming chat completion request with outsourcing logic.
+
+        This is the standalone entry point. When used via NimbusRouter (BaseRouter),
+        the decide() + adapter execution path is used instead.
+
+        Args:
+            messages: Chat messages in OpenAI format
+            request_id: Optional request ID for tracking
+            prefill_slo_seconds: Optional SLO requirement for time-to-first-token
+            **params: Additional parameters
+
+        Yields:
+            SSE chunks from the adapter
+        """
+        result = self.decide(messages, request_id, prefill_slo_seconds, params)
+        target_adapter = result["adapter"]
+
+        # Convert messages to dict format for adapter
+        messages_dict = [
+            msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in messages
+        ]
 
         # Stream from the selected adapter
         async for chunk in target_adapter.stream_chat_completion(messages_dict, **params):

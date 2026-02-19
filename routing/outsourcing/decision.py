@@ -8,6 +8,8 @@ Updated to use vidur-style outsourcing components:
 - RequestTracker for metrics
 """
 
+import contextlib
+import time
 from dataclasses import dataclass, field
 
 from .candidate_selection import CandidateSelector
@@ -115,22 +117,99 @@ class OutsourcingEngine:
             mode=violation_detection_mode,
             max_micro_batch_size=max_batch_size,
             utilization_target=utilization_target,
+            default_slo_seconds=prefill_slo_base_seconds,
         )
 
-    def should_outsource(self, current_time: float) -> OutsourcingDecision:
+        # Cache for SGLang metrics to avoid repeated HTTP calls within a short window
+        self._sglang_context_cache: dict | None = None
+        self._sglang_context_cache_time: float = 0.0
+        self._sglang_context_ttl: float = 0.5  # 500ms TTL
+
+    def _get_sglang_context(self, prefetched_metrics: dict | None = None) -> dict:
+        """Extract SGLang pending count and observed TTFT.
+
+        When *prefetched_metrics* is supplied (e.g. from a caller that already
+        queried ``get_metrics()``), we parse that dict directly and skip the
+        HTTP call entirely.  Otherwise falls back to a short TTL cache to avoid
+        redundant network requests.
+
+        Args:
+            prefetched_metrics: Optional already-fetched metrics dict.
+
+        Returns:
+            Dict with 'sglang_pending_count' (int) and 'observed_ttft' (float | None).
+        """
+        # If the caller already has fresh metrics, use them directly
+        if prefetched_metrics is not None:
+            return self._parse_sglang_metrics(prefetched_metrics)
+
+        # TTL cache path — only hit the network when cache is stale
+        now = time.monotonic()
+        if (
+            self._sglang_context_cache is not None
+            and (now - self._sglang_context_cache_time) < self._sglang_context_ttl
+        ):
+            return self._sglang_context_cache
+
+        metrics: dict = {}
+        if hasattr(self.waiting_queue, "get_metrics"):
+            with contextlib.suppress(Exception):
+                metrics = self.waiting_queue.get_metrics(safe=True) or {}
+
+        result = self._parse_sglang_metrics(metrics)
+        self._sglang_context_cache = result
+        self._sglang_context_cache_time = now
+        return result
+
+    @staticmethod
+    def _parse_sglang_metrics(metrics: dict) -> dict:
+        """Parse raw SGLang metrics into sglang_pending_count / observed_ttft."""
+        pending_count = 0
+        observed_ttft = None
+
+        raw_queue = metrics.get("request_queue")
+        if raw_queue is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                pending_count = int(float(raw_queue))
+
+        raw_ttft = metrics.get("ttft_seconds")
+        if raw_ttft is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                observed_ttft = float(raw_ttft)
+
+        return {
+            "sglang_pending_count": pending_count,
+            "observed_ttft": observed_ttft,
+        }
+
+    def should_outsource(
+        self,
+        current_time: float,
+        prefetched_metrics: dict | None = None,
+    ) -> OutsourcingDecision:
         """Main entry point: decide if outsourcing is needed.
 
         Uses vidur-style iterative outsourcing (if enabled) or single-pass decision.
         Call this before each scheduling cycle.
+
+        Args:
+            current_time: Current wall-clock time.
+            prefetched_metrics: Optional pre-fetched SGLang metrics dict to avoid
+                a redundant HTTP call (e.g. when the caller already called
+                ``get_metrics()``).
         """
         if self.enable_iterative_outsourcing:
-            return self._iterative_outsourcing(current_time)
+            return self._iterative_outsourcing(current_time, prefetched_metrics)
         else:
-            return self._single_pass_outsourcing(current_time)
+            return self._single_pass_outsourcing(current_time, prefetched_metrics)
 
-    def _iterative_outsourcing(self, current_time: float) -> OutsourcingDecision:
+    def _iterative_outsourcing(
+        self,
+        current_time: float,
+        prefetched_metrics: dict | None = None,
+    ) -> OutsourcingDecision:
         """Iteratively outsource one request at a time until TTFT violations are resolved.
-        
+
         This is the vidur approach: conservative outsourcing that only removes the minimum
         needed to resolve violations.
         """
@@ -144,13 +223,16 @@ class OutsourcingEngine:
                 reason="No waiting requests",
             )
 
+        # Fetch SGLang context once per decision cycle (reuse prefetched if available)
+        sglang_ctx = self._get_sglang_context(prefetched_metrics)
+
         all_outsourced = []
         iteration = 0
 
         while iteration < self.max_outsourcing_iterations:
             # Re-fetch waiting requests (some may have been removed)
             waiting_requests = self.waiting_queue.get_all_waiting()
-            
+
             if not waiting_requests:
                 break
 
@@ -163,25 +245,35 @@ class OutsourcingEngine:
             if not candidates:
                 if self.debug_outsourcing:
                     from serving.utils.logging import get_logger
+
                     logger = get_logger(__name__)
-                    logger.info(f"[{self.model_id}] No more outsourcing candidates, stopping at iteration {iteration}")
+                    logger.info(
+                        f"[{self.model_id}] No more outsourcing candidates, stopping at iteration {iteration}"
+                    )
                 break
 
-            # Check for TTFT violations
+            # Check for TTFT violations with SGLang metrics
             has_violations = self._violation_detector.check_violations(
-                candidates, current_time
+                candidates,
+                current_time,
+                sglang_pending_count=sglang_ctx["sglang_pending_count"],
+                observed_ttft=sglang_ctx["observed_ttft"],
             )
 
             if not has_violations:
                 # No violations detected, we're done
                 if iteration > 0 and self.debug_outsourcing:
                     from serving.utils.logging import get_logger
+
                     logger = get_logger(__name__)
-                    logger.info(f"[{self.model_id}] TTFT violations resolved after {iteration} outsourcing iteration(s)")
+                    logger.info(
+                        f"[{self.model_id}] TTFT violations resolved after {iteration} outsourcing iteration(s)"
+                    )
                 break
 
             if iteration == 0 and self.debug_outsourcing:
                 from serving.utils.logging import get_logger
+
                 logger = get_logger(__name__)
                 logger.info(f"[{self.model_id}] TTFT violation detected at t={current_time:.2f}")
 
@@ -206,8 +298,11 @@ class OutsourcingEngine:
                 outsource_ids = [sorted_items[0]["id"]]
                 if self.debug_outsourcing:
                     from serving.utils.logging import get_logger
+
                     logger = get_logger(__name__)
-                    logger.info(f"[{self.model_id}] Knapsack didn't outsource, manually selecting lowest-value request")
+                    logger.info(
+                        f"[{self.model_id}] Knapsack didn't outsource, manually selecting lowest-value request"
+                    )
 
             # Outsource only ONE request (the first one selected)
             # This is more conservative than outsourcing all at once
@@ -216,34 +311,45 @@ class OutsourcingEngine:
             if single_outsource:
                 if self.debug_outsourcing:
                     from serving.utils.logging import get_logger
+
                     logger = get_logger(__name__)
-                    logger.info(f"[{self.model_id}] Iteration {iteration + 1}: Outsourcing 1 request: {single_outsource[0]}")
-                
+                    logger.info(
+                        f"[{self.model_id}] Iteration {iteration + 1}: Outsourcing 1 request: {single_outsource[0]}"
+                    )
+
                 # Remove from queue and track
                 outsourced = self.waiting_queue.remove_requests(set(single_outsource))
                 for req in outsourced:
                     self.outsourced_request_ids.add(req.request_id)
                     self._request_tracker.track_outsourced_request(req, current_time)
                     all_outsourced.append(req.request_id)
-                
+
                 iteration += 1
             else:
                 # No request to outsource, break
                 if self.debug_outsourcing:
                     from serving.utils.logging import get_logger
+
                     logger = get_logger(__name__)
-                    logger.info(f"[{self.model_id}] No request selected for outsourcing at iteration {iteration}")
+                    logger.info(
+                        f"[{self.model_id}] No request selected for outsourcing at iteration {iteration}"
+                    )
                 break
 
         # Safety limit reached
         if iteration >= self.max_outsourcing_iterations and self.debug_outsourcing:
             from serving.utils.logging import get_logger
+
             logger = get_logger(__name__)
-            logger.warning(f"[{self.model_id}] Reached max outsourcing iterations ({self.max_outsourcing_iterations}), violations may still exist")
+            logger.warning(
+                f"[{self.model_id}] Reached max outsourcing iterations ({self.max_outsourcing_iterations}), violations may still exist"
+            )
 
         # Get final waiting requests for keep list
         final_waiting = self.waiting_queue.get_all_waiting()
-        keep_ids = [r.request_id for r in final_waiting if r.request_id not in self.outsourced_request_ids]
+        keep_ids = [
+            r.request_id for r in final_waiting if r.request_id not in self.outsourced_request_ids
+        ]
 
         if all_outsourced:
             return OutsourcingDecision(
@@ -266,7 +372,11 @@ class OutsourcingEngine:
                 reason="No SLO violations detected",
             )
 
-    def _single_pass_outsourcing(self, current_time: float) -> OutsourcingDecision:
+    def _single_pass_outsourcing(
+        self,
+        current_time: float,
+        prefetched_metrics: dict | None = None,
+    ) -> OutsourcingDecision:
         """Make outsourcing decision in single pass (original hybridInference approach)."""
         waiting_requests = self.waiting_queue.get_all_waiting()
 
@@ -292,9 +402,15 @@ class OutsourcingEngine:
                 reason="No candidates for outsourcing",
             )
 
+        # Fetch SGLang context for violation detection (reuse prefetched if available)
+        sglang_ctx = self._get_sglang_context(prefetched_metrics)
+
         # Check for TTFT violations using the violation detector
         has_violations = self._violation_detector.check_violations(
-            candidates, current_time
+            candidates,
+            current_time,
+            sglang_pending_count=sglang_ctx["sglang_pending_count"],
+            observed_ttft=sglang_ctx["observed_ttft"],
         )
 
         if not has_violations:
@@ -358,7 +474,7 @@ class OutsourcingEngine:
 
     def _build_knapsack_item(self, req: OutsourcingRequestInfo) -> dict:
         """Build a knapsack item for a request.
-        
+
         Weight: total FLOPs remaining (prefill + weighted decode)
         Value: cost savings from keeping local (API cost avoided)
         """
@@ -397,11 +513,6 @@ class OutsourcingEngine:
         """
         if not candidates:
             return [], []
-
-        # Get model dimensions for FLOP calculation
-        effective_flops = self.flop_calculator.get_effective_flops_per_second(
-            self.utilization_target
-        )
 
         # Build knapsack items
         items = [self._build_knapsack_item(req) for req in candidates]

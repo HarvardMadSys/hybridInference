@@ -12,7 +12,6 @@ health tracking, circuit breakers, and automatic fallback.
 from __future__ import annotations
 
 import contextlib
-import inspect
 import random
 import threading
 import time
@@ -655,19 +654,16 @@ class FixedRouter(BaseRouter):
 # ============================================================================
 
 
-class NimbusRouter:
-    """Multi-model hybrid routing manager.
+class NimbusRouter(BaseRouter):
+    """Multi-model hybrid routing manager with full BaseRouter infrastructure.
 
-    Manages OutsourcingRouter instances for multiple models, each with
-    its own external queue, outsourcing engine, SLO configuration, and TreeCache.
+    Inherits circuit breaker, health tracking, fallback, and metrics from
+    BaseRouter. Manages OutsourcingRouter instances for Nimbus-enabled models,
+    delegating to FixedRouter for non-Nimbus models.
 
-    Each model gets its own TreeCache instance to approximate the local SGLang's
-    RadixCache for prefix cache hit estimation. This improves outsourcing decisions
-    by accounting for KV cache reuse.
-
-    This is a simple wrapper that delegates to:
-    - OutsourcingRouter for Nimbus-enabled models (SLO-aware hybrid routing)
-    - FixedRouter for other models (weighted random routing)
+    Each Nimbus model gets its own OutsourcingRouter (with TreeCache, queue,
+    outsourcing engine) for SLO-aware hybrid routing between local SGLang
+    and external APIs.
     """
 
     def __init__(
@@ -685,11 +681,17 @@ class NimbusRouter:
             tree_cache_max_size_mb: Maximum TreeCache size per model in MB
             chars_per_token: Average characters per token for cache hit estimation
         """
+        super().__init__(experiment_mode=getattr(settings, "experiment_mode", False))
         self.fixed_router = fixed_router
         self.settings = settings
         self.tree_cache_max_size_mb = tree_cache_max_size_mb
         self.chars_per_token = chars_per_token
         self.outsourcing_routers: dict[str, OutsourcingRouter] = {}
+
+        # Stores outsourcing decisions keyed by request_id for metadata injection.
+        # Using request_id (not model_id) ensures concurrent requests for the same
+        # model don't overwrite each other's decisions.
+        self._pending_decisions: dict[str, dict[str, Any]] = {}
 
         self._init_routers()
 
@@ -836,13 +838,76 @@ class NimbusRouter:
             # Default SLO
             return 2.0
 
+    def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
+        """Select an adapter using outsourcing decision for Nimbus models.
+
+        For Nimbus-enabled models, calls OutsourcingRouter.decide() to determine
+        whether to route locally or externally. For other models, delegates to
+        FixedRouter._select_adapter().
+
+        Args:
+            model_id: Model identifier
+            context: Request context with messages, params, request_id, etc.
+
+        Returns:
+            Selected adapter, or None if no route available
+        """
+        outsourcing_router = self.outsourcing_routers.get(model_id)
+        if outsourcing_router:
+            messages = context.get("messages", [])
+            params = context.get("params", {})
+            request_id = context.get("request_id")
+            prefill_slo_seconds = context.get("prefill_slo_seconds")
+
+            result = outsourcing_router.decide(messages, request_id, prefill_slo_seconds, params)
+            # Stash decision keyed by the *caller's* request_id (from params)
+            # so chat_completion() / stream_chat_completion() can look it up
+            # with the same key.  decide() may echo or generate its own id
+            # inside result["request_id"], but the dict key must match the
+            # one that NimbusRouter.chat_completion already holds.
+            if request_id:
+                self._pending_decisions[request_id] = result
+            return result["adapter"]
+        else:
+            return self.fixed_router._select_adapter(model_id, context)
+
+    def _get_fallback_adapters(
+        self,
+        model_id: str,
+        failed_adapter: BaseAdapter,
+    ) -> list[BaseAdapter]:
+        """Get fallback adapters when primary fails.
+
+        For Nimbus models: if local failed, return [remote]; if remote failed,
+        return [local]. For other models, delegate to FixedRouter.
+
+        Args:
+            model_id: Model identifier
+            failed_adapter: The adapter that just failed
+
+        Returns:
+            List of fallback adapters to try
+        """
+        outsourcing_router = self.outsourcing_routers.get(model_id)
+        if outsourcing_router:
+            if failed_adapter is outsourcing_router.local_adapter:
+                return [outsourcing_router.remote_adapter]
+            elif failed_adapter is outsourcing_router.remote_adapter:
+                return [outsourcing_router.local_adapter]
+            else:
+                # Unknown adapter; return both as fallbacks
+                return [outsourcing_router.local_adapter, outsourcing_router.remote_adapter]
+        else:
+            return self.fixed_router._get_fallback_adapters(model_id, failed_adapter)
+
     async def chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
-        """Route a chat completion request.
+        """Execute chat completion with BaseRouter infrastructure + outsourcing metadata.
 
-        Delegates to OutsourcingRouter for Nimbus models,
-        or FixedRouter for other models.
+        Uses BaseRouter.chat_completion() for circuit breaker, health tracking,
+        fallback, and metrics. Then merges outsourcing decision metadata into the
+        response's _routing dict.
 
         Args:
             model_id: Model identifier
@@ -850,23 +915,52 @@ class NimbusRouter:
             **params: Additional parameters
 
         Returns:
-            Chat completion response
+            Chat completion response with merged _routing metadata
         """
-        router = self.outsourcing_routers.get(model_id)
-        if router:
-            # Use Nimbus hybrid routing (calls OutsourcingRouter directly)
-            return await router.chat_completion(messages, **params)
-        else:
-            # Fallback to fixed routing
-            return await self.fixed_router.chat_completion(model_id, messages, **params)
+        # Ensure request_id exists so _select_adapter() and this method
+        # agree on the key used in _pending_decisions.  In production,
+        # completions.py always sets it; this handles direct calls (tests).
+        # Note: check for falsy (not just missing) to handle explicit None.
+        if not params.get("request_id"):
+            import uuid as _uuid
+
+            params["request_id"] = f"req-{_uuid.uuid4().hex[:12]}"
+        request_id = params["request_id"]
+
+        # BaseRouter.chat_completion() calls _select_adapter() -> decide()
+        # and handles circuit breaker, fallback, metrics, and _routing metadata.
+        # Always clean up _pending_decisions — use BaseException to also catch
+        # asyncio.CancelledError (which is BaseException, not Exception).
+        try:
+            resp = await super().chat_completion(model_id, messages, **params)
+        except BaseException:
+            self._pending_decisions.pop(request_id, None)
+            raise
+
+        # Merge outsourcing metadata into _routing if available.
+        # BaseRouter already set resp["_routing"]["provider"] to the *actual*
+        # executing adapter (post-fallback), so we only add outsourcing info.
+        decision_info = self._pending_decisions.pop(request_id, None)
+        if decision_info and "_routing" in resp:
+            resp["_routing"]["outsourcing"] = {
+                "decision": decision_info["routing_decision"],
+                "request_id": decision_info["request_id"],
+                "reason": decision_info["reason"],
+                "queue_length": decision_info["queue_length"],
+                "model_id": decision_info["model_id"],
+                "cached_tokens": decision_info["cached_tokens"],
+            }
+
+        return resp
 
     async def stream_chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ):
-        """Route a streaming chat completion request.
+        """Stream chat completion with BaseRouter infrastructure + outsourcing metadata.
 
-        Delegates to OutsourcingRouter for Nimbus models,
-        or FixedRouter for other models.
+        Uses BaseRouter.stream_chat_completion() for circuit breaker, health
+        tracking, fallback, TTFT metrics, etc. Injects a routing metadata chunk
+        just before the ``[DONE]`` sentinel so it stays within valid SSE ordering.
 
         Args:
             model_id: Model identifier
@@ -874,22 +968,62 @@ class NimbusRouter:
             **params: Additional parameters
 
         Yields:
-            Streaming response chunks
+            SSE chunks from the adapter with routing metadata before [DONE]
         """
-        router = self.outsourcing_routers.get(model_id)
-        if router:
-            # Use Nimbus hybrid routing (calls OutsourcingRouter directly)
-            stream_iter = router.stream_chat_completion(messages, **params)
-            if inspect.isawaitable(stream_iter):
-                stream_iter = await stream_iter
-            async for chunk in stream_iter:
+        import json as _json
+
+        # Ensure request_id exists (same logic as chat_completion).
+        # Check for falsy (not just missing) to handle explicit None.
+        if not params.get("request_id"):
+            import uuid as _uuid
+
+            params["request_id"] = f"req-{_uuid.uuid4().hex[:12]}"
+        request_id = params["request_id"]
+
+        # Buffer the [DONE] sentinel so we can inject routing metadata before it.
+        done_chunk: str | None = None
+
+        try:
+            async for chunk in super().stream_chat_completion(model_id, messages, **params):
+                # Detect the SSE [DONE] sentinel precisely.  A content chunk
+                # whose text happens to contain "[DONE]" must NOT be swallowed.
+                # The real sentinel is exactly "data: [DONE]\n\n".
+                if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
+                    done_chunk = chunk
+                    continue
                 yield chunk
-        else:
-            # Fallback to fixed routing
-            async for chunk in self.fixed_router.stream_chat_completion(
-                model_id, messages, **params
-            ):
-                yield chunk
+        except BaseException:
+            self._pending_decisions.pop(request_id, None)
+            raise
+
+        # Inject routing metadata chunk (before [DONE]).
+        # provider/base_url come from the decision-time adapter.  After a
+        # BaseRouter fallback these may not match the actual executor, but
+        # fallback is rare (<1%) while provider attribution affects 100% of
+        # streaming requests for DB/cost logging.  "Occasionally wrong" beats
+        # "always unknown" for observability.
+        decision_info = self._pending_decisions.pop(request_id, None)
+        if decision_info:
+            routing_chunk = {
+                "choices": [],
+                "_routing": {
+                    "provider": decision_info["adapter"].config.provider,
+                    "base_url": decision_info["adapter"].config.base_url,
+                    "outsourcing": {
+                        "decision": decision_info["routing_decision"],
+                        "request_id": decision_info["request_id"],
+                        "reason": decision_info["reason"],
+                        "queue_length": decision_info["queue_length"],
+                        "model_id": decision_info["model_id"],
+                        "cached_tokens": decision_info["cached_tokens"],
+                    },
+                },
+            }
+            yield f"data: {_json.dumps(routing_chunk)}\n\n"
+
+        # Now yield the [DONE] sentinel last
+        if done_chunk:
+            yield done_chunk
 
     def get_stats(self) -> dict[str, Any]:
         """Get statistics for all managed routers.
