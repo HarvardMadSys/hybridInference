@@ -112,13 +112,14 @@ LOCAL_BASE_URL=http://localhost:8000/v1
 RATE_LIMIT_PER_MINUTE=100
 ```
 
-### Nginx and HTTPS (optional but recommended)
+### Nginx and HTTPS
 
-In production we recommend putting Nginx in front of the backend and frontend to:
+Nginx is required in front of the backend and frontend to:
 
 - Terminate TLS (HTTPS).
 - Serve the frontend on the root path (`/`).
-- Route API traffic to the backend.
+- Route API traffic (`/v1/`, `/auth/`, `/user/`, `/admin/`) to the backend.
+- Enforce request body size limits (`client_max_body_size`).
 
 An example configuration is provided in `infrastructure/nginx/freeinference.conf`. Typical
 deployment steps on Ubuntu/Debian:
@@ -137,8 +138,20 @@ This configuration assumes:
 - Public domain: `freeinference.org`
 - HTTPS certificates from Let's Encrypt (see comments in the config file).
 
-If you run behind Cloudflare, set SSL/TLS mode to **Full (strict)** so that Cloudflare
-connects to Nginx over HTTPS and avoids redirect loops on port 80.
+### Network Topology
+
+```
+Client ──▶ Cloudflare (CDN + DDoS) ──▶ Nginx (:443) ──▶ FastAPI (:8080)
+                                                    └──▶ Frontend (:3001)
+```
+
+### Cloudflare
+
+FreeInference runs behind Cloudflare for CDN and DDoS protection. Key settings:
+
+- **SSL/TLS mode**: Set to **Full (strict)** so that Cloudflare connects to Nginx over HTTPS and verifies the origin certificate. This avoids redirect loops on port 80.
+- **Real client IP**: Cloudflare sets the `CF-Connecting-IP` header with the original client IP. Nginx forwards this as `X-Real-IP` / `X-Forwarded-For` to FastAPI.
+- **Caching**: API paths (`/v1/*`) should have caching disabled in Cloudflare Page Rules. Static frontend assets benefit from edge caching.
 
 ### Health Checks
 

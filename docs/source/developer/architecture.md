@@ -34,6 +34,21 @@ HybridInference is designed as a modular, high-performance inference gateway.
 └──────────────────┘
 ```
 
+## Network Layer
+
+External traffic passes through three layers before reaching the application logic:
+
+```
+Client ──▶ Cloudflare (CDN + DDoS) ──▶ Nginx (:443) ──▶ FastAPI (:8080)
+                                                    └──▶ Frontend (:3001)
+```
+
+- **Cloudflare**: Edge CDN, DDoS protection, SSL termination (Full strict mode).
+- **Nginx**: Origin TLS, path-based routing, body size limits, WebSocket upgrade.
+- **FastAPI**: API authentication, model routing, rate limiting, observability.
+
+The network layer handles external connectivity and request delivery. The sections below describe the internal inference pipeline that runs inside FastAPI.
+
 ## Core Components
 
 ### Serving Layer (`serving/`)

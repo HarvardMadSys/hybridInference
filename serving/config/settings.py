@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # Frontend URL (for email links)
     frontend_url: str = "https://freeinference.org"
 
+    # Qdrant (shared vector database for codebase indexing)
+    qdrant_base_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
+
     # CORS
     cors_allowed_origins: list[str] = [
         "http://localhost:3000",

@@ -282,6 +282,27 @@ class AsyncHTTPClient:
                 async for raw in resp.content:
                     yield raw.decode("utf-8").strip()
 
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: aiohttp.ClientTimeout | None = None,
+    ) -> tuple[int, bytes, str]:
+        """Send an arbitrary HTTP request and return (status, body, content_type).
+
+        Intended for proxy-style forwarding where we need the raw response.
+        """
+        session = await self._ensure_session()
+        async with session.request(
+            method, url, data=data, headers=headers, timeout=timeout
+        ) as resp:
+            body = await resp.read()
+            content_type = resp.headers.get("content-type", "application/json")
+            return resp.status, body, content_type
+
     async def close(self) -> None:
         """Close the HTTP session."""
         if self._session and not self._session.closed:
