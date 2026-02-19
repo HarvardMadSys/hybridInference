@@ -1,12 +1,14 @@
 """Unit tests for NimbusRouter.
 
 Tests the NimbusRouter class which manages hybrid SLO-aware routing
-by delegating to OutsourcingRouter for Nimbus-enabled models and
-FixedRouter for other models.
+by inheriting BaseRouter infrastructure (circuit breaker, health, fallback)
+and delegating outsourcing decisions to OutsourcingRouter.decide() for
+Nimbus-enabled models, while falling back to FixedRouter for other models.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,13 +26,15 @@ from serving.adapters.base import BaseAdapter, ModelConfig
 # Test Fixtures
 
 
-def _make_adapter(adapter_id: str, provider: str = "test") -> BaseAdapter:
+def _make_adapter(adapter_id: str, provider: str = "test", base_url: str | None = None) -> BaseAdapter:
     """Create a mock adapter for testing."""
+    if base_url is None:
+        base_url = f"http://{provider}.test"
     config = ModelConfig(
         id=adapter_id,
         name=adapter_id,
         provider=provider,
-        base_url=f"http://{provider}.test",
+        base_url=base_url,
         context_length=8192,
         max_output_length=4096,
     )
@@ -49,32 +53,53 @@ def mock_settings():
     settings = MagicMock()
     settings.nimbus_enabled_models = []
     settings.routing_strategy = "nimbus"
+    settings.experiment_mode = False
     return settings
 
 
 @pytest.fixture
 def local_adapter():
     """Create a local adapter."""
-    return _make_adapter("glm-4.6-local", provider="sglang")
+    return _make_adapter("glm-4.6-local", provider="sglang", base_url="http://localhost:8001")
 
 
 @pytest.fixture
 def remote_adapter():
     """Create a remote adapter."""
-    return _make_adapter("glm-4.6-remote", provider="zhipu")
+    return _make_adapter("glm-4.6-remote", provider="zhipu", base_url="https://api.zhipu.ai")
 
 
-@pytest.fixture
-def mock_outsourcing_router(local_adapter, remote_adapter):
-    """Create a mock OutsourcingRouter."""
+def _make_mock_outsourcing_router(local_adapter, remote_adapter):
+    """Create a mock OutsourcingRouter with decide() support."""
     from routing.outsourcing_integration import OutsourcingRouter
 
     router = MagicMock(spec=OutsourcingRouter)
     router.local_adapter = local_adapter
     router.remote_adapter = remote_adapter
-    router.chat_completion = AsyncMock(return_value={"choices": [{"message": {"content": "test"}}]})
+
+    # decide() returns routing decision pointing to local adapter by default
+    router.decide.return_value = {
+        "adapter": local_adapter,
+        "routing_decision": "local",
+        "request_id": "req-test-1",
+        "reason": "No SLO violations detected",
+        "cached_tokens": 0,
+        "model_id": "glm-4.6",
+        "queue_length": 0,
+        "decision": MagicMock(),
+    }
+
+    router.chat_completion = AsyncMock(
+        return_value={"choices": [{"message": {"content": "test"}}]}
+    )
     router.stream_chat_completion = AsyncMock()
     return router
+
+
+@pytest.fixture
+def mock_outsourcing_router(local_adapter, remote_adapter):
+    """Create a mock OutsourcingRouter with decide() support."""
+    return _make_mock_outsourcing_router(local_adapter, remote_adapter)
 
 
 @pytest.fixture
@@ -113,6 +138,17 @@ class TestNimbusRouterInitialization:
         assert router.fixed_router is fixed_router
         assert "other-model" in router.fixed_router.routes
 
+    def test_inherits_base_router(self, fixed_router, mock_settings):
+        """Test NimbusRouter inherits from BaseRouter."""
+        from routing.routers import BaseRouter
+
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+
+        assert isinstance(router, BaseRouter)
+        assert hasattr(router, "_health")
+        assert hasattr(router, "_circuits")
+        assert hasattr(router, "experiment_mode")
+
 
 class TestNimbusRouterRegistration:
     """Test model registration in NimbusRouter."""
@@ -138,22 +174,31 @@ class TestNimbusRouterRegistration:
 
 
 class TestNimbusRouterChatCompletion:
-    """Test chat_completion method."""
+    """Test chat_completion method via BaseRouter infrastructure."""
 
     @pytest.mark.asyncio
     async def test_chat_completion_nimbus_model(
-        self, fixed_router, mock_settings, mock_outsourcing_router
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
     ):
-        """Test chat completion for Nimbus-enabled model."""
+        """Test chat completion for Nimbus-enabled model uses decide()."""
         router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
-        router.outsourcing_routers["glm-4.6"] = mock_outsourcing_router
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
 
         messages = [{"role": "user", "content": "Hello"}]
         result = await router.chat_completion("glm-4.6", messages)
 
-        # Should delegate to OutsourcingRouter
-        mock_outsourcing_router.chat_completion.assert_awaited_once()
+        # Should have called decide() on OutsourcingRouter
+        mock_or.decide.assert_called_once()
+        # Should have called the adapter returned by decide()
+        local_adapter.chat_completion.assert_awaited_once()
         assert result is not None
+        # Should include _routing metadata from BaseRouter
+        assert "_routing" in result
+        assert result["_routing"]["provider"] == "sglang"
+        # Should include outsourcing metadata
+        assert "outsourcing" in result["_routing"]
+        assert result["_routing"]["outsourcing"]["decision"] == "local"
 
     @pytest.mark.asyncio
     async def test_chat_completion_fixed_model(self, fixed_router, mock_settings):
@@ -176,33 +221,124 @@ class TestNimbusRouterChatCompletion:
         with pytest.raises(ValueError, match="No route configured"):
             await router.chat_completion("unknown-model", messages)
 
+    @pytest.mark.asyncio
+    async def test_chat_completion_outsourced_decision(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Test chat completion when outsourcing decision routes to remote."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        # Configure decide() to return remote adapter
+        mock_or.decide.return_value = {
+            "adapter": remote_adapter,
+            "routing_decision": "outsourced",
+            "request_id": "req-test-2",
+            "reason": "SLO violations detected",
+            "cached_tokens": 0,
+            "model_id": "glm-4.6",
+            "queue_length": 3,
+            "decision": MagicMock(),
+        }
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        messages = [{"role": "user", "content": "Hello"}]
+        result = await router.chat_completion("glm-4.6", messages)
+
+        # Should have called remote adapter
+        remote_adapter.chat_completion.assert_awaited_once()
+        assert result["_routing"]["provider"] == "zhipu"
+        assert result["_routing"]["outsourcing"]["decision"] == "outsourced"
+
 
 class TestNimbusRouterStreamCompletion:
     """Test stream_chat_completion method."""
 
     @pytest.mark.asyncio
     async def test_stream_completion_nimbus_model(
-        self, fixed_router, mock_settings, mock_outsourcing_router
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
     ):
-        """Test streaming for Nimbus-enabled model."""
+        """Test streaming for Nimbus-enabled model with routing metadata chunk."""
         router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
-        router.outsourcing_routers["glm-4.6"] = mock_outsourcing_router
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
 
-        # Mock stream generator - must be async generator
+        # Mock stream generator on the adapter
         async def mock_stream(messages, **params):
             yield "data: chunk1\n\n"
             yield "data: chunk2\n\n"
 
-        # Set the mock to call our async generator
-        mock_outsourcing_router.stream_chat_completion = mock_stream
+        local_adapter.stream_chat_completion = mock_stream
 
         messages = [{"role": "user", "content": "Hello"}]
         chunks = []
         async for chunk in router.stream_chat_completion("glm-4.6", messages):
             chunks.append(chunk)
 
-        # Should delegate to OutsourcingRouter
-        assert len(chunks) == 2
+        # Should get 2 content chunks + 1 routing metadata chunk
+        assert len(chunks) == 3
+        # Last chunk should be routing metadata
+        last_chunk = chunks[-1]
+        assert last_chunk.startswith("data: ")
+        routing_data = json.loads(last_chunk[6:].strip())
+        assert "_routing" in routing_data
+        assert routing_data["_routing"]["outsourcing"]["decision"] == "local"
+
+    @pytest.mark.asyncio
+    async def test_stream_content_containing_done_not_swallowed(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Test that content chunks containing literal '[DONE]' are NOT swallowed."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        async def mock_stream(messages, **params):
+            # Content chunk whose text happens to contain [DONE]
+            yield 'data: {"choices":[{"delta":{"content":"print [DONE] marker"}}]}\n\n'
+            yield "data: chunk2\n\n"
+            yield "data: [DONE]\n\n"
+
+        local_adapter.stream_chat_completion = mock_stream
+
+        messages = [{"role": "user", "content": "Hello"}]
+        chunks = []
+        async for chunk in router.stream_chat_completion("glm-4.6", messages):
+            chunks.append(chunk)
+
+        # Should get: content_with_DONE + chunk2 + routing_metadata + real_DONE = 4 chunks
+        assert len(chunks) == 4
+        # First chunk (with [DONE] in content) must NOT be swallowed
+        assert "[DONE]" in chunks[0]
+        assert "print" in chunks[0]
+        # Last chunk should be the real [DONE] sentinel
+        assert chunks[-1].strip() == "data: [DONE]"
+
+    @pytest.mark.asyncio
+    async def test_stream_exception_cleans_pending_decisions(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Test that _pending_decisions is cleaned up on stream exception."""
+        settings = MagicMock()
+        settings.nimbus_enabled_models = []
+        settings.experiment_mode = True  # Disable fallback so exception propagates
+
+        router = NimbusRouter(fixed_router=fixed_router, settings=settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        async def failing_stream(messages, **params):
+            yield "data: chunk1\n\n"
+            raise RuntimeError("Stream interrupted")
+
+        local_adapter.stream_chat_completion = failing_stream
+
+        messages = [{"role": "user", "content": "Hello"}]
+        with pytest.raises(RuntimeError, match="Stream interrupted"):
+            async for _ in router.stream_chat_completion("glm-4.6", messages):
+                pass
+
+        # _pending_decisions should be empty (cleaned up despite exception)
+        assert len(router._pending_decisions) == 0
 
     @pytest.mark.asyncio
     async def test_stream_completion_fixed_model(self, fixed_router, mock_settings):
@@ -224,8 +360,71 @@ class TestNimbusRouterStreamCompletion:
         async for chunk in router.stream_chat_completion("other-model", messages):
             chunks.append(chunk)
 
-        # Should delegate to FixedRouter and stream from adapter
+        # Should delegate to FixedRouter and stream from adapter (no extra routing chunk)
         assert len(chunks) == 2
+
+
+class TestNimbusRouterFallback:
+    """Test circuit breaker and fallback behavior inherited from BaseRouter."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_local_to_remote(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Test that when local adapter fails, falls back to remote."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        # Make local adapter raise an exception
+        local_adapter.chat_completion = AsyncMock(side_effect=RuntimeError("SGLang down"))
+
+        messages = [{"role": "user", "content": "Hello"}]
+        result = await router.chat_completion("glm-4.6", messages)
+
+        # Should have fallen back to remote adapter
+        remote_adapter.chat_completion.assert_awaited_once()
+        assert result is not None
+        assert result["_routing"]["fallback"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_in_experiment_mode(
+        self, fixed_router, local_adapter, remote_adapter
+    ):
+        """Test that experiment_mode disables fallback."""
+        settings = MagicMock()
+        settings.nimbus_enabled_models = []
+        settings.experiment_mode = True
+
+        router = NimbusRouter(fixed_router=fixed_router, settings=settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        # Make local adapter raise an exception
+        local_adapter.chat_completion = AsyncMock(side_effect=RuntimeError("SGLang down"))
+
+        messages = [{"role": "user", "content": "Hello"}]
+        with pytest.raises(RuntimeError, match="SGLang down"):
+            await router.chat_completion("glm-4.6", messages)
+
+    @pytest.mark.asyncio
+    async def test_get_fallback_adapters_nimbus(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Test _get_fallback_adapters returns correct fallback for Nimbus models."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        # When local fails, should return remote as fallback
+        fallbacks = router._get_fallback_adapters("glm-4.6", local_adapter)
+        assert len(fallbacks) == 1
+        assert fallbacks[0] is remote_adapter
+
+        # When remote fails, should return local as fallback
+        fallbacks = router._get_fallback_adapters("glm-4.6", remote_adapter)
+        assert len(fallbacks) == 1
+        assert fallbacks[0] is local_adapter
 
 
 class TestNimbusRouterStats:
@@ -263,23 +462,27 @@ class TestNimbusRouterEdgeCases:
     """Test edge cases and error handling."""
 
     @pytest.mark.asyncio
-    async def test_empty_messages(self, fixed_router, mock_settings, mock_outsourcing_router):
+    async def test_empty_messages(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
         """Test handling of empty messages."""
         router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
-        router.outsourcing_routers["glm-4.6"] = mock_outsourcing_router
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
 
-        # Should still call OutsourcingRouter
+        # Should still call decide()
         await router.chat_completion("glm-4.6", [])
 
-        mock_outsourcing_router.chat_completion.assert_awaited_once()
+        mock_or.decide.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_params_passed_through(
-        self, fixed_router, mock_settings, mock_outsourcing_router
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
     ):
-        """Test parameters are passed through correctly."""
+        """Test parameters are passed through to decide() and adapter."""
         router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
-        router.outsourcing_routers["glm-4.6"] = mock_outsourcing_router
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
 
         messages = [{"role": "user", "content": "Hello"}]
         params = {
@@ -290,11 +493,57 @@ class TestNimbusRouterEdgeCases:
 
         await router.chat_completion("glm-4.6", messages, **params)
 
-        # Verify params were passed
-        call_kwargs = mock_outsourcing_router.chat_completion.call_args.kwargs
+        # Verify decide() was called (params are passed via context)
+        mock_or.decide.assert_called_once()
+        call_args = mock_or.decide.call_args
+        # The params dict is passed as the 4th positional arg
+        decide_params = call_args[0][3] if len(call_args[0]) > 3 else call_args[1].get("params", {})
+        assert decide_params.get("temperature") == 0.7
+        assert decide_params.get("max_tokens") == 100
+
+        # Verify adapter received the params
+        call_kwargs = local_adapter.chat_completion.call_args.kwargs
         assert call_kwargs.get("temperature") == 0.7
         assert call_kwargs.get("max_tokens") == 100
-        assert call_kwargs.get("prefill_slo_seconds") == 2.0
+
+    @pytest.mark.asyncio
+    async def test_chat_exception_cleans_pending_decisions(
+        self, fixed_router, local_adapter, remote_adapter
+    ):
+        """Test that _pending_decisions is cleaned up on chat_completion exception."""
+        settings = MagicMock()
+        settings.nimbus_enabled_models = []
+        settings.experiment_mode = True  # Disable fallback so exception propagates
+
+        router = NimbusRouter(fixed_router=fixed_router, settings=settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        local_adapter.chat_completion = AsyncMock(side_effect=RuntimeError("SGLang crash"))
+
+        messages = [{"role": "user", "content": "Hello"}]
+        with pytest.raises(RuntimeError, match="SGLang crash"):
+            await router.chat_completion("glm-4.6", messages)
+
+        # _pending_decisions should be empty (cleaned up despite exception)
+        assert len(router._pending_decisions) == 0
+
+    @pytest.mark.asyncio
+    async def test_explicit_request_id_none_still_works(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Test that passing request_id=None explicitly still generates a valid ID."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        messages = [{"role": "user", "content": "Hello"}]
+        result = await router.chat_completion("glm-4.6", messages, request_id=None)
+
+        # Should still get outsourcing metadata despite explicit None
+        assert "_routing" in result
+        assert "outsourcing" in result["_routing"]
+        assert result["_routing"]["outsourcing"]["decision"] == "local"
 
     def test_multiple_nimbus_models(self, fixed_router, mock_settings):
         """Test managing multiple Nimbus-enabled models."""
@@ -309,6 +558,43 @@ class TestNimbusRouterEdgeCases:
         assert len(router.outsourcing_routers) == 2
         assert router.outsourcing_routers["glm-4.6"] is router1
         assert router.outsourcing_routers["qwen3"] is router2
+
+
+class TestNimbusRouterSelectAdapter:
+    """Test _select_adapter method."""
+
+    def test_select_adapter_nimbus_model(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Test _select_adapter calls decide() for Nimbus models."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        context = {"messages": [{"role": "user", "content": "test"}], "params": {}}
+        adapter = router._select_adapter("glm-4.6", context)
+
+        assert adapter is local_adapter
+        mock_or.decide.assert_called_once()
+
+    def test_select_adapter_fixed_model(self, fixed_router, mock_settings):
+        """Test _select_adapter delegates to FixedRouter for non-Nimbus models."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+
+        context = {"messages": [{"role": "user", "content": "test"}], "params": {}}
+        adapter = router._select_adapter("other-model", context)
+
+        # Should return an adapter from FixedRouter
+        assert adapter is not None
+
+    def test_select_adapter_unknown_model(self, fixed_router, mock_settings):
+        """Test _select_adapter returns None for unknown models."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+
+        context = {"messages": [], "params": {}}
+        adapter = router._select_adapter("unknown-model", context)
+
+        assert adapter is None
 
 
 # ============================================================================
@@ -414,6 +700,7 @@ class TestNimbusRouterHelpers:
         settings = MagicMock()
         settings.nimbus_enabled_models = []
         settings.glm46_slo_seconds = 1.5
+        settings.experiment_mode = False
 
         nimbus_router = NimbusRouter(fixed_router=fixed_router, settings=settings)
 
@@ -426,6 +713,7 @@ class TestNimbusRouterHelpers:
         settings = MagicMock()
         settings.nimbus_enabled_models = []
         settings.qwen3_slo_seconds = 2.5
+        settings.experiment_mode = False
 
         nimbus_router = NimbusRouter(fixed_router=fixed_router, settings=settings)
 
@@ -438,6 +726,7 @@ class TestNimbusRouterHelpers:
         settings = MagicMock()
         settings.nimbus_enabled_models = []
         settings.minimax_slo_seconds = 3.0
+        settings.experiment_mode = False
 
         nimbus_router = NimbusRouter(fixed_router=fixed_router, settings=settings)
 
@@ -474,6 +763,7 @@ class TestNimbusRouterInitializationWithSettings:
         settings = MagicMock()
         settings.nimbus_enabled_models = ["glm-4.6"]
         settings.glm46_slo_seconds = 1.5
+        settings.experiment_mode = False
 
         # Register model with both local and remote adapters
         local_adapter = MagicMock()
@@ -507,6 +797,7 @@ class TestNimbusRouterInitializationWithSettings:
         # Setup settings with a model that has invalid route
         settings = MagicMock()
         settings.nimbus_enabled_models = ["bad-model"]
+        settings.experiment_mode = False
 
         # Register model with only local adapter (missing remote)
         local_adapter = MagicMock()
@@ -532,6 +823,7 @@ class TestNimbusRouterInitializationWithSettings:
         # Setup settings with a model that doesn't exist in FixedRouter
         settings = MagicMock()
         settings.nimbus_enabled_models = ["non-existent-model"]
+        settings.experiment_mode = False
 
         # Create NimbusRouter
         nimbus_router = NimbusRouter(fixed_router=fixed_router, settings=settings)
@@ -555,6 +847,7 @@ class TestNimbusRouterInitializationWithSettings:
         settings.nimbus_enabled_models = ["glm-4.6", "qwen3-coder-30b"]
         settings.glm46_slo_seconds = 1.5
         settings.qwen3_slo_seconds = 2.5
+        settings.experiment_mode = False
 
         # Register both models
         for model_id in ["glm-4.6", "qwen3-coder-30b"]:
@@ -577,3 +870,46 @@ class TestNimbusRouterInitializationWithSettings:
 
         # Verify OutsourcingRouter was called twice
         assert mock_outsourcing_router.call_count == 2
+
+
+# ============================================================================
+# Tests: Metadata Handling
+# ============================================================================
+
+
+class TestNimbusRouterMetadata:
+    """Test _routing metadata handling (Fix 3 verification)."""
+
+    @pytest.mark.asyncio
+    async def test_no_outsourcing_key_in_response(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Test that response uses _routing, not _outsourcing."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        messages = [{"role": "user", "content": "Hello"}]
+        result = await router.chat_completion("glm-4.6", messages)
+
+        # Should have _routing but NOT _outsourcing
+        assert "_routing" in result
+        assert "_outsourcing" not in result
+
+    @pytest.mark.asyncio
+    async def test_routing_metadata_has_provider_and_base_url(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Test that _routing includes provider and base_url from BaseRouter."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        messages = [{"role": "user", "content": "Hello"}]
+        result = await router.chat_completion("glm-4.6", messages)
+
+        routing = result["_routing"]
+        assert "provider" in routing
+        assert "base_url" in routing
+        assert routing["provider"] == "sglang"
+        assert routing["base_url"] == "http://localhost:8001"

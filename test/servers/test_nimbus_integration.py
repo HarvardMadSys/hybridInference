@@ -110,20 +110,20 @@ def fixed_router():
     return router
 
 
-@pytest.fixture
-def mock_outsourcing_router():
-    """Create a mock OutsourcingRouter."""
-    import time
+class OutsourcingDummyAdapter(BaseAdapter):
+    """Adapter for outsourcing router integration tests.
 
-    mock_router = MagicMock()
+    Returns responses clearly marked as coming from the OutsourcingRouter path.
+    """
 
-    # Mock chat_completion
-    async def mock_chat(messages, **kwargs):
+    async def chat_completion(self, messages, **kwargs):
+        import time
+
         return {
             "id": "outsourcing-id",
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": "nimbus-model",
+            "model": self.config.id,
             "choices": [
                 {
                     "index": 0,
@@ -133,14 +133,45 @@ def mock_outsourcing_router():
             ],
         }
 
-    mock_router.chat_completion = AsyncMock(side_effect=mock_chat)
-
-    # Mock stream_chat_completion
-    async def mock_stream(messages, **kwargs):
+    async def stream_chat_completion(self, messages, **kwargs):
         yield "data: {'choices': [{'delta': {'content': 'Stream from OutsourcingRouter'}}]}\n\n"
         yield "data: [DONE]\n\n"
 
-    mock_router.stream_chat_completion = AsyncMock(side_effect=mock_stream)
+
+@pytest.fixture
+def mock_outsourcing_router():
+    """Create a mock OutsourcingRouter with decide() support.
+
+    NimbusRouter (inheriting BaseRouter) calls decide() to get the adapter,
+    then BaseRouter calls adapter.chat_completion() directly. So we need
+    decide() to return an adapter that produces the expected content.
+    """
+    from routing.outsourcing_integration import OutsourcingRouter
+
+    mock_router = MagicMock(spec=OutsourcingRouter)
+
+    # Create a real adapter that returns OutsourcingRouter-style responses
+    outsourcing_adapter = OutsourcingDummyAdapter(
+        _make_config("nimbus-model", "outsourcing_local")
+    )
+    remote_adapter = OutsourcingDummyAdapter(
+        _make_config("nimbus-model", "outsourcing_remote")
+    )
+
+    mock_router.local_adapter = outsourcing_adapter
+    mock_router.remote_adapter = remote_adapter
+
+    # decide() returns the adapter for BaseRouter to execute
+    mock_router.decide.return_value = {
+        "adapter": outsourcing_adapter,
+        "routing_decision": "local",
+        "request_id": "req-test-1",
+        "reason": "No SLO violations detected",
+        "cached_tokens": 0,
+        "model_id": "nimbus-model",
+        "queue_length": 0,
+        "decision": MagicMock(),
+    }
 
     # Mock get_stats
     mock_router.get_stats = MagicMock(

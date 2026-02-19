@@ -245,7 +245,7 @@ class TestOutsourcingRouterWithTreeCache:
         # Use a callback to capture the request ID and return matching decision
         captured_request_ids = []
 
-        def capture_and_outsource(current_time):
+        def capture_and_outsource(current_time, **kwargs):
             # Get the request ID from the waiting queue add_request call
             if mock_waiting_queue.add_request.call_args:
                 req_info = mock_waiting_queue.add_request.call_args[0][0]
@@ -509,7 +509,7 @@ class TestOutsourcingRouterApplyDecision:
         # Second call: outsource the first request (not the current one)
         call_count = [0]
 
-        def make_decision(current_time):
+        def make_decision(current_time, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 return OutsourcingDecision(
@@ -608,7 +608,7 @@ class TestOutsourcingRouterApplyDecision:
         # Decision: outsource first request, keep second request
         call_count = [0]
 
-        def make_decision(current_time):
+        def make_decision(current_time, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 return OutsourcingDecision(
