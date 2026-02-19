@@ -109,6 +109,23 @@ source ~/.bashrc
 
 6. Save settings and start using with Free Inference!
 
+### Codebase Indexing (Qdrant)
+
+Roo Code and Kilo Code support codebase indexing for context-aware code completions.
+Free Inference provides a shared Qdrant instance — no local Docker setup needed.
+
+In your extension settings, configure:
+
+| Setting | Value |
+|---------|-------|
+| Qdrant URL | `https://freeinference.org/v1/qdrant` |
+| Embedding Provider | `openai-compatible` |
+| Embedding API URL | `https://freeinference.org/v1` |
+| Embedding API Key | Your Free Inference API key |
+| Embedding Model | `BAAI/bge-en-icl` |
+
+That's it — the extension will create collections and index your codebase automatically.
+
 ---
 
 ## Troubleshooting

@@ -56,6 +56,13 @@ class JsonFormatter(logging.Formatter):
             "session_id",
             # Debug headers snapshot (full request headers when in DEBUG mode)
             "headers",
+            # Qdrant proxy fields
+            "rewritten_path",
+            "body_bytes",
+            "upstream_status",
+            "latency_ms",
+            "user_id",
+            "error",
         ):
             if key in record.__dict__:
                 payload[key] = record.__dict__[key]
