@@ -119,10 +119,11 @@ In your extension settings, configure:
 | Setting | Value |
 |---------|-------|
 | Qdrant URL | `https://freeinference.org/v1/qdrant` |
+| Qdrant API Key | Your Free Inference API key |
 | Embedding Provider | `openai-compatible` |
 | Embedding API URL | `https://freeinference.org/v1` |
 | Embedding API Key | Your Free Inference API key |
-| Embedding Model | `BAAI/bge-en-icl` |
+| Embedding Model | `bge-m3` |
 
 That's it — the extension will create collections and index your codebase automatically.
 
