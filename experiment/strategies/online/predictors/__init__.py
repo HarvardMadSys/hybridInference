@@ -22,6 +22,7 @@ from experiment.strategies.online.predictors.histogram import (
     HistogramDurationPredictor,
     HistogramOutputPredictor,
 )
+from experiment.strategies.online.predictors.oracle import OracleOutputPredictor
 
 __all__ = [
     # Base interfaces
@@ -36,4 +37,5 @@ __all__ = [
     "HistogramOutputPredictor",
     "HistogramDurationPredictor",
     "EMAOutputPredictor",
+    "OracleOutputPredictor",
 ]

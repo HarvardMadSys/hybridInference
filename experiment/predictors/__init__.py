@@ -32,6 +32,7 @@ _ema = _load_module_directly("experiment.predictors.ema", _predictors_dir / "ema
 _histogram = _load_module_directly(
     "experiment.predictors.histogram", _predictors_dir / "histogram.py"
 )
+_oracle = _load_module_directly("experiment.predictors.oracle", _predictors_dir / "oracle.py")
 
 # Re-export classes
 CombinedPredictor = _base.CombinedPredictor
@@ -46,6 +47,8 @@ EMAOutputPredictor = _ema.EMAOutputPredictor
 HistogramDurationPredictor = _histogram.HistogramDurationPredictor
 HistogramOutputPredictor = _histogram.HistogramOutputPredictor
 
+OracleOutputPredictor = _oracle.OracleOutputPredictor
+
 __all__ = [
     "CombinedPredictor",
     "DurationPrediction",
@@ -55,6 +58,7 @@ __all__ = [
     # Implementations
     "HistogramOutputPredictor",
     # Base interfaces
+    "OracleOutputPredictor",
     "OutputTokenPredictor",
     "PredictionContext",
     # Data classes
