@@ -40,7 +40,11 @@ class AsyncHTTPClient:
         if self._session is None or self._session.closed:
             # Set a conservative default timeout; callers can override per request.
             timeout = aiohttp.ClientTimeout(total=60)
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            connector = aiohttp.TCPConnector(limit=0)
+            self._session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+            )
         return self._session
 
     async def json_post(
@@ -164,6 +168,10 @@ class AsyncHTTPClient:
             aiohttp.ClientResponseError: If the response status is not 2xx.
         """
         session = await self._ensure_session()
+        # Streaming responses can run for minutes (LLM generation + queue time).
+        # Let the upstream manage its own lifecycle via [DONE] sentinel.
+        if timeout is None:
+            timeout = aiohttp.ClientTimeout(total=None)
         async with session.post(url, json=json, headers=headers, timeout=timeout) as resp:
             # Check status and read error body if present before raising
             if resp.status >= 400:
