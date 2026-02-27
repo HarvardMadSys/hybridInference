@@ -91,12 +91,16 @@ class Settings(BaseSettings):
     # When False: enables fallback for production reliability
     experiment_mode: bool = False
 
+    # Dry-run outsourcing: when True, outsourced requests return fake responses
+    # instead of calling the remote API. Saves API quota during experiments.
+    experiment_dry_run_outsource: bool = False
+
     # Nimbus: Models to enable hybrid routing for
     # These models MUST have both local (SGLang) and remote (API) adapters configured
     nimbus_enabled_models: list[str] = [
         # Example:
         "glm-4.6",
-        # "qwen3-coder-30b",
+        "qwen3-coder-30b",
         # "minimax-m2",
     ]
 
