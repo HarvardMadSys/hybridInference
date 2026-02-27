@@ -1,3 +1,5 @@
+"""Health check endpoints for the API server."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -181,8 +183,5 @@ async def get_routing(
         "routes": routing_info,
         "description": "Weight distribution for each model. Requests are randomly distributed based on weights.",
     }
-
-    if services.routing_manager:
-        response["manager_status"] = services.routing_manager.get_status()
 
     return response

@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin, models
@@ -31,7 +31,7 @@ def _cfg(model_id: str) -> ModelConfig:
 
 @pytest.fixture
 async def admin_app(mock_rate_limiter, mock_db_logger) -> FastAPI:
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("canonical-model", [(_Adapter(_cfg("canonical-model")), 1.0)])
     app = FastAPI(title="Admin App")
     app.state.services = AppServices(
@@ -66,7 +66,7 @@ async def test_admin_rate_limits_metrics(admin_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_admin_stats_without_db_logger(mock_rate_limiter):
-    router = RouteExecutor()
+    router = FixedRouter()
     services = AppServices(router=router, db_logger=None, rate_limiter=mock_rate_limiter)
     app = FastAPI()
     app.state.services = services  # type: ignore[attr-defined]

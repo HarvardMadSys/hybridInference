@@ -1,9 +1,4 @@
-"""Model registry and configuration loader.
-
-This module builds provider adapters from configuration and registers them on a
-``RouteExecutor``. It supports both environment-based and YAML-based
-configuration. Prefer YAML (``config/models.yaml``) for reproducibility.
-"""
+"""Model registry for loading and registering models from YAML configuration."""
 
 from __future__ import annotations
 
@@ -22,11 +17,14 @@ from serving.adapters import (
     OpenAICompatAdapter,
     ZhipuAdapter,
 )
+from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from routing.executor import RouteExecutor
+    from routing.routers import FixedRouter
+
+logger = get_logger(__name__)
 
 
 def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
@@ -114,7 +112,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
 
 def register_from_models_yaml(
-    router: RouteExecutor,
+    router: FixedRouter,
     path: Path,
     embedding_adapters: dict[str, Any] | None = None,
 ) -> int:
@@ -227,7 +225,7 @@ def register_from_models_yaml(
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
 
-        # Determine model type: "embedding" models bypass RouteExecutor
+        # Determine model type: "embedding" models bypass chat routing.
         model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"
 
         model_id = str(top_cfg["id"])  # type: ignore
@@ -242,8 +240,10 @@ def register_from_models_yaml(
                     embedding_adapters[alias] = adapter
             count += 1 + len(aliases)
         else:
-            # Chat models go through the full RouteExecutor
-            router.register_route(model_id, adapters_with_weights, aliases=aliases)
+            # FixedRouter has no aliases parameter; register aliases explicitly.
+            route_ids = [model_id, *aliases]
+            for route_id in route_ids:
+                router.register_route(route_id, adapters_with_weights)
             count += 1 + len(aliases)
 
     return count

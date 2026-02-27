@@ -120,8 +120,6 @@ async def admin_get_routing(
         "routes": routing_info,
         "description": "Weight distribution for each model.",
     }
-    if services.routing_manager:
-        response["manager_status"] = services.routing_manager.get_status()
     return response
 
 

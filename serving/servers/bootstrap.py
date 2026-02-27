@@ -14,8 +14,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from routing.executor import RouteExecutor
-from routing.manager import RoutingManager
+from routing.routers import FixedRouter, NimbusRouter
 from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
@@ -28,12 +27,11 @@ from .registry import register_from_models_yaml
 logger = get_logger(__name__)
 
 
-def _apply_hard_offload(router: RouteExecutor, local_base_url: str) -> None:
+def _apply_hard_offload(router: FixedRouter, local_base_url: str) -> None:
     """Apply hard OFFLOAD by filtering out local adapters from routes.
 
     In hybrid mode, a model may have both local and remote adapters.
     Hard OFFLOAD removes all local adapters, leaving only remote ones.
-    This is different from soft OFFLOAD which adjusts weights via RoutingManager.
 
     Args:
         router: The route executor to modify
@@ -127,7 +125,7 @@ def _init_db_logger() -> DatabaseLogger | None:
         return None
 
 
-async def _init_router_and_models(router: RouteExecutor) -> dict:
+async def _init_router_and_models(router: FixedRouter) -> dict:
     """Register models on the router from YAML configuration.
 
     All models should be configured via YAML for consistency and flexibility.
@@ -160,7 +158,6 @@ async def _init_router_and_models(router: RouteExecutor) -> dict:
         logger.warning(f"Failed to load models.yaml: {exc}")
 
     # Hard OFFLOAD: Filter out local adapters from multi-adapter routes
-    # This is different from soft OFFLOAD which adjusts weights in RoutingManager
     offload_flag = os.getenv("OFFLOAD", "0").strip().lower()
     offload_enabled = offload_flag in ("1", "true", "yes")
 
@@ -172,36 +169,6 @@ async def _init_router_and_models(router: RouteExecutor) -> dict:
             logger.info("OFFLOAD=1 but LOCAL_BASE_URL not set; no adapters filtered")
 
     return embedding_adapters
-
-
-def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
-    """Optionally load the routing manager and apply weights from YAML.
-
-    Returns:
-        Optional[RoutingManager]: The active manager when configuration exists,
-        otherwise None.
-    """
-    try:
-        routing_env = os.getenv("ROUTING_CONFIG")
-        routing_cfg_path = Path(routing_env or "config/routing.yaml")
-        if routing_env and not routing_cfg_path.exists():
-            logger.warning(f"Routing config not found: {routing_cfg_path}")
-        elif routing_cfg_path.exists():
-            manager = RoutingManager(router, routing_cfg_path)
-            manager.load()
-            updated = manager.apply()
-            if updated:
-                logger.info(
-                    f"RoutingManager applied weights to {updated} routes from {routing_cfg_path}"
-                )
-            else:
-                logger.info("RoutingManager loaded; no routes updated (check config)")
-            return manager
-        else:
-            logger.info("No routing config found; using default routes")
-    except Exception as exc:
-        logger.warning(f"RoutingManager failed to initialize: {exc}")
-    return None
 
 
 def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
@@ -260,8 +227,8 @@ async def initialize() -> AppServices:
     """Initialize application services.
 
     Loads environment variables, sets up logging, constructs the router,
-    registers models, optionally applies routing weights, initializes database
-    logging, and configures the persistent rate limiter.
+    registers models, initializes database logging, and configures the
+    persistent rate limiter.
 
     Returns:
         AppServices: A typed container with initialized services.
@@ -272,7 +239,11 @@ async def initialize() -> AppServices:
     load_dotenv()
     setup_logging()
 
-    router = RouteExecutor()
+    # Get settings to access experiment_mode
+    settings = get_settings()
+
+    # Create FixedRouter with experiment_mode from settings
+    router = FixedRouter(experiment_mode=settings.experiment_mode)
 
     # Database logger with retry logic
     db_logger = _init_db_logger()
@@ -309,8 +280,11 @@ async def initialize() -> AppServices:
     # Models into router
     embedding_adapters = await _init_router_and_models(router)
 
-    # Routing manager (optional)
-    routing_manager = _apply_routing_manager(router)
+    # Nimbus Router (optional)
+    nimbus_router = None
+    if settings.routing_strategy == "nimbus":
+        nimbus_router = NimbusRouter(fixed_router=router, settings=settings)
+        logger.info(f"Nimbus routing enabled for: {list(nimbus_router.outsourcing_routers.keys())}")
 
     # Rate limiter (optional)
     rate_limiter: PersistentRateLimiter | None = None
@@ -338,7 +312,7 @@ async def initialize() -> AppServices:
         embedding_adapters=embedding_adapters or None,
         rate_limiter=rate_limiter,
         db_logger=db_logger,
-        routing_manager=routing_manager,
+        nimbus_router=nimbus_router,
         user_stats_collector=user_stats_collector,
     )
 
@@ -363,20 +337,12 @@ async def shutdown(services: AppServices) -> None:
         except Exception as exc:
             logger.error(f"Persist rate limiter failed: {exc}")
 
-    # Routing manager health monitor
-    if services.routing_manager:
-        try:
-            await services.routing_manager.shutdown()
-        except Exception as exc:
-            logger.error(f"Routing manager shutdown failed: {exc}")
-
     # User stats collector
     if services.user_stats_collector:
         try:
             await services.user_stats_collector.shutdown()
         except Exception as exc:
             logger.error(f"User stats collector shutdown failed: {exc}")
-
     # Close shared HTTP client
     with contextlib.suppress(Exception):
         await AsyncHTTPClient.shared().close()

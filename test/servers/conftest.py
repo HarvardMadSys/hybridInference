@@ -17,7 +17,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers.deps import AppServices
 from serving.servers.rate_limiter import PersistentRateLimiter
 from serving.storage.database import DatabaseLogger
@@ -83,8 +83,8 @@ def mock_env(monkeypatch):
 
 @pytest.fixture
 def mock_router():
-    """Create a mock RouteExecutor with test routes."""
-    router = RouteExecutor()
+    """Create a mock FixedRouter with test routes."""
+    router = FixedRouter()
 
     # Create mock adapter
     mock_adapter = MagicMock()
@@ -115,6 +115,7 @@ def mock_db_logger():
     logger.initialize = AsyncMock()
     logger.cleanup = AsyncMock()
     logger.log_request = AsyncMock()
+    logger.upsert_request = AsyncMock()
     logger.get_stats = AsyncMock(return_value=[])
 
     # Mock the pool and connection context managers
@@ -161,7 +162,6 @@ async def app_services(mock_router, mock_db_logger, mock_rate_limiter):
         router=mock_router,
         db_logger=mock_db_logger,
         rate_limiter=mock_rate_limiter,
-        routing_manager=None,
     )
     yield services
 

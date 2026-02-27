@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
@@ -104,7 +104,7 @@ async def completions_app(monkeypatch, mock_rate_limiter, mock_db_logger) -> Fas
     # Disable auth for routing-focused tests to avoid auth noise.
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route("gpt-4", [(DummyAdapter(_mk_cfg("gpt-4")), 1.0)])
 
     app = FastAPI(title="Test Completions App")
@@ -183,7 +183,7 @@ async def test_invalid_request_returns_400(completions_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_fallback_on_primary_failure(completions_app: FastAPI, mock_rate_limiter):
     # Rebuild router with failing primary and working fallback
-    router = RouteExecutor()
+    router = FixedRouter()
     router.register_route(
         "gpt-4", [(FailingAdapter(_mk_cfg("gpt-4")), 0.9), (DummyAdapter(_mk_cfg("gpt-4")), 0.1)]
     )

@@ -40,11 +40,11 @@ class AsyncHTTPClient:
         if self._session is None or self._session.closed:
             # Set a conservative default timeout; callers can override per request.
             timeout = aiohttp.ClientTimeout(total=60)
+            # No connection limit — under burst workloads the default (100)
+            # causes requests to queue in the connection pool instead of
+            # reaching the backend where they can be batched efficiently.
             connector = aiohttp.TCPConnector(limit=0)
-            self._session = aiohttp.ClientSession(
-                timeout=timeout,
-                connector=connector,
-            )
+            self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
         return self._session
 
     async def json_post(

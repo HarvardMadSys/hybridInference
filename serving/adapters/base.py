@@ -123,6 +123,10 @@ class BaseAdapter(ABC):
         if "seed" in params and "seed" in self.config.supported_params:
             validated["seed"] = params["seed"]
 
+        # SGLang-specific: ignore_eos to force generating max_tokens
+        if "ignore_eos" in params:
+            validated["ignore_eos"] = params["ignore_eos"]
+
         return validated
 
     def format_response(

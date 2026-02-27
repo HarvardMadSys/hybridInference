@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.servers import registry
 
 
@@ -28,7 +28,7 @@ def test_register_from_models_yaml_env_expansion_and_aliases(tmp_path, monkeypat
     monkeypatch.setenv("LLAMA_BASE_URL", "http://llama.local")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count = registry.register_from_models_yaml(exe, Path(p))
     # Should register canonical id + alias
     assert count == 2
@@ -54,7 +54,7 @@ def test_register_defaults_to_single_route_when_no_route_list(tmp_path, monkeypa
     p = tmp_path / "models2.yaml"
     p.write_text(yaml_text)
 
-    exe = RouteExecutor()
+    exe = FixedRouter()
     count = registry.register_from_models_yaml(exe, Path(p))
     assert count == 1
     assert "vllm-model" in exe.routes

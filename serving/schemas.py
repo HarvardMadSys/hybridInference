@@ -58,6 +58,9 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
     stop: str | list[str] | None = None
     seed: int | None = None
 
+    # SGLang-specific: force generating exactly max_tokens (ignore EOS)
+    ignore_eos: bool | None = None
+
     # Penalties
     frequency_penalty: float | None = None
     presence_penalty: float | None = None

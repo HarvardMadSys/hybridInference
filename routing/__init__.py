@@ -1,14 +1,18 @@
-from .config import RoutingConfig, load_routing_config
-from .executor import RouteExecutor
+"""Routing module for intelligent request distribution.
+
+This module provides routing strategies for distributing requests across
+multiple model adapters with health tracking, circuit breakers, and fallback.
+"""
+
+from .config import RoutingConfig
 from .health import HealthMonitor
-from .manager import RoutingManager
-from .strategies import FixedRatioStrategy
+from .routers import BaseRouter, FixedRouter, NimbusRouter, RouteConfig
 
 __all__ = [
-    "FixedRatioStrategy",
+    "BaseRouter",
+    "FixedRouter",
     "HealthMonitor",
-    "RouteExecutor",
+    "NimbusRouter",
+    "RouteConfig",
     "RoutingConfig",
-    "RoutingManager",
-    "load_routing_config",
 ]

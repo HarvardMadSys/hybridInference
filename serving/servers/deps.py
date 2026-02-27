@@ -14,8 +14,7 @@ import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
 if TYPE_CHECKING:
-    from routing.executor import RouteExecutor
-    from routing.manager import RoutingManager
+    from routing.routers import FixedRouter, NimbusRouter
     from serving.observability.user_stats import UserStatsCollector
     from serving.storage.database import DatabaseLogger
 
@@ -30,11 +29,11 @@ class AppServices:
     when accessing ``app.state``.
     """
 
-    router: RouteExecutor
+    router: FixedRouter
     embedding_adapters: dict[str, Any] | None = None
     rate_limiter: PersistentRateLimiter | None = None
     db_logger: DatabaseLogger | None = None
-    routing_manager: RoutingManager | None = None
+    nimbus_router: NimbusRouter | None = None
     user_stats_collector: UserStatsCollector | None = None
 
 
@@ -43,9 +42,14 @@ def get_services(request: Request) -> AppServices:
     return request.app.state.services  # type: ignore[attr-defined]
 
 
-def get_router(services: AppServices = Depends(get_services)) -> RouteExecutor:
-    """Dependency to obtain the RouteExecutor."""
+def get_router(services: AppServices = Depends(get_services)) -> FixedRouter:
+    """Dependency to obtain the FixedRouter."""
     return services.router
+
+
+def get_nimbus_router(services: AppServices = Depends(get_services)) -> NimbusRouter | None:
+    """Dependency to obtain the NimbusRouter (if enabled)."""
+    return services.nimbus_router
 
 
 def get_embedding_adapters(

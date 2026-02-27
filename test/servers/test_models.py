@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
-from routing.executor import RouteExecutor
+from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.routers import models
@@ -59,7 +59,7 @@ def _cfg(
 
 @pytest.fixture
 async def models_app() -> FastAPI:
-    router = RouteExecutor()
+    router = FixedRouter()
     # Two adapters to exercise aggregation
     a1 = _Adapter(
         _cfg(
@@ -118,7 +118,7 @@ async def test_models_aggregation_and_slug(models_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_models_empty_routes_returns_empty_list():
-    router = RouteExecutor()
+    router = FixedRouter()
     app = FastAPI()
     app.state.services = AppServices(router=router, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
     app.include_router(models.router)
@@ -131,7 +131,7 @@ async def test_models_empty_routes_returns_empty_list():
 
 @pytest.mark.asyncio
 async def test_models_single_adapter_no_aggregation():
-    router = RouteExecutor()
+    router = FixedRouter()
     a = _Adapter(_cfg(id="solo", context=1234, max_out=321, supported=["temperature"], tools=True))
     router.register_route("solo", [(a, 1.0)])
     app = FastAPI()
@@ -150,7 +150,7 @@ async def test_models_single_adapter_no_aggregation():
 
 @pytest.mark.asyncio
 async def test_models_pricing_primary_config_behavior():
-    router = RouteExecutor()
+    router = FixedRouter()
     p_primary = {"prompt": "1", "completion": "2"}
     p_secondary = {"prompt": "9", "completion": "9"}
     a1 = _Adapter(_cfg(id="price", provider="p1"))
