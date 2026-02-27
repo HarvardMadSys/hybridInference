@@ -11,6 +11,7 @@ health tracking, circuit breakers, and automatic fallback.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import random
 import threading
@@ -186,8 +187,14 @@ def _has_non_empty_content(chunk: str | dict) -> bool:
             return False
 
         delta = choices[0].get("delta") or {}
+        # Any of content / tool_calls / reasoning_content counts as
+        # first model output (i.e. prefill is done).
         content = delta.get("content")
-        return isinstance(content, str) and len(content) > 0
+        if isinstance(content, str) and len(content) > 0:
+            return True
+        if delta.get("tool_calls"):
+            return True
+        return bool(delta.get("reasoning_content"))
     except Exception:
         # Be conservative and treat as content to avoid missing TTFT altogether
         return True
@@ -405,6 +412,51 @@ class BaseRouter(ABC):
             # Experiment mode or all fallbacks failed
             raise primary_error
 
+    async def _execute_stream_adapter(
+        self,
+        adapter: BaseAdapter,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> AsyncIterator[Any]:
+        """Execute a streaming request through an adapter with monitoring.
+
+        Parallel to ``_execute_adapter`` for non-streaming.  Subclasses can
+        override for per-adapter instrumentation (e.g. shadow queue cleanup).
+
+        Args:
+            adapter: The adapter to execute
+            model_id: Model identifier
+            messages: Chat messages
+            **params: Additional parameters
+
+        Yields:
+            SSE chunks from the adapter
+        """
+        with req_ctx.push(model=model_id, provider=adapter.config.provider):
+            self._ensure_health(adapter.config.provider)
+            first = True
+            started = time.perf_counter()
+            async for chunk in adapter.stream_chat_completion(messages, **params):
+                if first and _has_non_empty_content(chunk):
+                    first = False
+                    API_TTFT.labels(
+                        provider=normalize_provider_label(adapter.config.provider),
+                        model=normalize_model_label(model_id),
+                    ).observe(time.perf_counter() - started)
+                    self._on_success(adapter.config.provider)
+                    # Hook: subclasses run logic when prefill completes.
+                    self._on_first_token(adapter, model_id, params)
+                yield chunk
+
+    def _on_first_token(  # noqa: B027
+        self, adapter: BaseAdapter, model_id: str, params: dict[str, Any]
+    ) -> None:
+        """Hook called when the first content token is received (prefill done).
+
+        BaseRouter no-op.  NimbusRouter overrides to remove from shadow queue.
+        """
+
     async def stream_chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ) -> AsyncIterator[Any]:
@@ -433,18 +485,8 @@ class BaseRouter(ABC):
             raise ValueError(f"No route configured for model {model_id}")
 
         try:
-            with req_ctx.push(model=model_id, provider=primary.config.provider):
-                first = True
-                started = time.perf_counter()
-                async for chunk in primary.stream_chat_completion(messages, **params):
-                    if first and _has_non_empty_content(chunk):
-                        first = False
-                        API_TTFT.labels(
-                            provider=normalize_provider_label(primary.config.provider),
-                            model=normalize_model_label(model_id),
-                        ).observe(time.perf_counter() - started)
-                        self._on_success(primary.config.provider)
-                    yield chunk
+            async for chunk in self._execute_stream_adapter(primary, model_id, messages, **params):
+                yield chunk
             return
         except Exception as primary_error:
             STREAMING_INTERRUPTION.labels(
@@ -459,18 +501,10 @@ class BaseRouter(ABC):
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
                 for adapter in fallback_adapters:
                     try:
-                        with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                            first = True
-                            started = time.perf_counter()
-                            async for chunk in adapter.stream_chat_completion(messages, **params):
-                                if first and _has_non_empty_content(chunk):
-                                    first = False
-                                    API_TTFT.labels(
-                                        provider=normalize_provider_label(adapter.config.provider),
-                                        model=normalize_model_label(model_id),
-                                    ).observe(time.perf_counter() - started)
-                                    self._on_success(adapter.config.provider)
-                                yield chunk
+                        async for chunk in self._execute_stream_adapter(
+                            adapter, model_id, messages, **params
+                        ):
+                            yield chunk
                         API_FALLBACKS.labels(
                             from_provider=primary.config.provider,
                             to_provider=adapter.config.provider,
@@ -867,6 +901,10 @@ class NimbusRouter(BaseRouter):
             # one that NimbusRouter.chat_completion already holds.
             if request_id:
                 self._pending_decisions[request_id] = result
+
+            # Emit Prometheus metrics for observability
+            self._emit_nimbus_metrics(model_id, result, outsourcing_router)
+
             return result["adapter"]
         else:
             return self.fixed_router._select_adapter(model_id, context)
@@ -899,6 +937,188 @@ class NimbusRouter(BaseRouter):
                 return [outsourcing_router.local_adapter, outsourcing_router.remote_adapter]
         else:
             return self.fixed_router._get_fallback_adapters(model_id, failed_adapter)
+
+    # ------------------------------------------------------------------
+    # Shadow queue lifecycle: prefill-aware removal
+    # ------------------------------------------------------------------
+
+    def _remove_from_shadow_queue(
+        self,
+        adapter: BaseAdapter,
+        model_id: str,
+        request_id: str | None,
+    ) -> None:
+        """Remove a request from the shadow queue if it was a local execution.
+
+        Safe to call multiple times (idempotent) and must never raise —
+        it runs in finally blocks where an exception would mask the
+        original return value or error.
+        """
+        try:
+            if not request_id:
+                return
+            outsourcing_router = self.outsourcing_routers.get(model_id)
+            if not outsourcing_router:
+                return
+            if adapter is outsourcing_router.local_adapter:
+                outsourcing_router.waiting_queue.remove_requests({request_id})
+        except Exception:
+            logger.debug(
+                "Failed to remove request %s from shadow queue (non-fatal)",
+                request_id,
+                exc_info=True,
+            )
+
+    def _is_dry_run_outsource(self, adapter: BaseAdapter, model_id: str) -> bool:
+        """Check if this request should be dry-run (fake response) instead of calling remote API."""
+        if not self.settings.experiment_dry_run_outsource:
+            return False
+        outsourcing_router = self.outsourcing_routers.get(model_id)
+        if not outsourcing_router:
+            return False
+        return adapter is outsourcing_router.remote_adapter
+
+    def _make_dry_run_response(self, model_id: str, request_id: str | None) -> dict[str, Any]:
+        """Build a fake OpenAI-compatible chat completion response for dry-run outsourcing."""
+        import time as _time
+        import uuid as _uuid
+
+        return {
+            "id": f"chatcmpl-dryrun-{_uuid.uuid4().hex[:12]}",
+            "object": "chat.completion",
+            "created": int(_time.time()),
+            "model": model_id,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "[DRY-RUN] Outsourced request simulated",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "_routing": {"provider": "dry_run", "base_url": "dry_run"},
+        }
+
+    async def _execute_adapter(
+        self,
+        adapter: BaseAdapter,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Execute adapter with shadow queue cleanup on completion.
+
+        For non-streaming requests we don't have a first-token signal,
+        so removal happens when the full response returns.  This is a
+        slight overcount during decode but acceptable since non-streaming
+        is rare for LLM serving.
+        """
+        if self._is_dry_run_outsource(adapter, model_id):
+            await asyncio.sleep(0.1)  # Simulate minimal network latency
+            return self._make_dry_run_response(model_id, params.get("request_id"))
+        try:
+            return await super()._execute_adapter(adapter, model_id, messages, **params)
+        finally:
+            self._remove_from_shadow_queue(adapter, model_id, params.get("request_id"))
+
+    def _on_first_token(self, adapter: BaseAdapter, model_id: str, params: dict[str, Any]) -> None:
+        """Prefill done → remove from shadow queue immediately.
+
+        Called by BaseRouter._execute_stream_adapter() the instant the
+        first content token arrives.  This is the correct removal point
+        for streaming because, under continuous batching, a request in
+        the decode phase no longer blocks other prefills.
+        """
+        self._remove_from_shadow_queue(adapter, model_id, params.get("request_id"))
+
+    async def _execute_stream_adapter(
+        self,
+        adapter: BaseAdapter,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> AsyncIterator[Any]:
+        """Stream adapter with shadow queue lifecycle tracking.
+
+        Primary removal happens in ``_on_first_token`` (called by super
+        when the first content chunk arrives).  The ``finally`` block is
+        a safety net for streams that error or get cancelled before
+        producing any token — ``_remove_from_shadow_queue`` is idempotent
+        so a double-call is harmless.
+        """
+        if self._is_dry_run_outsource(adapter, model_id):
+            import json as _json
+            import time as _time
+            import uuid as _uuid
+
+            chunk_id = f"chatcmpl-dryrun-{_uuid.uuid4().hex[:12]}"
+            created = int(_time.time())
+            await asyncio.sleep(0.1)  # Simulate TTFT
+            # Role chunk
+            yield f'data: {_json.dumps({"id": chunk_id, "object": "chat.completion.chunk", "created": created, "model": model_id, "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})}\n\n'
+            # Content chunk
+            yield f'data: {_json.dumps({"id": chunk_id, "object": "chat.completion.chunk", "created": created, "model": model_id, "choices": [{"index": 0, "delta": {"content": "[DRY-RUN] Outsourced request simulated"}, "finish_reason": None}]})}\n\n'
+            # Finish chunk
+            yield f'data: {_json.dumps({"id": chunk_id, "object": "chat.completion.chunk", "created": created, "model": model_id, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})}\n\n'
+            yield "data: [DONE]\n\n"
+            return
+
+        try:
+            async for chunk in super()._execute_stream_adapter(
+                adapter, model_id, messages, **params
+            ):
+                yield chunk
+        finally:
+            # Safety net: if first token was never reached (error/cancel),
+            # ensure the request doesn't leak in the shadow queue.
+            self._remove_from_shadow_queue(adapter, model_id, params.get("request_id"))
+
+    def _emit_nimbus_metrics(
+        self,
+        model_id: str,
+        result: dict[str, Any],
+        outsourcing_router: Any,
+    ) -> None:
+        """Emit Prometheus metrics after an outsourcing decision."""
+        from serving.observability.metrics import (
+            NIMBUS_EST_TTFT,
+            NIMBUS_LOCAL_INFLIGHT,
+            NIMBUS_QUEUE_DEPTH,
+            NIMBUS_ROUTING_DECISIONS,
+            NIMBUS_SLO_VIOLATIONS,
+            ROUTING_STRATEGY_SELECTED,
+            normalize_model_label,
+        )
+
+        model_label = normalize_model_label(model_id)
+        decision = result.get("routing_decision", "local")
+
+        NIMBUS_ROUTING_DECISIONS.labels(model=model_label, decision=decision).inc()
+        ROUTING_STRATEGY_SELECTED.labels(model=model_label, strategy="nimbus").inc()
+
+        est_ttft = result.get("est_ttft_seconds")
+        if est_ttft is not None:
+            NIMBUS_EST_TTFT.labels(model=model_label, decision=decision).observe(est_ttft)
+
+        trigger = result.get("trigger", "none")
+        if trigger != "none":
+            NIMBUS_SLO_VIOLATIONS.labels(model=model_label, trigger=trigger).inc()
+
+        # Queue depth gauge — SGLang's internal pending count
+        sglang_port = ""
+        with contextlib.suppress(Exception):
+            sglang_port = str(outsourcing_router.local_adapter.config.base_url or "")
+        NIMBUS_QUEUE_DEPTH.labels(model=model_label, sglang_port=sglang_port).set(
+            result.get("sglang_pending_count", 0)
+        )
+
+        # Shadow queue depth = in-flight local requests whose prefill has
+        # not yet completed (for streaming) or that haven't returned yet
+        # (for non-streaming).
+        NIMBUS_LOCAL_INFLIGHT.labels(model=model_label).set(result.get("queue_length", 0))
 
     async def chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
@@ -949,6 +1169,10 @@ class NimbusRouter(BaseRouter):
                 "queue_length": decision_info["queue_length"],
                 "model_id": decision_info["model_id"],
                 "cached_tokens": decision_info["cached_tokens"],
+                "est_ttft_seconds": decision_info.get("est_ttft_seconds"),
+                "sglang_pending_count": decision_info.get("sglang_pending_count", 0),
+                "observed_ttft": decision_info.get("observed_ttft"),
+                "trigger": decision_info.get("trigger", "none"),
             }
 
         return resp
@@ -1016,6 +1240,10 @@ class NimbusRouter(BaseRouter):
                         "queue_length": decision_info["queue_length"],
                         "model_id": decision_info["model_id"],
                         "cached_tokens": decision_info["cached_tokens"],
+                        "est_ttft_seconds": decision_info.get("est_ttft_seconds"),
+                        "sglang_pending_count": decision_info.get("sglang_pending_count", 0),
+                        "observed_ttft": decision_info.get("observed_ttft"),
+                        "trigger": decision_info.get("trigger", "none"),
                     },
                 },
             }

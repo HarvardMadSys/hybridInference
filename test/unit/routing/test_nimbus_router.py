@@ -54,6 +54,7 @@ def mock_settings():
     settings.nimbus_enabled_models = []
     settings.routing_strategy = "nimbus"
     settings.experiment_mode = False
+    settings.experiment_dry_run_outsource = False
     return settings
 
 
@@ -76,6 +77,11 @@ def _make_mock_outsourcing_router(local_adapter, remote_adapter):
     router = MagicMock(spec=OutsourcingRouter)
     router.local_adapter = local_adapter
     router.remote_adapter = remote_adapter
+
+    # Set up waiting_queue mock for shadow queue lifecycle
+    router.waiting_queue = MagicMock()
+    router.waiting_queue.remove_requests = MagicMock(return_value=[])
+    router.waiting_queue.get_length = MagicMock(return_value=0)
 
     # decide() returns routing decision pointing to local adapter by default
     router.decide.return_value = {
@@ -913,3 +919,210 @@ class TestNimbusRouterMetadata:
         assert "base_url" in routing
         assert routing["provider"] == "sglang"
         assert routing["base_url"] == "http://localhost:8001"
+
+
+# ============================================================================
+# Tests: Shadow Queue Lifecycle (Prefill-Aware Removal)
+# ============================================================================
+
+
+class TestShadowQueueLifecycle:
+    """Test shadow queue removal happens at the correct time.
+
+    - Non-streaming: removal in _execute_adapter finally (completion time)
+    - Streaming: removal in _on_first_token (first content chunk)
+    - Safety net: _execute_stream_adapter finally catches error/cancel paths
+    """
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_removes_from_shadow_queue_on_completion(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Non-streaming: shadow queue remove happens after adapter returns."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        messages = [{"role": "user", "content": "Hello"}]
+        await router.chat_completion("glm-4.6", messages)
+
+        # _remove_from_shadow_queue should have been called via _execute_adapter finally
+        mock_or.waiting_queue.remove_requests.assert_called()
+        # The call should include the request_id
+        call_args = mock_or.waiting_queue.remove_requests.call_args
+        assert isinstance(call_args[0][0], set)
+
+    @pytest.mark.asyncio
+    async def test_streaming_removes_on_first_token(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Streaming: shadow queue remove on first content chunk (prefill done)."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        removal_timestamps = []
+        original_remove = mock_or.waiting_queue.remove_requests
+
+        def track_removal(ids):
+            removal_timestamps.append(len(chunks_so_far))
+            return original_remove(ids)
+
+        mock_or.waiting_queue.remove_requests = MagicMock(side_effect=track_removal)
+
+        chunks_so_far = []
+
+        async def mock_stream(messages, **params):
+            yield 'data: {"choices":[{"delta":{"content":"first"}}]}\n\n'
+            yield 'data: {"choices":[{"delta":{"content":"second"}}]}\n\n'
+            yield 'data: {"choices":[{"delta":{"content":"third"}}]}\n\n'
+
+        local_adapter.stream_chat_completion = mock_stream
+
+        messages = [{"role": "user", "content": "Hello"}]
+        async for chunk in router.stream_chat_completion("glm-4.6", messages):
+            chunks_so_far.append(chunk)
+
+        # remove_requests should have been called
+        assert mock_or.waiting_queue.remove_requests.call_count >= 1
+        # First removal should happen after the first content chunk (index 0),
+        # NOT after all chunks are consumed.
+        assert removal_timestamps[0] == 0, (
+            f"Shadow queue removal happened after chunk {removal_timestamps[0]}, "
+            f"expected after chunk 0 (first token)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_streaming_tool_calls_first_chunk_triggers_removal(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """First chunk is tool_calls (no content) — should still trigger first-token removal."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        removal_timestamps = []
+        original_remove = mock_or.waiting_queue.remove_requests
+
+        def track_removal(ids):
+            removal_timestamps.append(len(chunks_so_far))
+            return original_remove(ids)
+
+        mock_or.waiting_queue.remove_requests = MagicMock(side_effect=track_removal)
+
+        chunks_so_far = []
+
+        async def mock_stream(messages, **params):
+            # First chunk has tool_calls, not content
+            yield 'data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"get_weather"}}]}}]}\n\n'
+            yield 'data: {"choices":[{"delta":{"content":"result"}}]}\n\n'
+
+        local_adapter.stream_chat_completion = mock_stream
+
+        messages = [{"role": "user", "content": "Hello"}]
+        async for chunk in router.stream_chat_completion("glm-4.6", messages):
+            chunks_so_far.append(chunk)
+
+        assert mock_or.waiting_queue.remove_requests.call_count >= 1
+        assert removal_timestamps[0] == 0, (
+            "Shadow queue removal should trigger on tool_calls first chunk"
+        )
+
+    @pytest.mark.asyncio
+    async def test_streaming_error_before_first_token_still_removes(
+        self, fixed_router, local_adapter, remote_adapter
+    ):
+        """If stream errors before first token, finally safety net removes."""
+        settings = MagicMock()
+        settings.nimbus_enabled_models = []
+        settings.experiment_mode = True  # Disable fallback
+
+        router = NimbusRouter(fixed_router=fixed_router, settings=settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        async def failing_stream(messages, **params):
+            raise RuntimeError("Connection refused")
+            yield  # make it a generator  # noqa: RET503
+
+        local_adapter.stream_chat_completion = failing_stream
+
+        messages = [{"role": "user", "content": "Hello"}]
+        with pytest.raises(RuntimeError, match="Connection refused"):
+            async for _ in router.stream_chat_completion("glm-4.6", messages):
+                pass
+
+        # Safety net in finally should still remove from shadow queue
+        mock_or.waiting_queue.remove_requests.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_remote_adapter_not_removed_from_shadow_queue(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Remote adapter execution should NOT remove from shadow queue."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        # Configure decide() to return remote adapter
+        mock_or.decide.return_value = {
+            "adapter": remote_adapter,
+            "routing_decision": "outsourced",
+            "request_id": "req-test-2",
+            "reason": "SLO violation",
+            "cached_tokens": 0,
+            "model_id": "glm-4.6",
+            "queue_length": 3,
+            "decision": MagicMock(),
+        }
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        messages = [{"role": "user", "content": "Hello"}]
+        await router.chat_completion("glm-4.6", messages)
+
+        # remote adapter is NOT the local_adapter, so remove should NOT be called
+        mock_or.waiting_queue.remove_requests.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_double_remove_is_safe(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Calling remove_requests twice for the same ID should not raise."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        # Simulate: first token removes, then finally also tries to remove
+        # Both should succeed without error
+        async def mock_stream(messages, **params):
+            yield 'data: {"choices":[{"delta":{"content":"token"}}]}\n\n'
+
+        local_adapter.stream_chat_completion = mock_stream
+
+        messages = [{"role": "user", "content": "Hello"}]
+        async for _ in router.stream_chat_completion("glm-4.6", messages):
+            pass
+
+        # Should have been called at least twice (first token + finally)
+        assert mock_or.waiting_queue.remove_requests.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_fallback_local_to_remote_removes_once(
+        self, fixed_router, mock_settings, local_adapter, remote_adapter
+    ):
+        """Local fails → remove on local failure → fallback to remote → no extra remove."""
+        router = NimbusRouter(fixed_router=fixed_router, settings=mock_settings)
+        mock_or = _make_mock_outsourcing_router(local_adapter, remote_adapter)
+        router.outsourcing_routers["glm-4.6"] = mock_or
+
+        # Local adapter fails
+        local_adapter.chat_completion = AsyncMock(side_effect=RuntimeError("SGLang down"))
+
+        messages = [{"role": "user", "content": "Hello"}]
+        result = await router.chat_completion("glm-4.6", messages)
+
+        # Verify fallback happened
+        assert result["_routing"]["fallback"] is True
+
+        # remove should be called once (for local failure in finally)
+        # The remote adapter execution should NOT trigger remove
+        remove_calls = mock_or.waiting_queue.remove_requests.call_args_list
+        assert len(remove_calls) == 1  # Only the local adapter's finally
