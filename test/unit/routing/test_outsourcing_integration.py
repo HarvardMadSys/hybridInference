@@ -342,8 +342,12 @@ class TestOutsourcingRouterWithTreeCache:
         assert router.tree_cache.match_prefix("Pre-populated content") > 0
 
     @pytest.mark.asyncio
-    async def test_keep_requests_removed_when_outsourcing(self, mock_remote_adapter):
-        """Requests marked keep should be removed from the shadow queue when outsourcing occurs."""
+    async def test_keep_requests_stay_in_shadow_queue_when_outsourcing(self, mock_remote_adapter):
+        """Kept requests should NOT be removed from shadow queue in decide().
+
+        They stay in the queue so the FLOP algorithm can see all in-flight
+        requests. Removal happens at execution completion (NimbusRouter finally).
+        """
         local_adapter = MagicMock()
         local_adapter.config.provider = "sglang"
         local_adapter.config.base_url = "http://localhost:6000/v1"
@@ -381,7 +385,9 @@ class TestOutsourcingRouterWithTreeCache:
             request_id="req-keep",
         )
 
-        waiting_queue.remove_requests.assert_called_once_with({"req-keep"})
+        # Shadow queue should NOT have remove_requests called for kept requests
+        waiting_queue.remove_requests.assert_not_called()
+        # But prompt/payload dicts should still be cleaned up
         assert "req-keep" not in router._request_prompts
         assert router.stats["local_requests"] == 1
 
@@ -591,10 +597,15 @@ class TestOutsourcingRouterApplyDecision:
         assert request_info.num_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS
 
     @pytest.mark.asyncio
-    async def test_kept_requests_removed_from_queue(
+    async def test_kept_requests_stay_in_shadow_queue(
         self, mock_local_adapter, mock_remote_adapter, mock_waiting_queue
     ):
-        """Test that kept requests are removed from waiting queue to prevent leak."""
+        """Test that local/kept requests stay in shadow queue after decide().
+
+        Shadow queue lifecycle fix: requests are NOT removed in decide().
+        They remain so the FLOP algorithm sees all in-flight local requests.
+        Removal happens at execution completion (NimbusRouter finally block).
+        """
         engine = MagicMock()
 
         # Track request IDs
@@ -637,24 +648,12 @@ class TestOutsourcingRouterApplyDecision:
             model_id="test-model",
         )
 
-        # First request
+        # First request — no outsource decision
         await router.chat_completion([{"role": "user", "content": "First"}])
 
-        # Second request - triggers outsourcing decision
+        # Second request — outsource decision (first outsourced, second kept)
         await router.chat_completion([{"role": "user", "content": "Second"}])
 
-        # Verify that remove_requests was called for kept requests
-        # It should be called with the kept request ID (second request)
-        remove_calls = mock_waiting_queue.remove_requests.call_args_list
-
-        # Should have multiple remove calls:
-        # 1. First request (no outsourcing decision)
-        # 2. Second request's kept requests (when outsourcing decision is made)
-        assert len(remove_calls) >= 2
-
-        # Check that the second call includes the kept request ID
-        if len(request_ids) > 1:
-            # Find a call that includes the second request ID (the kept one)
-            kept_id = request_ids[1]
-            found_kept_removal = any(kept_id in call[0][0] for call in remove_calls)
-            assert found_kept_removal, f"Kept request {kept_id} should be removed from queue"
+        # remove_requests should NOT be called for local/kept requests.
+        # They remain in the shadow queue until execution completes.
+        mock_waiting_queue.remove_requests.assert_not_called()

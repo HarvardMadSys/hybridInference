@@ -190,11 +190,54 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
     )
 
     # Nimbus Metrics
-    # Used for caching
+    NIMBUS_ROUTING_DECISIONS = Counter(
+        "nimbus_routing_decisions_total",
+        "Nimbus routing decisions",
+        labelnames=("model", "decision"),  # decision = "local" | "outsourced"
+        registry=REGISTRY,
+    )
+
+    NIMBUS_SLO_VIOLATIONS = Counter(
+        "nimbus_slo_violations_total",
+        "TTFT SLO violations detected by Nimbus",
+        labelnames=("model", "trigger"),  # trigger = "flop_model" | "observed_ttft"
+        registry=REGISTRY,
+    )
+
+    ROUTING_STRATEGY_SELECTED = Counter(
+        "routing_strategy_selected_total",
+        "Routing strategy selected",
+        labelnames=("model", "strategy"),  # strategy = "nimbus" | "fixed" | "fallback"
+        registry=REGISTRY,
+    )
+
     NIMBUS_QUEUE_DEPTH = Gauge(
         "nimbus_queue_depth",
         "Queue depth observed by Nimbus",
         labelnames=("model", "sglang_port"),
+        registry=REGISTRY,
+    )
+
+    NIMBUS_EST_TTFT = Histogram(
+        "nimbus_est_ttft_seconds",
+        "Estimated TTFT from FLOP model at decision time",
+        labelnames=("model", "decision"),
+        buckets=(0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 7.5, 10.0, 15.0),
+        registry=REGISTRY,
+    )
+
+    NIMBUS_PREDICTION_ERROR = Histogram(
+        "nimbus_prediction_error_seconds",
+        "est_ttft - actual_ttft (positive = overestimate)",
+        labelnames=("model",),
+        buckets=(-5.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0),
+        registry=REGISTRY,
+    )
+
+    NIMBUS_LOCAL_INFLIGHT = Gauge(
+        "nimbus_local_inflight",
+        "Number of requests currently in-flight to local SGLang (shadow queue depth)",
+        labelnames=("model",),
         registry=REGISTRY,
     )
 
@@ -364,6 +407,11 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     NIMBUS_SLO_VIOLATIONS = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
+    NIMBUS_EST_TTFT = API_REQUEST_LATENCY  # Histogram no-op (observe)
+    NIMBUS_PREDICTION_ERROR = API_REQUEST_LATENCY  # Histogram no-op (observe)
+    NIMBUS_LOCAL_INFLIGHT = type(
+        "NoopGauge", (), {"labels": lambda *a, **k: type("L", (), {"set": _noop})()}
+    )()
 
     DATABASE_CONNECTED = type("NoopGauge", (), {"set": _noop})()
 
@@ -410,6 +458,9 @@ __all__ = [
     "API_TOKEN_ANOMALIES",
     "API_TTFT",
     # Nimbus metrics
+    "NIMBUS_EST_TTFT",
+    "NIMBUS_LOCAL_INFLIGHT",
+    "NIMBUS_PREDICTION_ERROR",
     "NIMBUS_QUEUE_DEPTH",
     "NIMBUS_ROUTING_DECISIONS",
     "NIMBUS_SLO_VIOLATIONS",

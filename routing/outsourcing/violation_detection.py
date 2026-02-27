@@ -4,12 +4,31 @@ Ported from vidur's outsourcing module with integration for SGLang metrics.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from routing.outsourcing.flop_calculator import FLOPCalculatorInterface
 from routing.outsourcing.request import OutsourcingRequestInfo
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class ViolationCheckResult:
+    """Structured result from TTFT violation detection.
+
+    Implements ``__bool__`` so existing ``if check_violations(...)`` code
+    continues to work without changes.
+    """
+
+    has_violation: bool
+    trigger: str = "none"  # "none" | "flop_model" | "observed_ttft" | "queue_pressure"
+    per_request_estimates: list[dict] = field(default_factory=list)
+    sglang_pending_count: int = 0
+    observed_ttft: float | None = None
+
+    def __bool__(self) -> bool:
+        return self.has_violation
 
 
 class TTFTViolationDetector:
@@ -75,7 +94,7 @@ class TTFTViolationDetector:
         current_time: float,
         sglang_pending_count: int = 0,
         observed_ttft: float | None = None,
-    ) -> bool:
+    ) -> ViolationCheckResult:
         """Check if there are any TTFT violations.
 
         Args:
@@ -89,13 +108,11 @@ class TTFTViolationDetector:
                 we short-circuit and return True immediately.
 
         Returns:
-            True if violations detected, False otherwise
+            ViolationCheckResult with violation status, trigger, and per-request estimates.
+            Supports ``bool()`` for backward compatibility.
         """
         # Fast-path: if the observed TTFT already nears any request's SLO,
         # skip the full FLOP computation and flag a violation immediately.
-        # Uses per-request SLO when available, otherwise falls back to the
-        # engine-level default_slo_seconds so the path is reachable even
-        # when the API schema doesn't expose prefill_slo_seconds.
         if observed_ttft is not None and waiting_requests:
             for r in waiting_requests:
                 slo = r.prefill_slo_seconds or self._default_slo_seconds
@@ -106,7 +123,13 @@ class TTFTViolationDetector:
                         slo,
                         r.request_id,
                     )
-                    return True
+                    return ViolationCheckResult(
+                        has_violation=True,
+                        trigger="observed_ttft",
+                        per_request_estimates=[],
+                        sglang_pending_count=sglang_pending_count,
+                        observed_ttft=observed_ttft,
+                    )
 
         return self._detector_func(waiting_requests, current_time, sglang_pending_count)
 
@@ -115,20 +138,30 @@ class TTFTViolationDetector:
         waiting_requests: list[OutsourcingRequestInfo],
         current_time: float,
         sglang_pending_count: int = 0,
-    ) -> bool:
+    ) -> ViolationCheckResult:
         """Check EVERY waiting request for imminent TTFT violation under FCFS.
 
-        Returns True if any request is at risk of SLO violation.
+        Returns ViolationCheckResult with per-request TTFT estimates.
         """
+        _no_violation = ViolationCheckResult(
+            has_violation=False,
+            trigger="none",
+            sglang_pending_count=sglang_pending_count,
+        )
         if not waiting_requests:
-            return False
+            return _no_violation
 
         # Get effective FLOPS per second
         effective_flops = self._flop_calculator.get_effective_flops_per_second(
             self._utilization_target
         )
         if effective_flops <= 0:
-            return len(waiting_requests) > self._max_micro_batch_size
+            is_overloaded = len(waiting_requests) > self._max_micro_batch_size
+            return ViolationCheckResult(
+                has_violation=is_overloaded,
+                trigger="queue_pressure" if is_overloaded else "none",
+                sglang_pending_count=sglang_pending_count,
+            )
 
         # Compute remaining prefill FLOPs for each request
         rem_flops = []
@@ -138,13 +171,8 @@ class TTFTViolationDetector:
             rem_flops.append(flops)
 
         # Phantom ahead FLOPs from SGLang's actual pending queue.
-        # The shadow queue may only contain 1 request (add/remove have no await
-        # between them), so we use the SGLang pending count to inject realistic
-        # load as the initial accumulator for the prefix sum.
         sglang_ahead_flops = 0.0
         if sglang_pending_count > 0:
-            # Use a synthetic OutsourcingRequestInfo to compute FLOPs for the
-            # average prompt.  We only need num_prompt_tokens for compute_prefill_flops.
             _phantom = OutsourcingRequestInfo(
                 request_id="_phantom",
                 arrival_time=0.0,
@@ -162,52 +190,100 @@ class TTFTViolationDetector:
             ahead[i] = acc
             acc += rem_flops[i]
 
-        # Evaluate every request with an SLO
-        at_risk = set()
+        # Evaluate every request and collect per-request estimates
+        at_risk: set[str] = set()
         saw_any_slo = False
+        per_request_estimates: list[dict] = []
+
         for i, r in enumerate(waiting_requests):
-            if r.prefill_slo_seconds is None:
-                continue
-            saw_any_slo = True
-
             est_ttft = (ahead[i] + rem_flops[i]) / effective_flops
-
             time_left = r.prefill_deadline - current_time if r.prefill_deadline else float("inf")
-            if est_ttft > time_left:
-                at_risk.add(r.request_id)
-                logger.debug(
-                    f"Request {r.request_id}: est_ttft={est_ttft:.2f}s > "
-                    f"time_left={time_left:.2f}s (VIOLATION)"
-                )
+            is_at_risk = False
 
-        # If none had an explicit SLO, fall back to a simple pressure heuristic
+            if r.prefill_slo_seconds is not None:
+                saw_any_slo = True
+                if est_ttft > time_left:
+                    at_risk.add(r.request_id)
+                    is_at_risk = True
+                    logger.debug(
+                        f"Request {r.request_id}: est_ttft={est_ttft:.2f}s > "
+                        f"time_left={time_left:.2f}s (VIOLATION)"
+                    )
+
+            per_request_estimates.append(
+                {
+                    "request_id": r.request_id,
+                    "est_ttft": est_ttft,
+                    "time_left": time_left,
+                    "at_risk": is_at_risk,
+                }
+            )
+
+        # If none had an explicit SLO, fall back to a simple pressure heuristic.
+        # Also update per_request_estimates to keep at_risk consistent with has_violation.
         if not saw_any_slo and len(waiting_requests) > self._max_micro_batch_size:
-            at_risk.update(r.request_id for r in waiting_requests[: self._max_micro_batch_size])
+            pressure_ids = {r.request_id for r in waiting_requests[: self._max_micro_batch_size]}
+            at_risk.update(pressure_ids)
+            for est in per_request_estimates:
+                if est["request_id"] in pressure_ids:
+                    est["at_risk"] = True
 
-        return len(at_risk) > 0
+        has_violation = len(at_risk) > 0
+        trigger = "none"
+        if has_violation:
+            trigger = "queue_pressure" if not saw_any_slo else "flop_model"
+
+        return ViolationCheckResult(
+            has_violation=has_violation,
+            trigger=trigger,
+            per_request_estimates=per_request_estimates,
+            sglang_pending_count=sglang_pending_count,
+        )
 
     def _check_head_violation(
         self,
         waiting_requests: list[OutsourcingRequestInfo],
         current_time: float,
         sglang_pending_count: int = 0,
-    ) -> bool:
+    ) -> ViolationCheckResult:
         """Check if the head request has imminent TTFT violation.
 
-        Returns True if head request is at risk of SLO violation.
+        Returns ViolationCheckResult with head request estimate.
         """
+        _no_violation = ViolationCheckResult(
+            has_violation=False,
+            trigger="none",
+            sglang_pending_count=sglang_pending_count,
+        )
         if not waiting_requests:
-            return False
+            return _no_violation
 
         head = waiting_requests[0]
         if head.prefill_slo_seconds is None:
-            # Fallback to queue length heuristic
-            return len(waiting_requests) > self._max_micro_batch_size
+            is_overloaded = len(waiting_requests) > self._max_micro_batch_size
+            return ViolationCheckResult(
+                has_violation=is_overloaded,
+                trigger="queue_pressure" if is_overloaded else "none",
+                sglang_pending_count=sglang_pending_count,
+            )
 
         est_ttft = self._estimate_fcfs_ttft(head, waiting_requests, sglang_pending_count)
-
         time_left = head.prefill_deadline - current_time if head.prefill_deadline else float("inf")
-        return est_ttft > time_left
+        has_violation = est_ttft > time_left
+
+        return ViolationCheckResult(
+            has_violation=has_violation,
+            trigger="flop_model" if has_violation else "none",
+            per_request_estimates=[
+                {
+                    "request_id": head.request_id,
+                    "est_ttft": est_ttft,
+                    "time_left": time_left,
+                    "at_risk": has_violation,
+                }
+            ],
+            sglang_pending_count=sglang_pending_count,
+        )
 
     def _estimate_fcfs_ttft(
         self,

@@ -228,6 +228,7 @@ class OutsourcingEngine:
 
         all_outsourced = []
         iteration = 0
+        first_violation_result = None  # capture first iteration for observability
 
         while iteration < self.max_outsourcing_iterations:
             # Re-fetch waiting requests (some may have been removed)
@@ -253,14 +254,18 @@ class OutsourcingEngine:
                 break
 
             # Check for TTFT violations with SGLang metrics
-            has_violations = self._violation_detector.check_violations(
+            violation_result = self._violation_detector.check_violations(
                 candidates,
                 current_time,
                 sglang_pending_count=sglang_ctx["sglang_pending_count"],
                 observed_ttft=sglang_ctx["observed_ttft"],
             )
 
-            if not has_violations:
+            # Capture the first check result for observability metrics
+            if first_violation_result is None:
+                first_violation_result = violation_result
+
+            if not violation_result:
                 # No violations detected, we're done
                 if iteration > 0 and self.debug_outsourcing:
                     from serving.utils.logging import get_logger
@@ -351,6 +356,22 @@ class OutsourcingEngine:
             r.request_id for r in final_waiting if r.request_id not in self.outsourced_request_ids
         ]
 
+        # Extract head est_ttft from first violation check
+        head_est_ttft = None
+        trigger = "none"
+        if first_violation_result is not None:
+            trigger = first_violation_result.trigger
+            estimates = first_violation_result.per_request_estimates
+            if estimates:
+                head_est_ttft = estimates[0].get("est_ttft")
+
+        observability_metrics = {
+            "sglang_pending_count": sglang_ctx["sglang_pending_count"],
+            "observed_ttft": sglang_ctx["observed_ttft"],
+            "trigger": trigger,
+            "head_est_ttft": head_est_ttft,
+        }
+
         if all_outsourced:
             return OutsourcingDecision(
                 should_outsource=True,
@@ -362,6 +383,7 @@ class OutsourcingEngine:
                     "total_waiting": len(waiting_requests),
                     "outsource_count": len(all_outsourced),
                     "keep_count": len(keep_ids),
+                    **observability_metrics,
                 },
             )
         else:
@@ -370,6 +392,7 @@ class OutsourcingEngine:
                 requests_to_outsource=[],
                 requests_to_keep=keep_ids,
                 reason="No SLO violations detected",
+                metrics=observability_metrics,
             )
 
     def _single_pass_outsourcing(
@@ -406,19 +429,33 @@ class OutsourcingEngine:
         sglang_ctx = self._get_sglang_context(prefetched_metrics)
 
         # Check for TTFT violations using the violation detector
-        has_violations = self._violation_detector.check_violations(
+        violation_result = self._violation_detector.check_violations(
             candidates,
             current_time,
             sglang_pending_count=sglang_ctx["sglang_pending_count"],
             observed_ttft=sglang_ctx["observed_ttft"],
         )
 
-        if not has_violations:
+        # Extract observability data from violation result
+        head_est_ttft = None
+        estimates = violation_result.per_request_estimates
+        if estimates:
+            head_est_ttft = estimates[0].get("est_ttft")
+
+        observability_metrics = {
+            "sglang_pending_count": sglang_ctx["sglang_pending_count"],
+            "observed_ttft": sglang_ctx["observed_ttft"],
+            "trigger": violation_result.trigger,
+            "head_est_ttft": head_est_ttft,
+        }
+
+        if not violation_result:
             return OutsourcingDecision(
                 should_outsource=False,
                 requests_to_outsource=[],
                 requests_to_keep=[r.request_id for r in candidates],
                 reason="No SLO violations detected",
+                metrics=observability_metrics,
             )
 
         # Run knapsack to decide what to keep vs outsource
@@ -434,6 +471,7 @@ class OutsourcingEngine:
                 "candidates": len(candidates),
                 "outsource_count": len(outsource_ids),
                 "keep_count": len(keep_ids),
+                **observability_metrics,
             },
         )
 

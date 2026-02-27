@@ -15,6 +15,7 @@ from serving.config.settings import RoutingStrategy, get_settings
 from serving.observability.metrics import (
     API_TOKEN_ANOMALIES,
     API_TOKENS,
+    NIMBUS_PREDICTION_ERROR,
     normalize_model_label,
     normalize_provider_label,
 )
@@ -414,6 +415,18 @@ async def chat_completions(
                 yield error_msg
 
             finally:
+                # Emit TTFT prediction error metric (independent of DB logger)
+                if routing_info and ttft_ms is not None:
+                    est_ttft = (routing_info.get("outsourcing") or {}).get("est_ttft_seconds")
+                    if est_ttft is not None:
+                        try:
+                            error = est_ttft - (ttft_ms / 1000.0)
+                            NIMBUS_PREDICTION_ERROR.labels(
+                                model=normalize_model_label(model)
+                            ).observe(error)
+                        except Exception:
+                            pass  # best-effort; never break streaming
+
                 # Always log to DB using UPSERT with asyncio.shield to prevent cancellation
                 if db_logger:
                     # Get pricing from actual provider used

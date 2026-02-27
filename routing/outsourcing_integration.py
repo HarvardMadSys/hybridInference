@@ -173,7 +173,16 @@ class OutsourcingRouter:
         request.num_cached_tokens = max(0, min(cached_tokens, request.num_prompt_tokens))
 
     def _assess_sglang_capacity(self) -> tuple[bool, float | None]:
-        """Check SGLang queue depth and decide if we should force local dispatch."""
+        """Check SGLang queue depth and decide if we should force local dispatch.
+
+        Short-circuits to force-local only when BOTH conditions hold:
+        1. SGLang internal queue is idle (request_queue < 1)
+        2. Shadow queue has at most 1 request (the current one just added)
+
+        If the shadow queue has accumulated requests (i.e. other requests are
+        still in-flight locally), we must let the outsourcing engine evaluate
+        even when SGLang's internal queue appears empty.
+        """
         metrics = self.waiting_queue.get_metrics(safe=True)
         if metrics:
             self._last_sglang_metrics = metrics
@@ -184,7 +193,10 @@ class OutsourcingRouter:
         except (TypeError, ValueError):
             queue_depth = None
 
-        if queue_depth is not None and queue_depth < 1:
+        sglang_idle = queue_depth is not None and queue_depth < 1
+        shadow_queue_small = self.waiting_queue.get_length() <= 1
+
+        if sglang_idle and shadow_queue_small:
             return True, queue_depth
         return False, queue_depth
 
@@ -307,9 +319,10 @@ class OutsourcingRouter:
                     f"[Outsourcing] {other_outsourced} other request(s) also marked for outsourcing"
                 )
 
-            if decision.requests_to_keep:
-                self.waiting_queue.remove_requests(set(decision.requests_to_keep))
-
+            # NOTE: kept requests are NOT removed from shadow queue here.
+            # They stay in the queue until execution completes (removed in
+            # NimbusRouter._execute_adapter / _execute_stream_adapter finally).
+            # This lets the FLOP algorithm see all in-flight local requests.
             for kept_id in decision.requests_to_keep:
                 if kept_id in self._request_prompts:
                     self.tree_cache.insert(self._request_prompts[kept_id])
@@ -341,7 +354,9 @@ class OutsourcingRouter:
             self.stats["local_requests"] += 1
 
             if not decision.should_outsource:
-                self.waiting_queue.remove_requests({request_id})
+                # NOTE: do NOT remove from shadow queue here — the request is
+                # about to execute locally. It will be removed when execution
+                # completes (NimbusRouter._execute_adapter finally block).
                 self.tree_cache.insert(prompt_text)
                 self._request_prompts.pop(request_id, None)
                 self._request_payloads.pop(request_id, None)
@@ -361,6 +376,13 @@ class OutsourcingRouter:
             "model_id": self.model_id,
             "queue_length": self.waiting_queue.get_length(),
             "decision": decision,
+            # Observability fields from violation detection
+            "est_ttft_seconds": decision.metrics.get("head_est_ttft") if decision.metrics else None,
+            "sglang_pending_count": decision.metrics.get("sglang_pending_count", 0)
+            if decision.metrics
+            else 0,
+            "observed_ttft": decision.metrics.get("observed_ttft") if decision.metrics else None,
+            "trigger": decision.metrics.get("trigger", "none") if decision.metrics else "none",
         }
 
     async def chat_completion(
