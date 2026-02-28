@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Expose Prometheus metrics at /metrics.
 
 If prometheus_client is unavailable or METRICS_ENABLED=0, returns a minimal
@@ -11,6 +9,8 @@ Prometheus scrapes. Database connection status is updated by:
 - Bootstrap initialization (on startup)
 - Auth middleware (on request authentication failures)
 """
+
+from __future__ import annotations
 
 from fastapi import APIRouter, Response
 

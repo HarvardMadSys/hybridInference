@@ -28,6 +28,7 @@ def make_stream_chunk(
         content: Delta content for this chunk; empty for terminal chunks.
         finish_reason: When provided, marks the final chunk finish reason.
         role: Role for the first chunk (e.g., "assistant"). OpenAI spec requires the first chunk to include role.
+
     Returns:
         A string representing one SSE line with a trailing blank line.
     """

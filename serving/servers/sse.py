@@ -1,3 +1,5 @@
+"""Incremental Server-Sent Events (SSE) parser for streaming responses."""
+
 from __future__ import annotations
 
 import codecs
@@ -22,7 +24,6 @@ class SSEParser:
 
     def feed(self, chunk: bytes) -> list[SSEMessage]:
         """Feed raw bytes and yield complete SSE messages when available."""
-
         try:
             decoded = self._decoder.decode(chunk, final=False)
         except UnicodeDecodeError:
