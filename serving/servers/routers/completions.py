@@ -15,6 +15,7 @@ from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     API_TOKEN_ANOMALIES,
     API_TOKENS,
+    COMPLETION_LATENCY,
     normalize_model_label,
     normalize_provider_label,
 )
@@ -468,6 +469,13 @@ async def chat_completions(
                     pricing = get_pricing_for_provider(provider, None)
                     logger.debug(f"Using provider from context for DB logging: {provider}")
 
+                # Record end-to-end completion latency per model/provider for performance monitoring
+                COMPLETION_LATENCY.labels(
+                    model=normalize_model_label(model),
+                    provider=normalize_provider_label(provider),
+                    stream="yes",
+                ).observe(time.time() - start_time)
+
                 # Prepare data for background database logging (don't await here!)
                 if db_logger:
                     _schedule_db_log_task(
@@ -719,6 +727,13 @@ async def chat_completions(
             provider=normalize_provider_label(provider),
             status_code="200",
         ).inc()
+
+        # Record end-to-end completion latency per model/provider for performance monitoring
+        COMPLETION_LATENCY.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label(provider),
+            stream="no",
+        ).observe(time.time() - start_time)
 
         return response
 

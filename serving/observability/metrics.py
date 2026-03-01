@@ -162,6 +162,14 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    COMPLETION_LATENCY = Histogram(
+        "completion_latency_seconds",
+        "End-to-end completion request latency per model and provider",
+        labelnames=("model", "provider", "stream"),
+        buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 7.5, 10.0, 15.0, 30.0, 60.0),
+        registry=REGISTRY,
+    )
+
     API_CONCURRENCY = Gauge(
         "api_concurrent_requests",
         "Number of in-flight API requests",
@@ -360,6 +368,13 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     API_MODEL_REQUESTS = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
+    COMPLETION_LATENCY = type(
+        "NoopH",
+        (),
+        {
+            "labels": lambda *a, **k: type("L", (), {"observe": _noop})(),
+        },
+    )()
     API_CONCURRENCY = type("NoopGauge", (), {"inc": _noop, "dec": _noop})()
     RATE_LIMIT_QUEUE_SIZE = type(
         "NoopGauge", (), {"labels": lambda *a, **k: type("L", (), {"set": _noop})()}
@@ -422,6 +437,8 @@ __all__ = [
     # Circuit breaker metrics
     "CIRCUIT_OPEN_TOTAL",
     "CIRCUIT_STATE",
+    # Completion latency (end-to-end per model/provider)
+    "COMPLETION_LATENCY",
     # Database metrics
     "DATABASE_CONNECTED",
     # Provider metrics

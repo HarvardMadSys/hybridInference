@@ -7,15 +7,42 @@
       "pluginId": "prometheus",
       "pluginName": "Prometheus"
     }
-    ],
-  "__requires": [
-    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.5.0"},
-    {"type": "panel", "id": "timeseries", "name": "Time series", "version": "9.5.0"},
-    {"type": "panel", "id": "stat", "name": "Stat", "version": "9.5.0"},
-    {"type": "panel", "id": "bargauge", "name": "Bar gauge", "version": "9.5.0"},
-    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "2.6.0"}
   ],
-  "annotations": {"list": []},
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "9.5.0"
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": "9.5.0"
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": "9.5.0"
+    },
+    {
+      "type": "panel",
+      "id": "bargauge",
+      "name": "Bar gauge",
+      "version": "9.5.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "2.6.0"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -26,7 +53,10 @@
   "refresh": "30s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["hybrid-inference", "overview"],
+  "tags": [
+    "hybrid-inference",
+    "overview"
+  ],
   "templating": {
     "list": [
       {
@@ -39,7 +69,9 @@
         "includeAll": true,
         "multi": true,
         "allValue": ".*",
-        "current": {"selected": false}
+        "current": {
+          "selected": false
+        }
       },
       {
         "name": "method",
@@ -51,7 +83,9 @@
         "includeAll": true,
         "multi": true,
         "allValue": ".*",
-        "current": {"selected": false}
+        "current": {
+          "selected": false
+        }
       },
       {
         "name": "stream",
@@ -63,7 +97,9 @@
         "includeAll": true,
         "multi": true,
         "allValue": ".*",
-        "current": {"selected": false}
+        "current": {
+          "selected": false
+        }
       },
       {
         "name": "provider",
@@ -75,7 +111,9 @@
         "includeAll": true,
         "multi": true,
         "allValue": ".*",
-        "current": {"selected": false}
+        "current": {
+          "selected": false
+        }
       },
       {
         "name": "model",
@@ -87,7 +125,9 @@
         "includeAll": true,
         "multi": true,
         "allValue": ".*",
-        "current": {"selected": false}
+        "current": {
+          "selected": false
+        }
       }
     ]
   },
@@ -630,9 +670,19 @@
       "type": "timeseries",
       "title": "Request Rate (RPS)",
       "id": 1,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 4},
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 4
+      },
       "datasource": "${DS_PROMETHEUS}",
-      "fieldConfig": {"defaults": {"unit": "req/s"}, "overrides": []},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "req/s"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "expr": "sum by (route, method, stream) (rate(api_requests_total{route=~\"$route\",method=~\"$method\",stream=~\"$stream\"}[1m]))",
@@ -645,9 +695,19 @@
       "type": "timeseries",
       "title": "Error Rate (%)",
       "id": 2,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 4},
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 4
+      },
       "datasource": "${DS_PROMETHEUS}",
-      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "expr": "100 * (sum(rate(api_requests_total{status_class=~\"4xx|5xx\",route=~\"$route\",method=~\"$method\",stream=~\"$stream\"}[5m])) / clamp_min(sum(rate(api_requests_total{route=~\"$route\",method=~\"$method\",stream=~\"$stream\"}[5m])), 1))",
@@ -660,9 +720,19 @@
       "type": "timeseries",
       "title": "Latency P95 (s)",
       "id": 3,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 4},
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 4
+      },
       "datasource": "${DS_PROMETHEUS}",
-      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le, route, method, stream) (rate(api_request_duration_seconds_bucket{route=~\"$route\",method=~\"$method\",stream=~\"$stream\"}[5m])))",
@@ -675,20 +745,43 @@
       "type": "stat",
       "title": "Concurrency",
       "id": 4,
-      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 12},
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 12
+      },
       "datasource": "${DS_PROMETHEUS}",
-      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
       "targets": [
-        {"expr": "sum(api_concurrent_requests)", "refId": "A"}
+        {
+          "expr": "sum(api_concurrent_requests)",
+          "refId": "A"
+        }
       ]
     },
     {
       "type": "timeseries",
       "title": "Provider Latency P95 (s)",
       "id": 6,
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
       "datasource": "${DS_PROMETHEUS}",
-      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le, provider, model) (rate(provider_request_duration_seconds_bucket{provider=~\"$provider\",model=~\"$model\"}[5m])))",
@@ -701,23 +794,120 @@
       "type": "bargauge",
       "title": "Open Circuits",
       "id": 7,
-      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 20},
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 20
+      },
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {"expr": "circuit_state{provider=~\"$provider\"}", "legendFormat": "{{provider}}", "refId": "A"}
+        {
+          "expr": "circuit_state{provider=~\"$provider\"}",
+          "legendFormat": "{{provider}}",
+          "refId": "A"
+        }
       ]
     },
     {
       "type": "timeseries",
       "title": "Rate Limit Queue Wait P95 (s)",
       "id": 8,
-      "gridPos": {"h": 6, "w": 9, "x": 6, "y": 20},
+      "gridPos": {
+        "h": 6,
+        "w": 9,
+        "x": 6,
+        "y": 20
+      },
       "datasource": "${DS_PROMETHEUS}",
-      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le, model, outcome) (rate(rate_limit_queue_wait_seconds_bucket{model=~\"$model\"}[5m])))",
           "legendFormat": "{{model}} ({{outcome}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Per-Model Completion Latency P95 (s)",
+      "id": 20,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": "${DS_PROMETHEUS}",
+      "description": "End-to-end latency (P95) per model and provider. Compare with Provider Latency P95 to isolate router overhead.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, model, provider, stream) (rate(completion_latency_seconds_bucket{model=~\"$model\",provider=~\"$provider\"}[5m])))",
+          "legendFormat": "{{model}} ({{provider}}, stream={{stream}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Model Request Throughput (RPS)",
+      "id": 21,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "datasource": "${DS_PROMETHEUS}",
+      "description": "Requests per second broken down by model and provider.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (model, provider) (rate(api_model_requests_total{model=~\"$model\",provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{model}} ({{provider}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Model Token Throughput (tokens/s)",
+      "id": 22,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "datasource": "${DS_PROMETHEUS}",
+      "description": "Token throughput per model and provider. High throughput indicates busy models.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (model, provider, direction) (rate(api_tokens_total{model=~\"$model\",provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{model}} ({{provider}}) {{direction}}",
           "refId": "A"
         }
       ]
