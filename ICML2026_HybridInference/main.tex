@@ -1,0 +1,130 @@
+\documentclass{article}
+
+% Recommended, but optional, packages for figures and better typesetting:
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{subfigure}
+\usepackage{booktabs} % for professional tables
+\usepackage{needspace}
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=*} % compact lists
+
+% hyperref makes hyperlinks in the resulting PDF.
+% If your build breaks (sometimes temporarily if a hyperlink spans a page)
+% please comment out the following usepackage line and replace
+% \usepackage{icml2025} with \usepackage[nohyperref]{icml2025} above.
+\usepackage{hyperref}
+
+% Attempt to make hyperref and algorithmic work together better:
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+
+% Use the following line for the initial blind version submitted for review:
+\usepackage{icml2025}
+
+% If accepted, instead use the following line for the camera-ready submission:
+% \usepackage[accepted]{icml2025}
+
+% For theorems and such
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+
+% if you use cleveref..
+\usepackage[capitalize,noabbrev]{cleveref}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% THEOREMS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+% Todonotes is useful during development; simply uncomment the next line
+%    and comment out the line below the next line to turn off comments
+%\usepackage[disable,textsize=tiny]{todonotes}
+\usepackage[textsize=tiny]{todonotes}
+
+% The \icmltitle you define below is probably too long as a header.
+% Therefore, a short form for the running title is supplied here:
+\icmltitlerunning{Latency--Cost Optimization for Multi-Provider LLM Routing}
+
+\begin{document}
+
+\twocolumn[
+\icmltitle{Latency--Cost Optimization for Multi-Provider LLM Routing}
+
+% It is OKAY to include author information, even for blind
+% submissions: the style file will automatically remove it for you
+% unless you've provided the [accepted] option to the icml2025
+% package.
+
+\icmlsetsymbol{equal}{*}
+
+\begin{icmlauthorlist}
+\icmlauthor{Anonymous Author}{equal}
+\end{icmlauthorlist}
+
+\icmlaffiliation{yyy}{Department of Computer Science, University of YYY}
+
+\icmlcorrespondingauthor{Anonymous Author}{anon@example.com}
+
+% You may provide any keywords that you
+% find helpful for describing your paper; these are used to populate
+% the "keywords" metadata in the PDF but will not be shown in the document
+\icmlkeywords{Machine Learning, ICML, LLM Routing, Online Algorithms}
+
+\vskip 0.3in
+]
+
+\newcommand*\jason[1]{{\textcolor{orange}{Juncheng: #1}}}
+\newcommand*\murphy[1]{{\textcolor{blue}{Murphy: #1}}}
+\newcommand*\yiyan[1]{{\textcolor{teal}{Yiyan: #1}}}
+
+% this must go after the closing bracket ] following \twocolumn[ ...
+
+%\printAffiliationsAndNotice{}  % leave blank if no need to mention equal contribution
+\printAffiliationsAndNotice{\icmlEqualContribution} % otherwise use the standard text.
+
+% ============================================================================
+% SECTIONS
+% ============================================================================
+
+\input{sections/00-abstract}
+\input{sections/01-introduction}
+\input{sections/new2-provider}
+% \input{sections/02-problem}  % merged into new2-provider
+\input{sections/03-offline}
+\input{sections/04-online}
+\input{sections/04b-latency}
+\input{sections/05-experiments}
+\input{sections/06-related}
+\input{sections/07-conclusion}
+
+
+\section*{Impact Statement}
+This paper presents work whose goal is to advance the field of machine learning. There are many potential societal consequences of our work, none of which we believe need to be highlighted here.
+
+% ============================================================================
+% BIBLIOGRAPHY
+% ============================================================================
+
+\bibliography{example_paper}
+\bibliographystyle{icml2025}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% APPENDIX
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\input{sections/08-appendix}
+
+\end{document}

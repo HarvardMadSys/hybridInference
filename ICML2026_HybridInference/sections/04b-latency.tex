@@ -1,0 +1,70 @@
+\section{Latency-Aware Provider Selection}
+\label{sec:latency}
+
+While the preceding sections optimize for cost, practical deployments must also satisfy latency Service Level Objectives (SLOs). When multiple providers serve the same model through platforms like OpenRouter, their latency profiles differ substantially---motivating a separate optimization dimension orthogonal to cost.
+
+\subsection{Problem Setting}
+
+Given a set of providers $\mathcal{P} = \{1, \ldots, n\}$ serving the same model, each provider $j$ has:
+\begin{itemize}
+    \item Cost per request $c_j$ (from token pricing)
+    \item Latency distribution $F_j(\cdot)$ estimated from online probing
+\end{itemize}
+
+The goal is to find routing probabilities $\pi = (\pi_1, \ldots, \pi_n)$ that minimize expected cost while satisfying a tail latency constraint (e.g., P99 $\leq L$).
+
+\subsection{Online Latency Profiling}
+
+Provider latencies exhibit high variance and temporal drift due to changing queue depths. We maintain per-provider latency profiles using a \textbf{mixed-window estimator}:
+\begin{equation}
+    \hat{F}_j(L) = \beta \cdot F_j^{\text{short}}(L) + (1 - \beta) \cdot F_j^{\text{long}}(L)
+\end{equation}
+where $F_j^{\text{short}}$ is the empirical CDF from a 15-minute window (responsive to drift), $F_j^{\text{long}}$ is from a 3-hour window (stable prior), and $\beta$ is an adaptive shrinkage weight. Profiles are updated via lightweight probing every 45 seconds per provider.
+
+\subsection{LP-Based Provider Mixing}
+
+Given latency profiles, we solve for the optimal routing mix via linear programming:
+\begin{align}
+\min_{\pi} \quad & \sum_{j \in \mathcal{P}} \pi_j c_j \label{eq:lp_obj} \\
+\text{s.t.} \quad & \sum_{j \in \mathcal{P}} \pi_j F_j(L) \geq 1 - \alpha \label{eq:lp_slo} \\
+& \sum_{j \in \mathcal{P}} \pi_j = 1, \quad \pi_j \geq 0 \nonumber
+\end{align}
+where $L$ is the SLO threshold and $\alpha$ is the target violation rate (e.g., $\alpha = 0.01$ for P99). Constraint~\eqref{eq:lp_slo} ensures the mixture CDF at $L$ exceeds $1 - \alpha$.
+
+\begin{proposition}[Sparsity of Optimal Mix]
+\label{prop:lp_sparsity}
+The optimal solution to the LP~\eqref{eq:lp_obj}--\eqref{eq:lp_slo} has at most 2 non-zero components.
+\end{proposition}
+
+\textbf{Proof.} See Appendix~\ref{app:lp_sparsity_proof}.
+
+This sparsity is practically valuable: routing decisions involve choosing between at most two providers, simplifying implementation and reducing variance.
+
+\subsection{Smart Hedging for Tail Guarantees}
+
+LP mixing optimizes the \textit{expected} latency distribution but cannot guarantee individual request SLOs. We augment it with a \textbf{smart hedging} mechanism that sends a backup request to a faster provider when the primary is at risk of violating the SLO.
+
+\textbf{Survival-Based Decision Rule.}
+Let $t$ be the elapsed time since a request was sent. Define the survival function $S(x) = 1 - F(x) = P(T > x)$. We trigger a hedge when the conditional probability of violating the SLO by waiting exceeds the probability of violating by hedging:
+\begin{equation}
+    \frac{S_{\text{primary}}(L)}{S_{\text{primary}}(t)} > S_{\text{backup}}(L - t - \delta)
+    \label{eq:hedge_survival}
+\end{equation}
+where $\delta$ is the dispatch overhead. This triggers hedging only when it reduces the expected violation probability.
+
+\textbf{Implementation.}
+We compute a hedge threshold $h^*$ as the smallest $t$ satisfying~\eqref{eq:hedge_survival} under the current online profiles. If the primary request has not completed by $h^*$, we dispatch a backup request and return the first response.
+
+\textbf{Cost Overhead.}
+Without cancellation, both requests may be billed, so the expected overhead scales with the hedge rate and the backup-to-primary cost ratio. Many providers support request cancellation by closing the HTTP connection, which can stop further token generation and reduce wasted cost; Appendix~\ref{app:cancel_aware} provides a cancel-aware cost model and empirical results.
+
+\subsection{Integration with Cost Routing}
+
+Latency-aware selection operates orthogonally to cost routing (Section~\ref{sec:online}). After the cost router decides to use the API provider $S_A$, the latency module selects \textit{which} API provider within $S_A$ to use:
+\begin{enumerate}
+    \item Cost router decides: $S_Q$, $S_C$, or $S_A$
+    \item If $S_A$: Latency router selects provider $j \sim \pi^*$ via LP mixing
+    \item Monitor elapsed time; hedge if survival condition~\eqref{eq:hedge_survival} triggers
+\end{enumerate}
+
+This modular design allows independent optimization of cost and latency while maintaining a simple, interpretable system.

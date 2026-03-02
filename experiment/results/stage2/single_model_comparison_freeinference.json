@@ -1,0 +1,167 @@
+{
+  "llama-4-scout": {
+    "description": "Small model (mult=1, eff_C=8)",
+    "multiplier": 1,
+    "effective_concurrency": 8,
+    "results": {
+      "ilp_optimal": {
+        "strategy": "ILP-Optimal",
+        "costs": {
+          "total": 135.8536,
+          "subscription": 135.0,
+          "api": 0.8536
+        },
+        "requests": {
+          "total": 371214,
+          "subscription": 360457,
+          "api": 10757
+        },
+        "quota_utilization": 0.0967,
+        "num_days": 90,
+        "runtime_seconds": 201.5
+      },
+      "daily_quota_only": {
+        "strategy": "Daily-Quota-Only",
+        "costs": {
+          "total": 90.7803,
+          "subscription": 60.0,
+          "api": 30.7803
+        },
+        "requests": {
+          "total": 371214,
+          "subscription": 96710,
+          "api": 274504
+        },
+        "quota_utilization": 0.3022,
+        "num_days": 90,
+        "runtime_seconds": 1.71
+      },
+      "concurrency_only": {
+        "strategy": "Concurrency-Only",
+        "costs": {
+          "total": 80.6644,
+          "subscription": 75.0,
+          "api": 5.6644
+        },
+        "requests": {
+          "total": 371214,
+          "subscription": 344288,
+          "api": 26926
+        },
+        "quota_utilization": 0.0,
+        "num_days": 90,
+        "runtime_seconds": 1.19
+      }
+    }
+  },
+  "qwen3-coder-30b": {
+    "description": "Medium model (mult=2, eff_C=4)",
+    "multiplier": 2,
+    "effective_concurrency": 4,
+    "results": {
+      "ilp_optimal": {
+        "strategy": "ILP-Optimal",
+        "costs": {
+          "total": 136.0322,
+          "subscription": 135.0,
+          "api": 1.0322
+        },
+        "requests": {
+          "total": 371214,
+          "subscription": 347296,
+          "api": 23918
+        },
+        "quota_utilization": 0.1499,
+        "num_days": 90,
+        "runtime_seconds": 187.78
+      },
+      "daily_quota_only": {
+        "strategy": "Daily-Quota-Only",
+        "costs": {
+          "total": 72.9278,
+          "subscription": 60.0,
+          "api": 12.9278
+        },
+        "requests": {
+          "total": 371214,
+          "subscription": 96710,
+          "api": 274504
+        },
+        "quota_utilization": 0.3022,
+        "num_days": 90,
+        "runtime_seconds": 2.24
+      },
+      "concurrency_only": {
+        "strategy": "Concurrency-Only",
+        "costs": {
+          "total": 82.2357,
+          "subscription": 75.0,
+          "api": 7.2357
+        },
+        "requests": {
+          "total": 371214,
+          "subscription": 307731,
+          "api": 63483
+        },
+        "quota_utilization": 0.0,
+        "num_days": 90,
+        "runtime_seconds": 1.24
+      }
+    }
+  },
+  "llama-3.3-70b-instruct": {
+    "description": "Large model (mult=4, eff_C=2)",
+    "multiplier": 4,
+    "effective_concurrency": 2,
+    "results": {
+      "ilp_optimal": {
+        "strategy": "ILP-Optimal",
+        "costs": {
+          "total": 145.9223,
+          "subscription": 135.0,
+          "api": 10.9223
+        },
+        "requests": {
+          "total": 371214,
+          "subscription": 293902,
+          "api": 77312
+        },
+        "quota_utilization": 0.1874,
+        "num_days": 90,
+        "runtime_seconds": 188.58
+      },
+      "daily_quota_only": {
+        "strategy": "Daily-Quota-Only",
+        "costs": {
+          "total": 101.1068,
+          "subscription": 60.0,
+          "api": 41.1068
+        },
+        "requests": {
+          "total": 371214,
+          "subscription": 96710,
+          "api": 274504
+        },
+        "quota_utilization": 0.3022,
+        "num_days": 90,
+        "runtime_seconds": 1.96
+      },
+      "concurrency_only": {
+        "strategy": "Concurrency-Only",
+        "costs": {
+          "total": 119.9087,
+          "subscription": 75.0,
+          "api": 44.9087
+        },
+        "requests": {
+          "total": 371214,
+          "subscription": 233354,
+          "api": 137860
+        },
+        "quota_utilization": 0.0,
+        "num_days": 90,
+        "runtime_seconds": 1.3
+      }
+    }
+  }
+}

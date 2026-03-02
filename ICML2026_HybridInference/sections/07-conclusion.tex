@@ -1,0 +1,4 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a unified framework for cost- and latency-aware LLM routing across heterogeneous providers with pay-per-token APIs and capacity-constrained subscriptions. Our offline algorithms---greedy-by-value for quota constraints and time-indexed ILP for concurrency constraints---establish theoretical lower bounds. For online routing, our Primal-Dual algorithm achieves a 1.18$\times$ competitive ratio by combining shadow pricing with adaptive value estimation. For latency optimization, LP-based provider mixing with survival-analysis-driven smart hedging reduces SLO violations by 31$\times$ and P99 latency by 5.5$\times$ compared to OpenRouter's default routing, while achieving 37\% cost savings in 24-hour production experiments.

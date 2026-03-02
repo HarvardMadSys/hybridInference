@@ -1,0 +1,14 @@
+{
+  "Groq": [0.59, 0.79],
+  "SambaNova": [0.45, 0.90],
+  "Cerebras": [0.85, 1.20],
+  "Fireworks": [0.90, 0.90],
+  "Together": [0.88, 0.88],
+  "Parasail": [0.10, 0.32],
+  "Friendli": [0.22, 0.50],
+  "Novita": [0.135, 0.40],
+  "Cloudflare": [0.29, 2.25],
+  "Nebius": [0.13, 0.40],
+  "Hyperbolic": [0.40, 0.40],
+  "Crusoe": [0.25, 0.75]
+}

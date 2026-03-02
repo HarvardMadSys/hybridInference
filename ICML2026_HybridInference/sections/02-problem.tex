@@ -1,0 +1,16 @@
+\section{Problem Formulation}
+\label{sec:problem}
+
+We consider a stream of inference requests $\mathcal{R} = \{r_1, r_2, \dots, r_T\}$ arriving over time. Each request $r_i$ is characterized by its arrival time $a_i$, input token count $n_i^{\text{in}}$, and (unknown at arrival) output token count $n_i^{\text{out}}$. Given the provider taxonomy defined in Section~\ref{sec:providers}, our goal is to route each request to minimize total cost while respecting capacity constraints.
+
+\subsection{Objective}
+
+The goal is to minimize the total API cost:
+\[
+\min \sum_{i \in \mathcal{R}} x_i^A \cdot c_i
+\]
+subject to the quota constraint $\sum_{i \in \text{window}} x_i^Q \le Q$ and concurrency constraint $\sum_i \mathbb{I}(t \in [s_i, s_i+p_i]) \le C$ for all $t$, where $x_i^A, x_i^Q, x_i^C \in \{0, 1\}$ are binary decision variables indicating where request $r_i$ is routed, and exactly one must be 1 for each request.
+
+\subsection{Key Assumptions}
+
+We make two simplifying assumptions. First, we assume \textbf{homogeneous quality}: all providers serve the same model, so routing decisions affect only cost, not output quality. This assumption holds for open-weight models (Llama, Mistral, DeepSeek) available across multiple providers. Second, the \textbf{output token count} $n_i^{\text{out}}$ is unknown at routing time. This is the key source of uncertainty that motivates our learning-augmented approach.

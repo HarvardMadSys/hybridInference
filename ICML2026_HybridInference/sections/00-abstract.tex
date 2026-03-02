@@ -1,0 +1,12 @@
+\begin{abstract}
+    % having multiple providers serving the same model allows us to use data-driven routing and hedging to minimize request latency.
+    % Interactive applications impose strict service-level objectives (SLOs), and provider performance can fluctuate due to queueing and shared infrastructure, making routing decisions inherently a latency--cost trade-off. Naive policies (e.g., always fill the subscription first) ignore both the opportunity cost of consuming scarce quota on low-value requests and the risk of missing latency deadlines.
+    The commoditization of Large Language Models (LLMs) has led to a fragmented
+    marketplace of providers in which the \emph{same} model is available under different pricing contracts---pay-per-token APIs, fixed-quota subscriptions, and reserved concurrency slots.
+    This heterogeneity creates an opportunity to minimize inference costs through intelligent routing.
+    Meanwhile, providers exhibit distinct latency profiles regardless of cost. And the latency profiles change over time based on load.
+    In this paper, we formalize this problem as a cost and latency optimization for multi-provider LLM routing. We derive offline optimal algorithms for quota- and concurrency-constrained settings, providing theoretical lower bounds on cost. Building on these insights, we propose a learning-augmented online algorithm that uses quantile regression to estimate request complexity and makes risk-aware routing decisions using a primal-dual framework.
+    Building on cost optimization, we further incorporated online provider latency modeling with smart hedging to minimize latency SLO violations.
+    Experiments on real-world traces show that our online algorithm achieves a 1.18$\times$ competitive ratio, outperforming greedy baselines (1.30$\times$) that naively fills subscriptions first. For latency optimization, our smart hedging mechanism reduces P99 latency by 5.5$\times$ and SLO violations by 31$\times$ compared to OpenRouter's default routing, while achieving 37\% cost savings.
+    % \jason{talk about latency results}
+    \end{abstract}

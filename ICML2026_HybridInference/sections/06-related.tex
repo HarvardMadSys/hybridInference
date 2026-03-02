@@ -1,0 +1,36 @@
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{LLM Routing and Cascading.}
+A growing body of work routes queries across \textit{different} LLMs to optimize quality--cost tradeoffs.
+FrugalGPT~\cite{chen2023frugalgptuselargelanguage} proposes LLM cascades that sequentially query cheaper models first and escalate only when confidence is low, matching GPT-4 quality at up to 98\% cost reduction.
+RouteLLM~\cite{ong2025routellmlearningroutellms} trains router models from human preference data to dynamically select between a stronger and weaker LLM.
+Dekoninck et al.~\cite{dekoninck2025unifiedapproachroutingcascading} unify routing and cascading into a single framework with provably optimal strategies.
+AutoMix~\cite{aggarwal2025automixautomaticallymixinglanguage} uses self-verification and a POMDP-based router for model selection.
+All of these works exploit \textit{quality heterogeneity} across models with different capabilities.
+In contrast, our work exploits \textit{pricing heterogeneity} across providers serving the \textit{identical} model---routing decisions affect cost and latency, not output quality.
+To the best of our knowledge, no prior work addresses same-model cross-provider routing under heterogeneous pricing structures.
+
+\paragraph{Multi-Cloud and Spot Instance Serving.}
+SkyPilot~\cite{DBLP:conf/nsdi/YangWLCBKZLMSS23} brokers ML workloads across clouds by optimizing instance selection for cost and availability.
+SkyServe~\cite{DBLP:conf/eurosys/MaoXWCGBYSS25} extends this to AI model serving, using a SpotHedge policy that places replicas across regions and clouds with spot instances to reduce cost by 43\% while improving tail latency.
+SpotServe~\cite{miao2023spotserveservinggenerativelarge} serves LLMs on preemptible instances with dynamic reparallelization and stateful recovery.
+These systems operate at the \textit{infrastructure level}---managing VMs, GPU instances, and model replicas.
+Our work operates at the \textit{API level}: we take provider endpoints as given and make per-request routing decisions under heterogeneous pricing contracts (pay-per-token, quota, concurrency), a complementary abstraction that does not require infrastructure control.
+
+\paragraph{LLM Serving Systems.}
+Recent systems optimize throughput and latency within individual serving instances: vLLM~\cite{vllm_pagedattention} introduces PagedAttention for efficient KV-cache management, SGLang~\cite{sglang_radixattention} uses RadixAttention for prefix caching, Orca~\cite{orca_osdi22} pioneered continuous batching, and DistServe~\cite{distserve_osdi24} disaggregates prefill and decoding for goodput optimization.
+Our work is complementary, optimizing the \textit{routing layer} across multiple provider endpoints rather than the serving engine within a single endpoint.
+
+\paragraph{Online Algorithms.}
+Our work builds on the \textit{ski-rental problem}~\cite{karlin_ski_rental_algorithmica94}---the canonical rent-vs-buy decision under uncertainty---and the \textit{online knapsack problem}~\cite{han_online_knapsack_tcs15} for packing items into limited capacity.
+The primal-dual framework~\cite{buchbinder_naor_pd_survey} provides provable competitive ratios for such online problems.
+Zhang et al.~\cite{zhang2024learningaugmentedonlinealgorithmtwolevel} extend ski-rental to a two-level setting with rental, single-purchase, and combo-purchase options under a learning-augmented framework.
+While their commitment problem (\textit{when} to buy a subscription) is structurally related, our setting differs: subscriptions are pre-committed and the challenge is online routing under capacity constraints with unknown request costs.
+Our LA-PD algorithm follows the \textit{algorithms with predictions} paradigm~\cite{mitzenmacher_vassilvitskii_cacm22}, using quantile regression~\cite{koenker_bassett_regression_quantiles} to predict output token counts for risk-aware routing.
+Unlike point predictions used in prior work on output length prediction~\cite{qiu_proxy_length_pred}, quantile estimates provide calibrated uncertainty for conservative decisions.
+
+\paragraph{Cloud Resource Management.}
+The hybrid pricing landscape we study mirrors cloud computing patterns~\cite{aws_reserved,aws_ondemand}: reserved instances (discounted, committed capacity) versus on-demand instances (elastic, premium-priced), with spot instances offering further discounts at the risk of preemption.
+Wu et al.~\cite{DBLP:conf/nsdi/WuCMYFSS24} study deadline-aware job scheduling on spot instances with on-demand fallback, achieving significant cost savings through a Uniform Progress policy.
+Our provider taxonomy maps naturally to these tiers---$S_Q$ as reserved capacity, $S_C$ as dedicated instances, and $S_A$ as on-demand overflow---but with a key difference: in LLM routing, request ``value'' (output tokens) is unknown at decision time, coupling the routing problem with output length uncertainty.

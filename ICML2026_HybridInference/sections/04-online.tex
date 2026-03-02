@@ -1,0 +1,73 @@
+\section{Online Routing Algorithms}
+\label{sec:online}
+
+In the online setting, we must make irrevocable routing decisions without knowledge of future arrivals or exact output lengths. We propose a unified framework that combines primal-dual algorithm design with learning-augmented predictions.
+
+\subsection{Primal-Dual Framework}
+
+We treat the subscription capacity as a scarce resource and assign it a dynamic \textit{shadow price}. This price represents the opportunity cost of using a subscription slot.
+
+\textbf{Quota Shadow Price ($\psi$).}
+For the daily quota constraint ($S_Q$), let $z = k/Q$ be the fraction of quota consumed. We define an exponential threshold function $\psi(z)$:
+\begin{equation}
+    \psi(z) = L \cdot \left( \frac{U}{L} \right)^z
+\end{equation}
+where $L$ and $U$ are estimated lower and upper bounds on the request value (avoided API cost). A request is routed to $S_Q$ only if its value exceeds this threshold.
+
+\begin{theorem}[Competitive Ratio]
+The primal-dual algorithm with threshold $\psi(z)$ achieves a competitive ratio of $O(\ln(U/L))$ for the online knapsack problem with known values.
+\end{theorem}
+
+\textbf{Remark.} The theorem assumes exact request values are known at arrival. In practice, we use predicted values $\hat{v}_t$, so the guarantee applies to the \emph{estimated} value sequence. Actual performance depends on prediction quality; we validate this empirically in Section~\ref{sec:experiments}.
+
+\textbf{Concurrency Shadow Price ($\lambda$).}
+For the concurrency constraint ($S_C$), we define a congestion price $\lambda_t$ based on the current utilization of the concurrency slots. When the system is saturated (queue full or utilization high), $\lambda_t$ increases, admitting only requests with high \textit{value density} (value per unit time).
+\begin{equation}
+    \lambda_t = \begin{cases}
+    0 & \text{if capacity available} \\
+    \min_{r \in \text{Queue}} \frac{v(r)}{w(r) \cdot p(r)} & \text{if saturated}
+    \end{cases}
+\end{equation}
+
+\subsection{Learning-Augmented Decision Making}
+
+A key challenge is that the ``value'' of a request (its output token count $n_i^{\text{out}}$) is unknown at arrival time. Standard estimators (e.g., historical averages) can be risky: over-estimating value leads to wasting scarce quota on cheap requests.
+
+We employ a \textbf{Learning-Augmented} approach with two components. First, we use \textbf{quantile regression} to train a lightweight model that predicts the distribution of output tokens. Specifically, we predict the 10th percentile (P10) $\hat{L}^{(10)}_t$ and the median (P50) $\hat{L}^{(50)}_t$. Second, we use \textbf{conservative value estimation} via the Lower Confidence Bound (LCB). We estimate the request value using the P10 prediction:
+\begin{equation}
+    \hat{v}_t^{\text{LCB}} = p_{\text{in}} \cdot n_t^{\text{in}} + p_{\text{out}} \cdot \hat{L}^{(10)}_t
+\end{equation}
+This conservative estimate ensures that the request is worth at least this much before spending quota on it.
+
+\textbf{Duration Estimation.}
+For concurrency-aware routing, we also need to estimate the processing time $\hat{p}_t$. We decompose this as $\hat{p}_t \approx \widehat{\text{TTFT}} + \hat{n}_t^{\text{out}} / \widehat{\text{TPS}}$, where TTFT is time-to-first-token and TPS is decode throughput. To avoid underestimating slot occupancy, we use upper confidence bounds (90th percentile for TTFT and output length, 10th percentile for TPS). Details are in Appendix~\ref{app:duration}.
+
+\subsection{Unified Risk-Aware Routing Algorithm}
+
+We combine the shadow prices and the conservative value estimate into a unified decision rule. For each incoming request $r_t$, we calculate the \textbf{net gain} of each routing option separately:
+\begin{align}
+    G_Q &= \hat{v}_t^{\text{LCB}} - \psi(z_t) \label{eq:gain_q} \\
+    G_C &= \hat{v}_t^{\text{LCB}} - \lambda_t \cdot w_t \cdot \hat{p}_t \label{eq:gain_c} \\
+    G_A &= 0 \quad \text{(baseline)} \label{eq:gain_a}
+\end{align}
+where $w_t$ is the concurrency weight (typically 1, but larger for models requiring more GPU memory). The router selects $\arg\max\{G_Q, G_C, G_A\}$, subject to capacity constraints.
+
+\begin{algorithm}[tb]
+   \caption{Unified Risk-Aware Routing (LA-PD)}
+   \label{alg:lapd}
+\begin{algorithmic}
+   \STATE {\bfseries Input:} Request $r_t$, quota usage $k_t$, concurrency state
+   \STATE {\bfseries Parameters:} Quota $Q$, concurrency $C$, value bounds $[L, U]$
+   \STATE 1. Predict $\hat{n}_t^{\text{out}} \gets \mathcal{M}(r_t)$; estimate $\hat{v}_t^{\text{LCB}}$, $\hat{p}_t$
+   \STATE 2. Compute shadow prices: $\psi(z_t) \gets L \cdot (U/L)^{k_t/Q}$, $\lambda_t$
+   \STATE 3. Compute net gains: $G_Q$, $G_C$, $G_A$ via Eq.~\eqref{eq:gain_q}--\eqref{eq:gain_a}
+   \STATE 4. Set $G_Q \gets -\infty$ if $k_t \geq Q$; $G_C \gets -\infty$ if incompatible
+   \IF{$G_Q \geq G_C$ \AND $G_Q > 0$}
+       \STATE Route to $S_Q$; update $k_{t+1} \gets k_t + 1$
+   \ELSIF{$G_C > 0$}
+       \STATE Route to $S_C$; update concurrency state
+   \ELSE
+       \STATE Route to API ($S_A$)
+   \ENDIF
+\end{algorithmic}
+\end{algorithm}

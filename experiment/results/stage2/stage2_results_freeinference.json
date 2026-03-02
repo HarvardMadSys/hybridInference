@@ -1,0 +1,50 @@
+{
+  "ilp_optimal": {
+    "strategy": "ILP-Optimal",
+    "costs": {
+      "total": 82.7827,
+      "subscription": 69.6667,
+      "api": 13.116
+    },
+    "requests": {
+      "total": 100000,
+      "subscription": 61723,
+      "api": 38277
+    },
+    "quota_utilization": 0.1789,
+    "num_days": 22,
+    "runtime_seconds": 87.49
+  },
+  "daily_quota_only": {
+    "strategy": "Daily-Quota-Only",
+    "costs": {
+      "total": 30.7103,
+      "subscription": 14.6667,
+      "api": 16.0436
+    },
+    "requests": {
+      "total": 100000,
+      "subscription": 34716,
+      "api": 65284
+    },
+    "quota_utilization": 0.3857,
+    "num_days": 22,
+    "runtime_seconds": 0.49
+  },
+  "concurrency_only": {
+    "strategy": "Concurrency-Only",
+    "costs": {
+      "total": 72.1103,
+      "subscription": 55.0,
+      "api": 17.1103
+    },
+    "requests": {
+      "total": 100000,
+      "subscription": 48898,
+      "api": 51102
+    },
+    "quota_utilization": 0.0,
+    "num_days": 22,
+    "runtime_seconds": 78.73
+  }
+}

@@ -1,0 +1,78 @@
+\section{Provider Taxonomy and Problem Formulation}
+\label{sec:providers}
+
+We model an inference marketplace as a set of services $S$ that expose the \emph{same} underlying LLMs under different pricing and capacity contracts.
+Requests arrive online as a sequence $\{r_i\}$; request $r_i$ has input length $n_i^{\text{in}}$ and an \emph{a priori unknown} output length $n_i^{\text{out}}$.
+Our routing decision chooses exactly one service for each request, trading off monetary cost against latency constraints.
+\begin{table}[t]
+\centering
+\begin{tabular}{@{}lcl@{}}
+\toprule
+\textbf{Provider Type} & \textbf{Symbol} & \textbf{Examples} \\
+\midrule
+Pay-per-token API & $S_A$ & Together \\
+Quota subscription & $S_Q$ & Chutes.ai \\
+Concurrency subscription & $S_C$ & Featherless.ai \\
+\bottomrule
+\end{tabular}
+\caption{Provider taxonomy for open-weight model inference (Llama, Mistral, DeepSeek-R1). Formal constraints are defined in Sections~\ref{sec:sa}--\ref{sec:sc}.}
+\label{tab:provider_taxonomy}
+\end{table}
+
+\subsection{Pay-per-token APIs ($S_A$)}
+\label{sec:sa}
+A pay-per-token API charges a posted price per input and output token.
+Routing request $r_i$ to $S_A$ incurs
+\[
+c_i \;=\; p_{\text{in}} \cdot n_i^{\text{in}} \;+\; p_{\text{out}} \cdot n_i^{\text{out}}.
+\]
+We use this service as the \emph{elastic overflow tier}: it is always feasible (no hard capacity constraint) but can be expensive at the margin.
+In practice, multiple providers expose open-weight models under this pricing structure with different posted rates.\cite{together_pricing,fireworks_pricing,groq_pricing,deepseek_api_pricing}
+
+\subsection{Quota subscriptions ($S_Q$)}
+\label{sec:sq}
+A quota subscription provides ``zero marginal cost'' inference up to a hard request budget within a fixed time window.
+Formally, for each window, we require
+\[
+\sum_{i \in \text{window}} x_i^{Q} \;\le\; Q,
+\]
+where $x_i^{Q}\in\{0,1\}$ indicates whether request $i$ is routed to $S_Q$.
+This model captures subscription tiers that impose request limits within fixed time windows (e.g., Chutes.ai with daily request quotas).\cite{chutes_pricing}
+The key algorithmic challenge is \emph{opportunity cost}: allocating a scarce quota slot to a short/low-value request may force a later long/high-value request to the metered API.
+
+\subsection{Concurrency subscriptions ($S_C$)}
+\label{sec:sc}
+A concurrency subscription exposes a reserved serving capacity that can process up to $C$ requests in parallel.
+If request $i$ starts at time $s_i$ and occupies the server for processing time $p_i$, then the in-flight constraint is
+\[
+\sum_i \mathbb{I}\!\left(t \in [s_i,\, s_i+p_i]\right) \;\le\; C \quad \forall t.
+\]
+This captures dedicated inference endpoints with reserved capacity (e.g., Featherless.ai, Arli AI),\cite{featherless-plans,arli-pricing}
+as well as self-hosted deployments in which the number of replicas bounds the number of concurrent requests.\cite{vllm_pagedattention}
+Compared to $S_Q$, $S_C$ introduces scheduling structure because the resource is blocked for the request duration.
+
+\subsection{Subscription amortization}
+\label{sec:amortization}
+In our experiments, we treat subscription fees as sunk costs (already paid) and optimize \emph{additional} spend on $S_A$ given fixed subscription capacities.
+This matches common operational settings in which an organization has committed to subscriptions (or provisioned a cluster) and aims to maximize utilization while minimizing overflow to token-metered APIs.
+
+\subsection{A unified abstraction beyond public APIs}
+While our motivating examples come from the API marketplace, the same resource types arise in local GPU deployments.
+\textbf{Concurrency as dedicated capacity:} $S_C$ maps directly to a GPU cluster with a fixed number of serving replicas, where $C$ is the maximum parallel requests.\cite{vllm_pagedattention}
+\textbf{Quota as gutter pool:} $S_Q$ maps to the \textit{gutter pool}---spare GPU nodes maintained for high availability.\cite{sre_introduction_goog}
+Since GPU nodes fail frequently due to hardware errors or network partitions,\cite{kokolis_reliability_2024} operators provision hot-standby capacity; routing inference to these idle nodes extracts value from sunk cost, subject to availability constraints that map to our quota model.
+This unified view connects API routing to internal GPU cluster scheduling.
+
+\subsection{Optimization objective}
+\label{sec:objective}
+Given a stream of requests $\mathcal{R} = \{r_1, \dots, r_T\}$, our goal is to minimize the total API cost:
+\[
+\min \sum_{i \in \mathcal{R}} x_i^A \cdot c_i
+\]
+subject to the quota constraint $\sum_{i \in \text{window}} x_i^Q \le Q$ and concurrency constraint $\sum_i \mathbb{I}(t \in [s_i, s_i+p_i]) \le C$ for all $t$, where $x_i^A, x_i^Q, x_i^C \in \{0, 1\}$ indicate routing decisions and exactly one must be 1 for each request.
+
+\subsection{Key assumptions}
+\label{sec:assumptions}
+We make two simplifying assumptions.
+First, \textbf{homogeneous quality}: all providers serve the same model, so routing decisions affect only cost, not output quality. This holds for open-weight models available across multiple providers.
+Second, the \textbf{output token count} $n_i^{\text{out}}$ is unknown at routing time---the key source of uncertainty that motivates our learning-augmented approach.

@@ -1,0 +1,51 @@
+\section{Optimal Offline Analysis}
+\label{sec:offline}
+
+To understand the theoretical limits of cost savings, we analyze the offline setting where the entire request sequence $\mathcal{R} = \{r_1, \dots, r_n\}$ is known in advance. We present two stages: Stage 1 considers routing between $S_Q$ and $S_A$ (quota-only), while Stage 2 incorporates the concurrency-limited subscription $S_C$, routing among all three provider types.
+
+\subsection{Stage 1: Quota-Only Routing ($S_Q + S_A$)}
+\label{sec:offline-stage1}
+
+We first consider a simplified problem with only the quota subscription $S_Q$ and the pay-per-token API $S_A$. This provides an \textit{Economic Lower Bound}, as it ignores the concurrency-limited resource.
+
+\textbf{Problem Formulation.}
+Let $x_i^Q \in \{0,1\}$ indicate whether request $i$ is routed to $S_Q$. The objective is to maximize total avoided API cost:
+\begin{equation}
+    \max \sum_{i \in \mathcal{R}} x_i^Q \cdot c_i^{\text{API}}
+\end{equation}
+subject to the quota constraint for each window $k$:
+\begin{equation}
+    \sum_{i: \operatorname{win}(a_i)=k} x_i^Q \le Q_{\text{win}}, \quad \forall k
+\end{equation}
+
+\textbf{Optimal Solution.}
+Since each request consumes exactly one unit of quota, this problem decomposes into independent selection problems (one per window) where all item weights are 1. The optimal strategy is to route the $Q_{\text{win}}$ requests with the highest API costs to $S_Q$ in each window.
+
+\begin{theorem}
+For the Quota-Only problem, the Greedy-by-Value strategy is optimal and can be computed in $\mathcal{O}(n \log n)$ time.
+\end{theorem}
+
+\subsection{Stage 2: Full Routing ($S_Q + S_C + S_A$)}
+\label{sec:offline-stage2}
+
+When we add the concurrency-limited subscription $S_C$, requests can be routed to any of the three providers. The problem becomes NP-hard, coupling quota allocation with parallel machine scheduling.
+
+\textbf{ILP Formulation.}
+We formulate this as a time-indexed Integer Linear Program (ILP). We discretize time into slots $t \in \{0, \dots, T\}$ of width $\Delta$. Let $\alpha_i$ and $\beta_i$ denote the earliest and latest feasible start slots for request $i$, and let $\hat{p}_i = \lceil p_i / \Delta \rceil$ be its processing time in slots. Define $z_{i,t} \in \{0,1\}$ to indicate if request $i$ starts on $S_C$ at slot $t$.
+
+The objective is to minimize total API cost:
+\begin{equation}
+    \min \sum_{i \in \mathcal{R}} x_i^A \cdot c_i^{\text{API}}
+\end{equation}
+
+Subject to:
+\begin{align}
+    & x_i^Q + x_i^C + x_i^A = 1, \quad \forall i \label{eq:assign} \\
+    & \sum_{i: \operatorname{win}(a_i)=k} x_i^Q \le Q_{\text{win}}, \quad \forall k \label{eq:quota} \\
+    & \sum_{t=\alpha_i}^{\beta_i} z_{i,t} = x_i^C, \quad \forall i \label{eq:consistency} \\
+    & \sum_{i \in \mathcal{R}} \sum_{\tau=\max(\alpha_i, t-\hat{p}_i+1)}^{\min(\beta_i, t)} z_{i,\tau} \le C, \quad \forall t \label{eq:concurrency}
+\end{align}
+
+Constraint~(\ref{eq:assign}) ensures each request is routed to exactly one provider. Constraint~(\ref{eq:quota}) enforces the quota limit per window. Constraint~(\ref{eq:consistency}) links routing decisions to scheduling variables. Constraint~(\ref{eq:concurrency}) enforces the instantaneous concurrency limit. Full details including deadline handling are in Appendix~\ref{app:stage2_ilp}.
+
+This ILP provides the \textit{Physical Lower Bound}. The gap between Stage 1 and Stage 2 costs quantifies the \textit{Cost of Concurrency}---efficiency lost due to physical resource contention when $S_C$ cannot absorb all high-value requests.
