@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -25,6 +26,16 @@ if TYPE_CHECKING:
     from routing.routers import FixedRouter
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class ModelRegistrationInfo:
+    """Per-model metadata returned from YAML registration."""
+
+    model_id: str
+    strategy: str | None = None
+    aliases: list[str] = field(default_factory=list)
+    route_subscription_types: list[str] = field(default_factory=list)
 
 
 def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
@@ -115,7 +126,7 @@ def register_from_models_yaml(
     router: FixedRouter,
     path: Path,
     embedding_adapters: dict[str, Any] | None = None,
-) -> int:
+) -> tuple[int, list[ModelRegistrationInfo]]:
     """Register models and routes from a YAML configuration file.
 
     Example schema::
@@ -132,6 +143,7 @@ def register_from_models_yaml(
             supports_structured_output: true
             supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
             aliases: ["llama-3.3-70b-instruct"]
+            routing_strategy: nimbus  # optional per-model override
             route:
               - kind: llama
                 weight: 1.0
@@ -143,13 +155,15 @@ def register_from_models_yaml(
         path: Path to the YAML configuration file.
 
     Returns:
-        int: Number of registered route identifiers (including aliases).
+        Tuple of (count of registered route identifiers including aliases,
+        list of ModelRegistrationInfo with per-model metadata).
     """
     if not path.exists():
-        return 0
+        return 0, []
     data = yaml.safe_load(path.read_text()) or {}
     models: list[dict[str, Any]] = data.get("models", [])
     count = 0
+    model_infos: list[ModelRegistrationInfo] = []
     for m in models:
         # Environment expansion for base_url/api_key in both top-level and route entries
         def expand_env(val: str | None) -> str | None:
@@ -222,6 +236,9 @@ def register_from_models_yaml(
             if "pricing" in r:
                 adapter_cfg["pricing"] = r["pricing"]
 
+            # RouteWise subscription type for this route entry
+            adapter_cfg["subscription_type"] = r.get("subscription_type", "api")
+
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
 
@@ -230,6 +247,9 @@ def register_from_models_yaml(
 
         model_id = str(top_cfg["id"])  # type: ignore
         aliases = (top_cfg.get("aliases") or []) or []
+
+        # Parse optional per-model routing strategy
+        routing_strategy = m.get("routing_strategy")
 
         if model_type == "embedding" and embedding_adapters is not None:
             # Embedding models use a simple adapter dict (no weighted routing)
@@ -246,4 +266,16 @@ def register_from_models_yaml(
                 router.register_route(route_id, adapters_with_weights)
             count += 1 + len(aliases)
 
-    return count
+        # Collect subscription types from all routes for this model
+        route_sub_types = [r.get("subscription_type", "api") for r in routes]
+
+        model_infos.append(
+            ModelRegistrationInfo(
+                model_id=model_id,
+                strategy=routing_strategy,
+                aliases=list(aliases),
+                route_subscription_types=route_sub_types,
+            )
+        )
+
+    return count, model_infos

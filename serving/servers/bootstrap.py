@@ -14,15 +14,17 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter, NimbusRouter
-from serving.config.settings import get_settings
+from routing.routewise import RouteWiseRouter, load_routewise_config
+from serving.config.settings import RoutingStrategy, Settings, get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
 from serving.utils.logging import get_logger, setup_logging
 
 from .deps import AppServices
 from .rate_limiter import PersistentRateLimiter, RateLimitConfig
-from .registry import register_from_models_yaml
+from .registry import ModelRegistrationInfo, register_from_models_yaml
 
 logger = get_logger(__name__)
 
@@ -125,7 +127,9 @@ def _init_db_logger() -> DatabaseLogger | None:
         return None
 
 
-async def _init_router_and_models(router: FixedRouter) -> dict:
+async def _init_router_and_models(
+    router: FixedRouter,
+) -> tuple[dict, list[ModelRegistrationInfo]]:
     """Register models on the router from YAML configuration.
 
     All models should be configured via YAML for consistency and flexibility.
@@ -133,9 +137,11 @@ async def _init_router_and_models(router: FixedRouter) -> dict:
     (e.g., local VLLM and remote API) for failover and load balancing.
 
     Returns:
-        dict: Embedding adapters keyed by model id.
+        Tuple of (embedding adapters keyed by model id,
+        list of ModelRegistrationInfo with per-model metadata).
     """
     embedding_adapters: dict = {}
+    model_infos: list[ModelRegistrationInfo] = []
 
     # Load models from YAML configuration
     try:
@@ -144,7 +150,7 @@ async def _init_router_and_models(router: FixedRouter) -> dict:
         if models_env and not models_path.exists():
             logger.warning(f"Models config not found: {models_path}")
         elif models_path.exists():
-            registered = register_from_models_yaml(
+            registered, model_infos = register_from_models_yaml(
                 router, models_path, embedding_adapters=embedding_adapters
             )
             if registered:
@@ -168,7 +174,7 @@ async def _init_router_and_models(router: FixedRouter) -> dict:
         else:
             logger.info("OFFLOAD=1 but LOCAL_BASE_URL not set; no adapters filtered")
 
-    return embedding_adapters
+    return embedding_adapters, model_infos
 
 
 def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
@@ -221,6 +227,61 @@ def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
                 )
                 limiter.configure(cfg)
             logger.info(f"Configured GLM limits: {glm_tph:,}/hour (glm-4.5, glm-4.6)")
+
+
+def _build_model_router_registry(
+    fixed_router: FixedRouter,
+    nimbus_router: NimbusRouter | None,
+    model_infos: list[ModelRegistrationInfo],
+    settings: Settings,
+    routewise_router: RouteWiseRouter | None = None,
+) -> ModelRouterRegistry:
+    """Build a per-model router registry from YAML metadata and settings.
+
+    Strategy resolution order (per model):
+    1. models.yaml explicit ``routing_strategy`` field (highest priority)
+    2. Legacy ``settings.nimbus_enabled_models`` list (backward compat)
+    3. Global ``settings.routing_strategy`` default (lowest priority)
+    """
+    registry = ModelRouterRegistry(default_router=fixed_router)
+
+    # Available routers keyed by strategy name
+    strategy_to_router: dict[str, FixedRouter | NimbusRouter | RouteWiseRouter] = {
+        RoutingStrategy.FIXED.value: fixed_router,
+    }
+    if nimbus_router is not None:
+        strategy_to_router[RoutingStrategy.NIMBUS.value] = nimbus_router
+    if routewise_router is not None:
+        strategy_to_router[RoutingStrategy.ROUTEWISE.value] = routewise_router
+
+    global_default = settings.routing_strategy  # e.g. "nimbus" or "fixed"
+
+    for info in model_infos:
+        # 1. Explicit per-model strategy from models.yaml
+        if info.strategy is not None:
+            resolved = info.strategy
+        # 2. Legacy nimbus_enabled_models list
+        elif info.model_id in settings.nimbus_enabled_models:
+            resolved = RoutingStrategy.NIMBUS.value
+        # 3. Global default
+        else:
+            resolved = global_default
+
+        if resolved not in strategy_to_router:
+            raise ValueError(
+                f"Model '{info.model_id}' requests routing_strategy='{resolved}' "
+                f"but no router is registered for it. "
+                f"Available strategies: {list(strategy_to_router.keys())}"
+            )
+
+        router_for_model = strategy_to_router[resolved]
+        if router_for_model is not fixed_router:
+            registry.register(info.model_id, router_for_model)
+            for alias in info.aliases:
+                registry.register(alias, router_for_model)
+
+    logger.info(f"ModelRouterRegistry built: {registry.registered_models()}")
+    return registry
 
 
 async def initialize() -> AppServices:
@@ -278,13 +339,40 @@ async def initialize() -> AppServices:
                     DATABASE_CONNECTED.set(0)
 
     # Models into router
-    embedding_adapters = await _init_router_and_models(router)
+    embedding_adapters, model_infos = await _init_router_and_models(router)
 
     # Nimbus Router (optional)
     nimbus_router = None
     if settings.routing_strategy == "nimbus":
         nimbus_router = NimbusRouter(fixed_router=router, settings=settings)
         logger.info(f"Nimbus routing enabled for: {list(nimbus_router.outsourcing_routers.keys())}")
+
+    # RouteWise Router (optional)
+    routewise_router = None
+    needs_routewise = settings.routing_strategy == "routewise" or any(
+        info.strategy == "routewise" for info in model_infos
+    )
+    if needs_routewise:
+        rw_config = load_routewise_config()
+        routewise_router = RouteWiseRouter(
+            fixed_router=router,
+            config=rw_config,
+            experiment_mode=settings.experiment_mode,
+        )
+        logger.info(
+            "RouteWise routing enabled (decision_rule=%s, predictor=%s)",
+            rw_config.decision_rule,
+            rw_config.predictor,
+        )
+
+    # Per-model router registry
+    model_router_registry = _build_model_router_registry(
+        fixed_router=router,
+        nimbus_router=nimbus_router,
+        model_infos=model_infos,
+        settings=settings,
+        routewise_router=routewise_router,
+    )
 
     # Rate limiter (optional)
     rate_limiter: PersistentRateLimiter | None = None
@@ -313,6 +401,7 @@ async def initialize() -> AppServices:
         rate_limiter=rate_limiter,
         db_logger=db_logger,
         nimbus_router=nimbus_router,
+        model_router_registry=model_router_registry,
         user_stats_collector=user_stats_collector,
     )
 

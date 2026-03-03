@@ -7,6 +7,7 @@ multiple model adapters with health tracking, circuit breakers, and fallback.
 from .config import RoutingConfig
 from .health import HealthMonitor
 from .routers import BaseRouter, FixedRouter, NimbusRouter, RouteConfig
+from .routewise import RouteWiseRouter
 
 __all__ = [
     "BaseRouter",
@@ -14,5 +15,6 @@ __all__ = [
     "HealthMonitor",
     "NimbusRouter",
     "RouteConfig",
+    "RouteWiseRouter",
     "RoutingConfig",
 ]

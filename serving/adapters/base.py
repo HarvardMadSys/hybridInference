@@ -80,6 +80,9 @@ class ModelConfig:
             "input_cache_writes": "0",
         }
     )
+    # RouteWise subscription classification for this route entry.
+    # Valid values: "api" (pay-per-token), "quota" (daily quota), "concurrency".
+    subscription_type: str = "api"
 
 
 class BaseAdapter(ABC):

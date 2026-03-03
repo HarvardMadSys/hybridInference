@@ -14,6 +14,7 @@ import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
 if TYPE_CHECKING:
+    from routing.model_router_registry import ModelRouterRegistry
     from routing.routers import FixedRouter, NimbusRouter
     from serving.observability.user_stats import UserStatsCollector
     from serving.storage.database import DatabaseLogger
@@ -34,6 +35,7 @@ class AppServices:
     rate_limiter: PersistentRateLimiter | None = None
     db_logger: DatabaseLogger | None = None
     nimbus_router: NimbusRouter | None = None
+    model_router_registry: ModelRouterRegistry | None = None
     user_stats_collector: UserStatsCollector | None = None
 
 
@@ -50,6 +52,13 @@ def get_router(services: AppServices = Depends(get_services)) -> FixedRouter:
 def get_nimbus_router(services: AppServices = Depends(get_services)) -> NimbusRouter | None:
     """Dependency to obtain the NimbusRouter (if enabled)."""
     return services.nimbus_router
+
+
+def get_model_router_registry(
+    services: AppServices = Depends(get_services),
+) -> ModelRouterRegistry | None:
+    """Dependency to obtain the ModelRouterRegistry (if configured)."""
+    return services.model_router_registry
 
 
 def get_embedding_adapters(

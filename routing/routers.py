@@ -230,6 +230,23 @@ def _reason_str(s: str) -> str:
 
 
 @dataclass
+class RoutingObservation:
+    """Observation from a completed request, for online learning routers.
+
+    RouteWiseRouter overrides record_observation() to update its cost model;
+    Fixed and Nimbus routers ignore observations (no-op).
+    """
+
+    model_id: str
+    endpoint_id: str
+    ttft_ms: float | None
+    total_latency_ms: float
+    token_count: int
+    success: bool
+    quota_committed: float  # V1: always 0.0 for Fixed/Nimbus
+
+
+@dataclass
 class RouteConfig:
     """Weighted adapter list for a model."""
 
@@ -273,6 +290,13 @@ class BaseRouter(ABC):
         self._lock = threading.RLock()
         # Experiment mode controls fallback behavior
         self.experiment_mode = experiment_mode
+
+    def record_observation(self, obs: RoutingObservation) -> None:  # noqa: B027
+        """Record a routing observation for online learning.
+
+        No-op for Fixed and Nimbus routers. RouteWiseRouter overrides this
+        to update its cost model.
+        """
 
     @abstractmethod
     def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:

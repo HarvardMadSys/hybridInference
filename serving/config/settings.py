@@ -15,6 +15,7 @@ class RoutingStrategy(Enum):
 
     FIXED = "fixed"
     NIMBUS = "nimbus"
+    ROUTEWISE = "routewise"
 
 
 class Settings(BaseSettings):
@@ -102,8 +103,9 @@ class Settings(BaseSettings):
     # instead of calling the remote API. Saves API quota during experiments.
     experiment_dry_run_outsource: bool = False
 
-    # Nimbus: Models to enable hybrid routing for
+    # Nimbus: Models to enable hybrid routing for (legacy; prefer models.yaml routing_strategy)
     # These models MUST have both local (SGLang) and remote (API) adapters configured
+    # NOTE: per-model routing_strategy in models.yaml takes precedence over this list.
     nimbus_enabled_models: list[str] = [
         # Example:
         "glm-4.6",
