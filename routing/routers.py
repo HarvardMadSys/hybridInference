@@ -244,6 +244,8 @@ class RoutingObservation:
     token_count: int
     success: bool
     quota_committed: float  # V1: always 0.0 for Fixed/Nimbus
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 @dataclass
@@ -407,6 +409,7 @@ class BaseRouter(ABC):
             resp["_routing"] = {
                 "provider": primary.config.provider,
                 "base_url": primary.config.base_url,
+                "endpoint_id": getattr(primary.config, "endpoint_id", None),
             }
             return resp
         except Exception as primary_error:
@@ -421,6 +424,7 @@ class BaseRouter(ABC):
                         resp["_routing"] = {
                             "provider": adapter.config.provider,
                             "base_url": adapter.config.base_url,
+                            "endpoint_id": getattr(adapter.config, "endpoint_id", None),
                             "fallback": True,
                         }
                         API_FALLBACKS.labels(

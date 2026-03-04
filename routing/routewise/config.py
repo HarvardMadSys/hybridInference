@@ -28,7 +28,7 @@ class RouteWiseConfig:
         predictor: Latency predictor type -- "ema" or "histogram".
         risk_quantile: Quantile for lower confidence bound in lapd mode.
 
-        daily_quota: Maximum tokens per day for S_Q (quota) subscriptions.
+        daily_quota: Maximum requests per day for S_Q (quota) subscriptions.
         quota_monthly_fee: Monthly cost of the quota subscription (USD).
         reset_timezone: Timezone for daily quota reset.
 

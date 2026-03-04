@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from routing.routers import BaseRouter, RoutingObservation
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     API_TOKEN_ANOMALIES,
@@ -63,6 +64,38 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
     # Fire-and-forget background task for non-blocking DB logging
     # We intentionally don't store the reference as we don't need to await it
     asyncio.create_task(log_to_db_background())  # noqa: RUF006
+
+
+def _record_routing_observation(
+    active_router: BaseRouter,
+    model_id: str,
+    endpoint_id: str,
+    ttft_ms: float | None,
+    total_latency_ms: float,
+    prompt_tokens: int,
+    completion_tokens: int,
+    success: bool,
+) -> None:
+    """Emit a RoutingObservation to the active router for online learning.
+
+    This is a best-effort operation -- exceptions are logged and swallowed
+    so they never impact the client response.
+    """
+    try:
+        obs = RoutingObservation(
+            model_id=model_id,
+            endpoint_id=endpoint_id,
+            ttft_ms=ttft_ms,
+            total_latency_ms=total_latency_ms,
+            token_count=prompt_tokens + completion_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            success=success,
+            quota_committed=0.0,
+        )
+        active_router.record_observation(obs)
+    except Exception:
+        logger.debug("Failed to record routing observation for %s", model_id, exc_info=True)
 
 
 @router.post(
@@ -548,6 +581,20 @@ async def chat_completions(
                     except Exception as e:
                         logger.error(f"Failed to upsert request {request_id}: {e}")
 
+                # Emit routing observation for online learning (best-effort).
+                if status_code == 200 and usage_data:
+                    norm_usage = normalize_usage(usage_data) or usage_data
+                    _record_routing_observation(
+                        active_router=active_router,
+                        model_id=model,
+                        endpoint_id=(routing_info or {}).get("endpoint_id", stream_provider),
+                        ttft_ms=ttft_ms,
+                        total_latency_ms=(time.time() - start_time) * 1000,
+                        prompt_tokens=int(norm_usage.get("prompt_tokens", 0) or 0),
+                        completion_tokens=int(norm_usage.get("completion_tokens", 0) or 0),
+                        success=True,
+                    )
+
         logger.debug(f"Creating StreamingResponse for model: {model}")
 
         # Record 200 for streaming response (HTTP layer success)
@@ -570,10 +617,12 @@ async def chat_completions(
         # Always sanitize internal routing metadata from response to client
         provider = "router"
         base_url = None
+        endpoint_id_for_obs: str | None = None
         if isinstance(response, dict) and "_routing" in response:
             try:
                 provider = response["_routing"].get("provider", "router")
                 base_url = response["_routing"].get("base_url")
+                endpoint_id_for_obs = response["_routing"].get("endpoint_id")
                 # Enrich metadata for analytics; safe to skip if no DB logger
                 metadata.update(response["_routing"])  # type: ignore[arg-type]
             except Exception:
@@ -690,6 +739,19 @@ async def chat_completions(
                     logger.warning(
                         f"Token estimation variance for {model}: estimated {estimated}, actual {actual_tokens}"
                     )
+
+        # Emit routing observation for online learning (best-effort).
+        if usage:
+            _record_routing_observation(
+                active_router=active_router,
+                model_id=model,
+                endpoint_id=endpoint_id_for_obs or provider,
+                ttft_ms=None,
+                total_latency_ms=(time.time() - start_time) * 1000,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                success=True,
+            )
 
         # Record 200 for non-streaming response
         API_MODEL_REQUESTS.labels(
