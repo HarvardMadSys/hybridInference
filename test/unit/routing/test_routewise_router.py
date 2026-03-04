@@ -1,7 +1,8 @@
-"""Tests for RouteWise router -- scaffold + PD / LA-PD decision logic."""
+"""Tests for RouteWise router -- scaffold + PD / LA-PD decision logic + Layer 2."""
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
@@ -590,3 +591,251 @@ class TestRouteWiseObservation:
             quota_committed=0.0,
         )
         router.record_observation(obs)  # Should not raise.
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: Latency-aware provider selection tests (PR-4)
+# ---------------------------------------------------------------------------
+
+
+def _make_router_with_two_api(
+    config: RouteWiseConfig | None = None,
+) -> tuple[RouteWiseRouter, MagicMock, MagicMock]:
+    """Build a RouteWiseRouter with two S_A adapters (no S_Q).
+
+    Returns:
+        (router, api_adapter_a, api_adapter_b)
+    """
+    if config is None:
+        config = RouteWiseConfig()
+    api_a = _make_adapter(
+        subscription_type="api",
+        prompt_price="3.0",
+        completion_price="15.0",
+        endpoint_id="test-model:api-a",
+    )
+    api_b = _make_adapter(
+        subscription_type="api",
+        prompt_price="4.0",
+        completion_price="20.0",
+        endpoint_id="test-model:api-b",
+    )
+    fr = _FakeFixedRouter()
+    fr.add("test-model", [(api_a, 0.5), (api_b, 0.5)])
+    router = RouteWiseRouter(fixed_router=fr, config=config)
+    return router, api_a, api_b
+
+
+@pytest.mark.unit
+class TestRouteWiseLayer2:
+
+    def test_layer2_uses_lp_when_warmed(self):
+        """After profile warmup, LP path is used for S_A selection."""
+        config = RouteWiseConfig(
+            latency_min_samples=5,
+            latency_lp_interval_sec=0.0,  # Always re-solve.
+            latency_slo_sec=2.0,
+        )
+        router, api_a, api_b = _make_router_with_two_api(config)
+
+        # Warm predictor.
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        # Populate latency profiles for both endpoints.
+        now = time.time()
+        for _ in range(10):
+            router._latency_profiles["test-model:api-a"].record(now, 200.0)
+            router._latency_profiles["test-model:api-b"].record(now, 300.0)
+
+        # Select adapter -- should use LP path.
+        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        assert selected is not None
+
+        # LP should have run: check that last_lp_status was updated.
+        assert router._last_lp_statuses.get("test-model") != "not_run"
+
+    def test_layer2_falls_back_to_cheapest_when_cold(self):
+        """When profiles have insufficient samples, falls back to cheapest."""
+        config = RouteWiseConfig(
+            latency_min_samples=100,  # Very high threshold.
+        )
+        router, api_a, api_b = _make_router_with_two_api(config)
+
+        # Warm predictor.
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        # No latency data -> cold start -> cheapest API.
+        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        # api_a is cheaper (3.0/15.0 vs 4.0/20.0).
+        assert selected is api_a
+
+    def test_record_observation_updates_latency_profile(self):
+        """Observation flows to the endpoint's ProviderProfile."""
+        config = RouteWiseConfig()
+        router, api_a, api_b = _make_router_with_two_api(config)
+
+        obs = RoutingObservation(
+            model_id="test-model",
+            endpoint_id="test-model:api-a",
+            ttft_ms=150.0,
+            total_latency_ms=500.0,
+            token_count=600,
+            prompt_tokens=100,
+            completion_tokens=500,
+            success=True,
+            quota_committed=0.0,
+        )
+        router.record_observation(obs)
+
+        # Profile should have 1 sample.
+        profile = router._latency_profiles["test-model:api-a"]
+        now = time.time()
+        assert profile.sample_count(now) == 1
+
+    def test_single_api_skips_lp(self):
+        """Single S_A provider bypasses Layer 2 LP."""
+        api_only = _make_adapter(
+            subscription_type="api",
+            prompt_price="3.0",
+            completion_price="15.0",
+            endpoint_id="test-model:api-only",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(api_only, 1.0)])
+
+        config = RouteWiseConfig(latency_min_samples=1)
+        router = RouteWiseRouter(fixed_router=fr, config=config)
+
+        # Warm predictor.
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        assert selected is api_only
+        # LP should not have run.
+        assert router._last_lp_statuses.get("test-model", "not_run") == "not_run"
+
+    def test_shadow_hedge_logged(self):
+        """Shadow mode produces log entries when multiple providers exist."""
+        config = RouteWiseConfig(
+            latency_min_samples=5,
+            latency_lp_interval_sec=0.0,
+            latency_slo_sec=2.0,
+            latency_hedge_mode="shadow",
+        )
+        router, api_a, api_b = _make_router_with_two_api(config)
+
+        # Warm predictor.
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        # Populate profiles.
+        now = time.time()
+        for _ in range(10):
+            router._latency_profiles["test-model:api-a"].record(now, 200.0)
+            router._latency_profiles["test-model:api-b"].record(now, 300.0)
+
+        router._select_adapter("test-model", {"prompt_tokens": 1000})
+
+        # Shadow hedge log should have at least one entry with correct model_id.
+        assert len(router._shadow_hedge_log) >= 1
+        entry = router._shadow_hedge_log[0]
+        assert entry.model_id == "test-model"
+        assert entry.reason in ("no_backup", "backup_slower", "hedge_warranted")
+
+    def test_error_observation_updates_profile(self):
+        """Failed observation records error in the profile."""
+        config = RouteWiseConfig()
+        router, api_a, api_b = _make_router_with_two_api(config)
+
+        obs = RoutingObservation(
+            model_id="test-model",
+            endpoint_id="test-model:api-a",
+            ttft_ms=None,
+            total_latency_ms=5000.0,
+            token_count=0,
+            prompt_tokens=100,
+            completion_tokens=0,
+            success=False,
+            quota_committed=0.0,
+        )
+        router.record_observation(obs)
+
+        profile = router._latency_profiles["test-model:api-a"]
+        now = time.time()
+        assert profile.error_rate(now) > 0
+
+    def test_multi_model_layer2_isolation(self):
+        """Two models sharing one RouteWiseRouter have independent LP state.
+
+        Model A's LP solve must NOT pollute model B's SWRR sampler, and
+        model B's LP interval check must be independent of model A.
+        """
+        config = RouteWiseConfig(
+            latency_min_samples=5,
+            latency_lp_interval_sec=0.0,  # Always re-solve.
+            latency_slo_sec=2.0,
+        )
+
+        # Two models, each with two S_A endpoints.
+        a1 = _make_adapter(
+            subscription_type="api", prompt_price="3.0", completion_price="15.0",
+            endpoint_id="model-a:ep1",
+        )
+        a2 = _make_adapter(
+            subscription_type="api", prompt_price="4.0", completion_price="20.0",
+            endpoint_id="model-a:ep2",
+        )
+        b1 = _make_adapter(
+            subscription_type="api", prompt_price="5.0", completion_price="10.0",
+            endpoint_id="model-b:ep1",
+        )
+        b2 = _make_adapter(
+            subscription_type="api", prompt_price="6.0", completion_price="12.0",
+            endpoint_id="model-b:ep2",
+        )
+
+        fr = _FakeFixedRouter()
+        fr.add("model-a", [(a1, 0.5), (a2, 0.5)])
+        fr.add("model-b", [(b1, 0.5), (b2, 0.5)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=config)
+
+        # Warm predictors for both models.
+        for _ in range(25):
+            router.predictor.update("model-a", 500)
+            router.predictor.update("model-b", 500)
+
+        # Populate latency profiles for all endpoints.
+        now = time.time()
+        for _ in range(10):
+            router._latency_profiles["model-a:ep1"].record(now, 200.0)
+            router._latency_profiles["model-a:ep2"].record(now, 300.0)
+            router._latency_profiles["model-b:ep1"].record(now, 400.0)
+            router._latency_profiles["model-b:ep2"].record(now, 500.0)
+
+        # Route model A.
+        sel_a = router._select_adapter("model-a", {"prompt_tokens": 1000})
+        assert sel_a is not None
+        assert sel_a in (a1, a2), "Model A must select from its own endpoints"
+
+        # Route model B.
+        sel_b = router._select_adapter("model-b", {"prompt_tokens": 1000})
+        assert sel_b is not None
+        assert sel_b in (b1, b2), "Model B must select from its own endpoints"
+
+        # LP statuses are independent per model.
+        assert router._last_lp_statuses.get("model-a") is not None
+        assert router._last_lp_statuses.get("model-b") is not None
+
+        # SWRR samplers are independent per model.
+        a_weights = router._swrr_samplers["model-a"].get_weights()
+        b_weights = router._swrr_samplers["model-b"].get_weights()
+        # A's weights must only contain A's endpoints.
+        for eid in a_weights:
+            assert eid.startswith("model-a:")
+        # B's weights must only contain B's endpoints.
+        for eid in b_weights:
+            assert eid.startswith("model-b:")

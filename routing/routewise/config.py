@@ -45,6 +45,16 @@ class RouteWiseConfig:
             shadow price estimation.
         shadow_price_min_ratio: Minimum observations required per window
             before adaptive estimation activates.
+
+        latency_slo_sec: Target SLO for latency-aware routing (seconds).
+        latency_target_cdf: Target CDF for the LP tail constraint.
+        latency_error_penalty: Kappa error penalty coefficient for LP.
+        latency_window_sec: Profile moving window duration (seconds).
+        latency_min_samples: Minimum samples before LP warmup.
+        latency_lp_interval_sec: Minimum seconds between LP re-solves.
+        latency_swrr_alpha: Smoothing factor for SWRR weight updates.
+        latency_relaxation_factors: Comma-separated SLO relaxation factors.
+        latency_hedge_mode: Hedge mode -- "shadow" or "disabled".
     """
 
     decision_rule: str = "pd"
@@ -67,6 +77,17 @@ class RouteWiseConfig:
     shadow_price_adaptive: bool = True
     shadow_price_window_hours: int = 24
     shadow_price_min_ratio: int = 10
+
+    # Layer 2: Latency-aware provider selection
+    latency_slo_sec: float = 3.0
+    latency_target_cdf: float = 0.99
+    latency_error_penalty: float = 0.0  # kappa
+    latency_window_sec: float = 900.0  # 15 min profile window
+    latency_min_samples: int = 10  # warmup threshold
+    latency_lp_interval_sec: float = 60.0  # LP re-solve interval
+    latency_swrr_alpha: float = 0.3
+    latency_relaxation_factors: str = "1.2,1.5,2.0"
+    latency_hedge_mode: str = "shadow"  # "shadow" | "disabled"
 
 
 def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
@@ -140,6 +161,17 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "adaptive": "shadow_price_adaptive",
             "window_hours": "shadow_price_window_hours",
             "min_ratio": "shadow_price_min_ratio",
+        },
+        "latency": {
+            "slo_sec": "latency_slo_sec",
+            "target_cdf": "latency_target_cdf",
+            "error_penalty": "latency_error_penalty",
+            "window_sec": "latency_window_sec",
+            "min_samples": "latency_min_samples",
+            "lp_interval_sec": "latency_lp_interval_sec",
+            "swrr_alpha": "latency_swrr_alpha",
+            "relaxation_factors": "latency_relaxation_factors",
+            "hedge_mode": "latency_hedge_mode",
         },
     }
 
