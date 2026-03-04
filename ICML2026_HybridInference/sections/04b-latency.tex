@@ -42,21 +42,29 @@ This sparsity is practically valuable: routing decisions involve choosing betwee
 
 \subsection{Smart Hedging for Tail Guarantees}
 
-LP mixing optimizes the \textit{expected} latency distribution but cannot guarantee individual request SLOs. We augment it with a \textbf{smart hedging} mechanism that sends a backup request to a faster provider when the primary is at risk of violating the SLO.
+LP mixing optimizes the \textit{expected} latency distribution but cannot guarantee individual request SLOs. We augment it with a \textbf{cost-benefit hedging} mechanism that sends a backup request to a faster provider when the expected benefit of avoiding a violation exceeds the backup cost.
 
-\textbf{Survival-Based Decision Rule.}
-Let $t$ be the elapsed time since a request was sent. Define the survival function $S(x) = 1 - F(x) = P(T > x)$. We trigger a hedge when the conditional probability of violating the SLO by waiting exceeds the probability of violating by hedging:
+\textbf{Cost-Benefit Decision Rule.}
+Let $t$ be the elapsed time since a request was sent. Define the survival function $S(x) = 1 - F(x) = P(T > x)$. We trigger a hedge when:
 \begin{equation}
-    \frac{S_{\text{primary}}(L)}{S_{\text{primary}}(t)} > S_{\text{backup}}(L - t - \delta)
-    \label{eq:hedge_survival}
+    \underbrace{\frac{S_p(L)}{S_p(t)}}_{\text{P(violation | waited } t\text{)}} \cdot \underbrace{F_b(L - t - \delta)}_{\text{P(backup succeeds)}} > \frac{C_b}{V}
+    \label{eq:hedge_economic}
 \end{equation}
-where $\delta$ is the dispatch overhead. This triggers hedging only when it reduces the expected violation probability.
+where $\delta$ is the dispatch overhead, $C_b$ is the backup request cost, and $V$ is the violation penalty. The left side is the probability that hedging actually prevents a violation: the primary must be heading toward a violation \textit{and} the backup must finish within the remaining budget. The right side $C_b / V$ is the cost-benefit threshold.
+
+\textbf{Properties.}
+The decision rule has several desirable properties:
+\begin{itemize}
+    \item \textbf{Single parameter}: The cost ratio $C_b/V$ replaces multiple thresholds, with clear economic meaning.
+    \item \textbf{Adaptive}: Cheap backups (low $C_b$) trigger hedging more aggressively than expensive ones, which is economically rational.
+    \item \textbf{Multiplicative}: Unlike an AND-gate that blocks hedging when either factor is below a fixed threshold, the product form allows tradeoff---high violation risk with moderate backup viability can still justify hedging.
+\end{itemize}
 
 \textbf{Implementation.}
-We compute a hedge threshold $h^*$ as the smallest $t$ satisfying~\eqref{eq:hedge_survival} under the current online profiles. If the primary request has not completed by $h^*$, we dispatch a backup request and return the first response.
+We compute a hedge threshold $h^*$ as the smallest $t$ satisfying~\eqref{eq:hedge_economic} under the current online profiles. If the primary request has not completed by $h^*$, we dispatch a parallel backup request and return the first response.
 
 \textbf{Cost Overhead.}
-Without cancellation, both requests may be billed, so the expected overhead scales with the hedge rate and the backup-to-primary cost ratio. Many providers support request cancellation by closing the HTTP connection, which can stop further token generation and reduce wasted cost; Appendix~\ref{app:cancel_aware} provides a cancel-aware cost model and empirical results.
+Without cancellation, both requests are billed when hedging triggers, so the expected overhead scales with the hedge rate and $C_b$. Many providers support request cancellation by closing the HTTP connection, which can stop further token generation and reduce wasted cost; Appendix~\ref{app:cancel_aware} provides a cancel-aware cost model and empirical results.
 
 \subsection{Integration with Cost Routing}
 
@@ -64,7 +72,7 @@ Latency-aware selection operates orthogonally to cost routing (Section~\ref{sec:
 \begin{enumerate}
     \item Cost router decides: $S_Q$, $S_C$, or $S_A$
     \item If $S_A$: Latency router selects provider $j \sim \pi^*$ via LP mixing
-    \item Monitor elapsed time; hedge if survival condition~\eqref{eq:hedge_survival} triggers
+    \item Monitor elapsed time; hedge if cost-benefit condition~\eqref{eq:hedge_economic} triggers
 \end{enumerate}
 
 This modular design allows independent optimization of cost and latency while maintaining a simple, interpretable system.
