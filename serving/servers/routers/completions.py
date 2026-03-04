@@ -66,6 +66,32 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
     asyncio.create_task(log_to_db_background())  # noqa: RUF006
 
 
+def _resolve_endpoint_id(
+    routing_info: dict[str, Any] | None,
+    cached_endpoint_id: str | None,
+    fallback_provider: str,
+) -> str:
+    """Resolve endpoint_id from available sources.
+
+    Resolution order:
+    1. routing_info["endpoint_id"] (from response/chunk _routing metadata)
+    2. cached_endpoint_id (captured from req_ctx while context was active)
+    3. fallback_provider (provider string as last resort)
+
+    Does NOT read req_ctx directly -- callers must cache endpoint_id while
+    the request context is still active and pass it explicitly.
+    """
+    if routing_info:
+        eid = routing_info.get("endpoint_id")
+        if eid:
+            return eid
+
+    if cached_endpoint_id:
+        return cached_endpoint_id
+
+    return fallback_provider
+
+
 def _record_routing_observation(
     active_router: BaseRouter,
     model_id: str,
@@ -323,8 +349,11 @@ async def chat_completions(
             finish_reason_for_db = "stop"
             tool_calls_map: dict[int, dict[str, Any]] = {}
             ttft_ms: int | None = None
-            # Track provider from request context (fallback when routing_info is not available)
+            # Track provider and endpoint_id from request context.
+            # Must be cached while req_ctx.push() is active (during chunk iteration);
+            # by the time finally runs, the context will have exited.
             provider_from_ctx: str | None = None
+            endpoint_id_from_ctx: str | None = None
             status_code = 200
             error_msg_for_db: str | None = None
             stream_provider = "router"
@@ -346,14 +375,23 @@ async def chat_completions(
                 async for chunk in stream_source:
                     chunk_count += 1
 
-                    # Extract provider from request context on first chunk (context is active during streaming)
+                    # Extract provider and endpoint_id from request context on first chunk.
+                    # This MUST happen while req_ctx.push() is active (during streaming);
+                    # by the time finally runs, the context will have exited.
                     if provider_from_ctx is None:
                         from serving.utils import context as req_ctx
 
                         ctx = req_ctx.get()
-                        if ctx and "provider" in ctx:
-                            provider_from_ctx = ctx["provider"]
-                            logger.debug(f"Extracted provider from context: {provider_from_ctx}")
+                        if ctx:
+                            if "provider" in ctx:
+                                provider_from_ctx = ctx["provider"]
+                            if "endpoint_id" in ctx:
+                                endpoint_id_from_ctx = ctx["endpoint_id"]
+                            logger.debug(
+                                "Cached from req_ctx: provider=%s endpoint_id=%s",
+                                provider_from_ctx,
+                                endpoint_id_from_ctx,
+                            )
 
                     # Forward adapter SSE chunks with sanitization. Adapters may emit final usage chunk.
                     if chunk_count <= 10 or chunk_count % 10 == 0:
@@ -482,8 +520,14 @@ async def chat_completions(
 
                 logger.info(f"Stream complete: total_chunks={chunk_count}")
 
-            except asyncio.CancelledError:
-                # Client disconnected or request was cancelled
+            except asyncio.CancelledError as cancel_exc:
+                # Client disconnected or request was cancelled.
+                # Extract _routing from exception if available (pre-first-chunk failure).
+                _cancel_routing = getattr(cancel_exc, "_routing", None)
+                if _cancel_routing and not endpoint_id_from_ctx:
+                    endpoint_id_from_ctx = _cancel_routing.get("endpoint_id")
+                if _cancel_routing and not provider_from_ctx:
+                    provider_from_ctx = _cancel_routing.get("provider")
                 status_code = 499  # Client Closed Request (nginx convention)
                 error_msg_for_db = "Client disconnected"
                 finish_reason_for_db = "cancelled"
@@ -498,6 +542,12 @@ async def chat_completions(
                 raise
 
             except Exception as exc:
+                # Extract _routing from exception if available (pre-first-chunk failure).
+                _exc_routing = getattr(exc, "_routing", None)
+                if _exc_routing and not endpoint_id_from_ctx:
+                    endpoint_id_from_ctx = _exc_routing.get("endpoint_id")
+                if _exc_routing and not provider_from_ctx:
+                    provider_from_ctx = _exc_routing.get("provider")
                 status_code = 500
                 error_msg_for_db = str(exc)
                 if rate_limiter:
@@ -582,17 +632,32 @@ async def chat_completions(
                         logger.error(f"Failed to upsert request {request_id}: {e}")
 
                 # Emit routing observation for online learning (best-effort).
+                total_latency_ms = (time.time() - start_time) * 1000
+                obs_endpoint_id = _resolve_endpoint_id(
+                    routing_info, endpoint_id_from_ctx, stream_provider
+                )
                 if status_code == 200 and usage_data:
                     norm_usage = normalize_usage(usage_data) or usage_data
                     _record_routing_observation(
                         active_router=active_router,
                         model_id=model,
-                        endpoint_id=(routing_info or {}).get("endpoint_id", stream_provider),
+                        endpoint_id=obs_endpoint_id,
                         ttft_ms=ttft_ms,
-                        total_latency_ms=(time.time() - start_time) * 1000,
+                        total_latency_ms=total_latency_ms,
                         prompt_tokens=int(norm_usage.get("prompt_tokens", 0) or 0),
                         completion_tokens=int(norm_usage.get("completion_tokens", 0) or 0),
                         success=True,
+                    )
+                elif status_code != 200:
+                    _record_routing_observation(
+                        active_router=active_router,
+                        model_id=model,
+                        endpoint_id=obs_endpoint_id,
+                        ttft_ms=ttft_ms,
+                        total_latency_ms=total_latency_ms,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        success=False,
                     )
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
@@ -741,13 +806,16 @@ async def chat_completions(
                     )
 
         # Emit routing observation for online learning (best-effort).
+        # Non-streaming: use total_latency_ms as conservative TTFT proxy
+        # (the entire response arrives in one round-trip).
         if usage:
+            ns_total_latency_ms = (time.time() - start_time) * 1000
             _record_routing_observation(
                 active_router=active_router,
                 model_id=model,
                 endpoint_id=endpoint_id_for_obs or provider,
-                ttft_ms=None,
-                total_latency_ms=(time.time() - start_time) * 1000,
+                ttft_ms=ns_total_latency_ms,
+                total_latency_ms=ns_total_latency_ms,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 success=True,
@@ -762,8 +830,11 @@ async def chat_completions(
 
         return response
 
-    except asyncio.CancelledError:
-        # Client disconnected or request was cancelled
+    except asyncio.CancelledError as cancel_exc:
+        # Client disconnected or request was cancelled.
+        # BaseRouter attaches _routing even for CancelledError (via BaseException handler).
+        cancel_routing: dict[str, Any] | None = getattr(cancel_exc, "_routing", None)
+        cancel_provider = (cancel_routing or {}).get("provider", provider)
         logger.warning(f"Non-streaming request cancelled: {request_id}")
         if rate_limiter:
             estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
@@ -774,7 +845,7 @@ async def chat_completions(
                     db_logger.upsert_request(
                         request_id=request_id,
                         model_id=model,
-                        provider=provider,
+                        provider=cancel_provider,
                         prompt=messages,
                         response=None,
                         usage=None,
@@ -787,6 +858,16 @@ async def chat_completions(
                 )
             except Exception as e:
                 logger.error(f"Failed to upsert cancelled request {request_id}: {e}")
+        _record_routing_observation(
+            active_router=active_router,
+            model_id=model,
+            endpoint_id=_resolve_endpoint_id(cancel_routing, None, cancel_provider),
+            ttft_ms=None,
+            total_latency_ms=(time.time() - start_time) * 1000,
+            prompt_tokens=0,
+            completion_tokens=0,
+            success=False,
+        )
         raise
 
     except Exception as exc:
@@ -806,10 +887,15 @@ async def chat_completions(
         if exc_status_code is None:
             exc_status_code = 500
 
-        from serving.utils import context as req_ctx
+        # Extract routing metadata from the exception if BaseRouter attached it.
+        exc_routing: dict[str, Any] | None = getattr(exc, "_routing", None)
+        if exc_routing:
+            provider_for_error = exc_routing.get("provider", provider)
+        else:
+            from serving.utils import context as req_ctx
 
-        ctx = req_ctx.get()
-        provider_for_error = ctx.get("provider", provider) if ctx else provider
+            ctx = req_ctx.get()
+            provider_for_error = ctx.get("provider", provider) if ctx else provider
 
         if rate_limiter:
             estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
@@ -838,5 +924,16 @@ async def chat_completions(
             provider=normalize_provider_label(provider_for_error),
             status_code=str(exc_status_code),
         ).inc()
+
+        _record_routing_observation(
+            active_router=active_router,
+            model_id=model,
+            endpoint_id=_resolve_endpoint_id(exc_routing, None, provider_for_error),
+            ttft_ms=None,
+            total_latency_ms=(time.time() - start_time) * 1000,
+            prompt_tokens=0,
+            completion_tokens=0,
+            success=False,
+        )
 
         raise HTTPException(exc_status_code, str(exc)) from exc

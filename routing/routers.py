@@ -354,7 +354,12 @@ class BaseRouter(ABC):
         Returns:
             Chat completion response
         """
-        with req_ctx.push(model=model_id, provider=adapter.config.provider):
+        endpoint_id = getattr(adapter.config, "endpoint_id", None)
+        with req_ctx.push(
+            model=model_id,
+            provider=adapter.config.provider,
+            endpoint_id=endpoint_id,
+        ):
             provider = adapter.config.provider
             self._ensure_health(provider)
             started = time.perf_counter()
@@ -404,41 +409,59 @@ class BaseRouter(ABC):
             raise ValueError(f"No route configured for model {model_id}")
 
         # 2-5. Execute with infrastructure
+        # Track the last adapter attempted so failure observations can identify the endpoint.
+        # Outer try/except BaseException ensures _routing is attached for ANY exception type
+        # (including CancelledError during primary OR fallback execution).
+        last_attempted = primary
         try:
-            resp = await self._execute_adapter(primary, model_id, messages, **params)
-            resp["_routing"] = {
-                "provider": primary.config.provider,
-                "base_url": primary.config.base_url,
-                "endpoint_id": getattr(primary.config, "endpoint_id", None),
-            }
-            return resp
-        except Exception as primary_error:
-            self._on_failure(primary.config.provider, reason=primary_error.__class__.__name__)
+            try:
+                resp = await self._execute_adapter(primary, model_id, messages, **params)
+                resp["_routing"] = {
+                    "provider": primary.config.provider,
+                    "base_url": primary.config.base_url,
+                    "endpoint_id": getattr(primary.config, "endpoint_id", None),
+                }
+                return resp
+            except Exception as primary_error:
+                self._on_failure(primary.config.provider, reason=primary_error.__class__.__name__)
 
-            # Fallback logic (only if not in experiment mode)
-            if not self.experiment_mode:
-                fallback_adapters = self._get_fallback_adapters(model_id, primary)
-                for adapter in fallback_adapters:
-                    try:
-                        resp = await self._execute_adapter(adapter, model_id, messages, **params)
-                        resp["_routing"] = {
-                            "provider": adapter.config.provider,
-                            "base_url": adapter.config.base_url,
-                            "endpoint_id": getattr(adapter.config, "endpoint_id", None),
-                            "fallback": True,
-                        }
-                        API_FALLBACKS.labels(
-                            from_provider=primary.config.provider,
-                            to_provider=adapter.config.provider,
-                            reason=primary_error.__class__.__name__,
-                        ).inc()
-                        return resp
-                    except Exception:
-                        self._on_failure(adapter.config.provider, reason="chat_exception")
-                        continue
+                # Fallback logic (only if not in experiment mode)
+                if not self.experiment_mode:
+                    fallback_adapters = self._get_fallback_adapters(model_id, primary)
+                    for adapter in fallback_adapters:
+                        last_attempted = adapter
+                        try:
+                            resp = await self._execute_adapter(
+                                adapter, model_id, messages, **params
+                            )
+                            resp["_routing"] = {
+                                "provider": adapter.config.provider,
+                                "base_url": adapter.config.base_url,
+                                "endpoint_id": getattr(adapter.config, "endpoint_id", None),
+                                "fallback": True,
+                            }
+                            API_FALLBACKS.labels(
+                                from_provider=primary.config.provider,
+                                to_provider=adapter.config.provider,
+                                reason=primary_error.__class__.__name__,
+                            ).inc()
+                            return resp
+                        except Exception:
+                            self._on_failure(adapter.config.provider, reason="chat_exception")
+                            continue
 
-            # Experiment mode or all fallbacks failed
-            raise primary_error
+                # Experiment mode or all fallbacks failed.
+                raise primary_error
+        except BaseException as e:
+            # Attach routing metadata for ANY exception (Exception, CancelledError, etc.)
+            # that escapes primary or fallback execution.
+            if not hasattr(e, "_routing"):
+                e._routing = {  # type: ignore[attr-defined]
+                    "provider": last_attempted.config.provider,
+                    "base_url": last_attempted.config.base_url,
+                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
+                }
+            raise
 
     async def _execute_stream_adapter(
         self,
@@ -461,7 +484,12 @@ class BaseRouter(ABC):
         Yields:
             SSE chunks from the adapter
         """
-        with req_ctx.push(model=model_id, provider=adapter.config.provider):
+        endpoint_id = getattr(adapter.config, "endpoint_id", None)
+        with req_ctx.push(
+            model=model_id,
+            provider=adapter.config.provider,
+            endpoint_id=endpoint_id,
+        ):
             self._ensure_health(adapter.config.provider)
             first = True
             started = time.perf_counter()
@@ -512,44 +540,60 @@ class BaseRouter(ABC):
         if not primary:
             raise ValueError(f"No route configured for model {model_id}")
 
+        # Track the last adapter attempted so failure observations can identify the endpoint.
+        # Outer try/except BaseException ensures _routing is attached for ANY exception type.
+        last_attempted = primary
         try:
-            async for chunk in self._execute_stream_adapter(primary, model_id, messages, **params):
-                yield chunk
-            return
-        except Exception as primary_error:
-            STREAMING_INTERRUPTION.labels(
-                model=model_id,
-                provider=primary.config.provider,
-                stage="adapter_stream",
-            ).inc()
-            self._on_failure(primary.config.provider, reason="stream_exception")
+            try:
+                async for chunk in self._execute_stream_adapter(
+                    primary, model_id, messages, **params
+                ):
+                    yield chunk
+                return
+            except Exception as primary_error:
+                STREAMING_INTERRUPTION.labels(
+                    model=model_id,
+                    provider=primary.config.provider,
+                    stage="adapter_stream",
+                ).inc()
+                self._on_failure(primary.config.provider, reason="stream_exception")
 
-            # Fallback (only if not in experiment mode)
-            if not self.experiment_mode:
-                fallback_adapters = self._get_fallback_adapters(model_id, primary)
-                for adapter in fallback_adapters:
-                    try:
-                        async for chunk in self._execute_stream_adapter(
-                            adapter, model_id, messages, **params
-                        ):
-                            yield chunk
-                        API_FALLBACKS.labels(
-                            from_provider=primary.config.provider,
-                            to_provider=adapter.config.provider,
-                            reason=primary_error.__class__.__name__,
-                        ).inc()
-                        return
-                    except Exception:
-                        STREAMING_INTERRUPTION.labels(
-                            model=model_id,
-                            provider=adapter.config.provider,
-                            stage="adapter_stream",
-                        ).inc()
-                        self._on_failure(adapter.config.provider, reason="stream_exception")
-                        continue
+                # Fallback (only if not in experiment mode)
+                if not self.experiment_mode:
+                    fallback_adapters = self._get_fallback_adapters(model_id, primary)
+                    for adapter in fallback_adapters:
+                        last_attempted = adapter
+                        try:
+                            async for chunk in self._execute_stream_adapter(
+                                adapter, model_id, messages, **params
+                            ):
+                                yield chunk
+                            API_FALLBACKS.labels(
+                                from_provider=primary.config.provider,
+                                to_provider=adapter.config.provider,
+                                reason=primary_error.__class__.__name__,
+                            ).inc()
+                            return
+                        except Exception:
+                            STREAMING_INTERRUPTION.labels(
+                                model=model_id,
+                                provider=adapter.config.provider,
+                                stage="adapter_stream",
+                            ).inc()
+                            self._on_failure(adapter.config.provider, reason="stream_exception")
+                            continue
 
-            # Experiment mode or all fallbacks failed
-            raise primary_error
+                # Experiment mode or all fallbacks failed.
+                raise primary_error
+        except BaseException as e:
+            # Attach routing metadata for ANY exception (Exception, CancelledError, etc.)
+            if not hasattr(e, "_routing"):
+                e._routing = {  # type: ignore[attr-defined]
+                    "provider": last_attempted.config.provider,
+                    "base_url": last_attempted.config.base_url,
+                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
+                }
+            raise
 
     def _ensure_health(self, provider: str) -> None:
         """Ensure health tracker and circuit breaker exist for provider."""
