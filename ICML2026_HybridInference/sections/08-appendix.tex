@@ -497,7 +497,7 @@ We evaluate our latency-aware routing on the OpenRouter platform, which provides
     \item \textbf{Fastest Fixed}: Always route to the fastest provider (Groq) regardless of cost.
     \item \textbf{Cheapest Fixed}: Always route to the cheapest provider (Parasail) regardless of latency.
     \item \textbf{LP-Mix}: Our LP-based provider mixing (Section~\ref{sec:latency}) that constructs a cost-latency Pareto-optimal distribution over providers.
-    \item \textbf{Smart Hedge}: LP-Mix as primary routing, with survival-analysis-based hedging (Eq.~\ref{eq:hedge_survival}) that triggers a backup request to the fastest provider when the primary exceeds its P90 latency threshold.
+    \item \textbf{Smart Hedge}: LP-Mix as primary routing, with cost-benefit hedging (Eq.~\ref{eq:hedge_economic}) that triggers a backup request to the fastest provider when the expected benefit of avoiding a violation exceeds the backup cost ($C_b/V = 0.05$).
 \end{itemize}
 
 \textbf{Fairness Protocol.} To ensure fair comparison, each trace request is sent to \emph{all} policies simultaneously. This guarantees that all policies experience identical network conditions and provider load for the same request, enabling direct comparison of routing decisions.
@@ -546,7 +546,7 @@ Smart Hedge (Ours) & 419 & 1,431 & 0.8\% & \$1.15$^\dagger$ \\
     \item Smart Hedge reduces SLO violations by 31$\times$ (0.8\% vs 23.8\%) and P99 latency by 5.5$\times$ (1.4s vs 7.8s) compared to OpenRouter Auto.
     \item With cancel-aware cost accounting, Smart Hedge saves 37\% cost (\$1.15 vs \$1.81) while dramatically improving latency.
     \item LP-Mix alone (without hedging) reduces cost to \$0.98 but has higher SLO violations (5.3\%) due to occasional provider slowdowns.
-    \item The hedge rate of 15.6\% indicates that hedging is triggered selectively, only when the primary provider shows signs of delay.
+    \item The cost-benefit rule triggers selectively on 15.6\% of requests---only when the expected benefit of avoiding a violation exceeds the backup cost.
 \end{itemize}
 
 \textbf{Implementation note.} Not all providers support mid-stream cancellation uniformly. We recommend implementing a timeout-based fallback: if cancellation fails, the backup request runs to completion but its output is discarded.
@@ -564,35 +564,42 @@ Together with $\sum_{j \in \mathcal{P}} \pi_j = 1$, the problem has two equality
 Any extreme point (basic feasible solution) therefore has at most two basic variables. If $s > 0$ (the SLO constraint is slack), then at most one $\pi_j$ can be positive, yielding a single-provider solution. Otherwise $s = 0$ and at most two $\pi_j$ can be positive. In all cases, the optimal solution can be chosen to have at most two non-zero components.
 \end{proof}
 
-\paragraph{Alternative: Residual Life Decision Rule.}
-An alternative to the survival-based hedging rule~\eqref{eq:hedge_survival} is based on expected residual life. Given elapsed time $t$, we compute:
+\paragraph{Alternative: Survival Comparison Rule.}
+A simpler alternative compares the primary's conditional violation probability against the backup's:
 \[
-\mathbb{E}[\text{Remaining} \mid T > t] = \frac{\int_t^\infty (s - t) f(s) ds}{1 - F(t)}
+\frac{S_p(L)}{S_p(t)} > S_b(L - t - \delta)
 \]
-and hedge when:
+This triggers hedging when waiting is riskier than hedging. However, when the backup is very fast (e.g., Groq), the right side approaches 0, making the condition nearly always true---leading to hedge rates of 28--87\% depending on backup provider. The cost-benefit rule~\eqref{eq:hedge_economic} avoids this by incorporating backup cost, which naturally penalizes over-hedging.
+
+\paragraph{Alternative: Residual Life Decision Rule.}
+Another alternative uses expected residual life. Given elapsed time $t$, hedge when:
 \[
 t + \mathbb{E}[\text{Remaining} \mid T > t] + \delta + \mathbb{E}[T_{\text{backup}}] > L_{\text{SLO}}
 \]
-This rule hedges when the expected completion time exceeds the SLO. In practice, the survival-based rule~\eqref{eq:hedge_survival} performs slightly better as it directly optimizes violation probability rather than expected latency.
+This was originally designed for cancel-and-resend (serial) execution, where the backup runs \textit{after} the primary is cancelled. Our system uses parallel hedging (both run concurrently), making the serial formula overly conservative---it double-counts time by including $\mathbb{E}[T_{\text{backup}}]$ as an additive term rather than modeling the min of two concurrent processes.
 
 \paragraph{Hedging Strategy Comparison.}
-Table~\ref{tab:hedging_strategies} compares different hedging strategies:
+Table~\ref{tab:hedging_strategies} compares hedging strategies in simulation (SLO = 2s, 500 evaluation points, backup = fastest):
 \begin{table}[h]
 \caption{Hedging Strategy Comparison}
 \label{tab:hedging_strategies}
 \begin{center}
-\begin{tabular}{lccc}
+\begin{tabular}{lcccc}
 \toprule
-Strategy & Cost Overhead & P99 Reduction & Description \\
+Strategy & Hedge Rate & Viol. Rate & P99 (ms) & Description \\
 \midrule
-Never & 1.0$\times$ & 0\% & LP-mix only \\
-Always & 2.0$\times$ & Optimal & Send two requests always \\
-Fixed-$\alpha$ & 1.2--1.5$\times$ & Good & Hedge at $t = \alpha \cdot L_{\text{SLO}}$ \\
-Smart (Ours) & 1.1--1.3$\times$ & Near-optimal & Hedge via~\eqref{eq:hedge_survival} \\
+Never & 0\% & 1.4\% & 2314 & LP-mix only \\
+Always & 100\% & 0\% & 547 & Send two requests always \\
+Fixed-0.5 & 5.2\% & 0\% & 1425 & Hedge at $0.5 \cdot L$ \\
+Survival & 15.2\% & 0\% & 1328 & $S_p(L)/S_p(t) > S_b$ \\
+Residual & 3.6\% & 0.6\% & 1495 & Serial formula \\
+\textbf{Economic} & \textbf{8.6\%} & \textbf{0\%} & \textbf{1328} & $P_\text{viol} \cdot F_b > C_b/V$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 \end{table}
+
+The economic rule achieves zero violations at a moderate hedge rate (8.6\%), with the cost ratio $C_b/V$ providing a single, economically interpretable knob for controlling the cost-violation tradeoff.
 
 \paragraph{Pre-filtering for Robustness.}
 Before solving the LP, we filter out clearly unusable providers:

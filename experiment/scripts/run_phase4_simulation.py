@@ -61,7 +61,6 @@ class SimulationConfig:
     """Configuration for a single simulation run."""
 
     slo_sec: float = 3.0
-    prior_strength: float = 10.0
     failure_mode: FailureMode = FailureMode.INFINITY
     kappa: float = 0.0
     weight_smoothing: float = 0.3
@@ -118,6 +117,7 @@ class HedgingSimulationResult:
             "backup_method": self.backup_method,
             "slo_sec": self.config.slo_sec,
             "alpha": self.hedging_params.alpha,
+            "cost_ratio": self.hedging_params.cost_ratio,
             "dispatch_overhead_sec": self.hedging_params.dispatch_overhead_sec,
             "total_requests": self.total_requests,
             "successful_requests": self.successful_requests,
@@ -217,7 +217,6 @@ class HedgingSimulator:
         for provider in self.providers:
             profile = ProviderProfile(
                 provider=provider,
-                prior_strength=self.config.prior_strength,
                 failure_mode=self.config.failure_mode,
             )
 
@@ -291,7 +290,6 @@ def run_hedging_simulation(
     router = OnlineLatencyRouter(
         costs=simulator.pricing,
         slo_sec=config.slo_sec,
-        prior_strength=config.prior_strength,
         failure_mode=config.failure_mode,
         kappa=config.kappa,
         weight_smoothing=config.weight_smoothing,
@@ -447,15 +445,21 @@ def run_ablation_study(
     """
     results = []
 
-    # Strategy configurations: (strategy, alpha, label_suffix)
+    # Strategy configurations: (strategy, alpha, cost_ratio, label_suffix)
     strategies = [
-        (HedgingStrategy.NEVER, None, ""),
-        (HedgingStrategy.ALWAYS, None, ""),
-        (HedgingStrategy.FIXED_TIMEOUT, 0.5, "_0.5"),
-        (HedgingStrategy.FIXED_TIMEOUT, 0.7, "_0.7"),
-        (HedgingStrategy.FIXED_TIMEOUT, 0.9, "_0.9"),
-        (HedgingStrategy.SMART_SURVIVAL, None, ""),
-        (HedgingStrategy.SMART_RESIDUAL, None, ""),
+        (HedgingStrategy.NEVER, None, None, ""),
+        (HedgingStrategy.ALWAYS, None, None, ""),
+        (HedgingStrategy.FIXED_TIMEOUT, 0.5, None, "_0.5"),
+        (HedgingStrategy.FIXED_TIMEOUT, 0.7, None, "_0.7"),
+        (HedgingStrategy.FIXED_TIMEOUT, 0.9, None, "_0.9"),
+        (HedgingStrategy.SMART_SURVIVAL, None, None, ""),
+        (HedgingStrategy.SMART_RESIDUAL, None, None, ""),
+        (HedgingStrategy.PERCENTILE_BASED, None, None, ""),
+        (HedgingStrategy.SMART_ECONOMIC, None, 0.01, "_cr0.01"),
+        (HedgingStrategy.SMART_ECONOMIC, None, 0.05, "_cr0.05"),
+        (HedgingStrategy.SMART_ECONOMIC, None, 0.1, "_cr0.1"),
+        (HedgingStrategy.SMART_ECONOMIC, None, 0.2, "_cr0.2"),
+        (HedgingStrategy.SMART_ECONOMIC, None, 0.5, "_cr0.5"),
     ]
 
     backup_methods = [
@@ -467,10 +471,11 @@ def run_ablation_study(
     total_runs = len(strategies) * len(backup_methods)
     current_run = 0
 
-    for strategy, alpha, label_suffix in strategies:
+    for strategy, alpha, cost_ratio, label_suffix in strategies:
         for backup_method in backup_methods:
             current_run += 1
             alpha_val = alpha if alpha else 0.7
+            cost_ratio_val = cost_ratio if cost_ratio else 0.1
             strategy_label = strategy.value + label_suffix
 
             print(
@@ -481,6 +486,7 @@ def run_ablation_study(
                 strategy=strategy,
                 slo_sec=config.slo_sec,
                 alpha=alpha_val,
+                cost_ratio=cost_ratio_val,
                 dispatch_overhead_sec=0.05,
                 backup_method=backup_method,
             )
@@ -574,7 +580,7 @@ def main():
     parser.add_argument(
         "--data",
         type=str,
-        default="ICML2026_HybridInference/data/latency_llama70b_24h.csv",
+        default="experiment/data/data/latency_llama70b_24h.csv",
         help="Path to Phase 1 latency data CSV",
     )
     parser.add_argument(
@@ -604,7 +610,14 @@ def main():
         "--strategy",
         type=str,
         default="smart_survival",
-        choices=["never", "always", "fixed_timeout", "smart_survival", "smart_residual"],
+        choices=[
+            "never",
+            "always",
+            "fixed_timeout",
+            "smart_survival",
+            "smart_residual",
+            "smart_economic",
+        ],
         help="Hedging strategy (default: smart_survival)",
     )
     parser.add_argument(
@@ -651,7 +664,7 @@ def main():
     print(f"Loading latency data from {args.data}...")
     data_path = args.data
     if not os.path.exists(data_path):
-        alt_path = os.path.join("ICML2026_HybridInference", "data", "latency_llama70b_24h.csv")
+        alt_path = os.path.join("experiment", "data", "data", "latency_llama70b_24h.csv")
         if os.path.exists(alt_path):
             data_path = alt_path
         else:

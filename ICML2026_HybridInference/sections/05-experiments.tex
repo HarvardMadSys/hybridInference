@@ -46,20 +46,20 @@ With quota constraints alone, Greedy routing saves 17--81\% across datasets, whi
 \end{figure*}
 
 \paragraph{Concurrency Constraints (Stage 2).}
-For small models (e.g., Llama-3-8B), concurrency limits rarely bind before quota exhaustion. However, for larger models (70B+) with low effective concurrency ($C_{\text{eff}}=2$), physical constraints become binding (Figure~\ref{fig:concurrency_impact}). The ILP-based Stage 2 routing becomes essential.
+Adding a concurrency-limited subscription ($S_C$: \$75/mo, $C=8$) creates a three-tier routing problem. We evaluate on FreeInference (371K requests, single-model deepseek-r1) with varying multipliers that control effective concurrency. Without quota ($Q=0$), $S_C$ saves 9--34\% vs API-only, with larger models (higher multiplier) reducing the savings (Figure~\ref{fig:concurrency_impact}). However, when $S_Q$ is available ($Q=5000$/day), it covers 83\% of requests, leaving insufficient overflow for $S_C$ to justify its subscription cost.
 
 \begin{figure}[ht]
 \vskip 0.1in
 \begin{center}
-\centerline{\includegraphics[width=\columnwidth]{images/single_model_comparison_rednote.png}}
-\caption{Impact of model size on cost. As effective concurrency decreases, the gap between Quota-Only and ILP-Optimal widens.}
+\centerline{\includegraphics[width=\columnwidth]{images/single_model_comparison.png}}
+\caption{Impact of model size on $S_C$ value. Left: Without quota, $S_C$ saves 9--34\% depending on effective concurrency. Right: With generous quota ($Q=5000$/day), $S_Q$ dominates and $S_C$ adds little marginal value.}
 \label{fig:concurrency_impact}
 \end{center}
 \vskip -0.2in
 \end{figure}
 
 \paragraph{Online Joint Optimization.}
-On Enterprise (54K requests, $C=8$), our PrimalDual algorithm achieves 99\% savings with CR 0.57$\times$---\textit{surpassing} the ILP-Optimal (1.0$\times$). This counterintuitive result arises because ILP discretizes time into 1-second slots, causing capacity fragmentation. PrimalDual's continuous-time event-driven admission captures opportunities that batch optimization misses. For comparison, $S_Q$-Only saves only 2\% (quota insufficient when costs vary), $S_C$-Only saves 68\% (powerful but scheduling-limited), and Greedy achieves 98\%.
+On FreeInference (371K requests, $C=8$, multiplier$=2$), our online algorithms achieve correct ordering: ILP-Optimal (\$294, CR 1.00$\times$) $>$ LA-PD (\$320, CR 1.09$\times$) $>$ PrimalDual (\$332, CR 1.13$\times$) $>$ Greedy (\$345, CR 1.17$\times$). LA-PD captures 65\% of optimal savings, while PrimalDual captures 49\% and Greedy only 31\%. Notably, $S_C$-Only (\$461) \textit{loses money} compared to All-API (\$368), demonstrating that joint optimization with $S_Q$ is essential---$S_C$ is only effective when combined with quota-based routing.
 
 \subsection{Robustness Under Uncertainty}
 
@@ -90,7 +90,7 @@ Probing 12 providers over 24 hours ($n \approx 11$K samples each) reveals P99 la
 We solve for routing fractions $\pi_j$ minimizing cost subject to $\sum_j \pi_j F_j(L) \geq 0.99$ (P99 SLO at threshold $L$). At tight SLOs (2s), optimal mix favors Groq (fast, expensive); as SLO relaxes to 5s, traffic shifts to cheaper providers, reducing cost by 3$\times$ (see Figure~\ref{fig:latency_pareto} in Appendix).
 
 \paragraph{Smart Hedging.}
-To guarantee tail latency without over-provisioning, we trigger backup requests when elapsed time exceeds the primary provider's P90 threshold. Simulation shows residual-based hedging eliminates SLO violations with only 3\% cost overhead, while always-hedging costs 3.3$\times$ more.
+To guarantee tail latency without over-provisioning, we trigger backup requests using the cost-benefit rule~\eqref{eq:hedge_economic} with $C_b/V = 0.05$. Simulation shows this eliminates SLO violations with only 8.6\% hedge rate and minimal cost overhead, while always-hedging costs 3.3$\times$ more. The cost ratio monotonically controls hedge rate: higher values produce fewer hedges at the expense of more violations.
 
 \paragraph{Production Evaluation.}
 We replay a 24-hour trace (BurstGPT timestamps + ShareGPT prompts) against the live OpenRouter API, sending each request to all policies simultaneously for fair comparison. Table~\ref{tab:openrouter_comparison} shows results.
@@ -115,4 +115,4 @@ Smart Hedge & 419ms & 1431ms & 0.8\% & \$1.15 \\
 \vskip -0.1in
 \end{table}
 
-Smart Hedge reduces SLO violations by \textbf{31$\times$} (0.8\% vs 23.8\%) and P99 latency by \textbf{5.5$\times$} (1.4s vs 7.8s) compared to OpenRouter's default routing, while saving \textbf{37\%} cost (\$1.15 vs \$1.81). Hedging triggered on 15.6\% of requests, demonstrating selective activation. LP-Mix alone achieves 46\% cost savings but higher tail latency; smart hedging trades modest cost for dramatically better latency guarantees.
+Smart Hedge reduces SLO violations by \textbf{31$\times$} (0.8\% vs 23.8\%) and P99 latency by \textbf{5.5$\times$} (1.4s vs 7.8s) compared to OpenRouter's default routing, while saving \textbf{37\%} cost (\$1.15 vs \$1.81). The cost-benefit rule~\eqref{eq:hedge_economic} triggers selectively on 15.6\% of requests---only when the expected benefit of avoiding a violation exceeds the backup cost. LP-Mix alone achieves 46\% cost savings but higher tail latency; smart hedging trades modest cost for dramatically better latency guarantees.

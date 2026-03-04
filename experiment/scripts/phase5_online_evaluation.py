@@ -121,6 +121,7 @@ class BudgetConfig:
         "cheapest_fixed",  # Always cheapest provider (cost baseline)
         "fastest_fixed",  # Always fastest provider (latency baseline)
     )
+    extra_fixed_providers: tuple[str, ...] = ()  # Additional single-provider baselines
 
 
 @dataclass
@@ -393,6 +394,7 @@ class EvaluationConfig:
     dispatch_overhead_sec: float = 0.05
     policy_backoff_sec: float = 60.0  # Backoff when error rate is high.
     probing_interval_sec: float = 300.0  # 5 minutes - periodic probing of all providers
+    extra_fixed_providers: tuple[str, ...] = ()  # Additional single-provider baselines
 
 
 @dataclass
@@ -470,12 +472,13 @@ class Phase5OnlineEvaluator:
         )
 
         # Initialize hedger for smart_hedge policy
-        # Use PERCENTILE_BASED strategy: hedge at P90 of primary's latency
-        # This reduces P99 by sending backup when primary is in the tail
+        # Use SMART_ECONOMIC strategy: cost-benefit model
+        # Hedge when P(violation|waited t) * P(backup succeeds) > C_b/V
+        # cost_ratio=0.05 chosen from Phase 4 ablation (best Pareto point)
         hedging_params = HedgingParams(
-            strategy=HedgingStrategy.PERCENTILE_BASED,
+            strategy=HedgingStrategy.SMART_ECONOMIC,
             slo_sec=config.slo_sec,
-            alpha_percentile=90.0,  # Hedge at P90 of primary
+            cost_ratio=0.05,
             dispatch_overhead_sec=config.dispatch_overhead_sec,
             backup_method=BackupSelectionMethod.FASTEST,
         )
@@ -490,6 +493,13 @@ class Phase5OnlineEvaluator:
             "fastest_fixed": PolicyState(name="fastest_fixed"),
         }
 
+        # Add extra fixed-provider baselines
+        self.extra_fixed_providers: dict[str, str] = {}  # policy_name -> provider_name
+        for provider_name in config.extra_fixed_providers:
+            policy_name = f"{provider_name.lower()}_fixed"
+            self.policies[policy_name] = PolicyState(name=policy_name)
+            self.extra_fixed_providers[policy_name] = provider_name
+
         # Determine fixed providers
         self.eval_providers = sorted(pricing.keys())
         self.cheapest_provider = min(pricing, key=lambda p: pricing[p])
@@ -499,6 +509,13 @@ class Phase5OnlineEvaluator:
                 "Warning: 'Groq' not found in pricing file. "
                 f"Using '{self.fastest_provider}' as fastest_fixed baseline."
             )
+        # Validate extra fixed providers exist in pricing
+        for provider_name in config.extra_fixed_providers:
+            if provider_name not in pricing:
+                print(
+                    f"Warning: '{provider_name}' not found in pricing. "
+                    f"{provider_name.lower()}_fixed will be disabled."
+                )
 
         self.avg_cost_estimate = float(np.mean(list(pricing.values()))) if pricing else 0.0
         self.policy_disabled_until: dict[str, float] = {}
@@ -961,6 +978,8 @@ class Phase5OnlineEvaluator:
             return self.cheapest_provider
         elif policy == "fastest_fixed":
             return self.fastest_provider
+        elif policy in self.extra_fixed_providers:
+            return self.extra_fixed_providers[policy]
         else:
             raise ValueError(f"Unknown policy: {policy}")
 
@@ -1028,10 +1047,10 @@ class Phase5OnlineEvaluator:
                 # Determine final result based on winner
                 if winner == "primary" or backup_result is None:
                     result = primary_result
-                    actual_provider = result.actual_provider
+                    actual_provider = result.actual_provider if result else "unknown"
                 else:
                     result = backup_result
-                    actual_provider = result.actual_provider
+                    actual_provider = result.actual_provider if result else "unknown"
 
                 overall_start = primary_result.start_ts if primary_result else now
                 if result and result.first_token_ts is not None and result.status == "success":
@@ -1183,10 +1202,10 @@ class Phase5OnlineEvaluator:
                 # Determine final result based on winner
                 if winner == "primary" or backup_result is None:
                     result = primary_result
-                    actual_provider = result.actual_provider
+                    actual_provider = result.actual_provider if result else "unknown"
                 else:
                     result = backup_result
-                    actual_provider = result.actual_provider
+                    actual_provider = result.actual_provider if result else "unknown"
 
                 overall_start = primary_result.start_ts if primary_result else now
                 if result and result.first_token_ts is not None and result.status == "success":
@@ -2186,6 +2205,13 @@ def main():
         help="Policies to evaluate (default: openrouter_auto, lp_mix, smart_hedge, cheapest_fixed, fastest_fixed)",
     )
     parser.add_argument(
+        "--extra-fixed",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Additional single-provider baselines (e.g., --extra-fixed Nebius Inceptron)",
+    )
+    parser.add_argument(
         "--skip-warmup",
         action="store_true",
         help="Skip warmup phase",
@@ -2278,6 +2304,13 @@ def main():
             "fastest_fixed",  # Always fastest provider (latency baseline)
         )
 
+    # Add extra fixed-provider baselines
+    extra_fixed_providers: tuple[str, ...] = ()
+    if args.extra_fixed:
+        extra_fixed_providers = tuple(args.extra_fixed)
+        extra_policies = tuple(f"{p.lower()}_fixed" for p in args.extra_fixed)
+        policies = policies + extra_policies
+
     # Create config
     config = EvaluationConfig(
         model=args.model,
@@ -2286,6 +2319,7 @@ def main():
         duration_sec=args.duration,
         cost_cap_usd=args.cost_cap,
         probing_interval_sec=args.probing_interval,
+        extra_fixed_providers=extra_fixed_providers,
     )
 
     # Create output directory with timestamp (or use resume-dir)

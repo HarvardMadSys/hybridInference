@@ -29,6 +29,7 @@ class HedgingStrategy(Enum):
     SMART_SURVIVAL = "smart_survival"
     SMART_RESIDUAL = "smart_residual"
     PERCENTILE_BASED = "percentile_based"  # Hedge at primary's P-alpha percentile
+    SMART_ECONOMIC = "smart_economic"  # Cost-benefit model: P_viol * F_backup > C_b/V
 
 
 class BackupSelectionMethod(Enum):
@@ -47,6 +48,7 @@ class HedgingParams:
     slo_sec: float
     alpha: float = 0.7  # For fixed-timeout: hedge at alpha * slo_sec
     alpha_percentile: float = 90.0  # For percentile-based: hedge at P-alpha of primary
+    cost_ratio: float = 0.1  # For smart_economic: C_b / V (backup cost / violation penalty)
     dispatch_overhead_sec: float = 0.05  # Backup launch overhead
     backup_method: BackupSelectionMethod = BackupSelectionMethod.FASTEST
     min_viable_cdf: float = 0.90  # For cheapest_viable selection
@@ -274,6 +276,53 @@ def smart_hedge_residual(
     return elapsed_sec + E_remaining + dispatch_overhead_sec + E_backup > slo_sec
 
 
+def smart_hedge_economic(
+    primary: str,
+    backup: str,
+    elapsed_sec: float,
+    slo_sec: float,
+    profiles: dict[str, ProviderProfile],
+    now: float,
+    cost_ratio: float = 0.1,
+    dispatch_overhead_sec: float = 0.05,
+) -> bool:
+    """Hedge when expected benefit of avoiding violation exceeds backup cost.
+
+    Decision rule:
+        P_viol(t) * F_b(remaining) > C_b / V
+
+    Left side: probability that hedging actually prevents a violation.
+      - P_viol(t) = S_p(L)/S_p(t) = P(primary violates | survived to t)
+      - F_b(remaining) = P(backup finishes within remaining budget)
+    Right side: cost ratio (backup cost / violation penalty).
+
+    Args:
+        primary: Primary provider name.
+        backup: Backup provider name.
+        elapsed_sec: Time already elapsed in seconds.
+        slo_sec: SLO deadline in seconds.
+        profiles: Provider profiles.
+        now: Decision timestamp.
+        cost_ratio: C_b / V, backup cost relative to violation penalty.
+        dispatch_overhead_sec: Backup launch overhead.
+
+    Returns:
+        True if hedging is recommended.
+    """
+    remaining = slo_sec - elapsed_sec - dispatch_overhead_sec
+    if remaining <= 0:
+        return False  # No time for backup, hedge is pointless
+
+    S_L = get_survival_for_hedging(profiles[primary], slo_sec, now)
+    S_t = get_survival_for_hedging(profiles[primary], elapsed_sec, now)
+
+    P_viol = 1.0 if S_t < 1e-6 else S_L / S_t
+
+    F_backup = get_cdf_for_hedging(profiles[backup], remaining, now)
+
+    return P_viol * F_backup > cost_ratio
+
+
 # -----------------------------------------------------------------------------
 # Find Optimal Hedge Time
 # -----------------------------------------------------------------------------
@@ -316,7 +365,7 @@ def find_optimal_hedge_time_survival(
             dispatch_overhead_sec=dispatch_overhead_sec,
         ):
             return float(h)
-    return slo_sec  # Never hedge if condition never met
+    return float("inf")  # Never hedge if condition never met
 
 
 def find_optimal_hedge_time_residual(
@@ -356,7 +405,50 @@ def find_optimal_hedge_time_residual(
             dispatch_overhead_sec=dispatch_overhead_sec,
         ):
             return float(h)
-    return slo_sec  # Never hedge if condition never met
+    return float("inf")  # Never hedge if condition never met
+
+
+def find_optimal_hedge_time_economic(
+    primary: str,
+    backup: str,
+    profiles: dict[str, ProviderProfile],
+    now: float,
+    slo_sec: float,
+    cost_ratio: float = 0.1,
+    dispatch_overhead_sec: float = 0.05,
+    resolution_sec: float = 0.1,
+) -> float:
+    """Find minimum h where cost-benefit condition triggers hedge.
+
+    Grid search with resolution steps.
+
+    Args:
+        primary: Primary provider name.
+        backup: Backup provider name.
+        profiles: Provider profiles.
+        now: Decision timestamp.
+        slo_sec: SLO deadline in seconds.
+        cost_ratio: C_b / V threshold.
+        dispatch_overhead_sec: Backup launch overhead.
+        resolution_sec: Grid search step size.
+
+    Returns:
+        Optimal hedge time in seconds. Returns inf if condition never met.
+    """
+    h_values = np.arange(0, slo_sec, resolution_sec)
+    for h in h_values:
+        if smart_hedge_economic(
+            primary,
+            backup,
+            elapsed_sec=h,
+            slo_sec=slo_sec,
+            profiles=profiles,
+            now=now,
+            cost_ratio=cost_ratio,
+            dispatch_overhead_sec=dispatch_overhead_sec,
+        ):
+            return float(h)
+    return float("inf")  # Never hedge if condition never met
 
 
 def find_percentile_hedge_time(
@@ -610,6 +702,17 @@ class SmartHedger:
                 profiles,
                 now=now,
                 percentile=self.params.alpha_percentile,
+            )
+
+        elif strategy == HedgingStrategy.SMART_ECONOMIC:
+            return find_optimal_hedge_time_economic(
+                primary,
+                backup,
+                profiles,
+                now=now,
+                slo_sec=self.params.slo_sec,
+                cost_ratio=self.params.cost_ratio,
+                dispatch_overhead_sec=self.params.dispatch_overhead_sec,
             )
 
         else:
