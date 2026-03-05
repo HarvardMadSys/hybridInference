@@ -743,7 +743,10 @@ class TestRouteWiseLayer2:
         assert len(router._shadow_hedge_log) >= 1
         entry = router._shadow_hedge_log[0]
         assert entry.model_id == "test-model"
-        assert entry.reason in ("no_backup", "backup_slower", "hedge_warranted")
+        assert entry.reason in (
+            "no_backup", "hedge_not_justified", "hedge_warranted",
+            "insufficient_samples",
+        )
 
     def test_error_observation_updates_profile(self):
         """Failed observation records error in the profile."""

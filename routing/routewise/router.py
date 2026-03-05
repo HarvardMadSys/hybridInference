@@ -27,6 +27,7 @@ from routing.routers import BaseRouter, RoutingObservation
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
 
+from .hedging import HedgedAdapter, compute_hedge_threshold
 from .latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
 from .lp_solver import pre_filter_providers, solve_provider_lp_with_relaxation
 from .predictor import EMAOutputPredictor
@@ -118,6 +119,18 @@ class RouteWiseRouter(BaseRouter):
         # Maps endpoint_id -> (adapter, p_in_per_token, p_out_per_token).
         self._api_endpoint_map: dict[str, tuple[Any, float, float]] = {}
         self._init_latency_profiles()
+
+    # ------------------------------------------------------------------
+    # ProviderEventSink conformance
+    # ------------------------------------------------------------------
+
+    def on_provider_success(self, provider: str) -> None:
+        """Record a successful request for *provider* (ProviderEventSink)."""
+        self._on_success(provider)
+
+    def on_provider_failure(self, provider: str, reason: str) -> None:
+        """Record a failed request for *provider* (ProviderEventSink)."""
+        self._on_failure(provider, reason=reason)
 
     # ------------------------------------------------------------------
     # Classification
@@ -252,9 +265,18 @@ class RouteWiseRouter(BaseRouter):
         adapter, p_in, p_out = self._api_endpoint_map[selected_eid]
         cost = p_in * prompt_tokens + p_out * predicted_output
 
-        # Shadow hedge computation.
+        # Hedge mode dispatch.
         if self.config.latency_hedge_mode == "shadow":
             self._compute_shadow_hedge(model_id, selected_eid, model_eids, now)
+        elif self.config.latency_hedge_mode == "economic":
+            hedged = self._maybe_create_hedged_adapter(
+                model_id,
+                selected_eid,
+                model_eids,
+                now,
+            )
+            if hedged is not None:
+                return hedged, cost
 
         return adapter, cost
 
@@ -345,8 +367,9 @@ class RouteWiseRouter(BaseRouter):
     ) -> None:
         """Compute and log a shadow hedge decision (no actual dispatch).
 
-        Compares the selected provider's p50 latency against backup
-        providers.  If a backup has lower p50, logs "hedge_warranted".
+        Uses SMART_ECONOMIC ``compute_hedge_threshold()`` to determine
+        whether hedging is cost-justified.  Logs "hedge_warranted" when
+        h* < inf, "hedge_not_justified" otherwise.
 
         Args:
             model_id: Model that triggered this decision.
@@ -368,8 +391,6 @@ class RouteWiseRouter(BaseRouter):
             )
             return
 
-        primary_p50 = self._latency_profiles[primary_eid].percentile(50, current_time)
-
         # Find backup with lowest p50.
         best_backup = min(
             backups,
@@ -377,19 +398,42 @@ class RouteWiseRouter(BaseRouter):
             if eid in self._latency_profiles
             else float("inf"),
         )
-        backup_p50 = (
-            self._latency_profiles[best_backup].percentile(50, current_time)
-            if best_backup in self._latency_profiles
-            else float("inf")
+
+        # Check backup has sufficient samples.
+        backup_profile = self._latency_profiles.get(best_backup)
+        primary_profile = self._latency_profiles.get(primary_eid)
+        if (
+            backup_profile is None
+            or primary_profile is None
+            or backup_profile.sample_count(current_time) < self.config.latency_min_samples
+        ):
+            self._shadow_hedge_log.append(
+                ShadowHedgeDecision(
+                    model_id=model_id,
+                    primary_endpoint=primary_eid,
+                    backup_endpoint=best_backup,
+                    hedge_threshold_sec=None,
+                    reason="insufficient_samples",
+                    timestamp=current_time,
+                )
+            )
+            return
+
+        h_star = compute_hedge_threshold(
+            primary_profile=primary_profile,
+            backup_profile=backup_profile,
+            slo_sec=self.config.latency_slo_sec,
+            cost_ratio=self.config.latency_hedge_cost_ratio,
+            dispatch_overhead_sec=self.config.latency_hedge_dispatch_overhead_sec,
+            current_time=current_time,
         )
 
-        if backup_p50 >= primary_p50:
-            reason = "backup_slower"
-            hedge_threshold = None
+        if h_star == float("inf"):
+            reason = "hedge_not_justified"
+            hedge_threshold: float | None = None
         else:
             reason = "hedge_warranted"
-            # Hedge threshold: midpoint between primary p50 and backup p50.
-            hedge_threshold = (primary_p50 + backup_p50) / 2.0
+            hedge_threshold = h_star
 
         self._shadow_hedge_log.append(
             ShadowHedgeDecision(
@@ -409,6 +453,90 @@ class RouteWiseRouter(BaseRouter):
             best_backup,
             reason,
             hedge_threshold,
+        )
+
+    def _maybe_create_hedged_adapter(
+        self,
+        model_id: str,
+        primary_eid: str,
+        candidate_eids: list[str],
+        current_time: float,
+    ) -> HedgedAdapter | None:
+        """Create a HedgedAdapter if hedging is cost-justified.
+
+        Finds the fastest backup provider (lowest p50), checks that both
+        profiles have sufficient samples, computes h* via SMART_ECONOMIC
+        grid search, and returns a HedgedAdapter if h* < inf.
+
+        Args:
+            model_id: Model identifier.
+            primary_eid: Primary endpoint selected by SWRR.
+            candidate_eids: All candidate endpoint IDs for this model.
+            current_time: Current Unix timestamp.
+
+        Returns:
+            A HedgedAdapter wrapping primary and backup, or None if
+            hedging is not justified.
+        """
+        backups = [eid for eid in candidate_eids if eid != primary_eid]
+        if not backups:
+            return None
+
+        # Find backup with lowest p50.
+        best_backup_eid = min(
+            backups,
+            key=lambda eid: self._latency_profiles[eid].percentile(50, current_time)
+            if eid in self._latency_profiles
+            else float("inf"),
+        )
+
+        primary_profile = self._latency_profiles.get(primary_eid)
+        backup_profile = self._latency_profiles.get(best_backup_eid)
+
+        if primary_profile is None or backup_profile is None:
+            return None
+
+        # Check both profiles have sufficient samples.
+        if (
+            primary_profile.sample_count(current_time) < self.config.latency_min_samples
+            or backup_profile.sample_count(current_time) < self.config.latency_min_samples
+        ):
+            return None
+
+        h_star = compute_hedge_threshold(
+            primary_profile=primary_profile,
+            backup_profile=backup_profile,
+            slo_sec=self.config.latency_slo_sec,
+            cost_ratio=self.config.latency_hedge_cost_ratio,
+            dispatch_overhead_sec=self.config.latency_hedge_dispatch_overhead_sec,
+            current_time=current_time,
+        )
+
+        if h_star == float("inf"):
+            return None
+
+        # Look up adapters for primary and backup.
+        primary_entry = self._api_endpoint_map.get(primary_eid)
+        backup_entry = self._api_endpoint_map.get(best_backup_eid)
+        if primary_entry is None or backup_entry is None:
+            return None
+
+        primary_adapter = primary_entry[0]
+        backup_adapter = backup_entry[0]
+
+        logger.debug(
+            "Creating HedgedAdapter: model=%s primary=%s backup=%s h*=%.3f",
+            model_id,
+            primary_eid,
+            best_backup_eid,
+            h_star,
+        )
+
+        return HedgedAdapter(
+            primary=primary_adapter,
+            backup=backup_adapter,
+            hedge_threshold_sec=h_star,
+            event_sink=self,
         )
 
     def _cheapest_api_for_request(
