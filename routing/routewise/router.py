@@ -25,7 +25,9 @@ block, covering success, error, and cancellation.
 
 from __future__ import annotations
 
+import json
 import time
+import uuid
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -115,6 +117,11 @@ class RouteWiseRouter(BaseRouter):
         self.conc_mgr: ConcurrencyManager | None = None
         if self.config.concurrency_enabled:
             self.conc_mgr = ConcurrencyManager(config)
+
+        # Per-request decision metadata, keyed by request_id.
+        # Populated in _select_adapter(), consumed in chat_completion() /
+        # stream_chat_completion().  Same pattern as NimbusRouter.
+        self._pending_decisions: dict[str, dict[str, Any]] = {}
 
         # Precomputed per-token prices for all S_A adapters, keyed by model.
         # Each entry: (adapter, price_prompt_per_token, price_completion_per_token).
@@ -736,6 +743,22 @@ class RouteWiseRouter(BaseRouter):
 
         gain_a = 0.0
 
+        # -- Request ID for decision metadata --------------------------------
+        request_id = context.get("request_id")
+
+        # Shared decision metadata fields reused across all tiers.
+        def _base_decision() -> dict[str, Any]:
+            return {
+                "v_t": v_t,
+                "gain_c": gain_c,
+                "gain_q": gain_q,
+                "gain_a": gain_a,
+                "theta_q": theta_q if theta_q < float("inf") else None,
+                "quota_remaining": self.quota_mgr.remaining,
+                "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
+                "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
+            }
+
         # -- Tier selection (S_C > S_Q > S_A) -----------------------------
         best_gain = max(gain_c, gain_q, gain_a)
 
@@ -749,6 +772,16 @@ class RouteWiseRouter(BaseRouter):
                     self.conc_mgr.active,
                     self.conc_mgr.limit,
                 )
+                if request_id:
+                    self._pending_decisions[request_id] = {
+                        **_base_decision(),
+                        "selected_tier": "concurrency",
+                        "quota_committed": 0.0,
+                        "sc_committed": True,
+                        "hedged": False,
+                        "backup_won": False,
+                        "lp_status": None,
+                    }
                 return conc_adapters[0]
             # Race lost -- fall through to S_Q.
             logger.debug(
@@ -764,6 +797,16 @@ class RouteWiseRouter(BaseRouter):
                 theta_q,
                 self.quota_mgr.remaining,
             )
+            if request_id:
+                self._pending_decisions[request_id] = {
+                    **_base_decision(),
+                    "selected_tier": "quota",
+                    "quota_committed": 0.0,
+                    "sc_committed": False,
+                    "hedged": False,
+                    "backup_won": False,
+                    "lp_status": None,
+                }
             return quota_adapters[0]
 
         if quota_adapters:
@@ -781,6 +824,16 @@ class RouteWiseRouter(BaseRouter):
             predicted_out,
         )
         if api_adapter is not None:
+            if request_id:
+                self._pending_decisions[request_id] = {
+                    **_base_decision(),
+                    "selected_tier": "api",
+                    "quota_committed": 0.0,
+                    "sc_committed": False,
+                    "hedged": isinstance(api_adapter, HedgedAdapter),
+                    "backup_won": False,
+                    "lp_status": self._last_lp_statuses.get(model_id),
+                }
             return api_adapter
 
         # Last resort: return any eligible S_A adapter.  S_C and S_Q are
@@ -789,6 +842,16 @@ class RouteWiseRouter(BaseRouter):
         # spurious releases in _execute_adapter's finally block.
         for adapter, _w, sub in entries:
             if sub is SubscriptionType.API:
+                if request_id:
+                    self._pending_decisions[request_id] = {
+                        **_base_decision(),
+                        "selected_tier": "api",
+                        "quota_committed": 0.0,
+                        "sc_committed": False,
+                        "hedged": False,
+                        "backup_won": False,
+                        "lp_status": None,
+                    }
                 return adapter
         return None
 
@@ -853,14 +916,23 @@ class RouteWiseRouter(BaseRouter):
         messages: list[dict[str, Any]],
         **params: Any,
     ) -> dict[str, Any]:
-        """Execute adapter with S_C slot release in finally block.
+        """Execute adapter with S_C slot release and backup_won detection.
 
         If *adapter* was selected as S_C, the concurrency slot acquired in
         ``_select_adapter`` is released here regardless of success or failure.
+
+        For HedgedAdapter, detects config swap (backup won) and records it
+        in ``_pending_decisions``.
         """
         is_sc = self._adapter_sub_type.get(id(adapter)) is SubscriptionType.CONCURRENCY
+        original_config = adapter.config if isinstance(adapter, HedgedAdapter) else None
         try:
-            return await super()._execute_adapter(adapter, model_id, messages, **params)
+            result = await super()._execute_adapter(adapter, model_id, messages, **params)
+            if original_config is not None and adapter.config is not original_config:
+                request_id = params.get("request_id")
+                if request_id and request_id in self._pending_decisions:
+                    self._pending_decisions[request_id]["backup_won"] = True
+            return result
         finally:
             if is_sc and self.conc_mgr is not None:
                 self.conc_mgr.release()
@@ -872,18 +944,98 @@ class RouteWiseRouter(BaseRouter):
         messages: list[dict[str, Any]],
         **params: Any,
     ) -> AsyncIterator[Any]:
-        """Execute streaming adapter with S_C slot release in finally block.
+        """Execute streaming adapter with S_C slot release and backup_won detection.
 
         Mirrors ``_execute_adapter`` for the streaming path.  The slot is
         released when the generator exits (normal completion, error, or
         ``GeneratorExit`` from cancellation).
+
+        For HedgedAdapter, config swap happens before first yield, so we
+        check in the finally block.
         """
         is_sc = self._adapter_sub_type.get(id(adapter)) is SubscriptionType.CONCURRENCY
+        original_config = adapter.config if isinstance(adapter, HedgedAdapter) else None
         try:
             async for chunk in super()._execute_stream_adapter(
                 adapter, model_id, messages, **params
             ):
                 yield chunk
         finally:
+            if original_config is not None and adapter.config is not original_config:
+                request_id = params.get("request_id")
+                if request_id and request_id in self._pending_decisions:
+                    self._pending_decisions[request_id]["backup_won"] = True
             if is_sc and self.conc_mgr is not None:
                 self.conc_mgr.release()
+
+    # ------------------------------------------------------------------
+    # chat_completion / stream_chat_completion: merge decision metadata
+    # ------------------------------------------------------------------
+
+    async def chat_completion(
+        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+    ) -> dict[str, Any]:
+        """Execute chat completion and merge RouteWise decision metadata.
+
+        Follows the same ``_pending_decisions`` pattern as NimbusRouter:
+        ensures request_id exists, calls super(), then merges decision
+        metadata into ``resp["_routing"]["routewise"]``.
+        """
+        if not params.get("request_id"):
+            params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
+        request_id = params["request_id"]
+
+        try:
+            resp = await super().chat_completion(model_id, messages, **params)
+        except BaseException as e:
+            decision_info = self._pending_decisions.pop(request_id, None)
+            if decision_info:
+                exc_routing = getattr(e, "_routing", None)
+                if exc_routing is not None:
+                    exc_routing["routewise"] = decision_info
+            raise
+
+        decision_info = self._pending_decisions.pop(request_id, None)
+        if decision_info and isinstance(resp, dict) and "_routing" in resp:
+            resp["_routing"]["routewise"] = decision_info
+        return resp
+
+    async def stream_chat_completion(
+        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+    ) -> AsyncIterator[Any]:
+        """Stream chat completion and inject RouteWise decision metadata.
+
+        Buffers the ``[DONE]`` sentinel, injects a routing metadata chunk
+        containing ``_routing.routewise``, then yields ``[DONE]``.
+        Same pattern as NimbusRouter.
+        """
+        if not params.get("request_id"):
+            params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
+        request_id = params["request_id"]
+
+        done_chunk: str | None = None
+
+        try:
+            async for chunk in super().stream_chat_completion(model_id, messages, **params):
+                if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
+                    done_chunk = chunk
+                    continue
+                yield chunk
+        except BaseException as e:
+            decision_info = self._pending_decisions.pop(request_id, None)
+            if decision_info:
+                exc_routing = getattr(e, "_routing", None)
+                if exc_routing is not None:
+                    exc_routing["routewise"] = decision_info
+            raise
+
+        decision_info = self._pending_decisions.pop(request_id, None)
+        if decision_info:
+            routing_chunk = {
+                "choices": [],
+                "_routing": {"routewise": decision_info},
+            }
+            yield f"data: {json.dumps(routing_chunk)}\n\n"
+
+        if done_chunk:
+            yield done_chunk

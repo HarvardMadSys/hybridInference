@@ -101,13 +101,27 @@ def _record_routing_observation(
     prompt_tokens: int,
     completion_tokens: int,
     success: bool,
+    routing_info: dict[str, Any] | None = None,
 ) -> None:
     """Emit a RoutingObservation to the active router for online learning.
 
     This is a best-effort operation -- exceptions are logged and swallowed
     so they never impact the client response.
+
+    Args:
+        active_router: Router instance whose ``record_observation`` is called.
+        model_id: Model identifier for the completed request.
+        endpoint_id: Endpoint that served the request.
+        ttft_ms: Time-to-first-token in milliseconds, or None on failure.
+        total_latency_ms: Total request latency in milliseconds.
+        prompt_tokens: Number of prompt tokens consumed.
+        completion_tokens: Number of completion tokens generated.
+        success: Whether the request completed successfully.
+        routing_info: The ``_routing`` dict from the response, which may
+            contain a ``routewise`` sub-dict with decision metadata.
     """
     try:
+        rw = (routing_info or {}).get("routewise", {})
         obs = RoutingObservation(
             model_id=model_id,
             endpoint_id=endpoint_id,
@@ -117,7 +131,12 @@ def _record_routing_observation(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             success=success,
-            quota_committed=0.0,
+            quota_committed=rw.get("quota_committed", 0.0),
+            selected_tier=rw.get("selected_tier"),
+            sc_committed=rw.get("sc_committed", False),
+            hedged=rw.get("hedged", False),
+            backup_won=rw.get("backup_won", False),
+            lp_status=rw.get("lp_status"),
         )
         active_router.record_observation(obs)
     except Exception:
@@ -415,6 +434,12 @@ async def chat_completions(
                                 # Never leak routing info to clients
                                 with suppress(Exception):
                                     del chunk_json["_routing"]
+                                # Skip metadata-only chunks (empty choices, no usage)
+                                # to avoid leaking non-standard empty chunks to clients.
+                                # These are injected by NimbusRouter/RouteWiseRouter
+                                # solely to carry _routing metadata.
+                                if not chunk_json.get("choices") and not chunk_json.get("usage"):
+                                    continue
 
                             # Record TTFT at the first meaningful delta (content or tool_calls)
                             if ttft_ms is None:
@@ -647,6 +672,7 @@ async def chat_completions(
                         prompt_tokens=int(norm_usage.get("prompt_tokens", 0) or 0),
                         completion_tokens=int(norm_usage.get("completion_tokens", 0) or 0),
                         success=True,
+                        routing_info=routing_info,
                     )
                 elif status_code != 200:
                     _record_routing_observation(
@@ -658,6 +684,7 @@ async def chat_completions(
                         prompt_tokens=0,
                         completion_tokens=0,
                         success=False,
+                        routing_info=routing_info,
                     )
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
@@ -683,8 +710,10 @@ async def chat_completions(
         provider = "router"
         base_url = None
         endpoint_id_for_obs: str | None = None
+        routing_info_snapshot: dict[str, Any] | None = None
         if isinstance(response, dict) and "_routing" in response:
             try:
+                routing_info_snapshot = dict(response["_routing"])
                 provider = response["_routing"].get("provider", "router")
                 base_url = response["_routing"].get("base_url")
                 endpoint_id_for_obs = response["_routing"].get("endpoint_id")
@@ -819,6 +848,7 @@ async def chat_completions(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 success=True,
+                routing_info=routing_info_snapshot,
             )
 
         # Record 200 for non-streaming response
@@ -867,6 +897,7 @@ async def chat_completions(
             prompt_tokens=0,
             completion_tokens=0,
             success=False,
+            routing_info=cancel_routing,
         )
         raise
 
@@ -934,6 +965,7 @@ async def chat_completions(
             prompt_tokens=0,
             completion_tokens=0,
             success=False,
+            routing_info=exc_routing,
         )
 
         raise HTTPException(exc_status_code, str(exc)) from exc

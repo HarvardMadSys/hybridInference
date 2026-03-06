@@ -229,6 +229,126 @@ async def test_rate_limit_rejection(completions_app: FastAPI, mock_rate_limiter)
 
 
 @pytest.mark.asyncio
+async def test_routewise_metadata_chunk_not_visible_to_client(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Metadata-only chunks injected by RouteWiseRouter are stripped by completions.py.
+
+    Invariants verified:
+    1. Client SSE output contains no empty ``{"choices": []}`` chunks.
+    2. Every client-visible data chunk (except [DONE]) has ``choices[0]``.
+    3. ``routing_info`` is still captured for observation (via record_observation).
+    """
+    from routing.model_router_registry import ModelRouterRegistry
+    from routing.routewise.config import RouteWiseConfig
+    from routing.routewise.router import RouteWiseRouter
+
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    # Build a RouteWiseRouter with one S_Q + one S_A adapter using real adapters.
+    quota_cfg = ModelConfig(
+        id="test-rw",
+        name="test-rw",
+        provider="quota-provider",
+        base_url="http://quota",
+        context_length=8192,
+        max_output_length=4096,
+        supported_params=["temperature", "top_p", "max_tokens"],
+        subscription_type="quota",
+        pricing={"prompt": "3.0", "completion": "15.0"},
+        endpoint_id="test-rw:quota",
+    )
+    api_cfg = ModelConfig(
+        id="test-rw",
+        name="test-rw",
+        provider="api-provider",
+        base_url="http://api",
+        context_length=8192,
+        max_output_length=4096,
+        supported_params=["temperature", "top_p", "max_tokens"],
+        subscription_type="api",
+        pricing={"prompt": "3.0", "completion": "15.0"},
+        endpoint_id="test-rw:api",
+    )
+    quota_adapter = DummyAdapter(quota_cfg)
+    api_adapter = DummyAdapter(api_cfg)
+
+    # FixedRouter holds routes (required by completions.py for route-existence check).
+    # RouteWiseRouter wraps it for tier-aware selection.
+    fixed = FixedRouter()
+    fixed.register_route("test-rw", [(quota_adapter, 0.5), (api_adapter, 0.5)])
+
+    rw_config = RouteWiseConfig()
+    rw_router = RouteWiseRouter(fixed_router=fixed, config=rw_config)
+
+    # ModelRouterRegistry dispatches to RouteWiseRouter for this model.
+    registry = ModelRouterRegistry(default_router=fixed)
+    registry.register("test-rw", rw_router)
+
+    # Spy on record_observation to verify routing_info is consumed.
+    observations: list = []
+    original_record = rw_router.record_observation
+
+    def _spy_record(obs):
+        observations.append(obs)
+        return original_record(obs)
+
+    rw_router.record_observation = _spy_record
+
+    app = FastAPI(title="Test RouteWise Metadata Suppression")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=fixed,
+        db_logger=mock_db_logger,
+        rate_limiter=mock_rate_limiter,
+        model_router_registry=registry,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "test-rw",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp:
+            assert resp.status_code == status.HTTP_200_OK
+            lines: list[str] = []
+            async for line in resp.aiter_lines():
+                if line.startswith("data: "):
+                    lines.append(line)
+
+    # Invariant 1 + 2: No empty-choices chunk visible to client.
+    for line in lines:
+        if line == "data: [DONE]":
+            continue
+        try:
+            chunk = json.loads(line[6:])
+        except json.JSONDecodeError:
+            continue
+        # Every non-[DONE] chunk must have at least one choice or usage.
+        choices = chunk.get("choices", [])
+        usage = chunk.get("usage")
+        assert choices or usage, (
+            f"Client received metadata-only empty chunk: {line}"
+        )
+        # If choices are present, choices[0] must exist.
+        if choices:
+            assert len(choices) > 0
+            # Verify no _routing leaked
+            assert "_routing" not in chunk
+
+    # Invariant 3: record_observation was called with V2 metadata.
+    assert len(observations) >= 1
+    obs = observations[0]
+    assert obs.selected_tier in ("quota", "api")
+
+
+@pytest.mark.asyncio
 async def test_reasoning_content_filtered_in_streaming(
     monkeypatch, mock_rate_limiter, mock_db_logger
 ):

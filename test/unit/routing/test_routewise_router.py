@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -12,6 +13,7 @@ import pytest
 
 from routing.routers import RoutingObservation
 from routing.routewise.config import RouteWiseConfig
+from routing.routewise.hedging import HedgedAdapter
 from routing.routewise.router import RouteWiseRouter, SubscriptionType
 
 
@@ -1344,3 +1346,345 @@ class TestRouteWiseNoApiBaseline:
             mock_logger.warning.assert_called()
             warning_msg = mock_logger.warning.call_args[0][0]
             assert "no S_A" in warning_msg
+
+
+# ---------------------------------------------------------------------------
+# Decision metadata tests (V2 observation plumbing)
+# ---------------------------------------------------------------------------
+
+
+def _make_router_with_all_tiers(
+    config: RouteWiseConfig | None = None,
+) -> tuple[RouteWiseRouter, MagicMock, MagicMock, MagicMock]:
+    """Build a RouteWiseRouter with one S_C, one S_Q, and one S_A adapter.
+
+    Returns:
+        (router, conc_adapter, quota_adapter, api_adapter)
+    """
+    if config is None:
+        config = RouteWiseConfig(concurrency_enabled=True, concurrency_limit=4)
+    conc_adapter = _make_adapter(
+        subscription_type="concurrency",
+        prompt_price="3.0",
+        completion_price="15.0",
+        endpoint_id="test-model:conc-provider",
+    )
+    quota_adapter = _make_adapter(
+        subscription_type="quota",
+        prompt_price="3.0",
+        completion_price="15.0",
+        endpoint_id="test-model:quota-provider",
+    )
+    api_adapter = _make_adapter(
+        subscription_type="api",
+        prompt_price="3.0",
+        completion_price="15.0",
+        endpoint_id="test-model:api-provider",
+    )
+    fr = _FakeFixedRouter()
+    fr.add(
+        "test-model",
+        [(conc_adapter, 0.3), (quota_adapter, 0.3), (api_adapter, 0.4)],
+    )
+    router = RouteWiseRouter(fixed_router=fr, config=config)
+    return router, conc_adapter, quota_adapter, api_adapter
+
+
+@pytest.mark.unit
+class TestRouteWiseDecisionMetadata:
+    """Verify _pending_decisions is populated and merged into responses."""
+
+    def test_sc_decision_stores_metadata(self):
+        """S_C selection stores metadata with selected_tier='concurrency'."""
+        router, conc, quota, api = _make_router_with_all_tiers()
+        request_id = "req-test-sc"
+        context = {"request_id": request_id}
+
+        selected = router._select_adapter("test-model", context)
+        assert selected is conc
+        assert request_id in router._pending_decisions
+
+        meta = router._pending_decisions[request_id]
+        assert meta["selected_tier"] == "concurrency"
+        assert meta["sc_committed"] is True
+        assert meta["quota_committed"] == 0.0
+        assert meta["hedged"] is False
+        assert meta["backup_won"] is False
+
+    def test_sq_decision_stores_metadata(self):
+        """S_Q selection stores metadata with selected_tier='quota'."""
+        router, quota, api = _make_router_with_quota_and_api()
+        request_id = "req-test-sq"
+        context = {"request_id": request_id}
+
+        selected = router._select_adapter("test-model", context)
+        assert selected is quota
+        assert request_id in router._pending_decisions
+
+        meta = router._pending_decisions[request_id]
+        assert meta["selected_tier"] == "quota"
+        assert meta["quota_committed"] == 0.0  # commitment signal via selected_tier, not v_t
+        assert meta["v_t"] > 0  # value estimation lives in its own field
+        assert meta["sc_committed"] is False
+        assert meta["hedged"] is False
+
+    def test_sa_decision_stores_metadata(self):
+        """S_A selection stores metadata with selected_tier='api'."""
+        # Make quota too expensive by setting high shadow price seed.
+        config = RouteWiseConfig(daily_quota=1000, shadow_price_L_seed=1000.0)
+        router, quota, api = _make_router_with_quota_and_api(config=config)
+        request_id = "req-test-sa"
+        context = {"request_id": request_id}
+
+        selected = router._select_adapter("test-model", context)
+        assert selected is api
+        assert request_id in router._pending_decisions
+
+        meta = router._pending_decisions[request_id]
+        assert meta["selected_tier"] == "api"
+        assert meta["quota_committed"] == 0.0
+        assert meta["sc_committed"] is False
+
+    def test_no_request_id_still_works(self):
+        """Selection works without request_id (no metadata stored)."""
+        router, quota, api = _make_router_with_quota_and_api()
+        # No request_id in context
+        selected = router._select_adapter("test-model", {})
+        assert selected is not None
+        # _pending_decisions should remain empty
+        assert len(router._pending_decisions) == 0
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_merges_routewise_into_routing(self):
+        """chat_completion() merges routewise metadata into resp['_routing']."""
+        router, quota, api = _make_router_with_quota_and_api()
+
+        # Mock the adapter to return a response
+        quota.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "hello"}}]}
+        )
+        api.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "hello"}}]}
+        )
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+            request_id="req-merge-test",
+        )
+
+        assert "_routing" in resp
+        assert "routewise" in resp["_routing"]
+        rw = resp["_routing"]["routewise"]
+        assert rw["selected_tier"] in ("quota", "api")
+        assert "v_t" in rw
+        # _pending_decisions should be cleaned up
+        assert "req-merge-test" not in router._pending_decisions
+
+    @pytest.mark.asyncio
+    async def test_stream_injects_routewise_chunk(self):
+        """stream_chat_completion() injects a routewise chunk before [DONE]."""
+        router, quota, api = _make_router_with_quota_and_api()
+
+        async def _fake_stream(*args, **kwargs):
+            yield 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        quota.stream_chat_completion = _fake_stream
+        api.stream_chat_completion = _fake_stream
+
+        chunks = []
+        async for chunk in router.stream_chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+            request_id="req-stream-test",
+        ):
+            chunks.append(chunk)
+
+        # Should have: content chunk, routewise chunk, [DONE]
+        assert len(chunks) >= 2
+
+        # Find the routewise metadata chunk
+        routewise_found = False
+        for c in chunks:
+            if isinstance(c, str) and c.startswith("data: ") and "routewise" in c:
+                parsed = json.loads(c[6:])
+                assert "_routing" in parsed
+                assert "routewise" in parsed["_routing"]
+                assert parsed["_routing"]["routewise"]["selected_tier"] in (
+                    "quota",
+                    "api",
+                )
+                routewise_found = True
+                break
+        assert routewise_found, "Routewise metadata chunk not found in stream"
+
+        # [DONE] should be last
+        assert chunks[-1].strip() == "data: [DONE]"
+
+        # Cleanup
+        assert "req-stream-test" not in router._pending_decisions
+
+    @pytest.mark.asyncio
+    async def test_pending_decisions_cleaned_on_error(self):
+        """_pending_decisions is cleaned up when chat_completion raises."""
+        router, quota, api = _make_router_with_quota_and_api()
+
+        # Both adapters fail
+        quota.chat_completion = AsyncMock(side_effect=RuntimeError("fail"))
+        api.chat_completion = AsyncMock(side_effect=RuntimeError("fail"))
+
+        with pytest.raises(RuntimeError):
+            await router.chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-error-test",
+            )
+
+        # Should be cleaned up
+        assert "req-error-test" not in router._pending_decisions
+
+    @pytest.mark.asyncio
+    async def test_backup_won_detected_on_config_swap(self):
+        """backup_won is set when HedgedAdapter swaps config."""
+        router, quota, api = _make_router_with_quota_and_api()
+
+        # Create a mock HedgedAdapter that swaps config on execution
+        primary_adapter = _make_adapter(
+            provider="primary",
+            endpoint_id="test-model:primary",
+        )
+        backup_adapter = _make_adapter(
+            provider="backup",
+            endpoint_id="test-model:backup",
+        )
+
+        # Create a real HedgedAdapter
+        hedged = HedgedAdapter(
+            primary=primary_adapter,
+            backup=backup_adapter,
+            hedge_threshold_sec=0.0,
+            event_sink=router,
+        )
+
+        # Pre-populate _pending_decisions as if _select_adapter ran
+        request_id = "req-backup-test"
+        router._pending_decisions[request_id] = {
+            "selected_tier": "api",
+            "hedged": True,
+            "backup_won": False,
+            "quota_committed": 0.0,
+            "sc_committed": False,
+            "lp_status": None,
+            "v_t": 0.01,
+            "gain_c": float("-inf"),
+            "gain_q": float("-inf"),
+            "gain_a": 0.0,
+            "theta_q": None,
+            "quota_remaining": 1000,
+            "sc_active": 0,
+            "sc_limit": 0,
+        }
+
+        # Simulate primary failing (slow), backup winning
+        async def _slow_primary(messages, **params):
+            await asyncio.sleep(10)
+            return {"choices": [{"message": {"content": "primary"}}]}
+
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}]}
+
+        primary_adapter.chat_completion = _slow_primary
+        backup_adapter.chat_completion = _fast_backup
+
+        # Execute through RouteWise's _execute_adapter
+        result = await router._execute_adapter(
+            hedged, "test-model", [{"role": "user", "content": "hi"}],
+            request_id=request_id,
+        )
+
+        # HedgedAdapter should have swapped config -> backup won
+        assert hedged.config is backup_adapter.config
+        assert router._pending_decisions[request_id]["backup_won"] is True
+
+    @pytest.mark.asyncio
+    async def test_exception_carries_routewise_in_routing(self):
+        """When chat_completion fails, exception._routing contains routewise metadata."""
+        router, quota, api = _make_router_with_quota_and_api()
+
+        # Both adapters fail
+        quota.chat_completion = AsyncMock(side_effect=RuntimeError("fail"))
+        api.chat_completion = AsyncMock(side_effect=RuntimeError("fail"))
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await router.chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-exc-meta",
+            )
+
+        exc = exc_info.value
+        routing = getattr(exc, "_routing", None)
+        assert routing is not None
+        assert "routewise" in routing
+        rw = routing["routewise"]
+        assert rw["selected_tier"] in ("quota", "api")
+        assert "v_t" in rw
+
+        # _pending_decisions should be cleaned up
+        assert "req-exc-meta" not in router._pending_decisions
+
+    @pytest.mark.asyncio
+    async def test_stream_exception_carries_routewise_in_routing(self):
+        """When stream_chat_completion fails, exception._routing contains routewise."""
+        router, quota, api = _make_router_with_quota_and_api()
+
+        async def _fail_stream(*args, **kwargs):
+            raise RuntimeError("stream fail")
+            yield  # noqa: RET503
+
+        quota.stream_chat_completion = _fail_stream
+        api.stream_chat_completion = _fail_stream
+
+        with pytest.raises(RuntimeError) as exc_info:
+            async for _ in router.stream_chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-stream-exc",
+            ):
+                pass
+
+        exc = exc_info.value
+        routing = getattr(exc, "_routing", None)
+        assert routing is not None
+        assert "routewise" in routing
+        assert routing["routewise"]["selected_tier"] in ("quota", "api")
+
+    @pytest.mark.asyncio
+    async def test_quota_committed_always_zero(self):
+        """quota_committed is 0.0 for all tiers (v_t lives in its own field)."""
+        router, conc, quota, api = _make_router_with_all_tiers()
+
+        # S_C path
+        meta_sc = None
+        router._select_adapter("test-model", {"request_id": "req-sc-qc"})
+        meta_sc = router._pending_decisions.get("req-sc-qc")
+        if meta_sc:
+            assert meta_sc["quota_committed"] == 0.0
+
+        # S_Q path (disable concurrency to force quota)
+        config_no_conc = RouteWiseConfig(concurrency_enabled=False)
+        router2, quota2, api2 = _make_router_with_quota_and_api(config=config_no_conc)
+        router2._select_adapter("test-model", {"request_id": "req-sq-qc"})
+        meta_sq = router2._pending_decisions.get("req-sq-qc")
+        if meta_sq and meta_sq["selected_tier"] == "quota":
+            assert meta_sq["quota_committed"] == 0.0
+            assert meta_sq["v_t"] > 0  # v_t is separate
+
+        # S_A path
+        config_sa = RouteWiseConfig(shadow_price_L_seed=1000.0)
+        router3, quota3, api3 = _make_router_with_quota_and_api(config=config_sa)
+        router3._select_adapter("test-model", {"request_id": "req-sa-qc"})
+        meta_sa = router3._pending_decisions.get("req-sa-qc")
+        if meta_sa:
+            assert meta_sa["quota_committed"] == 0.0

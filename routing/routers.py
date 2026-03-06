@@ -243,9 +243,17 @@ class RoutingObservation:
     total_latency_ms: float
     token_count: int
     success: bool
-    quota_committed: float  # V1: always 0.0 for Fixed/Nimbus
+    quota_committed: (
+        float  # Reserved (V1: always 0.0). Use selected_tier for commit signal, v_t for value.
+    )
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # V2: RouteWise decision metadata (all have defaults for backward compat)
+    selected_tier: str | None = None  # "api" | "quota" | "concurrency"
+    sc_committed: bool = False
+    hedged: bool = False
+    backup_won: bool = False
+    lp_status: str | None = None
 
 
 @dataclass

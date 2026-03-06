@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from routing.routers import RoutingObservation
 from serving.servers.routers.completions import _record_routing_observation, _resolve_endpoint_id
 
 
@@ -534,3 +535,134 @@ class TestCancelledErrorRouting:
         assert len(call_order) == 2
         assert routing["provider"] == call_order[-1]
         assert routing["endpoint_id"] is not None
+
+
+# ---------------------------------------------------------------------------
+# V2: RouteWise observation metadata propagation
+# ---------------------------------------------------------------------------
+
+
+def _call_record_with_routing(
+    routing_info: dict | None = None,
+) -> RoutingObservation:
+    """Call _record_routing_observation and return the captured RoutingObservation."""
+    mock_router = MagicMock()
+    _record_routing_observation(
+        active_router=mock_router,
+        model_id="test-model",
+        endpoint_id="test-model:provider",
+        ttft_ms=100.0,
+        total_latency_ms=500.0,
+        prompt_tokens=100,
+        completion_tokens=200,
+        success=True,
+        routing_info=routing_info,
+    )
+    mock_router.record_observation.assert_called_once()
+    return mock_router.record_observation.call_args[0][0]
+
+
+@pytest.mark.unit
+class TestRouteWiseObservationMetadata:
+    """Verify routewise metadata flows from routing_info into RoutingObservation."""
+
+    def test_routewise_metadata_propagated_to_observation(self):
+        """Full roundtrip: routewise dict -> RoutingObservation V2 fields."""
+        routing_info = {
+            "provider": "openai",
+            "routewise": {
+                "selected_tier": "quota",
+                "quota_committed": 0.0,
+                "sc_committed": False,
+                "hedged": True,
+                "backup_won": True,
+                "lp_status": "optimal",
+                "v_t": 0.0075,
+            },
+        }
+        obs = _call_record_with_routing(routing_info=routing_info)
+
+        assert obs.selected_tier == "quota"
+        assert obs.quota_committed == 0.0  # commitment signal via selected_tier, not v_t
+        assert obs.sc_committed is False
+        assert obs.hedged is True
+        assert obs.backup_won is True
+        assert obs.lp_status == "optimal"
+
+    def test_no_routewise_metadata_defaults(self):
+        """When routing_info has no routewise key, V2 fields get defaults."""
+        routing_info = {"provider": "openai"}
+        obs = _call_record_with_routing(routing_info=routing_info)
+
+        assert obs.selected_tier is None
+        assert obs.quota_committed == 0.0
+        assert obs.sc_committed is False
+        assert obs.hedged is False
+        assert obs.backup_won is False
+        assert obs.lp_status is None
+
+    def test_backward_compat_no_routing_info(self):
+        """Existing callers that pass no routing_info still work."""
+        obs = _call_record_with_routing(routing_info=None)
+
+        assert obs.quota_committed == 0.0
+        assert obs.selected_tier is None
+        assert obs.sc_committed is False
+        assert obs.hedged is False
+        assert obs.backup_won is False
+        assert obs.lp_status is None
+
+    def test_observation_v2_fields_have_defaults(self):
+        """RoutingObservation() with only required fields succeeds."""
+        obs = RoutingObservation(
+            model_id="m",
+            endpoint_id="e",
+            ttft_ms=10.0,
+            total_latency_ms=50.0,
+            token_count=100,
+            success=True,
+            quota_committed=0.0,
+        )
+        assert obs.selected_tier is None
+        assert obs.sc_committed is False
+        assert obs.hedged is False
+        assert obs.backup_won is False
+        assert obs.lp_status is None
+
+    def test_concurrency_tier_metadata(self):
+        """S_C tier metadata is correctly propagated."""
+        routing_info = {
+            "routewise": {
+                "selected_tier": "concurrency",
+                "quota_committed": 0.0,
+                "sc_committed": True,
+                "hedged": False,
+                "backup_won": False,
+                "lp_status": None,
+            },
+        }
+        obs = _call_record_with_routing(routing_info=routing_info)
+
+        assert obs.selected_tier == "concurrency"
+        assert obs.sc_committed is True
+        assert obs.quota_committed == 0.0
+
+    def test_failure_path_with_routewise_metadata(self):
+        """Exception _routing with routewise metadata propagates to observation."""
+        routing_info = {
+            "provider": "openai",
+            "endpoint_id": "model:openai",
+            "routewise": {
+                "selected_tier": "quota",
+                "quota_committed": 0.0,
+                "sc_committed": False,
+                "hedged": False,
+                "backup_won": False,
+                "lp_status": None,
+                "v_t": 0.005,
+            },
+        }
+        obs = _call_record_with_routing(routing_info=routing_info)
+        assert obs.selected_tier == "quota"
+        assert obs.quota_committed == 0.0
+        assert obs.hedged is False
