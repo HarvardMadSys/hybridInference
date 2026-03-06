@@ -374,6 +374,20 @@ async def initialize() -> AppServices:
         routewise_router=routewise_router,
     )
 
+    # Canary rollout (optional)
+    if routewise_router is not None and rw_config.canary_enabled:
+        model_router_registry.configure_canary(
+            enabled=True,
+            target_router=routewise_router,
+            enabled_models=rw_config.canary_enabled_models,
+            traffic_fraction=rw_config.canary_traffic_fraction,
+        )
+        logger.info(
+            "RouteWise canary enabled: fraction=%.2f, models=%s",
+            rw_config.canary_traffic_fraction,
+            rw_config.canary_enabled_models or "all",
+        )
+
     # Rate limiter (optional)
     rate_limiter: PersistentRateLimiter | None = None
     if os.getenv("RATE_LIMIT_ENABLED", "1") == "1":

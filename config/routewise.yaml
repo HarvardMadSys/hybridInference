@@ -34,3 +34,19 @@ routewise:
     adaptive: true                # update L/U from sliding window
     window_hours: 24              # sliding window for L/U adaptation
     min_ratio: 10                 # floor for U/L to prevent degenerate thresholds
+
+  # --- Canary rollout and rollback ---
+  # Rollout:
+  #   1. Set routing_strategy: routewise in models.yaml for target model
+  #   2. Enable canary below with low traffic_fraction (e.g. 0.1)
+  #   3. Monitor routewise_tier_decisions_total, routewise_value_estimate_usd
+  #   4. Increase fraction: 0.1 -> 0.25 -> 0.5 -> 1.0
+  #   5. Disable canary (set enabled: false)
+  # Rollback:
+  #   1. Set routing_strategy: fixed (or remove) in models.yaml
+  #   2. Restart. No code changes needed.
+  canary:
+    enabled: false
+    # enabled_models: null = all routewise models; [] = no models; [model-a] = specific models
+    enabled_models: null
+    traffic_fraction: 1.0

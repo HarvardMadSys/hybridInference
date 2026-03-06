@@ -248,6 +248,62 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    # RouteWise Metrics
+    ROUTEWISE_TIER_DECISIONS = Counter(
+        "routewise_tier_decisions_total",
+        "RouteWise tier selection distribution",
+        labelnames=("model", "tier"),
+        registry=REGISTRY,
+    )
+
+    ROUTEWISE_QUOTA_REMAINING = Gauge(
+        "routewise_quota_remaining",
+        "Remaining S_Q daily quota (router-global shared resource)",
+        registry=REGISTRY,
+    )
+
+    ROUTEWISE_SC_ACTIVE = Gauge(
+        "routewise_sc_active",
+        "Active S_C concurrency slots (router-global shared resource)",
+        registry=REGISTRY,
+    )
+
+    ROUTEWISE_HEDGE_DECISIONS = Counter(
+        "routewise_hedge_decisions_total",
+        "RouteWise hedge decision outcomes",
+        labelnames=("model", "outcome"),
+        registry=REGISTRY,
+    )
+
+    ROUTEWISE_BACKUP_WINS = Counter(
+        "routewise_backup_wins_total",
+        "Backup adapter wins in hedge races",
+        labelnames=("model",),
+        registry=REGISTRY,
+    )
+
+    ROUTEWISE_VALUE_ESTIMATE = Histogram(
+        "routewise_value_estimate_usd",
+        "Per-request value estimate v_t distribution (USD)",
+        labelnames=("model",),
+        buckets=(0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5),
+        registry=REGISTRY,
+    )
+
+    ROUTEWISE_LP_STATUS = Counter(
+        "routewise_lp_status_total",
+        "LP solver outcome distribution",
+        labelnames=("model", "status"),
+        registry=REGISTRY,
+    )
+
+    ROUTEWISE_CANARY_DECISIONS = Counter(
+        "routewise_canary_decisions_total",
+        "Canary gate decisions (experimental = sent to RouteWise, default = sent to Fixed)",
+        labelnames=("model", "outcome"),
+        registry=REGISTRY,
+    )
+
     DATABASE_CONNECTED = Gauge(
         "database_connected",
         "Database connection status (1=connected, 0=disconnected)",
@@ -442,6 +498,26 @@ else:  # No-op fallbacks to avoid hard dependency during tests
         "NoopGauge", (), {"labels": lambda *a, **k: type("L", (), {"set": _noop})()}
     )()
 
+    # RouteWise no-ops
+    ROUTEWISE_TIER_DECISIONS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    ROUTEWISE_QUOTA_REMAINING = type("NoopGauge", (), {"set": _noop})()
+    ROUTEWISE_SC_ACTIVE = type("NoopGauge", (), {"set": _noop})()
+    ROUTEWISE_HEDGE_DECISIONS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    ROUTEWISE_BACKUP_WINS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    ROUTEWISE_VALUE_ESTIMATE = API_REQUEST_LATENCY  # Histogram no-op (observe)
+    ROUTEWISE_LP_STATUS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    ROUTEWISE_CANARY_DECISIONS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+
     DATABASE_CONNECTED = type("NoopGauge", (), {"set": _noop})()
     USERS_TOTAL = type("NoopGauge", (), {"set": _noop})()
     USERS_ACTIVE_DAILY = type("NoopGauge", (), {"set": _noop})()
@@ -498,6 +574,15 @@ __all__ = [
     "NIMBUS_ROUTING_DECISIONS",
     "NIMBUS_SLO_VIOLATIONS",
     "ROUTING_STRATEGY_SELECTED",
+    # RouteWise metrics
+    "ROUTEWISE_BACKUP_WINS",
+    "ROUTEWISE_CANARY_DECISIONS",
+    "ROUTEWISE_HEDGE_DECISIONS",
+    "ROUTEWISE_LP_STATUS",
+    "ROUTEWISE_QUOTA_REMAINING",
+    "ROUTEWISE_SC_ACTIVE",
+    "ROUTEWISE_TIER_DECISIONS",
+    "ROUTEWISE_VALUE_ESTIMATE",
     # Circuit breaker metrics
     "CIRCUIT_OPEN_TOTAL",
     "CIRCUIT_STATE",

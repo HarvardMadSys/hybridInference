@@ -93,6 +93,11 @@ class RouteWiseConfig:
     latency_hedge_cost_ratio: float = 0.1  # C_b/V for SMART_ECONOMIC
     latency_hedge_dispatch_overhead_sec: float = 0.05  # backup launch overhead
 
+    # Canary rollout controls
+    canary_enabled: bool = False
+    canary_enabled_models: list[str] | None = None  # None = all routewise models
+    canary_traffic_fraction: float = 1.0  # 0.0-1.0
+
 
 def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
     """Load RouteWise configuration from a YAML file.
@@ -178,6 +183,11 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "hedge_mode": "latency_hedge_mode",
             "hedge_cost_ratio": "latency_hedge_cost_ratio",
             "hedge_dispatch_overhead_sec": "latency_hedge_dispatch_overhead_sec",
+        },
+        "canary": {
+            "enabled": "canary_enabled",
+            "enabled_models": "canary_enabled_models",
+            "traffic_fraction": "canary_traffic_fraction",
         },
     }
 

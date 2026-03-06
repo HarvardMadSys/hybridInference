@@ -220,3 +220,29 @@ class TestLoadFromYAML:
         cfg = load_routewise_config(p)
         assert cfg.latency_slo_sec == 2.0
         assert cfg.latency_min_samples == 5
+
+    def test_load_canary_config_nested(self, tmp_path: Path):
+        """Nested canary section is flattened correctly."""
+        yaml_content = (
+            "routewise:\n"
+            "  canary:\n"
+            "    enabled: true\n"
+            "    enabled_models:\n"
+            "      - model-a\n"
+            "      - model-b\n"
+            "    traffic_fraction: 0.25\n"
+        )
+        p = tmp_path / "routewise.yaml"
+        p.write_text(yaml_content)
+
+        cfg = load_routewise_config(p)
+        assert cfg.canary_enabled is True
+        assert cfg.canary_enabled_models == ["model-a", "model-b"]
+        assert cfg.canary_traffic_fraction == 0.25
+
+    def test_canary_defaults(self):
+        """Canary fields have safe defaults when section absent."""
+        cfg = RouteWiseConfig()
+        assert cfg.canary_enabled is False
+        assert cfg.canary_enabled_models is None
+        assert cfg.canary_traffic_fraction == 1.0

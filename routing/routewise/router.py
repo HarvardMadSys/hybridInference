@@ -759,6 +759,22 @@ class RouteWiseRouter(BaseRouter):
                 "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
             }
 
+        # -- Pre-decision gauges ------------------------------------------
+        from serving.observability.metrics import (
+            ROUTEWISE_QUOTA_REMAINING,
+            ROUTEWISE_SC_ACTIVE,
+            ROUTEWISE_VALUE_ESTIMATE,
+            normalize_model_label,
+        )
+
+        model_label = normalize_model_label(model_id)
+        # Quota and concurrency are router-global shared resources (no model label).
+        ROUTEWISE_QUOTA_REMAINING.set(self.quota_mgr.remaining)
+        if self.conc_mgr is not None:
+            ROUTEWISE_SC_ACTIVE.set(self.conc_mgr.active)
+        if v_t < float("inf"):
+            ROUTEWISE_VALUE_ESTIMATE.labels(model=model_label).observe(v_t)
+
         # -- Tier selection (S_C > S_Q > S_A) -----------------------------
         best_gain = max(gain_c, gain_q, gain_a)
 
@@ -897,6 +913,9 @@ class RouteWiseRouter(BaseRouter):
             ttft = obs.ttft_ms if obs.ttft_ms is not None else -1.0
             self._latency_profiles[obs.endpoint_id].record(now, ttft, error_type)
 
+        # Emit Prometheus metrics for this observation.
+        self._emit_metrics(obs)
+
         logger.debug(
             "RouteWise observation: model=%s endpoint=%s completion_tokens=%d success=%s",
             obs.model_id,
@@ -904,6 +923,34 @@ class RouteWiseRouter(BaseRouter):
             obs.completion_tokens,
             obs.success,
         )
+
+    def _emit_metrics(self, obs: RoutingObservation) -> None:
+        """Emit Prometheus counters from a completed observation.
+
+        Uses lazy imports to avoid circular dependency
+        (routing -> serving -> routing).
+        """
+        from serving.observability.metrics import (
+            ROUTEWISE_BACKUP_WINS,
+            ROUTEWISE_HEDGE_DECISIONS,
+            ROUTEWISE_LP_STATUS,
+            ROUTEWISE_TIER_DECISIONS,
+            ROUTING_STRATEGY_SELECTED,
+            normalize_model_label,
+        )
+
+        m = normalize_model_label(obs.model_id)
+        ROUTING_STRATEGY_SELECTED.labels(model=m, strategy="routewise").inc()
+        if obs.selected_tier:
+            ROUTEWISE_TIER_DECISIONS.labels(model=m, tier=obs.selected_tier).inc()
+        if obs.hedged:
+            ROUTEWISE_HEDGE_DECISIONS.labels(model=m, outcome="hedged").inc()
+            if obs.backup_won:
+                ROUTEWISE_BACKUP_WINS.labels(model=m).inc()
+        else:
+            ROUTEWISE_HEDGE_DECISIONS.labels(model=m, outcome="no_hedge").inc()
+        if obs.lp_status:
+            ROUTEWISE_LP_STATUS.labels(model=m, status=obs.lp_status).inc()
 
     # ------------------------------------------------------------------
     # Execution overrides: S_C slot lifecycle
