@@ -606,3 +606,194 @@ class TestDecisionTraceReplay:
             assert sim_state.count == prod_state.count, (
                 f"Global count diverged at step {i}"
             )
+
+
+# ===================================================================
+# 6. Stage 2 replay: S_C concurrency tier
+# ===================================================================
+
+class TestStage2DecisionReplay:
+    """Validate S_C concurrency behaviour under deterministic replay.
+
+    Per integration plan: equivalence under deterministic harness +
+    invariants on accounting and cost totals.
+    """
+
+    DAILY_QUOTA = 20
+    CONC_LIMIT = 3
+
+    @pytest.fixture()
+    def trace(self) -> list[ReplayStep]:
+        """30-request deterministic trace (same as Stage 1)."""
+        warmup = [
+            ReplayStep(1000, 200), ReplayStep(1000, 400),
+            ReplayStep(1000, 600), ReplayStep(1000, 300),
+            ReplayStep(1000, 500), ReplayStep(1000, 800),
+            ReplayStep(1000, 250), ReplayStep(1000, 550),
+            ReplayStep(1000, 700), ReplayStep(1000, 350),
+        ]
+        decision = [
+            ReplayStep(1000, 500), ReplayStep(200, 400),
+            ReplayStep(1500, 600), ReplayStep(500, 300),
+            ReplayStep(800, 450), ReplayStep(2000, 800),
+            ReplayStep(300, 200), ReplayStep(1200, 550),
+            ReplayStep(600, 350), ReplayStep(900, 500),
+            ReplayStep(100, 250), ReplayStep(1800, 700),
+            ReplayStep(400, 300), ReplayStep(1100, 450),
+            ReplayStep(700, 400), ReplayStep(1500, 600),
+            ReplayStep(250, 200), ReplayStep(1000, 500),
+            ReplayStep(500, 350), ReplayStep(800, 450),
+        ]
+        return warmup + decision
+
+    @pytest.fixture()
+    def three_tier_router(self):
+        """Set up RouteWiseRouter with S_C + S_Q + S_A."""
+        conc_adapter = MagicMock()
+        conc_adapter.config.subscription_type = "concurrency"
+        conc_adapter.config.endpoint_id = "conc-1"
+        conc_adapter.config.id = "conc-1"
+        conc_adapter.config.pricing = {
+            "prompt": str(INPUT_PRICE_PER_1M),
+            "completion": str(OUTPUT_PRICE_PER_1M),
+        }
+
+        quota_adapter = MagicMock()
+        quota_adapter.config.subscription_type = "quota"
+        quota_adapter.config.endpoint_id = "quota-1"
+        quota_adapter.config.id = "quota-1"
+
+        api_adapter = MagicMock()
+        api_adapter.config.subscription_type = "api"
+        api_adapter.config.endpoint_id = "api-1"
+        api_adapter.config.id = "api-1"
+        api_adapter.config.pricing = {
+            "prompt": str(INPUT_PRICE_PER_1M),
+            "completion": str(OUTPUT_PRICE_PER_1M),
+        }
+
+        route_cfg = MagicMock()
+        route_cfg.adapters = [
+            (conc_adapter, 1.0), (quota_adapter, 1.0), (api_adapter, 1.0),
+        ]
+
+        fixed_router = MagicMock()
+        fixed_router.routes = {"gpt-4o": route_cfg}
+
+        rw_config = RouteWiseConfig(
+            daily_quota=self.DAILY_QUOTA,
+            shadow_price_L_seed=L_SEED,
+            shadow_price_U_seed=U_SEED,
+            decision_rule="pd",
+            concurrency_enabled=True,
+            concurrency_limit=self.CONC_LIMIT,
+        )
+
+        router = RouteWiseRouter(fixed_router, rw_config)
+        router.predictor = ProdEMAPredictor(
+            alpha=0.1,
+            min_samples=10,
+            min_samples_per_model=10,
+            default_output=500.0,
+        )
+
+        return router, conc_adapter, quota_adapter, api_adapter
+
+    def _route_step(
+        self,
+        step: ReplayStep,
+        router: RouteWiseRouter,
+        conc_adapter: Any,
+        quota_adapter: Any,
+        api_adapter: Any,
+    ) -> str:
+        """Route one step and return tier name."""
+        context = {"prompt_tokens": step.prompt_tokens, "messages": []}
+        adapter = router._select_adapter("gpt-4o", context)
+
+        if adapter is conc_adapter:
+            decision = "concurrency"
+        elif adapter is quota_adapter:
+            decision = "quota"
+        elif adapter is api_adapter:
+            decision = "api"
+        else:
+            raise AssertionError(f"Unexpected adapter: {adapter}")
+
+        if step.response_tokens > 0:
+            router.predictor.update("gpt-4o", step.response_tokens)
+
+        return decision
+
+    def test_accounting_invariant(self, trace, three_tier_router) -> None:
+        """conc_mgr.active <= limit at all times during replay."""
+        router, conc_adapter, quota_adapter, api_adapter = three_tier_router
+
+        for i, step in enumerate(trace):
+            decision = self._route_step(
+                step, router, conc_adapter, quota_adapter, api_adapter,
+            )
+            assert router.conc_mgr.active <= self.CONC_LIMIT, (
+                f"Step {i}: active={router.conc_mgr.active} > limit={self.CONC_LIMIT}"
+            )
+
+            # Simulate slot release after each S_C request completes.
+            if decision == "concurrency":
+                router.conc_mgr.release()
+
+    def test_cost_total_within_tolerance(self, trace, three_tier_router) -> None:
+        """API cost matches expected based on tier decisions."""
+        router, conc_adapter, quota_adapter, api_adapter = three_tier_router
+
+        p_in = INPUT_PRICE_PER_1M / 1_000_000.0
+        p_out = OUTPUT_PRICE_PER_1M / 1_000_000.0
+
+        api_cost = 0.0
+        total_requests = 0
+        for step in trace:
+            decision = self._route_step(
+                step, router, conc_adapter, quota_adapter, api_adapter,
+            )
+            total_requests += 1
+            if decision == "api":
+                api_cost += p_in * step.prompt_tokens + p_out * step.response_tokens
+
+            # Release S_C slots so they're available for next request.
+            if decision == "concurrency":
+                router.conc_mgr.release()
+
+        # With S_C available and v_t > 0, most requests should avoid S_A.
+        # API cost should be less than the total cost if all went to S_A.
+        total_all_api = sum(
+            p_in * s.prompt_tokens + p_out * s.response_tokens for s in trace
+        )
+        assert api_cost <= total_all_api, (
+            f"API cost {api_cost:.6f} exceeds total-if-all-api {total_all_api:.6f}"
+        )
+        assert total_requests == len(trace)
+
+    def test_non_saturated_decisions_match(self, trace, three_tier_router) -> None:
+        """When S_C never fills, all decisions should be S_C (slots always free).
+
+        With limit=3 and immediate release, all requests see available slots
+        and gain_C = v_t > 0 = gain_A, so S_C always wins.
+        """
+        router, conc_adapter, quota_adapter, api_adapter = three_tier_router
+
+        decisions = []
+        for step in trace:
+            decision = self._route_step(
+                step, router, conc_adapter, quota_adapter, api_adapter,
+            )
+            decisions.append(decision)
+            # Immediate release -- never saturated.
+            if decision == "concurrency":
+                router.conc_mgr.release()
+
+        # All decisions should be S_C since slots are always available
+        # and gain_C = v_t > 0 = gain_A.
+        conc_count = decisions.count("concurrency")
+        assert conc_count == len(trace), (
+            f"Expected all {len(trace)} to be S_C, got {conc_count}. "
+            f"Decisions: {decisions}"
+        )

@@ -10,6 +10,7 @@ Exports:
     EMAState           -- Per-stream EMA tracking state.
     QuantilePrediction -- Quantile prediction dataclass.
     QuotaManager       -- Daily quota manager with shadow price computation.
+    ConcurrencyManager -- Production concurrency slot manager (K=0 binary gate).
     ProviderProfile    -- Real-time latency profile for an API endpoint.
     SWRRSampler        -- Smooth weighted round-robin sampler.
     ShadowHedgeDecision -- Shadow hedge decision record.
@@ -23,6 +24,7 @@ Exports:
     pre_filter_providers -- Hard-filter providers by basic requirements.
 """
 
+from .concurrency import ConcurrencyManager
 from .config import RouteWiseConfig, load_routewise_config
 from .hedging import (
     HedgedAdapter,
@@ -42,6 +44,7 @@ from .quota import QuotaManager
 from .router import RouteWiseRouter, SubscriptionType
 
 __all__ = [
+    "ConcurrencyManager",
     "EMAOutputPredictor",
     "EMAState",
     "HedgedAdapter",

@@ -5,16 +5,22 @@ classifies adapters by subscription type (quota / concurrency / API) and
 selects among them using a primal-dual (PD) or look-ahead primal-dual (LA-PD)
 threshold algorithm.
 
-Layer 1 (PD / LA-PD) decides whether to use S_Q or S_A.  When S_A is chosen
-and multiple API providers exist, Layer 2 applies LP-based latency-aware cost
-optimization to select among them using empirical latency profiles and SWRR
-sampling.
+Layer 1 decides among three tiers with priority **S_C > S_Q > S_A**:
 
-Quota semantics follow dispatch-commit: one request slot is consumed from
-the daily quota in ``_select_adapter`` at the moment the decision is made.
-This ensures that failed, cancelled, and fallback-to-S_A requests still
-account for quota usage, matching the real-world behaviour where the upstream
-provider has already received the request.
+- **S_C** (concurrency): binary gate -- admit if slots available (gain_C = v_t).
+- **S_Q** (quota): exponential shadow price threshold (gain_Q = v_t - theta_Q).
+- **S_A** (API): pay-per-token baseline (gain_A = 0).
+
+Since theta_Q > 0 always (L_seed > 0), S_C beats S_Q whenever slots exist.
+
+When S_A is chosen and multiple API providers exist, Layer 2 applies LP-based
+latency-aware cost optimization to select among them using empirical latency
+profiles and SWRR sampling.
+
+Slot and quota semantics follow selection-commit: resources are acquired in
+``_select_adapter`` at the moment the decision is made.  Concurrency slots
+are released in the ``_execute_adapter`` / ``_execute_stream_adapter`` finally
+block, covering success, error, and cancellation.
 """
 
 from __future__ import annotations
@@ -23,10 +29,14 @@ import time
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
 from routing.routers import BaseRouter, RoutingObservation
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
 
+from .concurrency import ConcurrencyManager
 from .hedging import HedgedAdapter, compute_hedge_threshold
 from .latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
 from .lp_solver import pre_filter_providers, solve_provider_lp_with_relaxation
@@ -60,10 +70,9 @@ class RouteWiseRouter(BaseRouter):
     RouteWiseRouter is a **peer** of NimbusRouter -- both extend BaseRouter
     directly and operate on routes registered in a shared ``FixedRouter``.
 
-    The router classifies adapters into S_Q / S_C / S_A tiers, then applies
+    The router classifies adapters into S_C / S_Q / S_A tiers, then applies
     either the PD or LA-PD decision rule (controlled by ``config.decision_rule``)
-    to decide whether an incoming request should consume quota (S_Q) or be sent
-    to a pay-per-token API (S_A).
+    to decide tier priority: **S_C > S_Q > S_A**.
 
     Attributes:
         fixed_router: The shared ``FixedRouter`` whose ``routes`` dict
@@ -73,6 +82,7 @@ class RouteWiseRouter(BaseRouter):
             ``{model_id: [(adapter, weight, SubscriptionType), ...]}``.
         predictor: EMA output-token predictor for value estimation.
         quota_mgr: Daily quota manager with shadow price computation.
+        conc_mgr: Concurrency slot manager (None when disabled).
     """
 
     def __init__(
@@ -89,6 +99,10 @@ class RouteWiseRouter(BaseRouter):
         self.classified: dict[str, list[tuple[Any, float, SubscriptionType]]] = {}
         self._classify_all()
 
+        # Reverse lookup: adapter id(obj) -> SubscriptionType.
+        self._adapter_sub_type: dict[int, SubscriptionType] = {}
+        self._build_adapter_sub_type_map()
+
         # Online predictors and quota tracking.
         self.predictor = EMAOutputPredictor(
             alpha=0.1,
@@ -97,10 +111,20 @@ class RouteWiseRouter(BaseRouter):
         )
         self.quota_mgr = QuotaManager(config)
 
+        # S_C concurrency manager (None when concurrency_enabled=False).
+        self.conc_mgr: ConcurrencyManager | None = None
+        if self.config.concurrency_enabled:
+            self.conc_mgr = ConcurrencyManager(config)
+
         # Precomputed per-token prices for all S_A adapters, keyed by model.
         # Each entry: (adapter, price_prompt_per_token, price_completion_per_token).
         self._api_adapter_prices: dict[str, list[tuple[Any, float, float]]] = {}
         self._precompute_api_prices()
+
+        # Validate that every model has at least one S_A baseline adapter.
+        # Without S_A, v_t (the API cost savings) is undefined and the
+        # fallthrough path has no safe adapter to return.
+        self._validate_api_baseline()
 
         # Layer 2: Latency-aware provider selection state.
         # Latency profiles are keyed by endpoint_id.  This dict is router-global,
@@ -153,6 +177,36 @@ class RouteWiseRouter(BaseRouter):
                     sub_type = SubscriptionType.API
                 entries.append((adapter, weight, sub_type))
             self.classified[model_id] = entries
+
+    def _build_adapter_sub_type_map(self) -> None:
+        """Build reverse lookup from ``id(adapter)`` to ``SubscriptionType``.
+
+        Called after ``_classify_all()`` so the execution overrides
+        (``_execute_adapter``, ``_execute_stream_adapter``) can determine
+        whether a given adapter is S_C without touching ``self.classified``.
+        """
+        self._adapter_sub_type = {}
+        for entries in self.classified.values():
+            for adapter, _w, sub in entries:
+                self._adapter_sub_type[id(adapter)] = sub
+
+    def _validate_api_baseline(self) -> None:
+        """Warn if any model lacks an S_A baseline adapter.
+
+        Without S_A, the value estimation (v_t) is undefined (inf from
+        cheapest-API lookup) and the last-resort fallthrough in
+        ``_select_adapter`` has no safe adapter to return.
+        """
+        for model_id, entries in self.classified.items():
+            has_api = any(s is SubscriptionType.API for _, _, s in entries)
+            if not has_api:
+                logger.warning(
+                    "Model '%s' has no S_A (API) adapter. "
+                    "RouteWise routing requires at least one S_A baseline "
+                    "for value estimation; requests may return None when "
+                    "S_C/S_Q resources are exhausted.",
+                    model_id,
+                )
 
     # ------------------------------------------------------------------
     # Per-request API cost computation
@@ -605,27 +659,36 @@ class RouteWiseRouter(BaseRouter):
     # ------------------------------------------------------------------
 
     def _is_eligible(self, sub: SubscriptionType) -> bool:
-        """Check whether an adapter with *sub* type is eligible in Stage 1.
+        """Check whether an adapter with *sub* type is eligible.
 
-        Concurrency adapters are only eligible when ``concurrency_enabled``
-        is True in the config.  Quota and API adapters are always eligible.
+        Concurrency adapters (S_C) are only eligible when
+        ``concurrency_enabled`` is True.  Quota and API adapters are always
+        eligible.  Used as the last-resort filter in the fallthrough path
+        at the end of ``_select_adapter``.
         """
         if sub is SubscriptionType.CONCURRENCY:
             return self.config.concurrency_enabled
         return True
 
     def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
-        """Select an adapter for *model_id* using PD / LA-PD decision logic.
+        """Select an adapter for *model_id* using three-tier PD decision logic.
+
+        Priority cascade: **S_C > S_Q > S_A**.
 
         Decision algorithm:
-        1. Estimate prompt_tokens from context (explicit value or message
-           heuristic).
+        1. Estimate prompt_tokens from context.
         2. Compute predicted output tokens via the EMA predictor.
-        3. Find the cheapest S_A adapter for this specific request.
-        4. If S_Q adapters exist and ``v_t >= theta_Q`` with quota remaining:
-           **dispatch-commit** one request slot and select S_Q.
-        5. Otherwise: select cheapest S_A adapter.
-        6. S_C gating is unchanged (respects ``_is_eligible``).
+        3. Compute value ``v_t`` (cheapest S_A cost for this request).
+        4. Compute gains:
+           - ``gain_C = v_t`` if S_C adapters exist and slots available, else ``-inf``.
+           - ``gain_Q = v_t - theta_Q`` if S_Q adapters exist, quota > 0,
+             and ``v_t >= theta_Q``, else ``-inf``.
+           - ``gain_A = 0`` (baseline).
+        5. Select the tier with the highest gain.
+        6. Selection-commit: acquire slot (S_C) or consume quota (S_Q).
+
+        Since ``theta_Q > 0`` always (L_seed > 0), ``gain_C = v_t > v_t - theta_Q = gain_Q``
+        whenever both are available.
 
         Args:
             model_id: Model identifier.
@@ -640,8 +703,6 @@ class RouteWiseRouter(BaseRouter):
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
 
         # -- Prompt tokens ------------------------------------------------
-        # prompt_tokens is arrival-time ground truth (not a prediction).
-        # Computed from messages via tiktoken when available, else chars/4.
         prompt_tokens = context.get("prompt_tokens", 0)
         if prompt_tokens <= 0:
             prompt_tokens = estimate_prompt_tokens(context.get("messages") or [])
@@ -657,25 +718,55 @@ class RouteWiseRouter(BaseRouter):
             predicted_out,
         )
 
-        # -- S_Q decision (Layer 1) ---------------------------------------
+        # -- Classify adapters by tier ------------------------------------
+        conc_adapters = [a for a, _w, s in entries if s is SubscriptionType.CONCURRENCY]
         quota_adapters = [a for a, _w, s in entries if s is SubscriptionType.QUOTA]
 
+        # -- Compute gains ------------------------------------------------
+        gain_c = float("-inf")
+        if conc_adapters and self.conc_mgr is not None and self.conc_mgr.available > 0:
+            gain_c = v_t
+
+        gain_q = float("-inf")
+        theta_q = float("inf")
         if quota_adapters:
             theta_q = self.quota_mgr.get_shadow_price()
-
             if v_t >= theta_q and self.quota_mgr.remaining > 0:
-                # Dispatch-commit: consume one quota slot *now*, before the
-                # adapter even executes.  Failed / cancelled requests still
-                # count against the daily budget (one request = one slot).
-                self.quota_mgr.consume()
-                logger.debug(
-                    "PD decision: route to S_Q (v_t=%.6f >= theta_Q=%.6f, " "remaining=%d)",
-                    v_t,
-                    theta_q,
-                    self.quota_mgr.remaining,
-                )
-                return quota_adapters[0]
+                gain_q = v_t - theta_q
 
+        gain_a = 0.0
+
+        # -- Tier selection (S_C > S_Q > S_A) -----------------------------
+        best_gain = max(gain_c, gain_q, gain_a)
+
+        # Try S_C first.
+        if gain_c == best_gain and gain_c > float("-inf"):
+            # Selection-commit: acquire slot atomically.
+            if self.conc_mgr is not None and self.conc_mgr.try_acquire():
+                logger.debug(
+                    "PD decision: route to S_C (v_t=%.6f, slots=%d/%d)",
+                    v_t,
+                    self.conc_mgr.active,
+                    self.conc_mgr.limit,
+                )
+                return conc_adapters[0]
+            # Race lost -- fall through to S_Q.
+            logger.debug(
+                "PD decision: S_C race lost, falling through to S_Q/S_A",
+            )
+
+        # Try S_Q.
+        if gain_q >= gain_a and gain_q > float("-inf"):
+            self.quota_mgr.consume()
+            logger.debug(
+                "PD decision: route to S_Q (v_t=%.6f >= theta_Q=%.6f, remaining=%d)",
+                v_t,
+                theta_q,
+                self.quota_mgr.remaining,
+            )
+            return quota_adapters[0]
+
+        if quota_adapters:
             logger.debug(
                 "PD decision: route to S_A (v_t=%.6f < theta_Q=%.6f or remaining=%d)",
                 v_t,
@@ -692,8 +783,12 @@ class RouteWiseRouter(BaseRouter):
         if api_adapter is not None:
             return api_adapter
 
+        # Last resort: return any eligible S_A adapter.  S_C and S_Q are
+        # excluded because this path bypasses try_acquire() / consume() --
+        # returning them here would break slot/quota accounting and cause
+        # spurious releases in _execute_adapter's finally block.
         for adapter, _w, sub in entries:
-            if self._is_eligible(sub):
+            if sub is SubscriptionType.API:
                 return adapter
         return None
 
@@ -711,9 +806,9 @@ class RouteWiseRouter(BaseRouter):
 
         * **S_Q excluded**: if primary was S_Q the slot is already
           consumed; if primary was S_A the PD rule said "don't use quota".
-        * **S_C excluded**: concurrency slot lifecycle (acquire / release)
-          is not wired in the fallback path.  S_C will participate in
-          fallback once Stage 2 adds proper slot accounting.
+        * **S_C excluded**: the fallback path does not call
+          ``_execute_adapter`` / ``_execute_stream_adapter``, so the
+          slot acquire/release lifecycle cannot be guaranteed.
         """
         entries = self.classified.get(model_id, [])
         return [a for a, _w, s in entries if a is not failed_adapter and s is SubscriptionType.API]
@@ -722,7 +817,7 @@ class RouteWiseRouter(BaseRouter):
         """Record a completed request observation.
 
         Updates the EMA output-token predictor and Layer 2 latency profiles.
-        Quota accounting is handled by dispatch-commit in ``_select_adapter``
+        Quota accounting is handled by selection-commit in ``_select_adapter``
         and is intentionally *not* done here -- otherwise failed, cancelled,
         or fallback-to-S_A requests would silently leak quota.
 
@@ -746,3 +841,49 @@ class RouteWiseRouter(BaseRouter):
             obs.completion_tokens,
             obs.success,
         )
+
+    # ------------------------------------------------------------------
+    # Execution overrides: S_C slot lifecycle
+    # ------------------------------------------------------------------
+
+    async def _execute_adapter(
+        self,
+        adapter: Any,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Execute adapter with S_C slot release in finally block.
+
+        If *adapter* was selected as S_C, the concurrency slot acquired in
+        ``_select_adapter`` is released here regardless of success or failure.
+        """
+        is_sc = self._adapter_sub_type.get(id(adapter)) is SubscriptionType.CONCURRENCY
+        try:
+            return await super()._execute_adapter(adapter, model_id, messages, **params)
+        finally:
+            if is_sc and self.conc_mgr is not None:
+                self.conc_mgr.release()
+
+    async def _execute_stream_adapter(
+        self,
+        adapter: Any,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> AsyncIterator[Any]:
+        """Execute streaming adapter with S_C slot release in finally block.
+
+        Mirrors ``_execute_adapter`` for the streaming path.  The slot is
+        released when the generator exits (normal completion, error, or
+        ``GeneratorExit`` from cancellation).
+        """
+        is_sc = self._adapter_sub_type.get(id(adapter)) is SubscriptionType.CONCURRENCY
+        try:
+            async for chunk in super()._execute_stream_adapter(
+                adapter, model_id, messages, **params
+            ):
+                yield chunk
+        finally:
+            if is_sc and self.conc_mgr is not None:
+                self.conc_mgr.release()
