@@ -124,6 +124,10 @@ Metrics at `http://localhost:9090`. Key metrics:
 
 Access at `https://<your-domain>/grafana/` (default login: admin/admin).
 
+> **Security note**: The `/grafana/` path is currently public-facing behind Nginx with only
+> Grafana's built-in login. Consider adding an IP allowlist or HTTP Basic Auth in the Nginx
+> `location ^~ /grafana/` block for an extra layer of protection.
+
 Dashboards are managed via the Grafana UI. To backup/restore:
 
 ```bash

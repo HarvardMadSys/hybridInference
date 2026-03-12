@@ -1,6 +1,6 @@
 # OpenRouter-Compatible API Gateway
 
-A FastAPI-based gateway that serves OpenRouter-compatible traffic, fans out to local and remote LLM adapters, and exposes observability interfaces for operations. The application listens on port 80 in production (via `systemd`) and can also run on a developer-selectable port for local work.
+A FastAPI-based gateway that serves OpenRouter-compatible traffic, fans out to local and remote LLM adapters, and exposes observability interfaces for operations. In production the application runs as a Docker container on port 8080 behind Nginx; for local development it can run on any port via `uvicorn` directly.
 
 ## Architecture
 
