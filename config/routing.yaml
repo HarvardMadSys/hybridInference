@@ -6,16 +6,16 @@ health_check: 30
 logging:
   output: output.log
 local_deployment:
-  - endpoint: http://localhost:8003
+  - endpoint: http://host.docker.internal:8003
     models:
       - qwen3-coder-30b
-  - endpoint: http://localhost:12003
+  - endpoint: http://host.docker.internal:12003
     models:
       - glm-4.6
-  - endpoint: http://localhost:12004
+  - endpoint: http://host.docker.internal:12004
     models:
       - minimax-m2
-  - endpoint: http://localhost:8004/v1
+  - endpoint: http://host.docker.internal:8004/v1
     models:
       - glm-4.7-flash
 remote_deployment:
