@@ -32,13 +32,14 @@ See [Deployment](deployment.md) for full production setup including Nginx and mo
 ### Using uv (Recommended)
 
 ```bash
-git clone https://github.com/HarvardMadSys/hybridInference.git
+git clone --recurse-submodules https://github.com/HarvardMadSys/hybridInference.git
 cd hybridInference
 
-# Set up Python environment and pre-commit hooks
+# Set up Python environment, submodules, and pre-commit hooks
 make setup-dev
 
 # Or manually:
+git submodule update --init --recursive
 uv venv -p 3.10
 source .venv/bin/activate
 uv sync
@@ -94,6 +95,24 @@ make test          # Run unit/integration tests
 make lint          # Run linters
 make check         # Run all checks
 ```
+
+## Documentation Structure
+
+This repo contains **developer documentation** only (deployment, architecture, internals).
+
+**User-facing documentation** (API quickstart, models, IDE integrations) lives in the
+[free_inference](https://github.com/HarvardMadSys/free_inference) repo, included here
+as a git submodule at `docs/free_inference/`. To update user docs:
+
+```bash
+cd docs/free_inference
+# edit docs/source/*.md
+git add . && git commit -m "docs: ..."
+git push origin main
+```
+
+After `git pull`, run `git submodule update` to sync the submodule (or use
+`make setup-dev` which does this automatically).
 
 ## Troubleshooting
 

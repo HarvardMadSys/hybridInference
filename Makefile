@@ -55,6 +55,8 @@ all: format check  ## Format code and run all checks
 
 setup-dev:  ## Set up development environment
 	@echo "$(YELLOW)Setting up development environment...$(RESET)"
+	@# Init git submodules (e.g. docs/free_inference)
+	git submodule update --init --recursive
 	@# Create venv if it doesn't exist; keep idempotent
 	[ -d .venv ] || uv venv -p 3.10
 	@# Install package in editable mode
