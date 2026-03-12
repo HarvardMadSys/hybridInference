@@ -54,7 +54,7 @@ remote_deployment:
 # Development: run FastAPI app with routing enabled
 uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
 
-# Respect production environment (see openrouter.md for systemd deployment)
+# Or use a custom port for local development
 PORT=9000 uvicorn serving.servers.app:app --host 0.0.0.0 --port $PORT
 ```
 

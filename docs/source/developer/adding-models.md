@@ -317,8 +317,10 @@ YOUR_PROVIDER_API_KEY=your-api-key-here
 ### Step 5: Test the Integration
 
 ```bash
-# Start the server
-uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
+# Start the server (Docker)
+make build s=backend
+# Or locally without Docker:
+# uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
 
 # List available models
 curl http://localhost:8080/v1/models

@@ -81,10 +81,10 @@ Centralized configuration management:
 
 Deployment and observability:
 
-- Systemd service definitions
+- Docker Compose service definitions and Dockerfiles
 - Prometheus metrics collection
-- Grafana dashboards
-- Alert manager rules
+- Grafana dashboards and provisioning
+- Alertmanager rules and alert logger
 
 ## Key Design Principles
 
