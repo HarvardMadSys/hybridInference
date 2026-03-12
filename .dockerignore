@@ -1,0 +1,30 @@
+.git
+.venv
+__pycache__
+*.pyc
+
+# Frontend build artifacts
+frontend/node_modules
+frontend/.next
+
+# Data & logs (never bake into images)
+var/
+data/
+
+# Dev/test
+test/
+tests/
+docs/
+
+# Binaries on host
+prometheus
+prometheus-*.linux-amd64/
+alertmanager-*.linux-amd64/
+
+# Rollback backup (created during migration)
+infrastructure/docker/.rollback-backup/
+
+# IDE
+.vscode/
+.idea/
+*.swp

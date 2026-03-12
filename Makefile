@@ -1,4 +1,5 @@
-.PHONY: help format lint test test-verbose test-cov setup-dev clean check all
+.PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
+       up down restart ps logs build
 
 # Default target
 .DEFAULT_GOAL := help
@@ -54,6 +55,8 @@ all: format check  ## Format code and run all checks
 
 setup-dev:  ## Set up development environment
 	@echo "$(YELLOW)Setting up development environment...$(RESET)"
+	@# Init git submodules (e.g. docs/free_inference)
+	git submodule update --init --recursive
 	@# Create venv if it doesn't exist; keep idempotent
 	[ -d .venv ] || uv venv -p 3.10
 	@# Install package in editable mode
@@ -103,3 +106,36 @@ check-all: lint test frontend-check  ## Run all checks (backend + frontend)
 	@echo "$(GREEN)OK All checks passed (backend + frontend)$(RESET)"
 
 all-with-frontend: format check-all  ## Format and check everything (backend + frontend)
+
+# ─── Docker / Production ─────────────────────────────────────────────────────
+COMPOSE := docker compose -f infrastructure/docker/docker-compose.yml --env-file .env
+
+up:  ## Start all services
+	$(COMPOSE) up -d
+
+down:  ## Stop all services
+	$(COMPOSE) down
+
+restart:  ## Restart all services (or: make restart s=backend)
+ifdef s
+	$(COMPOSE) restart $(s)
+else
+	$(COMPOSE) restart
+endif
+
+ps:  ## Show running services
+	$(COMPOSE) ps
+
+logs:  ## Tail logs (or: make logs s=backend)
+ifdef s
+	$(COMPOSE) logs -f $(s)
+else
+	$(COMPOSE) logs -f --tail=500
+endif
+
+build:  ## Rebuild images and restart (or: make build s=backend)
+ifdef s
+	$(COMPOSE) up -d --build $(s)
+else
+	$(COMPOSE) up -d --build
+endif

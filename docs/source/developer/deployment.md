@@ -2,241 +2,199 @@
 
 Guide for deploying HybridInference in production.
 
-## Production Deployment
-
-### Using systemd
-
-The recommended way to deploy HybridInference is using systemd for both the backend API
-and the frontend app.
-
-#### Backend API service
-
-1. **Install dependencies:**
-
-   ```bash
-   cd hybridInference
-   uv venv -p 3.10
-   source .venv/bin/activate
-   uv sync
-   ```
-
-2. **Create systemd unit file:**
-
-   ```bash
-   sudo cp infrastructure/systemd/hybrid_inference.service /etc/systemd/system/
-   ```
-
-3. **Configure environment:**
-
-   Edit `/etc/systemd/system/hybrid_inference.service` and update:
-
-   - `WorkingDirectory`
-   - `User`
-   - Environment variables
-
-4. **Start the service:**
-
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable hybrid_inference.service
-   sudo systemctl start hybrid_inference.service
-   ```
-
-5. **Check status:**
-
-   ```bash
-   sudo systemctl status hybrid_inference.service
-   journalctl -u hybrid_inference.service -f
-   ```
-
-#### Frontend service (Next.js)
-
-For the FreeInference web UI, we recommend running the Next.js frontend as a separate
-systemd service on port `3001` and putting Nginx in front of it.
-
-1. **Build the production frontend:**
-
-   ```bash
-   cd hybridInference/frontend
-   npm install
-   npm run build
-   ```
-
-2. **Install the systemd unit:**
-
-   ```bash
-   sudo cp infrastructure/systemd/freeinference-frontend.service /etc/systemd/system/
-   ```
-
-3. **Edit the unit if needed:**
-
-   Update `/etc/systemd/system/freeinference-frontend.service`:
-
-   - `User` and `Group`
-   - `WorkingDirectory`
-   - `ExecStart` (Node.js path) if your Node.js binary is not in the default location
-
-4. **Enable and start the frontend:**
-
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable freeinference-frontend.service
-   sudo systemctl start freeinference-frontend.service
-   sudo systemctl status freeinference-frontend.service
-   ```
-
-With this setup, the backend API listens on `127.0.0.1:8080` and the frontend on
-`127.0.0.1:3001`. The next section shows how to expose both securely via Nginx and HTTPS.
-
-### Environment Variables
-
-Required environment variables for production:
+## Quick Start (Docker)
 
 ```bash
-# API Keys
-DEEPSEEK_API_KEY=your-key
-GEMINI_API_KEY=your-key
-LLAMA_API_KEY=your-key
+# 1. Clone and configure
+git clone https://github.com/HarvardMadSys/hybridInference.git
+cd hybridInference
+cp .env.example .env
+# Edit .env — fill in DB_PASSWORD, JWT_SECRET_KEY, API_KEY_SECRET, and provider API keys
 
-# Database
-DB_NAME=hybridinference
-DB_USER=postgres
-DB_PASSWORD=your-secure-password
-DB_HOST=localhost
-DB_PORT=5432
+# 2. Start all services
+make up
 
-# Local vLLM (optional)
-LOCAL_BASE_URL=http://localhost:8000/v1
-
-# Rate limiting (optional)
-RATE_LIMIT_PER_MINUTE=100
-```
-
-### Nginx and HTTPS
-
-Nginx is required in front of the backend and frontend to:
-
-- Terminate TLS (HTTPS).
-- Serve the frontend on the root path (`/`).
-- Route API traffic (`/v1/`, `/auth/`, `/user/`, `/admin/`) to the backend.
-- Enforce request body size limits (`client_max_body_size`).
-
-An example configuration is provided in `infrastructure/nginx/freeinference.conf`. Typical
-deployment steps on Ubuntu/Debian:
-
-```bash
-sudo cp infrastructure/nginx/freeinference.conf /etc/nginx/sites-available/freeinference.conf
-sudo ln -s /etc/nginx/sites-available/freeinference.conf /etc/nginx/sites-enabled/freeinference.conf
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-This configuration assumes:
-
-- Backend API: `127.0.0.1:8080`
-- Frontend Next.js: `127.0.0.1:3001`
-- Public domain: `freeinference.org`
-- HTTPS certificates from Let's Encrypt (see comments in the config file).
-
-### Network Topology
-
-```
-Client ──▶ Cloudflare (CDN + DDoS) ──▶ Nginx (:443) ──▶ FastAPI (:8080)
-                                                    └──▶ Frontend (:3001)
-```
-
-### Cloudflare
-
-FreeInference runs behind Cloudflare for CDN and DDoS protection. Key settings:
-
-- **SSL/TLS mode**: Set to **Full (strict)** so that Cloudflare connects to Nginx over HTTPS and verifies the origin certificate. This avoids redirect loops on port 80.
-- **Real client IP**: Cloudflare sets the `CF-Connecting-IP` header with the original client IP. Nginx forwards this as `X-Real-IP` / `X-Forwarded-For` to FastAPI.
-- **Caching**: API paths (`/v1/*`) should have caching disabled in Cloudflare Page Rules. Static frontend assets benefit from edge caching.
-
-### Health Checks
-
-Monitor service health:
-
-```bash
+# 3. Verify
+make ps
 curl http://localhost:8080/health
 ```
 
-### Logs
+This starts 7 containers: backend (FastAPI), frontend (Next.js), PostgreSQL, Prometheus,
+Alertmanager, alert-logger, and Grafana. All ports bind to `127.0.0.1` only.
 
-View logs:
+## Prerequisites
+
+- Docker Engine 24+ and Docker Compose v2+
+- User in the `docker` group (`sudo usermod -aG docker $USER`)
+- Nginx on the host for SSL termination (not containerized)
+
+## Service Architecture
+
+```
+Client ──▶ Cloudflare (CDN + DDoS) ──▶ Nginx (:443) ──┬──▶ backend  (:8080)
+                                                        ├──▶ frontend (:3001)
+                                                        ├──▶ grafana  (:3000)
+                                                        └──▶ prometheus (:9090)
+
+Docker internal network:
+  backend ──▶ postgres (:5432)
+  prometheus ──▶ backend (:8080/metrics)
+  prometheus ──▶ alertmanager (:9093) ──▶ alert-logger (:5001)
+  grafana ──▶ prometheus (:9090), postgres (:5432)
+  backend ──▶ host.docker.internal (GPU SSH tunnels on host)
+```
+
+## Common Operations
+
+All commands run from the project root via `make`:
 
 ```bash
-# Follow logs
-journalctl -u hybrid_inference.service -f
-
-# View recent logs
-journalctl -u hybrid_inference.service -n 100
+make up                  # Start all services
+make down                # Stop all services
+make restart             # Restart all services
+make restart s=backend   # Restart a single service
+make ps                  # Show running services and health status
+make logs                # Tail logs (all services)
+make logs s=backend      # Tail logs for one service
+make build               # Rebuild images and restart
+make build s=frontend    # Rebuild one service
 ```
+
+## Configuration
+
+### Environment Variables
+
+All secrets and configuration live in `.env` at the project root. See `.env.example` for
+the full list with comments. Key variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Yes | PostgreSQL credentials |
+| `JWT_SECRET_KEY` | Yes | JWT signing key (generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`) |
+| `API_KEY_SECRET` | Yes | HMAC key for API key hashing |
+| `LLAMA_API_KEY`, `ZAI_API_KEY`, etc. | No | LLM provider API keys (only needed for providers you enable) |
+| `GRAFANA_USER`, `GRAFANA_PASSWORD` | No | Grafana admin credentials (default: admin/admin) |
+
+### Local GPU Endpoints
+
+If you run local inference servers (sglang, vLLM) on the host or via SSH tunnels,
+`config/models.yaml` references them as `host.docker.internal:<port>`. This DNS name
+resolves to the host machine from inside Docker containers.
+
+For bare-metal development without Docker, replace `host.docker.internal` with `localhost`.
+
+## Nginx and HTTPS
+
+Nginx runs on the host (not in Docker) to terminate TLS. An example configuration is
+at `infrastructure/nginx/freeinference.conf`.
+
+```bash
+sudo cp infrastructure/nginx/freeinference.conf /etc/nginx/sites-available/
+sudo ln -s /etc/nginx/sites-available/freeinference.conf /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+This assumes:
+- Backend: `127.0.0.1:8080`, Frontend: `127.0.0.1:3001`, Grafana: `127.0.0.1:3000`
+- HTTPS certificates from Let's Encrypt
+
+### Cloudflare
+
+FreeInference runs behind Cloudflare. Key settings:
+- **SSL/TLS mode**: Full (strict)
+- **Caching**: Disabled for API paths (`/v1/*`)
 
 ## Monitoring
 
-### Prometheus Metrics
-
-Metrics are exposed at `/metrics`:
+### Health Checks
 
 ```bash
-curl http://localhost:80/metrics
+curl http://localhost:8080/health
+# {"status":"healthy","routes_configured":17,"database_connected":true}
 ```
 
-Key metrics:
-- `http_requests_total` - Total HTTP requests
-- `http_request_duration_seconds` - Request latency
-- `model_requests_total` - Requests per model
-- `model_errors_total` - Errors per model
+### Prometheus Metrics
+
+Metrics at `http://localhost:9090`. Key metrics:
+- `http_requests_total` — Total HTTP requests
+- `http_request_duration_seconds` — Request latency
+- `model_requests_total` — Requests per model
 
 ### Grafana Dashboards
 
-Import the dashboard from `infrastructure/grafana/`.
+Access at `https://<your-domain>/grafana/` (default login: admin/admin).
 
-## Database Setup
+> **Security note**: The `/grafana/` path is currently public-facing behind Nginx with only
+> Grafana's built-in login. Consider adding an IP allowlist or HTTP Basic Auth in the Nginx
+> `location ^~ /grafana/` block for an extra layer of protection.
 
-### PostgreSQL
+Dashboards are managed via the Grafana UI. To backup/restore:
 
-1. **Create database:**
+```bash
+# Export current dashboards from UI to repo
+./infrastructure/grafana/export-dashboards.sh
 
-   ```sql
-   CREATE DATABASE hybridinference;
-   CREATE USER hybridinference WITH PASSWORD 'your-password';
-   GRANT ALL PRIVILEGES ON DATABASE hybridinference TO hybridinference;
-   ```
+# Import repo dashboards into a fresh Grafana instance
+./infrastructure/grafana/import-dashboards.sh
+```
 
-2. **Configure connection:**
+### Alerting
 
-   Update `.env` with database credentials.
+Three active alert rules: `ServiceDown`, `ServiceUnreachable`, `DatabaseDisconnected`.
+Alerts route to Slack and are logged to `alert_log_data` volume.
 
-See the Database guide in this section: [Database](database.md).
+## Database
+
+PostgreSQL runs in Docker with data persisted to a named volume (`hybridinference_postgres_data`).
+
+To access the database directly:
+
+```bash
+docker exec -it hybridinference-postgres psql -U $DB_USER -d $DB_NAME
+```
+
+For pgAdmin (optional):
+
+```bash
+# Start with admin profile
+docker compose -f infrastructure/docker/docker-compose.yml --env-file .env --profile admin up -d
+# Access at http://localhost:5050
+```
+
+See [Database](database.md) for schema details.
 
 ## Troubleshooting
 
 ### Service won't start
 
-Check logs:
 ```bash
-journalctl -u hybrid_inference.service -n 50
+make logs s=backend      # Check service-specific logs
+make ps                  # Check health status
 ```
 
 Common issues:
-- Missing API keys
-- Database connection failed
-- Port already in use
+- Missing required env vars in `.env` → compose will error with `variable X is missing a value`
+- Port already in use → check `ss -tlnp | grep <port>`
+- Database connection failed → ensure postgres is healthy: `make ps`
 
-### High latency
+### Rebuild after code changes
 
-Check:
-- Database performance
-- Provider API latency
-- Resource usage (CPU/memory)
-
-### Rate limiting
-
-Adjust rate limits in configuration:
-```yaml
-rate_limits:
-  requests_per_minute: 100
-  tokens_per_minute: 100000
+```bash
+make build               # Rebuild all images
+make build s=backend     # Rebuild just backend
 ```
+
+### Full reset (preserves data)
+
+```bash
+make down && make up
+```
+
+### Full reset (destroy data)
+
+```bash
+docker compose -f infrastructure/docker/docker-compose.yml --env-file .env down -v
+make up
+```
+
+> **Warning**: `-v` deletes all named volumes including the database.
