@@ -562,4 +562,4 @@ See `serving/adapters/vllm.py` for integrating local inference servers.
 - [OpenRouter Gateway Overview](openrouter.md) — Architecture and endpoints
 - [Routing Configuration](routing.md) — Central weight overrides and strategy
 - [Configuration Guide](configuration.md) — Environment and YAML configuration
-- [API Reference](../api-reference.md) — Top-level usage and running
+- [API Reference](https://freeinference.org/docs/api-reference) — Top-level usage and running
