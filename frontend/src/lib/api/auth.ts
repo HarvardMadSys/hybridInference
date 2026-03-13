@@ -13,6 +13,7 @@ export interface SignupResponse {
   message: string;
   email: string;
   user_id: string;
+  requires_approval: boolean;
 }
 
 export interface LoginRequest {

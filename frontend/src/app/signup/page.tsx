@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { signupSchema, SignupFormData } from '@/lib/schemas/auth';
-import { signup } from '@/lib/api/auth';
+import { signup, SignupResponse } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
@@ -13,7 +13,7 @@ import { Card } from '@/components/ui/Card';
 export default function SignupPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const [signupResult, setSignupResult] = useState<SignupResponse | null>(null);
 
   const {
     register,
@@ -28,12 +28,12 @@ export default function SignupPage() {
     setError(null);
 
     try {
-      await signup({
+      const result = await signup({
         email: data.email,
         password: data.password,
         user_name: data.userName,
       });
-      setSuccess(true);
+      setSignupResult(result);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -41,36 +41,61 @@ export default function SignupPage() {
     }
   };
 
-  if (success) {
+  if (signupResult) {
+    const isPendingApproval = signupResult.requires_approval;
+
     return (
       <div className="mx-auto w-full max-w-md">
-        <Card className="border-green-100">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
-            <svg
-              className="h-6 w-6 text-green-600"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M5 13l4 4L19 7"
-              />
-            </svg>
+        <Card className={isPendingApproval ? 'border-amber-100' : 'border-green-100'}>
+          <div
+            className={`mb-4 flex h-12 w-12 items-center justify-center rounded-full ${
+              isPendingApproval ? 'bg-amber-100' : 'bg-green-100'
+            }`}
+          >
+            {isPendingApproval ? (
+              <svg
+                className="h-6 w-6 text-amber-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+            ) : (
+              <svg
+                className="h-6 w-6 text-green-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M5 13l4 4L19 7"
+                />
+              </svg>
+            )}
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">Registration Successful!</h1>
+          <h1 className="text-2xl font-bold text-gray-900">
+            {isPendingApproval ? 'Registration Submitted' : 'Registration Successful!'}
+          </h1>
           <p className="mt-3 text-base text-gray-600">
-            We&apos;ve sent a verification email to your inbox. Please check and click the link to
-            complete verification.
+            {isPendingApproval
+              ? 'Your registration is pending admin approval. You will receive an email once your account is approved. In the meantime, please verify your email address if you received a verification link.'
+              : "We've sent a verification email to your inbox. Please check and click the link to complete verification."}
           </p>
           <div className="mt-6">
             <a
               href="/login"
               className="inline-flex items-center text-sm font-medium text-blue-600 transition-colors hover:text-blue-700"
             >
-              ← Back to Login
+              &larr; Back to Login
             </a>
           </div>
         </Card>

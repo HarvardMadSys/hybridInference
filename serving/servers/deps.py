@@ -187,3 +187,75 @@ async def require_admin(
     if not is_admin_email(current_user["email"]):
         raise HTTPException(status_code=403, detail="Admin access required.")
     return current_user
+
+
+async def verify_admin_access(
+    request: Request,
+    authorization: str | None = Header(None),
+    db_logger=Depends(get_db_logger),
+) -> str:
+    """Unified admin auth: accept either JWT (admin user) or ADMIN_TOKEN.
+
+    This dependency allows admin endpoints to be called from both the
+    frontend dashboard (JWT) and scripts/legacy admin UI (ADMIN_TOKEN).
+
+    Returns:
+        Admin identifier string (email for JWT auth, IP for token auth).
+    """
+    import os
+
+    from serving.config.settings import is_admin_email
+    from serving.utils.jwt import verify_access_token
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing authentication. Provide a JWT or admin token via Authorization header.",
+        )
+
+    token = authorization[7:]
+
+    # Try JWT first: valid JWTs contain a "sub" claim with a user ID
+    try:
+        payload = verify_access_token(token)
+        user_id = payload.get("sub")
+        email = payload.get("email", "")
+
+        if not is_admin_email(email):
+            raise HTTPException(status_code=403, detail="Admin access required.")
+
+        # Verify user still exists and is active in DB (prevent stale JWT abuse)
+        if db_logger and db_logger.pool and user_id:
+            async with db_logger.pool.acquire() as conn:
+                user_row = await conn.fetchrow(
+                    "SELECT email, status FROM users WHERE id = $1",
+                    user_id,
+                )
+            if not user_row or user_row["status"] != "active":
+                raise HTTPException(status_code=403, detail="Admin account is no longer active.")
+            # Use DB email (authoritative) in case it changed since JWT was issued
+            email = user_row["email"]
+            if not is_admin_email(email):
+                raise HTTPException(status_code=403, detail="Admin access required.")
+
+        return email
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        pass
+
+    # Fall back to ADMIN_TOKEN
+    admin_token = os.getenv("ADMIN_TOKEN", "")
+    if not admin_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication token.",
+        )
+
+    import hmac as _hmac
+
+    if not _hmac.compare_digest(token, admin_token):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication token.",
+        )
+
+    return request.client.host if request.client else "admin-token"

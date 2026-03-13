@@ -20,6 +20,7 @@ class SignupResponse(BaseModel):
     message: str
     email: str
     user_id: str
+    requires_approval: bool = False
 
 
 class LoginRequest(BaseModel):
