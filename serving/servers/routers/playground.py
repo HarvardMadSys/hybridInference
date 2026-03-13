@@ -19,20 +19,47 @@ router = APIRouter(prefix="/internal/playground", tags=["Playground"])
 _INTERNAL_KEYS = frozenset({"_routing"})
 
 
+class PlaygroundModelItem(BaseModel):
+    """Canonical model metadata exposed to the admin playground."""
+
+    id: str
+    name: str
+
+
 @router.get("/models")
 async def list_models(
     _admin: dict[str, Any] = Depends(require_admin),
     router_exec=Depends(get_router),
 ) -> dict[str, Any]:
-    """Return available model IDs for the playground."""
-    model_ids = sorted(router_exec.routes.keys())
-    return {"models": model_ids}
+    """Return canonical model metadata for the playground selector."""
+    canonical_models: dict[str, PlaygroundModelItem] = {}
+
+    for route in router_exec.routes.values():
+        if not route.adapters:
+            continue
+
+        primary_cfg = route.adapters[0][0].config
+        canonical_id = primary_cfg.id
+        if canonical_id in canonical_models:
+            continue
+
+        canonical_models[canonical_id] = PlaygroundModelItem(
+            id=canonical_id,
+            name=primary_cfg.name,
+        )
+
+    models = sorted(
+        canonical_models.values(),
+        key=lambda model: (model.name.lower(), model.id.lower()),
+    )
+    return {"models": [model.model_dump() for model in models]}
 
 
 class PlaygroundChatRequest(BaseModel):
     """Request body for playground chat completion."""
 
     model: str
+    system_prompt: str = ""
     messages: list[dict[str, str]]
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1, le=32768)
@@ -63,12 +90,18 @@ async def playground_chat(
     router_exec=Depends(get_router),
 ) -> StreamingResponse:
     """Stream a chat completion for admin testing."""
+    effective_messages = body.messages
+    if body.system_prompt.strip():
+        effective_messages = [
+            {"role": "system", "content": body.system_prompt.strip()},
+            *body.messages,
+        ]
 
     async def _generate():
         yield make_role_chunk(model=body.model)
         async for chunk in router_exec.stream_chat_completion(
             body.model,
-            body.messages,
+            effective_messages,
             temperature=body.temperature,
             max_tokens=body.max_tokens,
         ):
@@ -76,4 +109,11 @@ async def playground_chat(
                 chunk = _sanitize_chunk(chunk)
             yield chunk
 
-    return StreamingResponse(_generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

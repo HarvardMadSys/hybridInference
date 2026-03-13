@@ -389,7 +389,9 @@ class TestPlaygroundAccess:
         )
 
         assert response.status_code == 200
-        assert response.json() == {"models": ["playground-model"]}
+        assert response.json() == {
+            "models": [{"id": "playground-model", "name": "playground-model"}]
+        }
 
     @pytest.mark.asyncio
     async def test_playground_models_uses_db_email_for_admin_check(
@@ -440,6 +442,8 @@ class TestPlaygroundAccess:
         ) as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
+            assert response.headers["cache-control"] == "no-cache"
+            assert response.headers["x-accel-buffering"] == "no"
 
             lines: list[str] = []
             async for line in response.aiter_lines():
