@@ -5,6 +5,7 @@ import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import {
   AdminUser,
+  StatusCounts,
   UserDetail,
   listUsers,
   getUserDetail,
@@ -31,7 +32,13 @@ function relTime(s: string | null): string {
 export default function AdminPage() {
   const { state } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [total, setTotal] = useState(0);
+  const [counts, setCounts] = useState<StatusCounts>({
+    all: 0,
+    pending_approval: 0,
+    active: 0,
+    suspended: 0,
+    rejected: 0,
+  });
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +61,7 @@ export default function AdminPage() {
     try {
       const d = await listUsers(filter || undefined);
       setUsers(d.users);
-      setTotal(d.total);
+      setCounts(d.status_counts);
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -164,9 +171,6 @@ export default function AdminPage() {
     }).finally(() => setSaving(false));
   };
 
-  const pending = users.filter((u) => u.status === 'pending_approval').length;
-  const active = users.filter((u) => u.status === 'active').length;
-
   if (!state.user?.is_admin) {
     return (
       <ProtectedRoute>
@@ -187,11 +191,11 @@ export default function AdminPage() {
   }
 
   const filters = [
-    { key: '', label: 'All', count: total },
-    { key: 'pending_approval', label: 'Pending', count: pending },
-    { key: 'active', label: 'Active', count: active },
-    { key: 'rejected', label: 'Rejected' },
-    { key: 'suspended', label: 'Suspended' },
+    { key: '', label: 'All', count: counts.all },
+    { key: 'pending_approval', label: 'Pending', count: counts.pending_approval },
+    { key: 'active', label: 'Active', count: counts.active },
+    { key: 'rejected', label: 'Rejected', count: counts.rejected },
+    { key: 'suspended', label: 'Suspended', count: counts.suspended },
   ];
 
   return (

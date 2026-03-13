@@ -22,6 +22,7 @@ from serving.schemas_admin import (
     RejectUserRequest,
     RejectUserResponse,
     RevokeAPIKeyResponse,
+    StatusCounts,
     UpdateAPIKeyRequest,
     UpdateAPIKeyResponse,
     UpdateUserRequest,
@@ -721,6 +722,18 @@ async def list_users(
         )
         total = count_row["total"] if count_row else 0
 
+        # Always fetch per-status counts (unfiltered)
+        count_rows = await conn.fetch("SELECT status, COUNT(*) as cnt FROM users GROUP BY status")
+        sc = {r["status"]: r["cnt"] for r in count_rows}
+        all_total = sum(sc.values())
+        status_counts = StatusCounts(
+            all=all_total,
+            pending_approval=sc.get("pending_approval", 0),
+            active=sc.get("active", 0),
+            suspended=sc.get("suspended", 0),
+            rejected=sc.get("rejected", 0),
+        )
+
         # LEFT JOIN api_keys to get key status per user
         rows = await conn.fetch(
             f"""
@@ -738,7 +751,7 @@ async def list_users(
         )
 
         if not rows:
-            return ListUsersResponse(total=total, users=[])
+            return ListUsersResponse(total=total, users=[], status_counts=status_counts)
 
         # Batch fetch usage for all users with active keys
         user_ids = [row["id"] for row in rows if row["key_prefix"]]
@@ -793,7 +806,7 @@ async def list_users(
         for row in rows
     ]
 
-    return ListUsersResponse(total=total, users=users)
+    return ListUsersResponse(total=total, users=users, status_counts=status_counts)
 
 
 @router.post("/admin/users/{user_id}/approve", response_model=ApproveUserResponse)

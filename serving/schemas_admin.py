@@ -186,11 +186,22 @@ class UserListItem(BaseModel):
     usage_month_usd: Decimal = Field(default=Decimal("0"))
 
 
+class StatusCounts(BaseModel):
+    """Per-status user counts (always unfiltered)."""
+
+    all: int = 0
+    pending_approval: int = 0
+    active: int = 0
+    suspended: int = 0
+    rejected: int = 0
+
+
 class ListUsersResponse(BaseModel):
     """Response payload for listing users."""
 
     total: int
     users: list[UserListItem]
+    status_counts: StatusCounts = Field(default_factory=StatusCounts)
 
 
 class ApproveUserRequest(BaseModel):
@@ -282,6 +293,7 @@ __all__ = [
     "RejectUserRequest",
     "RejectUserResponse",
     "RevokeAPIKeyResponse",
+    "StatusCounts",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
     "UpdateUserRequest",

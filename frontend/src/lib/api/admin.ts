@@ -26,9 +26,18 @@ export interface AdminUser {
   usage_month_usd: number;
 }
 
+export interface StatusCounts {
+  all: number;
+  pending_approval: number;
+  active: number;
+  suspended: number;
+  rejected: number;
+}
+
 export interface ListUsersResponse {
   total: number;
   users: AdminUser[];
+  status_counts: StatusCounts;
 }
 
 export interface ApproveRejectResponse {
