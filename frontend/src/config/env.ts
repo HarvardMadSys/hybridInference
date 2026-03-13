@@ -3,32 +3,12 @@
 // For most developers, the defaults below are sufficient.
 // If you need to override (e.g., backend on different port), you can:
 // 1. Create .env.local and set NEXT_PUBLIC_API_BASE=http://localhost:YOUR_PORT
-// 2. Or set environment variable when running: NEXT_PUBLIC_API_BASE=http://localhost:8080 npm run dev
-
-const isDevelopment = process.env.NODE_ENV === 'development';
-
-function resolveRuntimeApiBase(): string | null {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  const { hostname } = window.location;
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return `http://${hostname}:8080`;
-  }
-
-  return null;
-}
-
-const defaultApiBase =
-  resolveRuntimeApiBase() ||
-  process.env.NEXT_PUBLIC_API_BASE ||
-  (isDevelopment ? 'http://localhost:8080' : 'https://freeinference.org');
+// 2. Or set environment variable when running: NEXT_PUBLIC_API_BASE=http://localhost:3001 npm run dev
 
 export const config = {
   // API Configuration
-  // Development defaults to the local backend; production defaults to the public deployment.
-  apiBase: defaultApiBase,
+  // Default: https://freeinference.org (production backend via nginx)
+  apiBase: process.env.NEXT_PUBLIC_API_BASE || 'https://freeinference.org',
 
   // Application Configuration
   appName: process.env.NEXT_PUBLIC_APP_NAME || 'FreeInference',
@@ -39,7 +19,7 @@ export const config = {
   enableDarkMode: process.env.NEXT_PUBLIC_ENABLE_DARK_MODE !== 'false',
 
   // Computed
-  isDevelopment,
+  isDevelopment: process.env.NODE_ENV === 'development',
   isProduction: process.env.NODE_ENV === 'production',
 } as const;
 
