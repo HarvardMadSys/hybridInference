@@ -397,7 +397,11 @@ class DatabaseLogger:
                     password_hash TEXT NOT NULL,
                     user_name TEXT,
                     email_verified BOOLEAN DEFAULT FALSE,
-                    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'deleted')),
+                    status TEXT DEFAULT 'active'
+                        CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
+                    approval_note TEXT,
+                    reviewed_at TIMESTAMPTZ,
+                    reviewed_by TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     last_login_at TIMESTAMPTZ
                 )
@@ -416,6 +420,40 @@ class DatabaseLogger:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_users_created_at
                 ON users(created_at DESC)
+            """)
+
+            # Migrations: approval-based registration columns
+            await conn.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS approval_note TEXT
+            """)
+
+            await conn.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ
+            """)
+
+            await conn.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS reviewed_by TEXT
+            """)
+
+            # Expand status CHECK constraint to include pending_approval and rejected
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check;
+                    ALTER TABLE users
+                        ADD CONSTRAINT users_status_check
+                        CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected'));
+                EXCEPTION WHEN others THEN
+                    NULL;
+                END $$
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_users_pending_approval
+                ON users(created_at DESC) WHERE status = 'pending_approval'
             """)
 
             # Auth sessions table for refresh token management

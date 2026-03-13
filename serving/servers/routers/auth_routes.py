@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 
-from serving.config.settings import is_admin_email
+from serving.config.settings import is_admin_email, settings
 from serving.schemas_auth import (
     ForgotPasswordRequest,
     LoginRequest,
@@ -25,7 +25,11 @@ from serving.schemas_auth import (
 )
 from serving.servers.deps import get_current_user, get_db_logger
 from serving.utils import password as password_utils
-from serving.utils.email import is_email_enabled, send_verification_email
+from serving.utils.email import (
+    is_email_enabled,
+    send_new_registration_admin_email,
+    send_verification_email,
+)
 from serving.utils.jwt import (
     create_access_token,
     create_refresh_token,
@@ -102,6 +106,10 @@ async def signup(
         # Return conflict using standard HTTPException for test apps without exception handlers
         raise HTTPException(status_code=409, detail=f"Email {body.email} already registered")
 
+    # Determine initial status based on approval setting
+    require_approval = os.getenv("SIGNUP_REQUIRE_APPROVAL", "0") == "1"
+    initial_status = "pending_approval" if require_approval else "active"
+
     # Create user
     user_id = generate_ulid()
     password_hash_str = password_utils.hash_password(body.password)
@@ -117,7 +125,7 @@ async def signup(
             password_hash_str,
             body.user_name,
             False,  # Email not verified yet
-            "active",
+            initial_status,
         )
 
     # Send verification email if SMTP is configured
@@ -144,12 +152,32 @@ async def signup(
         if not email_sent:
             logger.warning(f"Failed to send verification email to {body.email}")
 
-    logger.info(f"New user registered: {user_id} ({body.email})")
+    # Notify admins of new registration when approval is required
+    if require_approval and is_email_enabled():
+        admin_emails = [e.strip() for e in settings.admin_emails.split(",") if e.strip()]
+        for admin_email in admin_emails:
+            send_new_registration_admin_email(
+                to_email=admin_email,
+                user_email=body.email,
+                user_name=body.user_name,
+                user_id=user_id,
+            )
+
+    logger.info(f"New user registered: {user_id} ({body.email}) [status={initial_status}]")
+
+    if require_approval:
+        message = (
+            "Account created successfully. Your registration is pending admin approval. "
+            "You will receive an email once your account is approved."
+        )
+    else:
+        message = "Account created successfully. Please check your email to verify your account."
 
     return SignupResponse(
-        message="Account created successfully. Please check your email to verify your account.",
+        message=message,
         email=body.email,
         user_id=user_id,
+        requires_approval=require_approval,
     )
 
 
@@ -203,6 +231,18 @@ async def login(
         )
 
     # Check account status
+    if user_row["status"] == "pending_approval":
+        raise HTTPException(
+            status_code=403,
+            detail="Your registration is pending admin approval. You will receive an email once approved.",
+        )
+
+    if user_row["status"] == "rejected":
+        raise HTTPException(
+            status_code=403,
+            detail="Your registration was not approved. Please contact support for details.",
+        )
+
     if user_row["status"] != "active":
         raise HTTPException(
             status_code=403,

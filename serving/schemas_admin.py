@@ -156,16 +156,136 @@ class RegenerateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     )
 
 
+# ========================================
+# User Registration Management Schemas
+# ========================================
+
+
+class UserListItem(BaseModel):
+    """Single user item in admin user list.
+
+    Includes API key status and usage data via LEFT JOIN.
+    """
+
+    id: str
+    email: str
+    user_name: str | None
+    status: str
+    email_verified: bool
+    approval_note: str | None = None
+    reviewed_at: datetime | None = None
+    reviewed_by: str | None = None
+    created_at: datetime
+    last_login_at: datetime | None = None
+    # API key info (populated via LEFT JOIN)
+    has_key: bool = False
+    key_prefix: str | None = None
+    key_status: str | None = None
+    key_tier: str | None = None
+    usage_today_usd: Decimal = Field(default=Decimal("0"))
+    usage_month_usd: Decimal = Field(default=Decimal("0"))
+
+
+class ListUsersResponse(BaseModel):
+    """Response payload for listing users."""
+
+    total: int
+    users: list[UserListItem]
+
+
+class ApproveUserRequest(BaseModel):
+    """Request payload for approving a user registration."""
+
+    note: str | None = Field(None, max_length=500, description="Optional approval note")
+
+
+class ApproveUserResponse(BaseModel):
+    """Response payload for successful user approval."""
+
+    user_id: str
+    email: str
+    status: str
+    message: str
+
+
+class RejectUserRequest(BaseModel):
+    """Request payload for rejecting a user registration."""
+
+    reason: str = Field(
+        ..., min_length=1, max_length=500, description="Reason for rejection (sent to user)"
+    )
+
+
+class RejectUserResponse(BaseModel):
+    """Response payload for successful user rejection."""
+
+    user_id: str
+    email: str
+    status: str
+    message: str
+
+
+class UserDetailResponse(BaseModel):
+    """Detailed user info including usage analytics."""
+
+    id: str
+    email: str
+    user_name: str | None
+    status: str
+    email_verified: bool
+    created_at: datetime
+    last_login_at: datetime | None = None
+    # Key info
+    has_key: bool = False
+    key_prefix: str | None = None
+    key_tier: str | None = None
+    quota_daily_usd: float | None = None
+    quota_monthly_usd: float | None = None
+    # Usage
+    usage_today_usd: float = 0.0
+    usage_today_requests: int = 0
+    usage_month_usd: float = 0.0
+    usage_month_requests: int = 0
+    models_used: list[str] = Field(default_factory=list)
+    last_request_at: datetime | None = None
+
+
+class UpdateUserRequest(BaseModel):
+    """Request payload for updating user/key settings."""
+
+    tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
+    status: str | None = Field(None, pattern="^(active|suspended)$")
+    quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
+    quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)
+
+
+class UpdateUserResponse(BaseModel):
+    """Response payload for successful user update."""
+
+    user_id: str
+    updated_fields: list[str]
+    message: str
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
     "APIKeyDetailUsage",
     "APIKeyListItem",
+    "ApproveUserRequest",
+    "ApproveUserResponse",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
     "ListAPIKeysResponse",
+    "ListUsersResponse",
     "RegenerateAPIKeyResponse",
+    "RejectUserRequest",
+    "RejectUserResponse",
     "RevokeAPIKeyResponse",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
+    "UpdateUserRequest",
+    "UpdateUserResponse",
+    "UserDetailResponse",
+    "UserListItem",
 ]

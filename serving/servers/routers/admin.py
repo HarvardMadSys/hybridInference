@@ -12,21 +12,35 @@ from serving.schemas_admin import (
     APIKeyDetailResponse,
     APIKeyDetailUsage,
     APIKeyListItem,
+    ApproveUserRequest,
+    ApproveUserResponse,
     CreateAPIKeyRequest,
     CreateAPIKeyResponse,
     ListAPIKeysResponse,
+    ListUsersResponse,
     RegenerateAPIKeyResponse,
+    RejectUserRequest,
+    RejectUserResponse,
     RevokeAPIKeyResponse,
     UpdateAPIKeyRequest,
     UpdateAPIKeyResponse,
+    UpdateUserRequest,
+    UpdateUserResponse,
+    UserDetailResponse,
+    UserListItem,
 )
 from serving.servers.auth import (
     generate_api_key,
     hash_api_key,
     log_admin_action,
-    verify_admin_token,
 )
-from serving.servers.deps import get_db_logger, get_rate_limiter, get_router, get_services
+from serving.servers.deps import (
+    get_db_logger,
+    get_rate_limiter,
+    get_router,
+    get_services,
+    verify_admin_access,
+)
 
 router = APIRouter()
 
@@ -134,7 +148,7 @@ async def admin_get_routing(
 async def create_api_key(
     request: Request,
     payload: CreateAPIKeyRequest,
-    admin_ip: str = Depends(verify_admin_token),
+    admin_ip: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> CreateAPIKeyResponse:
     """Create a new API key for a user.
@@ -229,7 +243,7 @@ async def list_api_keys(
     tier: str | None = None,
     limit: int = 100,
     offset: int = 0,
-    admin_ip: str = Depends(verify_admin_token),
+    admin_ip: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> ListAPIKeysResponse:
     """List all API keys with optional filtering.
@@ -351,7 +365,7 @@ async def list_api_keys(
 async def get_api_key_detail(
     request: Request,
     user_id: str,
-    admin_ip: str = Depends(verify_admin_token),
+    admin_ip: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyDetailResponse:
     """Get detailed information about a specific API key including usage analytics.
@@ -469,7 +483,7 @@ async def update_api_key(
     request: Request,
     user_id: str,
     payload: UpdateAPIKeyRequest,
-    admin_ip: str = Depends(verify_admin_token),
+    admin_ip: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> UpdateAPIKeyResponse:
     """Update an existing API key's settings.
@@ -539,7 +553,7 @@ async def revoke_api_key(
     request: Request,
     user_id: str,
     hard_delete: bool = False,
-    admin_ip: str = Depends(verify_admin_token),
+    admin_ip: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> RevokeAPIKeyResponse:
     """Revoke or delete an API key.
@@ -597,7 +611,7 @@ async def revoke_api_key(
 async def regenerate_api_key(
     request: Request,
     user_id: str,
-    admin_ip: str = Depends(verify_admin_token),
+    admin_ip: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> RegenerateAPIKeyResponse:
     """Regenerate API key for a user (e.g., after suspected compromise).
@@ -659,4 +673,435 @@ async def regenerate_api_key(
         user_id=user_id,
         key_prefix=new_key_prefix,
         old_key_prefix=old_key_prefix,
+    )
+
+
+# ========================================
+# User Registration Management Endpoints
+# ========================================
+
+
+@router.get("/admin/users", response_model=ListUsersResponse)
+async def list_users(
+    request: Request,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> ListUsersResponse:
+    """List registered users with optional status filter.
+
+    Query Parameters:
+    - status: Filter by status (pending_approval|active|suspended|rejected|deleted)
+    - limit: Max results (default: 100)
+    - offset: Pagination offset
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    where_clauses = []
+    params: list[Any] = []
+
+    if status:
+        where_clauses.append(f"status = ${len(params) + 1}")
+        params.append(status)
+
+    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    params.append(limit)
+    params.append(offset)
+
+    async with db_logger.pool.acquire() as conn:
+        count_row = await conn.fetchrow(
+            f"SELECT COUNT(*) as total FROM users {where_sql}",
+            *params[: len(params) - 2],
+        )
+        total = count_row["total"] if count_row else 0
+
+        # LEFT JOIN api_keys to get key status per user
+        rows = await conn.fetch(
+            f"""
+            SELECT u.id, u.email, u.user_name, u.status, u.email_verified,
+                   u.approval_note, u.reviewed_at, u.reviewed_by,
+                   u.created_at, u.last_login_at,
+                   k.key_prefix, k.status AS key_status, k.tier AS key_tier
+            FROM users u
+            LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
+            {where_sql.replace("status", "u.status") if where_sql else ""}
+            ORDER BY u.created_at DESC
+            LIMIT ${len(params) - 1} OFFSET ${len(params)}
+            """,
+            *params,
+        )
+
+        if not rows:
+            return ListUsersResponse(total=total, users=[])
+
+        # Batch fetch usage for all users with active keys
+        user_ids = [row["id"] for row in rows if row["key_prefix"]]
+
+        usage_today_map: dict[str, Decimal] = {}
+        usage_month_map: dict[str, Decimal] = {}
+
+        if user_ids:
+            usage_today_rows = await conn.fetch(
+                """
+                SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
+                FROM api_logs
+                WHERE user_id = ANY($1::text[])
+                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                GROUP BY user_id
+                """,
+                user_ids,
+            )
+            usage_today_map = {r["user_id"]: r["cost"] for r in usage_today_rows}
+
+            usage_month_rows = await conn.fetch(
+                """
+                SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
+                FROM api_logs
+                WHERE user_id = ANY($1::text[])
+                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                GROUP BY user_id
+                """,
+                user_ids,
+            )
+            usage_month_map = {r["user_id"]: r["cost"] for r in usage_month_rows}
+
+    users = [
+        UserListItem(
+            id=row["id"],
+            email=row["email"],
+            user_name=row["user_name"],
+            status=row["status"],
+            email_verified=row["email_verified"],
+            approval_note=row["approval_note"],
+            reviewed_at=row["reviewed_at"],
+            reviewed_by=row["reviewed_by"],
+            created_at=row["created_at"],
+            last_login_at=row["last_login_at"],
+            has_key=row["key_prefix"] is not None,
+            key_prefix=row["key_prefix"],
+            key_status=row["key_status"],
+            key_tier=row["key_tier"],
+            usage_today_usd=Decimal(str(usage_today_map.get(row["id"], 0))),
+            usage_month_usd=Decimal(str(usage_month_map.get(row["id"], 0))),
+        )
+        for row in rows
+    ]
+
+    return ListUsersResponse(total=total, users=users)
+
+
+@router.post("/admin/users/{user_id}/approve", response_model=ApproveUserResponse)
+async def approve_user(
+    request: Request,
+    user_id: str,
+    payload: ApproveUserRequest | None = None,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> ApproveUserResponse:
+    """Approve a pending user registration.
+
+    Changes user status from pending_approval to active and notifies the user.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    async with db_logger.pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            "SELECT id, email, status FROM users WHERE id = $1",
+            user_id,
+        )
+
+    if not user_row:
+        raise HTTPException(404, f"User '{user_id}' not found")
+
+    if user_row["status"] != "pending_approval":
+        raise HTTPException(
+            409,
+            f"User is not pending approval (current status: {user_row['status']})",
+        )
+
+    note = payload.note if payload else None
+
+    async with db_logger.pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET status = 'active', approval_note = $1, reviewed_at = NOW(), reviewed_by = $2
+            WHERE id = $3
+            """,
+            note,
+            admin_id,
+            user_id,
+        )
+
+    await log_admin_action(
+        db_logger,
+        admin_id,
+        "approve_user",
+        user_id,
+        {"email": user_row["email"], "note": note},
+    )
+
+    from serving.utils.email import is_email_enabled, send_approval_email
+
+    if is_email_enabled():
+        send_approval_email(user_row["email"])
+
+    return ApproveUserResponse(
+        user_id=user_id,
+        email=user_row["email"],
+        status="active",
+        message=f"User {user_row['email']} has been approved.",
+    )
+
+
+@router.post("/admin/users/{user_id}/reject", response_model=RejectUserResponse)
+async def reject_user(
+    request: Request,
+    user_id: str,
+    payload: RejectUserRequest,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> RejectUserResponse:
+    """Reject a pending user registration.
+
+    Changes user status from pending_approval to rejected and notifies the user
+    with the provided reason.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    async with db_logger.pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            "SELECT id, email, status FROM users WHERE id = $1",
+            user_id,
+        )
+
+    if not user_row:
+        raise HTTPException(404, f"User '{user_id}' not found")
+
+    if user_row["status"] != "pending_approval":
+        raise HTTPException(
+            409,
+            f"User is not pending approval (current status: {user_row['status']})",
+        )
+
+    async with db_logger.pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET status = 'rejected', approval_note = $1, reviewed_at = NOW(), reviewed_by = $2
+            WHERE id = $3
+            """,
+            payload.reason,
+            admin_id,
+            user_id,
+        )
+
+    await log_admin_action(
+        db_logger,
+        admin_id,
+        "reject_user",
+        user_id,
+        {"email": user_row["email"], "reason": payload.reason},
+    )
+
+    from serving.utils.email import is_email_enabled, send_rejection_email
+
+    if is_email_enabled():
+        send_rejection_email(user_row["email"], payload.reason)
+
+    return RejectUserResponse(
+        user_id=user_id,
+        email=user_row["email"],
+        status="rejected",
+        message=f"User {user_row['email']} has been rejected.",
+    )
+
+
+@router.get("/admin/users/{user_id}/detail", response_model=UserDetailResponse)
+async def get_user_detail(
+    user_id: str,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> UserDetailResponse:
+    """Get detailed user info including usage analytics.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    async with db_logger.pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            """
+            SELECT u.id, u.email, u.user_name, u.status, u.email_verified,
+                   u.created_at, u.last_login_at,
+                   k.key_prefix, k.tier, k.quota_daily_cost_usd, k.quota_monthly_cost_usd
+            FROM users u
+            LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
+            WHERE u.id = $1
+            """,
+            user_id,
+        )
+
+    if not user_row:
+        raise HTTPException(404, f"User '{user_id}' not found")
+
+    has_key = user_row["key_prefix"] is not None
+    usage_today_usd = 0.0
+    usage_today_req = 0
+    usage_month_usd = 0.0
+    usage_month_req = 0
+    models_used: list[str] = []
+    last_request_at = None
+
+    if has_key:
+        async with db_logger.pool.acquire() as conn:
+            today = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                FROM api_logs
+                WHERE user_id = $1
+                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                """,
+                user_id,
+            )
+            month = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                FROM api_logs
+                WHERE user_id = $1
+                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                """,
+                user_id,
+            )
+            models_rows = await conn.fetch(
+                """
+                SELECT DISTINCT model_id FROM api_logs
+                WHERE user_id = $1 AND timestamp >= NOW() - INTERVAL '30 days'
+                ORDER BY model_id
+                """,
+                user_id,
+            )
+            last_req = await conn.fetchrow(
+                "SELECT MAX(timestamp) AS ts FROM api_logs WHERE user_id = $1",
+                user_id,
+            )
+
+        if today:
+            usage_today_usd = float(today["cost"])
+            usage_today_req = int(today["reqs"])
+        if month:
+            usage_month_usd = float(month["cost"])
+            usage_month_req = int(month["reqs"])
+        models_used = [r["model_id"] for r in models_rows]
+        if last_req and last_req["ts"]:
+            last_request_at = last_req["ts"]
+
+    return UserDetailResponse(
+        id=user_row["id"],
+        email=user_row["email"],
+        user_name=user_row["user_name"],
+        status=user_row["status"],
+        email_verified=user_row["email_verified"],
+        created_at=user_row["created_at"],
+        last_login_at=user_row["last_login_at"],
+        has_key=has_key,
+        key_prefix=user_row["key_prefix"],
+        key_tier=user_row["tier"],
+        quota_daily_usd=float(user_row["quota_daily_cost_usd"])
+        if user_row["quota_daily_cost_usd"]
+        else None,
+        quota_monthly_usd=float(user_row["quota_monthly_cost_usd"])
+        if user_row["quota_monthly_cost_usd"]
+        else None,
+        usage_today_usd=usage_today_usd,
+        usage_today_requests=usage_today_req,
+        usage_month_usd=usage_month_usd,
+        usage_month_requests=usage_month_req,
+        models_used=models_used,
+        last_request_at=last_request_at,
+    )
+
+
+@router.patch("/admin/users/{user_id}", response_model=UpdateUserResponse)
+async def update_user(
+    request: Request,
+    user_id: str,
+    payload: UpdateUserRequest,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> UpdateUserResponse:
+    """Update user account status or API key settings (tier, quota).
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    payload_dict = payload.model_dump(exclude_unset=True)
+    if not payload_dict:
+        raise HTTPException(422, "No fields to update")
+
+    async with db_logger.pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT id FROM users WHERE id = $1", user_id)
+        if not user_row:
+            raise HTTPException(404, f"User '{user_id}' not found")
+
+        updated: list[str] = []
+
+        # Update user-level fields
+        if "status" in payload_dict:
+            await conn.execute(
+                "UPDATE users SET status = $1 WHERE id = $2",
+                payload_dict["status"],
+                user_id,
+            )
+            updated.append("status")
+
+        # Update key-level fields
+        key_fields = {
+            k: v
+            for k, v in payload_dict.items()
+            if k in ("tier", "quota_daily_cost_usd", "quota_monthly_cost_usd")
+        }
+        if key_fields:
+            has_key = await conn.fetchrow(
+                "SELECT id FROM api_keys WHERE account_id = $1 AND status = 'active'",
+                user_id,
+            )
+            if not has_key:
+                raise HTTPException(409, "User has no active API key to update")
+
+            for field, value in key_fields.items():
+                await conn.execute(
+                    f"UPDATE api_keys SET {field} = $1 WHERE account_id = $2 AND status = 'active'",
+                    value,
+                    user_id,
+                )
+                updated.append(field)
+
+    await log_admin_action(
+        db_logger,
+        admin_id,
+        "update_user",
+        user_id,
+        _serialize_for_audit({"updated_fields": updated, "values": payload_dict}),
+    )
+
+    return UpdateUserResponse(
+        user_id=user_id,
+        updated_fields=updated,
+        message=f"Updated {', '.join(updated)} for user {user_id}.",
     )
