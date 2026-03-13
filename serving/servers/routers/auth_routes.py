@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 
+from serving.config.settings import is_admin_email
 from serving.schemas_auth import (
     ForgotPasswordRequest,
     LoginRequest,
@@ -217,11 +218,13 @@ async def login(
 
     # Create session and tokens
     session_id = generate_session_id()
+    is_admin = is_admin_email(user_row["email"])
     access_token, jti = create_access_token(
         user_id=user_row["id"],
         email=user_row["email"],
         tier="free",  # TODO: Get from user record
         session_id=session_id,
+        is_admin=is_admin,
     )
     refresh_token = create_refresh_token()
     refresh_token_hash_str = hash_refresh_token(refresh_token)
@@ -274,6 +277,7 @@ async def login(
             email_verified=user_row["email_verified"],
             created_at=user_row["created_at"],
             last_login_at=datetime.now(timezone.utc),
+            is_admin=is_admin,
         ),
     )
 
@@ -391,11 +395,13 @@ async def refresh(
         )
 
     # Create new access token
+    is_admin = is_admin_email(user_row["email"])
     access_token, jti = create_access_token(
         user_id=user_row["id"],
         email=user_row["email"],
         tier="free",
         session_id=session_row["sid"],
+        is_admin=is_admin,
     )
 
     # Generate new refresh token for rotation
