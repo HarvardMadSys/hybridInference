@@ -32,6 +32,7 @@ from serving.stream import done_sentinel, make_final_usage_chunk
 from serving.utils.jwt import generate_ulid
 from serving.utils.password import hash_password
 
+
 class _PlaygroundAdapter(BaseAdapter):
     """Simple streaming adapter for playground tests."""
 
@@ -267,7 +268,9 @@ class TestAdminModeUnit:
         monkeypatch.setattr(settings_module.settings, "admin_emails", ["admin@example.com"])
 
         with pytest.raises(HTTPException) as exc:
-            await deps_module.require_admin(current_user={"email": "user@example.com", "user_id": "u1"})
+            await deps_module.require_admin(
+                current_user={"email": "user@example.com", "user_id": "u1"}
+            )
 
         assert exc.value.status_code == 403
 
