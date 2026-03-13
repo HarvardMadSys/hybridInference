@@ -218,9 +218,26 @@ async def verify_admin_access(
     # Try JWT first: valid JWTs contain a "sub" claim with a user ID
     try:
         payload = verify_access_token(token)
+        user_id = payload.get("sub")
         email = payload.get("email", "")
+
         if not is_admin_email(email):
             raise HTTPException(status_code=403, detail="Admin access required.")
+
+        # Verify user still exists and is active in DB (prevent stale JWT abuse)
+        if db_logger and db_logger.pool and user_id:
+            async with db_logger.pool.acquire() as conn:
+                user_row = await conn.fetchrow(
+                    "SELECT email, status FROM users WHERE id = $1",
+                    user_id,
+                )
+            if not user_row or user_row["status"] != "active":
+                raise HTTPException(status_code=403, detail="Admin account is no longer active.")
+            # Use DB email (authoritative) in case it changed since JWT was issued
+            email = user_row["email"]
+            if not is_admin_email(email):
+                raise HTTPException(status_code=403, detail="Admin access required.")
+
         return email
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         pass

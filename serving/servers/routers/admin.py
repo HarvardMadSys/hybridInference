@@ -1055,20 +1055,43 @@ async def update_user(
         raise HTTPException(422, "No fields to update")
 
     async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow("SELECT id FROM users WHERE id = $1", user_id)
+        user_row = await conn.fetchrow("SELECT id, status FROM users WHERE id = $1", user_id)
         if not user_row:
             raise HTTPException(404, f"User '{user_id}' not found")
 
         updated: list[str] = []
+        current_status = user_row["status"]
 
         # Update user-level fields
         if "status" in payload_dict:
+            new_status = payload_dict["status"]
+
+            # Enforce valid transitions: only active <-> suspended.
+            # pending_approval/rejected must go through approve/reject endpoints.
+            valid_transitions = {
+                ("active", "suspended"),
+                ("suspended", "active"),
+            }
+            if (current_status, new_status) not in valid_transitions:
+                raise HTTPException(
+                    409,
+                    f"Cannot transition from '{current_status}' to '{new_status}'. "
+                    f"Use the approve/reject endpoints for pending users.",
+                )
+
             await conn.execute(
                 "UPDATE users SET status = $1 WHERE id = $2",
-                payload_dict["status"],
+                new_status,
                 user_id,
             )
             updated.append("status")
+
+            # Suspend: also revoke active API key to cut API access immediately
+            if new_status == "suspended":
+                await conn.execute(
+                    "UPDATE api_keys SET status = 'revoked' WHERE account_id = $1 AND status = 'active'",
+                    user_id,
+                )
 
         # Update key-level fields
         key_fields = {
