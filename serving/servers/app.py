@@ -17,7 +17,6 @@ from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
 from .routers import (
     admin,
-    admin_ui,
     auth_routes,
     compat,
     completions,
@@ -84,7 +83,6 @@ def create_app() -> FastAPI:
     app.include_router(qdrant_proxy.router)
     app.include_router(compat.router)
     app.include_router(admin.router)
-    app.include_router(admin_ui.router)
     app.include_router(auth_routes.router)
     app.include_router(user_routes.router)
     app.include_router(internal.router)
