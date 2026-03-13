@@ -6,7 +6,6 @@ All environment variables are centralized here for easy tracking and testing.
 
 from functools import lru_cache
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -25,17 +24,9 @@ class Settings(BaseSettings):
 
     # Admin
     admin_token: str = ""
-    admin_emails: list[str] = []
+    admin_emails: str = ""
     user_auth_enabled: bool = True
     api_key_secret: str = ""
-
-    @field_validator("admin_emails", mode="before")
-    @classmethod
-    def parse_admin_emails(cls, v: str | list[str]) -> list[str]:
-        """Parse comma-separated string or list into lowercase email list."""
-        if isinstance(v, str):
-            return [e.strip().lower() for e in v.split(",") if e.strip()]
-        return [e.strip().lower() for e in v]
 
     # JWT (required in production)
     jwt_secret_key: str = ""
@@ -119,6 +110,13 @@ def get_settings() -> Settings:
 settings = get_settings()
 
 
+def _parse_admin_emails(raw: str) -> list[str]:
+    """Parse comma-separated admin emails string into a lowercase list."""
+    if not raw:
+        return []
+    return [e.strip().lower() for e in raw.split(",") if e.strip()]
+
+
 def is_admin_email(email: str) -> bool:
     """Check if the given email is in the admin list."""
-    return email.strip().lower() in settings.admin_emails
+    return email.strip().lower() in _parse_admin_emails(settings.admin_emails)

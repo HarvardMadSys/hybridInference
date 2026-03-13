@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
@@ -256,7 +258,7 @@ class TestAdminModeUnit:
 
     @pytest.mark.asyncio
     async def test_require_admin_allows_configured_admin(self, monkeypatch):
-        monkeypatch.setattr(settings_module.settings, "admin_emails", ["admin@example.com"])
+        monkeypatch.setattr(settings_module.settings, "admin_emails", "admin@example.com")
         current_user = {"email": "admin@example.com", "user_id": "u1"}
 
         result = await deps_module.require_admin(current_user=current_user)
@@ -265,7 +267,7 @@ class TestAdminModeUnit:
 
     @pytest.mark.asyncio
     async def test_require_admin_rejects_non_admin(self, monkeypatch):
-        monkeypatch.setattr(settings_module.settings, "admin_emails", ["admin@example.com"])
+        monkeypatch.setattr(settings_module.settings, "admin_emails", "admin@example.com")
 
         with pytest.raises(HTTPException) as exc:
             await deps_module.require_admin(
@@ -276,7 +278,7 @@ class TestAdminModeUnit:
 
     @pytest.mark.asyncio
     async def test_verify_grafana_rejects_revoked_session(self, monkeypatch):
-        monkeypatch.setattr(settings_module.settings, "admin_emails", ["admin@example.com"])
+        monkeypatch.setattr(settings_module.settings, "admin_emails", "admin@example.com")
         db_logger, _ = _mock_db_logger_with_rows(
             {"user_id": "u1", "expires_at": "9999-01-01T00:00:00+00:00", "revoked": True}
         )
@@ -316,7 +318,7 @@ class TestGrafanaVerification:
         monkeypatch,
         clean_auth_tables,
     ):
-        monkeypatch.setattr(settings_module.settings, "admin_emails", [])
+        monkeypatch.setattr(settings_module.settings, "admin_emails", "")
         user = await _insert_user(auth_db_logger)
         _, refresh_token = await _login(admin_mode_client, user["email"], user["password"])
 
@@ -336,7 +338,7 @@ class TestGrafanaVerification:
         clean_auth_tables,
     ):
         user = await _insert_user(auth_db_logger)
-        monkeypatch.setattr(settings_module.settings, "admin_emails", [user["email"].lower()])
+        monkeypatch.setattr(settings_module.settings, "admin_emails", user["email"].lower())
         _, refresh_token = await _login(admin_mode_client, user["email"], user["password"])
 
         response = await admin_mode_client.get(
@@ -358,7 +360,7 @@ class TestPlaygroundAccess:
         monkeypatch,
         clean_auth_tables,
     ):
-        monkeypatch.setattr(settings_module.settings, "admin_emails", [])
+        monkeypatch.setattr(settings_module.settings, "admin_emails", "")
         user = await _insert_user(auth_db_logger)
         access_token, _ = await _login(admin_mode_client, user["email"], user["password"])
 
@@ -378,7 +380,7 @@ class TestPlaygroundAccess:
         clean_auth_tables,
     ):
         user = await _insert_user(auth_db_logger)
-        monkeypatch.setattr(settings_module.settings, "admin_emails", [user["email"].lower()])
+        monkeypatch.setattr(settings_module.settings, "admin_emails", user["email"].lower())
         access_token, _ = await _login(admin_mode_client, user["email"], user["password"])
 
         response = await admin_mode_client.get(
@@ -398,7 +400,7 @@ class TestPlaygroundAccess:
         clean_auth_tables,
     ):
         user = await _insert_user(auth_db_logger)
-        monkeypatch.setattr(settings_module.settings, "admin_emails", [user["email"].lower()])
+        monkeypatch.setattr(settings_module.settings, "admin_emails", user["email"].lower())
         access_token, _ = await _login(admin_mode_client, user["email"], user["password"])
 
         async with auth_db_logger.pool.acquire() as conn:
@@ -424,7 +426,7 @@ class TestPlaygroundAccess:
         clean_auth_tables,
     ):
         user = await _insert_user(auth_db_logger)
-        monkeypatch.setattr(settings_module.settings, "admin_emails", [user["email"].lower()])
+        monkeypatch.setattr(settings_module.settings, "admin_emails", user["email"].lower())
         access_token, _ = await _login(admin_mode_client, user["email"], user["password"])
 
         async with admin_mode_client.stream(
