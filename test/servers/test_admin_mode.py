@@ -390,7 +390,7 @@ class TestPlaygroundAccess:
 
         assert response.status_code == 200
         assert response.json() == {
-            "models": [{"id": "playground-model", "name": "Playground Model"}]
+            "models": [{"id": "playground-model", "name": "playground-model"}]
         }
 
     @pytest.mark.asyncio
