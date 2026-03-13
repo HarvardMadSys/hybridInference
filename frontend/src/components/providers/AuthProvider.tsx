@@ -8,6 +8,7 @@ interface User {
   id: string;
   email: string;
   tier: string;
+  is_admin: boolean;
 }
 
 interface AuthState {
@@ -38,7 +39,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setState({
         isAuthenticated: true,
         loading: false,
-        user: { id: me.id, email: me.email, tier: me.tier },
+        user: { id: me.id, email: me.email, tier: me.tier, is_admin: me.is_admin },
       });
     } catch {
       setState({ isAuthenticated: false, loading: false, user: null });

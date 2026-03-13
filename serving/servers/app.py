@@ -23,8 +23,10 @@ from .routers import (
     completions,
     embeddings,
     health,
+    internal,
     metrics,
     models,
+    playground,
     qdrant_proxy,
     user_routes,
 )
@@ -85,6 +87,8 @@ def create_app() -> FastAPI:
     app.include_router(admin_ui.router)
     app.include_router(auth_routes.router)
     app.include_router(user_routes.router)
+    app.include_router(internal.router)
+    app.include_router(playground.router)
 
     return app
 

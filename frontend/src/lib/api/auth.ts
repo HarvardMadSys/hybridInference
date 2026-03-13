@@ -28,6 +28,7 @@ export interface LoginResponse {
     id: string;
     email: string;
     tier: string;
+    is_admin: boolean;
   };
 }
 

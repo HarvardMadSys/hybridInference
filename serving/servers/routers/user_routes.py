@@ -71,6 +71,7 @@ async def get_current_user_info(
         tier=current_user.get("tier", "free"),
         status=user_row["status"],
         email_verified=user_row["email_verified"],
+        is_admin=current_user.get("is_admin", False),
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
     )

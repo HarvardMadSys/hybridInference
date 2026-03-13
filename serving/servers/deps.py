@@ -162,11 +162,28 @@ async def get_current_user(
             detail=f"Account is {user_row['status']}. Please contact support.",
         )
 
-    # Return user context
+    # Return user context — use DB email (authoritative) instead of JWT email
+    # so that downstream checks like require_admin see the current address.
     return {
         "user_id": user_id,
-        "email": email,
+        "email": user_row["email"],
         "tier": tier,
+        "is_admin": payload.get("is_admin", False),
         "email_verified": user_row["email_verified"],
         "status": user_row["status"],
     }
+
+
+async def require_admin(
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Require admin privileges. Raises 403 if user is not an admin.
+
+    Uses real-time ``is_admin_email()`` check against the settings-level
+    admin list instead of trusting the (potentially stale) JWT claim.
+    """
+    from serving.config.settings import is_admin_email
+
+    if not is_admin_email(current_user["email"]):
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return current_user
