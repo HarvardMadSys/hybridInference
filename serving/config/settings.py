@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     codex_account_cooldown: int = 60
     codex_failure_threshold: int = 3
 
+    # Claude subscription
+    claude_sub_accounts_file: str = "var/data/claude_accounts.json"
+    claude_sub_fallback_api_key: str = ""
+    claude_sub_token_refresh_margin: int = 300  # 5 min (tokens last ~1 hour)
+    claude_sub_account_cooldown: int = 60
+    claude_sub_failure_threshold: int = 3
+
     # CORS
     cors_allowed_origins: list[str] = [
         "http://localhost:3000",

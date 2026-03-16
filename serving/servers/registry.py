@@ -14,6 +14,7 @@ import yaml
 
 from serving.adapters import (
     ClaudeAdapter,
+    ClaudeSubscriptionAdapter,
     CodexSubscriptionAdapter,
     DeepSeekAdapter,
     GeminiAdapter,
@@ -112,6 +113,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         return ZhipuAdapter(model_cfg)
     if kind == "codex_sub":
         return CodexSubscriptionAdapter(model_cfg)
+    if kind == "claude_sub":
+        return ClaudeSubscriptionAdapter(model_cfg)
 
     raise ValueError(f"Unknown adapter kind: {kind}")
 
