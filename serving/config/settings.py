@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     qdrant_base_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
 
+    # Codex subscription
+    codex_accounts_file: str = "var/data/codex_accounts.json"
+    codex_fallback_api_key: str = ""
+    codex_token_refresh_margin: int = 30
+    codex_account_cooldown: int = 60
+    codex_failure_threshold: int = 3
+
     # CORS
     cors_allowed_origins: list[str] = [
         "http://localhost:3000",
