@@ -223,7 +223,7 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
 
         # Use the /inference endpoint for Llama API
         # Use standard OpenAI-compatible endpoint for Llama
-        url = f"{self.config.base_url}/chat/completions"
+        url = f"{self.config.base_url.rstrip('/')}/chat/completions"
 
         data = await self.http.json_post_with_retry(url, json=payload, headers=headers)
 
@@ -468,7 +468,10 @@ class LlamaAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                                             {
                                                 "id": f"call_{int(__import__('time').time() * 1000)}",
                                                 "type": "function",
-                                                "function": {"name": name, "arguments": args},
+                                                "function": {
+                                                    "name": name,
+                                                    "arguments": args,
+                                                },
                                             }
                                         ]
                                     },
