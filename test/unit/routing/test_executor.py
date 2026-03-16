@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.executor import RouteExecutor
+from routing.executor import RouteExecutor, _has_non_empty_content
 from serving.adapters.base import BaseAdapter, ModelConfig
 
 if TYPE_CHECKING:
@@ -192,3 +192,43 @@ def test_route_selection_performance():
         _ = exe._select_adapter("m")  # type: ignore[attr-defined]
     elapsed = time.perf_counter() - start
     assert elapsed < 0.1
+
+
+# ---------------------------------------------------------------------------
+# _has_non_empty_content tests
+# ---------------------------------------------------------------------------
+
+
+class TestHasNonEmptyContent:
+    """Regression tests for the TTFT-gating helper."""
+
+    def test_text_content(self):
+        chunk = 'data: {"choices": [{"delta": {"content": "hello"}}]}\n\n'
+        assert _has_non_empty_content(chunk) is True
+
+    def test_empty_content(self):
+        chunk = 'data: {"choices": [{"delta": {"content": ""}}]}\n\n'
+        assert _has_non_empty_content(chunk) is False
+
+    def test_tool_calls_delta(self):
+        """tool_calls in delta should be treated as content (blocks stream fallback)."""
+        chunk = (
+            'data: {"choices": [{"delta": {"tool_calls": '
+            '[{"index": 0, "function": {"arguments": "{\\"x\\": 1}"}}]}}]}\n\n'
+        )
+        assert _has_non_empty_content(chunk) is True
+
+    def test_empty_tool_calls(self):
+        chunk = 'data: {"choices": [{"delta": {"tool_calls": []}}]}\n\n'
+        assert _has_non_empty_content(chunk) is False
+
+    def test_done_sentinel(self):
+        assert _has_non_empty_content("data: [DONE]\n\n") is False
+
+    def test_no_choices(self):
+        chunk = 'data: {"choices": []}\n\n'
+        assert _has_non_empty_content(chunk) is False
+
+    def test_null_delta(self):
+        chunk = 'data: {"choices": [{"delta": {}}]}\n\n'
+        assert _has_non_empty_content(chunk) is False
