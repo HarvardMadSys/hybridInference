@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..config.settings import settings
+from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap
 from .middleware.error import install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
@@ -37,6 +38,10 @@ if TYPE_CHECKING:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - initialize and cleanup resources."""
+    # Attach after uvicorn's own logging setup, which would otherwise wipe filters
+    # added at import time. LOG_LEVEL=DEBUG disables suppression.
+    attach_quiet_access_filter()
+
     services: AppServices = await bootstrap.initialize()
     app.state.services = services  # type: ignore[attr-defined]
     try:

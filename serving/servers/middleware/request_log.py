@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from serving.utils import context as req_ctx
-from serving.utils.logging import get_logger
+from serving.utils.logging import _QUIET_PATHS, get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -75,6 +75,8 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
             log_extra["error"] = str(exc_to_raise)
             log_extra["error_type"] = type(exc_to_raise).__name__
             logger.error("http_request", extra=log_extra)
+        elif request.url.path in _QUIET_PATHS:
+            logger.debug("http_request", extra=log_extra)
         else:
             logger.info("http_request", extra=log_extra)
 
