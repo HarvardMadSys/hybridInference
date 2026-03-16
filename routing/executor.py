@@ -155,10 +155,13 @@ class RouteExecutor:
                     operation="chat_completion",
                 ).observe(time.perf_counter() - started)
                 self._on_success(endpoint_id)
-            resp["_routing"] = {
-                "provider": primary.config.provider,
-                "base_url": primary.config.base_url,
-            }
+            # Preserve adapter-set _routing (e.g. codex_sub fallback overrides);
+            # only set default routing if the adapter didn't provide one.
+            if "_routing" not in resp:
+                resp["_routing"] = {
+                    "provider": primary.config.provider,
+                    "base_url": primary.config.base_url,
+                }
             return resp
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
@@ -179,11 +182,12 @@ class RouteExecutor:
                             operation="chat_completion",
                         ).observe(time.perf_counter() - started)
                         self._on_success(endpoint_id)
-                    resp["_routing"] = {
-                        "provider": adapter.config.provider,
-                        "base_url": adapter.config.base_url,
-                        "fallback": True,
-                    }
+                    if "_routing" not in resp:
+                        resp["_routing"] = {
+                            "provider": adapter.config.provider,
+                            "base_url": adapter.config.base_url,
+                            "fallback": True,
+                        }
                     API_FALLBACKS.labels(
                         from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                         to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
@@ -276,11 +280,12 @@ class RouteExecutor:
 
 
 def _has_non_empty_content(chunk: Any) -> bool:
-    r"""Return True if the SSE ``chunk`` carries a non-empty delta content.
+    r"""Return True if the SSE ``chunk`` carries a non-empty delta (content or tool_calls).
 
     The streaming protocol emits lines like ``"data: {json}\n\n"`` and a
-    terminal ``"data: [DONE]\n\n"``. We only consider a chunk as the first
-    token when the JSON "choices[0].delta.content" is a non-empty string.
+    terminal ``"data: [DONE]\n\n"``. We consider a chunk as having started
+    output when delta.content is a non-empty string **or** delta.tool_calls
+    is a non-empty list.
     """
     try:
         if not isinstance(chunk, str | bytes):
@@ -300,7 +305,10 @@ def _has_non_empty_content(chunk: Any) -> bool:
             return False
         delta = choices[0].get("delta") or {}
         content = delta.get("content")
-        return isinstance(content, str) and len(content) > 0
+        if isinstance(content, str) and len(content) > 0:
+            return True
+        tool_calls = delta.get("tool_calls")
+        return isinstance(tool_calls, list) and len(tool_calls) > 0
     except Exception:
         # Be conservative and treat as content to avoid missing TTFT altogether
         return True
