@@ -203,6 +203,10 @@ class CodexSubscriptionAdapter(BaseAdapter):
     async def _fallback_chat(self, messages: list[dict[str, Any]], **params: Any) -> dict[str, Any]:
         """Fall back to standard OpenAI API when subscription is unavailable."""
         validated = self.validate_params(params)
+        reasoning_effort = params.get("reasoning_effort")
+        if reasoning_effort and reasoning_effort != "none":
+            validated["reasoning_effort"] = reasoning_effort
+            validated.pop("temperature", None)
         payload: dict[str, Any] = {
             "model": self.config.provider_model_id or self.config.id,
             "messages": messages,
@@ -393,6 +397,10 @@ class CodexSubscriptionAdapter(BaseAdapter):
     ) -> AsyncGenerator[str, None]:
         """Stream via standard OpenAI API as fallback."""
         validated = self.validate_params(params)
+        reasoning_effort = params.get("reasoning_effort")
+        if reasoning_effort and reasoning_effort != "none":
+            validated["reasoning_effort"] = reasoning_effort
+            validated.pop("temperature", None)
         payload: dict[str, Any] = {
             "model": self.config.provider_model_id or self.config.id,
             "messages": messages,

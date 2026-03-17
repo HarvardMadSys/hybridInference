@@ -128,10 +128,11 @@ def translate_request(messages: list[dict[str, Any]], model: str, **params: Any)
         "store": False,
     }
 
-    if reasoning_effort:
+    # Codex API: temperature is forbidden when reasoning is enabled.
+    if reasoning_effort and reasoning_effort != "none":
         body["reasoning"] = {"effort": reasoning_effort}
-
-    # Note: Codex Responses API does not support temperature or max_output_tokens
+    elif params.get("temperature") is not None:
+        body["temperature"] = params["temperature"]
     if params.get("tools"):
         body["tools"] = _translate_tools(params["tools"])
     if params.get("tool_choice") is not None:
