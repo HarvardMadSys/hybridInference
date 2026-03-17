@@ -130,9 +130,9 @@ class TestTranslateRequest:
             tool_choice="auto",
         )
         assert body["temperature"] == 0.5
-        assert body["max_output_tokens"] == 100
+        assert "max_output_tokens" not in body
         assert body["stream"] is True
-        assert body["tools"] == [{"type": "function", "function": {"name": "f"}}]
+        assert body["tools"] == [{"type": "function", "name": "f"}]
         assert body["tool_choice"] == "auto"
 
 
