@@ -435,9 +435,7 @@ def _build_ttft_app(
     return app
 
 
-async def _get_db_log_ttft(
-    mock_db_logger, timeout: float = 2.0
-) -> tuple[bool, int | None]:
+async def _get_db_log_ttft(mock_db_logger, timeout: float = 2.0) -> tuple[bool, int | None]:
     """Wait for the background DB log task and return (logged, ttft_ms).
 
     Returns:
@@ -454,9 +452,7 @@ async def _get_db_log_ttft(
 
 
 @pytest.mark.asyncio
-async def test_ttft_recorded_for_reasoning_content(
-    monkeypatch, mock_rate_limiter, mock_db_logger
-):
+async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limiter, mock_db_logger):
     """Streaming request where first delta has only reasoning_content should record ttft_ms."""
     app = _build_ttft_app(
         "deepseek-r1",
@@ -489,9 +485,7 @@ async def test_ttft_recorded_for_reasoning_content(
 
 
 @pytest.mark.asyncio
-async def test_ttft_preserved_in_error_path(
-    monkeypatch, mock_rate_limiter, mock_db_logger
-):
+async def test_ttft_preserved_in_error_path(monkeypatch, mock_rate_limiter, mock_db_logger):
     """If TTFT was recorded before stream error, error-path DB log should include it."""
     app = _build_ttft_app(
         "error-model",
