@@ -14,12 +14,10 @@ from serving.adapters.base import ModelConfig
 from serving.adapters.claude_sub import ClaudeSubscriptionAdapter
 from serving.adapters.claude_token import (
     ClaudeAccountCredential,
-    ClaudeCredentialProvider,
     RefreshTokenRevokedError,
     RefreshTokenTransientError,
 )
 from serving.adapters.codex_token import AccountPool, NoHealthyAccountError
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -109,19 +107,19 @@ def _claude_stream_events(
 ) -> list[str]:
     """Build standard Claude SSE event lines for streaming."""
     events = [
-        f'data: {json.dumps({"type": "message_start", "message": {"id": "msg_1", "role": "assistant", "model": "claude-sonnet-4-6-20250514", "usage": {"input_tokens": input_tokens, "output_tokens": 0}}})}',
-        f'data: {json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})}',
+        f"data: {json.dumps({'type': 'message_start', 'message': {'id': 'msg_1', 'role': 'assistant', 'model': 'claude-sonnet-4-6-20250514', 'usage': {'input_tokens': input_tokens, 'output_tokens': 0}}})}",
+        f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}",
     ]
     # Split text into word-level deltas
     for word in text.split():
         events.append(
-            f'data: {json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": word + " "}})}'
+            f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': word + ' '}})}"
         )
     events.extend(
         [
-            f'data: {json.dumps({"type": "content_block_stop", "index": 0})}',
-            f'data: {json.dumps({"type": "message_delta", "delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": output_tokens}})}',
-            f'data: {json.dumps({"type": "message_stop"})}',
+            f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}",
+            f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason}, 'usage': {'output_tokens': output_tokens}})}",
+            f"data: {json.dumps({'type': 'message_stop'})}",
         ]
     )
     return events
@@ -130,16 +128,32 @@ def _claude_stream_events(
 def _claude_stream_with_tools() -> list[str]:
     """Build Claude SSE events that include a tool_use block."""
     return [
-        f'data: {json.dumps({"type": "message_start", "message": {"id": "msg_1", "role": "assistant", "model": "claude-sonnet-4-6-20250514", "usage": {"input_tokens": 10, "output_tokens": 0}}})}',
-        f'data: {json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})}',
-        f'data: {json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Let me help."}})}',
-        f'data: {json.dumps({"type": "content_block_stop", "index": 0})}',
-        f'data: {json.dumps({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {}}})}',
-        f'data: {json.dumps({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"city\":"}})}',
-        f'data: {json.dumps({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "\"SF\"}"}})}',
-        f'data: {json.dumps({"type": "content_block_stop", "index": 1})}',
-        f'data: {json.dumps({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 15}})}',
-        f'data: {json.dumps({"type": "message_stop"})}',
+        f"data: {json.dumps({'type': 'message_start', 'message': {'id': 'msg_1', 'role': 'assistant', 'model': 'claude-sonnet-4-6-20250514', 'usage': {'input_tokens': 10, 'output_tokens': 0}}})}",
+        f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}",
+        f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': 'Let me help.'}})}",
+        f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}",
+        f"data: {json.dumps({'type': 'content_block_start', 'index': 1, 'content_block': {'type': 'tool_use', 'id': 'toolu_1', 'name': 'get_weather', 'input': {}}})}",
+        "data: {}".format(
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "input_json_delta", "partial_json": '{"city":'},
+                }
+            )
+        ),
+        "data: {}".format(
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "input_json_delta", "partial_json": '"SF"}'},
+                }
+            )
+        ),
+        f"data: {json.dumps({'type': 'content_block_stop', 'index': 1})}",
+        f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}, 'usage': {'output_tokens': 15}})}",
+        f"data: {json.dumps({'type': 'message_stop'})}",
     ]
 
 
@@ -320,9 +334,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "Hi"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "Hi"}]):
             chunks.append(chunk)
 
         # Should have text deltas + final usage + [DONE]
@@ -347,9 +359,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         # Should contain tool call data
@@ -389,9 +399,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         assert any("OK" in c for c in chunks)
@@ -416,9 +424,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-            async for _ in adapter.stream_chat_completion(
-                [{"role": "user", "content": "test"}]
-            ):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
                 pass
 
         assert exc_info.value.status == 400
@@ -443,9 +449,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-            async for _ in adapter.stream_chat_completion(
-                [{"role": "user", "content": "test"}]
-            ):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
                 pass
 
         assert exc_info.value.status == 500
@@ -469,9 +473,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-            async for _ in adapter.stream_chat_completion(
-                [{"role": "user", "content": "test"}]
-            ):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
                 pass
 
         assert exc_info.value.status == 401
@@ -492,9 +494,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         assert len(chunks) >= 2
@@ -640,9 +640,7 @@ class TestAcquireWithRetry:
                 raise RefreshTokenRevokedError("a", "invalid_grant")
             return acct.access_token
 
-        adapter._credential_provider.get_valid_token = AsyncMock(
-            side_effect=mock_get_valid_token
-        )
+        adapter._credential_provider.get_valid_token = AsyncMock(side_effect=mock_get_valid_token)
         adapter._credential_provider.transition_state = AsyncMock()
 
         account, token = await adapter._acquire_with_retry()
@@ -669,9 +667,7 @@ class TestAcquireWithRetry:
                 raise RefreshTokenTransientError("a", 500, "server error")
             return acct.access_token
 
-        adapter._credential_provider.get_valid_token = AsyncMock(
-            side_effect=mock_get_valid_token
-        )
+        adapter._credential_provider.get_valid_token = AsyncMock(side_effect=mock_get_valid_token)
 
         account, token = await adapter._acquire_with_retry()
 

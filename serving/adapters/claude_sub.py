@@ -120,7 +120,7 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
                 return account, token
             except RefreshTokenRevokedError as exc:
                 logger.warning(
-                    f"[ClaudeSub] Refresh token revoked for {account.id}, " f"marking revoked"
+                    f"[ClaudeSub] Refresh token revoked for {account.id}, marking revoked"
                 )
                 await self._credential_provider.transition_state(
                     account, "revoked", "invalid_grant", pool=self._account_pool

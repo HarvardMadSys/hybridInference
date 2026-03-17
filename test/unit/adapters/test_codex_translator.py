@@ -14,7 +14,6 @@ from serving.adapters.codex_translator import (
     translate_stream_event,
 )
 
-
 # ---------------------------------------------------------------------------
 # translate_request
 # ---------------------------------------------------------------------------
@@ -85,7 +84,8 @@ class TestTranslateRequest:
 
     def test_reasoning_effort_from_param(self):
         body = translate_request(
-            [{"role": "user", "content": "hi"}], "gpt-5.1-codex",
+            [{"role": "user", "content": "hi"}],
+            "gpt-5.1-codex",
             reasoning_effort="low",
         )
         assert body["model"] == "gpt-5.1-codex"
@@ -93,16 +93,15 @@ class TestTranslateRequest:
 
     def test_reasoning_effort_high_from_param(self):
         body = translate_request(
-            [{"role": "user", "content": "hi"}], "gpt-5.1-codex",
+            [{"role": "user", "content": "hi"}],
+            "gpt-5.1-codex",
             reasoning_effort="high",
         )
         assert body["model"] == "gpt-5.1-codex"
         assert body["reasoning"] == {"effort": "high"}
 
     def test_no_reasoning_when_not_specified(self):
-        body = translate_request(
-            [{"role": "user", "content": "hi"}], "gpt-5.1-codex"
-        )
+        body = translate_request([{"role": "user", "content": "hi"}], "gpt-5.1-codex")
         assert "reasoning" not in body
 
     def test_multimodal_content(self):

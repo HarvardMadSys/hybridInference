@@ -5,18 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from serving.adapters.codex_token import (
     AccountCredential,
-    AccountHealth,
     AccountPool,
     CredentialProvider,
     NoHealthyAccountError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -322,9 +320,7 @@ class TestCredentialProvider:
 
         with patch.object(provider, "_refresh_token", side_effect=mock_refresh):
             # Launch 5 concurrent refreshes
-            results = await asyncio.gather(
-                *[provider.get_valid_token(account) for _ in range(5)]
-            )
+            results = await asyncio.gather(*[provider.get_valid_token(account) for _ in range(5)])
 
         # Only 1 refresh should have happened (single-flight)
         assert call_count == 1

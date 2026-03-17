@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from dataclasses import dataclass, field
@@ -23,7 +22,6 @@ from serving.servers.routers.anthropic_proxy import (
     _resolve_model,
     router,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -69,9 +67,7 @@ def _make_router_exec(
     provider_model_id: str = "claude-sonnet-4-6",
 ) -> MagicMock:
     """Build a fake RouteExecutor with one registered model."""
-    cfg = _FakeModelConfig(
-        id=model_id, provider=provider, provider_model_id=provider_model_id
-    )
+    cfg = _FakeModelConfig(id=model_id, provider=provider, provider_model_id=provider_model_id)
     adapter = _FakeAdapter(config=cfg)
     route = _FakeRouteConfig(adapters=[(adapter, 1.0)])
     exec_mock = MagicMock()
@@ -178,10 +174,7 @@ class TestExtractUsageFromSSE:
         }
         start = {"type": "message_start", "message": {"usage": {"input_tokens": 10}}}
         delta = {"type": "message_delta", "usage": {"output_tokens": 20}}
-        raw = (
-            f"data: {json.dumps(start)}\n\n"
-            f"data: {json.dumps(delta)}\n\n"
-        ).encode()
+        raw = (f"data: {json.dumps(start)}\n\ndata: {json.dumps(delta)}\n\n").encode()
         _extract_usage_from_sse(raw, usage)
         assert usage["input_tokens"] == 10
         assert usage["output_tokens"] == 20
@@ -218,10 +211,7 @@ class TestExtractUsageFromSSE:
         }
         delta1 = {"type": "message_delta", "usage": {"output_tokens": 5}}
         delta2 = {"type": "message_delta", "usage": {"output_tokens": 8}}
-        raw = (
-            f"data: {json.dumps(delta1)}\n\n"
-            f"data: {json.dumps(delta2)}\n\n"
-        ).encode()
+        raw = (f"data: {json.dumps(delta1)}\n\ndata: {json.dumps(delta2)}\n\n").encode()
         _extract_usage_from_sse(raw, usage)
         assert usage["output_tokens"] == 8  # cumulative, not 13
 
@@ -275,7 +265,6 @@ def _mock_pool():
 @pytest.fixture
 def _mock_deps():
     """Override FastAPI dependencies for testing."""
-    from serving.servers.routers.anthropic_proxy import router as proxy_router
 
     async def fake_verify_api_key():
         return {"authenticated": True, "user_id": "test-user"}
@@ -333,9 +322,7 @@ class TestNonStreaming:
             "model": "claude-sonnet-4-6",
             "usage": {"input_tokens": 10, "output_tokens": 5},
         }
-        with patch(
-            "serving.http.AsyncHTTPClient.shared"
-        ) as mock_http_cls:
+        with patch("serving.http.AsyncHTTPClient.shared") as mock_http_cls:
             mock_http = MagicMock()
             mock_http.json_post_with_retry = AsyncMock(return_value=upstream_resp)
             mock_http_cls.return_value = mock_http
@@ -390,9 +377,7 @@ class TestNonStreaming:
             _mock_pool.return_value[0],
             _mock_pool.return_value[1],
         )
-        with patch(
-            "serving.servers.routers.anthropic_proxy.get_shared_pool"
-        ) as mock:
+        with patch("serving.servers.routers.anthropic_proxy.get_shared_pool") as mock:
             pool = MagicMock()
             pool.acquire = AsyncMock(side_effect=NoHealthyAccountError("all down"))
             mock.return_value = (MagicMock(), pool)
@@ -408,8 +393,8 @@ class TestNonStreaming:
         """Model exists but provider is not claude_sub."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from serving.servers.auth import verify_api_key
-        from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
+
+        from serving.servers.deps import get_router
 
         async def fake_get_router():
             return _make_router_exec(provider="vertex")
@@ -490,8 +475,6 @@ class TestStreaming:
         not leave the account marked as healthy."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from serving.servers.auth import verify_api_key
-        from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
 
         # Build a pool spy to track report_success / report_failure calls
         account = _make_account()
@@ -550,8 +533,6 @@ class TestStreaming:
         """A stream that completes without error should report_success."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from serving.servers.auth import verify_api_key
-        from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
 
         account = _make_account()
         pool = AccountPool([account])
@@ -625,7 +606,7 @@ class TestStreaming:
 
         async def exploding_iter():
             raise ConnectionError('quote"and\nnewline')
-            yield  # make it an async generator  # noqa: RUF027
+            yield  # make it an async generator
 
         mock_resp.content = MagicMock()
         mock_resp.content.iter_any = exploding_iter
@@ -667,8 +648,8 @@ class TestDBLogging:
     def test_db_log_called(self, _mock_pool, _mock_deps):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from serving.servers.auth import verify_api_key
-        from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
+
+        from serving.servers.deps import get_db_logger
 
         mock_db = MagicMock()
         mock_db.log_request = AsyncMock()
@@ -747,9 +728,7 @@ class TestEnsureSystemPrefix:
 
     def test_array_system_already_prefixed_unchanged(self):
         body: dict[str, Any] = {
-            "system": [
-                {"type": "text", "text": f"{_REQUIRED_SYSTEM_PREFIX}\n\nBe helpful."}
-            ],
+            "system": [{"type": "text", "text": f"{_REQUIRED_SYSTEM_PREFIX}\n\nBe helpful."}],
         }
         _ensure_system_prefix(body)
         assert body["system"][0]["text"].count(_REQUIRED_SYSTEM_PREFIX) == 1

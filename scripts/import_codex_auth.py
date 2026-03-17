@@ -25,7 +25,6 @@ import base64
 import json
 import os
 import sys
-from pathlib import Path
 
 
 def _decode_jwt_payload(token: str) -> dict:
@@ -198,7 +197,9 @@ def main():
     print("  2. Restart the server")
     print("  3. Test: curl -X POST http://localhost:8000/v1/chat/completions \\")
     print('       -H "Content-Type: application/json" \\')
-    print('       -d \'{"model": "gpt-5.1-codex", "messages": [{"role": "user", "content": "Hello"}]}\'')
+    print(
+        '       -d \'{"model": "gpt-5.1-codex", "messages": [{"role": "user", "content": "Hello"}]}\''
+    )
 
 
 if __name__ == "__main__":

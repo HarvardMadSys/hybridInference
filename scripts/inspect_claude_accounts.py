@@ -17,7 +17,6 @@ import sys
 import time
 from datetime import datetime, timezone
 
-
 _DEFAULT_PATH = "var/data/claude_accounts.json"
 
 
@@ -58,9 +57,7 @@ def _state_indicator(state: str) -> str:
 
 def main():
     """Read and display Claude subscription account status from the JSON file."""
-    parser = argparse.ArgumentParser(
-        description="Inspect Claude subscription accounts"
-    )
+    parser = argparse.ArgumentParser(description="Inspect Claude subscription accounts")
     parser.add_argument(
         "--file",
         default=_DEFAULT_PATH,
@@ -117,9 +114,7 @@ def main():
 
         state_changed_at = int(acct.get("state_changed_at", 0))
         if state_changed_at:
-            changed_dt = datetime.fromtimestamp(
-                state_changed_at / 1000, tz=timezone.utc
-            )
+            changed_dt = datetime.fromtimestamp(state_changed_at / 1000, tz=timezone.utc)
             print(f"    state_changed_at: {changed_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
         print()
 

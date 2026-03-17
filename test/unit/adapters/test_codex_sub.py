@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -13,7 +13,6 @@ import pytest
 from serving.adapters.base import ModelConfig
 from serving.adapters.codex_sub import CodexSubscriptionAdapter
 from serving.adapters.codex_token import AccountCredential, AccountPool, NoHealthyAccountError
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -89,7 +88,7 @@ def _make_adapter_initialized(
 
 def _mock_completed_stream(codex_response: dict[str, Any]):
     """Return a mock stream_post that yields a response.completed SSE event."""
-    line = f'data: {json.dumps({"type": "response.completed", "response": codex_response})}'
+    line = f"data: {json.dumps({'type': 'response.completed', 'response': codex_response})}"
 
     async def stream(*args, **kwargs):
         yield line
@@ -106,9 +105,12 @@ def _mock_401_then_completed_stream(codex_response: dict[str, Any]):
         call_count += 1
         if call_count == 1:
             raise aiohttp.ClientResponseError(
-                request_info=MagicMock(), history=(), status=401, message="Unauthorized",
+                request_info=MagicMock(),
+                history=(),
+                status=401,
+                message="Unauthorized",
             )
-        yield f'data: {json.dumps({"type": "response.completed", "response": codex_response})}'
+        yield f"data: {json.dumps({'type': 'response.completed', 'response': codex_response})}"
 
     return stream
 
@@ -150,9 +152,7 @@ class TestChatCompletion:
 
         good_response = {
             "id": "resp_2",
-            "output": [
-                {"type": "message", "content": [{"type": "output_text", "text": "OK"}]}
-            ],
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "OK"}]}],
             "stop_reason": "stop",
             "usage": {"input_tokens": 5, "output_tokens": 2},
         }
@@ -168,9 +168,7 @@ class TestChatCompletion:
 
         good_response = {
             "id": "resp_3",
-            "output": [
-                {"type": "message", "content": [{"type": "output_text", "text": "OK"}]}
-            ],
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "OK"}]}],
             "stop_reason": "stop",
             "usage": {"input_tokens": 5, "output_tokens": 2},
         }
@@ -199,9 +197,7 @@ class TestChatCompletion:
     @pytest.mark.asyncio
     async def test_fallback_on_no_healthy_accounts(self):
         acct = _make_account()
-        adapter = _make_adapter_initialized(
-            accounts=[acct], fallback_key="sk-fallback"
-        )
+        adapter = _make_adapter_initialized(accounts=[acct], fallback_key="sk-fallback")
 
         # Mark account unhealthy
         adapter._account_pool.report_failure(acct.id, 429)
@@ -259,9 +255,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "Hi"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "Hi"}]):
             chunks.append(chunk)
 
         # Should have content chunks + final usage + [DONE]
@@ -301,9 +295,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         # Should have content from retry + usage + [DONE]
@@ -334,9 +326,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-            async for _ in adapter.stream_chat_completion(
-                [{"role": "user", "content": "test"}]
-            ):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
                 pass
 
         assert exc_info.value.status == 400
@@ -366,9 +356,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-            async for _ in adapter.stream_chat_completion(
-                [{"role": "user", "content": "test"}]
-            ):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
                 pass
 
         assert exc_info.value.status == 500
@@ -406,9 +394,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         with pytest.raises(aiohttp.ClientResponseError):
-            async for _ in adapter.stream_chat_completion(
-                [{"role": "user", "content": "test"}]
-            ):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
                 pass
 
         # With 3 accounts, max_retries = 3-1 = 2.
@@ -438,9 +424,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-            async for _ in adapter.stream_chat_completion(
-                [{"role": "user", "content": "test"}]
-            ):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
                 pass
 
         assert exc_info.value.status == 401
@@ -450,9 +434,7 @@ class TestStreamChatCompletion:
     @pytest.mark.asyncio
     async def test_fallback_stream(self):
         acct = _make_account()
-        adapter = _make_adapter_initialized(
-            accounts=[acct], fallback_key="sk-fallback"
-        )
+        adapter = _make_adapter_initialized(accounts=[acct], fallback_key="sk-fallback")
         adapter._account_pool.report_failure(acct.id, 429)
 
         # Mock OpenAI streaming response
@@ -468,9 +450,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         # Should get content + final + [DONE]
@@ -514,8 +494,6 @@ class TestEnsureInit:
         # Patch get_settings at the module level where it's imported inline
         import serving.adapters.codex_sub as codex_sub_mod
 
-        original_ensure_init = codex_sub_mod.CodexSubscriptionAdapter._ensure_init
-
         def patched_ensure_init(self):
             # Inline the logic with our mock settings
             if self._initialized:
@@ -539,7 +517,9 @@ class TestEnsureInit:
         config = _make_config()
         adapter = CodexSubscriptionAdapter(config)
 
-        monkeypatch.setattr(codex_sub_mod.CodexSubscriptionAdapter, "_ensure_init", patched_ensure_init)
+        monkeypatch.setattr(
+            codex_sub_mod.CodexSubscriptionAdapter, "_ensure_init", patched_ensure_init
+        )
         adapter._ensure_init()
 
         assert adapter._initialized is True

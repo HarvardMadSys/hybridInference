@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,7 +15,6 @@ from serving.adapters.claude_token import (
     RefreshTokenTransientError,
     TokenRefreshError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -123,7 +121,9 @@ class TestLoadAccounts:
     def test_filters_revoked_accounts(self, tmp_path):
         f = tmp_path / "accounts.json"
         active = _account_to_dict_v2(_make_credential("a"))
-        revoked = _account_to_dict_v2(_make_credential("b", state="revoked", revoke_reason="invalid_grant"))
+        revoked = _account_to_dict_v2(
+            _make_credential("b", state="revoked", revoke_reason="invalid_grant")
+        )
         _write_accounts_file(f, [active, revoked], version=2)
 
         provider = ClaudeCredentialProvider(str(f))
@@ -227,9 +227,11 @@ class TestRefreshTokenErrors:
         error_body = json.dumps({"error": "invalid_grant", "error_description": "token revoked"})
         mock_session = _mock_refresh_response(status=400, body=error_body)
 
-        with patch("serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session):
-            with pytest.raises(RefreshTokenRevokedError) as exc_info:
-                await provider._refresh_token(acct)
+        with (
+            patch("serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session),
+            pytest.raises(RefreshTokenRevokedError) as exc_info,
+        ):
+            await provider._refresh_token(acct)
 
         assert exc_info.value.account_id == "a"
         assert "invalid_grant" in str(exc_info.value)
@@ -246,9 +248,11 @@ class TestRefreshTokenErrors:
         error_body = json.dumps({"error": "server_error", "error_description": "try again"})
         mock_session = _mock_refresh_response(status=500, body=error_body)
 
-        with patch("serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session):
-            with pytest.raises(RefreshTokenTransientError) as exc_info:
-                await provider._refresh_token(acct)
+        with (
+            patch("serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session),
+            pytest.raises(RefreshTokenTransientError) as exc_info,
+        ):
+            await provider._refresh_token(acct)
 
         assert exc_info.value.account_id == "a"
         assert exc_info.value.status == 500
@@ -264,9 +268,11 @@ class TestRefreshTokenErrors:
 
         mock_session = _mock_refresh_response(status=502, body="Bad Gateway")
 
-        with patch("serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session):
-            with pytest.raises(RefreshTokenTransientError):
-                await provider._refresh_token(acct)
+        with (
+            patch("serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session),
+            pytest.raises(RefreshTokenTransientError),
+        ):
+            await provider._refresh_token(acct)
 
     def test_error_hierarchy(self):
         assert issubclass(RefreshTokenRevokedError, TokenRefreshError)
@@ -296,7 +302,8 @@ class TestGetValidToken:
     async def test_refreshes_near_expiry(self, tmp_path):
         f = tmp_path / "accounts.json"
         acct = _make_credential(
-            "a", expires_at=int(time.time() * 1000) + 5_000  # 5 seconds left
+            "a",
+            expires_at=int(time.time() * 1000) + 5_000,  # 5 seconds left
         )
         _write_accounts_file(f, [_account_to_dict_v2(acct)], version=2)
 
@@ -312,7 +319,9 @@ class TestGetValidToken:
             }
         )
 
-        with patch("serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session):
+        with patch(
+            "serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session
+        ):
             token = await provider.get_valid_token(acct)
 
         assert token == new_token
@@ -336,7 +345,9 @@ class TestGetValidToken:
             }
         )
 
-        with patch("serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session):
+        with patch(
+            "serving.adapters.claude_token.aiohttp.ClientSession", return_value=mock_session
+        ):
             token = await provider.get_valid_token(acct, force_refresh=True)
 
         assert token == new_token

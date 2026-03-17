@@ -144,8 +144,7 @@ class CredentialProvider:
             if resp.status != 200:
                 body = await resp.text()
                 logger.error(
-                    f"Token refresh failed for {account.id}: "
-                    f"status={resp.status} body={body[:200]}"
+                    f"Token refresh failed for {account.id}: status={resp.status} body={body[:200]}"
                 )
                 raise RuntimeError(
                     f"Token refresh failed for account {account.id}: HTTP {resp.status}"

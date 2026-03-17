@@ -32,7 +32,6 @@ import os
 import sys
 import time
 
-
 _CLAUDE_CREDENTIAL_PATHS = [
     "~/.claude/.credentials.json",
     "~/.claude/credentials.json",
@@ -75,9 +74,8 @@ def _extract_credentials(auth_path: str) -> dict:
         return _extract_from_flat(data["tokens"])
 
     # Try account list format
-    if "accounts" in data and isinstance(data["accounts"], list):
-        if data["accounts"]:
-            return _extract_from_flat(data["accounts"][0])
+    if "accounts" in data and isinstance(data["accounts"], list) and data["accounts"]:
+        return _extract_from_flat(data["accounts"][0])
 
     print(f"Error: Unrecognized credential format in {auth_path}", file=sys.stderr)
     print(f"Keys found: {list(data.keys())}", file=sys.stderr)
@@ -112,7 +110,7 @@ def _extract_from_claude_cli(entry: dict) -> dict:
         "refresh_token": refresh_token,
         "expires_at": expires_at_ms,
         "organization_id": "",  # Not available in CLI credentials
-        "email": "",            # Not available in CLI credentials
+        "email": "",  # Not available in CLI credentials
         "plan": plan,
     }
 
@@ -242,20 +240,18 @@ def main():
     for acct in existing_accounts:
         is_match = False
         # Rule 1: explicit --account-id
-        if account_id and acct.get("id") == account_id:
-            is_match = True
-        # Rule 2: refresh_token match (same credential)
-        elif not account_id and acct.get("refresh_token") == creds["refresh_token"]:
-            is_match = True
-        # Rule 3: org_id match (relaxed — email can be empty on either side)
-        elif (
-            not account_id
-            and creds["organization_id"]
-            and acct.get("organization_id") == creds["organization_id"]
-            and (
-                not creds["email"]
-                or not acct.get("email")
-                or acct.get("email") == creds["email"]
+        if (
+            (account_id and acct.get("id") == account_id)
+            or (not account_id and acct.get("refresh_token") == creds["refresh_token"])
+            or (
+                not account_id
+                and creds["organization_id"]
+                and acct.get("organization_id") == creds["organization_id"]
+                and (
+                    not creds["email"]
+                    or not acct.get("email")
+                    or acct.get("email") == creds["email"]
+                )
             )
         ):
             is_match = True

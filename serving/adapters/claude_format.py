@@ -603,11 +603,11 @@ class StreamEventResult:
     """Result from processing a single Claude SSE event."""
 
     __slots__ = (
-        "text_delta",
-        "input_tokens",
-        "output_tokens",
         "finish_reason",
+        "input_tokens",
         "is_done",
+        "output_tokens",
+        "text_delta",
     )
 
     def __init__(
