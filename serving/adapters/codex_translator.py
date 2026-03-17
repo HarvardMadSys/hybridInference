@@ -24,6 +24,10 @@ _ROLE_MAP = {
 }
 
 _SLUG_MAP: dict[str, tuple[str, str | None]] = {
+    "gpt-5.4": ("gpt-5.4", None),
+    "gpt-5.3-codex": ("gpt-5.3-codex", None),
+    "gpt-5.2-codex": ("gpt-5.2-codex", None),
+    "gpt-5.2": ("gpt-5.2", None),
     "gpt-5.1-codex": ("gpt-5.1-codex", None),
     "gpt-5-codex": ("gpt-5-codex", None),
     "o4-mini-codex": ("o4-mini-codex", None),
@@ -130,10 +134,9 @@ def translate_request(messages: list[dict[str, Any]], model: str, **params: Any)
     # Optional parameters
     if params.get("temperature") is not None:
         body["temperature"] = params["temperature"]
-    if params.get("max_tokens") is not None:
-        body["max_output_tokens"] = params["max_tokens"]
+    # Note: Codex API does not support max_output_tokens
     if params.get("tools"):
-        body["tools"] = params["tools"]
+        body["tools"] = _translate_tools(params["tools"])
     if params.get("tool_choice") is not None:
         body["tool_choice"] = params["tool_choice"]
 
@@ -251,6 +254,30 @@ def translate_stream_event(event_data: dict[str, Any]) -> tuple[str | None, dict
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _translate_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Chat Completions tools to Codex Responses API format.
+
+    Chat Completions: ``{"type": "function", "function": {"name": ..., "parameters": ...}}``
+    Codex Responses:  ``{"type": "function", "name": ..., "parameters": ...}``
+    """
+    result = []
+    for tool in tools:
+        if tool.get("type") == "function" and "function" in tool:
+            fn = tool["function"]
+            entry: dict[str, Any] = {"type": "function", "name": fn.get("name", "")}
+            if fn.get("description"):
+                entry["description"] = fn["description"]
+            if fn.get("parameters"):
+                entry["parameters"] = fn["parameters"]
+            if fn.get("strict") is not None:
+                entry["strict"] = fn["strict"]
+            result.append(entry)
+        else:
+            # Pass through unknown tool types as-is
+            result.append(tool)
+    return result
 
 
 def _translate_content(content: Any) -> list[dict[str, Any]]:

@@ -137,7 +137,8 @@ class CodexSubscriptionAdapter(BaseAdapter):
         account = await self._account_pool.acquire()
         token = await self._credential_provider.get_valid_token(account)
 
-        body = translate_request(messages, self.config.id, **params)
+        chat_params = {k: v for k, v in params.items() if k != "stream"}
+        body = translate_request(messages, self.config.id, **chat_params)
         session_id = self._get_session_id(params)
         body["prompt_cache_key"] = session_id
 
@@ -145,9 +146,16 @@ class CodexSubscriptionAdapter(BaseAdapter):
         headers["session_id"] = session_id
         url = self._build_url()
 
+        logger.debug(f"[CodexSub] POST {url} body={json.dumps(body)[:500]}")
+        logger.debug(
+            f"[CodexSub] headers={{{', '.join(f'{k}: {v[:20]}...' if len(str(v)) > 20 else f'{k}: {v}' for k, v in headers.items())}}}"
+        )
+
         try:
             completed_response = await self._collect_stream(url, body, headers)
         except aiohttp.ClientResponseError as exc:
+            error_body = getattr(exc, "error_body", "")
+            logger.error(f"[CodexSub] HTTP {exc.status} from codex: {error_body[:500]}")
             if exc.status == 401:
                 logger.info(f"[CodexSub] 401 for {account.id}, force-refreshing token and retrying")
                 token = await self._credential_provider.get_valid_token(account, force_refresh=True)
@@ -285,7 +293,8 @@ class CodexSubscriptionAdapter(BaseAdapter):
         account = await self._account_pool.acquire()
         token = await self._credential_provider.get_valid_token(account)
 
-        body = translate_request(messages, self.config.id, stream=True, **params)
+        stream_params = {k: v for k, v in params.items() if k != "stream"}
+        body = translate_request(messages, self.config.id, **stream_params)
         session_id = self._get_session_id(params)
         body["prompt_cache_key"] = session_id
 
