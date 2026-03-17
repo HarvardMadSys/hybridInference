@@ -320,7 +320,7 @@ export default function PlaygroundPage() {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [session, streaming, modelId, sysPrompt, temp, patch, flushDelta, scheduleFlush]);
+  }, [session, streaming, modelId, model?.name, sysPrompt, temp, patch, flushDelta, scheduleFlush]);
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {

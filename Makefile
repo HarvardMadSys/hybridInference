@@ -113,10 +113,20 @@ COMPOSE := docker compose -f infrastructure/docker/docker-compose.yml --env-file
 sync-subscriptions:  ## Import CLI OAuth credentials for subscription adapters
 	@mkdir -p var/data
 	@echo "$(YELLOW)Syncing subscription credentials...$(RESET)"
-	@$(UV_RUN) python scripts/import_codex_auth.py  2>/dev/null && echo "$(GREEN)  codex: imported$(RESET)" \
-		|| echo "  codex: skipped (no CLI credentials found)"
-	@$(UV_RUN) python scripts/import_claude_auth.py 2>/dev/null && echo "$(GREEN)  claude: imported$(RESET)" \
-		|| echo "  claude: skipped (no CLI credentials found)"
+	@if [ -f "$$HOME/.codex/auth.json" ]; then \
+		$(UV_RUN) python scripts/import_codex_auth.py \
+			&& echo "$(GREEN)  codex: imported$(RESET)" \
+			|| echo "$(YELLOW)  codex: import FAILED (see error above)$(RESET)"; \
+	else \
+		echo "  codex: skipped (~/.codex/auth.json not found; run codex --login)"; \
+	fi
+	@if [ -f "$$HOME/.claude/.credentials.json" ] || [ -f "$$HOME/.claude/credentials.json" ] || [ -f "$$HOME/.claude/auth.json" ]; then \
+		$(UV_RUN) python scripts/import_claude_auth.py \
+			&& echo "$(GREEN)  claude: imported$(RESET)" \
+			|| echo "$(YELLOW)  claude: import FAILED (see error above)$(RESET)"; \
+	else \
+		echo "  claude: skipped (~/.claude/ credentials not found; run claude login)"; \
+	fi
 
 up: sync-subscriptions  ## Start all services
 	$(COMPOSE) up -d
