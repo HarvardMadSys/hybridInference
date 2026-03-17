@@ -84,7 +84,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"openai"``, ``"zhipu"``,
-              ``"chutes"``, ``"featherless"``, ``"openai_compat"``).
+              ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -96,7 +96,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     model_cfg = ModelConfig(**cfg)
 
     # All OpenAI-compatible services use the same adapter
-    if kind in ("vllm", "sglang", "chutes", "featherless", "openai_compat"):
+    if kind in ("vllm", "sglang", "chutes", "featherless", "ollama", "openai_compat"):
         return OpenAICompatAdapter(model_cfg)
 
     if kind == "claude":
