@@ -16,6 +16,9 @@ from serving.observability.metrics import (
     normalize_provider_label,
 )
 from serving.servers.deps import get_db_logger
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def generate_api_key() -> str:
@@ -233,13 +236,22 @@ async def optional_verify_api_key(
         api_key = x_api_key
 
     if not api_key:
-        return None
+        return None  # No key supplied — anonymous
 
     if not db_logger or not db_logger.pool:
-        return None
+        logger.warning("optional_verify_api_key: DB unavailable, cannot resolve identity")
+        raise HTTPException(status_code=500, detail="Database not available for authentication")
 
     try:
         key_hash = hash_api_key(api_key)
+    except ValueError as exc:
+        # API_KEY_SECRET not configured — server misconfiguration, not a client error
+        logger.error("optional_verify_api_key: API_KEY_SECRET not set")
+        raise HTTPException(
+            status_code=500, detail="Server authentication misconfiguration"
+        ) from exc
+
+    try:
         async with db_logger.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -252,11 +264,12 @@ async def optional_verify_api_key(
                 """,
                 key_hash,
             )
-    except Exception:
-        return None
+    except Exception as exc:
+        logger.exception("optional_verify_api_key: DB query failed")
+        raise HTTPException(status_code=500, detail="Database error during authentication") from exc
 
     if not row:
-        return None
+        return None  # Key invalid or expired — treat as anonymous
 
     return {
         "user_id": row["user_id"],
