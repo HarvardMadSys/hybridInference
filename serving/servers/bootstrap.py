@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
+from serving.adapters import ClaudeSubscriptionAdapter, CodexSubscriptionAdapter
 from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
@@ -127,6 +128,35 @@ def _init_db_logger() -> DatabaseLogger | None:
         return None
 
 
+def _warn_missing_subscription_files(router: RouteExecutor) -> None:
+    """Warn at startup if subscription adapters are configured but accounts files are missing."""
+    needs_codex = False
+    needs_claude = False
+
+    for route in router.routes.values():
+        for adapter, _ in route.adapters:
+            if isinstance(adapter, CodexSubscriptionAdapter):
+                needs_codex = True
+            elif isinstance(adapter, ClaudeSubscriptionAdapter):
+                needs_claude = True
+
+    if not needs_codex and not needs_claude:
+        return
+
+    settings = get_settings()
+
+    if needs_codex and not Path(settings.codex_accounts_file).exists():
+        logger.warning(
+            f"codex_sub route configured but accounts file not found: "
+            f"{settings.codex_accounts_file} — requests will fail until credentials are imported"
+        )
+    if needs_claude and not Path(settings.claude_sub_accounts_file).exists():
+        logger.warning(
+            f"claude_sub route configured but accounts file not found: "
+            f"{settings.claude_sub_accounts_file} — requests will fail until credentials are imported"
+        )
+
+
 async def _init_router_and_models(router: RouteExecutor) -> dict:
     """Register models on the router from YAML configuration.
 
@@ -171,6 +201,7 @@ async def _init_router_and_models(router: RouteExecutor) -> dict:
         else:
             logger.info("OFFLOAD=1 but LOCAL_BASE_URL not set; no adapters filtered")
 
+    _warn_missing_subscription_files(router)
     return embedding_adapters
 
 
