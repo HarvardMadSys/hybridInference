@@ -495,7 +495,12 @@ class TestBuildPayload:
 
         payload = adapter._build_payload(messages)
 
-        assert payload["system"] == "Be helpful"
+        from serving.adapters.claude_sub import _REQUIRED_SYSTEM_PREFIX
+
+        # System should be array format with prefix + user system
+        assert isinstance(payload["system"], list)
+        assert payload["system"][0]["text"] == _REQUIRED_SYSTEM_PREFIX
+        assert payload["system"][1]["text"] == "Be helpful"
 
     def test_tools_conversion(self):
         adapter = _make_adapter_initialized()

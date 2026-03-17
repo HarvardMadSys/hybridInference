@@ -31,11 +31,12 @@ from .claude_format import (
     parse_response_content,
     parse_usage,
 )
-from .claude_token import ClaudeCredentialProvider
 from .codex_token import AccountPool, NoHealthyAccountError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+    from .claude_token import ClaudeCredentialProvider
 
 logger = get_logger(__name__)
 
@@ -48,6 +49,7 @@ _ANTHROPIC_BETA = (
     "context-management-2025-06-27,"
     "prompt-caching-scope-2026-01-05"
 )
+_REQUIRED_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 
 
 class ClaudeSubscriptionAdapter(BaseAdapter):
@@ -77,26 +79,15 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
 
         from serving.config.settings import get_settings
 
-        settings = get_settings()
+        from .claude_pool import get_shared_pool
 
-        accounts_file = settings.claude_sub_accounts_file
+        settings = get_settings()
         self._fallback_api_key = settings.claude_sub_fallback_api_key or None
 
-        provider = ClaudeCredentialProvider(
-            accounts_file=accounts_file,
-            refresh_margin=settings.claude_sub_token_refresh_margin,
-        )
-        accounts = provider.load_accounts()
-
-        self._credential_provider = provider
-        self._account_pool = AccountPool(
-            accounts=accounts,
-            cooldown=settings.claude_sub_account_cooldown,
-            failure_threshold=settings.claude_sub_failure_threshold,
-        )
+        self._credential_provider, self._account_pool = get_shared_pool()
         self._initialized = True
         logger.info(
-            f"[ClaudeSub] Initialised with {len(accounts)} accounts, "
+            f"[ClaudeSub] Initialised (shared pool), "
             f"fallback={'yes' if self._fallback_api_key else 'no'}"
         )
 
@@ -107,7 +98,7 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
     def _build_url(self) -> str:
         """Build the Messages API URL."""
         base = (self.config.base_url or "https://api.anthropic.com").rstrip("/")
-        return f"{base}/v1/messages"
+        return f"{base}/v1/messages?beta=true"
 
     def _build_headers(self, token: str, *, streaming: bool = False) -> dict[str, str]:
         """Build HTTP headers for subscription requests."""
@@ -136,6 +127,32 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
             "Accept": "application/json",
         }
 
+    @staticmethod
+    def _ensure_system_prefix(payload: dict[str, Any]) -> None:
+        """Ensure required Claude Code identity prefix for OAuth subscription access.
+
+        OAuth mode also requires array-of-blocks format for system prompts.
+        """
+        prefix = _REQUIRED_SYSTEM_PREFIX
+        system = payload.get("system")
+        if isinstance(system, str):
+            if system.startswith(prefix):
+                payload["system"] = [{"type": "text", "text": system}]
+            else:
+                payload["system"] = [
+                    {"type": "text", "text": prefix},
+                    {"type": "text", "text": system},
+                ]
+        elif isinstance(system, list):
+            for block in system:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    if not block.get("text", "").startswith(prefix):
+                        block["text"] = f"{prefix}\n\n{block['text']}"
+                    return
+            system.insert(0, {"type": "text", "text": prefix})
+        else:
+            payload["system"] = [{"type": "text", "text": prefix}]
+
     def _build_payload(
         self,
         messages: list[dict[str, Any]],
@@ -153,13 +170,14 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
         if stream:
             payload["stream"] = True
 
-        # System prompt
+        # System prompt — ensure Claude Code identity prefix for OAuth access
         if params.get("system"):
             payload["system"] = params["system"]
         else:
             sys_text = extract_system(messages)
             if sys_text:
                 payload["system"] = sys_text
+        self._ensure_system_prefix(payload)
 
         # Standard parameters
         payload["max_tokens"] = validated_params.get("max_tokens", self.config.max_output_length)
