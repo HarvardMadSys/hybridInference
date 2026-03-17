@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
+from serving.servers.auth import verify_api_key
+
+
 class DummyAdapter(BaseAdapter):
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         content = params.get("content", "Test response")
@@ -288,3 +291,61 @@ async def test_reasoning_content_filtered_in_streaming(
             if line != "data: [DONE]" and line != "data: {}"
         )
         assert content == "Test response"
+
+
+# ---------------------------------------------------------------------------
+# Admin-only enforcement tests for /v1/chat/completions
+# ---------------------------------------------------------------------------
+
+
+def _build_admin_gate_app(user_ctx: dict, mock_rate_limiter, mock_db_logger) -> FastAPI:
+    """Build test app with an admin_only model and injected user_ctx."""
+    router_exec = RouteExecutor()
+    router_exec.register_route("public-model", [(DummyAdapter(_mk_cfg("public-model")), 1.0)])
+    router_exec.register_route(
+        "secret-model", [(DummyAdapter(_mk_cfg("secret-model")), 1.0)], admin_only=True
+    )
+
+    app = FastAPI()
+    app.state.services = AppServices(
+        router=router_exec, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.dependency_overrides[verify_api_key] = lambda: user_ctx
+    app.include_router(completions.router)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_admin_only_rejected_for_non_admin(mock_rate_limiter, mock_db_logger):
+    """Non-admin user calling admin_only model gets 404."""
+    app = _build_admin_gate_app(
+        {"user_id": "user1", "authenticated": True, "is_admin": False},
+        mock_rate_limiter,
+        mock_db_logger,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "secret-model", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+        assert resp.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_admin_only_allowed_for_admin(mock_rate_limiter, mock_db_logger):
+    """Admin user calling admin_only model gets 200."""
+    app = _build_admin_gate_app(
+        {"user_id": "admin1", "authenticated": True, "is_admin": True},
+        mock_rate_limiter,
+        mock_db_logger,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "secret-model", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json()["choices"][0]["message"]["content"] == "Test response"

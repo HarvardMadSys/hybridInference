@@ -120,6 +120,19 @@ async def chat_completions(
         ).inc()
         raise HTTPException(404, f"Model '{model}' not found")
 
+    # Admin-only gate: non-admin users see a 404 as if the model doesn't exist
+    route = router_exec.routes[model]
+    if route.admin_only and not user_ctx.get("is_admin", False):
+        logger.info(
+            "Admin-only model rejected", extra={"model": model, "user_id": user_ctx.get("user_id")}
+        )
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label("router"),
+            status_code="404",
+        ).inc()
+        raise HTTPException(404, f"Model '{model}' not found")
+
     # Extract parameters
     params: dict[str, Any] = {}
     if payload.temperature is not None:

@@ -58,18 +58,25 @@ _REQUIRED_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Cla
 # ------------------------------------------------------------------
 
 
-def _resolve_model(model_id: str, router_exec: RouteExecutor) -> tuple[str, dict[str, str]]:
+def _resolve_model(
+    model_id: str,
+    router_exec: RouteExecutor,
+    user_ctx: dict | None = None,
+) -> tuple[str, dict[str, str]]:
     """Map a public model ID to its upstream provider_model_id.
 
     Returns:
         (provider_model_id, pricing_dict)
 
     Raises:
-        HTTPException 400: model not found or not eligible.
+        HTTPException 404: model not found, not eligible, or admin-only.
     """
     route = router_exec.routes.get(model_id)
     if route is None:
-        raise HTTPException(400, f"Model '{model_id}' not found in registry")
+        raise HTTPException(404, f"Model '{model_id}' not found")
+
+    if route.admin_only and not (user_ctx or {}).get("is_admin", False):
+        raise HTTPException(404, f"Model '{model_id}' not found")
 
     for adapter, _ in route.adapters:
         cfg = getattr(adapter, "config", None)
@@ -81,7 +88,7 @@ def _resolve_model(model_id: str, router_exec: RouteExecutor) -> tuple[str, dict
         return upstream_model, cfg.pricing
 
     raise HTTPException(
-        400,
+        404,
         f"Model '{model_id}' is not eligible for /anthropic/v1/messages "
         f"(requires provider={_PROVIDER_NAME})",
     )
@@ -321,7 +328,7 @@ async def anthropic_messages(
 
     # --- Model resolution -------------------------------------------
     try:
-        upstream_model, pricing = _resolve_model(model_id, router_exec)
+        upstream_model, pricing = _resolve_model(model_id, router_exec, user_ctx)
     except HTTPException as exc:
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label(model_id),

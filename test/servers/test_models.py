@@ -185,3 +185,53 @@ async def test_models_endpoint_performance(models_client: AsyncClient):
     elapsed = time.perf_counter() - start
     assert resp.status_code == status.HTTP_200_OK
     assert elapsed < 0.2
+
+
+# ---------------------------------------------------------------------------
+# admin_only visibility tests
+# ---------------------------------------------------------------------------
+
+
+def _build_admin_app(user_ctx: dict | None) -> FastAPI:
+    """Build a test app with one admin_only model and inject user_ctx."""
+    from serving.servers.auth import optional_verify_api_key
+
+    router_exec = RouteExecutor()
+    public = _Adapter(_cfg(id="public-model"))
+    secret = _Adapter(_cfg(id="secret-model"))
+    router_exec.register_route("public-model", [(public, 1.0)])
+    router_exec.register_route("secret-model", [(secret, 1.0)], admin_only=True)
+
+    app = FastAPI()
+    app.state.services = AppServices(router=router_exec, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
+
+    # Override the optional_verify_api_key dependency to return our test value
+    app.dependency_overrides[optional_verify_api_key] = lambda: user_ctx
+    app.include_router(models.router)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_admin_only_hidden_no_auth():
+    """Admin-only route not listed when user_ctx is None (unauthenticated)."""
+    app = _build_admin_app(user_ctx=None)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+        assert resp.status_code == status.HTTP_200_OK
+        ids = [m["id"] for m in resp.json()["data"]]
+        assert "public-model" in ids
+        assert "secret-model" not in ids
+
+
+@pytest.mark.asyncio
+async def test_admin_only_visible_to_admin():
+    """Admin-only route listed when user_ctx has is_admin=True."""
+    app = _build_admin_app(user_ctx={"is_admin": True, "user_id": "admin-user"})
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+        assert resp.status_code == status.HTTP_200_OK
+        ids = [m["id"] for m in resp.json()["data"]]
+        assert "public-model" in ids
+        assert "secret-model" in ids

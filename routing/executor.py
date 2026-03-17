@@ -42,6 +42,7 @@ class RouteConfig:
     """Weighted adapter list for a model."""
 
     adapters: list[tuple[BaseAdapter, float]]
+    admin_only: bool = False
 
 
 class RouteExecutor:
@@ -68,6 +69,7 @@ class RouteExecutor:
         adapters_with_weights: list[tuple[BaseAdapter, float]],
         *,
         aliases: list[str] | None = None,
+        admin_only: bool = False,
     ) -> None:
         """Register a weighted route for a model.
 
@@ -77,12 +79,13 @@ class RouteExecutor:
                 Weights will be normalized to sum to 1.0.
             aliases: Optional alias model IDs that share the same RouteConfig.
                 Updates to the canonical route automatically apply to aliases.
+            admin_only: If True, only admin users may access this route.
         """
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
             return
         normalized = [(adapter, weight / total_weight) for adapter, weight in adapters_with_weights]
-        route_cfg = RouteConfig(adapters=normalized)
+        route_cfg = RouteConfig(adapters=normalized, admin_only=admin_only)
         self.routes[model_id] = route_cfg
         for alias in aliases or []:
             self.routes[alias] = route_cfg  # shared reference, not a copy

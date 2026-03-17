@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.executor import RouteExecutor, _has_non_empty_content
+from routing.executor import RouteConfig, RouteExecutor, _has_non_empty_content
 from serving.adapters.base import BaseAdapter, ModelConfig
 
 if TYPE_CHECKING:
@@ -232,3 +232,28 @@ class TestHasNonEmptyContent:
     def test_null_delta(self):
         chunk = 'data: {"choices": [{"delta": {}}]}\n\n'
         assert _has_non_empty_content(chunk) is False
+
+
+# ---------------------------------------------------------------------------
+# admin_only tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_admin_only_default_false():
+    """RouteConfig defaults admin_only to False."""
+    cfg = RouteConfig(adapters=[])
+    assert cfg.admin_only is False
+
+
+@pytest.mark.unit
+def test_admin_only_propagated():
+    """register_route(..., admin_only=True) sets the flag on route and aliases."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    exe.register_route("m", [(a, 1.0)], aliases=["m-alias"], admin_only=True)
+
+    assert exe.routes["m"].admin_only is True
+    assert exe.routes["m-alias"].admin_only is True
+    # Shared reference
+    assert exe.routes["m"] is exe.routes["m-alias"]

@@ -249,7 +249,10 @@ def register_from_models_yaml(
             count += 1 + len(aliases)
         else:
             # Chat models go through the full RouteExecutor
-            router.register_route(model_id, adapters_with_weights, aliases=aliases)
+            admin_only = bool(m.get("admin_only", False))
+            router.register_route(
+                model_id, adapters_with_weights, aliases=aliases, admin_only=admin_only
+            )
             count += 1 + len(aliases)
 
     return count
