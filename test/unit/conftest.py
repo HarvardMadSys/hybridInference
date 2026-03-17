@@ -26,8 +26,21 @@ if "aiohttp" not in sys.modules:  # pragma: no cover - import-time shim
 
         # Methods used by tests are patched, so we keep placeholders only.
 
+    class _ClientResponseError(Exception):
+        """Stub for aiohttp.ClientResponseError."""
+
+        def __init__(self, request_info=None, history=(), status=0, message="", headers=None):
+            self.request_info = request_info
+            self.history = history
+            self.status = status
+            self.message = message
+            self.headers = headers
+            super().__init__(message)
+
     sys.modules["aiohttp"] = SimpleNamespace(
         ClientError=Exception,
+        ClientResponseError=_ClientResponseError,
         ClientTimeout=lambda total=None: None,
         ClientSession=_DummySession,
+        TCPConnector=lambda **k: None,
     )

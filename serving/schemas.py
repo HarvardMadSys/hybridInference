@@ -62,6 +62,9 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
 
+    # Reasoning effort (for Codex models: "low", "medium", "high")
+    reasoning_effort: str | None = None
+
     # Tools / structured output
     tools: list[dict[str, Any]] | None = None
     tool_choice: str | dict[str, Any] | None = None

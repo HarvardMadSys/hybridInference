@@ -16,6 +16,9 @@ from serving.observability.metrics import (
     normalize_provider_label,
 )
 from serving.servers.deps import get_db_logger
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def generate_api_key() -> str:
@@ -51,7 +54,7 @@ async def verify_api_key(
     # Check if auth is enabled
     if os.getenv("USER_AUTH_ENABLED", "0") != "1":
         # Auth disabled - allow all, mark as anonymous
-        return {"user_id": "anonymous", "tier": "free", "authenticated": False}
+        return {"user_id": "anonymous", "tier": "free", "authenticated": False, "is_admin": True}
 
     # Extract API key from headers
     api_key = None
@@ -90,11 +93,13 @@ async def verify_api_key(
         async with db_logger.pool.acquire() as conn:
             user_row = await conn.fetchrow(
                 """
-                SELECT id, user_id, user_name, quota_daily_cost_usd, tier
-                FROM api_keys
-                WHERE key_hash = $1
-                  AND status = 'active'
-                  AND (expires_at IS NULL OR expires_at > NOW())
+                SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, k.tier,
+                       u.email
+                FROM api_keys k
+                LEFT JOIN users u ON u.id = k.user_id
+                WHERE k.key_hash = $1
+                  AND k.status = 'active'
+                  AND (k.expires_at IS NULL OR k.expires_at > NOW())
                 """,
                 key_hash,
             )
@@ -195,6 +200,81 @@ async def verify_api_key(
         "tier": user["tier"],
         "authenticated": True,
         "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,
+        "is_admin": _check_admin(user.get("email") or ""),
+    }
+
+
+def _check_admin(email: str) -> bool:
+    """Lazy wrapper around is_admin_email to avoid top-level pydantic_settings import."""
+    from serving.config.settings import is_admin_email
+
+    return is_admin_email(email)
+
+
+async def optional_verify_api_key(
+    request: Request,
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    db_logger=Depends(get_db_logger),
+) -> dict[str, Any] | None:
+    """Lightweight identity lookup — no quota check, no last_used_at write.
+
+    Returns a minimal user context (with ``is_admin``) when a valid API key is
+    present, or ``None`` when the key is missing/invalid.  Designed for
+    read-only endpoints like ``/v1/models`` that need admin visibility without
+    side-effects.
+    """
+    # Auth disabled — treat caller as anonymous admin
+    if os.getenv("USER_AUTH_ENABLED", "0") != "1":
+        return {"user_id": "anonymous", "authenticated": False, "is_admin": True}
+
+    # Extract API key from headers
+    api_key = None
+    if authorization and authorization.startswith("Bearer "):
+        api_key = authorization[7:]
+    elif x_api_key:
+        api_key = x_api_key
+
+    if not api_key:
+        return None  # No key supplied — anonymous
+
+    if not db_logger or not db_logger.pool:
+        logger.warning("optional_verify_api_key: DB unavailable, cannot resolve identity")
+        raise HTTPException(status_code=500, detail="Database not available for authentication")
+
+    try:
+        key_hash = hash_api_key(api_key)
+    except ValueError as exc:
+        # API_KEY_SECRET not configured — server misconfiguration, not a client error
+        logger.error("optional_verify_api_key: API_KEY_SECRET not set")
+        raise HTTPException(
+            status_code=500, detail="Server authentication misconfiguration"
+        ) from exc
+
+    try:
+        async with db_logger.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT k.user_id, u.email
+                FROM api_keys k
+                LEFT JOIN users u ON u.id = k.user_id
+                WHERE k.key_hash = $1
+                  AND k.status = 'active'
+                  AND (k.expires_at IS NULL OR k.expires_at > NOW())
+                """,
+                key_hash,
+            )
+    except Exception as exc:
+        logger.exception("optional_verify_api_key: DB query failed")
+        raise HTTPException(status_code=500, detail="Database error during authentication") from exc
+
+    if not row:
+        return None  # Key invalid or expired — treat as anonymous
+
+    return {
+        "user_id": row["user_id"],
+        "authenticated": True,
+        "is_admin": _check_admin(row["email"] or ""),
     }
 
 

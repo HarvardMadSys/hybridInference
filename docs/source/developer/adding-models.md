@@ -14,7 +14,9 @@ There is a single guide for both needs. Depending on your case, follow one of:
 
 ### Adding a Model with an Existing Provider
 
-If the provider is already supported (vLLM, DeepSeek, Gemini, Llama, Zhipu), you only need to add configuration:
+If the provider is already supported (vLLM, DeepSeek, Gemini, Llama, Zhipu), you only need to add configuration.
+
+> **Subscription providers** (Claude, Codex) use OAuth account pools instead of API keys. See `developer/configuration.md`, section `Subscription Adapters (Claude / Codex)`, for setup instructions. The rest of this guide covers API-key-based providers.
 
 1. **Add model configuration** in `config/models.yaml`:
 
