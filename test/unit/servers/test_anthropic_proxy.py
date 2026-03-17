@@ -59,6 +59,7 @@ class _FakeAdapter:
 @dataclass
 class _FakeRouteConfig:
     adapters: list = field(default_factory=list)
+    admin_only: bool = False
 
 
 def _make_router_exec(
@@ -93,7 +94,7 @@ class TestResolveModel:
 
         with pytest.raises(HTTPException) as exc_info:
             _resolve_model("nonexistent-model", exec_mock)
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
         assert "not found" in exc_info.value.detail
 
     def test_wrong_provider(self):
@@ -102,7 +103,7 @@ class TestResolveModel:
 
         with pytest.raises(HTTPException) as exc_info:
             _resolve_model("claude-sonnet-4.6", exec_mock)
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
         assert "not eligible" in exc_info.value.detail
 
 
@@ -343,7 +344,7 @@ class TestNonStreaming:
             json=_request_body(model="nonexistent"),
             headers={"x-api-key": "hyi-test"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 404
         assert "not found" in resp.json()["error"]["message"]
 
     def test_missing_model_field(self, client):
@@ -412,7 +413,7 @@ class TestNonStreaming:
             json=_request_body(),
             headers={"x-api-key": "hyi-test"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 404
         assert "not eligible" in resp.json()["error"]["message"]
 
 

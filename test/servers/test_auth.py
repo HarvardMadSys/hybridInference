@@ -59,6 +59,7 @@ async def test_auth_disabled_returns_anonymous(monkeypatch, mock_request):
         "user_id": "anonymous",
         "tier": "free",
         "authenticated": False,
+        "is_admin": True,
     }
 
 
