@@ -336,7 +336,7 @@ async def chat_completions(
                                 with suppress(Exception):
                                     del chunk_json["_routing"]
 
-                            # Record TTFT at the first meaningful delta (content or tool_calls)
+                            # Record TTFT at the first meaningful delta (content, tool_calls, or reasoning_content)
                             if ttft_ms is None:
                                 try:
                                     choices_local = chunk_json.get("choices", [])
@@ -344,7 +344,8 @@ async def chat_completions(
                                         delta_local = choices_local[0].get("delta", {})
                                         has_content = bool(delta_local.get("content"))
                                         has_tool_calls = bool(delta_local.get("tool_calls"))
-                                        if has_content or has_tool_calls:
+                                        has_reasoning = bool(delta_local.get("reasoning_content"))
+                                        if has_content or has_tool_calls or has_reasoning:
                                             ttft_ms = int((time.time() - start_time) * 1000)
                                             logger.debug(
                                                 f"TTFT recorded (first delta): {ttft_ms}ms"
@@ -558,6 +559,7 @@ async def chat_completions(
                             "error": str(exc),
                             "params": params,
                             "metadata": metadata,
+                            "ttft_ms": ttft_ms,
                             "pricing": None,  # Error case - no pricing available
                         },
                     )
