@@ -129,7 +129,7 @@ class TestTranslateRequest:
             tools=[{"type": "function", "function": {"name": "f"}}],
             tool_choice="auto",
         )
-        assert body["temperature"] == 0.5
+        assert "temperature" not in body  # Codex API does not support temperature
         assert "max_output_tokens" not in body
         assert body["stream"] is True
         assert body["tools"] == [{"type": "function", "name": "f"}]

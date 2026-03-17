@@ -25,6 +25,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   durationMs?: number;
+  modelName?: string;
 }
 
 interface PlaygroundSession {
@@ -233,7 +234,7 @@ export default function PlaygroundPage() {
     patch((s) => ({
       ...s,
       title: getSessionTitle({ ...s, messages: newMsgs }),
-      messages: [...newMsgs, { role: 'assistant', content: '' }],
+      messages: [...newMsgs, { role: 'assistant', content: '', modelName: model?.name }],
       input: '',
     }));
     setStreaming(true);
@@ -319,7 +320,7 @@ export default function PlaygroundPage() {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [session, streaming, modelId, sysPrompt, temp, patch, flushDelta, scheduleFlush]);
+  }, [session, streaming, modelId, model?.name, sysPrompt, temp, patch, flushDelta, scheduleFlush]);
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -558,7 +559,7 @@ export default function PlaygroundPage() {
                               isUser ? 'text-indigo-400' : 'text-gray-500'
                             }`}
                           >
-                            {isUser ? 'You' : model?.name || 'Assistant'}
+                            {isUser ? 'You' : msg.modelName || model?.name || 'Assistant'}
                           </span>
                           <div className="flex items-center gap-2">
                             {!isUser && msg.durationMs != null && !isWaiting && (

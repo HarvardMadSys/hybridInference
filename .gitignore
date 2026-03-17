@@ -17,7 +17,6 @@ eggs/
 lib64/
 parts/
 sdist/
-var/
 wheels/
 share/python-wheels/
 *.egg-info/
@@ -191,6 +190,9 @@ results/*
 # Runtime data directories (var/)
 var/**
 !var/.gitkeep
+!var/data/
+var/data/**
+!var/data/.gitkeep
 
 # Back-compat (legacy data/ paths)
 data/db/*.db
