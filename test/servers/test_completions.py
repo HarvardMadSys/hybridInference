@@ -6,7 +6,9 @@ fallback behavior, and basic rate-limit rejection using injected services.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -349,3 +351,198 @@ async def test_admin_only_allowed_for_admin(mock_rate_limiter, mock_db_logger):
         )
         assert resp.status_code == status.HTTP_200_OK
         assert resp.json()["choices"][0]["message"]["content"] == "Test response"
+
+
+# ---------------------------------------------------------------------------
+# TTFT (Time To First Token) tests
+# ---------------------------------------------------------------------------
+
+
+class ReasoningOnlyAdapter(BaseAdapter):
+    """Adapter that emits only reasoning_content before content (deepseek-r1 scenario)."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(content="answer", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        # First chunk: only reasoning_content, no content
+        reasoning_chunk = {
+            "id": "chatcmpl-r1",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.config.id,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": "Let me think step by step..."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(reasoning_chunk)}\n\n"
+
+        # Then content
+        yield self.format_stream_chunk(model=self.config.id, content="answer")
+        yield make_final_usage_chunk(
+            model=self.config.id, messages=messages, total_content="answer"
+        )
+        yield done_sentinel()
+
+
+class ErrorAfterFirstTokenAdapter(BaseAdapter):
+    """Adapter that emits one content chunk then raises an error."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        raise RuntimeError("not implemented")
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        yield self.format_stream_chunk(model=self.config.id, content="partial")
+        raise RuntimeError("upstream connection lost")
+
+
+class ErrorBeforeAnyTokenAdapter(BaseAdapter):
+    """Adapter that raises immediately without yielding any content."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        raise RuntimeError("not implemented")
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        raise RuntimeError("upstream refused connection")
+        yield ""  # noqa: unreachable — makes this an async generator
+
+
+def _build_ttft_app(
+    model_id: str, adapter: BaseAdapter, mock_rate_limiter, mock_db_logger, monkeypatch
+) -> FastAPI:
+    """Build a minimal app for TTFT testing."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route(model_id, [(adapter, 1.0)])
+
+    app = FastAPI(title="TTFT Test")
+    app.state.services = AppServices(
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    return app
+
+
+async def _get_db_log_ttft(mock_db_logger, timeout: float = 2.0) -> tuple[bool, int | None]:
+    """Wait for the background DB log task and return (logged, ttft_ms).
+
+    Returns:
+        (True, ttft_ms) if log_request was called — ttft_ms may be None.
+        (False, None) if log_request was never called within timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if mock_db_logger.log_request.call_count > 0:
+            kwargs = mock_db_logger.log_request.call_args.kwargs
+            return True, kwargs.get("ttft_ms")
+        await asyncio.sleep(0.05)
+    return False, None
+
+
+@pytest.mark.asyncio
+async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limiter, mock_db_logger):
+    """Streaming request where first delta has only reasoning_content should record ttft_ms."""
+    app = _build_ttft_app(
+        "deepseek-r1",
+        ReasoningOnlyAdapter(_mk_cfg("deepseek-r1")),
+        mock_rate_limiter,
+        mock_db_logger,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "deepseek-r1",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            # Consume the stream fully
+            async for _ in resp.aiter_lines():
+                pass
+
+    logged, ttft = await _get_db_log_ttft(mock_db_logger)
+    assert logged, "DB log_request should have been called"
+    assert ttft is not None, "ttft_ms should be recorded when reasoning_content is in first delta"
+    assert ttft >= 0
+
+
+@pytest.mark.asyncio
+async def test_ttft_preserved_in_error_path(monkeypatch, mock_rate_limiter, mock_db_logger):
+    """If TTFT was recorded before stream error, error-path DB log should include it."""
+    app = _build_ttft_app(
+        "error-model",
+        ErrorAfterFirstTokenAdapter(_mk_cfg("error-model")),
+        mock_rate_limiter,
+        mock_db_logger,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "error-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp:
+            # Consume stream (may get partial content then error)
+            async for _ in resp.aiter_lines():
+                pass
+
+    logged, ttft = await _get_db_log_ttft(mock_db_logger)
+    assert logged, "DB log_request should have been called on error path"
+    assert ttft is not None, "ttft_ms should be preserved in error-path DB log"
+    assert ttft >= 0
+
+
+@pytest.mark.asyncio
+async def test_ttft_null_when_error_before_any_token(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """If error occurs before any meaningful delta, ttft_ms should be None in DB log."""
+    app = _build_ttft_app(
+        "fail-model",
+        ErrorBeforeAnyTokenAdapter(_mk_cfg("fail-model")),
+        mock_rate_limiter,
+        mock_db_logger,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "fail-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp:
+            async for _ in resp.aiter_lines():
+                pass
+
+    logged, ttft = await _get_db_log_ttft(mock_db_logger)
+    assert logged, "DB log_request should have been called on error path"
+    assert ttft is None, "ttft_ms should be None when error occurs before any meaningful delta"
