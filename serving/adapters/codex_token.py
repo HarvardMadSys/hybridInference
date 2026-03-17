@@ -282,6 +282,29 @@ class AccountPool:
             return False
         return True
 
+    def deactivate(self, account_id: str) -> None:
+        """Remove an account from the active pool (e.g., revoked).
+
+        Safe to call if the account is not in the pool.
+        """
+        original_len = len(self._accounts)
+        self._accounts = [a for a in self._accounts if a.id != account_id]
+        self._health.pop(account_id, None)
+        if self._accounts and self._index >= len(self._accounts):
+            self._index = 0
+        if len(self._accounts) < original_len:
+            logger.info(f"Deactivated account {account_id} from pool")
+
+    def activate(self, account) -> None:
+        """Add an account back to the active pool.
+
+        No-op if the account is already present.
+        """
+        if any(a.id == account.id for a in self._accounts):
+            return
+        self._accounts.append(account)
+        logger.info(f"Activated account {account.id} in pool")
+
     @staticmethod
     def _classify_error(status_code: int) -> str:
         """Classify HTTP error into account / upstream / client."""

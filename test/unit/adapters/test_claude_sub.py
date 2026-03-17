@@ -12,7 +12,12 @@ import pytest
 
 from serving.adapters.base import ModelConfig
 from serving.adapters.claude_sub import ClaudeSubscriptionAdapter
-from serving.adapters.claude_token import ClaudeAccountCredential
+from serving.adapters.claude_token import (
+    ClaudeAccountCredential,
+    ClaudeCredentialProvider,
+    RefreshTokenRevokedError,
+    RefreshTokenTransientError,
+)
 from serving.adapters.codex_token import AccountPool, NoHealthyAccountError
 
 
@@ -233,6 +238,43 @@ class TestChatCompletion:
         assert len(call_args_list) == 2
         assert call_args_list[0].get("force_refresh") is not True
         assert call_args_list[1].get("force_refresh") is True
+
+    @pytest.mark.asyncio
+    async def test_401_force_refresh_revoked_marks_account(self):
+        """If force_refresh on 401 hits invalid_grant, account is revoked."""
+        adapter = _make_adapter_initialized()
+
+        call_count = 0
+
+        async def mock_post(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise aiohttp.ClientResponseError(
+                request_info=MagicMock(), history=(), status=401, message="Unauthorized"
+            )
+
+        adapter.http.json_post_with_retry = AsyncMock(side_effect=mock_post)
+
+        # First get_valid_token succeeds, second (force_refresh) raises revoked
+        token_call_count = 0
+
+        async def mock_get_token(acct, **kwargs):
+            nonlocal token_call_count
+            token_call_count += 1
+            if kwargs.get("force_refresh"):
+                raise RefreshTokenRevokedError(acct.id, "invalid_grant")
+            return acct.access_token
+
+        adapter._credential_provider.get_valid_token = AsyncMock(side_effect=mock_get_token)
+        adapter._credential_provider.transition_state = AsyncMock()
+
+        with pytest.raises(NoHealthyAccountError):
+            await adapter.chat_completion([{"role": "user", "content": "test"}])
+
+        # Should have marked account as revoked
+        adapter._credential_provider.transition_state.assert_called_once()
+        args = adapter._credential_provider.transition_state.call_args
+        assert args[0][1] == "revoked"
 
     @pytest.mark.asyncio
     async def test_fallback_on_no_healthy_accounts(self):
@@ -566,3 +608,84 @@ class TestHeaders:
         assert headers["x-api-key"] == "sk-ant-paid"
         assert "Authorization" not in headers
         assert "Anthropic-Version" in headers
+
+
+# ---------------------------------------------------------------------------
+# _acquire_with_retry tests
+# ---------------------------------------------------------------------------
+
+
+class TestAcquireWithRetry:
+    @pytest.mark.asyncio
+    async def test_returns_account_and_token_on_success(self):
+        adapter = _make_adapter_initialized()
+
+        account, token = await adapter._acquire_with_retry()
+
+        assert account.id == "acct_01"
+        assert token == account.access_token
+
+    @pytest.mark.asyncio
+    async def test_skips_revoked_account(self):
+        acct_a = _make_account("a")
+        acct_b = _make_account("b")
+        adapter = _make_adapter_initialized(accounts=[acct_a, acct_b])
+
+        call_count = 0
+
+        async def mock_get_valid_token(acct, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if acct.id == "a":
+                raise RefreshTokenRevokedError("a", "invalid_grant")
+            return acct.access_token
+
+        adapter._credential_provider.get_valid_token = AsyncMock(
+            side_effect=mock_get_valid_token
+        )
+        adapter._credential_provider.transition_state = AsyncMock()
+
+        account, token = await adapter._acquire_with_retry()
+
+        assert account.id == "b"
+        assert token == acct_b.access_token
+        adapter._credential_provider.transition_state.assert_called_once()
+        call_args = adapter._credential_provider.transition_state.call_args
+        assert call_args[0][1] == "revoked"  # new_state
+        assert call_args[0][2] == "invalid_grant"  # reason
+
+    @pytest.mark.asyncio
+    async def test_skips_transient_failure(self):
+        acct_a = _make_account("a")
+        acct_b = _make_account("b")
+        adapter = _make_adapter_initialized(accounts=[acct_a, acct_b])
+
+        call_count = 0
+
+        async def mock_get_valid_token(acct, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if acct.id == "a":
+                raise RefreshTokenTransientError("a", 500, "server error")
+            return acct.access_token
+
+        adapter._credential_provider.get_valid_token = AsyncMock(
+            side_effect=mock_get_valid_token
+        )
+
+        account, token = await adapter._acquire_with_retry()
+
+        assert account.id == "b"
+        assert token == acct_b.access_token
+
+    @pytest.mark.asyncio
+    async def test_all_accounts_fail_raises(self):
+        acct_a = _make_account("a")
+        adapter = _make_adapter_initialized(accounts=[acct_a])
+
+        adapter._credential_provider.get_valid_token = AsyncMock(
+            side_effect=RefreshTokenTransientError("a", 500, "fail")
+        )
+
+        with pytest.raises(NoHealthyAccountError):
+            await adapter._acquire_with_retry()

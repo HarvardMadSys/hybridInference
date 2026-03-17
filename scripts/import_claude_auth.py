@@ -232,28 +232,49 @@ def main():
         print(f"Loaded {len(existing_accounts)} existing account(s) from {args.output}")
 
     # Find or create account entry
-    # Merge rules:
+    # Merge rules (ordered by priority):
     #   1. Explicit --account-id with existing match → update in-place
-    #   2. Stable identity (org_id + email both present) match → update in-place
-    #   3. Otherwise → always append (avoids merging distinct accounts with same plan)
+    #   2. refresh_token matches (same OAuth session) → update in-place
+    #   3. org_id matches AND (email matches or either is empty) → update in-place
+    #   4. Otherwise → append new account
     account_id = args.account_id
     matched = False
     for acct in existing_accounts:
         is_match = False
-        # Explicit --account-id: only merge when ID matches
+        # Rule 1: explicit --account-id
         if account_id and acct.get("id") == account_id:
             is_match = True
-        # Stable identity: org_id + email both present and match
+        # Rule 2: refresh_token match (same credential)
+        elif not account_id and acct.get("refresh_token") == creds["refresh_token"]:
+            is_match = True
+        # Rule 3: org_id match (relaxed — email can be empty on either side)
         elif (
             not account_id
             and creds["organization_id"]
-            and creds["email"]
             and acct.get("organization_id") == creds["organization_id"]
-            and acct.get("email") == creds["email"]
+            and (
+                not creds["email"]
+                or not acct.get("email")
+                or acct.get("email") == creds["email"]
+            )
         ):
             is_match = True
 
         if is_match:
+            # Check if re-importing into a revoked account → reset to active
+            was_revoked = acct.get("state") in ("revoked", "disabled")
+            if was_revoked:
+                old_reason = acct.get("revoke_reason", "")
+                acct["state"] = "active"
+                acct["consecutive_failures"] = 0
+                acct["revoke_reason"] = ""
+                acct["state_changed_at"] = int(time.time() * 1000)
+                print(
+                    f"Account {acct.get('id')} was {acct.get('state', 'revoked')} "
+                    f"(reason: {old_reason or 'unknown'}), "
+                    f"resetting to active with new credentials."
+                )
+
             acct["access_token"] = creds["access_token"]
             acct["refresh_token"] = creds["refresh_token"]
             acct["expires_at"] = creds["expires_at"]
@@ -289,7 +310,10 @@ def main():
             "organization_id": creds["organization_id"],
             "email": creds["email"],
             "plan": creds["plan"],
-            "enabled": True,
+            "state": "active",
+            "state_changed_at": int(time.time() * 1000),
+            "consecutive_failures": 0,
+            "revoke_reason": "",
         }
         existing_accounts.append(new_entry)
         print(f"Added new account: {account_id} ({label})")
@@ -299,8 +323,8 @@ def main():
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    # Write atomically
-    output_data = json.dumps({"accounts": existing_accounts}, indent=2)
+    # Write atomically (v2 format with version field)
+    output_data = json.dumps({"version": 2, "accounts": existing_accounts}, indent=2)
     with open(args.output, "w") as f:
         f.write(output_data)
     os.chmod(args.output, 0o600)

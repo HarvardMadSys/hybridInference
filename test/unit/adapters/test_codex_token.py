@@ -109,6 +109,75 @@ class TestAccountPool:
         assert pool._health["a"].healthy is True
 
 
+class TestDeactivateActivate:
+    @pytest.mark.asyncio
+    async def test_deactivate_removes_account(self):
+        pool = _make_pool("a", "b", "c")
+        pool.deactivate("b")
+
+        ids = []
+        for _ in range(4):
+            acct = await pool.acquire()
+            ids.append(acct.id)
+        assert "b" not in ids
+        assert ids == ["a", "c", "a", "c"]
+
+    @pytest.mark.asyncio
+    async def test_deactivate_clears_health(self):
+        pool = _make_pool("a", "b")
+        pool.report_failure("a", 401)
+        assert "a" in pool._health
+
+        pool.deactivate("a")
+        assert "a" not in pool._health
+
+    @pytest.mark.asyncio
+    async def test_deactivate_adjusts_index(self):
+        pool = _make_pool("a", "b")
+        # Advance index past end after deactivation
+        pool._index = 1
+        pool.deactivate("b")
+        assert pool._index == 0
+
+    def test_deactivate_nonexistent_is_noop(self):
+        pool = _make_pool("a", "b")
+        pool.deactivate("z")
+        assert len(pool._accounts) == 2
+
+    @pytest.mark.asyncio
+    async def test_activate_adds_account(self):
+        pool = _make_pool("a")
+        new_acct = _make_account("b")
+        pool.activate(new_acct)
+
+        ids = []
+        for _ in range(4):
+            acct = await pool.acquire()
+            ids.append(acct.id)
+        assert ids == ["a", "b", "a", "b"]
+
+    def test_activate_noop_if_already_present(self):
+        pool = _make_pool("a", "b")
+        existing = pool._accounts[0]
+        pool.activate(existing)
+        assert len(pool._accounts) == 2
+
+    @pytest.mark.asyncio
+    async def test_deactivate_all_then_activate(self):
+        pool = _make_pool("a", "b")
+        pool.deactivate("a")
+        pool.deactivate("b")
+
+        with pytest.raises(NoHealthyAccountError):
+            await pool.acquire()
+
+        new_acct = _make_account("c")
+        pool.activate(new_acct)
+
+        acct = await pool.acquire()
+        assert acct.id == "c"
+
+
 class TestErrorClassification:
     @pytest.mark.parametrize(
         "status,expected",

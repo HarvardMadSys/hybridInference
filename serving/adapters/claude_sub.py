@@ -31,6 +31,10 @@ from .claude_format import (
     parse_response_content,
     parse_usage,
 )
+from .claude_token import (
+    RefreshTokenRevokedError,
+    TokenRefreshError,
+)
 from .codex_token import AccountPool, NoHealthyAccountError
 
 if TYPE_CHECKING:
@@ -90,6 +94,43 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
             f"[ClaudeSub] Initialised (shared pool), "
             f"fallback={'yes' if self._fallback_api_key else 'no'}"
         )
+
+    # ------------------------------------------------------------------
+    # Account acquisition with token-refresh retry
+    # ------------------------------------------------------------------
+
+    async def _acquire_with_retry(self) -> tuple:
+        """Acquire an account and get a valid token, retrying on refresh failure.
+
+        On ``RefreshTokenRevokedError``, marks the account revoked and tries
+        the next one. On transient refresh errors, reports failure to the pool
+        and tries the next one. Returns ``(account, token)`` tuple.
+
+        Raises:
+            NoHealthyAccountError: If no account can produce a valid token.
+        """
+        assert self._account_pool is not None
+        assert self._credential_provider is not None
+
+        last_err: Exception | None = None
+        for _ in range(len(self._account_pool._accounts)):
+            account = await self._account_pool.acquire()
+            try:
+                token = await self._credential_provider.get_valid_token(account)
+                return account, token
+            except RefreshTokenRevokedError as exc:
+                logger.warning(
+                    f"[ClaudeSub] Refresh token revoked for {account.id}, " f"marking revoked"
+                )
+                await self._credential_provider.transition_state(
+                    account, "revoked", "invalid_grant", pool=self._account_pool
+                )
+                last_err = exc
+            except TokenRefreshError as exc:
+                logger.warning(f"[ClaudeSub] Token refresh failed for {account.id}: {exc}")
+                self._account_pool.report_failure(account.id, 401)
+                last_err = exc
+        raise NoHealthyAccountError(f"All accounts failed token acquisition: {last_err}")
 
     # ------------------------------------------------------------------
     # Header / URL / payload builders
@@ -227,8 +268,7 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
         assert self._account_pool is not None
         assert self._credential_provider is not None
 
-        account = await self._account_pool.acquire()
-        token = await self._credential_provider.get_valid_token(account)
+        account, token = await self._acquire_with_retry()
 
         payload = self._build_payload(messages, stream=False, **params)
         headers = self._build_headers(token, streaming=False)
@@ -243,7 +283,22 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
                 logger.info(
                     f"[ClaudeSub] 401 for {account.id}, force-refreshing token and retrying"
                 )
-                token = await self._credential_provider.get_valid_token(account, force_refresh=True)
+                try:
+                    token = await self._credential_provider.get_valid_token(
+                        account, force_refresh=True
+                    )
+                except RefreshTokenRevokedError as revoked_exc:
+                    await self._credential_provider.transition_state(
+                        account, "revoked", "invalid_grant", pool=self._account_pool
+                    )
+                    raise NoHealthyAccountError(
+                        f"Account {account.id} revoked during 401 retry"
+                    ) from revoked_exc
+                except TokenRefreshError as refresh_exc:
+                    self._account_pool.report_failure(account.id, 401)
+                    raise NoHealthyAccountError(
+                        f"Token refresh failed for {account.id} during 401 retry"
+                    ) from refresh_exc
                 headers["Authorization"] = f"Bearer {token}"
                 try:
                     data = await self.http.json_post_with_retry(
@@ -345,8 +400,7 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
         assert self._credential_provider is not None
 
         max_retries = len(self._account_pool._accounts) - 1
-        account = await self._account_pool.acquire()
-        token = await self._credential_provider.get_valid_token(account)
+        account, token = await self._acquire_with_retry()
 
         payload = self._build_payload(messages, stream=True, **params)
         headers = self._build_headers(token, streaming=True)
