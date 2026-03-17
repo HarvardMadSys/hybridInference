@@ -19,6 +19,7 @@ const API_BASE = config.apiBase;
 interface PlaygroundModel {
   id: string;
   name: string;
+  provider: string;
 }
 
 interface Message {
@@ -28,12 +29,15 @@ interface Message {
   modelName?: string;
 }
 
+type ReasoningEffort = 'low' | 'medium' | 'high' | null;
+
 interface PlaygroundSession {
   id: string;
   title: string;
   selectedModelId: string;
   systemPrompt: string;
   temperature: number;
+  reasoningEffort: ReasoningEffort;
   messages: Message[];
   input: string;
 }
@@ -45,6 +49,7 @@ function createSession(id: string, defaultModelId = ''): PlaygroundSession {
     selectedModelId: defaultModelId,
     systemPrompt: '',
     temperature: 0.7,
+    reasoningEffort: null,
     messages: [],
     input: '',
   };
@@ -95,6 +100,8 @@ export default function PlaygroundPage() {
   const msgs = session?.messages || [];
   const input = session?.input || '';
   const model = models.find((m) => m.id === modelId) ?? null;
+  const reasoningEffort = session?.reasoningEffort ?? null;
+  const isCodexModel = model?.provider === 'codex_sub';
 
   const patch = useCallback(
     (fn: (s: PlaygroundSession) => PlaygroundSession) => {
@@ -252,6 +259,7 @@ export default function PlaygroundPage() {
           system_prompt: sysPrompt,
           messages: newMsgs.map((m) => ({ role: m.role, content: m.content })),
           temperature: temp,
+          ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         }),
         signal: ctrl.signal,
       });
@@ -320,7 +328,18 @@ export default function PlaygroundPage() {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [session, streaming, modelId, model?.name, sysPrompt, temp, patch, flushDelta, scheduleFlush]);
+  }, [
+    session,
+    streaming,
+    modelId,
+    model?.name,
+    sysPrompt,
+    temp,
+    reasoningEffort,
+    patch,
+    flushDelta,
+    scheduleFlush,
+  ]);
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -460,7 +479,16 @@ export default function PlaygroundPage() {
                   </label>
                   <select
                     value={modelId}
-                    onChange={(e) => patch((s) => ({ ...s, selectedModelId: e.target.value }))}
+                    onChange={(e) => {
+                      const newId = e.target.value;
+                      const newModel = models.find((m) => m.id === newId);
+                      patch((s) => ({
+                        ...s,
+                        selectedModelId: newId,
+                        reasoningEffort:
+                          newModel?.provider === 'codex_sub' ? s.reasoningEffort : null,
+                      }));
+                    }}
                     disabled={streaming}
                     className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
                   >
@@ -477,7 +505,9 @@ export default function PlaygroundPage() {
                     <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">
                       Temperature
                     </label>
-                    <span className="text-xs tabular-nums text-gray-400">{temp.toFixed(1)}</span>
+                    <span className="text-xs tabular-nums text-gray-400">
+                      {reasoningEffort ? '--' : temp.toFixed(1)}
+                    </span>
                   </div>
                   <input
                     type="range"
@@ -488,10 +518,43 @@ export default function PlaygroundPage() {
                     onChange={(e) =>
                       patch((s) => ({ ...s, temperature: parseFloat(e.target.value) }))
                     }
-                    disabled={streaming}
+                    disabled={streaming || !!reasoningEffort}
                     className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-indigo-500 disabled:opacity-50"
                   />
+                  {reasoningEffort && (
+                    <p className="mt-1 text-xs text-gray-600">Disabled while reasoning is active</p>
+                  )}
                 </div>
+
+                {isCodexModel && (
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
+                      Reasoning effort
+                    </label>
+                    <div className="flex rounded-lg border border-gray-700 bg-gray-800">
+                      {([null, 'low', 'medium', 'high'] as const).map((level) => {
+                        const label =
+                          level === null ? 'None' : level.charAt(0).toUpperCase() + level.slice(1);
+                        const active = reasoningEffort === level;
+                        return (
+                          <button
+                            key={label}
+                            type="button"
+                            onClick={() => patch((s) => ({ ...s, reasoningEffort: level }))}
+                            disabled={streaming}
+                            className={`flex-1 px-2 py-1.5 text-xs font-medium transition first:rounded-l-md last:rounded-r-md disabled:opacity-50 ${
+                              active
+                                ? 'bg-indigo-600 text-white'
+                                : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 <div>
                   <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
@@ -647,8 +710,14 @@ export default function PlaygroundPage() {
                     <div className="text-xs text-gray-600">
                       {(() => {
                         if (!model) return 'Loading...';
-                        const base = `${model.name} / temp ${temp.toFixed(1)}`;
-                        return sysPrompt.trim() ? `${base} / custom instructions` : base;
+                        const parts = [model.name];
+                        if (reasoningEffort) {
+                          parts.push(`reasoning: ${reasoningEffort}`);
+                        } else {
+                          parts.push(`temp ${temp.toFixed(1)}`);
+                        }
+                        if (sysPrompt.trim()) parts.push('custom instructions');
+                        return parts.join(' / ');
                       })()}
                     </div>
                     <div className="flex items-center gap-2">
