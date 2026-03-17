@@ -131,10 +131,7 @@ def translate_request(messages: list[dict[str, Any]], model: str, **params: Any)
     if reasoning_effort:
         body["reasoning"] = {"effort": reasoning_effort}
 
-    # Optional parameters
-    if params.get("temperature") is not None:
-        body["temperature"] = params["temperature"]
-    # Note: Codex API does not support max_output_tokens
+    # Note: Codex Responses API does not support temperature or max_output_tokens
     if params.get("tools"):
         body["tools"] = _translate_tools(params["tools"])
     if params.get("tool_choice") is not None:
