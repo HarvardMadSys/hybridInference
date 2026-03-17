@@ -138,8 +138,8 @@ The gateway currently exposes more than one client-facing protocol surface:
 The Anthropic surface is an **identity surface translator**: the client-facing and upstream protocols are both Anthropic Messages API, so the route mainly performs auth, rate limiting, model resolution, credential injection, and usage logging.
 
 For design details, see:
-- [`docs/claude-account-lifecycle.md`](../../claude-account-lifecycle.md) — account state machine, error handling, data model
-- [`docs/subscription-adapter-architecture.md`](../../subscription-adapter-architecture.md) — long-term multi-provider architecture
+- repository design doc `docs/claude-account-lifecycle.md` — account state machine, error handling, data model
+- repository design doc `docs/subscription-adapter-architecture.md` — long-term multi-provider architecture
 
 ## Key Design Principles
 

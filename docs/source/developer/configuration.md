@@ -135,6 +135,7 @@ python -m serving.servers.app
 - `POST /v1/chat/completions` - Routes requests based on configured ratios
 - `GET /routing` - Shows current routing configuration
 
+(subscription-adapters)=
 ## 5. Subscription Adapters (Claude / Codex)
 
 Subscription adapters use **OAuth account pools** instead of static API keys. This requires a separate credentials file and import workflow.
@@ -310,7 +311,7 @@ CODEX_FAILURE_THRESHOLD=3
 
 Codex currently exposes only the OpenAI-compatible northbound surface (`POST /v1/chat/completions`); there is no separate Codex-native public route yet.
 
-See [`docs/codex-subscription-design.md`](../../codex-subscription-design.md) for Codex-specific details.
+For Codex-specific details, see the repository design doc `docs/codex-subscription-design.md`.
 
 ## 6. FAQ
 

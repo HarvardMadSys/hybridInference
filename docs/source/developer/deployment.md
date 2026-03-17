@@ -153,7 +153,7 @@ curl -s http://localhost:8080/anthropic/v1/messages \
 
 This route uses the same shared Claude account pool as `/v1/chat/completions`, but it only accepts models routed through `provider: claude_sub`.
 
-See the [Configuration Guide — Subscription Adapters](configuration.md#5-subscription-adapters-claude--codex) for full setup details.
+See `developer/configuration.md`, section `Subscription Adapters (Claude / Codex)`, for full setup details.
 
 ## Monitoring
 
