@@ -129,7 +129,8 @@ class TestTranslateRequest:
             tools=[{"type": "function", "function": {"name": "f"}}],
             tool_choice="auto",
         )
-        assert body["temperature"] == 0.5  # temperature allowed when no reasoning
+        # Codex Responses API does not support temperature at all
+        assert "temperature" not in body
         assert "max_output_tokens" not in body
         assert body["stream"] is True
         assert body["tools"] == [{"type": "function", "name": "f"}]
@@ -146,8 +147,8 @@ class TestTranslateRequest:
         assert body["reasoning"] == {"effort": "medium"}
         assert "temperature" not in body
 
-    def test_reasoning_effort_none_allows_temperature(self):
-        """reasoning_effort='none' is equivalent to no reasoning — temperature is allowed."""
+    def test_temperature_never_sent(self):
+        """Codex Responses API does not support temperature — always omitted."""
         body = translate_request(
             [{"role": "user", "content": "hi"}],
             "gpt-5.1-codex",
@@ -155,17 +156,15 @@ class TestTranslateRequest:
             temperature=0.5,
         )
         assert "reasoning" not in body
-        assert body["temperature"] == 0.5
+        assert "temperature" not in body
 
-    def test_temperature_without_reasoning(self):
-        """Temperature passes through when no reasoning_effort is set."""
-        body = translate_request(
+        body2 = translate_request(
             [{"role": "user", "content": "hi"}],
             "gpt-5.1-codex",
             temperature=1.2,
         )
-        assert "reasoning" not in body
-        assert body["temperature"] == 1.2
+        assert "reasoning" not in body2
+        assert "temperature" not in body2
 
 
 # ---------------------------------------------------------------------------

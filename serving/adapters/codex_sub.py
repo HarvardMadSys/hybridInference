@@ -306,6 +306,8 @@ class CodexSubscriptionAdapter(BaseAdapter):
         headers["session_id"] = session_id
         url = self._build_url()
 
+        logger.debug(f"[CodexSub] Stream POST {url} body={json.dumps(body)[:500]}")
+
         yielded_any_content = False
         total_content = ""
         finish_reason = "stop"
@@ -356,6 +358,8 @@ class CodexSubscriptionAdapter(BaseAdapter):
                     break
 
         except aiohttp.ClientResponseError as exc:
+            error_body = getattr(exc, "error_body", "")
+            logger.error(f"[CodexSub] Stream HTTP {exc.status} from codex: {error_body[:500]}")
             self._account_pool.report_failure(account.id, exc.status)
             error_class = AccountPool._classify_error(exc.status)
             if not yielded_any_content and error_class == "account" and _retry_count < max_retries:
