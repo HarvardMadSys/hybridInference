@@ -441,6 +441,12 @@ async def chat_completions(
 
                 logger.info(f"Stream complete: total_chunks={chunk_count}")
 
+                if not final_text and not tool_calls_map:
+                    logger.warning(
+                        f"Stream completed with no visible content or tool_calls: "
+                        f"model={model}, chunks={chunk_count}, request_id={request_id}"
+                    )
+
                 # Reconstruct a complete response object for DB logging
                 response_for_db: dict[str, Any] = {
                     "id": request_id,

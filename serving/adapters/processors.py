@@ -603,14 +603,33 @@ def _clone_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
     return new_chunk
 
 
-def get_processor(model_id: str | None) -> BaseProcessor:
-    """Factory function to get the appropriate processor."""
+_PROCESSOR_MAP: dict[str, type[BaseProcessor]] = {
+    "default": DefaultProcessor,
+    "glm": GLMProcessor,
+    "qwen_coder": QwenCoderProcessor,
+    "think_block": ThinkBlockProcessor,
+}
+
+
+def get_processor(model_id: str | None, override: str | None = None) -> BaseProcessor:
+    """Factory function to get the appropriate processor.
+
+    Args:
+        model_id: Model identifier for auto-detection.
+        override: Explicit processor name (bypasses auto-detection).
+                  Values: "default", "glm", "qwen_coder", "think_block".
+    """
+    if override:
+        cls = _PROCESSOR_MAP.get(override)
+        if cls:
+            return cls()
+
     if not model_id:
         return DefaultProcessor()
 
     model_id_lower = model_id.lower()
 
-    # Auto-detect GLM models (glm-4.x, glm-5, etc.)
+    # Auto-detect from model ID
     if model_id_lower.startswith("glm"):
         return GLMProcessor()
     if "qwen" in model_id_lower and "coder" in model_id_lower:

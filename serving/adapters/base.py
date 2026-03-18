@@ -80,6 +80,10 @@ class ModelConfig:
             "input_cache_writes": "0",
         }
     )
+    # Output processor override for OpenAICompatAdapter.
+    # When set, bypasses auto-detection based on model ID.
+    # Values: "default", "glm", "qwen_coder", "think_block".
+    processor: str | None = None
 
 
 class BaseAdapter(ABC):

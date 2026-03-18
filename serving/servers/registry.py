@@ -230,6 +230,10 @@ def register_from_models_yaml(
             if "pricing" in r:
                 adapter_cfg["pricing"] = r["pricing"]
 
+            # Route-level processor override (bypasses model-ID auto-detection)
+            if "processor" in r:
+                adapter_cfg["processor"] = r["processor"]
+
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
 

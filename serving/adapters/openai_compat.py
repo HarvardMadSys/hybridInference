@@ -60,7 +60,10 @@ class OpenAICompatAdapter(BaseAdapter):
 
         # Store model ID for per-request processor creation (avoids shared mutable state)
         self._processor_model_id = config.provider_model_id or config.id
-        processor_name = get_processor(self._processor_model_id).__class__.__name__
+        self._processor_override = config.processor
+        processor_name = get_processor(
+            self._processor_model_id, override=self._processor_override
+        ).__class__.__name__
         logger.debug(f"[OpenAICompat] Processor type: {processor_name}")
 
     def _clean_message(self, message: dict[str, Any]) -> dict[str, Any]:
@@ -159,7 +162,7 @@ class OpenAICompatAdapter(BaseAdapter):
         )
 
         # Process output format (e.g. remove XML tags)
-        processor = get_processor(self._processor_model_id)
+        processor = get_processor(self._processor_model_id, override=self._processor_override)
         processed_response = processor.process_response(response)
 
         # Parse response
@@ -205,7 +208,7 @@ class OpenAICompatAdapter(BaseAdapter):
         headers = self._build_headers()
 
         # Fresh processor per request — avoids shared mutable state across concurrent streams
-        processor = get_processor(self._processor_model_id)
+        processor = get_processor(self._processor_model_id, override=self._processor_override)
 
         total_content = ""
         finish_reason = "stop"
