@@ -621,8 +621,10 @@ def get_processor(model_id: str | None, override: str | None = None) -> BaseProc
     """
     if override:
         cls = _PROCESSOR_MAP.get(override)
-        if cls:
-            return cls()
+        if not cls:
+            valid = ", ".join(sorted(_PROCESSOR_MAP))
+            raise ValueError(f"Unknown processor override '{override}'. Valid values: {valid}")
+        return cls()
 
     if not model_id:
         return DefaultProcessor()
@@ -630,8 +632,9 @@ def get_processor(model_id: str | None, override: str | None = None) -> BaseProc
     model_id_lower = model_id.lower()
 
     # Auto-detect from model ID
-    if model_id_lower.startswith("glm"):
-        return GLMProcessor()
+    # Note: GLMProcessor is NOT auto-detected. ZhipuAdapter handles GLM XML
+    # internally, and OpenAICompatAdapter endpoints (vLLM, Ollama) use standard
+    # OpenAI format. Use `processor: glm` in route config to opt in explicitly.
     if "qwen" in model_id_lower and "coder" in model_id_lower:
         return QwenCoderProcessor()
     if "minimax" in model_id_lower:
