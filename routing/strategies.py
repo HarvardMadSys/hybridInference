@@ -1,3 +1,5 @@
+"""Routing weight distribution strategies."""
+
 from __future__ import annotations
 
 

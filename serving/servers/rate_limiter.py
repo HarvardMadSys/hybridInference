@@ -38,6 +38,7 @@ class TokenCounter:
 
     @staticmethod
     def estimate_tokens(messages: list[dict[str, Any]], max_tokens: int | None = None) -> int:
+        """Estimate total tokens for the given messages and optional max_tokens budget."""
         return int(estimate_total_tokens(messages, max_tokens))
 
 

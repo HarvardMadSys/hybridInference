@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Expose Prometheus metrics at /metrics.
 
 If prometheus_client is unavailable or METRICS_ENABLED=0, returns a minimal
