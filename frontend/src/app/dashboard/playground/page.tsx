@@ -26,6 +26,8 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   durationMs?: number;
+  ttftMs?: number;
+  completionTokens?: number;
   modelName?: string;
 }
 
@@ -92,6 +94,8 @@ export default function PlaygroundPage() {
   const rafRef = useRef<number | null>(null);
   const counterRef = useRef(2);
   const streamStartRef = useRef<number>(0);
+  const firstTokenTimeRef = useRef<number>(0);
+  const completionTokensRef = useRef<number>(0);
 
   const session = sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
   const modelId = session?.selectedModelId || '';
@@ -246,6 +250,8 @@ export default function PlaygroundPage() {
     }));
     setStreaming(true);
     streamStartRef.current = performance.now();
+    firstTokenTimeRef.current = 0;
+    completionTokensRef.current = 0;
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -291,8 +297,15 @@ export default function PlaygroundPage() {
           const payload = line.slice(6).trim();
           if (payload === '[DONE]') continue;
           try {
-            const delta = JSON.parse(payload).choices?.[0]?.delta?.content;
+            const parsed = JSON.parse(payload);
+            if (parsed.usage?.completion_tokens) {
+              completionTokensRef.current = parsed.usage.completion_tokens;
+            }
+            const delta = parsed.choices?.[0]?.delta?.content;
             if (delta) {
+              if (!firstTokenTimeRef.current) {
+                firstTokenTimeRef.current = performance.now();
+              }
               pendingRef.current += delta;
               scheduleFlush();
             }
@@ -317,11 +330,20 @@ export default function PlaygroundPage() {
       }
       flushDelta();
       const elapsed = Math.round(performance.now() - streamStartRef.current);
+      const ttft = firstTokenTimeRef.current
+        ? Math.round(firstTokenTimeRef.current - streamStartRef.current)
+        : undefined;
+      const tokens = completionTokensRef.current || undefined;
       patch((s) => {
         const c = [...s.messages];
         const last = c[c.length - 1];
         if (last && last.role === 'assistant') {
-          c[c.length - 1] = { ...last, durationMs: elapsed };
+          c[c.length - 1] = {
+            ...last,
+            durationMs: elapsed,
+            ttftMs: ttft,
+            completionTokens: tokens,
+          };
         }
         return { ...s, messages: c };
       });
@@ -626,7 +648,13 @@ export default function PlaygroundPage() {
                           </span>
                           <div className="flex items-center gap-2">
                             {!isUser && msg.durationMs != null && !isWaiting && (
-                              <span className="text-xs tabular-nums text-gray-600">
+                              <span className="text-xs tabular-nums text-gray-500">
+                                {msg.ttftMs != null && `${msg.ttftMs}ms TTFT · `}
+                                {msg.completionTokens != null &&
+                                  msg.durationMs > 0 &&
+                                  `${((msg.completionTokens / msg.durationMs) * 1000).toFixed(
+                                    1,
+                                  )} tok/s · `}
                                 {formatDuration(msg.durationMs)}
                               </span>
                             )}
