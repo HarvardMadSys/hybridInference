@@ -294,150 +294,198 @@ async def chat_completions(
             provider_from_ctx: str | None = None
             try:
                 # Emit initial assistant role chunk for client compatibility (e.g., Cursor)
+                from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
                 from serving.stream import make_role_chunk
 
                 role_chunk = make_role_chunk(model=model)
                 logger.debug(f"Yielding initial role chunk: {role_chunk[:150]}")
                 yield role_chunk
 
+                serializer_mode = resolve_mode(request.headers)
+                if serializer_mode.value != "strict_openai":
+                    logger.debug(
+                        f"OpenAI chat serializer mode={serializer_mode.value} for model={model}"
+                    )
+
                 logger.debug(f"Starting to consume adapter stream for model: {model}")
-                async for chunk in router_exec.stream_chat_completion(model, messages, **params):
-                    chunk_count += 1
+                # Keepalive: a background task consumes the adapter stream and
+                # feeds chunks into a queue.  The generator pulls from the queue
+                # with a short timeout; on timeout it yields an SSE comment so
+                # intermediate proxies (Cloudflare 100s, Nginx 120s) see activity
+                # and don't close the connection during long upstream pauses
+                # (e.g., reasoning).  This avoids cancelling the upstream read.
+                _KEEPALIVE_INTERVAL = 30  # seconds
+                _SENTINEL = object()  # marks end of adapter stream
+                last_client_yield = time.monotonic()  # track last data sent to client
+                chunk_queue: asyncio.Queue = asyncio.Queue()
 
-                    # Extract provider from request context on first chunk (context is active during streaming)
-                    if provider_from_ctx is None:
-                        from serving.utils import context as req_ctx
+                async def _adapter_reader():
+                    try:
+                        async for item in router_exec.stream_chat_completion(
+                            model, messages, **params
+                        ):
+                            await chunk_queue.put(item)
+                    except Exception as exc:
+                        await chunk_queue.put(exc)
+                    finally:
+                        await chunk_queue.put(_SENTINEL)
 
-                        ctx = req_ctx.get()
-                        if ctx and "provider" in ctx:
-                            provider_from_ctx = ctx["provider"]
-                            logger.debug(f"Extracted provider from context: {provider_from_ctx}")
-
-                    # Forward adapter SSE chunks with sanitization. Adapters may emit final usage chunk.
-                    if chunk_count <= 10 or chunk_count % 10 == 0:
-                        logger.debug(f"Chunk {chunk_count} received from adapter: {chunk[:200]}")
-
-                    # Extract usage and routing info from chunks; sanitize before yielding
-                    if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+                reader_task = asyncio.create_task(_adapter_reader())
+                try:
+                    while True:
                         try:
-                            chunk_json = json.loads(chunk[6:])
-                            if chunk_json.get("usage"):
-                                usage_data = chunk_json["usage"]
-                                logger.debug(
-                                    f"Extracted usage from chunk {chunk_count}: {usage_data}"
-                                )
-                            # Streaming adapters may also include _routing in final chunk
-                            if "_routing" in chunk_json:
-                                routing_info = chunk_json.get("_routing")
-                                logger.debug(
-                                    f"Extracted routing from chunk {chunk_count}: {routing_info}"
-                                )
-                                # Never leak routing info to clients
-                                with suppress(Exception):
-                                    del chunk_json["_routing"]
-
-                            # Record TTFT at the first meaningful delta (content, tool_calls, or reasoning_content)
-                            if ttft_ms is None:
-                                try:
-                                    choices_local = chunk_json.get("choices", [])
-                                    if choices_local:
-                                        delta_local = choices_local[0].get("delta", {})
-                                        has_content = bool(delta_local.get("content"))
-                                        has_tool_calls = bool(delta_local.get("tool_calls"))
-                                        has_reasoning = bool(delta_local.get("reasoning_content"))
-                                        if has_content or has_tool_calls or has_reasoning:
-                                            ttft_ms = int((time.time() - start_time) * 1000)
-                                            logger.debug(
-                                                f"TTFT recorded (first delta): {ttft_ms}ms"
-                                            )
-                                except Exception:
-                                    # Best effort only; do not impact streaming on errors.
-                                    pass
-
-                            # Accumulate content and finish_reason for DB logging
-                            choices = chunk_json.get("choices", [])
-                            if choices:
-                                choice = choices[0]
-                                delta = choice.get("delta", {})
-
-                                # Accumulate content
-                                content_piece = delta.get("content")
-                                if content_piece:
-                                    # Record TTFT at the first actual content token
-                                    if ttft_ms is None:
-                                        ttft_ms = int((time.time() - start_time) * 1000)
-                                        logger.debug(f"TTFT recorded: {ttft_ms}ms")
-                                    final_text += content_piece
-
-                                # Handle tool_calls delta merging
-                                tool_calls_delta = delta.get("tool_calls")
-                                if tool_calls_delta:
-                                    for tc_delta in tool_calls_delta:
-                                        idx = tc_delta.get("index", 0)
-                                        if idx not in tool_calls_map:
-                                            tool_calls_map[idx] = {
-                                                "index": idx,
-                                                "id": tc_delta.get("id", ""),
-                                                "type": tc_delta.get("type", "function"),
-                                                "function": {"name": "", "arguments": ""},
-                                            }
-
-                                        # Merge id if present
-                                        if "id" in tc_delta:
-                                            tool_calls_map[idx]["id"] = tc_delta["id"]
-
-                                        # Merge type if present
-                                        if "type" in tc_delta:
-                                            tool_calls_map[idx]["type"] = tc_delta["type"]
-
-                                        # Merge function delta
-                                        if "function" in tc_delta:
-                                            fn_delta = tc_delta["function"]
-                                            if "name" in fn_delta:
-                                                tool_calls_map[idx]["function"]["name"] = fn_delta[
-                                                    "name"
-                                                ]
-                                            if "arguments" in fn_delta:
-                                                # Arguments are streamed incrementally
-                                                tool_calls_map[idx]["function"]["arguments"] += (
-                                                    fn_delta["arguments"]
-                                                )
-
-                                # Update finish_reason if present
-                                fr = choice.get("finish_reason")
-                                if fr:
-                                    finish_reason_for_db = fr
-
-                                # Filter out non-standard fields from delta for OpenAI compatibility
-                                # Some providers (e.g., Zhipu GLM-4.6) return reasoning_content which
-                                # is not part of the OpenAI API spec and may break clients like Codex
-                                if "reasoning_content" in delta:
-                                    # Create a sanitized copy of the chunk without reasoning_content
-                                    chunk_json = json.loads(json.dumps(chunk_json))  # Deep copy
-                                    if chunk_json.get("choices") and chunk_json["choices"]:
-                                        sanitized_delta = {
-                                            k: v
-                                            for k, v in chunk_json["choices"][0]
-                                            .get("delta", {})
-                                            .items()
-                                            if k != "reasoning_content"
-                                        }
-                                        chunk_json["choices"][0]["delta"] = sanitized_delta
-
-                            # Yield sanitized chunk to client
-                            sanitized_chunk = f"data: {json.dumps(chunk_json)}\n\n"
-                            logger.debug(
-                                f"Yielding sanitized chunk {chunk_count} to client: {sanitized_chunk[:150]}"
+                            item = await asyncio.wait_for(
+                                chunk_queue.get(), timeout=_KEEPALIVE_INTERVAL
                             )
-                            yield sanitized_chunk
+                        except asyncio.TimeoutError:
+                            logger.debug(
+                                f"Emitting SSE keepalive (no chunk in {_KEEPALIVE_INTERVAL}s) "
+                                f"for model={model}"
+                            )
+                            yield ": keepalive\n\n"
+                            last_client_yield = time.monotonic()
                             continue
-                        except (json.JSONDecodeError, KeyError) as e:
-                            logger.warning(f"Failed to parse chunk {chunk_count}: {e}")
-                            # Fall through to yield original chunk unmodified
+                        if item is _SENTINEL:
+                            break
+                        if isinstance(item, Exception):
+                            raise item
+                        chunk = item
+                        chunk_count += 1
 
-                    # Non-JSON or [DONE] chunks pass through
-                    logger.debug(f"Yielding chunk {chunk_count} to client: {chunk[:150]}")
-                    yield chunk
+                        # Extract provider from request context on first chunk
+                        if provider_from_ctx is None:
+                            from serving.utils import context as req_ctx
+
+                            ctx = req_ctx.get()
+                            if ctx and "provider" in ctx:
+                                provider_from_ctx = ctx["provider"]
+                                logger.debug(
+                                    f"Extracted provider from context: {provider_from_ctx}"
+                                )
+
+                        # Forward adapter SSE chunks with sanitization.
+                        if chunk_count <= 10 or chunk_count % 10 == 0:
+                            logger.debug(
+                                f"Chunk {chunk_count} received from adapter: {chunk[:200]}"
+                            )
+
+                        # Extract usage and routing; sanitize for public API contract
+                        if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+                            try:
+                                chunk_json = json.loads(chunk[6:])
+                                result = sanitize_chunk(chunk_json, serializer_mode)
+
+                                if result.usage_data:
+                                    usage_data = result.usage_data
+                                    logger.debug(
+                                        f"Extracted usage from chunk {chunk_count}: {usage_data}"
+                                    )
+                                if result.routing_info:
+                                    routing_info = result.routing_info
+                                    logger.debug(
+                                        f"Extracted routing from chunk {chunk_count}: {routing_info}"
+                                    )
+
+                                # Record TTFT at first meaningful delta
+                                if ttft_ms is None:
+                                    try:
+                                        choices_local = chunk_json.get("choices", [])
+                                        if choices_local:
+                                            delta_local = choices_local[0].get("delta", {})
+                                            has_content = bool(delta_local.get("content"))
+                                            has_tool_calls = bool(delta_local.get("tool_calls"))
+                                            has_reasoning = bool(
+                                                delta_local.get("reasoning_content")
+                                            )
+                                            if has_content or has_tool_calls or has_reasoning:
+                                                ttft_ms = int((time.time() - start_time) * 1000)
+                                                logger.debug(
+                                                    f"TTFT recorded (first delta): {ttft_ms}ms"
+                                                )
+                                    except Exception:
+                                        pass
+
+                                # Accumulate content and finish_reason for DB logging
+                                choices = chunk_json.get("choices", [])
+                                if choices:
+                                    choice = choices[0]
+                                    delta = choice.get("delta", {})
+
+                                    content_piece = delta.get("content")
+                                    if content_piece:
+                                        if ttft_ms is None:
+                                            ttft_ms = int((time.time() - start_time) * 1000)
+                                            logger.debug(f"TTFT recorded: {ttft_ms}ms")
+                                        final_text += content_piece
+
+                                    # Handle tool_calls delta merging
+                                    tool_calls_delta = delta.get("tool_calls")
+                                    if tool_calls_delta:
+                                        for tc_delta in tool_calls_delta:
+                                            idx = tc_delta.get("index", 0)
+                                            if idx not in tool_calls_map:
+                                                tool_calls_map[idx] = {
+                                                    "index": idx,
+                                                    "id": tc_delta.get("id", ""),
+                                                    "type": tc_delta.get("type", "function"),
+                                                    "function": {
+                                                        "name": "",
+                                                        "arguments": "",
+                                                    },
+                                                }
+                                            if "id" in tc_delta:
+                                                tool_calls_map[idx]["id"] = tc_delta["id"]
+                                            if "type" in tc_delta:
+                                                tool_calls_map[idx]["type"] = tc_delta["type"]
+                                            if "function" in tc_delta:
+                                                fn_delta = tc_delta["function"]
+                                                if "name" in fn_delta:
+                                                    tool_calls_map[idx]["function"]["name"] = (
+                                                        fn_delta["name"]
+                                                    )
+                                                if "arguments" in fn_delta:
+                                                    tool_calls_map[idx]["function"][
+                                                        "arguments"
+                                                    ] += fn_delta["arguments"]
+
+                                    fr = choice.get("finish_reason")
+                                    if fr:
+                                        finish_reason_for_db = fr
+
+                                # Strict mode: reasoning-only chunks are not forwarded;
+                                # emit keepalive when client idle long enough
+                                if not result.should_forward:
+                                    now = time.monotonic()
+                                    if now - last_client_yield >= _KEEPALIVE_INTERVAL:
+                                        logger.debug(
+                                            f"Sending keepalive instead of "
+                                            f"reasoning chunk {chunk_count} for model={model}"
+                                        )
+                                        yield ": keepalive\n\n"
+                                        last_client_yield = now
+                                    continue
+
+                                # Yield chunk to client
+                                out_json = result.chunk_json or chunk_json
+                                sanitized_chunk = f"data: {json.dumps(out_json)}\n\n"
+                                logger.debug(
+                                    f"Yielding sanitized chunk {chunk_count} to client: "
+                                    f"{sanitized_chunk[:150]}"
+                                )
+                                yield sanitized_chunk
+                                last_client_yield = time.monotonic()
+                                continue
+                            except (json.JSONDecodeError, KeyError) as e:
+                                logger.warning(f"Failed to parse chunk {chunk_count}: {e}")
+
+                        # Non-JSON or [DONE] chunks pass through
+                        logger.debug(f"Yielding chunk {chunk_count} to client: {chunk[:150]}")
+                        yield chunk
+
+                finally:
+                    reader_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await reader_task
 
                 logger.info(f"Stream complete: total_chunks={chunk_count}")
 

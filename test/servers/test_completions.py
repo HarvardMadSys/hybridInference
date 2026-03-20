@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -234,22 +235,21 @@ async def test_rate_limit_rejection(completions_app: FastAPI, mock_rate_limiter)
 
 
 @pytest.mark.asyncio
-async def test_reasoning_content_filtered_in_streaming(
+async def test_default_strict_mode_strips_reasoning(
     monkeypatch, mock_rate_limiter, mock_db_logger
 ):
-    """Test that non-standard reasoning_content field is filtered from streaming responses."""
-    # Disable auth for routing-focused tests
+    """Default /v1/chat/completions behavior is strict OpenAI: no reasoning_content visible."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    # Create router with adapter that emits reasoning_content
     router = RouteExecutor()
-    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
+    router.register_route(
+        "glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)]
+    )
 
-    app = FastAPI(title="Test Reasoning Content Filter")
+    app = FastAPI(title="Test Strict Mode")
     app.state.services = AppServices(  # type: ignore[attr-defined]
         router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
     )
-
     install_error_handlers(app)
     app.include_router(completions.router)
 
@@ -272,21 +272,80 @@ async def test_reasoning_content_filtered_in_streaming(
             if line.startswith("data: "):
                 lines.append(line)
 
-        # Verify that no chunk contains reasoning_content
+        # Default: reasoning_content should NOT appear
         for line in lines:
             if line != "data: [DONE]" and line != "data: {}":
                 try:
                     chunk = json.loads(line[6:])
                     if chunk.get("choices"):
                         delta = chunk["choices"][0].get("delta", {})
-                        # Assert that reasoning_content is NOT present
                         assert "reasoning_content" not in delta, (
-                            f"reasoning_content should be filtered out, but found in: {line}"
+                            "reasoning_content should be stripped in default strict mode"
                         )
                 except json.JSONDecodeError:
-                    pass  # Skip malformed lines
+                    pass
 
-        # Verify content is still present
+        # Content should still arrive intact
+        content = "".join(
+            json.loads(line[6:])["choices"][0]["delta"].get("content", "")
+            for line in lines
+            if line != "data: [DONE]" and line != "data: {}"
+        )
+        assert content == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_passthrough_header_preserves_reasoning(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """X-Reasoning-Passthrough: true preserves reasoning_content for clients that can use it."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route(
+        "glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)]
+    )
+
+    app = FastAPI(title="Test Reasoning Passthrough")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "glm-4.6",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+            headers={"X-Reasoning-Passthrough": "true"},
+        ) as resp,
+    ):
+        assert resp.status_code == status.HTTP_200_OK
+        lines: list[str] = []
+        async for line in resp.aiter_lines():
+            if line.startswith("data: "):
+                lines.append(line)
+
+        saw_reasoning = False
+        for line in lines:
+            if line != "data: [DONE]" and line != "data: {}":
+                try:
+                    chunk = json.loads(line[6:])
+                    if chunk.get("choices"):
+                        delta = chunk["choices"][0].get("delta", {})
+                        if "reasoning_content" in delta:
+                            saw_reasoning = True
+                except json.JSONDecodeError:
+                    pass
+        assert saw_reasoning, "reasoning_content should be preserved with X-Reasoning-Passthrough"
+
         content = "".join(
             json.loads(line[6:])["choices"][0]["delta"].get("content", "")
             for line in lines
@@ -391,6 +450,98 @@ class ReasoningOnlyAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+class SlowStartAdapter(BaseAdapter):
+    """Adapter that stalls before the first visible chunk."""
+
+    def __init__(self, config: ModelConfig, delay_s: float = 0.05) -> None:
+        super().__init__(config)
+        self.delay_s = delay_s
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(content="late", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        await asyncio.sleep(self.delay_s)
+        yield self.format_stream_chunk(model=self.config.id, content="late")
+        yield make_final_usage_chunk(model=self.config.id, messages=messages, total_content="late")
+        yield done_sentinel()
+
+
+class ToolCallsOnlyAdapter(BaseAdapter):
+    """Adapter that emits reasoning followed by tool calls and no text."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(content="", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        reasoning_chunk = {
+            "id": "chatcmpl-tool-reasoning",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.config.id,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": "Thinking about which file to inspect..."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(reasoning_chunk)}\n\n"
+        yield self.format_tool_chunk(
+            tool_calls=[
+                {
+                    "index": 0,
+                    "id": "call_read_file_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"app/main.py"}',
+                    },
+                }
+            ],
+            model=self.config.id,
+        )
+        yield make_final_usage_chunk(
+            model=self.config.id,
+            messages=messages,
+            total_content="",
+            finish_reason="tool_calls",
+        )
+        yield done_sentinel()
+
+
+class TrueEmptyTerminalAdapter(BaseAdapter):
+    """Adapter that ends after reasoning without content or tool calls."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(content="", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        reasoning_chunk = {
+            "id": "chatcmpl-empty-terminal",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.config.id,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": "I am thinking, but never answering."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(reasoning_chunk)}\n\n"
+        yield make_final_usage_chunk(model=self.config.id, messages=messages, total_content="")
+        yield done_sentinel()
+
+
 class ErrorAfterFirstTokenAdapter(BaseAdapter):
     """Adapter that emits one content chunk then raises an error."""
 
@@ -451,6 +602,18 @@ async def _get_db_log_ttft(mock_db_logger, timeout: float = 2.0) -> tuple[bool, 
     return False, None
 
 
+async def _wait_for_db_log_kwargs(
+    mock_db_logger, timeout: float = 2.0
+) -> dict[str, Any] | None:
+    """Wait for the background DB log task and return kwargs."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if mock_db_logger.log_request.call_count > 0:
+            return mock_db_logger.log_request.call_args.kwargs
+        await asyncio.sleep(0.05)
+    return None
+
+
 @pytest.mark.asyncio
 async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limiter, mock_db_logger):
     """Streaming request where first delta has only reasoning_content should record ttft_ms."""
@@ -482,6 +645,148 @@ async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limite
     assert logged, "DB log_request should have been called"
     assert ttft is not None, "ttft_ms should be recorded when reasoning_content is in first delta"
     assert ttft >= 0
+
+
+@pytest.mark.asyncio
+async def test_keepalive_emitted_without_cancelling_upstream(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """A long gap before the first chunk should emit keepalive comments and still deliver output."""
+    app = _build_ttft_app(
+        "slow-start",
+        SlowStartAdapter(_mk_cfg("slow-start"), delay_s=0.05),
+        mock_rate_limiter,
+        mock_db_logger,
+        monkeypatch,
+    )
+
+    real_wait_for = asyncio.wait_for
+
+    async def fast_wait_for(awaitable, timeout=None):
+        shortened = 0.01 if timeout is not None and timeout > 0.01 else timeout
+        return await real_wait_for(awaitable, timeout=shortened)
+
+    monkeypatch.setattr(completions.asyncio, "wait_for", fast_wait_for)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "slow-start",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            lines = [line async for line in resp.aiter_lines()]
+
+    assert any(line == ": keepalive" for line in lines), "expected an SSE keepalive comment"
+    data_lines = [line for line in lines if line.startswith("data: ")]
+    content = "".join(
+        json.loads(line[6:])["choices"][0]["delta"].get("content", "")
+        for line in data_lines
+        if line != "data: [DONE]" and line != "data: {}"
+    )
+    assert content == "late"
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_only_stream_is_not_classified_as_empty(
+    monkeypatch, mock_rate_limiter, mock_db_logger, caplog
+):
+    """Tool-calls-only streams are valid output and should not trigger empty-output warnings."""
+    app = _build_ttft_app(
+        "tool-only",
+        ToolCallsOnlyAdapter(_mk_cfg("tool-only")),
+        mock_rate_limiter,
+        mock_db_logger,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app)
+    with caplog.at_level(logging.WARNING):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "tool-only",
+                    "messages": [{"role": "user", "content": "Inspect this file"}],
+                    "stream": True,
+                },
+            ) as resp:
+                assert resp.status_code == 200
+                lines = [line async for line in resp.aiter_lines() if line.startswith("data: ")]
+
+    tool_deltas = []
+    for line in lines:
+        if line == "data: [DONE]" or line == "data: {}":
+            continue
+        payload = json.loads(line[6:])
+        if payload.get("choices"):
+            delta = payload["choices"][0].get("delta", {})
+            if delta.get("tool_calls"):
+                tool_deltas.extend(delta["tool_calls"])
+
+    assert tool_deltas, "expected at least one streamed tool call delta"
+    assert not any(
+        "no visible content or tool_calls" in record.getMessage() for record in caplog.records
+    )
+
+    db_kwargs = await _wait_for_db_log_kwargs(mock_db_logger)
+    assert db_kwargs is not None, "expected background DB logging to run"
+    response = db_kwargs["response"]
+    assert response["choices"][0]["message"]["content"] is None
+    assert response["choices"][0]["message"]["tool_calls"]
+    assert response["choices"][0]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_true_empty_terminal_stream_logs_warning_and_db_empty_response(
+    monkeypatch, mock_rate_limiter, mock_db_logger, caplog
+):
+    """Streams that end without content or tool calls should be classified as true empty output."""
+    app = _build_ttft_app(
+        "empty-terminal",
+        TrueEmptyTerminalAdapter(_mk_cfg("empty-terminal")),
+        mock_rate_limiter,
+        mock_db_logger,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app)
+    with caplog.at_level(logging.WARNING):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "empty-terminal",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "stream": True,
+                },
+                headers={"X-Reasoning-Passthrough": "true"},
+            ) as resp:
+                assert resp.status_code == 200
+                lines = [line async for line in resp.aiter_lines() if line.startswith("data: ")]
+
+    assert any(
+        "no visible content or tool_calls" in record.getMessage() for record in caplog.records
+    )
+    # In passthrough mode, reasoning_content from upstream is visible
+    assert any(
+        "reasoning_content" in json.loads(line[6:])["choices"][0].get("delta", {})
+        for line in lines
+        if line not in {"data: [DONE]", "data: {}"} and json.loads(line[6:]).get("choices")
+    )
+
+    db_kwargs = await _wait_for_db_log_kwargs(mock_db_logger)
+    assert db_kwargs is not None, "expected background DB logging to run"
+    response = db_kwargs["response"]
+    assert response["choices"][0]["message"]["content"] is None
+    assert "tool_calls" not in response["choices"][0]["message"]
 
 
 @pytest.mark.asyncio

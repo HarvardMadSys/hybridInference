@@ -84,6 +84,18 @@ class ModelConfig:
     # When set, bypasses auto-detection based on model ID.
     # Values: "default", "glm", "qwen_coder", "think_block".
     processor: str | None = None
+    # Auth/header overrides for OpenAICompatAdapter-like providers.
+    use_bearer_auth: bool = True
+    auth_header_name: str | None = None
+    auth_format: str | None = None
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    extra_query: dict[str, str] = field(default_factory=dict)
+    # Optional upstream chat endpoint path override for OpenAI-like providers
+    # that do not expose the default /v1/chat/completions route.
+    chat_path: str | None = None
+    # Provider profile for usage extraction (e.g. "deepseek" for cache hit/miss semantics).
+    # When set, OpenAICompatAdapter uses profile-specific usage normalization.
+    provider_profile: str | None = None
 
 
 class BaseAdapter(ABC):

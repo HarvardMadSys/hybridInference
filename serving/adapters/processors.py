@@ -632,9 +632,9 @@ def get_processor(model_id: str | None, override: str | None = None) -> BaseProc
     model_id_lower = model_id.lower()
 
     # Auto-detect from model ID
-    # Note: GLMProcessor is NOT auto-detected. ZhipuAdapter handles GLM XML
-    # internally, and OpenAICompatAdapter endpoints (vLLM, Ollama) use standard
-    # OpenAI format. Use `processor: glm` in route config to opt in explicitly.
+    # Note: GLMProcessor is NOT auto-detected. Unified OpenAI-compatible routes
+    # assume standard OpenAI chunks unless a route explicitly opts into
+    # `processor: glm`.
     if "qwen" in model_id_lower and "coder" in model_id_lower:
         return QwenCoderProcessor()
     if "minimax" in model_id_lower:

@@ -1,4 +1,4 @@
-"""Unit tests for OpenAI adapter tool message ordering.
+"""Unit tests for Azure OpenAI message ordering profile.
 
 Azure OpenAI / OpenAI requires that tool messages immediately follow the assistant
 message that contains tool_calls. Some clients (e.g., Codex CLI) may insert extra
@@ -7,24 +7,14 @@ assistant "preamble" messages or user messages between tool_calls and the tool r
 
 import pytest
 
-from serving.adapters.base import ModelConfig
-from serving.adapters.openai import OpenAIAdapter
+from serving.adapters.profiles import ProviderProfile, normalize_messages_for_profile
 
 
-@pytest.fixture
-def openai_adapter() -> OpenAIAdapter:
-    """Create an OpenAI adapter instance for testing."""
-    config = ModelConfig(
-        id="gpt-5-test",
-        name="Azure OpenAI Test",
-        provider="openai",
-        base_url="https://example.invalid",
-        api_key="test-key",
-        context_length=8192,
-        max_output_length=1024,
-        supports_tools=True,
-    )
-    return OpenAIAdapter(config)
+def _normalize(messages: list[dict]) -> list[dict]:
+    """Normalize messages using the Azure OpenAI provider profile."""
+    normalized = normalize_messages_for_profile(ProviderProfile.AZURE_OPENAI, messages)
+    assert normalized is not None
+    return normalized
 
 
 def _get_roles(messages: list[dict]) -> list[str]:
@@ -46,7 +36,7 @@ def _assert_tool_follows_tool_calls(messages: list[dict]) -> None:
 class TestMergeAssistantPreambles:
     """Tests for merging consecutive assistant messages."""
 
-    def test_merges_single_preamble(self, openai_adapter: OpenAIAdapter) -> None:
+    def test_merges_single_preamble(self) -> None:
         """Merges assistant preamble into assistant tool_calls message."""
         messages = [
             {"role": "user", "content": "Hello"},
@@ -65,14 +55,14 @@ class TestMergeAssistantPreambles:
             {"role": "tool", "content": "ok", "tool_call_id": "call_1"},
         ]
 
-        fixed = openai_adapter._fix_tool_call_message_order(messages)
+        fixed = _normalize(messages)
 
         assert _get_roles(fixed) == ["user", "assistant", "tool"]
         assert fixed[1].get("tool_calls"), "Merged assistant must preserve tool_calls"
         assert fixed[1].get("content") == "I'll run the tool now."
         _assert_tool_follows_tool_calls(fixed)
 
-    def test_merges_multiple_preambles(self, openai_adapter: OpenAIAdapter) -> None:
+    def test_merges_multiple_preambles(self) -> None:
         """Merges multiple consecutive assistant preambles."""
         messages = [
             {
@@ -91,7 +81,7 @@ class TestMergeAssistantPreambles:
             {"role": "tool", "content": "result", "tool_call_id": "call_1"},
         ]
 
-        fixed = openai_adapter._fix_tool_call_message_order(messages)
+        fixed = _normalize(messages)
 
         assert _get_roles(fixed) == ["assistant", "tool"]
         assert fixed[0].get("tool_calls")
@@ -102,7 +92,7 @@ class TestMergeAssistantPreambles:
 class TestReorderToolMessages:
     """Tests for reordering tool messages to follow their corresponding tool_calls."""
 
-    def test_reorders_tool_after_user(self, openai_adapter: OpenAIAdapter) -> None:
+    def test_reorders_tool_after_user(self) -> None:
         """Reorders tool message when user message appears between tool_calls and tool."""
         messages = [
             {
@@ -114,12 +104,12 @@ class TestReorderToolMessages:
             {"role": "tool", "content": "result", "tool_call_id": "call_1"},
         ]
 
-        fixed = openai_adapter._fix_tool_call_message_order(messages)
+        fixed = _normalize(messages)
 
         assert _get_roles(fixed) == ["assistant", "tool", "user"]
         _assert_tool_follows_tool_calls(fixed)
 
-    def test_reorders_tool_after_preamble_and_user(self, openai_adapter: OpenAIAdapter) -> None:
+    def test_reorders_tool_after_preamble_and_user(self) -> None:
         """Handles both preamble merge and tool reordering."""
         messages = [
             {
@@ -132,14 +122,14 @@ class TestReorderToolMessages:
             {"role": "tool", "content": "file1.txt", "tool_call_id": "call_1"},
         ]
 
-        fixed = openai_adapter._fix_tool_call_message_order(messages)
+        fixed = _normalize(messages)
 
         assert _get_roles(fixed) == ["assistant", "tool", "user"]
         assert fixed[0].get("content") == "Let me check..."
         assert fixed[0].get("tool_calls")
         _assert_tool_follows_tool_calls(fixed)
 
-    def test_handles_multiple_tool_calls(self, openai_adapter: OpenAIAdapter) -> None:
+    def test_handles_multiple_tool_calls(self) -> None:
         """Correctly reorders multiple tool messages."""
         messages = [
             {
@@ -155,7 +145,7 @@ class TestReorderToolMessages:
             {"role": "tool", "content": "result2", "tool_call_id": "call_2"},
         ]
 
-        fixed = openai_adapter._fix_tool_call_message_order(messages)
+        fixed = _normalize(messages)
 
         assert _get_roles(fixed) == ["assistant", "tool", "tool", "user"]
         assert fixed[1].get("tool_call_id") == "call_1"
@@ -166,7 +156,7 @@ class TestReorderToolMessages:
 class TestNoOpCases:
     """Tests for cases where no reordering is needed."""
 
-    def test_valid_sequence_unchanged(self, openai_adapter: OpenAIAdapter) -> None:
+    def test_valid_sequence_unchanged(self) -> None:
         """Leaves already-valid sequences unchanged."""
         messages = [
             {"role": "user", "content": "Hello"},
@@ -179,18 +169,18 @@ class TestNoOpCases:
             {"role": "assistant", "content": "Done."},
         ]
 
-        fixed = openai_adapter._fix_tool_call_message_order(messages)
+        fixed = _normalize(messages)
 
         assert fixed == messages
         _assert_tool_follows_tool_calls(fixed)
 
-    def test_no_tool_calls(self, openai_adapter: OpenAIAdapter) -> None:
+    def test_no_tool_calls(self) -> None:
         """Handles messages without any tool calls."""
         messages = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there!"},
         ]
 
-        fixed = openai_adapter._fix_tool_call_message_order(messages)
+        fixed = _normalize(messages)
 
         assert fixed == messages

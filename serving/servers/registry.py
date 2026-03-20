@@ -16,13 +16,9 @@ from serving.adapters import (
     ClaudeAdapter,
     ClaudeSubscriptionAdapter,
     CodexSubscriptionAdapter,
-    DeepSeekAdapter,
     GeminiAdapter,
-    LlamaAdapter,
     ModelConfig,
-    OpenAIAdapter,
     OpenAICompatAdapter,
-    ZhipuAdapter,
 )
 
 if TYPE_CHECKING:
@@ -93,24 +89,46 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     Raises:
         ValueError: When ``kind`` is unknown.
     """
+    # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
+    if kind == "deepseek":
+        cfg = {**cfg, "provider_profile": "deepseek"}
+    if kind == "llama":
+        cfg = {**cfg, "provider_profile": "llama", "chat_path": "/chat/completions"}
+    if kind == "openai":
+        cfg = {
+            **cfg,
+            "provider_profile": "azure_openai",
+            "chat_path": "/chat/completions",
+            "use_bearer_auth": False,
+            "auth_header_name": "api-key",
+            "auth_format": "{api_key}",
+            "extra_query": {"api-version": "2024-12-01-preview"},
+        }
+    # Zhipu routes through OpenAICompatAdapter with a non-/v1 chat path.
+    if kind == "zhipu":
+        cfg = {**cfg, "provider_profile": "zhipu", "chat_path": "/chat/completions"}
+
     model_cfg = ModelConfig(**cfg)
 
     # All OpenAI-compatible services use the same adapter
-    if kind in ("vllm", "sglang", "chutes", "featherless", "ollama", "openai_compat"):
+    if kind in (
+        "vllm",
+        "sglang",
+        "chutes",
+        "featherless",
+        "ollama",
+        "openai_compat",
+        "deepseek",
+        "llama",
+        "openai",
+        "zhipu",
+    ):
         return OpenAICompatAdapter(model_cfg)
 
     if kind == "claude":
         return ClaudeAdapter(model_cfg)
-    if kind == "deepseek":
-        return DeepSeekAdapter(model_cfg)
     if kind == "gemini":
         return GeminiAdapter(model_cfg)
-    if kind == "llama":
-        return LlamaAdapter(model_cfg)
-    if kind == "openai":
-        return OpenAIAdapter(model_cfg)
-    if kind == "zhipu":
-        return ZhipuAdapter(model_cfg)
     if kind == "codex_sub":
         return CodexSubscriptionAdapter(model_cfg)
     if kind == "claude_sub":
