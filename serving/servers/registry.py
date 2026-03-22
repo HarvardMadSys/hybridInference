@@ -14,6 +14,8 @@ import yaml
 
 from serving.adapters import (
     ClaudeAdapter,
+    ClaudeSubscriptionAdapter,
+    CodexSubscriptionAdapter,
     DeepSeekAdapter,
     GeminiAdapter,
     LlamaAdapter,
@@ -82,7 +84,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"openai"``, ``"zhipu"``,
-              ``"chutes"``, ``"featherless"``, ``"openai_compat"``).
+              ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -94,7 +96,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     model_cfg = ModelConfig(**cfg)
 
     # All OpenAI-compatible services use the same adapter
-    if kind in ("vllm", "sglang", "chutes", "featherless", "openai_compat"):
+    if kind in ("vllm", "sglang", "chutes", "featherless", "ollama", "openai_compat"):
         return OpenAICompatAdapter(model_cfg)
 
     if kind == "claude":
@@ -109,6 +111,10 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         return OpenAIAdapter(model_cfg)
     if kind == "zhipu":
         return ZhipuAdapter(model_cfg)
+    if kind == "codex_sub":
+        return CodexSubscriptionAdapter(model_cfg)
+    if kind == "claude_sub":
+        return ClaudeSubscriptionAdapter(model_cfg)
 
     raise ValueError(f"Unknown adapter kind: {kind}")
 
@@ -243,7 +249,10 @@ def register_from_models_yaml(
             count += 1 + len(aliases)
         else:
             # Chat models go through the full RouteExecutor
-            router.register_route(model_id, adapters_with_weights, aliases=aliases)
+            admin_only = bool(m.get("admin_only", False))
+            router.register_route(
+                model_id, adapters_with_weights, aliases=aliases, admin_only=admin_only
+            )
             count += 1 + len(aliases)
 
     return count

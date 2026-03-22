@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..config.settings import settings
+from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap
 from .middleware.error import install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
@@ -17,14 +18,16 @@ from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
 from .routers import (
     admin,
-    admin_ui,
+    anthropic_proxy,
     auth_routes,
     compat,
     completions,
     embeddings,
     health,
+    internal,
     metrics,
     models,
+    playground,
     qdrant_proxy,
     user_routes,
 )
@@ -36,6 +39,10 @@ if TYPE_CHECKING:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - initialize and cleanup resources."""
+    # Attach after uvicorn's own logging setup, which would otherwise wipe filters
+    # added at import time. LOG_LEVEL=DEBUG disables suppression.
+    attach_quiet_access_filter()
+
     services: AppServices = await bootstrap.initialize()
     app.state.services = services  # type: ignore[attr-defined]
     try:
@@ -79,12 +86,14 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(completions.router)
     app.include_router(embeddings.router)
+    app.include_router(anthropic_proxy.router)
     app.include_router(qdrant_proxy.router)
     app.include_router(compat.router)
     app.include_router(admin.router)
-    app.include_router(admin_ui.router)
     app.include_router(auth_routes.router)
     app.include_router(user_routes.router)
+    app.include_router(internal.router)
+    app.include_router(playground.router)
 
     return app
 

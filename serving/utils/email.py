@@ -247,3 +247,168 @@ If you didn't request a password reset, you can safely ignore this email.
     """
 
     return send_email(to_email, subject, html_body, text_body)
+
+
+def send_approval_email(to_email: str) -> bool:
+    """Notify user that their registration has been approved.
+
+    Args:
+        to_email: User's email address.
+
+    Returns:
+        True if email sent successfully, False otherwise.
+    """
+    login_url = f"{settings.frontend_url}/login"
+
+    subject = "Your FreeInference account has been approved"
+
+    html_body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #10b981;">Account Approved</h2>
+            <p>Your FreeInference account has been approved by an administrator.</p>
+            <p>You can now log in and start using the API.</p>
+            <p style="margin: 30px 0;">
+                <a href="{login_url}"
+                   style="background-color: #2563eb; color: white; padding: 12px 24px;
+                          text-decoration: none; border-radius: 4px; display: inline-block;">
+                    Log In Now
+                </a>
+            </p>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+            <p style="color: #999; font-size: 12px;">
+                If you did not register for FreeInference, please ignore this email.
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+
+    text_body = f"""
+Account Approved
+
+Your FreeInference account has been approved by an administrator.
+
+You can now log in and start using the API:
+{login_url}
+
+If you did not register for FreeInference, please ignore this email.
+    """
+
+    return send_email(to_email, subject, html_body, text_body)
+
+
+def send_rejection_email(to_email: str, reason: str) -> bool:
+    """Notify user that their registration has been rejected.
+
+    Args:
+        to_email: User's email address.
+        reason: Rejection reason provided by admin.
+
+    Returns:
+        True if email sent successfully, False otherwise.
+    """
+    subject = "Your FreeInference registration update"
+
+    html_body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #ef4444;">Registration Not Approved</h2>
+            <p>Unfortunately, your FreeInference registration was not approved at this time.</p>
+            <div style="background: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px;
+                        margin: 20px 0; border-radius: 4px;">
+                <strong>Reason:</strong> {reason}
+            </div>
+            <p>If you believe this was a mistake, please contact the administrator.</p>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+            <p style="color: #999; font-size: 12px;">
+                If you did not register for FreeInference, please ignore this email.
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+
+    text_body = f"""
+Registration Not Approved
+
+Unfortunately, your FreeInference registration was not approved at this time.
+
+Reason: {reason}
+
+If you believe this was a mistake, please contact the administrator.
+    """
+
+    return send_email(to_email, subject, html_body, text_body)
+
+
+def send_new_registration_admin_email(
+    to_email: str,
+    user_email: str,
+    user_name: str | None,
+    user_id: str,
+) -> bool:
+    """Notify admin of a new user registration pending approval.
+
+    Args:
+        to_email: Admin email address.
+        user_email: New user's email.
+        user_name: New user's display name (if provided).
+        user_id: New user's ID.
+
+    Returns:
+        True if email sent successfully, False otherwise.
+    """
+    admin_url = f"{settings.frontend_url}/dashboard/admin"
+    display_name = user_name or "(not provided)"
+
+    subject = f"[FreeInference] New registration pending approval: {user_email}"
+
+    html_body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #f59e0b;">New Registration Pending Approval</h2>
+            <p>A new user has registered and is waiting for approval:</p>
+            <table style="border-collapse: collapse; margin: 20px 0;">
+                <tr>
+                    <td style="padding: 6px 16px 6px 0; font-weight: bold;">Email:</td>
+                    <td style="padding: 6px 0;">{user_email}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px 16px 6px 0; font-weight: bold;">Name:</td>
+                    <td style="padding: 6px 0;">{display_name}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px 16px 6px 0; font-weight: bold;">User ID:</td>
+                    <td style="padding: 6px 0; font-family: monospace; font-size: 13px;">{user_id}</td>
+                </tr>
+            </table>
+            <p style="margin: 30px 0;">
+                <a href="{admin_url}"
+                   style="background-color: #f59e0b; color: #1f2937; padding: 12px 24px;
+                          text-decoration: none; border-radius: 4px; display: inline-block;
+                          font-weight: bold;">
+                    Review in Admin Panel
+                </a>
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+
+    text_body = f"""
+New Registration Pending Approval
+
+A new user has registered and is waiting for approval:
+
+Email: {user_email}
+Name: {display_name}
+User ID: {user_id}
+
+Review at: {admin_url}
+    """
+
+    return send_email(to_email, subject, html_body, text_body)

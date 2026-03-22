@@ -10,6 +10,7 @@ export interface User {
   tier: string;
   status: string;
   email_verified: boolean;
+  is_admin: boolean;
   created_at: string;
 }
 

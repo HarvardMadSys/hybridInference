@@ -72,6 +72,37 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+_QUIET_PATHS = frozenset({"/health", "/health/deep", "/metrics"})
+
+
+class _QuietPathFilter(logging.Filter):
+    """Suppress uvicorn access log lines for polling paths unless DEBUG is enabled."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return False (suppress) for quiet paths when the effective level is above DEBUG."""
+        if logging.root.level <= logging.DEBUG:
+            return True
+        # Uvicorn access log args: (client_addr, method, path, http_version, status_code)
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3:
+            return args[2] not in _QUIET_PATHS
+        # Fallback for unexpected record formats
+        msg = record.getMessage()
+        return not any(f'"{path} ' in msg or f'"{path}"' in msg for path in _QUIET_PATHS)
+
+
+def attach_quiet_access_filter() -> None:
+    """Attach the quiet-path filter to uvicorn's access logger.
+
+    Must be called after uvicorn's own logging setup (i.e., from the app
+    lifespan), otherwise uvicorn's dictConfig will wipe the filter.
+    Set LOG_LEVEL=DEBUG to disable suppression and see all access logs.
+    """
+    uvicorn_access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _QuietPathFilter) for f in uvicorn_access.filters):
+        uvicorn_access.addFilter(_QuietPathFilter())
+
+
 def _env_level() -> int:
     level = os.getenv("LOG_LEVEL", "INFO").upper()
     return getattr(logging, level, logging.INFO)
@@ -122,6 +153,7 @@ def get_logger(name: str | None = None) -> logging.Logger:
 
 __all__ = [
     "JsonFormatter",
+    "attach_quiet_access_filter",
     "get_logger",
     "setup_logging",
 ]

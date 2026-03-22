@@ -1,22 +1,22 @@
+"""Test DeepSeek API directly (external)."""
+
 import os
 
 import pytest
 from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv()
-
 pytestmark = pytest.mark.external
 
-# TEST configuration
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-if not DEEPSEEK_API_KEY:
-    pytest.skip("DEEPSEEK_API_KEY not configured", allow_module_level=True)
 
+def test_deepseek_chat_basic():
+    """Basic DeepSeek chat call; requires network and DEEPSEEK_API_KEY."""
+    load_dotenv()
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        pytest.skip("DEEPSEEK_API_KEY not configured")
 
-def test_deepseek_api():
-    client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
-
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     response = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
@@ -25,5 +25,4 @@ def test_deepseek_api():
         ],
         stream=False,
     )
-
     assert response.choices[0].message.content is not None

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     # Admin
     admin_token: str = ""
+    admin_emails: str = ""
     user_auth_enabled: bool = True
     api_key_secret: str = ""
 
@@ -66,6 +67,20 @@ class Settings(BaseSettings):
     qdrant_base_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
 
+    # Codex subscription
+    codex_accounts_file: str = "var/data/codex_accounts.json"
+    codex_fallback_api_key: str = ""
+    codex_token_refresh_margin: int = 30
+    codex_account_cooldown: int = 60
+    codex_failure_threshold: int = 3
+
+    # Claude subscription
+    claude_sub_accounts_file: str = "var/data/claude_accounts.json"
+    claude_sub_fallback_api_key: str = ""
+    claude_sub_token_refresh_margin: int = 300  # 5 min (tokens last ~1 hour)
+    claude_sub_account_cooldown: int = 60
+    claude_sub_failure_threshold: int = 3
+
     # CORS
     cors_allowed_origins: list[str] = [
         "http://localhost:3000",
@@ -107,3 +122,15 @@ def get_settings() -> Settings:
 # Note: This is created at import time. Tests should use get_settings() or
 # reload the module to pick up environment changes.
 settings = get_settings()
+
+
+def _parse_admin_emails(raw: str) -> list[str]:
+    """Parse comma-separated admin emails string into a lowercase list."""
+    if not raw:
+        return []
+    return [e.strip().lower() for e in raw.split(",") if e.strip()]
+
+
+def is_admin_email(email: str) -> bool:
+    """Check if the given email is in the admin list."""
+    return email.strip().lower() in _parse_admin_emails(settings.admin_emails)

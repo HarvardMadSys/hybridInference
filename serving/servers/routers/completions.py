@@ -120,6 +120,19 @@ async def chat_completions(
         ).inc()
         raise HTTPException(404, f"Model '{model}' not found")
 
+    # Admin-only gate: non-admin users see a 404 as if the model doesn't exist
+    route = router_exec.routes[model]
+    if route.admin_only and not user_ctx.get("is_admin", False):
+        logger.info(
+            "Admin-only model rejected", extra={"model": model, "user_id": user_ctx.get("user_id")}
+        )
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label("router"),
+            status_code="404",
+        ).inc()
+        raise HTTPException(404, f"Model '{model}' not found")
+
     # Extract parameters
     params: dict[str, Any] = {}
     if payload.temperature is not None:
@@ -140,6 +153,8 @@ async def chat_completions(
         params["frequency_penalty"] = payload.frequency_penalty
     if payload.presence_penalty is not None:
         params["presence_penalty"] = payload.presence_penalty
+    if payload.reasoning_effort is not None:
+        params["reasoning_effort"] = payload.reasoning_effort
     if payload.tools is not None:
         params["tools"] = payload.tools
     if payload.tool_choice is not None:
@@ -217,6 +232,7 @@ async def chat_completions(
     }
     if session_id:
         metadata["session_id"] = session_id
+        params["session_id"] = session_id
 
     # Helper function to get pricing for a specific provider
     def get_pricing_for_provider(
@@ -320,7 +336,7 @@ async def chat_completions(
                                 with suppress(Exception):
                                     del chunk_json["_routing"]
 
-                            # Record TTFT at the first meaningful delta (content or tool_calls)
+                            # Record TTFT at the first meaningful delta (content, tool_calls, or reasoning_content)
                             if ttft_ms is None:
                                 try:
                                     choices_local = chunk_json.get("choices", [])
@@ -328,7 +344,8 @@ async def chat_completions(
                                         delta_local = choices_local[0].get("delta", {})
                                         has_content = bool(delta_local.get("content"))
                                         has_tool_calls = bool(delta_local.get("tool_calls"))
-                                        if has_content or has_tool_calls:
+                                        has_reasoning = bool(delta_local.get("reasoning_content"))
+                                        if has_content or has_tool_calls or has_reasoning:
                                             ttft_ms = int((time.time() - start_time) * 1000)
                                             logger.debug(
                                                 f"TTFT recorded (first delta): {ttft_ms}ms"
@@ -459,9 +476,12 @@ async def chat_completions(
                 if routing_info:
                     provider = routing_info.get("provider", "router")
                     base_url = routing_info.get("base_url")
-                    pricing = get_pricing_for_provider(provider, base_url)
-                    if routing_info:
-                        metadata.update(routing_info)
+                    # Prefer embedded pricing (e.g. adapter-internal fallback)
+                    # before looking up from registered routes
+                    pricing = routing_info.get("pricing") or get_pricing_for_provider(
+                        provider, base_url
+                    )
+                    metadata.update(routing_info)
                 elif provider_from_ctx:
                     # Fallback: use provider extracted from request context during streaming
                     provider = provider_from_ctx
@@ -539,6 +559,7 @@ async def chat_completions(
                             "error": str(exc),
                             "params": params,
                             "metadata": metadata,
+                            "ttft_ms": ttft_ms,
                             "pricing": None,  # Error case - no pricing available
                         },
                     )
@@ -576,10 +597,12 @@ async def chat_completions(
         # Always sanitize internal routing metadata from response to client
         provider = "router"
         base_url = None
+        routing_pricing = None
         if isinstance(response, dict) and "_routing" in response:
             try:
                 provider = response["_routing"].get("provider", "router")
                 base_url = response["_routing"].get("base_url")
+                routing_pricing = response["_routing"].get("pricing")
                 # Enrich metadata for analytics; safe to skip if no DB logger
                 metadata.update(response["_routing"])  # type: ignore[arg-type]
             except Exception:
@@ -602,7 +625,8 @@ async def chat_completions(
         # Move db_logger.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
         if db_logger:
-            pricing = get_pricing_for_provider(provider, base_url)
+            # Prefer embedded pricing (e.g. adapter-internal fallback)
+            pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
             _schedule_db_log_task(
                 db_logger,
                 request_id,

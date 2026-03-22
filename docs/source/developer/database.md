@@ -7,8 +7,13 @@
 
 ## Restart Admin Stack
 ```bash
+# Stop and restart pgAdmin (data is in hybridinference_pgadmin_data volume)
+make down
+make up
+
+# Or to fully reset pgAdmin (destroys saved connections):
 docker compose -f infrastructure/docker/docker-compose.yml --env-file .env --profile admin down
-docker volume rm docker_pgadmin_data
+docker volume rm hybridinference_pgadmin_data
 docker compose -f infrastructure/docker/docker-compose.yml --env-file .env --profile admin up -d
 ```
 
@@ -28,6 +33,6 @@ docker compose -f infrastructure/docker/docker-compose.yml --env-file .env --pro
 4. Save and expand the new server to inspect `freeinference_db`; leave the default `postgres` database for maintenance tasks only.
 
 ## Post-Restart Checks
-- `docker compose ps` to confirm bindings on `127.0.0.1`.
+- `make ps` to confirm bindings on `127.0.0.1`.
 - Run a smoke query via pgAdmin (e.g., `SELECT 1;`).
 - Log findings in the ops channel and schedule password rotation reminders.

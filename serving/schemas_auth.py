@@ -20,6 +20,7 @@ class SignupResponse(BaseModel):
     message: str
     email: str
     user_id: str
+    requires_approval: bool = False
 
 
 class LoginRequest(BaseModel):
@@ -69,6 +70,7 @@ class UserInfo(BaseModel):
     tier: str = "free"
     status: str = "active"
     email_verified: bool = False
+    is_admin: bool = False
     created_at: datetime
     last_login_at: datetime | None = None
 

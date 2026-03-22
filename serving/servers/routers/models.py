@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from serving.schemas import ModelItem, ModelList
+from serving.servers.auth import optional_verify_api_key
 from serving.servers.deps import get_embedding_adapters, get_router
 
 router = APIRouter()
@@ -36,6 +37,7 @@ CREATED_TS = int(time.time())
 async def list_models(
     router_exec=Depends(get_router),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+    user_ctx: dict | None = Depends(optional_verify_api_key),
 ) -> ModelList:
     """List available models with metadata similar to OpenRouter schema.
 
@@ -43,10 +45,13 @@ async def list_models(
     conservative limits (minimum across adapters) to ensure compatibility
     regardless of the routed backend.
     """
+    is_admin = bool(user_ctx and user_ctx.get("is_admin"))
     models: list[ModelItem] = []
     emitted_ids: set[str] = set()
 
     for model_id, route in router_exec.routes.items():
+        if route.admin_only and not is_admin:
+            continue
         configs = [adapter.config for adapter, _ in route.adapters]
         if not configs:
             continue

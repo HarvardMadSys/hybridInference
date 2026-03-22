@@ -4,6 +4,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from serving.servers.registry import register_from_models_yaml

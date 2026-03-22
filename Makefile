@@ -1,4 +1,5 @@
-.PHONY: help format lint test test-verbose test-cov setup-dev clean check all
+.PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
+       sync-subscriptions up down restart ps logs build
 
 # Default target
 .DEFAULT_GOAL := help
@@ -54,6 +55,8 @@ all: format check  ## Format code and run all checks
 
 setup-dev:  ## Set up development environment
 	@echo "$(YELLOW)Setting up development environment...$(RESET)"
+	@# Init git submodules (e.g. docs/free_inference)
+	git submodule update --init --recursive
 	@# Create venv if it doesn't exist; keep idempotent
 	[ -d .venv ] || uv venv -p 3.10
 	@# Install package in editable mode
@@ -103,3 +106,54 @@ check-all: lint test frontend-check  ## Run all checks (backend + frontend)
 	@echo "$(GREEN)OK All checks passed (backend + frontend)$(RESET)"
 
 all-with-frontend: format check-all  ## Format and check everything (backend + frontend)
+
+# ─── Docker / Production ─────────────────────────────────────────────────────
+COMPOSE := docker compose -f infrastructure/docker/docker-compose.yml --env-file .env
+
+sync-subscriptions:  ## Import CLI OAuth credentials for subscription adapters
+	@mkdir -p var/data
+	@echo "$(YELLOW)Syncing subscription credentials...$(RESET)"
+	@if [ -f "$$HOME/.codex/auth.json" ]; then \
+		$(UV_RUN) python scripts/import_codex_auth.py \
+			&& echo "$(GREEN)  codex: imported$(RESET)" \
+			|| echo "$(YELLOW)  codex: import FAILED (see error above)$(RESET)"; \
+	else \
+		echo "  codex: skipped (~/.codex/auth.json not found; run codex --login)"; \
+	fi
+	@if [ -f "$$HOME/.claude/.credentials.json" ] || [ -f "$$HOME/.claude/credentials.json" ] || [ -f "$$HOME/.claude/auth.json" ]; then \
+		$(UV_RUN) python scripts/import_claude_auth.py \
+			&& echo "$(GREEN)  claude: imported$(RESET)" \
+			|| echo "$(YELLOW)  claude: import FAILED (see error above)$(RESET)"; \
+	else \
+		echo "  claude: skipped (~/.claude/ credentials not found; run claude login)"; \
+	fi
+
+up: sync-subscriptions  ## Start all services
+	$(COMPOSE) up -d
+
+down:  ## Stop all services
+	$(COMPOSE) down
+
+restart:  ## Restart all services (or: make restart s=backend)
+ifdef s
+	$(COMPOSE) restart $(s)
+else
+	$(COMPOSE) restart
+endif
+
+ps:  ## Show running services
+	$(COMPOSE) ps
+
+logs:  ## Tail logs (or: make logs s=backend)
+ifdef s
+	$(COMPOSE) logs -f $(s)
+else
+	$(COMPOSE) logs -f --tail=500
+endif
+
+build:  ## Rebuild images and restart (or: make build s=backend)
+ifdef s
+	$(COMPOSE) up -d --build $(s)
+else
+	$(COMPOSE) up -d --build
+endif

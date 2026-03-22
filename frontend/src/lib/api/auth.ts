@@ -13,6 +13,7 @@ export interface SignupResponse {
   message: string;
   email: string;
   user_id: string;
+  requires_approval: boolean;
 }
 
 export interface LoginRequest {
@@ -28,6 +29,7 @@ export interface LoginResponse {
     id: string;
     email: string;
     tier: string;
+    is_admin: boolean;
   };
 }
 

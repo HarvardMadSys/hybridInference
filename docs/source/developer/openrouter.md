@@ -1,6 +1,6 @@
 # OpenRouter-Compatible API Gateway
 
-A FastAPI-based gateway that serves OpenRouter-compatible traffic, fans out to local and remote LLM adapters, and exposes observability interfaces for operations. The application listens on port 80 in production (via `systemd`) and can also run on a developer-selectable port for local work.
+A FastAPI-based gateway that serves OpenRouter-compatible traffic, fans out to local and remote LLM adapters, and exposes observability interfaces for operations. In production the application runs as a Docker container on port 8080 behind Nginx; for local development it can run on any port via `uvicorn` directly.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ hybridInference/
 ├── config/
 │   ├── models.yaml             # Canonical model definitions + adapters
 │   └── routing.yaml (optional) # Weighted routing configuration
-├── infrastructure/systemd/     # Production unit files (FastAPI on port 80)
+├── infrastructure/docker/      # Dockerfiles and docker-compose.yml
 └── var/db/openrouter_logs.db   # Default SQLite request log (created at runtime)
 ```
 
@@ -110,23 +110,19 @@ env \
 
 ## Production Deployment
 
-We run the service directly on port 80 under `systemd`, letting Cloudflare terminate TLS at the edge. The repository ships a maintained unit file at `infrastructure/systemd/hybrid_inference.service`.
+All services run via Docker Compose. Nginx on the host terminates TLS;
+Cloudflare provides CDN and DDoS protection in front of Nginx.
 
 ```bash
-# Copy the unit file
-sudo cp infrastructure/systemd/hybrid_inference.service \
-        /etc/systemd/system/freeinference.service
-
-# Reload systemd and enable on boot
-sudo systemctl daemon-reload
-sudo systemctl enable freeinference.service
-sudo systemctl start freeinference.service
-sudo systemctl status freeinference.service
+make up      # Start all services
+make ps      # Verify health
 ```
 
 Runtime operations:
-- Restart: `sudo systemctl restart freeinference.service`
-- Logs: `journalctl -u freeinference.service -f`
+- Restart: `make restart` or `make restart s=backend`
+- Logs: `make logs` or `make logs s=backend`
+
+See [Deployment](deployment.md) for the full guide.
 - Health: `curl https://freeinference.org/health`
 
 ## API Surface

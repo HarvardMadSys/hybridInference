@@ -220,8 +220,8 @@ class ZhipuAdapter(BaseAdapter):  # type: ignore[no-any-unimported]
                     if line_count <= 10:
                         logger.debug(f"Delta at line {line_count}: {delta}")
 
-                    # Handle content
-                    content = delta.get("content")
+                    # Handle content — GLM thinking models use reasoning_content instead of content
+                    content = delta.get("content") or delta.get("reasoning_content")
                     if content:
                         total_content += content
                         # Use format_stream_chunk for consistency
