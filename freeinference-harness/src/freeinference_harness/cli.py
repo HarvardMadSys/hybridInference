@@ -1,4 +1,4 @@
-"""Command-line interface for the standalone hardness harness."""
+"""Command-line interface for the standalone FreeInference harness."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-from freeinference_hardness.config import load_suite, load_targets
-from freeinference_hardness.reporting import write_run_artifacts
-from freeinference_hardness.runner import HardnessRunner
+from freeinference_harness.config import load_suite, load_targets
+from freeinference_harness.reporting import write_run_artifacts
+from freeinference_harness.runner import HarnessRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Builds the CLI parser."""
-    parser = argparse.ArgumentParser(description="Run black-box hardness suites.")
+    parser = argparse.ArgumentParser(description="Run black-box FreeInference harness suites.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Run a configured suite.")
@@ -67,7 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 + ". Set FREEINFERENCE_API_KEY or provide api_key/api_key_env in the target file."
             )
 
-        runner = HardnessRunner()
+        runner = HarnessRunner()
         run_record = runner.run(targets=targets, suite=suite)
         run_dir = write_run_artifacts(Path(args.output_dir), run_record)
         print(f"Run complete. Artifacts written to: {run_dir}")

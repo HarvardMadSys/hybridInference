@@ -1,6 +1,6 @@
-# FreeInference Hardness
+# FreeInference Harness
 
-`freeinference-hardness` is a standalone black-box harness for validating the
+`freeinference-harness` is a standalone black-box harness for validating the
 FreeInference API through real HTTP clients and third-party SDKs.
 
 The project intentionally does not import runtime code from `hybridInference`.
@@ -29,19 +29,19 @@ export FREEINFERENCE_API_KEY="hyi-..."
 Run a dry-run to inspect target and scenario selection:
 
 ```bash
-python -m freeinference_hardness.cli run \
+python -m freeinference_harness.cli run \
   --targets configs/targets/freeinference.yaml \
   --scenarios configs/scenarios/chat-core.yaml \
   --dry-run
 ```
 
-Run a pinned target:
+Run a target:
 
 ```bash
-python -m freeinference_hardness.cli run \
+python -m freeinference_harness.cli run \
   --targets configs/targets/freeinference.yaml \
   --scenarios configs/scenarios/chat-core.yaml \
-  --target glm-5-zhipu-only
+  --target glm-5-public
 ```
 
 Artifacts are written under `outputs/<run_id>/`.

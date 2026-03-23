@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from freeinference_hardness.models import Capabilities, ScenarioConfig, SuiteConfig, TargetConfig
+from freeinference_harness.models import Capabilities, ScenarioConfig, SuiteConfig, TargetConfig
 
 if TYPE_CHECKING:
     from pathlib import Path

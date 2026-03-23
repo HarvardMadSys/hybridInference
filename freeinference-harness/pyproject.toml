@@ -1,7 +1,7 @@
 [project]
-name = "freeinference-hardness"
+name = "freeinference-harness"
 version = "0.1.0"
-description = "Standalone black-box hardness harness for FreeInference."
+description = "Standalone black-box harness for FreeInference."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-freeinference-hardness = "freeinference_hardness.cli:main"
+freeinference-harness = "freeinference_harness.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

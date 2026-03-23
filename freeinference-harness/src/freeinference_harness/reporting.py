@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from freeinference_hardness.models import RunRecord
+    from freeinference_harness.models import RunRecord
 
 
 def write_run_artifacts(output_root: Path, run_record: RunRecord) -> Path:
@@ -31,7 +31,7 @@ def write_run_artifacts(output_root: Path, run_record: RunRecord) -> Path:
 def _render_summary(run_json: dict[str, Any]) -> str:
     """Renders a concise markdown summary for one run."""
     lines = [
-        f"# Hardness Summary: {run_json['run_id']}",
+        f"# Harness Summary: {run_json['run_id']}",
         "",
         f"- Timestamp: `{run_json['timestamp']}`",
         f"- Suite: `{run_json['suite_name']}`",

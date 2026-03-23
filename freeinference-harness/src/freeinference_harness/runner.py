@@ -1,4 +1,4 @@
-"""Scenario runner for the standalone hardness harness."""
+"""Scenario runner for the standalone FreeInference harness."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from typing import Any
 
 import httpx
 
-from freeinference_hardness.clients.openai_compat import OpenAICompatClient
-from freeinference_hardness.models import (
+from freeinference_harness.clients.openai_compat import OpenAICompatClient
+from freeinference_harness.models import (
     AttemptResult,
     RunRecord,
     ScenarioConfig,
@@ -24,7 +24,7 @@ def build_run_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
-class HardnessRunner:
+class HarnessRunner:
     """Executes suites against black-box FreeInference targets."""
 
     def run(

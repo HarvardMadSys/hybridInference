@@ -1,8 +1,8 @@
-# FreeInference Hardness Plan
+# FreeInference Harness Plan
 
 ## Goal
 
-Build a standalone black-box hardness harness for FreeInference that exercises
+Build a standalone black-box harness for FreeInference that exercises
 the public API through real HTTP clients and third-party SDKs.
 
 The harness must answer two different questions without mixing them together:
