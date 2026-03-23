@@ -1,0 +1,24 @@
+[project]
+name = "freeinference-hardness"
+version = "0.1.0"
+description = "Standalone black-box hardness harness for FreeInference."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx",
+  "openai",
+  "PyYAML",
+]
+
+[project.scripts]
+freeinference-hardness = "freeinference_hardness.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

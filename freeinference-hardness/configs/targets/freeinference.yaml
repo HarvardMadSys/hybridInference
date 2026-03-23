@@ -1,0 +1,34 @@
+defaults:
+  base_url: https://freeinference.org
+  api_key_env: FREEINFERENCE_API_KEY
+  timeout_seconds: 240
+  sampling_count: 5
+
+targets:
+  - name: bge-m3
+    model: bge-m3
+    suite_type: gateway-pinned
+    sampling_count: 3
+    capabilities:
+      chat: false
+      streaming: false
+      tools: false
+      structured_output: false
+      embeddings: true
+      anthropic_messages: false
+      admin_required: false
+    tags: [embedding, local]
+
+  - name: glm-5-public
+    model: glm-5
+    suite_type: gateway-public
+    sampling_count: 10
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [glm, public]
