@@ -518,6 +518,7 @@ class OpenAICompatAdapter(BaseAdapter):
             model=self.config.id,
             usage=usage,
             tool_calls=tool_calls,
+            reasoning_content=message.get("reasoning_content"),
             finish_reason=choice.get("finish_reason", "stop"),
         )
 

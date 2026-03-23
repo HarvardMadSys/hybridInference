@@ -13,6 +13,7 @@ from serving.openai_chat_serializer import (
     SerializerMode,
     resolve_mode,
     sanitize_chunk,
+    sanitize_response,
 )
 
 
@@ -139,3 +140,47 @@ def test_sanitize_reasoning_with_tool_calls_stripped():
     delta = result.chunk_json["choices"][0]["delta"]
     assert "reasoning_content" not in delta
     assert delta["tool_calls"]
+
+
+@pytest.mark.unit
+def test_sanitize_response_strict_removes_reasoning_content():
+    """Strict mode: non-stream response should not expose reasoning_content."""
+    response = {
+        "id": "resp-1",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning_content": "private chain of thought",
+                }
+            }
+        ],
+        "_routing": {"provider": "zhipu"},
+    }
+    result = sanitize_response(dict(response), SerializerMode.STRICT_OPENAI)
+    message = result.response_json["choices"][0]["message"]
+    assert "reasoning_content" not in message
+    assert message["content"] == "answer"
+    assert "_routing" not in result.response_json
+    assert result.routing_info == {"provider": "zhipu"}
+
+
+@pytest.mark.unit
+def test_sanitize_response_passthrough_preserves_reasoning_content():
+    """Passthrough mode: non-stream response keeps reasoning_content."""
+    response = {
+        "id": "resp-1",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "thinking...",
+                }
+            }
+        ],
+    }
+    result = sanitize_response(dict(response), SerializerMode.REASONING_PASSTHROUGH)
+    message = result.response_json["choices"][0]["message"]
+    assert message["reasoning_content"] == "thinking..."

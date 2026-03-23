@@ -62,6 +62,7 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
 @router.post(
     "/v1/chat/completions",
     response_model=ChatCompletionResponse,
+    response_model_exclude_none=True,
     responses={
         400: {"model": ErrorResponse, "description": "Bad Request"},
         404: {"model": ErrorResponse, "description": "Model Not Found"},
@@ -646,7 +647,16 @@ async def chat_completions(
 
     # Non-streaming path
     try:
+        from serving.openai_chat_serializer import resolve_mode, sanitize_response
+
         response = await router_exec.chat_completion(model, messages, **params)
+        serializer_mode = resolve_mode(request.headers)
+
+        if isinstance(response, dict):
+            sanitize_result = sanitize_response(response, serializer_mode)
+            response = sanitize_result.response_json
+            if sanitize_result.routing_info:
+                metadata.update(sanitize_result.routing_info)  # type: ignore[arg-type]
 
         # Always sanitize internal routing metadata from response to client
         provider = "router"
@@ -665,6 +675,11 @@ async def chat_completions(
             # Never leak internal routing details to clients
             with suppress(Exception):
                 del response["_routing"]
+        elif isinstance(response, dict):
+            routing_info = metadata if isinstance(metadata, dict) else {}
+            provider = routing_info.get("provider", "router") or "router"
+            base_url = routing_info.get("base_url")
+            routing_pricing = routing_info.get("pricing")
         else:
             # Fallback: get provider from request context when _routing is not available
             from serving.utils import context as req_ctx

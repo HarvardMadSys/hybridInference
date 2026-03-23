@@ -12,7 +12,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from starlette.datastructures import Headers
+    from collections.abc import Mapping
 
 
 class SerializerMode(str, Enum):
@@ -32,7 +32,15 @@ class SanitizeResult:
     routing_info: dict | None
 
 
-def resolve_mode(headers: Headers) -> SerializerMode:
+@dataclass
+class SanitizeResponseResult:
+    """Result of sanitizing a non-streaming chat completion response."""
+
+    response_json: dict
+    routing_info: dict | None
+
+
+def resolve_mode(headers: Mapping[str, str]) -> SerializerMode:
     """Resolve serializer mode from request headers.
 
     Default is strict OpenAI. Opt-in passthrough via X-Reasoning-Passthrough: true.
@@ -97,3 +105,32 @@ def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:
         usage_data=usage_data,
         routing_info=routing_info,
     )
+
+
+def sanitize_response(response_json: dict, mode: SerializerMode) -> SanitizeResponseResult:
+    """Sanitize a non-streaming chat completion response for the public API.
+
+    - Always strips `_routing`.
+    - In strict mode: removes `message.reasoning_content`.
+    - In passthrough mode: preserves `message.reasoning_content`.
+    """
+    sanitized = dict(response_json)
+    routing_info = sanitized.pop("_routing", None)
+
+    if mode == SerializerMode.REASONING_PASSTHROUGH:
+        return SanitizeResponseResult(response_json=sanitized, routing_info=routing_info)
+
+    choices = sanitized.get("choices", [])
+    if not choices:
+        return SanitizeResponseResult(response_json=sanitized, routing_info=routing_info)
+
+    choice = dict(choices[0])
+    message = dict(choice.get("message", {}))
+    if "reasoning_content" in message:
+        message.pop("reasoning_content", None)
+        new_choices = list(choices)
+        choice["message"] = message
+        new_choices[0] = choice
+        sanitized["choices"] = new_choices
+
+    return SanitizeResponseResult(response_json=sanitized, routing_info=routing_info)

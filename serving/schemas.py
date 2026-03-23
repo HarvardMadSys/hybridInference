@@ -82,6 +82,7 @@ class ChoiceMessage(BaseModel):  # type: ignore[no-any-unimported]
 
     role: Literal["assistant"] = "assistant"
     content: str | None = ""
+    reasoning_content: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
 
 

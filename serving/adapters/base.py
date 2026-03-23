@@ -143,10 +143,11 @@ class BaseAdapter(ABC):
 
     def format_response(
         self,
-        content: str,
+        content: str | None,
         model: str,
         usage: UsageInfo | None = None,
         tool_calls: list[dict] | None = None,
+        reasoning_content: str | None = None,
         finish_reason: str = "stop",
     ) -> dict[str, Any]:
         """Format provider response into OpenAI-compatible schema."""
@@ -166,6 +167,9 @@ class BaseAdapter(ABC):
 
         if tool_calls:
             response["choices"][0]["message"]["tool_calls"] = tool_calls
+
+        if reasoning_content is not None:
+            response["choices"][0]["message"]["reasoning_content"] = reasoning_content
 
         if usage:
             response["usage"] = usage.to_dict()

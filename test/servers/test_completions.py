@@ -63,7 +63,11 @@ class AdapterWithReasoningContent(BaseAdapter):
 
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         content = params.get("content", "Test response")
-        resp = self.format_response(content=content, model=self.config.id)
+        resp = self.format_response(
+            content=content,
+            model=self.config.id,
+            reasoning_content="Let me think through this carefully.",
+        )
         return resp
 
     async def stream_chat_completion(
@@ -84,6 +88,22 @@ class AdapterWithReasoningContent(BaseAdapter):
         yield make_final_usage_chunk(
             model=self.config.id, messages=messages, total_content="Test response"
         )
+        yield done_sentinel()
+
+
+class NonStreamReasoningOnlyAdapter(BaseAdapter):
+    """Adapter that returns only reasoning_content in non-stream mode."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(
+            content="",
+            model=self.config.id,
+            reasoning_content="Internal reasoning only.",
+        )
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
         yield done_sentinel()
 
 
@@ -352,6 +372,140 @@ async def test_reasoning_passthrough_header_preserves_reasoning(
             if line != "data: [DONE]" and line != "data: {}"
         )
         assert content == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_non_stream_default_strict_strips_reasoning_content(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Non-streaming path should also default to strict OpenAI serialization."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route(
+        "glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)]
+    )
+
+    app = FastAPI(title="Test Non-Stream Strict Mode")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "glm-4.6", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    message = body["choices"][0]["message"]
+    assert message["content"] == "Test response"
+    assert "reasoning_content" not in message
+
+
+@pytest.mark.asyncio
+async def test_non_stream_reasoning_passthrough_header_preserves_reasoning_content(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Non-streaming path should preserve reasoning_content when passthrough is requested."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route(
+        "glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)]
+    )
+
+    app = FastAPI(title="Test Non-Stream Passthrough Mode")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "glm-4.6", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"X-Reasoning-Passthrough": "true"},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    message = body["choices"][0]["message"]
+    assert message["content"] == "Test response"
+    assert message["reasoning_content"] == "Let me think through this carefully."
+
+
+@pytest.mark.asyncio
+async def test_non_stream_reasoning_only_strict_returns_empty_visible_output(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Strict non-streaming mode should hide reasoning-only output and leave content empty."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route(
+        "glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)]
+    )
+
+    app = FastAPI(title="Test Non-Stream Reasoning Only Strict")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "glm-5", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    message = body["choices"][0]["message"]
+    assert message["content"] == ""
+    assert "reasoning_content" not in message
+
+
+@pytest.mark.asyncio
+async def test_non_stream_reasoning_only_passthrough_preserves_reasoning(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Passthrough non-streaming mode should expose reasoning-only responses."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route(
+        "glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)]
+    )
+
+    app = FastAPI(title="Test Non-Stream Reasoning Only Passthrough")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "glm-5", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"X-Reasoning-Passthrough": "true"},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    message = body["choices"][0]["message"]
+    assert message["content"] == ""
+    assert message["reasoning_content"] == "Internal reasoning only."
 
 
 # ---------------------------------------------------------------------------
