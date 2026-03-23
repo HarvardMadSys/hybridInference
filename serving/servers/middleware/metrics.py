@@ -39,43 +39,57 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         route = normalize_route(request.url.path)
         method = request.method
         started = time.perf_counter()
-        API_CONCURRENCY.inc()
+        record_metrics = request.headers.get("x-probe", "").lower() != "synthetic"
+        if record_metrics:
+            API_CONCURRENCY.inc()
         try:
             timeout_s = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "120"))
             response: Response = await asyncio.wait_for(call_next(request), timeout=timeout_s)
         except asyncio.TimeoutError:
             # Record timeout as 5xx and raise 504 to be shaped by error handlers.
             elapsed = time.perf_counter() - started
-            API_REQUEST_LATENCY.labels(route=route, method=method, stream="unknown").observe(
-                elapsed
-            )
-            API_REQUESTS.labels(
-                route=route, method=method, status_class="5xx", stream="unknown"
-            ).inc()
+            if record_metrics:
+                API_REQUEST_LATENCY.labels(route=route, method=method, stream="unknown").observe(
+                    elapsed
+                )
+                API_REQUESTS.labels(
+                    route=route,
+                    method=method,
+                    status_class="5xx",
+                    stream="unknown",
+                ).inc()
             raise HTTPException(status_code=504, detail="Gateway Timeout") from None
         except Exception:
             # Record as 500 and re-raise
             elapsed = time.perf_counter() - started
-            API_REQUEST_LATENCY.labels(route=route, method=method, stream="unknown").observe(
-                elapsed
-            )
-            API_REQUESTS.labels(
-                route=route, method=method, status_class="5xx", stream="unknown"
-            ).inc()
+            if record_metrics:
+                API_REQUEST_LATENCY.labels(route=route, method=method, stream="unknown").observe(
+                    elapsed
+                )
+                API_REQUESTS.labels(
+                    route=route,
+                    method=method,
+                    status_class="5xx",
+                    stream="unknown",
+                ).inc()
             raise
         else:
             stream_label = "yes" if isinstance(response, StreamingResponse) else "no"
             elapsed = time.perf_counter() - started
-            API_REQUEST_LATENCY.labels(route=route, method=method, stream=stream_label).observe(
-                elapsed
-            )
-            status = int(getattr(response, "status_code", 0))
-            API_REQUESTS.labels(
-                route=route,
-                method=method,
-                status_class=status_class_from_code(status),
-                stream=stream_label,
-            ).inc()
+            if record_metrics:
+                API_REQUEST_LATENCY.labels(
+                    route=route,
+                    method=method,
+                    stream=stream_label,
+                ).observe(elapsed)
+                status = int(getattr(response, "status_code", 0))
+                API_REQUESTS.labels(
+                    route=route,
+                    method=method,
+                    status_class=status_class_from_code(status),
+                    stream=stream_label,
+                ).inc()
             return response
         finally:
-            API_CONCURRENCY.dec()
+            if record_metrics:
+                API_CONCURRENCY.dec()
