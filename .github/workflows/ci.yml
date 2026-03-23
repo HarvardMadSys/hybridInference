@@ -151,7 +151,7 @@ jobs:
           COOKIE_SAMESITE: lax
           BASE_URL: http://localhost:8000
         run: |
-          uv run pytest --cov=. --cov-report=term-missing --cov-report=xml -v
+          uv run pytest --cov=. --cov-report=term-missing --cov-report=xml -v -m "not external"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

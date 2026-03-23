@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Request, Response
 
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import (
@@ -21,6 +21,7 @@ router = APIRouter()
 @router.post("/completion")
 async def single_completion(
     request: Request,
+    http_response: Response,
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
@@ -33,6 +34,7 @@ async def single_completion(
     """
     return await chat_completions(
         request,
+        http_response,
         authorization=authorization,
         user_ctx=user_ctx,
         router_exec=router_exec,
@@ -44,6 +46,7 @@ async def single_completion(
 @router.post("/v1/completions")
 async def legacy_completions(
     request: Request,
+    http_response: Response,
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
@@ -59,6 +62,7 @@ async def legacy_completions(
     request._body = json.dumps(body).encode()  # type: ignore[attr-defined]
     return await chat_completions(
         request,
+        http_response,
         authorization=authorization,
         user_ctx=user_ctx,
         router_exec=router_exec,

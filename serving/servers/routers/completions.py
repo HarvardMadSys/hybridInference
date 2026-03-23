@@ -8,7 +8,7 @@ import time
 from contextlib import suppress
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from serving.observability.metrics import (
@@ -72,6 +72,7 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
 )
 async def chat_completions(
     request: Request,
+    http_response: Response,
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
@@ -89,12 +90,24 @@ async def chat_completions(
         payload = ChatCompletionRequest.model_validate(body)
     except Exception as e:
         # Record 400 error for request parsing failures
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label("unknown"),
-            provider=normalize_provider_label("router"),
-            status_code="400",
-        ).inc()
+        if request.headers.get("x-probe", "").lower() != "synthetic":
+            API_MODEL_REQUESTS.labels(
+                model=normalize_model_label("unknown"),
+                provider=normalize_provider_label("router"),
+                status_code="400",
+            ).inc()
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
+
+    is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
+
+    def record_model_request(status_code: str, provider_name: str) -> None:
+        if is_synthetic_probe:
+            return
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(model),
+            provider=normalize_provider_label(provider_name),
+            status_code=status_code,
+        ).inc()
 
     model = payload.model
     messages = [m.model_dump() for m in payload.messages]
@@ -114,11 +127,7 @@ async def chat_completions(
     # Check if model has routing configured
     if model not in router_exec.routes:
         # Record 404 error for model not found
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(model),
-            provider=normalize_provider_label("router"),
-            status_code="404",
-        ).inc()
+        record_model_request("404", "router")
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Admin-only gate: non-admin users see a 404 as if the model doesn't exist
@@ -127,11 +136,7 @@ async def chat_completions(
         logger.info(
             "Admin-only model rejected", extra={"model": model, "user_id": user_ctx.get("user_id")}
         )
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(model),
-            provider=normalize_provider_label("router"),
-            status_code="404",
-        ).inc()
+        record_model_request("404", "router")
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Extract parameters
@@ -166,7 +171,7 @@ async def chat_completions(
     params["stream"] = bool(payload.stream)
 
     # Rate limit check with advanced features
-    if rate_limiter:
+    if rate_limiter and not is_synthetic_probe:
         # Higher priority for authenticated requests (via Authorization or X-API-Key)
         priority = 1 if user_ctx.get("authenticated") else 0
         success, meta = await rate_limiter.acquire_tokens(
@@ -206,11 +211,7 @@ async def chat_completions(
                 )
 
             # Record 429 rate limit error
-            API_MODEL_REQUESTS.labels(
-                model=normalize_model_label(model),
-                provider=normalize_provider_label("router"),
-                status_code="429",
-            ).inc()
+            record_model_request("429", "router")
             raise HTTPException(status_code=429, detail=error_detail, headers=headers)
 
     # Generate request ID and metadata
@@ -231,6 +232,8 @@ async def chat_completions(
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
     }
+    if is_synthetic_probe:
+        metadata["synthetic_probe"] = True
     if session_id:
         metadata["session_id"] = session_id
         params["session_id"] = session_id
@@ -276,6 +279,14 @@ async def chat_completions(
                 continue
             return cfg
         return None
+
+    def get_single_route_provider() -> str | None:
+        """Return a provider name when the route has exactly one backend."""
+        if len(route.adapters) != 1:
+            return None
+        adapter, _ = route.adapters[0]
+        config = getattr(adapter, "config", None)
+        return getattr(config, "provider", None)
 
     # Streaming path
     if payload.stream:
@@ -544,7 +555,7 @@ async def chat_completions(
                     logger.debug(f"Using provider from context for DB logging: {provider}")
 
                 # Prepare data for background database logging (don't await here!)
-                if db_logger:
+                if db_logger and not is_synthetic_probe:
                     _schedule_db_log_task(
                         db_logger,
                         request_id,
@@ -598,7 +609,7 @@ async def chat_completions(
                 ctx = req_ctx.get()
                 provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-                if db_logger:
+                if db_logger and not is_synthetic_probe:
                     _schedule_db_log_task(
                         db_logger,
                         request_id,
@@ -619,7 +630,7 @@ async def chat_completions(
                         },
                     )
 
-                if rate_limiter:
+                if rate_limiter and not is_synthetic_probe:
                     estimated_tokens = TokenCounter.estimate_tokens(
                         messages, params.get("max_tokens")
                     )
@@ -633,16 +644,16 @@ async def chat_completions(
         logger.debug(f"Creating StreamingResponse for model: {model}")
 
         # Record 200 for streaming response (HTTP layer success)
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(model),
-            provider=normalize_provider_label(provider),
-            status_code="200",
-        ).inc()
-
+        record_model_request("200", provider)
+        response_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        if is_synthetic_probe:
+            provider_header = get_single_route_provider()
+            if provider_header:
+                response_headers["X-Provider"] = provider_header
         return StreamingResponse(
             stream_generator(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers=response_headers,
         )
 
     # Non-streaming path
@@ -693,7 +704,7 @@ async def chat_completions(
 
         # Move db_logger.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
-        if db_logger:
+        if db_logger and not is_synthetic_probe:
             # Prefer embedded pricing (e.g. adapter-internal fallback)
             pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
             _schedule_db_log_task(
@@ -739,7 +750,7 @@ async def chat_completions(
         # Normalize usage to extract reasoning_tokens from nested locations
         raw_usage = response.get("usage", {}) if isinstance(response, dict) else {}
         usage = normalize_usage(raw_usage) or {}
-        if usage:
+        if usage and not is_synthetic_probe:
             prompt_tokens_raw = usage.get("prompt_tokens")
             completion_tokens_raw = usage.get("completion_tokens")
             total_tokens_raw = usage.get("total_tokens")
@@ -797,7 +808,7 @@ async def chat_completions(
                         direction="reasoning",
                     ).inc(reasoning_tokens)
 
-        if rate_limiter:
+        if rate_limiter and not is_synthetic_probe:
             actual_tokens = response.get("usage", {}).get("total_tokens")
             if actual_tokens:
                 estimated = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
@@ -807,12 +818,9 @@ async def chat_completions(
                     )
 
         # Record 200 for non-streaming response
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(model),
-            provider=normalize_provider_label(provider),
-            status_code="200",
-        ).inc()
-
+        record_model_request("200", provider)
+        if is_synthetic_probe and provider != "router":
+            http_response.headers["X-Provider"] = provider
         return response
 
     except Exception as exc:
@@ -852,7 +860,7 @@ async def chat_completions(
         ctx = req_ctx.get()
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-        if db_logger:
+        if db_logger and not is_synthetic_probe:
             _schedule_db_log_task(
                 db_logger,
                 request_id,
@@ -871,15 +879,11 @@ async def chat_completions(
                     "pricing": None,  # Error case - no pricing available
                 },
             )
-        if rate_limiter:
+        if rate_limiter and not is_synthetic_probe:
             estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
             await rate_limiter.release_tokens(model, estimated_tokens)
 
         # Record error status code
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(model),
-            provider=normalize_provider_label(provider_for_error),
-            status_code=str(exc_status_code),
-        ).inc()
+        record_model_request(str(exc_status_code), provider_for_error)
 
         raise HTTPException(exc_status_code, str(exc)) from exc

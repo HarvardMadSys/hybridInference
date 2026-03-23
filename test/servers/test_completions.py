@@ -107,6 +107,25 @@ class NonStreamReasoningOnlyAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+class RoutingAwareAdapter(BaseAdapter):
+    """Adapter that returns explicit internal routing metadata."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        response = self.format_response(content="Synthetic response", model=self.config.id)
+        response["_routing"] = {
+            "provider": self.config.provider,
+            "base_url": self.config.base_url,
+        }
+        return response
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        yield self.format_stream_chunk(model=self.config.id, content="Synthetic ")
+        yield self.format_stream_chunk(model=self.config.id, content="response")
+        yield done_sentinel()
+
+
 def _mk_cfg(model_id: str) -> ModelConfig:
     return ModelConfig(
         id=model_id,
@@ -255,7 +274,40 @@ async def test_rate_limit_rejection(completions_app: FastAPI, mock_rate_limiter)
 
 
 @pytest.mark.asyncio
-async def test_default_strict_mode_strips_reasoning(
+async def test_synthetic_probe_skips_rate_limit_and_db_logging(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Synthetic probe traffic should not consume rate limits or DB logging."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route("gpt-4", [(RoutingAwareAdapter(_mk_cfg("gpt-4")), 1.0)])
+
+    app = FastAPI(title="Synthetic Probe Test")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=mock_db_logger,
+        rate_limiter=mock_rate_limiter,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"X-Probe": "synthetic"},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    assert resp.headers.get("X-Provider") == "test"
+    mock_rate_limiter.acquire_tokens.assert_not_called()
+    mock_db_logger.log_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_content_filtered_in_streaming(
     monkeypatch, mock_rate_limiter, mock_db_logger
 ):
     """Default /v1/chat/completions behavior is strict OpenAI: no reasoning_content visible."""
@@ -719,7 +771,8 @@ class ErrorBeforeAnyTokenAdapter(BaseAdapter):
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
         raise RuntimeError("upstream refused connection")
-        yield ""  # noqa: unreachable — makes this an async generator
+        if False:  # pragma: no cover
+            yield ""
 
 
 def _build_ttft_app(
@@ -780,8 +833,9 @@ async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limite
     )
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        async with client.stream(
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
             "POST",
             "/v1/chat/completions",
             json={
@@ -789,11 +843,12 @@ async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limite
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": True,
             },
-        ) as resp:
-            assert resp.status_code == 200
-            # Consume the stream fully
-            async for _ in resp.aiter_lines():
-                pass
+        ) as resp,
+    ):
+        assert resp.status_code == 200
+        # Consume the stream fully
+        async for _ in resp.aiter_lines():
+            pass
 
     logged, ttft = await _get_db_log_ttft(mock_db_logger)
     assert logged, "DB log_request should have been called"
@@ -955,8 +1010,9 @@ async def test_ttft_preserved_in_error_path(monkeypatch, mock_rate_limiter, mock
     )
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        async with client.stream(
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
             "POST",
             "/v1/chat/completions",
             json={
@@ -964,10 +1020,11 @@ async def test_ttft_preserved_in_error_path(monkeypatch, mock_rate_limiter, mock
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": True,
             },
-        ) as resp:
-            # Consume stream (may get partial content then error)
-            async for _ in resp.aiter_lines():
-                pass
+        ) as resp,
+    ):
+        # Consume stream (may get partial content then error)
+        async for _ in resp.aiter_lines():
+            pass
 
     logged, ttft = await _get_db_log_ttft(mock_db_logger)
     assert logged, "DB log_request should have been called on error path"
@@ -989,8 +1046,9 @@ async def test_ttft_null_when_error_before_any_token(
     )
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        async with client.stream(
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
             "POST",
             "/v1/chat/completions",
             json={
@@ -998,9 +1056,10 @@ async def test_ttft_null_when_error_before_any_token(
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": True,
             },
-        ) as resp:
-            async for _ in resp.aiter_lines():
-                pass
+        ) as resp,
+    ):
+        async for _ in resp.aiter_lines():
+            pass
 
     logged, ttft = await _get_db_log_ttft(mock_db_logger)
     assert logged, "DB log_request should have been called on error path"

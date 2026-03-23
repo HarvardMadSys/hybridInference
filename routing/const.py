@@ -1,6 +1,4 @@
-"""
-Constants for the waiting queue API and outsourcing engine.
-"""
+"""Constants for the waiting queue API and outsourcing engine."""
 
 # ============================================================================
 # Pricing Constants
