@@ -396,6 +396,7 @@ class DatabaseLogger:
                     email TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
                     user_name TEXT,
+                    preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
                     email_verified BOOLEAN DEFAULT FALSE,
                     status TEXT DEFAULT 'active'
                         CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
@@ -436,6 +437,11 @@ class DatabaseLogger:
             await conn.execute("""
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS reviewed_by TEXT
+            """)
+
+            await conn.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}'::jsonb
             """)
 
             # Expand status CHECK constraint to include pending_approval and rejected
