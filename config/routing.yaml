@@ -9,6 +9,9 @@ local_deployment:
   - endpoint: http://host.docker.internal:8003
     models:
       - qwen3-coder-30b
+  - endpoint: http://host.docker.internal:8007/v1
+    models:
+      - qwen3.5-27b
   - endpoint: http://host.docker.internal:12003
     models:
       - glm-4.6
