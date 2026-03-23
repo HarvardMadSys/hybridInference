@@ -1,3 +1,5 @@
+"""Base types and abstract interface for LLM providers."""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -5,6 +7,8 @@ from typing import Any
 
 @dataclass
 class LLMRequest:
+    """Represents a single LLM completion request."""
+
     prompt: str
     model: str
     max_tokens: int | None = 4096
@@ -13,20 +17,22 @@ class LLMRequest:
 
 @dataclass
 class LLMResponse:
+    """Represents a single LLM completion response."""
+
     text: str
     model: str
     provider: str
 
 
 class LLMProvider(ABC):
-    """Abstract base class for LLM providers"""
+    """Abstract base class for LLM providers."""
 
     def __init__(self, config: dict[str, Any]):
         self.config = config
 
     @abstractmethod
     async def generate(self, request: LLMRequest) -> LLMResponse:
-        """Generate a completion for the given request"""
+        """Generate a completion for the given request."""
         pass
 
     async def list_models(self) -> list[dict[str, Any]]:

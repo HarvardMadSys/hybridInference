@@ -93,7 +93,7 @@ def translate_request(messages: list[dict[str, Any]], model: str, **params: Any)
                 {
                     "type": "message",
                     "role": "assistant",
-                    "content": _translate_content(msg.get("content")),
+                    "content": _translate_content(msg.get("content"), role="assistant"),
                 }
             )
             for tc in msg["tool_calls"]:
@@ -112,7 +112,7 @@ def translate_request(messages: list[dict[str, Any]], model: str, **params: Any)
                 {
                     "type": "message",
                     "role": _ROLE_MAP.get(role, role),
-                    "content": _translate_content(msg.get("content")),
+                    "content": _translate_content(msg.get("content"), role=role),
                 }
             )
 
@@ -128,10 +128,9 @@ def translate_request(messages: list[dict[str, Any]], model: str, **params: Any)
         "store": False,
     }
 
-    if reasoning_effort:
+    # Codex Responses API does not support temperature at all.
+    if reasoning_effort and reasoning_effort != "none":
         body["reasoning"] = {"effort": reasoning_effort}
-
-    # Note: Codex Responses API does not support temperature or max_output_tokens
     if params.get("tools"):
         body["tools"] = _translate_tools(params["tools"])
     if params.get("tool_choice") is not None:
@@ -277,15 +276,18 @@ def _translate_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _translate_content(content: Any) -> list[dict[str, Any]]:
-    """Convert message content to Responses API ``input_text`` blocks.
+def _translate_content(content: Any, *, role: str = "user") -> list[dict[str, Any]]:
+    """Convert message content to Responses API content blocks.
 
-    Handles plain strings and multimodal content block lists.
+    Uses ``output_text`` for assistant messages and ``input_text`` for all
+    other roles, matching the Codex Responses API schema.
     """
+    text_type = "output_text" if role == "assistant" else "input_text"
+
     if content is None:
         return []
     if isinstance(content, str):
-        return [{"type": "input_text", "text": content}]
+        return [{"type": text_type, "text": content}]
 
     # Multimodal content blocks
     blocks: list[dict[str, Any]] = []
@@ -294,7 +296,7 @@ def _translate_content(content: Any) -> list[dict[str, Any]]:
             continue
         part_type = part.get("type", "")
         if part_type == "text":
-            blocks.append({"type": "input_text", "text": part.get("text", "")})
+            blocks.append({"type": text_type, "text": part.get("text", "")})
         elif part_type == "image_url":
             url_data = part.get("image_url", {})
             url = url_data.get("url", "") if isinstance(url_data, dict) else str(url_data)

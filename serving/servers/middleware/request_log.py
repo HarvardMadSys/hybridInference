@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from serving.utils import context as req_ctx
-from serving.utils.logging import get_logger
+from serving.utils.logging import _QUIET_PATHS, get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from fastapi import Request, Response
 
 logger = get_logger(__name__)
-_QUIET_PATHS = {"/metrics", "/health", "/health/deep"}
 
 
 class RequestLogMiddleware(BaseHTTPMiddleware):

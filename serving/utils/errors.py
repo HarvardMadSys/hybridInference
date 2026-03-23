@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 """Small, low-cardinality error categorization helpers."""
 
+from __future__ import annotations
 
 _CATEGORIES: dict[str, tuple[str, ...]] = {
     "timeout": ("TimeoutError", "ReadTimeout", "WriteTimeout", "timed out"),

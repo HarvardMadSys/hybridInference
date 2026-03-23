@@ -129,11 +129,42 @@ class TestTranslateRequest:
             tools=[{"type": "function", "function": {"name": "f"}}],
             tool_choice="auto",
         )
-        assert "temperature" not in body  # Codex API does not support temperature
+        # Codex Responses API does not support temperature at all
+        assert "temperature" not in body
         assert "max_output_tokens" not in body
         assert body["stream"] is True
         assert body["tools"] == [{"type": "function", "name": "f"}]
         assert body["tool_choice"] == "auto"
+
+    def test_reasoning_effort_excludes_temperature(self):
+        """When reasoning is enabled, temperature must NOT be sent."""
+        body = translate_request(
+            [{"role": "user", "content": "hi"}],
+            "gpt-5.1-codex",
+            reasoning_effort="medium",
+            temperature=0.8,
+        )
+        assert body["reasoning"] == {"effort": "medium"}
+        assert "temperature" not in body
+
+    def test_temperature_never_sent(self):
+        """Codex Responses API does not support temperature — always omitted."""
+        body = translate_request(
+            [{"role": "user", "content": "hi"}],
+            "gpt-5.1-codex",
+            reasoning_effort="none",
+            temperature=0.5,
+        )
+        assert "reasoning" not in body
+        assert "temperature" not in body
+
+        body2 = translate_request(
+            [{"role": "user", "content": "hi"}],
+            "gpt-5.1-codex",
+            temperature=1.2,
+        )
+        assert "reasoning" not in body2
+        assert "temperature" not in body2
 
 
 # ---------------------------------------------------------------------------
