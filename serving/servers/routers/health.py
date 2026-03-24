@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from serving.observability.metrics import DATABASE_CONNECTED
+from serving.servers.auth import optional_verify_api_key
 from serving.servers.deps import get_db_logger, get_router, get_services
 
 if TYPE_CHECKING:
@@ -160,6 +162,29 @@ async def deep_health(
         "providers": provider_status,
         "rate_limiter": rl_status,
     }
+
+
+@router.get("/health/model-activity")
+async def model_activity(
+    window: int = Query(default=10, ge=1, le=60),
+    user_ctx: dict[str, Any] | None = Depends(optional_verify_api_key),
+    db_logger: DatabaseLogger | None = Depends(get_db_logger),
+) -> dict[str, Any]:
+    """Per-model, per-provider traffic activity over a recent window.
+
+    Admin-only endpoint used by the prober to decide whether to skip
+    synthetic probes when real user traffic provides sufficient signal.
+    Requires USER_AUTH_ENABLED=1 — always returns 403 in auth-disabled
+    deployments to prevent unintentional exposure of traffic stats.
+    """
+    if os.getenv("USER_AUTH_ENABLED", "0") != "1":
+        raise HTTPException(status_code=403, detail="Requires USER_AUTH_ENABLED=1")
+    if not user_ctx or not user_ctx.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not db_logger:
+        raise HTTPException(status_code=503, detail="Database not available")
+    routes = await db_logger.get_model_activity(window_minutes=window)
+    return {"window_minutes": window, "routes": routes}
 
 
 @router.get("/routing")

@@ -713,6 +713,65 @@ class DatabaseLogger:
                 json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
             )
 
+    async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
+        """Aggregate recent real-user traffic per (model_id, provider).
+
+        Returns a dict keyed by ``"model_id::provider"`` with per-route stats.
+        Synthetic probes (``user_id IS NULL``) are excluded.
+        """
+        if not self.pool:
+            return {}
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT model_id, provider,
+                       COUNT(*)                                           AS request_count,
+                       COUNT(*) FILTER (WHERE status_code < 400)          AS success_count,
+                       MAX(timestamp)                                     AS last_request_at,
+                       AVG(latency_ms) FILTER (WHERE status_code < 400)   AS avg_latency_ms,
+                       COUNT(*) FILTER (WHERE stream = TRUE)              AS stream_count,
+                       COUNT(*) FILTER (WHERE stream IS NOT TRUE)         AS non_stream_count,
+                       COUNT(*) FILTER (WHERE stream = TRUE AND status_code < 400)
+                           AS stream_success_count,
+                       COUNT(*) FILTER (WHERE stream IS NOT TRUE AND status_code < 400)
+                           AS non_stream_success_count,
+                       MAX(timestamp) FILTER (WHERE stream = TRUE AND status_code < 400)
+                           AS stream_last_success_at,
+                       MAX(timestamp) FILTER (WHERE stream IS NOT TRUE AND status_code < 400)
+                           AS non_stream_last_success_at
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 || ' minutes')::interval
+                  AND user_id IS NOT NULL
+                GROUP BY model_id, provider
+                """,
+                str(window_minutes),
+            )
+        result: dict[str, Any] = {}
+        for row in rows:
+            key = f"{row['model_id']}::{row['provider']}"
+            last_req = row["last_request_at"]
+
+            def _iso(ts: object) -> str | None:
+                if ts is None:
+                    return None
+                return ts.isoformat().replace("+00:00", "Z")  # type: ignore[union-attr]
+
+            result[key] = {
+                "request_count": row["request_count"],
+                "success_count": row["success_count"],
+                "last_request_at": _iso(last_req),
+                "avg_latency_ms": (
+                    round(float(row["avg_latency_ms"]), 1) if row["avg_latency_ms"] else None
+                ),
+                "stream_count": row["stream_count"],
+                "non_stream_count": row["non_stream_count"],
+                "stream_success_count": row["stream_success_count"],
+                "non_stream_success_count": row["non_stream_success_count"],
+                "stream_last_success_at": _iso(row["stream_last_success_at"]),
+                "non_stream_last_success_at": _iso(row["non_stream_last_success_at"]),
+            }
+        return result
+
     async def get_stats(
         self, model_id: str | None = None, provider: str | None = None, hours: int = 24
     ) -> list[dict[str, Any]]:
