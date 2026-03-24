@@ -71,7 +71,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_record = runner.run(targets=targets, suite=suite)
         run_dir = write_run_artifacts(Path(args.output_dir), run_record)
         print(f"Run complete. Artifacts written to: {run_dir}")
-        return 0
+
+        has_failures = any(
+            a.status == "fail" for s in run_record.scenario_summaries for a in s.attempts
+        )
+        return 1 if has_failures else 0
 
     parser.error(f"Unsupported command: {args.command}")
     return 2

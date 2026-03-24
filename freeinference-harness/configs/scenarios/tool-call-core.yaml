@@ -1,0 +1,105 @@
+suite_name: tool-call-core
+
+scenarios:
+  # ── Forced tool call (streaming) per fixture ─────────────────────────
+
+  - id: forced_tool_trivial_stream
+    type: forced_tool_call
+    tools_fixture: tools-trivial-1.yaml
+    forced_tool_name: record_findings
+    required_capabilities: [chat, streaming, tools]
+    max_tokens: 256
+    repetitions: 1
+
+  - id: forced_tool_codex_stream
+    type: forced_tool_call
+    tools_fixture: tools-codex-3.yaml
+    forced_tool_name: execute_shell
+    user_prompt: "Execute a shell command to list the files in the current directory."
+    required_capabilities: [chat, streaming, tools]
+    max_tokens: 512
+    repetitions: 1
+
+  - id: forced_tool_claude_code_stream
+    type: forced_tool_call
+    tools_fixture: tools-claude-code-6.yaml
+    forced_tool_name: bash
+    user_prompt: "Run a bash command to check the current working directory."
+    required_capabilities: [chat, streaming, tools]
+    max_tokens: 512
+    repetitions: 1
+
+  - id: forced_tool_cline_stream
+    type: forced_tool_call
+    tools_fixture: tools-cline-13.yaml
+    forced_tool_name: execute_command
+    user_prompt: "Execute a command to list all files in the project root."
+    required_capabilities: [chat, streaming, tools]
+    max_tokens: 512
+    repetitions: 1
+
+  # ── Forced tool call (non-streaming) per fixture ─────────────────────
+
+  - id: forced_tool_trivial_nonstream
+    type: forced_tool_call_nonstream
+    tools_fixture: tools-trivial-1.yaml
+    forced_tool_name: record_findings
+    required_capabilities: [chat, tools]
+    max_tokens: 256
+    repetitions: 1
+
+  - id: forced_tool_codex_nonstream
+    type: forced_tool_call_nonstream
+    tools_fixture: tools-codex-3.yaml
+    forced_tool_name: execute_shell
+    user_prompt: "Execute a shell command to list the files in the current directory."
+    required_capabilities: [chat, tools]
+    max_tokens: 512
+    repetitions: 1
+
+  - id: forced_tool_claude_code_nonstream
+    type: forced_tool_call_nonstream
+    tools_fixture: tools-claude-code-6.yaml
+    forced_tool_name: bash
+    user_prompt: "Run a bash command to check the current working directory."
+    required_capabilities: [chat, tools]
+    max_tokens: 512
+    repetitions: 1
+
+  # ── Auto tool call (streaming) ───────────────────────────────────────
+
+  - id: auto_tool_codex_stream
+    type: auto_tool_call
+    tools_fixture: tools-codex-3.yaml
+    user_prompt: "Read the file at /etc/hostname and tell me the hostname."
+    required_capabilities: [chat, streaming, tools]
+    max_tokens: 512
+    repetitions: 1
+
+  - id: auto_tool_claude_code_stream
+    type: auto_tool_call
+    tools_fixture: tools-claude-code-6.yaml
+    user_prompt: "Think about what 2+2 is, then submit your answer."
+    required_capabilities: [chat, streaming, tools]
+    max_tokens: 512
+    repetitions: 1
+
+  # ── Multi-turn tool call (streaming) ─────────────────────────────────
+
+  - id: multi_turn_codex_stream
+    type: multi_turn_tool
+    tools_fixture: tools-codex-3.yaml
+    forced_tool_name: execute_shell
+    user_prompt: "Execute a shell command to check disk usage."
+    required_capabilities: [chat, streaming, tools]
+    max_tokens: 512
+    repetitions: 1
+
+  - id: multi_turn_claude_code_stream
+    type: multi_turn_tool
+    tools_fixture: tools-claude-code-6.yaml
+    forced_tool_name: bash
+    user_prompt: "Run a bash command to check the system uptime."
+    required_capabilities: [chat, streaming, tools]
+    max_tokens: 512
+    repetitions: 1

@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import os
 import re
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import yaml
 
 from freeinference_harness.models import Capabilities, ScenarioConfig, SuiteConfig, TargetConfig
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 _ENV_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
@@ -76,6 +74,9 @@ def load_targets(path: Path) -> list[TargetConfig]:
                 sampling_count=int(merged.get("sampling_count", 5)),
                 capabilities=capabilities,
                 tags=tuple(str(tag) for tag in merged.get("tags", [])),
+                extra_headers={
+                    str(k): str(v) for k, v in (merged.get("extra_headers") or {}).items()
+                },
             )
         )
 
@@ -98,6 +99,11 @@ def load_suite(path: Path) -> SuiteConfig:
                 if item.get("repetitions") is not None
                 else None,
                 max_tokens=int(item["max_tokens"]) if item.get("max_tokens") is not None else None,
+                tools_fixture=str(item["tools_fixture"]) if item.get("tools_fixture") else None,
+                forced_tool_name=str(item["forced_tool_name"])
+                if item.get("forced_tool_name")
+                else None,
+                user_prompt=str(item["user_prompt"]) if item.get("user_prompt") else None,
             )
         )
 
@@ -105,3 +111,18 @@ def load_suite(path: Path) -> SuiteConfig:
         suite_name=str(raw.get("suite_name", path.stem)),
         scenarios=tuple(scenarios),
     )
+
+
+def load_tools_fixture(fixture_name: str) -> list[dict[str, Any]]:
+    """Loads a tool fixture YAML and returns the tools list in OpenAI format.
+
+    Fixture files are looked up relative to ``configs/fixtures/`` from the
+    repository root (two levels above this source file).
+    """
+    fixtures_dir = Path(__file__).resolve().parent.parent.parent / "configs" / "fixtures"
+    path = fixtures_dir / fixture_name
+    if not path.exists():
+        raise FileNotFoundError(f"Tool fixture not found: {path}")
+    raw = _read_yaml(path)
+    tools: list[dict[str, Any]] = raw.get("tools", [])
+    return tools

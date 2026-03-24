@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from freeinference_harness.clients.openai_compat import OpenAICompatClient
+from freeinference_harness.config import load_tools_fixture
 from freeinference_harness.models import (
     AttemptResult,
     RunRecord,
@@ -17,11 +18,43 @@ from freeinference_harness.models import (
     SuiteConfig,
     TargetConfig,
 )
+from freeinference_harness.tool_validation import validate_tool_calls
+
+# Default fallback tools when no fixture is specified (backwards compat).
+_DEFAULT_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "record_findings",
+            "description": "Record a short finding for regression testing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                },
+                "required": ["summary"],
+            },
+        },
+    }
+]
+_DEFAULT_FORCED_NAME = "record_findings"
 
 
 def build_run_id() -> str:
     """Builds a sortable run identifier."""
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _load_scenario_tools(scenario: ScenarioConfig) -> list[dict[str, Any]]:
+    """Loads tool definitions for a scenario (fixture or default)."""
+    if scenario.tools_fixture:
+        return load_tools_fixture(scenario.tools_fixture)
+    return list(_DEFAULT_TOOLS)
+
+
+def _user_prompt(scenario: ScenarioConfig) -> str:
+    """Returns the user prompt for a tool-call scenario."""
+    return scenario.user_prompt or "Use the tool immediately and do not answer in plain text."
 
 
 class HarnessRunner:
@@ -40,6 +73,7 @@ class HarnessRunner:
                 base_url=target.base_url,
                 api_key=target.api_key,
                 timeout_seconds=target.timeout_seconds,
+                extra_headers=target.extra_headers or None,
             )
             for scenario in suite.scenarios:
                 summary = ScenarioSummary(
@@ -117,6 +151,12 @@ class HarnessRunner:
                 result = self._run_stream_basic(client, target, scenario)
             elif scenario.scenario_type == "forced_tool_call":
                 result = self._run_forced_tool_call(client, target, scenario)
+            elif scenario.scenario_type == "forced_tool_call_nonstream":
+                result = self._run_forced_tool_call_nonstream(client, target, scenario)
+            elif scenario.scenario_type == "auto_tool_call":
+                result = self._run_auto_tool_call(client, target, scenario)
+            elif scenario.scenario_type == "multi_turn_tool":
+                result = self._run_multi_turn_tool(client, target, scenario)
             elif scenario.scenario_type == "embedding_basic":
                 result = self._run_embedding_basic(client, target)
             else:
@@ -188,6 +228,8 @@ class HarnessRunner:
             observed=observed,
         )
 
+    # ── Non-streaming basic ────────────────────────────────────────────
+
     def _run_non_stream_basic(
         self,
         client: OpenAICompatClient,
@@ -233,6 +275,8 @@ class HarnessRunner:
             "detail": "Non-streaming response returned no visible assistant content or tool calls.",
             "observed": observed,
         }
+
+    # ── Streaming basic ────────────────────────────────────────────────
 
     def _run_stream_basic(
         self,
@@ -290,44 +334,32 @@ class HarnessRunner:
             "observed": stats,
         }
 
+    # ── Forced tool call (streaming) ───────────────────────────────────
+
     def _run_forced_tool_call(
         self,
         client: OpenAICompatClient,
         target: TargetConfig,
         scenario: ScenarioConfig,
     ) -> dict[str, Any]:
-        """Runs a forced tool-call contract."""
+        """Runs a forced tool-call contract (streaming) with fixture-based validation."""
+        tools = _load_scenario_tools(scenario)
+        forced_name = scenario.forced_tool_name or _DEFAULT_FORCED_NAME
+
         stats = client.collect_stream(
             {
                 "model": target.model,
                 "messages": [
                     {"role": "system", "content": "You are a tool-using assistant."},
-                    {
-                        "role": "user",
-                        "content": "Use the tool immediately and do not answer in plain text.",
-                    },
+                    {"role": "user", "content": _user_prompt(scenario)},
                 ],
-                "tools": [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "record_findings",
-                            "description": "Record a short finding for regression testing.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "summary": {"type": "string"},
-                                },
-                                "required": ["summary"],
-                            },
-                        },
-                    }
-                ],
-                "tool_choice": {"type": "function", "function": {"name": "record_findings"}},
+                "tools": tools,
+                "tool_choice": {"type": "function", "function": {"name": forced_name}},
                 "max_tokens": scenario.max_tokens or 256,
                 "stream": True,
             }
         )
+
         if not stats["done"]:
             return {
                 "status": "fail",
@@ -336,29 +368,319 @@ class HarnessRunner:
                 "detail": "Forced tool-call stream did not terminate with [DONE].",
                 "observed": stats,
             }
-        if stats["saw_tool_calls"]:
+        if not stats["saw_tool_calls"]:
+            if stats["saw_content"]:
+                return {
+                    "status": "fail",
+                    "failure_type": "text_instead_of_tool_calls",
+                    "http_status": 200,
+                    "detail": "Forced tool-call request degraded into plain text output.",
+                    "observed": stats,
+                }
+            return {
+                "status": "fail",
+                "failure_type": "true_empty_terminal",
+                "http_status": 200,
+                "detail": "Forced tool-call request ended without visible tool calls or text.",
+                "observed": stats,
+            }
+
+        # Validate accumulated tool calls against fixture schemas.
+        validation_errors = validate_tool_calls(stats["tool_calls"], tools, forced_name=forced_name)
+        stats["validation_errors"] = validation_errors
+        if validation_errors:
+            return {
+                "status": "fail",
+                "failure_type": "tool_call_validation",
+                "http_status": 200,
+                "detail": f"Tool call validation failed: {'; '.join(validation_errors)}",
+                "observed": stats,
+            }
+        return {
+            "status": "pass",
+            "failure_type": None,
+            "http_status": 200,
+            "detail": "Forced tool-call stream emitted validated tool_calls.",
+            "observed": stats,
+        }
+
+    # ── Forced tool call (non-streaming) ───────────────────────────────
+
+    def _run_forced_tool_call_nonstream(
+        self,
+        client: OpenAICompatClient,
+        target: TargetConfig,
+        scenario: ScenarioConfig,
+    ) -> dict[str, Any]:
+        """Runs a forced tool-call contract (non-streaming) with validation."""
+        tools = _load_scenario_tools(scenario)
+        forced_name = scenario.forced_tool_name or _DEFAULT_FORCED_NAME
+
+        response = client.create_chat_completion(
+            {
+                "model": target.model,
+                "messages": [
+                    {"role": "system", "content": "You are a tool-using assistant."},
+                    {"role": "user", "content": _user_prompt(scenario)},
+                ],
+                "tools": tools,
+                "tool_choice": {"type": "function", "function": {"name": forced_name}},
+                "max_tokens": scenario.max_tokens or 256,
+            }
+        )
+
+        choice = (response.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        raw_tool_calls = message.get("tool_calls") or []
+
+        # Normalize to the same shape as streaming accumulator output.
+        tool_calls = [
+            {
+                "id": tc.get("id", ""),
+                "name": (tc.get("function") or {}).get("name", ""),
+                "arguments": (tc.get("function") or {}).get("arguments", ""),
+            }
+            for tc in raw_tool_calls
+        ]
+
+        observed: dict[str, Any] = {
+            "finish_reason": choice.get("finish_reason"),
+            "usage": response.get("usage"),
+            "tool_calls": tool_calls,
+            "has_tool_calls": bool(tool_calls),
+            "has_content": bool(message.get("content")),
+        }
+
+        if not tool_calls:
+            if message.get("content"):
+                return {
+                    "status": "fail",
+                    "failure_type": "text_instead_of_tool_calls",
+                    "http_status": 200,
+                    "detail": "Forced tool-call (non-stream) degraded into plain text.",
+                    "observed": observed,
+                }
+            return {
+                "status": "fail",
+                "failure_type": "empty_assistant",
+                "http_status": 200,
+                "detail": "Forced tool-call (non-stream) returned no tool calls or text.",
+                "observed": observed,
+            }
+
+        validation_errors = validate_tool_calls(tool_calls, tools, forced_name=forced_name)
+        observed["validation_errors"] = validation_errors
+        if validation_errors:
+            return {
+                "status": "fail",
+                "failure_type": "tool_call_validation",
+                "http_status": 200,
+                "detail": f"Tool call validation failed: {'; '.join(validation_errors)}",
+                "observed": observed,
+            }
+        return {
+            "status": "pass",
+            "failure_type": None,
+            "http_status": 200,
+            "detail": "Forced tool-call (non-stream) returned validated tool_calls.",
+            "observed": observed,
+        }
+
+    # ── Auto tool call ─────────────────────────────────────────────────
+
+    def _run_auto_tool_call(
+        self,
+        client: OpenAICompatClient,
+        target: TargetConfig,
+        scenario: ScenarioConfig,
+    ) -> dict[str, Any]:
+        """Runs tool_choice='auto': model decides whether to call a tool."""
+        tools = _load_scenario_tools(scenario)
+
+        stats = client.collect_stream(
+            {
+                "model": target.model,
+                "messages": [
+                    {"role": "system", "content": "You are a tool-using assistant."},
+                    {"role": "user", "content": _user_prompt(scenario)},
+                ],
+                "tools": tools,
+                "tool_choice": "auto",
+                "max_tokens": scenario.max_tokens or 512,
+                "stream": True,
+            }
+        )
+
+        if not stats["done"]:
+            return {
+                "status": "fail",
+                "failure_type": "missing_done",
+                "http_status": 200,
+                "detail": "Auto tool-call stream did not terminate with [DONE].",
+                "observed": stats,
+            }
+
+        # Auto mode: the model might return text or tool calls -- both are valid.
+        # But if it called tools, validate them.
+        if stats["saw_tool_calls"] and stats["tool_calls"]:
+            validation_errors = validate_tool_calls(stats["tool_calls"], tools)
+            stats["validation_errors"] = validation_errors
+            if validation_errors:
+                return {
+                    "status": "fail",
+                    "failure_type": "tool_call_validation",
+                    "http_status": 200,
+                    "detail": f"Auto tool-call validation failed: {'; '.join(validation_errors)}",
+                    "observed": stats,
+                }
             return {
                 "status": "pass",
                 "failure_type": None,
                 "http_status": 200,
-                "detail": "Forced tool-call stream emitted tool_calls.",
+                "detail": "Auto tool-call stream emitted validated tool_calls.",
                 "observed": stats,
             }
+
         if stats["saw_content"]:
             return {
-                "status": "fail",
-                "failure_type": "text_instead_of_tool_calls",
+                "status": "pass",
+                "failure_type": None,
                 "http_status": 200,
-                "detail": "Forced tool-call request degraded into plain text output.",
+                "detail": "Auto tool-call stream produced text content (model chose not to call tools).",
                 "observed": stats,
             }
+
         return {
             "status": "fail",
             "failure_type": "true_empty_terminal",
             "http_status": 200,
-            "detail": "Forced tool-call request ended without visible tool calls or text.",
+            "detail": "Auto tool-call stream ended without tool calls or text.",
             "observed": stats,
         }
+
+    # ── Multi-turn tool call ───────────────────────────────────────────
+
+    def _run_multi_turn_tool(
+        self,
+        client: OpenAICompatClient,
+        target: TargetConfig,
+        scenario: ScenarioConfig,
+    ) -> dict[str, Any]:
+        """Two-turn tool call: get tool call, send synthetic result, get final response."""
+        tools = _load_scenario_tools(scenario)
+        forced_name = scenario.forced_tool_name or _DEFAULT_FORCED_NAME
+
+        # Turn 1: force a tool call.
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": "You are a tool-using assistant."},
+            {"role": "user", "content": _user_prompt(scenario)},
+        ]
+        turn1 = client.collect_stream(
+            {
+                "model": target.model,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": {"type": "function", "function": {"name": forced_name}},
+                "max_tokens": scenario.max_tokens or 256,
+                "stream": True,
+            }
+        )
+
+        if not turn1["done"] or not turn1["saw_tool_calls"] or not turn1["tool_calls"]:
+            return {
+                "status": "fail",
+                "failure_type": "turn1_no_tool_call",
+                "http_status": 200,
+                "detail": "Multi-turn: first turn did not produce a tool call.",
+                "observed": {"turn1": turn1},
+            }
+
+        # Validate turn 1 tool calls.
+        validation_errors = validate_tool_calls(turn1["tool_calls"], tools, forced_name=forced_name)
+        if validation_errors:
+            return {
+                "status": "fail",
+                "failure_type": "tool_call_validation",
+                "http_status": 200,
+                "detail": f"Multi-turn turn1 validation failed: {'; '.join(validation_errors)}",
+                "observed": {"turn1": turn1, "validation_errors": validation_errors},
+            }
+
+        # Build turn 2 messages: original + assistant tool call + tool result.
+        tc = turn1["tool_calls"][0]
+        messages.append(
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": tc["id"] or "call_harness_0",
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tc["id"] or "call_harness_0",
+                "content": '{"status": "ok", "result": "Synthetic harness result for regression testing."}',
+            }
+        )
+
+        # Turn 2: model should produce a final text response (or another tool call).
+        turn2 = client.collect_stream(
+            {
+                "model": target.model,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",
+                "max_tokens": scenario.max_tokens or 512,
+                "stream": True,
+            }
+        )
+
+        observed: dict[str, Any] = {"turn1": turn1, "turn2": turn2}
+
+        if not turn2["done"]:
+            return {
+                "status": "fail",
+                "failure_type": "turn2_missing_done",
+                "http_status": 200,
+                "detail": "Multi-turn: second turn did not terminate with [DONE].",
+                "observed": observed,
+            }
+
+        if turn2["saw_content"] or turn2["saw_tool_calls"]:
+            # If turn 2 has tool calls, validate them too.
+            if turn2["saw_tool_calls"] and turn2["tool_calls"]:
+                t2_errors = validate_tool_calls(turn2["tool_calls"], tools)
+                observed["turn2_validation_errors"] = t2_errors
+                if t2_errors:
+                    return {
+                        "status": "fail",
+                        "failure_type": "tool_call_validation",
+                        "http_status": 200,
+                        "detail": f"Multi-turn turn2 validation failed: {'; '.join(t2_errors)}",
+                        "observed": observed,
+                    }
+            return {
+                "status": "pass",
+                "failure_type": None,
+                "http_status": 200,
+                "detail": "Multi-turn tool call round-trip completed successfully.",
+                "observed": observed,
+            }
+
+        return {
+            "status": "fail",
+            "failure_type": "turn2_empty",
+            "http_status": 200,
+            "detail": "Multi-turn: second turn produced no content or tool calls.",
+            "observed": observed,
+        }
+
+    # ── Embeddings ─────────────────────────────────────────────────────
 
     def _run_embedding_basic(
         self,
@@ -397,6 +719,8 @@ class HarnessRunner:
             "detail": "Embeddings response did not contain a non-empty float vector.",
             "observed": observed,
         }
+
+    # ── Exception classification ───────────────────────────────────────
 
     def _classify_exception(self, exc: Exception) -> tuple[str, str, int | None, str]:
         """Maps exceptions into scored or non-scored harness outcomes."""

@@ -12,7 +12,14 @@ from openai import OpenAI
 class OpenAICompatClient:
     """Thin wrapper over the OpenAI SDK and raw SSE parsing."""
 
-    def __init__(self, *, base_url: str, api_key: str, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        timeout_seconds: float,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         root_base_url = base_url.rstrip("/").removesuffix("/v1")
         openai_base_url = base_url.rstrip("/")
         if not openai_base_url.endswith("/v1"):
@@ -23,13 +30,19 @@ class OpenAICompatClient:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        if extra_headers:
+            self._headers.update(extra_headers)
         self._timeout = httpx.Timeout(
             connect=20.0,
             read=timeout_seconds,
             write=20.0,
             pool=20.0,
         )
-        self._sdk = OpenAI(api_key=api_key, base_url=openai_base_url)
+        self._sdk = OpenAI(
+            api_key=api_key,
+            base_url=openai_base_url,
+            default_headers=extra_headers or {},
+        )
 
     def create_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Executes a non-streaming chat completion through the OpenAI SDK."""
@@ -61,7 +74,10 @@ class OpenAICompatClient:
             "samples": [],
             "finish_reasons": [],
             "usage": None,
+            "tool_calls": [],
         }
+        # Accumulator for incremental tool call fragments keyed by index.
+        tc_acc: dict[int, dict[str, Any]] = {}
 
         with (
             httpx.Client(timeout=self._timeout) as client,
@@ -119,6 +135,22 @@ class OpenAICompatClient:
                 tool_calls = delta.get("tool_calls")
                 if isinstance(tool_calls, list) and tool_calls:
                     stats["saw_tool_calls"] = True
+                    for tc_fragment in tool_calls:
+                        idx = tc_fragment.get("index", 0)
+                        if idx not in tc_acc:
+                            tc_acc[idx] = {
+                                "id": tc_fragment.get("id") or "",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        entry = tc_acc[idx]
+                        if tc_fragment.get("id"):
+                            entry["id"] = tc_fragment["id"]
+                        func = tc_fragment.get("function") or {}
+                        if func.get("name"):
+                            entry["name"] = func["name"]
+                        if func.get("arguments"):
+                            entry["arguments"] += func["arguments"]
 
                 if len(stats["samples"]) < 5:
                     sample: dict[str, Any] = {"delta_keys": list(delta.keys())}
@@ -133,4 +165,7 @@ class OpenAICompatClient:
                     stats["samples"].append(sample)
 
         stats["full_content"] = "".join(stats["content_parts"])
+        # Flatten accumulated tool calls ordered by index.
+        if tc_acc:
+            stats["tool_calls"] = [tc_acc[idx] for idx in sorted(tc_acc)]
         return stats

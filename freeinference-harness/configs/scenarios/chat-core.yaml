@@ -13,5 +13,7 @@ scenarios:
 
   - id: forced_tool_call
     type: forced_tool_call
+    tools_fixture: tools-trivial-1.yaml
+    forced_tool_name: record_findings
     required_capabilities: [chat, streaming, tools]
     max_tokens: 256
