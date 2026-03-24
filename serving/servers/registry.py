@@ -40,7 +40,7 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
         - glm-4.6 + zhipu + https://api.z.ai/v4/    -> "glm-4.6:zhipu-api"
         - qwen3-coder + sglang + http://localhost:8003 -> "qwen3-coder:local"
         - qwen3-coder + chutes + https://llm.chutes.ai -> "qwen3-coder:chutes-api"
-        - minimax-m2 + openai_compat + https://api.minimax.io -> "minimax-m2:minimax-api"
+        - minimax-m2.7 + openai_compat + https://api.minimax.io -> "minimax-m2.7:minimax-api"
 
     Args:
         model_id: The model identifier (e.g., "glm-4.6", "qwen3-coder").

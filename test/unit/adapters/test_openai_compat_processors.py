@@ -701,7 +701,7 @@ class TestGetProcessorAutoDetect:
         assert isinstance(get_processor("qwen3-coder-30b"), QwenCoderProcessor)
 
     def test_minimax_still_auto_detected(self):
-        assert isinstance(get_processor("minimax-m2"), ThinkBlockProcessor)
+        assert isinstance(get_processor("minimax-m2.7"), ThinkBlockProcessor)
 
     def test_unknown_model_returns_default(self):
         assert isinstance(get_processor("llama-3.3-70b"), DefaultProcessor)
