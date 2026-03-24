@@ -663,36 +663,22 @@ async def chat_completions(
         response = await router_exec.chat_completion(model, messages, **params)
         serializer_mode = resolve_mode(request.headers)
 
-        if isinstance(response, dict):
-            sanitize_result = sanitize_response(response, serializer_mode)
-            response = sanitize_result.response_json
-            if sanitize_result.routing_info:
-                metadata.update(sanitize_result.routing_info)  # type: ignore[arg-type]
-
-        # Always sanitize internal routing metadata from response to client
+        # Apply serializer: strip _routing metadata and enforce reasoning_content
+        # policy (strict / passthrough), mirroring the streaming path contract.
         provider = "router"
         base_url = None
         routing_pricing = None
-        if isinstance(response, dict) and "_routing" in response:
-            try:
-                provider = response["_routing"].get("provider", "router")
-                base_url = response["_routing"].get("base_url")
-                routing_pricing = response["_routing"].get("pricing")
-                # Enrich metadata for analytics; safe to skip if no DB logger
-                metadata.update(response["_routing"])  # type: ignore[arg-type]
-            except Exception:
-                # Do not let metadata processing impact client response
-                pass
-            # Never leak internal routing details to clients
-            with suppress(Exception):
-                del response["_routing"]
-        elif isinstance(response, dict):
-            routing_info = metadata if isinstance(metadata, dict) else {}
-            provider = routing_info.get("provider", "router") or "router"
-            base_url = routing_info.get("base_url")
-            routing_pricing = routing_info.get("pricing")
+        if isinstance(response, dict):
+            sanitize_result = sanitize_response(response, serializer_mode)
+            response = sanitize_result.response_json
+            routing_info = sanitize_result.routing_info
+            if routing_info:
+                provider = routing_info.get("provider", "router")
+                base_url = routing_info.get("base_url")
+                routing_pricing = routing_info.get("pricing")
+                metadata.update(routing_info)  # type: ignore[arg-type]
         else:
-            # Fallback: get provider from request context when _routing is not available
+            # Fallback: get provider from request context when response is not a dict
             from serving.utils import context as req_ctx
 
             ctx = req_ctx.get()
