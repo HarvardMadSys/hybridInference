@@ -11,6 +11,8 @@ defaults:
   api_key_env: FREEINFERENCE_ADMIN_API_KEY
   sampling_count: 1
   suite_type: gateway-pinned
+  extra_headers:
+    X-Reasoning-Passthrough: "true"
 
 targets:
   # ── glm-4.7: zhipu + ollama + chutes + featherless ──────────────────

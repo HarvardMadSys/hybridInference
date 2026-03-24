@@ -48,6 +48,11 @@ def load_targets(path: Path) -> list[TargetConfig]:
 
     for item in targets:
         merged = {**defaults, **item}
+        # Deep-merge extra_headers: defaults + target-specific (target wins on conflict)
+        merged["extra_headers"] = {
+            **defaults.get("extra_headers", {}),
+            **(item.get("extra_headers") or {}),
+        }
         api_key = merged.get("api_key")
         api_key_env = merged.get("api_key_env")
         if not api_key and api_key_env:

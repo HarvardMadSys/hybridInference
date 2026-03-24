@@ -29,6 +29,10 @@ The only required inputs are:
 - suite definition
 - sampling count
 
+The standalone harness is now the only maintained black-box entry point for
+this workflow. The earlier pytest prototype under `test/external/` has been
+retired to avoid duplicate logic and drifting pass/fail rules.
+
 ## Test Layers
 
 ### 1. Gateway-Pinned
@@ -42,7 +46,12 @@ Requirements:
 
 - Each target must use a provider-pinned model ID such as
   `glm-5-zhipu-only`.
-- Each pinned model must be `admin_only: true`.
+- Each pinned target should come from a dedicated harness deployment config or
+  a separate gateway environment.
+- Avoid adding long-lived test-only targets to the primary production
+  `config/models.yaml`.
+- Each pinned model should be `admin_only: true` when exposed through a shared
+  gateway.
 - Each pinned model must have exactly one active route.
 
 Questions answered:
@@ -82,7 +91,13 @@ Notes:
 
 ### Phase 0: Prerequisites in `hybridInference`
 
-Create provider-pinned aliases in the gateway configuration.
+Create provider-pinned targets in a harness-specific gateway configuration.
+
+Preferred implementation:
+
+- use a dedicated models config for the harness
+- or use a separate gateway environment for pinned targets
+- do not rely on long-lived test-only entries in the primary `config/models.yaml`
 
 Initial pinned targets:
 
@@ -98,6 +113,7 @@ Constraints:
 
 - `admin_only: true`
 - exactly one route per pinned model
+- keep them out of the shared production-facing route set when possible
 - do not add these IDs to `routing.yaml`
 
 ### Phase 1a: Repository Skeleton
@@ -129,7 +145,8 @@ The runner must skip unsupported scenarios automatically.
 
 ### Phase 2: Migrate Core Chat Scenarios
 
-Move the current external hardness logic into the standalone harness.
+Move the old external pytest prototype logic into the standalone harness and
+retire the duplicate implementation.
 
 Initial scenarios:
 
@@ -230,7 +247,7 @@ and write artifacts.
 
 ### Deliverable B
 
-Pinned aliases landed in `hybridInference`.
+Pinned targets available through a harness-specific deployment path.
 
 ### Deliverable C
 

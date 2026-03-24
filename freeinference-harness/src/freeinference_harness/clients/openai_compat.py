@@ -6,11 +6,10 @@ import json
 from typing import Any
 
 import httpx
-from openai import OpenAI
 
 
 class OpenAICompatClient:
-    """Thin wrapper over the OpenAI SDK and raw SSE parsing."""
+    """Thin wrapper over raw HTTP for OpenAI-compatible endpoints."""
 
     def __init__(
         self,
@@ -20,12 +19,7 @@ class OpenAICompatClient:
         timeout_seconds: float,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
-        root_base_url = base_url.rstrip("/").removesuffix("/v1")
-        openai_base_url = base_url.rstrip("/")
-        if not openai_base_url.endswith("/v1"):
-            openai_base_url = f"{openai_base_url}/v1"
-
-        self._root_base_url = root_base_url
+        self._root_base_url = base_url.rstrip("/").removesuffix("/v1")
         self._headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -38,16 +32,17 @@ class OpenAICompatClient:
             write=20.0,
             pool=20.0,
         )
-        self._sdk = OpenAI(
-            api_key=api_key,
-            base_url=openai_base_url,
-            default_headers=extra_headers or {},
-        )
 
     def create_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Executes a non-streaming chat completion through the OpenAI SDK."""
-        response = self._sdk.chat.completions.create(**payload)
-        return response.model_dump(mode="json")
+        """Executes a non-streaming chat completion via raw HTTP."""
+        with httpx.Client(timeout=self._timeout) as client:
+            response = client.post(
+                f"{self._root_base_url}/v1/chat/completions",
+                headers=self._headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
 
     def create_embeddings(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Executes an embeddings request through raw HTTP."""

@@ -253,14 +253,16 @@ class HarnessRunner:
         choice = (response.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         content = message.get("content")
+        reasoning_content = message.get("reasoning_content")
         tool_calls = message.get("tool_calls")
         observed = {
             "finish_reason": choice.get("finish_reason"),
             "usage": response.get("usage"),
             "content_preview": content[:160] if isinstance(content, str) else content,
+            "has_reasoning_content": bool(reasoning_content),
             "has_tool_calls": bool(tool_calls),
         }
-        if content or tool_calls:
+        if content or tool_calls or reasoning_content:
             return {
                 "status": "pass",
                 "failure_type": None,
