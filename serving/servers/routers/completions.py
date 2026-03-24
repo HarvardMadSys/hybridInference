@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
+from routing.executor import ProviderPinError
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     API_TOKEN_ANOMALIES,
@@ -161,6 +162,8 @@ async def chat_completions(
         params["presence_penalty"] = payload.presence_penalty
     if payload.reasoning_effort is not None:
         params["reasoning_effort"] = payload.reasoning_effort
+    if payload.thinking is not None:
+        params["thinking"] = payload.thinking
     if payload.tools is not None:
         params["tools"] = payload.tools
     if payload.tool_choice is not None:
@@ -292,6 +295,29 @@ async def chat_completions(
         adapter, _ = route.adapters[0]
         config = getattr(adapter, "config", None)
         return getattr(config, "provider", None)
+
+    # Pre-flight: validate pin_provider before routing.  For streaming this is
+    # critical (HTTP 200 is already committed once StreamingResponse starts),
+    # but we check unconditionally so non-stream also gets a clean 400.
+    if pin_provider:
+        route = router_exec.routes.get(model)
+        if not route or not any(
+            (
+                adapter.config.provider == pin_provider
+                or (getattr(adapter.config, "endpoint_id", None) or adapter.config.provider)
+                == pin_provider
+            )
+            and weight > 0
+            for adapter, weight in route.adapters
+        ):
+            if rate_limiter and not is_synthetic_probe:
+                estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
+                await rate_limiter.release_tokens(model, estimated_tokens)
+            record_model_request("400", "router")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Pinned provider '{pin_provider}' not found for model {model}",
+            )
 
     # Streaming path
     if payload.stream:
@@ -815,6 +841,13 @@ async def chat_completions(
         if is_synthetic_probe and provider != "router":
             http_response.headers["X-Provider"] = provider
         return response
+
+    except ProviderPinError as exc:
+        if rate_limiter and not is_synthetic_probe:
+            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
+            await rate_limiter.release_tokens(model, estimated_tokens)
+        record_model_request("400", "router")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     except Exception as exc:
         # Best-effort extraction of status code from exception

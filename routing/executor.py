@@ -37,6 +37,10 @@ def _get_endpoint_id(adapter: BaseAdapter) -> str:
     return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
 
 
+class ProviderPinError(ValueError):
+    """Raised when a pinned provider is not found or disabled for a model."""
+
+
 @dataclass
 class RouteConfig:
     """Weighted adapter list for a model."""
@@ -109,8 +113,12 @@ class RouteExecutor:
             return None
 
         # Provider pinning: deterministically select the matching adapter.
+        # Skip weight=0 adapters (disabled routes) to stay consistent with
+        # the playground UI and normal weighted selection.
         if pin_provider:
-            for adapter, _weight in route.adapters:
+            for adapter, weight in route.adapters:
+                if weight <= 0:
+                    continue
                 eid = _get_endpoint_id(adapter)
                 if adapter.config.provider == pin_provider or eid == pin_provider:
                     return adapter
@@ -165,6 +173,10 @@ class RouteExecutor:
         """
         primary = self._select_adapter(model_id, pin_provider=pin_provider)
         if not primary:
+            if pin_provider:
+                raise ProviderPinError(
+                    f"Pinned provider '{pin_provider}' not found for model {model_id}"
+                )
             raise ValueError(f"No route configured for model {model_id}")
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
@@ -189,9 +201,13 @@ class RouteExecutor:
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
             self._on_failure(_get_endpoint_id(primary), reason="chat_exception")
+            # Pin mode: never fallback — the caller explicitly requested this
+            # provider, so a silent switch would produce misleading results.
+            if pin_provider:
+                raise primary_error
             route = self.routes[model_id]
-            for adapter, _ in route.adapters:
-                if adapter == primary:
+            for adapter, weight in route.adapters:
+                if adapter == primary or weight <= 0:
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
@@ -246,6 +262,10 @@ class RouteExecutor:
         """
         primary = self._select_adapter(model_id, pin_provider=pin_provider)
         if not primary:
+            if pin_provider:
+                raise ProviderPinError(
+                    f"Pinned provider '{pin_provider}' not found for model {model_id}"
+                )
             raise ValueError(f"No route configured for model {model_id}")
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
@@ -273,9 +293,12 @@ class RouteExecutor:
                 stage="adapter_stream",
             ).inc()
             self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+            # Pin mode: never fallback — re-raise immediately.
+            if pin_provider:
+                raise primary_error
             route = self.routes[model_id]
-            for adapter, _ in route.adapters:
-                if adapter == primary:
+            for adapter, weight in route.adapters:
+                if adapter == primary or weight <= 0:
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
