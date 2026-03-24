@@ -223,6 +223,11 @@ async def chat_completions(
     # Extract a stable session identifier from a single, canonical header.
     # Clients are expected to send X-Session-ID. Starlette headers are case-insensitive.
     session_id = request.headers.get("X-Session-ID")
+    # Provider pinning: allows the harness (or admin tooling) to force routing
+    # to a specific backend.  Only honoured for admin users to prevent abuse.
+    pin_provider = request.headers.get("X-Route-Pin")
+    if pin_provider and not user_ctx.get("is_admin", False):
+        pin_provider = None  # silently ignore for non-admin
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
@@ -334,7 +339,7 @@ async def chat_completions(
                 async def _adapter_reader():
                     try:
                         async for item in router_exec.stream_chat_completion(
-                            model, messages, **params
+                            model, messages, pin_provider=pin_provider, **params
                         ):
                             await chunk_queue.put(item)
                     except Exception as exc:
@@ -660,7 +665,9 @@ async def chat_completions(
     try:
         from serving.openai_chat_serializer import resolve_mode, sanitize_response
 
-        response = await router_exec.chat_completion(model, messages, **params)
+        response = await router_exec.chat_completion(
+            model, messages, pin_provider=pin_provider, **params
+        )
         serializer_mode = resolve_mode(request.headers)
 
         # Apply serializer: strip _routing metadata and enforce reasoning_content

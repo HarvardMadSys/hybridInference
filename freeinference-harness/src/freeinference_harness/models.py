@@ -1,4 +1,4 @@
-"""Data models for the standalone hardness harness."""
+"""Data models for the standalone harness."""
 
 from __future__ import annotations
 
@@ -45,6 +45,7 @@ class TargetConfig:
     sampling_count: int = 5
     capabilities: Capabilities = field(default_factory=Capabilities)
     tags: tuple[str, ...] = ()
+    extra_headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,9 @@ class ScenarioConfig:
     required_capabilities: tuple[str, ...] = ()
     repetitions: int | None = None
     max_tokens: int | None = None
+    tools_fixture: str | None = None
+    forced_tool_name: str | None = None
+    user_prompt: str | None = None
 
 
 @dataclass(frozen=True)

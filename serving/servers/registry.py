@@ -92,9 +92,9 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
     if kind == "deepseek":
         cfg = {**cfg, "provider_profile": "deepseek"}
-    if kind == "llama":
+    elif kind == "llama":
         cfg = {**cfg, "provider_profile": "llama", "chat_path": "/chat/completions"}
-    if kind == "openai":
+    elif kind == "openai":
         cfg = {
             **cfg,
             "provider_profile": "azure_openai",
@@ -105,7 +105,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
             "extra_query": {"api-version": "2024-12-01-preview"},
         }
     # Zhipu routes through OpenAICompatAdapter with a non-/v1 chat path.
-    if kind == "zhipu":
+    elif kind == "zhipu":
         cfg = {**cfg, "provider_profile": "zhipu", "chat_path": "/chat/completions"}
 
     model_cfg = ModelConfig(**cfg)
