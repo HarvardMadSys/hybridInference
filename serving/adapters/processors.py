@@ -99,12 +99,19 @@ class GLMProcessor(BaseProcessor):
         self.buffer += content
         self.model_id = chunk.get("model", self.model_id)
 
-        # Check if we should enter tool mode
-        # We look for <tool_call> or <tool> depending on model variant
-        if ("<tool_call>" in self.buffer or "<tool>" in self.buffer) and not self.in_tool_mode:
-            self.in_tool_mode = True
-
         to_yield = []
+
+        # Check if we should enter tool mode
+        if "<tool_call>" in self.buffer and not self.in_tool_mode:
+            self.in_tool_mode = True
+            # Emit any text before <tool_call> (with think tags stripped)
+            idx = self.buffer.index("<tool_call>")
+            pre_text = self.buffer[:idx].replace("<think>", "").replace("</think>", "")
+            self.buffer = self.buffer[idx:]
+            if pre_text:
+                new_chunk = _clone_chunk(chunk)
+                new_chunk["choices"][0]["delta"]["content"] = pre_text
+                to_yield.append(new_chunk)
 
         if self.in_tool_mode:
             # We are in tool mode. We buffer EVERYTHING until we see a potential end.
