@@ -1064,3 +1064,125 @@ async def test_ttft_null_when_error_before_any_token(
     logged, ttft = await _get_db_log_ttft(mock_db_logger)
     assert logged, "DB log_request should have been called on error path"
     assert ttft is None, "ttft_ms should be None when error occurs before any meaningful delta"
+
+
+# ===========================================================================
+# X-Route-Pin integration tests
+# ===========================================================================
+
+
+@pytest.fixture
+async def pin_app(monkeypatch, mock_rate_limiter, mock_db_logger) -> FastAPI:
+    """App with multi-provider routes for pin testing."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")  # all callers are admin
+
+    router = RouteExecutor()
+    zhipu = DummyAdapter(_mk_cfg("test-model"))
+    zhipu.config = ModelConfig(
+        id="test-model", name="test-model", provider="zhipu",
+        base_url="http://zhipu", context_length=8192, max_output_length=4096,
+    )
+    ollama = DummyAdapter(_mk_cfg("test-model"))
+    ollama.config = ModelConfig(
+        id="test-model", name="test-model", provider="ollama",
+        base_url="http://ollama", context_length=8192, max_output_length=4096,
+    )
+    disabled = DummyAdapter(_mk_cfg("test-model"))
+    disabled.config = ModelConfig(
+        id="test-model", name="test-model", provider="featherless",
+        base_url="http://featherless", context_length=8192, max_output_length=4096,
+    )
+    router.register_route("test-model", [(zhipu, 0.8), (ollama, 0.2), (disabled, 0.0)])
+
+    app = FastAPI()
+    app.state.services = AppServices(
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    return app
+
+
+@pytest.fixture
+async def pin_client(pin_app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+    transport = ASGITransport(app=pin_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+def _chat_body(model: str = "test-model", stream: bool = False) -> dict:
+    return {"model": model, "messages": [{"role": "user", "content": "hi"}], "stream": stream}
+
+
+@pytest.mark.asyncio
+async def test_pin_nonstream_success(pin_client: AsyncClient):
+    """Non-stream request pinned to a valid provider returns 200."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "ollama"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_pin_nonstream_miss_returns_400(pin_client: AsyncClient):
+    """Non-stream request pinned to nonexistent provider returns 400."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "nonexistent"},
+    )
+    assert resp.status_code == 400
+    assert "nonexistent" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_pin_zero_weight_returns_400(pin_client: AsyncClient):
+    """Pinning to a weight=0 (disabled) provider returns 400."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "featherless"},
+    )
+    assert resp.status_code == 400
+    assert "featherless" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_pin_stream_miss_returns_400(pin_client: AsyncClient):
+    """Streaming request pinned to nonexistent provider returns 400, not 200+SSE error."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(stream=True),
+        headers={"X-Route-Pin": "nonexistent"},
+    )
+    # Must be 400, NOT 200 with an SSE error chunk
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_pin_stream_zero_weight_returns_400(pin_client: AsyncClient):
+    """Streaming request pinned to weight=0 provider returns 400."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(stream=True),
+        headers={"X-Route-Pin": "featherless"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_pin_miss_releases_rate_limiter(pin_app: FastAPI, pin_client: AsyncClient):
+    """Invalid pin must release acquired rate limiter tokens."""
+    limiter = pin_app.state.services.rate_limiter
+    limiter.release_tokens.reset_mock()
+
+    await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "nonexistent"},
+    )
+    limiter.release_tokens.assert_called_once()
