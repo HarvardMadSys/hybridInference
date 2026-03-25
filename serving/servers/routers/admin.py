@@ -14,9 +14,13 @@ from serving.schemas_admin import (
     APIKeyListItem,
     ApproveUserRequest,
     ApproveUserResponse,
+    AuditLogEntry,
     CreateAPIKeyRequest,
     CreateAPIKeyResponse,
+    DeleteUserRequest,
+    DeleteUserResponse,
     ListAPIKeysResponse,
+    ListAuditLogResponse,
     ListUsersResponse,
     RegenerateAPIKeyResponse,
     RejectUserRequest,
@@ -686,15 +690,17 @@ async def regenerate_api_key(
 async def list_users(
     request: Request,
     status: str | None = None,
+    search: str | None = None,
     limit: int = 100,
     offset: int = 0,
     admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> ListUsersResponse:
-    """List registered users with optional status filter.
+    """List registered users with optional status filter and search.
 
     Query Parameters:
     - status: Filter by status (pending_approval|active|suspended|rejected|deleted)
+    - search: Search by email or user_name (case-insensitive ILIKE)
     - limit: Max results (default: 100)
     - offset: Pagination offset
 
@@ -709,6 +715,13 @@ async def list_users(
     if status:
         where_clauses.append(f"status = ${len(params) + 1}")
         params.append(status)
+
+    if search:
+        search_pattern = f"%{search}%"
+        where_clauses.append(
+            f"(email ILIKE ${len(params) + 1} OR user_name ILIKE ${len(params) + 1})"
+        )
+        params.append(search_pattern)
 
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -732,7 +745,14 @@ async def list_users(
             active=sc.get("active", 0),
             suspended=sc.get("suspended", 0),
             rejected=sc.get("rejected", 0),
+            deleted=sc.get("deleted", 0),
         )
+
+        # Qualify bare column names with u. for the JOIN query
+        join_where_sql = where_sql
+        if join_where_sql:
+            for col in ("status", "email", "user_name"):
+                join_where_sql = join_where_sql.replace(col, f"u.{col}")
 
         # LEFT JOIN api_keys to get key status per user
         rows = await conn.fetch(
@@ -743,7 +763,7 @@ async def list_users(
                    k.key_prefix, k.status AS key_status, k.tier AS key_tier
             FROM users u
             LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
-            {where_sql.replace("status", "u.status") if where_sql else ""}
+            {join_where_sql}
             ORDER BY u.created_at DESC
             LIMIT ${len(params) - 1} OFFSET ${len(params)}
             """,
@@ -1161,4 +1181,180 @@ async def update_user(
         user_id=user_id,
         updated_fields=updated,
         message=f"Updated {', '.join(updated)} for user {user_id}.",
+    )
+
+
+# ========================================
+# Audit Log Endpoint
+# ========================================
+
+
+@router.get("/admin/audit-log", response_model=ListAuditLogResponse)
+async def list_audit_log(
+    action: str | None = None,
+    target_user_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> ListAuditLogResponse:
+    """List admin audit log entries with optional filtering.
+
+    Query Parameters:
+    - action: Filter by action type (e.g. approve_user, reject_user)
+    - target_user_id: Filter by affected user
+    - limit: Max results (default: 50)
+    - offset: Pagination offset
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    where_clauses = []
+    params: list[Any] = []
+
+    if action:
+        where_clauses.append(f"action = ${len(params) + 1}")
+        params.append(action)
+
+    if target_user_id:
+        where_clauses.append(f"target_user_id = ${len(params) + 1}")
+        params.append(target_user_id)
+
+    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    params.append(limit)
+    params.append(offset)
+
+    async with db_logger.pool.acquire() as conn:
+        count_row = await conn.fetchrow(
+            f"SELECT COUNT(*) as total FROM admin_audit_log {where_sql}",
+            *params[: len(params) - 2],
+        )
+        total = count_row["total"] if count_row else 0
+
+        rows = await conn.fetch(
+            f"""
+            SELECT id, timestamp, admin_ip, action, target_user_id, details, success
+            FROM admin_audit_log
+            {where_sql}
+            ORDER BY timestamp DESC
+            LIMIT ${len(params) - 1} OFFSET ${len(params)}
+            """,
+            *params,
+        )
+
+    import json as _json
+
+    entries = []
+    for row in rows:
+        details = row["details"]
+        # asyncpg may return JSONB as a string — parse if needed
+        if isinstance(details, str):
+            try:
+                details = _json.loads(details)
+            except (ValueError, TypeError):
+                details = {"raw": details}
+        entries.append(
+            AuditLogEntry(
+                id=row["id"],
+                timestamp=row["timestamp"],
+                admin_ip=row["admin_ip"],
+                action=row["action"],
+                target_user_id=row["target_user_id"],
+                details=details,
+                success=row["success"],
+            )
+        )
+
+    return ListAuditLogResponse(total=total, entries=entries)
+
+
+# ========================================
+# Delete User Endpoint
+# ========================================
+
+
+@router.post("/admin/users/{user_id}/delete", response_model=DeleteUserResponse)
+async def delete_user(
+    request: Request,
+    user_id: str,
+    payload: DeleteUserRequest,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> DeleteUserResponse:
+    """Soft-delete a user account.
+
+    Sets user status to 'deleted', revokes all API keys, purges sessions and
+    tokens. Preserves api_logs and admin_audit_log for compliance.
+
+    Only active or suspended users can be deleted.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    async with db_logger.pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            "SELECT id, email, status FROM users WHERE id = $1",
+            user_id,
+        )
+
+        if not user_row:
+            raise HTTPException(404, f"User '{user_id}' not found")
+
+        if user_row["status"] not in ("active", "suspended"):
+            raise HTTPException(
+                409,
+                f"Cannot delete user with status '{user_row['status']}'. "
+                "Only active or suspended users can be deleted.",
+            )
+
+        # All cleanup + audit in a single transaction so the audit record
+        # is guaranteed to exist if (and only if) the delete commits.
+        import json as _json
+
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE users SET status = 'deleted' WHERE id = $1",
+                user_id,
+            )
+            # Revoke all active keys — cover both account_id and legacy user_id
+            await conn.execute(
+                "UPDATE api_keys SET status = 'revoked' "
+                "WHERE (account_id = $1 OR user_id = $1) AND status = 'active'",
+                user_id,
+            )
+            await conn.execute(
+                "DELETE FROM auth_sessions WHERE user_id = $1",
+                user_id,
+            )
+            await conn.execute(
+                "DELETE FROM email_verification_tokens WHERE user_id = $1",
+                user_id,
+            )
+            await conn.execute(
+                "DELETE FROM password_reset_tokens WHERE user_id = $1",
+                user_id,
+            )
+            # Audit log inside the same transaction
+            await conn.execute(
+                """
+                INSERT INTO admin_audit_log (admin_ip, action, target_user_id, details, success)
+                VALUES ($1, $2, $3, $4::jsonb, $5)
+                """,
+                admin_id,
+                "delete_user",
+                user_id,
+                _json.dumps({"email": user_row["email"], "reason": payload.reason}),
+                True,
+            )
+
+    return DeleteUserResponse(
+        user_id=user_id,
+        email=user_row["email"],
+        status="deleted",
+        message=f"User {user_row['email']} has been deleted.",
     )

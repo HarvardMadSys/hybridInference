@@ -106,6 +106,7 @@ async def verify_api_key(
                 WHERE k.key_hash = $1
                   AND k.status = 'active'
                   AND (k.expires_at IS NULL OR k.expires_at > NOW())
+                  AND (u.id IS NULL OR u.status = 'active')
                 """,
                 key_hash,
             )
@@ -262,6 +263,7 @@ async def optional_verify_api_key(
                 WHERE k.key_hash = $1
                   AND k.status = 'active'
                   AND (k.expires_at IS NULL OR k.expires_at > NOW())
+                  AND (u.id IS NULL OR u.status = 'active')
                 """,
                 key_hash,
             )

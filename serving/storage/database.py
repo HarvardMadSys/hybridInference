@@ -694,6 +694,11 @@ class DatabaseLogger:
                 ON admin_audit_log(target_user_id, timestamp DESC)
             """)
 
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_admin_audit_action
+                ON admin_audit_log(action, timestamp DESC)
+            """)
+
             # Critical index for usage analytics (prevents full table scan on cost queries)
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost
