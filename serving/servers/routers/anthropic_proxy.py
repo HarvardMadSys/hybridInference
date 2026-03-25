@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from serving.adapters.claude_pool import get_shared_pool
 from serving.adapters.claude_sub import _ANTHROPIC_BETA, _ANTHROPIC_VERSION
 from serving.adapters.codex_token import NoHealthyAccountError
+from serving.config.settings import has_role
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     normalize_model_label,
@@ -75,11 +76,9 @@ def _resolve_model(
     if route is None:
         raise HTTPException(404, f"Model '{model_id}' not found")
 
-    from serving.config.settings import has_role as _has_role
-
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = (user_ctx or {}).get("role", "free")
-    if not _has_role(user_role, required):
+    if not has_role(user_role, required):
         raise HTTPException(404, f"Model '{model_id}' not found")
 
     for adapter, _ in route.adapters:

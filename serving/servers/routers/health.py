@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
+from serving.config.settings import has_role
 from serving.observability.metrics import DATABASE_CONNECTED
 from serving.servers.auth import optional_verify_api_key
 from serving.servers.deps import get_db_logger, get_router, get_services
@@ -179,7 +180,6 @@ async def model_activity(
     """
     if os.getenv("USER_AUTH_ENABLED", "0") != "1":
         raise HTTPException(status_code=403, detail="Requires USER_AUTH_ENABLED=1")
-    from serving.config.settings import has_role
 
     user_role = (user_ctx or {}).get("role", "free")
     if not user_ctx or not has_role(user_role, "developer"):
