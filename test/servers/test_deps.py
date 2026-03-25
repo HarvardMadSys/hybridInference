@@ -287,23 +287,23 @@ class TestRequireRoleDependency:
         app.dependency_overrides[get_current_user] = override_current_user
 
         @app.get("/protected")
-        async def protected_route(user=Depends(require_role("developer"))):
+        async def protected_route(user=Depends(require_role("internal"))):
             return {"role": user["role"]}
 
         return app
 
     def test_require_role_rejects_free_user(self):
-        """free users should not pass a developer-gated dependency."""
+        """free users should not pass an internal-gated dependency."""
         client = TestClient(self._make_app("free"))
 
         response = client.get("/protected")
 
         assert response.status_code == 403
-        assert response.json()["detail"] == "Requires role 'developer' or higher."
+        assert response.json()["detail"] == "Requires role 'internal' or higher."
 
-    @pytest.mark.parametrize("role", ["developer", "admin"])
+    @pytest.mark.parametrize("role", ["internal", "admin"])
     def test_require_role_allows_sufficient_roles(self, role: str):
-        """developer and admin users should satisfy the dependency."""
+        """internal and admin users should satisfy the dependency."""
         client = TestClient(self._make_app(role))
 
         response = client.get("/protected")

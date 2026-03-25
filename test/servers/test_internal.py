@@ -122,15 +122,15 @@ class TestVerifyAdmin:
         assert response.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_verify_admin_rejects_developer_session(
+    async def test_verify_admin_rejects_internal_session(
         self,
         internal_client: AsyncClient,
         auth_db_logger,
         auth_test_user,
     ) -> None:
-        """Developer sessions should not pass the admin auth_request check."""
-        refresh_token = "test-refresh-developer"
-        await _set_user_role(auth_db_logger, auth_test_user["id"], "developer")
+        """Internal sessions should not pass the admin auth_request check."""
+        refresh_token = "test-refresh-internal"
+        await _set_user_role(auth_db_logger, auth_test_user["id"], "internal")
         await _create_refresh_session(auth_db_logger, auth_test_user["id"], refresh_token)
 
         response = await internal_client.get(

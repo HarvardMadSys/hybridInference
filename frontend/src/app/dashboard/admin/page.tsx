@@ -522,8 +522,7 @@ export default function AdminPage() {
                                     className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
                                   >
                                     <option value="free">free</option>
-                                    <option value="internal_group">internal_group</option>
-                                    <option value="developer">developer</option>
+                                    <option value="internal">internal</option>
                                     <option value="admin">admin</option>
                                   </select>
                                 </div>

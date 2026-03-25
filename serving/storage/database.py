@@ -427,7 +427,7 @@ class DatabaseLogger:
                     user_name TEXT,
                     preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
                     role TEXT NOT NULL DEFAULT 'free'
-                        CHECK (role IN ('free', 'internal_group', 'developer', 'admin')),
+                        CHECK (role IN ('free', 'internal', 'admin')),
                     email_verified BOOLEAN DEFAULT FALSE,
                     status TEXT DEFAULT 'active'
                         CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
@@ -509,7 +509,7 @@ class DatabaseLogger:
                 ON users(created_at DESC) WHERE status = 'pending_approval'
             """)
 
-            # Add role column for permission levels (free/internal_group/developer/admin)
+            # Add role column for permission levels (free/internal/admin)
             await conn.execute("""
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS role TEXT
@@ -537,21 +537,36 @@ class DatabaseLogger:
                 ALTER COLUMN role SET NOT NULL
             """)
 
+            # Migrate old 4-role hierarchy to 3-role: internal_group/developer → internal.
+            # The constraint must be dropped BEFORE the UPDATE — on an existing DB the
+            # old CHECK (role IN ('free','internal_group','developer','admin')) would
+            # reject the new 'internal' value.
             try:
                 async with conn.transaction():
                     await conn.execute("""
                         ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check
                     """)
+                    migrated_roles_tag = await conn.execute("""
+                        UPDATE users
+                        SET role = 'internal'
+                        WHERE role IN ('internal_group', 'developer')
+                    """)
+                    migrated_roles = _parse_command_tag_count(migrated_roles_tag)
+                    if migrated_roles:
+                        logger.info(
+                            "Migrated %d users from internal_group/developer to internal.",
+                            migrated_roles,
+                        )
                     await conn.execute("""
                         ALTER TABLE users
                         ADD CONSTRAINT users_role_check
-                        CHECK (role IN ('free', 'internal_group', 'developer', 'admin'))
+                        CHECK (role IN ('free', 'internal', 'admin'))
                     """)
             except asyncpg.PostgresError as exc:
                 invalid_role_rows = await conn.fetch("""
                     SELECT id, email, role
                     FROM users
-                    WHERE role NOT IN ('free', 'internal_group', 'developer', 'admin')
+                    WHERE role NOT IN ('free', 'internal', 'admin')
                     ORDER BY created_at DESC
                     LIMIT 10
                 """)

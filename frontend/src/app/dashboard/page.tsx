@@ -89,10 +89,10 @@ export default function DashboardPage() {
 
         <UsageStats />
 
-        {hasRole(state.user?.role, 'developer') && (
+        {hasRole(state.user?.role, 'internal') && (
           <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
             <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-4">
-              Developer Tools
+              Internal Tools
             </h2>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <a

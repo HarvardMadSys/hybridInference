@@ -126,7 +126,7 @@ export default function PlaygroundPage() {
   );
 
   useEffect(() => {
-    if (!hasRole(state.user?.role, 'developer')) return;
+    if (!hasRole(state.user?.role, 'internal')) return;
     fetchWithAuth(API_BASE, '/internal/playground/models')
       .then((r) => jsonOrThrow<{ models: PlaygroundModel[] }>(r))
       .then((d) => {
@@ -391,7 +391,7 @@ export default function PlaygroundPage() {
     );
   }
 
-  if (!hasRole(state.user?.role, 'developer')) {
+  if (!hasRole(state.user?.role, 'internal')) {
     return (
       <ProtectedRoute>
         <div className="flex h-full flex-col items-center justify-center gap-4 bg-gray-950 text-white">
