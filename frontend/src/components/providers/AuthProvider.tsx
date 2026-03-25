@@ -33,7 +33,8 @@ const ROLE_RANK: Record<string, number> = {
 };
 
 export function hasRole(userRole: string | undefined, required: string): boolean {
-  return (ROLE_RANK[userRole ?? 'free'] ?? 0) >= (ROLE_RANK[required] ?? 0);
+  if (!(required in ROLE_RANK)) return false;
+  return (ROLE_RANK[userRole ?? 'free'] ?? 0) >= ROLE_RANK[required];
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
