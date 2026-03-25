@@ -39,8 +39,21 @@ LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
 
 
 def _coerce_preferences(value: Any) -> dict[str, Any]:
-    """Return a mutable preferences mapping from a DB JSONB value."""
-    return dict(value) if isinstance(value, dict) else {}
+    """Return a mutable preferences mapping from a DB JSONB value.
+
+    asyncpg may return JSONB columns as either a dict (if a codec is
+    registered) or a raw JSON string.  Handle both cases.
+    """
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {}
 
 
 def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutState:
