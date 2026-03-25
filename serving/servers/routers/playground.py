@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from serving.servers.deps import get_router, require_admin
+from serving.servers.deps import get_router, require_role
 from serving.stream import make_role_chunk
 
 router = APIRouter(prefix="/internal/playground", tags=["Playground"])
@@ -83,7 +83,7 @@ def _provider_display_name(endpoint_id: str, base_url: str = "") -> str:
 
 @router.get("/models")
 async def list_models(
-    _admin: dict[str, Any] = Depends(require_admin),
+    _admin: dict[str, Any] = Depends(require_role("developer")),
     router_exec=Depends(get_router),
 ) -> dict[str, Any]:
     """Return canonical model metadata for the playground selector."""
@@ -162,7 +162,7 @@ def _sanitize_chunk(chunk: str) -> str:
 @router.post("/chat")
 async def playground_chat(
     body: PlaygroundChatRequest,
-    _admin: dict[str, Any] = Depends(require_admin),
+    _admin: dict[str, Any] = Depends(require_role("developer")),
     router_exec=Depends(get_router),
 ) -> StreamingResponse:
     """Stream a chat completion for admin testing."""

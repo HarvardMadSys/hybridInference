@@ -75,7 +75,11 @@ def _resolve_model(
     if route is None:
         raise HTTPException(404, f"Model '{model_id}' not found")
 
-    if route.admin_only and not (user_ctx or {}).get("is_admin", False):
+    from serving.config.settings import has_role as _has_role
+
+    required = route.required_role or ("admin" if route.admin_only else "free")
+    user_role = (user_ctx or {}).get("role", "free")
+    if not _has_role(user_role, required):
         raise HTTPException(404, f"Model '{model_id}' not found")
 
     for adapter, _ in route.adapters:

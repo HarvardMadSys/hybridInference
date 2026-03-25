@@ -131,11 +131,16 @@ async def chat_completions(
         record_model_request("404", "router")
         raise HTTPException(404, f"Model '{model}' not found")
 
-    # Admin-only gate: non-admin users see a 404 as if the model doesn't exist
+    # Role-based model gate: insufficient role sees a 404 as if the model doesn't exist
+    from serving.config.settings import has_role as _has_role
+
     route = router_exec.routes[model]
-    if route.admin_only and not user_ctx.get("is_admin", False):
+    required = route.required_role or ("admin" if route.admin_only else "free")
+    user_role = user_ctx.get("role", "free")
+    if not _has_role(user_role, required):
         logger.info(
-            "Admin-only model rejected", extra={"model": model, "user_id": user_ctx.get("user_id")}
+            "Insufficient role for model",
+            extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
         record_model_request("404", "router")
         raise HTTPException(404, f"Model '{model}' not found")

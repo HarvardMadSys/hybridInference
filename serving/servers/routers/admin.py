@@ -737,7 +737,7 @@ async def list_users(
         # LEFT JOIN api_keys to get key status per user
         rows = await conn.fetch(
             f"""
-            SELECT u.id, u.email, u.user_name, u.status, u.email_verified,
+            SELECT u.id, u.email, u.user_name, u.role, u.status, u.email_verified,
                    u.approval_note, u.reviewed_at, u.reviewed_by,
                    u.created_at, u.last_login_at,
                    k.key_prefix, k.status AS key_status, k.tier AS key_tier
@@ -789,6 +789,7 @@ async def list_users(
             id=row["id"],
             email=row["email"],
             user_name=row["user_name"],
+            role=row["role"] or "free",
             status=row["status"],
             email_verified=row["email_verified"],
             approval_note=row["approval_note"],
@@ -958,7 +959,7 @@ async def get_user_detail(
     async with db_logger.pool.acquire() as conn:
         user_row = await conn.fetchrow(
             """
-            SELECT u.id, u.email, u.user_name, u.status, u.email_verified,
+            SELECT u.id, u.email, u.user_name, u.role, u.status, u.email_verified,
                    u.created_at, u.last_login_at,
                    k.key_prefix, k.tier, k.quota_daily_cost_usd, k.quota_monthly_cost_usd
             FROM users u
@@ -1026,6 +1027,7 @@ async def get_user_detail(
         id=user_row["id"],
         email=user_row["email"],
         user_name=user_row["user_name"],
+        role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
         created_at=user_row["created_at"],
@@ -1068,12 +1070,31 @@ async def update_user(
         raise HTTPException(422, "No fields to update")
 
     async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow("SELECT id, status FROM users WHERE id = $1", user_id)
+        user_row = await conn.fetchrow(
+            "SELECT id, email, status, role FROM users WHERE id = $1", user_id
+        )
         if not user_row:
             raise HTTPException(404, f"User '{user_id}' not found")
 
         updated: list[str] = []
         current_status = user_row["status"]
+
+        # Update role (user-level field on users table)
+        if "role" in payload_dict:
+            new_role = payload_dict["role"]
+            # Guard: admin cannot demote themselves
+            if (
+                user_row["email"]
+                and user_row["email"].lower() == admin_id.lower()
+                and new_role != "admin"
+            ):
+                raise HTTPException(409, "Cannot demote your own admin role.")
+            await conn.execute(
+                "UPDATE users SET role = $1 WHERE id = $2",
+                new_role,
+                user_id,
+            )
+            updated.append("role")
 
         # Update user-level fields
         if "status" in payload_dict:

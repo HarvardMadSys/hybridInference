@@ -13,6 +13,10 @@ from typing import TYPE_CHECKING, Any
 import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
@@ -143,7 +147,7 @@ async def get_current_user(
     async with db_logger.pool.acquire() as conn:
         user_row = await conn.fetchrow(
             """
-            SELECT id, email, status, email_verified
+            SELECT id, email, status, email_verified, role
             FROM users
             WHERE id = $1
             """,
@@ -162,13 +166,14 @@ async def get_current_user(
             detail=f"Account is {user_row['status']}. Please contact support.",
         )
 
-    # Return user context — use DB email (authoritative) instead of JWT email
-    # so that downstream checks like require_admin see the current address.
+    # Return user context — use DB email and role (authoritative) instead of JWT claims.
+    user_role = user_row["role"] or "free"
     return {
         "user_id": user_id,
         "email": user_row["email"],
         "tier": tier,
-        "is_admin": payload.get("is_admin", False),
+        "role": user_role,
+        "is_admin": user_role == "admin",
         "email_verified": user_row["email_verified"],
         "status": user_row["status"],
     }
@@ -179,14 +184,29 @@ async def require_admin(
 ) -> dict[str, Any]:
     """Require admin privileges. Raises 403 if user is not an admin.
 
-    Uses real-time ``is_admin_email()`` check against the settings-level
-    admin list instead of trusting the (potentially stale) JWT claim.
+    Uses the authoritative ``users.role`` from DB (set by get_current_user).
     """
-    from serving.config.settings import is_admin_email
-
-    if not is_admin_email(current_user["email"]):
+    if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required.")
     return current_user
+
+
+def require_role(min_role: str):
+    """Dependency factory: require a minimum role level.
+
+    Usage: ``Depends(require_role("developer"))``
+    """
+
+    async def _check(
+        current_user: dict[str, Any] = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        from serving.config.settings import has_role
+
+        if not has_role(current_user.get("role", "free"), min_role):
+            raise HTTPException(status_code=403, detail=f"Requires role '{min_role}' or higher.")
+        return current_user
+
+    return _check
 
 
 async def verify_admin_access(
@@ -204,7 +224,6 @@ async def verify_admin_access(
     """
     import os
 
-    from serving.config.settings import is_admin_email
     from serving.utils.jwt import verify_access_token
 
     if not authorization or not authorization.startswith("Bearer "):
@@ -221,22 +240,28 @@ async def verify_admin_access(
         user_id = payload.get("sub")
         email = payload.get("email", "")
 
-        if not is_admin_email(email):
-            raise HTTPException(status_code=403, detail="Admin access required.")
-
-        # Verify user still exists and is active in DB (prevent stale JWT abuse)
+        # Verify user still exists, is active, and has admin role in DB
         if db_logger and db_logger.pool and user_id:
             async with db_logger.pool.acquire() as conn:
                 user_row = await conn.fetchrow(
-                    "SELECT email, status FROM users WHERE id = $1",
+                    "SELECT email, status, role FROM users WHERE id = $1",
                     user_id,
                 )
             if not user_row or user_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="Admin account is no longer active.")
-            # Use DB email (authoritative) in case it changed since JWT was issued
             email = user_row["email"]
-            if not is_admin_email(email):
+            if (user_row["role"] or "free") != "admin":
                 raise HTTPException(status_code=403, detail="Admin access required.")
+        else:
+            # DB unavailable — fail closed.  Admin endpoints require
+            # authoritative role verification from the database.
+            logger.warning(
+                "verify_admin_access: DB unavailable, refusing admin access (fail-closed)"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Database unavailable; cannot verify admin role. Try again later.",
+            )
 
         return email
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
