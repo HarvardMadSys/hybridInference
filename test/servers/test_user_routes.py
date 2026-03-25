@@ -296,6 +296,7 @@ class TestLLMProberLayout:
             "layout": {"direct_models": [], "direct_providers": {}, "e2e_models": []}
         }
 
+
 class TestConcurrentAPIKeyCreation:
     """Test concurrent API key creation (database constraint)."""
 

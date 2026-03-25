@@ -64,9 +64,7 @@ def _feed_stream(
 def _concat_content(chunks: list[dict[str, Any]]) -> str:
     """Concatenate all delta.content from chunks."""
     return "".join(
-        c["choices"][0]["delta"].get("content", "") or ""
-        for c in chunks
-        if c.get("choices")
+        c["choices"][0]["delta"].get("content", "") or "" for c in chunks if c.get("choices")
     )
 
 
@@ -89,9 +87,12 @@ class TestGLMProcessor:
     def test_g01_plain_text_no_tags(self):
         """G-01: Plain text with no XML tags is emitted via stream + flush."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("Hello world", model="glm-4"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("Hello world", model="glm-4"),
+            ],
+        )
         all_chunks = emitted + flushed
         text = _concat_content(all_chunks)
         assert text == "Hello world"
@@ -99,9 +100,12 @@ class TestGLMProcessor:
     def test_g02_think_tags_stripped_content_kept(self):
         """G-02: <think> tags removed, thinking text emitted as content."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("<think>reasoning</think>Hello", model="glm-4"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<think>reasoning</think>Hello", model="glm-4"),
+            ],
+        )
         all_chunks = emitted + flushed
         text = _concat_content(all_chunks)
         assert "Hello" in text
@@ -112,11 +116,14 @@ class TestGLMProcessor:
     def test_g03_single_tool_call(self):
         """G-03: Single tool call via XML is buffered, then flushed as tool_calls."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("<tool_call>get_weather\n", model="glm-4"),
-            _make_stream_chunk("<arg_key>city</arg_key>"),
-            _make_stream_chunk("<arg_value>Beijing</arg_value></tool_call>"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<tool_call>get_weather\n", model="glm-4"),
+                _make_stream_chunk("<arg_key>city</arg_key>"),
+                _make_stream_chunk("<arg_value>Beijing</arg_value></tool_call>"),
+            ],
+        )
         assert emitted == []  # all buffered in tool mode
         assert len(flushed) == 1
         tc = _get_tool_calls(flushed)
@@ -128,13 +135,16 @@ class TestGLMProcessor:
     def test_g04_tool_call_json_array_arg(self):
         """G-04: arg_value containing JSON array is parsed via json.loads."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                '<tool_call>run_cmd\n<arg_key>cmd</arg_key>'
-                '<arg_value>["ls", "-la"]</arg_value></tool_call>',
-                model="glm-4",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<tool_call>run_cmd\n<arg_key>cmd</arg_key>"
+                    '<arg_value>["ls", "-la"]</arg_value></tool_call>',
+                    model="glm-4",
+                ),
+            ],
+        )
         tc = _get_tool_calls(flushed)
         args = json.loads(tc[0]["function"]["arguments"])
         assert args["cmd"] == ["ls", "-la"]
@@ -142,13 +152,16 @@ class TestGLMProcessor:
     def test_g05_tool_call_json_object_arg(self):
         """G-05: arg_value containing JSON object is parsed via json.loads."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                '<tool_call>configure\n<arg_key>opts</arg_key>'
-                '<arg_value>{"key": "val"}</arg_value></tool_call>',
-                model="glm-4",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<tool_call>configure\n<arg_key>opts</arg_key>"
+                    '<arg_value>{"key": "val"}</arg_value></tool_call>',
+                    model="glm-4",
+                ),
+            ],
+        )
         tc = _get_tool_calls(flushed)
         args = json.loads(tc[0]["function"]["arguments"])
         assert args["opts"] == {"key": "val"}
@@ -157,9 +170,12 @@ class TestGLMProcessor:
         """G-06: Malformed tool XML (no name after tag) — raw buffer emitted as content fallback."""
         proc = GLMProcessor()
         # Use XML where _parse_glm_tool_xml returns None: no text after <tool_call>
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("<tool_call>\n</tool_call>", model="glm-4"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<tool_call>\n</tool_call>", model="glm-4"),
+            ],
+        )
         assert emitted == []
         assert len(flushed) == 1
         text = _concat_content(flushed)
@@ -179,18 +195,14 @@ class TestGLMProcessor:
         """G-08: Partial '<' near end of buffer is held back, not emitted prematurely."""
         proc = GLMProcessor()
         # Send text ending with a partial '<'
-        emitted1 = proc.process_stream_chunk(
-            _make_stream_chunk("Hello world <", model="glm-4")
-        )
+        emitted1 = proc.process_stream_chunk(_make_stream_chunk("Hello world <", model="glm-4"))
         # The '<' near the end should be held back
         text1 = _concat_content(emitted1)
         assert "<" not in text1
         assert "Hello world " in text1
 
         # Next chunk completes — it's just text, not a tag
-        emitted2 = proc.process_stream_chunk(
-            _make_stream_chunk("not a tag>", model="glm-4")
-        )
+        emitted2 = proc.process_stream_chunk(_make_stream_chunk("not a tag>", model="glm-4"))
         flushed = proc.flush()
         all_after = emitted2 + flushed
         text_after = _concat_content(all_after)
@@ -223,13 +235,16 @@ class TestGLMProcessor:
     def test_g09b_think_and_tool_in_same_buffer(self):
         """G-09b: Think + tool_call in same buffer — think text emitted, tool call parsed."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "<think>thought</think><tool_call>func\n"
-                "<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>",
-                model="glm-4",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<think>thought</think><tool_call>func\n"
+                    "<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>",
+                    model="glm-4",
+                ),
+            ],
+        )
         # Think text must be emitted (tags stripped, content kept — GLM contract)
         pre_text = _concat_content(emitted)
         assert "thought" in pre_text
@@ -241,9 +256,12 @@ class TestGLMProcessor:
     def test_g10_tool_tag_is_regular_text(self):
         """G-10: <tool> (not <tool_call>) is treated as regular text, not entering tool mode."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("<tool>some_func</tool>", model="glm-4"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<tool>some_func</tool>", model="glm-4"),
+            ],
+        )
         text = _concat_content(emitted + flushed)
         assert "<tool>some_func</tool>" in text
 
@@ -251,7 +269,9 @@ class TestGLMProcessor:
         """G-11: Non-streaming — <think>/</ think> tags removed, content kept (GLM keeps think text)."""
         proc = GLMProcessor()
         response = {
-            "choices": [{"message": {"content": "<think>internal</think>Hello"}, "finish_reason": "stop"}],
+            "choices": [
+                {"message": {"content": "<think>internal</think>Hello"}, "finish_reason": "stop"}
+            ],
         }
         result = proc.process_response(response)
         content = result["choices"][0]["message"]["content"]
@@ -292,22 +312,28 @@ class TestGLMProcessor:
     def test_g16_flush_non_tool_remaining_text(self):
         """G-16: Text with partial tag — total output preserves all content after flush."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("leftover<", model="glm-4"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("leftover<", model="glm-4"),
+            ],
+        )
         text = _concat_content(emitted + flushed)
         assert text == "leftover<"
 
     def test_g17_json_loads_failure_raw_string(self):
         """G-17: json.loads failure in arg value — value kept as raw string."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "<tool_call>func\n<arg_key>data</arg_key>"
-                "<arg_value>[not valid json</arg_value></tool_call>",
-                model="glm-4",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<tool_call>func\n<arg_key>data</arg_key>"
+                    "<arg_value>[not valid json</arg_value></tool_call>",
+                    model="glm-4",
+                ),
+            ],
+        )
         tc = _get_tool_calls(flushed)
         args = json.loads(tc[0]["function"]["arguments"])
         assert args["data"] == "[not valid json"
@@ -341,9 +367,12 @@ class TestQwenCoderProcessor:
     def test_q01_plain_text(self):
         """Q-01: Plain text with no tool calls is emitted via stream + flush."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("Hello world", model="qwen3-coder"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("Hello world", model="qwen3-coder"),
+            ],
+        )
         all_chunks = emitted + flushed
         text = _concat_content(all_chunks)
         assert text == "Hello world"
@@ -351,13 +380,16 @@ class TestQwenCoderProcessor:
     def test_q02_single_tool_call(self):
         """Q-02: Single tool call — pre-text emitted, tool XML buffered, flush emits tool_calls."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "I'll search for that.\n<tool_call>\n<function=search>\n"
-                "<parameter=query>hello</parameter>\n</function>\n</tool_call>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "I'll search for that.\n<tool_call>\n<function=search>\n"
+                    "<parameter=query>hello</parameter>\n</function>\n</tool_call>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         # Pre-text should have been emitted
         pre_text = _concat_content(emitted)
         assert "search for that" in pre_text
@@ -371,14 +403,17 @@ class TestQwenCoderProcessor:
     def test_q03_parallel_tool_calls(self):
         """Q-03: Two tool_call blocks parsed with correct indices."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "<tool_call>\n<function=read_file>\n<parameter=path>/etc/hosts</parameter>\n"
-                "</function>\n</tool_call>\n<tool_call>\n<function=search>\n"
-                "<parameter=query>hello</parameter>\n</function>\n</tool_call>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<tool_call>\n<function=read_file>\n<parameter=path>/etc/hosts</parameter>\n"
+                    "</function>\n</tool_call>\n<tool_call>\n<function=search>\n"
+                    "<parameter=query>hello</parameter>\n</function>\n</tool_call>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         assert emitted == []
         tc = _get_tool_calls(flushed)
         assert len(tc) == 2
@@ -411,12 +446,15 @@ class TestQwenCoderProcessor:
     def test_q06_unclosed_tool_call_fallback(self):
         """Q-06: Unclosed <tool_call> — fallback parsing via <function= match."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "<tool_call>\n<function=search>\n<parameter=q>test</parameter>\n</function>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<tool_call>\n<function=search>\n<parameter=q>test</parameter>\n</function>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         # No closing </tool_call>, but fallback should still parse
         tc = _get_tool_calls(flushed)
         assert tc[0]["function"]["name"] == "search"
@@ -424,13 +462,16 @@ class TestQwenCoderProcessor:
     def test_q07_param_newline_stripping(self):
         """Q-07: Leading/trailing newlines stripped from parameter values."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "<tool_call>\n<function=write>\n<parameter=content>\nline1\nline2\n</parameter>\n"
-                "</function>\n</tool_call>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<tool_call>\n<function=write>\n<parameter=content>\nline1\nline2\n</parameter>\n"
+                    "</function>\n</tool_call>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         tc = _get_tool_calls(flushed)
         args = json.loads(tc[0]["function"]["arguments"])
         # Leading and trailing \n stripped, internal preserved
@@ -439,13 +480,16 @@ class TestQwenCoderProcessor:
     def test_q08_param_json_object(self):
         """Q-08: Parameter with JSON object value parsed via json.loads."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                '<tool_call>\n<function=configure>\n<parameter=opts>{"key": "val"}</parameter>\n'
-                "</function>\n</tool_call>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    '<tool_call>\n<function=configure>\n<parameter=opts>{"key": "val"}</parameter>\n'
+                    "</function>\n</tool_call>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         tc = _get_tool_calls(flushed)
         args = json.loads(tc[0]["function"]["arguments"])
         assert args["opts"] == {"key": "val"}
@@ -453,13 +497,16 @@ class TestQwenCoderProcessor:
     def test_q09_param_json_array(self):
         """Q-09: Parameter with JSON array value parsed via json.loads."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                '<tool_call>\n<function=run>\n<parameter=cmd>["ls", "-la"]</parameter>\n'
-                "</function>\n</tool_call>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    '<tool_call>\n<function=run>\n<parameter=cmd>["ls", "-la"]</parameter>\n'
+                    "</function>\n</tool_call>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         tc = _get_tool_calls(flushed)
         args = json.loads(tc[0]["function"]["arguments"])
         assert args["cmd"] == ["ls", "-la"]
@@ -467,13 +514,16 @@ class TestQwenCoderProcessor:
     def test_q10_param_json_parse_failure(self):
         """Q-10: JSON parse failure — value kept as raw string."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "<tool_call>\n<function=run>\n<parameter=data>[broken json</parameter>\n"
-                "</function>\n</tool_call>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<tool_call>\n<function=run>\n<parameter=data>[broken json</parameter>\n"
+                    "</function>\n</tool_call>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         tc = _get_tool_calls(flushed)
         args = json.loads(tc[0]["function"]["arguments"])
         assert args["data"] == "[broken json"
@@ -482,15 +532,17 @@ class TestQwenCoderProcessor:
         """Q-11: Non-streaming — tool call XML converted, pre-text kept as content."""
         proc = QwenCoderProcessor()
         response = {
-            "choices": [{
-                "message": {
-                    "content": (
-                        "Here you go.\n<tool_call>\n<function=search>\n"
-                        "<parameter=query>hello</parameter>\n</function>\n</tool_call>"
-                    ),
-                },
-                "finish_reason": "stop",
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "Here you go.\n<tool_call>\n<function=search>\n"
+                            "<parameter=query>hello</parameter>\n</function>\n</tool_call>"
+                        ),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
         }
         result = proc.process_response(response)
         msg = result["choices"][0]["message"]
@@ -519,13 +571,16 @@ class TestQwenCoderProcessor:
     def test_q14_pre_tool_text_emitted(self):
         """Q-14: Pre-tool text emitted as chunk before entering tool mode."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "Let me search.\n<tool_call>\n<function=search>\n"
-                "<parameter=q>test</parameter>\n</function>\n</tool_call>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "Let me search.\n<tool_call>\n<function=search>\n"
+                    "<parameter=q>test</parameter>\n</function>\n</tool_call>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         pre_text = _concat_content(emitted)
         assert "Let me search." in pre_text
         tc = _get_tool_calls(flushed)
@@ -534,13 +589,16 @@ class TestQwenCoderProcessor:
     def test_q15_pre_tool_whitespace_only(self):
         """Q-15: Pre-tool text is whitespace only — no pre-text chunk emitted."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "  \n<tool_call>\n<function=search>\n"
-                "<parameter=q>test</parameter>\n</function>\n</tool_call>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "  \n<tool_call>\n<function=search>\n"
+                    "<parameter=q>test</parameter>\n</function>\n</tool_call>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         # Whitespace-only pre-text stripped to empty — no content chunk emitted
         assert emitted == []
         tc = _get_tool_calls(flushed)
@@ -561,9 +619,12 @@ class TestQwenCoderProcessor:
     def test_q18_flush_non_tool_remaining_text(self):
         """Q-18: Text with partial tag — total output preserves all content after flush."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("leftover<", model="qwen3-coder"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("leftover<", model="qwen3-coder"),
+            ],
+        )
         text = _concat_content(emitted + flushed)
         assert "leftover" in text
         assert "<" in text
@@ -571,12 +632,15 @@ class TestQwenCoderProcessor:
     def test_q19_flush_tool_parse_failure(self):
         """Q-19: Flush tool parse failure — raw buffer emitted as content."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "<tool_call>garbage with no function tag</tool_call>",
-                model="qwen3-coder",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<tool_call>garbage with no function tag</tool_call>",
+                    model="qwen3-coder",
+                ),
+            ],
+        )
         assert emitted == []
         # Parse fails — no <function= found after fallback
         assert len(flushed) == 1
@@ -588,15 +652,17 @@ class TestQwenCoderProcessor:
         """Q-20: Non-streaming — tool_call at start, content set to None."""
         proc = QwenCoderProcessor()
         response = {
-            "choices": [{
-                "message": {
-                    "content": (
-                        "<tool_call>\n<function=search>\n"
-                        "<parameter=q>test</parameter>\n</function>\n</tool_call>"
-                    ),
-                },
-                "finish_reason": "stop",
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "<tool_call>\n<function=search>\n"
+                            "<parameter=q>test</parameter>\n</function>\n</tool_call>"
+                        ),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
         }
         result = proc.process_response(response)
         msg = result["choices"][0]["message"]
@@ -629,9 +695,12 @@ class TestThinkBlockProcessor:
     def test_t01_no_think_blocks(self):
         """T-01: No think blocks — text emitted normally."""
         proc = ThinkBlockProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("Hello world", model="minimax-m1"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("Hello world", model="minimax-m1"),
+            ],
+        )
         all_chunks = emitted + flushed
         text = _concat_content(all_chunks)
         assert text == "Hello world"
@@ -639,9 +708,12 @@ class TestThinkBlockProcessor:
     def test_t02_complete_think_block_one_chunk(self):
         """T-02: Complete <think>...</think> in one chunk — entirely discarded."""
         proc = ThinkBlockProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("<think>internal reasoning</think>", model="minimax-m1"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<think>internal reasoning</think>", model="minimax-m1"),
+            ],
+        )
         all_chunks = emitted + flushed
         text = _concat_content(all_chunks)
         assert text == ""
@@ -650,10 +722,13 @@ class TestThinkBlockProcessor:
     def test_t03_think_block_split_across_chunks(self):
         """T-03: Think block split across chunks — content discarded across chunks."""
         proc = ThinkBlockProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("<think>start of ", model="minimax-m1"),
-            _make_stream_chunk("reasoning</think>"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<think>start of ", model="minimax-m1"),
+                _make_stream_chunk("reasoning</think>"),
+            ],
+        )
         all_chunks = emitted + flushed
         text = _concat_content(all_chunks)
         assert "reasoning" not in text
@@ -662,9 +737,14 @@ class TestThinkBlockProcessor:
     def test_t04_text_before_and_after_think(self):
         """T-04: Text before and after think block — pre/post text emitted, think discarded."""
         proc = ThinkBlockProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("Hello <think>internal reasoning</think> World", model="minimax-m1"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "Hello <think>internal reasoning</think> World", model="minimax-m1"
+                ),
+            ],
+        )
         all_chunks = emitted + flushed
         text = _concat_content(all_chunks)
         assert "Hello" in text
@@ -674,12 +754,15 @@ class TestThinkBlockProcessor:
     def test_t05_multiple_think_blocks(self):
         """T-05: Multiple think blocks interleaved with text — all blocks stripped."""
         proc = ThinkBlockProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk(
-                "A<think>thought1</think>B<think>thought2</think>C",
-                model="minimax-m1",
-            ),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "A<think>thought1</think>B<think>thought2</think>C",
+                    model="minimax-m1",
+                ),
+            ],
+        )
         all_chunks = emitted + flushed
         text = _concat_content(all_chunks)
         assert "A" in text
@@ -710,9 +793,12 @@ class TestThinkBlockProcessor:
     def test_t07_incomplete_think_at_end_of_stream(self):
         """T-07: Incomplete think block at end of stream — discarded by flush."""
         proc = ThinkBlockProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("<think>never closed reasoning", model="minimax-m1"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<think>never closed reasoning", model="minimax-m1"),
+            ],
+        )
         # Flush with in_think=True returns []
         assert flushed == []
         # Stream also shouldn't have emitted think content
@@ -744,10 +830,12 @@ class TestThinkBlockProcessor:
         """T-10: Non-streaming — regex removes all <think> blocks, result stripped."""
         proc = ThinkBlockProcessor()
         response = {
-            "choices": [{
-                "message": {"content": "<think>internal</think>Hello <think>more</think>World"},
-                "finish_reason": "stop",
-            }],
+            "choices": [
+                {
+                    "message": {"content": "<think>internal</think>Hello <think>more</think>World"},
+                    "finish_reason": "stop",
+                }
+            ],
         }
         result = proc.process_response(response)
         content = result["choices"][0]["message"]["content"]
@@ -768,9 +856,12 @@ class TestThinkBlockProcessor:
     def test_t12_flush_remaining_text_no_think(self):
         """T-12: Text with partial tag — total output preserves all content after flush."""
         proc = ThinkBlockProcessor()
-        emitted, flushed = _feed_stream(proc, [
-            _make_stream_chunk("leftover<", model="minimax-m1"),
-        ])
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("leftover<", model="minimax-m1"),
+            ],
+        )
         text = _concat_content(emitted + flushed)
         assert "leftover" in text
         assert "<" in text
@@ -798,9 +889,7 @@ class TestThinkBlockProcessor:
     def test_t16_partial_tag_near_end(self):
         """T-16: Partial '<' near end of buffer (no think) — safe-index holds back partial tag."""
         proc = ThinkBlockProcessor()
-        emitted = proc.process_stream_chunk(
-            _make_stream_chunk("text<", model="minimax-m1")
-        )
+        emitted = proc.process_stream_chunk(_make_stream_chunk("text<", model="minimax-m1"))
         text = _concat_content(emitted)
         assert "text" in text
         assert "<" not in text

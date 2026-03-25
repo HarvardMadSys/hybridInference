@@ -314,9 +314,7 @@ async def test_reasoning_content_filtered_in_streaming(
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
-    router.register_route(
-        "glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)]
-    )
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Strict Mode")
     app.state.services = AppServices(  # type: ignore[attr-defined]
@@ -374,9 +372,7 @@ async def test_reasoning_passthrough_header_preserves_reasoning(
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
-    router.register_route(
-        "glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)]
-    )
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Reasoning Passthrough")
     app.state.services = AppServices(  # type: ignore[attr-defined]
@@ -434,9 +430,7 @@ async def test_non_stream_default_strict_strips_reasoning_content(
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
-    router.register_route(
-        "glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)]
-    )
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Non-Stream Strict Mode")
     app.state.services = AppServices(  # type: ignore[attr-defined]
@@ -467,9 +461,7 @@ async def test_non_stream_reasoning_passthrough_header_preserves_reasoning_conte
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
-    router.register_route(
-        "glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)]
-    )
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
     app = FastAPI(title="Test Non-Stream Passthrough Mode")
     app.state.services = AppServices(  # type: ignore[attr-defined]
@@ -501,9 +493,7 @@ async def test_non_stream_reasoning_only_strict_returns_empty_visible_output(
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
-    router.register_route(
-        "glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)]
-    )
+    router.register_route("glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)])
 
     app = FastAPI(title="Test Non-Stream Reasoning Only Strict")
     app.state.services = AppServices(  # type: ignore[attr-defined]
@@ -534,9 +524,7 @@ async def test_non_stream_reasoning_only_passthrough_preserves_reasoning(
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
-    router.register_route(
-        "glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)]
-    )
+    router.register_route("glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)])
 
     app = FastAPI(title="Test Non-Stream Reasoning Only Passthrough")
     app.state.services = AppServices(  # type: ignore[attr-defined]
@@ -809,9 +797,7 @@ async def _get_db_log_ttft(mock_db_logger, timeout: float = 2.0) -> tuple[bool, 
     return False, None
 
 
-async def _wait_for_db_log_kwargs(
-    mock_db_logger, timeout: float = 2.0
-) -> dict[str, Any] | None:
+async def _wait_for_db_log_kwargs(mock_db_logger, timeout: float = 2.0) -> dict[str, Any] | None:
     """Wait for the background DB log task and return kwargs."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -878,8 +864,9 @@ async def test_keepalive_emitted_without_cancelling_upstream(
     monkeypatch.setattr(completions.asyncio, "wait_for", fast_wait_for)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        async with client.stream(
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
             "POST",
             "/v1/chat/completions",
             json={
@@ -887,9 +874,10 @@ async def test_keepalive_emitted_without_cancelling_upstream(
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": True,
             },
-        ) as resp:
-            assert resp.status_code == 200
-            lines = [line async for line in resp.aiter_lines()]
+        ) as resp,
+    ):
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines()]
 
     assert any(line == ": keepalive" for line in lines), "expected an SSE keepalive comment"
     data_lines = [line for line in lines if line.startswith("data: ")]
@@ -1079,24 +1067,38 @@ async def pin_app(monkeypatch, mock_rate_limiter, mock_db_logger) -> FastAPI:
     router = RouteExecutor()
     zhipu = DummyAdapter(_mk_cfg("test-model"))
     zhipu.config = ModelConfig(
-        id="test-model", name="test-model", provider="zhipu",
-        base_url="http://zhipu", context_length=8192, max_output_length=4096,
+        id="test-model",
+        name="test-model",
+        provider="zhipu",
+        base_url="http://zhipu",
+        context_length=8192,
+        max_output_length=4096,
     )
     ollama = DummyAdapter(_mk_cfg("test-model"))
     ollama.config = ModelConfig(
-        id="test-model", name="test-model", provider="ollama",
-        base_url="http://ollama", context_length=8192, max_output_length=4096,
+        id="test-model",
+        name="test-model",
+        provider="ollama",
+        base_url="http://ollama",
+        context_length=8192,
+        max_output_length=4096,
     )
     disabled = DummyAdapter(_mk_cfg("test-model"))
     disabled.config = ModelConfig(
-        id="test-model", name="test-model", provider="featherless",
-        base_url="http://featherless", context_length=8192, max_output_length=4096,
+        id="test-model",
+        name="test-model",
+        provider="featherless",
+        base_url="http://featherless",
+        context_length=8192,
+        max_output_length=4096,
     )
     router.register_route("test-model", [(zhipu, 0.8), (ollama, 0.2), (disabled, 0.0)])
 
     app = FastAPI()
     app.state.services = AppServices(
-        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter,
+        router=router,
+        db_logger=mock_db_logger,
+        rate_limiter=mock_rate_limiter,
     )
     install_error_handlers(app)
     app.include_router(completions.router)

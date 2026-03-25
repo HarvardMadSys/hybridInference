@@ -1,5 +1,6 @@
 """User dashboard routes for API key management and usage statistics."""
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -138,8 +139,8 @@ async def update_llm_prober_layout(
         preferences = _coerce_preferences(user_row["preferences"])
         preferences[LLM_PROBER_LAYOUT_KEY] = body.model_dump()
         await conn.execute(
-            "UPDATE users SET preferences = $1 WHERE id = $2",
-            preferences,
+            "UPDATE users SET preferences = $1::jsonb WHERE id = $2",
+            json.dumps(preferences),
             current_user["user_id"],
         )
 
@@ -167,8 +168,8 @@ async def reset_llm_prober_layout(
         preferences = _coerce_preferences(user_row["preferences"])
         preferences.pop(LLM_PROBER_LAYOUT_KEY, None)
         await conn.execute(
-            "UPDATE users SET preferences = $1 WHERE id = $2",
-            preferences,
+            "UPDATE users SET preferences = $1::jsonb WHERE id = $2",
+            json.dumps(preferences),
             current_user["user_id"],
         )
 

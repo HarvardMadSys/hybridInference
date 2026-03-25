@@ -73,7 +73,9 @@ async def test_streaming_default_processor_preserves_content_after_reasoning_onl
     adapter = _make_adapter(processor="default")
     adapter.http.stream_post = fake_stream_post
 
-    chunks = [chunk async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])]
+    chunks = [
+        chunk async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])
+    ]
 
     assert chunks[-1] == "data: [DONE]\n\n"
 
@@ -139,6 +141,7 @@ async def test_deepseek_profile_non_streaming_usage_normalizes_cache_fields():
 @pytest.mark.asyncio
 async def test_deepseek_profile_streaming_usage_normalizes_cache_fields():
     """Streaming final chunk uses normalized DeepSeek usage, not raw prompt_cache_* fields."""
+
     async def fake_stream_post(*args, **kwargs):
         yield _make_chunk(delta={"content": "hi"})
         yield _make_chunk(
@@ -168,7 +171,9 @@ async def test_deepseek_profile_streaming_usage_normalizes_cache_fields():
 
     chunks = [c async for c in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])]
 
-    final_payloads = [json.loads(c[6:]) for c in chunks[:-1] if c.startswith("data: ") and c != "data: [DONE]\n\n"]
+    final_payloads = [
+        json.loads(c[6:]) for c in chunks[:-1] if c.startswith("data: ") and c != "data: [DONE]\n\n"
+    ]
     usage_chunks = [p for p in final_payloads if "usage" in p]
     assert len(usage_chunks) >= 1
     usage = usage_chunks[-1]["usage"]
@@ -233,7 +238,10 @@ async def test_deepseek_profile_response_format_only_json_object_no_guided_json(
 
     await adapter.chat_completion(
         [{"role": "user", "content": "hi"}],
-        response_format={"type": "json_object", "schema": {"type": "object", "properties": {"x": {}}}},
+        response_format={
+            "type": "json_object",
+            "schema": {"type": "object", "properties": {"x": {}}},
+        },
     )
 
     call_kwargs = mock_post.call_args.kwargs
@@ -485,6 +493,7 @@ async def test_azure_openai_profile_normalizes_nested_usage_nonstream():
 @pytest.mark.asyncio
 async def test_azure_openai_profile_stream_includes_usage_and_normalizes_final_chunk():
     """Azure OpenAI profile should request include_usage and normalize nested usage in final chunk."""
+
     async def fake_stream_post(*args, **kwargs):
         yield _make_chunk(delta={"content": "hi"})
         yield _make_chunk(
@@ -605,10 +614,9 @@ async def test_llama_profile_normalizes_messages_tools_and_default_tool_choice(m
     assert payload["messages"][3]["role"] == "tool"
     assert payload["messages"][3]["content"] == ""
     assert len(payload["messages"]) == 4
-    assert (
-        payload["tools"][0]["function"]["parameters"]["properties"]["paths"]["items"]
-        == {"type": "string"}
-    )
+    assert payload["tools"][0]["function"]["parameters"]["properties"]["paths"]["items"] == {
+        "type": "string"
+    }
 
 
 @pytest.mark.asyncio
@@ -654,7 +662,9 @@ async def test_llama_profile_stream_function_call_normalized_and_idle_timeout_pa
     monkeypatch.setenv("LLAMA_STREAM_IDLE_TIMEOUT_SECS", "7")
 
     async def fake_stream_post(*args, **kwargs):
-        yield _make_chunk(delta={"function_call": {"name": "search", "arguments": '{"query":"hi"}'}})
+        yield _make_chunk(
+            delta={"function_call": {"name": "search", "arguments": '{"query":"hi"}'}}
+        )
         yield _make_chunk(delta={}, finish_reason="stop")
         yield "data: [DONE]"
 
@@ -675,7 +685,9 @@ async def test_llama_profile_stream_function_call_normalized_and_idle_timeout_pa
 
     payloads = [json.loads(c[6:]) for c in chunks[:-1] if c.startswith("data: ")]
     tool_payloads = [
-        p for p in payloads if p.get("choices") and p["choices"][0].get("delta", {}).get("tool_calls")
+        p
+        for p in payloads
+        if p.get("choices") and p["choices"][0].get("delta", {}).get("tool_calls")
     ]
     assert tool_payloads
     assert tool_payloads[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "search"
