@@ -58,6 +58,7 @@ def create_access_token(
     session_id: str | None = None,
     expires_delta: timedelta | None = None,
     is_admin: bool = False,
+    role: str = "free",
 ) -> tuple[str, str]:
     """Create a JWT access token.
 
@@ -68,6 +69,7 @@ def create_access_token(
         session_id: Session ID for token rotation (optional).
         expires_delta: Custom expiration time (default: from env).
         is_admin: Whether user has admin privileges.
+        role: User permission role (free/internal_group/developer/admin).
 
     Returns:
         Tuple of (token_string, jti).
@@ -85,6 +87,7 @@ def create_access_token(
         "sub": user_id,
         "email": email,
         "tier": tier,
+        "role": role,
         "is_admin": is_admin,
         "jti": jti,
         "sid": sid,

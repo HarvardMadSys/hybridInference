@@ -170,6 +170,7 @@ class UserListItem(BaseModel):
     id: str
     email: str
     user_name: str | None
+    role: str = "free"
     status: str
     email_verified: bool
     approval_note: str | None = None
@@ -242,6 +243,7 @@ class UserDetailResponse(BaseModel):
     id: str
     email: str
     user_name: str | None
+    role: str = "free"
     status: str
     email_verified: bool
     created_at: datetime
@@ -264,6 +266,7 @@ class UserDetailResponse(BaseModel):
 class UpdateUserRequest(BaseModel):
     """Request payload for updating user/key settings."""
 
+    role: str | None = Field(None, pattern="^(free|internal_group|developer|admin)$")
     tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)

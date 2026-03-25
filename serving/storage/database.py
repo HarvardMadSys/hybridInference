@@ -7,9 +7,30 @@ production or staging environments where PostgreSQL is available.
 
 import hashlib
 import json
+import os
 from typing import Any
 
 import asyncpg
+
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def _parse_admin_emails(raw: str) -> list[str]:
+    """Return normalized admin email addresses from a comma-separated env var."""
+    return [email.strip().lower() for email in raw.split(",") if email.strip()]
+
+
+def _parse_command_tag_count(command_tag: str) -> int:
+    """Extract the affected row count from an asyncpg command tag."""
+    parts = command_tag.split()
+    if not parts:
+        return 0
+    try:
+        return int(parts[-1])
+    except ValueError:
+        return 0
 
 
 def compute_prompt_hash(prompt: list[dict[str, Any]] | str) -> str:
@@ -405,6 +426,8 @@ class DatabaseLogger:
                     password_hash TEXT NOT NULL,
                     user_name TEXT,
                     preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    role TEXT NOT NULL DEFAULT 'free'
+                        CHECK (role IN ('free', 'internal_group', 'developer', 'admin')),
                     email_verified BOOLEAN DEFAULT FALSE,
                     status TEXT DEFAULT 'active'
                         CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
@@ -452,23 +475,111 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}'::jsonb
             """)
 
-            # Expand status CHECK constraint to include pending_approval and rejected
-            await conn.execute("""
-                DO $$
-                BEGIN
-                    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check;
-                    ALTER TABLE users
+            # Expand status CHECK constraint to include pending_approval and rejected.
+            # Rebuild inside a transaction so a failed ADD does not leave the table
+            # without its previous integrity constraint.
+            try:
+                async with conn.transaction():
+                    await conn.execute("""
+                        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check
+                    """)
+                    await conn.execute("""
+                        ALTER TABLE users
                         ADD CONSTRAINT users_status_check
-                        CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected'));
-                EXCEPTION WHEN others THEN
-                    NULL;
-                END $$
-            """)
+                        CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected'))
+                    """)
+            except asyncpg.PostgresError as exc:
+                invalid_status_rows = await conn.fetch("""
+                    SELECT id, email, status
+                    FROM users
+                    WHERE status NOT IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                """)
+                logger.error(
+                    "Failed to rebuild users_status_check; transaction rolled back. "
+                    "Sample invalid rows=%s error=%s",
+                    [dict(row) for row in invalid_status_rows],
+                    exc,
+                )
+                raise
 
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_users_pending_approval
                 ON users(created_at DESC) WHERE status = 'pending_approval'
             """)
+
+            # Add role column for permission levels (free/internal_group/developer/admin)
+            await conn.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS role TEXT
+            """)
+
+            await conn.execute("""
+                ALTER TABLE users
+                ALTER COLUMN role SET DEFAULT 'free'
+            """)
+
+            updated_roles_tag = await conn.execute("""
+                UPDATE users
+                SET role = 'free'
+                WHERE role IS NULL
+            """)
+            updated_roles = _parse_command_tag_count(updated_roles_tag)
+            if updated_roles:
+                logger.info(
+                    "Backfilled default user role for %d existing rows.",
+                    updated_roles,
+                )
+
+            await conn.execute("""
+                ALTER TABLE users
+                ALTER COLUMN role SET NOT NULL
+            """)
+
+            try:
+                async with conn.transaction():
+                    await conn.execute("""
+                        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check
+                    """)
+                    await conn.execute("""
+                        ALTER TABLE users
+                        ADD CONSTRAINT users_role_check
+                        CHECK (role IN ('free', 'internal_group', 'developer', 'admin'))
+                    """)
+            except asyncpg.PostgresError as exc:
+                invalid_role_rows = await conn.fetch("""
+                    SELECT id, email, role
+                    FROM users
+                    WHERE role NOT IN ('free', 'internal_group', 'developer', 'admin')
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                """)
+                logger.error(
+                    "Failed to rebuild users_role_check; transaction rolled back. "
+                    "Sample invalid rows=%s error=%s",
+                    [dict(row) for row in invalid_role_rows],
+                    exc,
+                )
+                raise
+
+            admin_emails = _parse_admin_emails(os.getenv("ADMIN_EMAILS", ""))
+            if admin_emails:
+                seeded_admins_tag = await conn.execute(
+                    """
+                    UPDATE users
+                    SET role = 'admin'
+                    WHERE lower(trim(email)) = ANY($1::text[])
+                      AND role = 'free'
+                    """,
+                    admin_emails,
+                )
+                seeded_admins = _parse_command_tag_count(seeded_admins_tag)
+                if seeded_admins:
+                    logger.info(
+                        "Seeded %d admin role assignments from ADMIN_EMAILS during DB initialization.",
+                        seeded_admins,
+                    )
 
             # Auth sessions table for refresh token management
             await conn.execute("""
