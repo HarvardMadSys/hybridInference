@@ -320,7 +320,7 @@ class HarnessRunner:
                 "detail": "Streaming response produced no data events.",
                 "observed": stats,
             }
-        if stats["saw_content"] or stats["saw_tool_calls"]:
+        if stats["saw_content"] or stats["saw_tool_calls"] or stats["saw_reasoning"]:
             return {
                 "status": "pass",
                 "failure_type": None,
