@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
+import { hasRole } from '@/components/providers/AuthProvider';
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
 
@@ -125,7 +126,7 @@ export default function PlaygroundPage() {
   );
 
   useEffect(() => {
-    if (!state.user?.is_admin) return;
+    if (!hasRole(state.user?.role, 'developer')) return;
     fetchWithAuth(API_BASE, '/internal/playground/models')
       .then((r) => jsonOrThrow<{ models: PlaygroundModel[] }>(r))
       .then((d) => {
@@ -137,7 +138,7 @@ export default function PlaygroundPage() {
         }
       })
       .catch(() => {});
-  }, [state.user?.is_admin]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [state.user?.role]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scrollDown = useCallback((behavior: ScrollBehavior = 'auto') => {
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior });
@@ -390,7 +391,7 @@ export default function PlaygroundPage() {
     );
   }
 
-  if (!state.user?.is_admin) {
+  if (!hasRole(state.user?.role, 'developer')) {
     return (
       <ProtectedRoute>
         <div className="flex h-full flex-col items-center justify-center gap-4 bg-gray-950 text-white">

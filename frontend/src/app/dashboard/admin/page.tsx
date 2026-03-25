@@ -51,6 +51,7 @@ export default function AdminPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<UserDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [editRole, setEditRole] = useState('');
   const [editTier, setEditTier] = useState('');
   const [editQuota, setEditQuota] = useState('');
   const [saving, setSaving] = useState(false);
@@ -90,6 +91,7 @@ export default function AdminPage() {
     try {
       const d = await getUserDetail(uid);
       setDetail(d);
+      setEditRole(d.role || 'free');
       setEditTier(d.key_tier || 'free');
       setEditQuota(d.quota_daily_usd?.toString() || '100');
     } catch (e) {
@@ -159,6 +161,7 @@ export default function AdminPage() {
     setSaving(true);
     act(async () => {
       const u: Record<string, unknown> = {};
+      if (editRole !== (detail.role || 'free')) u.role = editRole;
       if (editTier !== (detail.key_tier || 'free')) u.tier = editTier;
       if (editQuota !== (detail.quota_daily_usd?.toString() || '100'))
         u.quota_daily_cost_usd = Number(editQuota);
@@ -361,6 +364,11 @@ export default function AdminPage() {
                               REJECTED
                             </span>
                           )}
+                          {u.role && u.role !== 'free' && (
+                            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">
+                              {u.role}
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 text-[12px] text-gray-500">
                           <span>{relTime(u.created_at)}</span>
@@ -502,33 +510,52 @@ export default function AdminPage() {
                             )}
 
                             {/* Edit */}
-                            {detail.has_key && u.status === 'active' && (
+                            {u.status === 'active' && (
                               <div className="flex items-end gap-3 border-t border-gray-200 pt-4">
                                 <div>
                                   <div className="text-[11px] font-medium text-gray-500 mb-1">
-                                    Tier
+                                    Role
                                   </div>
                                   <select
-                                    value={editTier}
-                                    onChange={(e) => setEditTier(e.target.value)}
+                                    value={editRole}
+                                    onChange={(e) => setEditRole(e.target.value)}
                                     className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
                                   >
                                     <option value="free">free</option>
-                                    <option value="pro">pro</option>
-                                    <option value="enterprise">enterprise</option>
+                                    <option value="internal_group">internal_group</option>
+                                    <option value="developer">developer</option>
+                                    <option value="admin">admin</option>
                                   </select>
                                 </div>
-                                <div>
-                                  <div className="text-[11px] font-medium text-gray-500 mb-1">
-                                    Daily quota
-                                  </div>
-                                  <input
-                                    type="number"
-                                    value={editQuota}
-                                    onChange={(e) => setEditQuota(e.target.value)}
-                                    className="w-24 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
-                                  />
-                                </div>
+                                {detail.has_key && (
+                                  <>
+                                    <div>
+                                      <div className="text-[11px] font-medium text-gray-500 mb-1">
+                                        Tier
+                                      </div>
+                                      <select
+                                        value={editTier}
+                                        onChange={(e) => setEditTier(e.target.value)}
+                                        className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
+                                      >
+                                        <option value="free">free</option>
+                                        <option value="pro">pro</option>
+                                        <option value="enterprise">enterprise</option>
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <div className="text-[11px] font-medium text-gray-500 mb-1">
+                                        Daily quota
+                                      </div>
+                                      <input
+                                        type="number"
+                                        value={editQuota}
+                                        onChange={(e) => setEditQuota(e.target.value)}
+                                        className="w-24 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
+                                      />
+                                    </div>
+                                  </>
+                                )}
                                 <button
                                   onClick={doSave}
                                   disabled={saving}

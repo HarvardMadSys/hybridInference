@@ -8,6 +8,7 @@ export interface User {
   email: string;
   user_name?: string;
   tier: string;
+  role: string;
   status: string;
   email_verified: boolean;
   is_admin: boolean;

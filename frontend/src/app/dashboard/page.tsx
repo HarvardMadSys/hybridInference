@@ -4,6 +4,7 @@ import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
 import { UsageStats } from '@/components/features/dashboard/UsageStats';
 import { useAuth } from '@/components/providers';
+import { hasRole } from '@/components/providers/AuthProvider';
 
 export default function DashboardPage() {
   const { state } = useAuth();
@@ -88,26 +89,12 @@ export default function DashboardPage() {
 
         <UsageStats />
 
-        {state.user?.is_admin && (
+        {hasRole(state.user?.role, 'developer') && (
           <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
             <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-4">
-              Admin Tools
+              Developer Tools
             </h2>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <a
-                href="/dashboard/admin"
-                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-              >
-                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
-                  />
-                </svg>
-                Manage Users
-              </a>
               <a
                 href="/grafana/"
                 target="_blank"
@@ -153,6 +140,30 @@ export default function DashboardPage() {
                   />
                 </svg>
                 API Playground
+              </a>
+            </div>
+          </div>
+        )}
+
+        {state.user?.role === 'admin' && (
+          <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+            <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-4">
+              Admin Tools
+            </h2>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <a
+                href="/dashboard/admin"
+                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
+              >
+                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
+                  />
+                </svg>
+                Manage Users
               </a>
               <a
                 href="/pgadmin/"

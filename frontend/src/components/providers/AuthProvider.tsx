@@ -8,6 +8,7 @@ interface User {
   id: string;
   email: string;
   tier: string;
+  role: string;
   is_admin: boolean;
 }
 
@@ -22,6 +23,17 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+}
+
+const ROLE_RANK: Record<string, number> = {
+  free: 0,
+  internal_group: 1,
+  developer: 2,
+  admin: 3,
+};
+
+export function hasRole(userRole: string | undefined, required: string): boolean {
+  return (ROLE_RANK[userRole ?? 'free'] ?? 0) >= (ROLE_RANK[required] ?? 0);
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -39,7 +51,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setState({
         isAuthenticated: true,
         loading: false,
-        user: { id: me.id, email: me.email, tier: me.tier, is_admin: me.is_admin },
+        user: {
+          id: me.id,
+          email: me.email,
+          tier: me.tier,
+          role: me.role || 'free',
+          is_admin: me.is_admin,
+        },
       });
     } catch {
       setState({ isAuthenticated: false, loading: false, user: null });

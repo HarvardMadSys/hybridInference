@@ -11,6 +11,7 @@ export interface AdminUser {
   id: string;
   email: string;
   user_name: string | null;
+  role: string;
   status: string;
   email_verified: boolean;
   approval_note: string | null;
@@ -184,6 +185,7 @@ export interface UserDetail {
   id: string;
   email: string;
   user_name: string | null;
+  role: string;
   status: string;
   email_verified: boolean;
   created_at: string;
@@ -207,6 +209,7 @@ export async function getUserDetail(userId: string): Promise<UserDetail> {
 }
 
 export interface UpdateUserData {
+  role?: string;
   tier?: string;
   status?: string;
   quota_daily_cost_usd?: number;
