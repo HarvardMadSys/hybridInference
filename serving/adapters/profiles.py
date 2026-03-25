@@ -156,10 +156,34 @@ def extract_tool_calls_for_profile(
 def function_call_delta_to_tool_calls(
     profile: ProviderProfile, function_call: dict[str, Any] | None
 ) -> list[dict[str, Any]] | None:
-    """Convert a streaming function_call delta to tool_calls when needed."""
+    """Convert a streaming function_call delta to tool_calls when needed.
+
+    Unlike the non-streaming path, streaming deltas may carry *only*
+    ``arguments`` (no ``name``) after the initial chunk.  We must emit
+    argument-only deltas so the client can reassemble the full call.
+    """
     if profile != ProviderProfile.LLAMA:
         return None
-    return _function_call_to_tool_calls(function_call)
+    if not isinstance(function_call, dict):
+        return None
+
+    name = function_call.get("name") or ""
+    arguments = function_call.get("arguments")
+
+    if name:
+        # First delta — full tool_call entry with id
+        return [
+            {
+                "index": 0,
+                "id": f"call_{int(time.time() * 1000)}",
+                "type": "function",
+                "function": {"name": name, "arguments": arguments or ""},
+            }
+        ]
+    if arguments:
+        # Continuation delta — argument fragment only
+        return [{"index": 0, "function": {"arguments": arguments}}]
+    return None
 
 
 def normalize_usage_default(usage_data: dict[str, Any]) -> UsageInfo:

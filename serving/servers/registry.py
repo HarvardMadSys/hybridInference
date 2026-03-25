@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
 
 
+_LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"))
+
+
 def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
     """Generate a unique, user-friendly endpoint identifier.
 
@@ -36,11 +39,12 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
     Format: "{model}:{location}"
 
     Examples:
-        - glm-4.6 + sglang + http://localhost:12003 -> "glm-4.6:local"
-        - glm-4.6 + zhipu + https://api.z.ai/v4/    -> "glm-4.6:zhipu-api"
-        - qwen3-coder + sglang + http://localhost:8003 -> "qwen3-coder:local"
-        - qwen3-coder + chutes + https://llm.chutes.ai -> "qwen3-coder:chutes-api"
-        - minimax-m2.7 + openai_compat + https://api.minimax.io -> "minimax-m2.7:minimax-api"
+        - glm-4.6 + sglang + http://localhost:12003       -> "glm-4.6:local-12003"
+        - glm-4.6 + zhipu + https://api.z.ai/v4/          -> "glm-4.6:zhipu-api"
+        - qwen3-coder + sglang + http://localhost:8003     -> "qwen3-coder:local-8003"
+        - glm-4.7 + compat + http://host.docker.internal:8004 -> "glm-4.7:local-8004"
+        - qwen3-coder + chutes + https://llm.chutes.ai    -> "qwen3-coder:chutes-api"
+        - minimax-m2.7 + compat + https://api.minimax.io  -> "minimax-m2.7:minimax-api"
 
     Args:
         model_id: The model identifier (e.g., "glm-4.6", "qwen3-coder").
@@ -56,8 +60,11 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
         parsed = urlparse(base_url)
         host = parsed.hostname or "unknown"
 
-        # Local endpoints: use "{model}:local" format
-        if host in ("localhost", "127.0.0.1", "0.0.0.0"):
+        # Local endpoints: include port to disambiguate multiple local services
+        if host in _LOCAL_HOSTS:
+            port = parsed.port
+            if port:
+                return f"{model_id}:local-{port}"
             return f"{model_id}:local"
 
         # For generic adapters, extract service name from hostname

@@ -233,6 +233,14 @@ class DatabaseLogger:
                 WHERE session_id IS NOT NULL
             """)
 
+            # Covers the model-activity aggregation query which filters by
+            # recent timestamp window + real users, then groups by model/provider.
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_logs_model_activity
+                ON api_logs(timestamp DESC, model_id, provider)
+                WHERE user_id IS NOT NULL
+            """)
+
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_api_logs_error
                 ON api_logs(timestamp DESC)
