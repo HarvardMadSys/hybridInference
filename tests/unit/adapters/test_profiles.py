@@ -90,6 +90,15 @@ def test_delta_split_reassembly_sequence() -> None:
     assert reassembled == '{"query": "hello"}'
 
 
+def test_tool_call_ids_are_unique() -> None:
+    """Concurrent calls must not produce colliding IDs."""
+    ids = {
+        _function_call_to_tool_calls({"name": "fn", "arguments": "{}"})[0]["id"]  # type: ignore[index]
+        for _ in range(100)
+    }
+    assert len(ids) == 100
+
+
 def test_delta_non_llama_profile_returns_none() -> None:
     result = function_call_delta_to_tool_calls(
         ProviderProfile.DEFAULT,

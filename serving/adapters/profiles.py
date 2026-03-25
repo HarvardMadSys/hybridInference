@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -175,7 +175,7 @@ def function_call_delta_to_tool_calls(
         return [
             {
                 "index": 0,
-                "id": f"call_{int(time.time() * 1000)}",
+                "id": f"call_{uuid4().hex[:24]}",
                 "type": "function",
                 "function": {"name": name, "arguments": arguments or ""},
             }
@@ -402,7 +402,7 @@ def _function_call_to_tool_calls(
     return [
         {
             "index": 0,
-            "id": f"call_{int(time.time() * 1000)}",
+            "id": f"call_{uuid4().hex[:24]}",
             "type": "function",
             "function": {"name": name, "arguments": arguments},
         }
