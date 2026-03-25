@@ -7,12 +7,19 @@ failures while focusing on pure-unit tests that don't need their behavior.
 
 from __future__ import annotations
 
+import importlib
 import sys
 from types import SimpleNamespace
 
-# Stub python-dotenv if missing
+# Stub python-dotenv only when the real package is unavailable.
 if "dotenv" not in sys.modules:  # pragma: no cover - import-time shim
-    sys.modules["dotenv"] = SimpleNamespace(load_dotenv=lambda *a, **k: None)
+    try:
+        sys.modules["dotenv"] = importlib.import_module("dotenv")
+    except ImportError:
+        sys.modules["dotenv"] = SimpleNamespace(
+            load_dotenv=lambda *a, **k: None,
+            dotenv_values=lambda *a, **k: {},
+        )
 
 # Stub aiohttp if missing to satisfy imports in serving.http
 if "aiohttp" not in sys.modules:  # pragma: no cover - import-time shim

@@ -9,16 +9,18 @@ project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from routing.executor import RouteExecutor
 from serving.servers.deps import (
     AppServices,
     get_db_logger,
+    get_current_user,
     get_rate_limiter,
     get_router,
     get_services,
+    require_role,
 )
 from serving.servers.rate_limiter import PersistentRateLimiter
 from serving.storage.database import DatabaseLogger
@@ -270,3 +272,41 @@ class TestDependencyEdgeCases:
 
         # Services should be the same instance
         assert service_ids[0] == service_ids[1]
+
+
+class TestRequireRoleDependency:
+    """Test the role-based dependency factory."""
+
+    def _make_app(self, role: str) -> FastAPI:
+        """Build a small app whose current user has the given role."""
+        app = FastAPI()
+
+        async def override_current_user():
+            return {"role": role, "email": "user@example.com"}
+
+        app.dependency_overrides[get_current_user] = override_current_user
+
+        @app.get("/protected")
+        async def protected_route(user=Depends(require_role("developer"))):
+            return {"role": user["role"]}
+
+        return app
+
+    def test_require_role_rejects_free_user(self):
+        """free users should not pass a developer-gated dependency."""
+        client = TestClient(self._make_app("free"))
+
+        response = client.get("/protected")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Requires role 'developer' or higher."
+
+    @pytest.mark.parametrize("role", ["developer", "admin"])
+    def test_require_role_allows_sufficient_roles(self, role: str):
+        """developer and admin users should satisfy the dependency."""
+        client = TestClient(self._make_app(role))
+
+        response = client.get("/protected")
+
+        assert response.status_code == 200
+        assert response.json() == {"role": role}

@@ -14,6 +14,7 @@ from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
+from serving.servers.rate_limiter import PersistentRateLimiter
 
 
 class TestBootstrapInitialization:
@@ -60,14 +61,19 @@ class TestBootstrapInitialization:
             mock_logger.initialize.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_initialize_with_rate_limiter(self, mock_env, monkeypatch):
+    async def test_initialize_with_rate_limiter(self, mock_env, monkeypatch, tmp_path):
         """Test initialization with rate limiter enabled."""
         monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
+        limiter_db = tmp_path / "rate_limits.db"
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
             patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch(
+                "serving.servers.bootstrap.PersistentRateLimiter",
+                return_value=PersistentRateLimiter(str(limiter_db)),
+            ),
         ):
             services = await bootstrap.initialize()
 
