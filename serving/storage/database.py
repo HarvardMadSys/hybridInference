@@ -738,7 +738,15 @@ class DatabaseLogger:
                        MAX(timestamp) FILTER (WHERE stream = TRUE AND status_code < 400)
                            AS stream_last_success_at,
                        MAX(timestamp) FILTER (WHERE stream IS NOT TRUE AND status_code < 400)
-                           AS non_stream_last_success_at
+                           AS non_stream_last_success_at,
+                       AVG(ttft_ms) FILTER (WHERE stream = TRUE AND status_code < 400 AND ttft_ms IS NOT NULL)
+                           AS stream_avg_ttft_ms,
+                       AVG(completion_tokens) FILTER (WHERE status_code < 400 AND completion_tokens IS NOT NULL)
+                           AS avg_completion_tokens,
+                       AVG(completion_tokens) FILTER (WHERE stream = TRUE AND status_code < 400 AND completion_tokens IS NOT NULL)
+                           AS stream_avg_completion_tokens,
+                       AVG(completion_tokens) FILTER (WHERE stream IS NOT TRUE AND status_code < 400 AND completion_tokens IS NOT NULL)
+                           AS non_stream_avg_completion_tokens
                 FROM api_logs
                 WHERE timestamp >= NOW() - ($1 || ' minutes')::interval
                   AND user_id IS NOT NULL
@@ -756,19 +764,28 @@ class DatabaseLogger:
                     return None
                 return ts.isoformat().replace("+00:00", "Z")  # type: ignore[union-attr]
 
+            def _round_or_none(val: object) -> float | None:
+                if val is None:
+                    return None
+                return round(float(val), 1)
+
             result[key] = {
                 "request_count": row["request_count"],
                 "success_count": row["success_count"],
                 "last_request_at": _iso(last_req),
-                "avg_latency_ms": (
-                    round(float(row["avg_latency_ms"]), 1) if row["avg_latency_ms"] else None
-                ),
+                "avg_latency_ms": _round_or_none(row["avg_latency_ms"]),
                 "stream_count": row["stream_count"],
                 "non_stream_count": row["non_stream_count"],
                 "stream_success_count": row["stream_success_count"],
                 "non_stream_success_count": row["non_stream_success_count"],
                 "stream_last_success_at": _iso(row["stream_last_success_at"]),
                 "non_stream_last_success_at": _iso(row["non_stream_last_success_at"]),
+                "stream_avg_ttft_ms": _round_or_none(row["stream_avg_ttft_ms"]),
+                "avg_completion_tokens": _round_or_none(row["avg_completion_tokens"]),
+                "stream_avg_completion_tokens": _round_or_none(row["stream_avg_completion_tokens"]),
+                "non_stream_avg_completion_tokens": _round_or_none(
+                    row["non_stream_avg_completion_tokens"]
+                ),
             }
         return result
 
