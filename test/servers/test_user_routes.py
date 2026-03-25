@@ -1,5 +1,7 @@
 """Integration tests for user routes."""
 
+import json
+
 import pytest
 from httpx import AsyncClient
 
@@ -285,7 +287,10 @@ class TestLLMProberLayout:
                 "SELECT preferences FROM users WHERE id = $1",
                 test_user["id"],
             )
-        assert user_row["preferences"]["llm_prober_layout"] == layout
+        # asyncpg returns JSONB as a raw string when no codec is registered
+        prefs = user_row["preferences"]
+        prefs = json.loads(prefs) if isinstance(prefs, str) else prefs
+        assert prefs["llm_prober_layout"] == layout
 
         reset_response = await auth_app_client.delete(
             "/user/preferences/llm-prober-layout",
