@@ -1,0 +1,19 @@
+suite_name: chat-core
+
+scenarios:
+  - id: non_stream_basic
+    type: non_stream_basic
+    required_capabilities: [chat]
+    max_tokens: 96
+
+  - id: stream_basic
+    type: stream_basic
+    required_capabilities: [chat, streaming]
+    max_tokens: 512
+
+  - id: forced_tool_call
+    type: forced_tool_call
+    tools_fixture: tools-trivial-1.yaml
+    forced_tool_name: record_findings
+    required_capabilities: [chat, streaming, tools]
+    max_tokens: 256

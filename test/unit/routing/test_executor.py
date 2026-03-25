@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.executor import RouteConfig, RouteExecutor, _has_non_empty_content
+from routing.executor import ProviderPinError, RouteConfig, RouteExecutor, _has_non_empty_content
 from serving.adapters.base import BaseAdapter, ModelConfig
 
 if TYPE_CHECKING:
@@ -41,8 +41,9 @@ class _FailAdapter(BaseAdapter):
 
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params
-    ) -> AsyncGenerator[str, None]:  # pragma: no cover
+    ) -> AsyncGenerator[str, None]:
         raise RuntimeError("fail")
+        yield  # make this an async generator  # pragma: no cover
 
 
 @pytest.mark.unit
@@ -147,7 +148,7 @@ async def test_multiple_fallback_chain():
     # Force selecting the primary first
     orig = exe._select_adapter  # type: ignore[attr-defined]
     try:
-        exe._select_adapter = lambda model_id: p1  # type: ignore[assignment]
+        exe._select_adapter = lambda model_id, **kw: p1  # type: ignore[assignment]
         resp = await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
     finally:
         exe._select_adapter = orig  # type: ignore[assignment]
@@ -237,6 +238,161 @@ class TestHasNonEmptyContent:
 # ---------------------------------------------------------------------------
 # admin_only tests
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# pin_provider tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_pin_selects_matching_provider():
+    """pin_provider deterministically selects the matching adapter."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    b = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(a, 0.8), (b, 0.2)])
+
+    chosen = exe._select_adapter("m", pin_provider="ollama")
+    assert chosen is b
+
+
+@pytest.mark.unit
+def test_pin_skips_zero_weight():
+    """pin_provider must not route to a weight=0 (disabled) adapter."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    b = _EchoAdapter(_cfg("m", provider="featherless"))
+    exe.register_route("m", [(a, 1.0), (b, 0.0)])
+
+    chosen = exe._select_adapter("m", pin_provider="featherless")
+    assert chosen is None
+
+
+@pytest.mark.unit
+def test_pin_miss_returns_none():
+    """pin_provider with unknown name returns None."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    exe.register_route("m", [(a, 1.0)])
+
+    chosen = exe._select_adapter("m", pin_provider="nonexistent")
+    assert chosen is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pin_miss_raises_provider_pin_error():
+    """chat_completion with unmatched pin raises ProviderPinError, not generic ValueError."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    exe.register_route("m", [(a, 1.0)])
+
+    with pytest.raises(ProviderPinError, match="nonexistent"):
+        await exe.chat_completion(
+            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="nonexistent"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pin_no_fallback_on_failure():
+    """When pin_provider is set and the pinned adapter fails, must NOT fallback."""
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="zhipu"))
+    backup = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(primary, 0.8), (backup, 0.2)])
+
+    with pytest.raises(RuntimeError, match="fail"):
+        await exe.chat_completion(
+            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zhipu"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pin_success():
+    """pin_provider routes to the correct adapter and returns its response."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    b = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(a, 0.8), (b, 0.2)])
+
+    resp = await exe.chat_completion(
+        "m", messages=[{"role": "user", "content": "hi"}], pin_provider="ollama"
+    )
+    assert resp["_routing"]["provider"] == "ollama"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_skips_zero_weight():
+    """Normal fallback loop must skip weight=0 adapters."""
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="zhipu"))
+    disabled = _EchoAdapter(_cfg("m", provider="featherless"))
+    backup = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(primary, 0.8), (disabled, 0.0), (backup, 0.2)])
+
+    # Force primary selection
+    orig = exe._select_adapter
+    try:
+        exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
+        resp = await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        exe._select_adapter = orig  # type: ignore[assignment]
+
+    # Should fallback to ollama, NOT to featherless (weight=0)
+    assert resp["_routing"]["provider"] == "ollama"
+    assert resp["_routing"].get("fallback") is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_pin_success():
+    """stream_chat_completion with pin routes to correct adapter."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    b = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(a, 0.8), (b, 0.2)])
+
+    chunks = []
+    async for chunk in exe.stream_chat_completion(
+        "m", messages=[{"role": "user", "content": "hi"}], pin_provider="ollama"
+    ):
+        chunks.append(chunk)
+    assert len(chunks) > 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_pin_miss_raises():
+    """stream_chat_completion with unmatched pin raises ProviderPinError."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    exe.register_route("m", [(a, 1.0)])
+
+    with pytest.raises(ProviderPinError, match="nonexistent"):
+        async for _ in exe.stream_chat_completion(
+            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="nonexistent"
+        ):
+            pass
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_pin_no_fallback():
+    """stream_chat_completion with pin must NOT fallback on failure."""
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="zhipu"))
+    backup = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(primary, 0.8), (backup, 0.2)])
+
+    with pytest.raises(RuntimeError, match="fail"):
+        async for _ in exe.stream_chat_completion(
+            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zhipu"
+        ):
+            pass
 
 
 @pytest.mark.unit

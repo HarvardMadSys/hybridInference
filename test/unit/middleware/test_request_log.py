@@ -45,6 +45,7 @@ async def _get(app, path: str) -> None:
 class TestRequestLogMiddleware:
     """Verify verbose paths log at DEBUG and normal paths log at INFO."""
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("path", ["/health", "/health/deep", "/metrics"])
     async def test_verbose_paths_log_at_debug(self, app_with_middleware, caplog, path):
         with caplog.at_level(logging.DEBUG, logger="serving.servers.middleware.request_log"):
@@ -54,6 +55,7 @@ class TestRequestLogMiddleware:
         assert records, f"Expected an http_request log record for {path}"
         assert all(r.levelno == logging.DEBUG for r in records)
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("path", ["/health", "/health/deep", "/metrics"])
     async def test_verbose_paths_silent_at_info(self, app_with_middleware, caplog, path):
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
@@ -62,6 +64,7 @@ class TestRequestLogMiddleware:
         records = [r for r in caplog.records if r.message == "http_request"]
         assert not records, f"Expected no http_request log at INFO level for {path}"
 
+    @pytest.mark.asyncio
     async def test_normal_path_logs_at_info(self, app_with_middleware, caplog):
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
             await _get(app_with_middleware, "/v1/chat/completions")

@@ -1,0 +1,217 @@
+defaults:
+  base_url: https://freeinference.org
+  api_key_env: FREEINFERENCE_API_KEY
+  timeout_seconds: 240
+  sampling_count: 5
+
+targets:
+  # Public chat models
+  - name: llama-3.3-70b-instruct-public
+    model: llama-3.3-70b-instruct
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [llama, public]
+
+  - name: llama-4-scout-public
+    model: llama-4-scout
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [llama, public]
+
+  - name: llama-4-maverick-public
+    model: llama-4-maverick
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [llama, public]
+
+  - name: glm-4.7-public
+    model: glm-4.7
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [glm, public]
+
+  - name: glm-4.7-flash-public
+    model: glm-4.7-flash
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [glm, public]
+
+  - name: glm-5-public
+    model: glm-5
+    suite_type: gateway-public
+    sampling_count: 10
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [glm, public]
+
+  - name: qwen3.5-27b-public
+    model: qwen3.5-27b
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [qwen, public]
+
+  - name: minimax-m2.7-public
+    model: minimax-m2.7
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [minimax, public]
+
+  - name: minimax-m2.5-public
+    model: minimax-m2.5
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [minimax, public]
+
+  # Admin-only chat models
+  - name: gpt-5.4-admin
+    model: gpt-5.4
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: true
+    tags: [codex, admin]
+
+  - name: gpt-5.3-codex-admin
+    model: gpt-5.3-codex
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: true
+    tags: [codex, admin]
+
+  - name: gpt-5.2-codex-admin
+    model: gpt-5.2-codex
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: true
+    tags: [codex, admin]
+
+  - name: gpt-5.2-admin
+    model: gpt-5.2
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: true
+    tags: [codex, admin]
+
+  - name: gpt-5.1-codex-admin
+    model: gpt-5.1-codex
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: false
+      embeddings: false
+      anthropic_messages: false
+      admin_required: true
+    tags: [codex, admin]
+
+  - name: claude-sonnet-4.6-admin
+    model: claude-sonnet-4.6
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: false
+      embeddings: false
+      anthropic_messages: true
+      admin_required: true
+    tags: [claude, admin]
+
+  - name: claude-opus-4.6-admin
+    model: claude-opus-4.6
+    suite_type: gateway-public
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: false
+      embeddings: false
+      anthropic_messages: true
+      admin_required: true
+    tags: [claude, admin]

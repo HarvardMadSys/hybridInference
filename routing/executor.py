@@ -37,6 +37,10 @@ def _get_endpoint_id(adapter: BaseAdapter) -> str:
     return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
 
 
+class ProviderPinError(ValueError):
+    """Raised when a pinned provider is not found or disabled for a model."""
+
+
 @dataclass
 class RouteConfig:
     """Weighted adapter list for a model."""
@@ -90,18 +94,36 @@ class RouteExecutor:
         for alias in aliases or []:
             self.routes[alias] = route_cfg  # shared reference, not a copy
 
-    def _select_adapter(self, model_id: str) -> BaseAdapter | None:
+    def _select_adapter(
+        self, model_id: str, *, pin_provider: str | None = None
+    ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection.
 
         Args:
             model_id: Model identifier.
+            pin_provider: Optional provider/endpoint_id to pin to.  When set,
+                only the adapter whose ``config.provider`` or ``endpoint_id``
+                matches this value will be returned (no weighted selection).
 
         Returns:
-            Selected adapter or None if no route configured.
+            Selected adapter or None if no route configured / no match.
         """
         route = self.routes.get(model_id)
         if not route or not route.adapters:
             return None
+
+        # Provider pinning: deterministically select the matching adapter.
+        # Skip weight=0 adapters (disabled routes) to stay consistent with
+        # the playground UI and normal weighted selection.
+        if pin_provider:
+            for adapter, weight in route.adapters:
+                if weight <= 0:
+                    continue
+                eid = _get_endpoint_id(adapter)
+                if adapter.config.provider == pin_provider or eid == pin_provider:
+                    return adapter
+            return None
+
         # Build a snapshot of (adapter, weight, circuit) under a short lock, then
         # decide allow_request() outside the lock to minimize contention.
         with self._lock:
@@ -128,13 +150,19 @@ class RouteExecutor:
         return pool[-1][0]
 
     async def chat_completion(
-        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        pin_provider: str | None = None,
+        **params: Any,
     ) -> dict[str, Any]:
         """Execute chat completion with automatic fallback.
 
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
+            pin_provider: Optional provider name to force routing to.
             **params: Additional parameters for the adapter.
 
         Returns:
@@ -143,8 +171,12 @@ class RouteExecutor:
         Raises:
             ValueError: If no route configured for model.
         """
-        primary = self._select_adapter(model_id)
+        primary = self._select_adapter(model_id, pin_provider=pin_provider)
         if not primary:
+            if pin_provider:
+                raise ProviderPinError(
+                    f"Pinned provider '{pin_provider}' not found for model {model_id}"
+                )
             raise ValueError(f"No route configured for model {model_id}")
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
@@ -169,9 +201,13 @@ class RouteExecutor:
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
             self._on_failure(_get_endpoint_id(primary), reason="chat_exception")
+            # Pin mode: never fallback — the caller explicitly requested this
+            # provider, so a silent switch would produce misleading results.
+            if pin_provider:
+                raise primary_error
             route = self.routes[model_id]
-            for adapter, _ in route.adapters:
-                if adapter == primary:
+            for adapter, weight in route.adapters:
+                if adapter == primary or weight <= 0:
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
@@ -203,13 +239,19 @@ class RouteExecutor:
             raise primary_error
 
     async def stream_chat_completion(
-        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        pin_provider: str | None = None,
+        **params: Any,
     ) -> AsyncIterator[Any]:
         """Stream chat completion with automatic fallback.
 
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
+            pin_provider: Optional provider name to force routing to.
             **params: Additional parameters for the adapter.
 
         Yields:
@@ -218,8 +260,12 @@ class RouteExecutor:
         Raises:
             ValueError: If no route configured for model.
         """
-        primary = self._select_adapter(model_id)
+        primary = self._select_adapter(model_id, pin_provider=pin_provider)
         if not primary:
+            if pin_provider:
+                raise ProviderPinError(
+                    f"Pinned provider '{pin_provider}' not found for model {model_id}"
+                )
             raise ValueError(f"No route configured for model {model_id}")
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
@@ -247,9 +293,12 @@ class RouteExecutor:
                 stage="adapter_stream",
             ).inc()
             self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+            # Pin mode: never fallback — re-raise immediately.
+            if pin_provider:
+                raise primary_error
             route = self.routes[model_id]
-            for adapter, _ in route.adapters:
-                if adapter == primary:
+            for adapter, weight in route.adapters:
+                if adapter == primary or weight <= 0:
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):

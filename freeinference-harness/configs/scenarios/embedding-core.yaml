@@ -1,0 +1,6 @@
+suite_name: embedding-core
+
+scenarios:
+  - id: embedding_basic
+    type: embedding_basic
+    required_capabilities: [embeddings]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -62,7 +63,11 @@ class AdapterWithReasoningContent(BaseAdapter):
 
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         content = params.get("content", "Test response")
-        resp = self.format_response(content=content, model=self.config.id)
+        resp = self.format_response(
+            content=content,
+            model=self.config.id,
+            reasoning_content="Let me think through this carefully.",
+        )
         return resp
 
     async def stream_chat_completion(
@@ -83,6 +88,22 @@ class AdapterWithReasoningContent(BaseAdapter):
         yield make_final_usage_chunk(
             model=self.config.id, messages=messages, total_content="Test response"
         )
+        yield done_sentinel()
+
+
+class NonStreamReasoningOnlyAdapter(BaseAdapter):
+    """Adapter that returns only reasoning_content in non-stream mode."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(
+            content="",
+            model=self.config.id,
+            reasoning_content="Internal reasoning only.",
+        )
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
         yield done_sentinel()
 
 
@@ -289,19 +310,16 @@ async def test_synthetic_probe_skips_rate_limit_and_db_logging(
 async def test_reasoning_content_filtered_in_streaming(
     monkeypatch, mock_rate_limiter, mock_db_logger
 ):
-    """Test that non-standard reasoning_content field is filtered from streaming responses."""
-    # Disable auth for routing-focused tests
+    """Default /v1/chat/completions behavior is strict OpenAI: no reasoning_content visible."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
-    # Create router with adapter that emits reasoning_content
     router = RouteExecutor()
     router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
-    app = FastAPI(title="Test Reasoning Content Filter")
+    app = FastAPI(title="Test Strict Mode")
     app.state.services = AppServices(  # type: ignore[attr-defined]
         router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
     )
-
     install_error_handlers(app)
     app.include_router(completions.router)
 
@@ -324,27 +342,210 @@ async def test_reasoning_content_filtered_in_streaming(
             if line.startswith("data: "):
                 lines.append(line)
 
-        # Verify that no chunk contains reasoning_content
+        # Default: reasoning_content should NOT appear
         for line in lines:
             if line != "data: [DONE]" and line != "data: {}":
                 try:
                     chunk = json.loads(line[6:])
                     if chunk.get("choices"):
                         delta = chunk["choices"][0].get("delta", {})
-                        # Assert that reasoning_content is NOT present
                         assert "reasoning_content" not in delta, (
-                            f"reasoning_content should be filtered out, but found in: {line}"
+                            "reasoning_content should be stripped in default strict mode"
                         )
                 except json.JSONDecodeError:
-                    pass  # Skip malformed lines
+                    pass
 
-        # Verify content is still present
+        # Content should still arrive intact
         content = "".join(
             json.loads(line[6:])["choices"][0]["delta"].get("content", "")
             for line in lines
             if line != "data: [DONE]" and line != "data: {}"
         )
         assert content == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_passthrough_header_preserves_reasoning(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """X-Reasoning-Passthrough: true preserves reasoning_content for clients that can use it."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
+
+    app = FastAPI(title="Test Reasoning Passthrough")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "glm-4.6",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+            headers={"X-Reasoning-Passthrough": "true"},
+        ) as resp,
+    ):
+        assert resp.status_code == status.HTTP_200_OK
+        lines: list[str] = []
+        async for line in resp.aiter_lines():
+            if line.startswith("data: "):
+                lines.append(line)
+
+        saw_reasoning = False
+        for line in lines:
+            if line != "data: [DONE]" and line != "data: {}":
+                try:
+                    chunk = json.loads(line[6:])
+                    if chunk.get("choices"):
+                        delta = chunk["choices"][0].get("delta", {})
+                        if "reasoning_content" in delta:
+                            saw_reasoning = True
+                except json.JSONDecodeError:
+                    pass
+        assert saw_reasoning, "reasoning_content should be preserved with X-Reasoning-Passthrough"
+
+        content = "".join(
+            json.loads(line[6:])["choices"][0]["delta"].get("content", "")
+            for line in lines
+            if line != "data: [DONE]" and line != "data: {}"
+        )
+        assert content == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_non_stream_default_strict_strips_reasoning_content(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Non-streaming path should also default to strict OpenAI serialization."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
+
+    app = FastAPI(title="Test Non-Stream Strict Mode")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "glm-4.6", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    message = body["choices"][0]["message"]
+    assert message["content"] == "Test response"
+    assert "reasoning_content" not in message
+
+
+@pytest.mark.asyncio
+async def test_non_stream_reasoning_passthrough_header_preserves_reasoning_content(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Non-streaming path should preserve reasoning_content when passthrough is requested."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
+
+    app = FastAPI(title="Test Non-Stream Passthrough Mode")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "glm-4.6", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"X-Reasoning-Passthrough": "true"},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    message = body["choices"][0]["message"]
+    assert message["content"] == "Test response"
+    assert message["reasoning_content"] == "Let me think through this carefully."
+
+
+@pytest.mark.asyncio
+async def test_non_stream_reasoning_only_strict_returns_empty_visible_output(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Strict non-streaming mode should hide reasoning-only output and leave content empty."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route("glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)])
+
+    app = FastAPI(title="Test Non-Stream Reasoning Only Strict")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "glm-5", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    message = body["choices"][0]["message"]
+    assert message["content"] == ""
+    assert "reasoning_content" not in message
+
+
+@pytest.mark.asyncio
+async def test_non_stream_reasoning_only_passthrough_preserves_reasoning(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """Passthrough non-streaming mode should expose reasoning-only responses."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route("glm-5", [(NonStreamReasoningOnlyAdapter(_mk_cfg("glm-5")), 1.0)])
+
+    app = FastAPI(title="Test Non-Stream Reasoning Only Passthrough")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "glm-5", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"X-Reasoning-Passthrough": "true"},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    message = body["choices"][0]["message"]
+    assert message["content"] == ""
+    assert message["reasoning_content"] == "Internal reasoning only."
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +644,98 @@ class ReasoningOnlyAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+class SlowStartAdapter(BaseAdapter):
+    """Adapter that stalls before the first visible chunk."""
+
+    def __init__(self, config: ModelConfig, delay_s: float = 0.05) -> None:
+        super().__init__(config)
+        self.delay_s = delay_s
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(content="late", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        await asyncio.sleep(self.delay_s)
+        yield self.format_stream_chunk(model=self.config.id, content="late")
+        yield make_final_usage_chunk(model=self.config.id, messages=messages, total_content="late")
+        yield done_sentinel()
+
+
+class ToolCallsOnlyAdapter(BaseAdapter):
+    """Adapter that emits reasoning followed by tool calls and no text."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(content="", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        reasoning_chunk = {
+            "id": "chatcmpl-tool-reasoning",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.config.id,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": "Thinking about which file to inspect..."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(reasoning_chunk)}\n\n"
+        yield self.format_tool_chunk(
+            tool_calls=[
+                {
+                    "index": 0,
+                    "id": "call_read_file_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"app/main.py"}',
+                    },
+                }
+            ],
+            model=self.config.id,
+        )
+        yield make_final_usage_chunk(
+            model=self.config.id,
+            messages=messages,
+            total_content="",
+            finish_reason="tool_calls",
+        )
+        yield done_sentinel()
+
+
+class TrueEmptyTerminalAdapter(BaseAdapter):
+    """Adapter that ends after reasoning without content or tool calls."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(content="", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        reasoning_chunk = {
+            "id": "chatcmpl-empty-terminal",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.config.id,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": "I am thinking, but never answering."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(reasoning_chunk)}\n\n"
+        yield make_final_usage_chunk(model=self.config.id, messages=messages, total_content="")
+        yield done_sentinel()
+
+
 class ErrorAfterFirstTokenAdapter(BaseAdapter):
     """Adapter that emits one content chunk then raises an error."""
 
@@ -504,6 +797,16 @@ async def _get_db_log_ttft(mock_db_logger, timeout: float = 2.0) -> tuple[bool, 
     return False, None
 
 
+async def _wait_for_db_log_kwargs(mock_db_logger, timeout: float = 2.0) -> dict[str, Any] | None:
+    """Wait for the background DB log task and return kwargs."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if mock_db_logger.log_request.call_count > 0:
+            return mock_db_logger.log_request.call_args.kwargs
+        await asyncio.sleep(0.05)
+    return None
+
+
 @pytest.mark.asyncio
 async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limiter, mock_db_logger):
     """Streaming request where first delta has only reasoning_content should record ttft_ms."""
@@ -537,6 +840,150 @@ async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limite
     assert logged, "DB log_request should have been called"
     assert ttft is not None, "ttft_ms should be recorded when reasoning_content is in first delta"
     assert ttft >= 0
+
+
+@pytest.mark.asyncio
+async def test_keepalive_emitted_without_cancelling_upstream(
+    monkeypatch, mock_rate_limiter, mock_db_logger
+):
+    """A long gap before the first chunk should emit keepalive comments and still deliver output."""
+    app = _build_ttft_app(
+        "slow-start",
+        SlowStartAdapter(_mk_cfg("slow-start"), delay_s=0.05),
+        mock_rate_limiter,
+        mock_db_logger,
+        monkeypatch,
+    )
+
+    real_wait_for = asyncio.wait_for
+
+    async def fast_wait_for(awaitable, timeout=None):
+        shortened = 0.01 if timeout is not None and timeout > 0.01 else timeout
+        return await real_wait_for(awaitable, timeout=shortened)
+
+    monkeypatch.setattr(completions.asyncio, "wait_for", fast_wait_for)
+
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "slow-start",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp,
+    ):
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines()]
+
+    assert any(line == ": keepalive" for line in lines), "expected an SSE keepalive comment"
+    data_lines = [line for line in lines if line.startswith("data: ")]
+    content = "".join(
+        json.loads(line[6:])["choices"][0]["delta"].get("content", "")
+        for line in data_lines
+        if line != "data: [DONE]" and line != "data: {}"
+    )
+    assert content == "late"
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_only_stream_is_not_classified_as_empty(
+    monkeypatch, mock_rate_limiter, mock_db_logger, caplog
+):
+    """Tool-calls-only streams are valid output and should not trigger empty-output warnings."""
+    app = _build_ttft_app(
+        "tool-only",
+        ToolCallsOnlyAdapter(_mk_cfg("tool-only")),
+        mock_rate_limiter,
+        mock_db_logger,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app)
+    with caplog.at_level(logging.WARNING):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "tool-only",
+                    "messages": [{"role": "user", "content": "Inspect this file"}],
+                    "stream": True,
+                },
+            ) as resp:
+                assert resp.status_code == 200
+                lines = [line async for line in resp.aiter_lines() if line.startswith("data: ")]
+
+    tool_deltas = []
+    for line in lines:
+        if line == "data: [DONE]" or line == "data: {}":
+            continue
+        payload = json.loads(line[6:])
+        if payload.get("choices"):
+            delta = payload["choices"][0].get("delta", {})
+            if delta.get("tool_calls"):
+                tool_deltas.extend(delta["tool_calls"])
+
+    assert tool_deltas, "expected at least one streamed tool call delta"
+    assert not any(
+        "no visible content or tool_calls" in record.getMessage() for record in caplog.records
+    )
+
+    db_kwargs = await _wait_for_db_log_kwargs(mock_db_logger)
+    assert db_kwargs is not None, "expected background DB logging to run"
+    response = db_kwargs["response"]
+    assert response["choices"][0]["message"]["content"] is None
+    assert response["choices"][0]["message"]["tool_calls"]
+    assert response["choices"][0]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_true_empty_terminal_stream_logs_warning_and_db_empty_response(
+    monkeypatch, mock_rate_limiter, mock_db_logger, caplog
+):
+    """Streams that end without content or tool calls should be classified as true empty output."""
+    app = _build_ttft_app(
+        "empty-terminal",
+        TrueEmptyTerminalAdapter(_mk_cfg("empty-terminal")),
+        mock_rate_limiter,
+        mock_db_logger,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app)
+    with caplog.at_level(logging.WARNING):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "empty-terminal",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "stream": True,
+                },
+                headers={"X-Reasoning-Passthrough": "true"},
+            ) as resp:
+                assert resp.status_code == 200
+                lines = [line async for line in resp.aiter_lines() if line.startswith("data: ")]
+
+    assert any(
+        "no visible content or tool_calls" in record.getMessage() for record in caplog.records
+    )
+    # In passthrough mode, reasoning_content from upstream is visible
+    assert any(
+        "reasoning_content" in json.loads(line[6:])["choices"][0].get("delta", {})
+        for line in lines
+        if line not in {"data: [DONE]", "data: {}"} and json.loads(line[6:]).get("choices")
+    )
+
+    db_kwargs = await _wait_for_db_log_kwargs(mock_db_logger)
+    assert db_kwargs is not None, "expected background DB logging to run"
+    response = db_kwargs["response"]
+    assert response["choices"][0]["message"]["content"] is None
+    assert "tool_calls" not in response["choices"][0]["message"]
 
 
 @pytest.mark.asyncio
@@ -605,3 +1052,139 @@ async def test_ttft_null_when_error_before_any_token(
     logged, ttft = await _get_db_log_ttft(mock_db_logger)
     assert logged, "DB log_request should have been called on error path"
     assert ttft is None, "ttft_ms should be None when error occurs before any meaningful delta"
+
+
+# ===========================================================================
+# X-Route-Pin integration tests
+# ===========================================================================
+
+
+@pytest.fixture
+async def pin_app(monkeypatch, mock_rate_limiter, mock_db_logger) -> FastAPI:
+    """App with multi-provider routes for pin testing."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")  # all callers are admin
+
+    router = RouteExecutor()
+    zhipu = DummyAdapter(_mk_cfg("test-model"))
+    zhipu.config = ModelConfig(
+        id="test-model",
+        name="test-model",
+        provider="zhipu",
+        base_url="http://zhipu",
+        context_length=8192,
+        max_output_length=4096,
+    )
+    ollama = DummyAdapter(_mk_cfg("test-model"))
+    ollama.config = ModelConfig(
+        id="test-model",
+        name="test-model",
+        provider="ollama",
+        base_url="http://ollama",
+        context_length=8192,
+        max_output_length=4096,
+    )
+    disabled = DummyAdapter(_mk_cfg("test-model"))
+    disabled.config = ModelConfig(
+        id="test-model",
+        name="test-model",
+        provider="featherless",
+        base_url="http://featherless",
+        context_length=8192,
+        max_output_length=4096,
+    )
+    router.register_route("test-model", [(zhipu, 0.8), (ollama, 0.2), (disabled, 0.0)])
+
+    app = FastAPI()
+    app.state.services = AppServices(
+        router=router,
+        db_logger=mock_db_logger,
+        rate_limiter=mock_rate_limiter,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    return app
+
+
+@pytest.fixture
+async def pin_client(pin_app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+    transport = ASGITransport(app=pin_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+def _chat_body(model: str = "test-model", stream: bool = False) -> dict:
+    return {"model": model, "messages": [{"role": "user", "content": "hi"}], "stream": stream}
+
+
+@pytest.mark.asyncio
+async def test_pin_nonstream_success(pin_client: AsyncClient):
+    """Non-stream request pinned to a valid provider returns 200."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "ollama"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_pin_nonstream_miss_returns_400(pin_client: AsyncClient):
+    """Non-stream request pinned to nonexistent provider returns 400."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "nonexistent"},
+    )
+    assert resp.status_code == 400
+    assert "nonexistent" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_pin_zero_weight_returns_400(pin_client: AsyncClient):
+    """Pinning to a weight=0 (disabled) provider returns 400."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "featherless"},
+    )
+    assert resp.status_code == 400
+    assert "featherless" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_pin_stream_miss_returns_400(pin_client: AsyncClient):
+    """Streaming request pinned to nonexistent provider returns 400, not 200+SSE error."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(stream=True),
+        headers={"X-Route-Pin": "nonexistent"},
+    )
+    # Must be 400, NOT 200 with an SSE error chunk
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_pin_stream_zero_weight_returns_400(pin_client: AsyncClient):
+    """Streaming request pinned to weight=0 provider returns 400."""
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(stream=True),
+        headers={"X-Route-Pin": "featherless"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_pin_miss_releases_rate_limiter(pin_app: FastAPI, pin_client: AsyncClient):
+    """Invalid pin must release acquired rate limiter tokens."""
+    limiter = pin_app.state.services.rate_limiter
+    limiter.release_tokens.reset_mock()
+
+    await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "nonexistent"},
+    )
+    limiter.release_tokens.assert_called_once()

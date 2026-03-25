@@ -19,12 +19,66 @@ router = APIRouter(prefix="/internal/playground", tags=["Playground"])
 _INTERNAL_KEYS = frozenset({"_routing"})
 
 
+class PlaygroundProviderItem(BaseModel):
+    """One routable provider backend for a model."""
+
+    id: str
+    name: str
+
+
 class PlaygroundModelItem(BaseModel):
     """Canonical model metadata exposed to the admin playground."""
 
     id: str
     name: str
     provider: str
+    providers: list[PlaygroundProviderItem] = []
+
+
+def _get_endpoint_id(adapter: Any) -> str:
+    return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
+
+
+# Human-friendly display names for provider kinds.
+_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
+    "chutes": "Chutes",
+    "featherless": "Featherless AI",
+    "ollama": "Ollama",
+    "zhipu": "ZAI",
+    "llama": "Llama API",
+    "openai_compat": "OpenAI Compatible",
+    "sglang": "SGLang",
+    "deepseek": "DeepSeek",
+    "openai": "OpenAI",
+    "minimax": "Minimax",
+    "codex_sub": "OpenAI",
+}
+
+
+_BASE_URL_DISPLAY_NAMES: dict[str, str] = {
+    "api.minimax.io": "Minimax",
+    "llm.chutes.ai": "Chutes",
+    "api.featherless.ai": "Featherless AI",
+    "ollama.com": "Ollama",
+    "api.z.ai": "ZAI",
+    "api.together.ai": "Together AI",
+}
+
+
+def _provider_display_name(endpoint_id: str, base_url: str = "") -> str:
+    """Return a human-friendly provider name.
+
+    Tries base_url host matching first (more specific), then falls back
+    to the endpoint_id mapping.
+    """
+    if base_url:
+        from urllib.parse import urlparse
+
+        host = urlparse(base_url).netloc.lower().split(":")[0]
+        for pattern, name in _BASE_URL_DISPLAY_NAMES.items():
+            if pattern in host:
+                return name
+    return _PROVIDER_DISPLAY_NAMES.get(endpoint_id, endpoint_id)
 
 
 @router.get("/models")
@@ -44,10 +98,28 @@ async def list_models(
         if canonical_id in canonical_models:
             continue
 
+        providers: list[PlaygroundProviderItem] = []
+        seen: set[str] = set()
+        for adapter, weight in route.adapters:
+            if weight <= 0:
+                continue
+            eid = _get_endpoint_id(adapter)
+            if eid in seen:
+                continue
+            seen.add(eid)
+            base_url = getattr(adapter.config, "base_url", "")
+            providers.append(
+                PlaygroundProviderItem(
+                    id=eid,
+                    name=_provider_display_name(eid, base_url),
+                )
+            )
+
         canonical_models[canonical_id] = PlaygroundModelItem(
             id=canonical_id,
             name=primary_cfg.name,
             provider=primary_cfg.provider,
+            providers=providers,
         )
 
     models = sorted(
@@ -66,6 +138,7 @@ class PlaygroundChatRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1, le=32768)
     reasoning_effort: str | None = None
+    provider: str | None = None
 
 
 def _sanitize_chunk(chunk: str) -> str:
@@ -111,6 +184,7 @@ async def playground_chat(
         async for chunk in router_exec.stream_chat_completion(
             body.model,
             effective_messages,
+            pin_provider=body.provider,
             **kwargs,
         ):
             with suppress(Exception):

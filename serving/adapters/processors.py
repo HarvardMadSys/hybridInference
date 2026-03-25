@@ -99,12 +99,19 @@ class GLMProcessor(BaseProcessor):
         self.buffer += content
         self.model_id = chunk.get("model", self.model_id)
 
-        # Check if we should enter tool mode
-        # We look for <tool_call> or <tool> depending on model variant
-        if ("<tool_call>" in self.buffer or "<tool>" in self.buffer) and not self.in_tool_mode:
-            self.in_tool_mode = True
-
         to_yield = []
+
+        # Check if we should enter tool mode
+        if "<tool_call>" in self.buffer and not self.in_tool_mode:
+            self.in_tool_mode = True
+            # Emit any text before <tool_call> (with think tags stripped)
+            idx = self.buffer.index("<tool_call>")
+            pre_text = self.buffer[:idx].replace("<think>", "").replace("</think>", "")
+            self.buffer = self.buffer[idx:]
+            if pre_text:
+                new_chunk = _clone_chunk(chunk)
+                new_chunk["choices"][0]["delta"]["content"] = pre_text
+                to_yield.append(new_chunk)
 
         if self.in_tool_mode:
             # We are in tool mode. We buffer EVERYTHING until we see a potential end.
@@ -603,16 +610,38 @@ def _clone_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
     return new_chunk
 
 
-def get_processor(model_id: str | None) -> BaseProcessor:
-    """Factory function to get the appropriate processor."""
+_PROCESSOR_MAP: dict[str, type[BaseProcessor]] = {
+    "default": DefaultProcessor,
+    "glm": GLMProcessor,
+    "qwen_coder": QwenCoderProcessor,
+    "think_block": ThinkBlockProcessor,
+}
+
+
+def get_processor(model_id: str | None, override: str | None = None) -> BaseProcessor:
+    """Factory function to get the appropriate processor.
+
+    Args:
+        model_id: Model identifier for auto-detection.
+        override: Explicit processor name (bypasses auto-detection).
+                  Values: "default", "glm", "qwen_coder", "think_block".
+    """
+    if override:
+        cls = _PROCESSOR_MAP.get(override)
+        if not cls:
+            valid = ", ".join(sorted(_PROCESSOR_MAP))
+            raise ValueError(f"Unknown processor override '{override}'. Valid values: {valid}")
+        return cls()
+
     if not model_id:
         return DefaultProcessor()
 
     model_id_lower = model_id.lower()
 
-    # Auto-detect GLM models (glm-4.x, glm-5, etc.)
-    if model_id_lower.startswith("glm"):
-        return GLMProcessor()
+    # Auto-detect from model ID
+    # Note: GLMProcessor is NOT auto-detected. Unified OpenAI-compatible routes
+    # assume standard OpenAI chunks unless a route explicitly opts into
+    # `processor: glm`.
     if "qwen" in model_id_lower and "coder" in model_id_lower:
         return QwenCoderProcessor()
     if "minimax" in model_id_lower:

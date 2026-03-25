@@ -80,6 +80,22 @@ class ModelConfig:
             "input_cache_writes": "0",
         }
     )
+    # Output processor override for OpenAICompatAdapter.
+    # When set, bypasses auto-detection based on model ID.
+    # Values: "default", "glm", "qwen_coder", "think_block".
+    processor: str | None = None
+    # Auth/header overrides for OpenAICompatAdapter-like providers.
+    use_bearer_auth: bool = True
+    auth_header_name: str | None = None
+    auth_format: str | None = None
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    extra_query: dict[str, str] = field(default_factory=dict)
+    # Optional upstream chat endpoint path override for OpenAI-like providers
+    # that do not expose the default /v1/chat/completions route.
+    chat_path: str | None = None
+    # Provider profile for usage extraction (e.g. "deepseek" for cache hit/miss semantics).
+    # When set, OpenAICompatAdapter uses profile-specific usage normalization.
+    provider_profile: str | None = None
 
 
 class BaseAdapter(ABC):
@@ -127,10 +143,11 @@ class BaseAdapter(ABC):
 
     def format_response(
         self,
-        content: str,
+        content: str | None,
         model: str,
         usage: UsageInfo | None = None,
         tool_calls: list[dict] | None = None,
+        reasoning_content: str | None = None,
         finish_reason: str = "stop",
     ) -> dict[str, Any]:
         """Format provider response into OpenAI-compatible schema."""
@@ -150,6 +167,9 @@ class BaseAdapter(ABC):
 
         if tool_calls:
             response["choices"][0]["message"]["tool_calls"] = tool_calls
+
+        if reasoning_content is not None:
+            response["choices"][0]["message"]["reasoning_content"] = reasoning_content
 
         if usage:
             response["usage"] = usage.to_dict()

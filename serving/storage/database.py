@@ -233,6 +233,14 @@ class DatabaseLogger:
                 WHERE session_id IS NOT NULL
             """)
 
+            # Covers the model-activity aggregation query which filters by
+            # recent timestamp window + real users, then groups by model/provider.
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_logs_model_activity
+                ON api_logs(timestamp DESC, model_id, provider)
+                WHERE user_id IS NOT NULL
+            """)
+
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_api_logs_error
                 ON api_logs(timestamp DESC)
@@ -396,6 +404,7 @@ class DatabaseLogger:
                     email TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
                     user_name TEXT,
+                    preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
                     email_verified BOOLEAN DEFAULT FALSE,
                     status TEXT DEFAULT 'active'
                         CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
@@ -436,6 +445,11 @@ class DatabaseLogger:
             await conn.execute("""
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS reviewed_by TEXT
+            """)
+
+            await conn.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}'::jsonb
             """)
 
             # Expand status CHECK constraint to include pending_approval and rejected
@@ -706,6 +720,82 @@ class DatabaseLogger:
                 json.dumps(metadata) if metadata else None,
                 json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
             )
+
+    async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
+        """Aggregate recent real-user traffic per (model_id, provider).
+
+        Returns a dict keyed by ``"model_id::provider"`` with per-route stats.
+        Synthetic probes (``user_id IS NULL``) are excluded.
+        """
+        if not self.pool:
+            return {}
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT model_id, provider,
+                       COUNT(*)                                           AS request_count,
+                       COUNT(*) FILTER (WHERE status_code < 400)          AS success_count,
+                       MAX(timestamp)                                     AS last_request_at,
+                       AVG(latency_ms) FILTER (WHERE status_code < 400)   AS avg_latency_ms,
+                       COUNT(*) FILTER (WHERE stream = TRUE)              AS stream_count,
+                       COUNT(*) FILTER (WHERE stream IS NOT TRUE)         AS non_stream_count,
+                       COUNT(*) FILTER (WHERE stream = TRUE AND status_code < 400)
+                           AS stream_success_count,
+                       COUNT(*) FILTER (WHERE stream IS NOT TRUE AND status_code < 400)
+                           AS non_stream_success_count,
+                       MAX(timestamp) FILTER (WHERE stream = TRUE AND status_code < 400)
+                           AS stream_last_success_at,
+                       MAX(timestamp) FILTER (WHERE stream IS NOT TRUE AND status_code < 400)
+                           AS non_stream_last_success_at,
+                       AVG(ttft_ms) FILTER (WHERE stream = TRUE AND status_code < 400 AND ttft_ms IS NOT NULL)
+                           AS stream_avg_ttft_ms,
+                       AVG(completion_tokens) FILTER (WHERE status_code < 400 AND completion_tokens IS NOT NULL)
+                           AS avg_completion_tokens,
+                       AVG(completion_tokens) FILTER (WHERE stream = TRUE AND status_code < 400 AND completion_tokens IS NOT NULL)
+                           AS stream_avg_completion_tokens,
+                       AVG(completion_tokens) FILTER (WHERE stream IS NOT TRUE AND status_code < 400 AND completion_tokens IS NOT NULL)
+                           AS non_stream_avg_completion_tokens
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 || ' minutes')::interval
+                  AND user_id IS NOT NULL
+                GROUP BY model_id, provider
+                """,
+                str(window_minutes),
+            )
+        result: dict[str, Any] = {}
+        for row in rows:
+            key = f"{row['model_id']}::{row['provider']}"
+            last_req = row["last_request_at"]
+
+            def _iso(ts: object) -> str | None:
+                if ts is None:
+                    return None
+                return ts.isoformat().replace("+00:00", "Z")  # type: ignore[union-attr]
+
+            def _round_or_none(val: object) -> float | None:
+                if val is None:
+                    return None
+                return round(float(val), 1)
+
+            result[key] = {
+                "request_count": row["request_count"],
+                "success_count": row["success_count"],
+                "last_request_at": _iso(last_req),
+                "avg_latency_ms": _round_or_none(row["avg_latency_ms"]),
+                "stream_count": row["stream_count"],
+                "non_stream_count": row["non_stream_count"],
+                "stream_success_count": row["stream_success_count"],
+                "non_stream_success_count": row["non_stream_success_count"],
+                "stream_last_success_at": _iso(row["stream_last_success_at"]),
+                "non_stream_last_success_at": _iso(row["non_stream_last_success_at"]),
+                "stream_avg_ttft_ms": _round_or_none(row["stream_avg_ttft_ms"]),
+                "avg_completion_tokens": _round_or_none(row["avg_completion_tokens"]),
+                "stream_avg_completion_tokens": _round_or_none(row["stream_avg_completion_tokens"]),
+                "non_stream_avg_completion_tokens": _round_or_none(
+                    row["non_stream_avg_completion_tokens"]
+                ),
+            }
+        return result
 
     async def get_stats(
         self, model_id: str | None = None, provider: str | None = None, hours: int = 24

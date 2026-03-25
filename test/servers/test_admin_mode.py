@@ -389,9 +389,13 @@ class TestPlaygroundAccess:
         )
 
         assert response.status_code == 200
-        assert response.json() == {
-            "models": [{"id": "playground-model", "name": "playground-model", "provider": "test"}]
-        }
+        data = response.json()
+        assert len(data["models"]) == 1
+        model = data["models"][0]
+        assert model["id"] == "playground-model"
+        assert model["name"] == "playground-model"
+        assert model["provider"] == "test"
+        assert model["providers"] == [{"id": "test", "name": "test"}]
 
     @pytest.mark.asyncio
     async def test_playground_models_uses_db_email_for_admin_check(

@@ -1,8 +1,10 @@
 """User dashboard routes for API key management and usage statistics."""
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -17,6 +19,8 @@ from serving.schemas_auth import (
     ChangeEmailResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
+    LLMProberLayoutResponse,
+    LLMProberLayoutState,
     QuotaInfo,
     UsageResponse,
     UsageStats,
@@ -31,6 +35,34 @@ from serving.utils.logging import get_logger
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
+LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
+
+
+def _coerce_preferences(value: Any) -> dict[str, Any]:
+    """Return a mutable preferences mapping from a DB JSONB value.
+
+    asyncpg may return JSONB columns as either a dict (if a codec is
+    registered) or a raw JSON string.  Handle both cases.
+    """
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {}
+
+
+def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutState:
+    """Parse the persisted llm-prober layout or fall back to defaults."""
+    raw_layout = preferences.get(LLM_PROBER_LAYOUT_KEY, {})
+    try:
+        return LLMProberLayoutState.model_validate(raw_layout)
+    except Exception:
+        return LLMProberLayoutState()
 
 
 def get_default_daily_quota() -> Decimal:
@@ -75,6 +107,87 @@ async def get_current_user_info(
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
     )
+
+
+@router.get("/preferences/llm-prober-layout", response_model=LLMProberLayoutResponse)
+async def get_llm_prober_layout(
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> LLMProberLayoutResponse:
+    """Return the current user's saved llm-prober layout."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    async with db_logger.pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            "SELECT preferences FROM users WHERE id = $1",
+            current_user["user_id"],
+        )
+
+    if not user_row:
+        raise UserNotFoundError(current_user["user_id"])
+
+    preferences = _coerce_preferences(user_row["preferences"])
+    return LLMProberLayoutResponse(layout=_extract_llm_prober_layout(preferences))
+
+
+@router.put("/preferences/llm-prober-layout", response_model=LLMProberLayoutResponse)
+async def update_llm_prober_layout(
+    body: LLMProberLayoutState,
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> LLMProberLayoutResponse:
+    """Persist the current user's preferred llm-prober layout."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    async with db_logger.pool.acquire() as conn, conn.transaction():
+        user_row = await conn.fetchrow(
+            "SELECT preferences FROM users WHERE id = $1 FOR UPDATE",
+            current_user["user_id"],
+        )
+        if not user_row:
+            raise UserNotFoundError(current_user["user_id"])
+
+        preferences = _coerce_preferences(user_row["preferences"])
+        preferences[LLM_PROBER_LAYOUT_KEY] = body.model_dump()
+        await conn.execute(
+            "UPDATE users SET preferences = $1::jsonb WHERE id = $2",
+            json.dumps(preferences),
+            current_user["user_id"],
+        )
+
+    logger.info("llm_prober_layout_updated user_id=%s", current_user["user_id"])
+    return LLMProberLayoutResponse(layout=body)
+
+
+@router.delete("/preferences/llm-prober-layout", response_model=LLMProberLayoutResponse)
+async def reset_llm_prober_layout(
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> LLMProberLayoutResponse:
+    """Delete the saved llm-prober layout for the current user."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    async with db_logger.pool.acquire() as conn, conn.transaction():
+        user_row = await conn.fetchrow(
+            "SELECT preferences FROM users WHERE id = $1 FOR UPDATE",
+            current_user["user_id"],
+        )
+        if not user_row:
+            raise UserNotFoundError(current_user["user_id"])
+
+        preferences = _coerce_preferences(user_row["preferences"])
+        preferences.pop(LLM_PROBER_LAYOUT_KEY, None)
+        await conn.execute(
+            "UPDATE users SET preferences = $1::jsonb WHERE id = $2",
+            json.dumps(preferences),
+            current_user["user_id"],
+        )
+
+    logger.info("llm_prober_layout_reset user_id=%s", current_user["user_id"])
+    return LLMProberLayoutResponse(layout=LLMProberLayoutState())
 
 
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=201)

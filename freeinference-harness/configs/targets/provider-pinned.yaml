@@ -1,0 +1,224 @@
+# Provider-pinned targets: go through the gateway but pin to a specific backend
+# via the X-Route-Pin header. Tests the full adapter+processor stack per provider.
+#
+# Requires admin API key (X-Route-Pin is admin-only).
+#
+# Naming convention: {model}@{provider}-gw
+# "gw" suffix distinguishes from provider-direct targets.
+
+defaults:
+  base_url: https://freeinference.org
+  api_key_env: FREEINFERENCE_ADMIN_API_KEY
+  sampling_count: 1
+  suite_type: gateway-pinned
+  extra_headers:
+    X-Reasoning-Passthrough: "true"
+
+targets:
+  # ── glm-4.7: zhipu + ollama + chutes + featherless ──────────────────
+  - name: glm-4.7@zhipu-gw
+    model: glm-4.7
+    tags: [zhipu, glm, pinned]
+    extra_headers:
+      X-Route-Pin: zhipu
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-4.7@ollama-gw
+    model: glm-4.7
+    tags: [ollama, glm, pinned]
+    extra_headers:
+      X-Route-Pin: ollama
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-4.7@chutes-gw
+    model: glm-4.7
+    tags: [chutes, glm, pinned]
+    extra_headers:
+      X-Route-Pin: chutes
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-4.7@featherless-gw
+    model: glm-4.7
+    tags: [featherless, glm, pinned]
+    extra_headers:
+      X-Route-Pin: featherless
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  # ── glm-4.7-flash: local vLLM + featherless ─────────────────────────
+  - name: glm-4.7-flash@local-gw
+    model: glm-4.7-flash
+    tags: [local, glm, pinned]
+    extra_headers:
+      X-Route-Pin: openai_compat
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-4.7-flash@featherless-gw
+    model: glm-4.7-flash
+    tags: [featherless, glm, pinned]
+    extra_headers:
+      X-Route-Pin: featherless
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  # ── glm-5: zhipu + ollama + chutes + featherless ────────────────────
+  - name: glm-5@zhipu-gw
+    model: glm-5
+    tags: [zhipu, glm, pinned]
+    extra_headers:
+      X-Route-Pin: zhipu
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-5@ollama-gw
+    model: glm-5
+    tags: [ollama, glm, pinned]
+    extra_headers:
+      X-Route-Pin: ollama
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-5@chutes-gw
+    model: glm-5
+    tags: [chutes, glm, pinned]
+    extra_headers:
+      X-Route-Pin: chutes
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-5@featherless-gw
+    model: glm-5
+    tags: [featherless, glm, pinned]
+    extra_headers:
+      X-Route-Pin: featherless
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  # ── llama-3.3-70b: llama API + featherless ──────────────────────────
+  - name: llama-3.3-70b@llama-gw
+    model: llama-3.3-70b-instruct
+    tags: [llama, pinned]
+    extra_headers:
+      X-Route-Pin: llama
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  # ── llama-4-scout: llama API only ──────────────────────────────────
+  - name: llama-4-scout@llama-gw
+    model: llama-4-scout
+    tags: [llama, pinned]
+    extra_headers:
+      X-Route-Pin: llama
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  # ── minimax-m2.7: minimax + ollama ──────────────────────────────────
+  - name: minimax-m2.7@minimax-gw
+    model: minimax-m2.7
+    tags: [minimax, pinned]
+    extra_headers:
+      X-Route-Pin: openai_compat
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: minimax-m2.7@ollama-gw
+    model: minimax-m2.7
+    tags: [ollama, minimax, pinned]
+    extra_headers:
+      X-Route-Pin: ollama
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  # ── minimax-m2.5: minimax + ollama + chutes + featherless ───────────
+  - name: minimax-m2.5@minimax-gw
+    model: minimax-m2.5
+    tags: [minimax, pinned]
+    extra_headers:
+      X-Route-Pin: openai_compat
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: minimax-m2.5@ollama-gw
+    model: minimax-m2.5
+    tags: [ollama, minimax, pinned]
+    extra_headers:
+      X-Route-Pin: ollama
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: minimax-m2.5@chutes-gw
+    model: minimax-m2.5
+    tags: [chutes, minimax, pinned]
+    extra_headers:
+      X-Route-Pin: chutes
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: minimax-m2.5@featherless-gw
+    model: minimax-m2.5
+    tags: [featherless, minimax, pinned]
+    extra_headers:
+      X-Route-Pin: featherless
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  # ── qwen3.5-27b: local sglang + featherless ─────────────────────────
+  - name: qwen3.5-27b@sglang-gw
+    model: qwen3.5-27b
+    tags: [sglang, qwen, pinned]
+    extra_headers:
+      X-Route-Pin: sglang
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: qwen3.5-27b@featherless-gw
+    model: qwen3.5-27b
+    tags: [featherless, qwen, pinned]
+    extra_headers:
+      X-Route-Pin: featherless
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true

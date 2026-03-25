@@ -65,6 +65,9 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
     # Reasoning effort (for Codex models: "low", "medium", "high")
     reasoning_effort: str | None = None
 
+    # Reasoning / thinking control (Zhipu GLM-4.7/GLM-5, MiniMax M2.5)
+    thinking: dict[str, Any] | None = None
+
     # Tools / structured output
     tools: list[dict[str, Any]] | None = None
     tool_choice: str | dict[str, Any] | None = None
@@ -82,6 +85,7 @@ class ChoiceMessage(BaseModel):  # type: ignore[no-any-unimported]
 
     role: Literal["assistant"] = "assistant"
     content: str | None = ""
+    reasoning_content: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
 
 

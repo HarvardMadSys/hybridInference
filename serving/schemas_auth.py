@@ -81,6 +81,20 @@ class UserProfileUpdate(BaseModel):
     user_name: str | None = None
 
 
+class LLMProberLayoutState(BaseModel):
+    """Persisted llm-prober layout for one user account."""
+
+    direct_models: list[str] = Field(default_factory=list)
+    direct_providers: dict[str, list[str]] = Field(default_factory=dict)
+    e2e_models: list[str] = Field(default_factory=list)
+
+
+class LLMProberLayoutResponse(BaseModel):
+    """Current llm-prober layout response."""
+
+    layout: LLMProberLayoutState
+
+
 # API key schemas
 class APIKeyCreate(BaseModel):
     """API key creation request (no body needed)."""

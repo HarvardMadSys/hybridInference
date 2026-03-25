@@ -1,5 +1,7 @@
 """Integration tests for user routes."""
 
+import json
+
 import pytest
 from httpx import AsyncClient
 
@@ -232,6 +234,72 @@ class TestUserProfile:
         response = await auth_app_client.patch("/user/profile", headers=auth_headers, json={})
 
         assert response.status_code == 400
+
+
+class TestLLMProberLayout:
+    """Test llm-prober layout preference endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_llm_prober_layout_defaults(
+        self, auth_app_client: AsyncClient, test_user, auth_headers
+    ):
+        response = await auth_app_client.get(
+            "/user/preferences/llm-prober-layout",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "layout": {"direct_models": [], "direct_providers": {}, "e2e_models": []}
+        }
+
+    @pytest.mark.asyncio
+    async def test_update_and_reset_llm_prober_layout(
+        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_db_logger
+    ):
+        layout = {
+            "direct_models": ["glm-4.7", "glm-5", "qwen3-coder-30b"],
+            "direct_providers": {
+                "glm-4.7": ["glm-4.7::ollama::ollama-com", "glm-4.7::zhipu::api-z-ai"],
+                "minimax-m2.7": ["a", "b", "c"],
+            },
+            "e2e_models": ["glm-4.7-flash", "minimax-m2.7"],
+        }
+
+        update_response = await auth_app_client.put(
+            "/user/preferences/llm-prober-layout",
+            headers=auth_headers,
+            json=layout,
+        )
+
+        assert update_response.status_code == 200
+        assert update_response.json() == {"layout": layout}
+
+        fetch_response = await auth_app_client.get(
+            "/user/preferences/llm-prober-layout",
+            headers=auth_headers,
+        )
+        assert fetch_response.status_code == 200
+        assert fetch_response.json() == {"layout": layout}
+
+        async with auth_db_logger.pool.acquire() as conn:
+            user_row = await conn.fetchrow(
+                "SELECT preferences FROM users WHERE id = $1",
+                test_user["id"],
+            )
+        # asyncpg returns JSONB as a raw string when no codec is registered
+        prefs = user_row["preferences"]
+        prefs = json.loads(prefs) if isinstance(prefs, str) else prefs
+        assert prefs["llm_prober_layout"] == layout
+
+        reset_response = await auth_app_client.delete(
+            "/user/preferences/llm-prober-layout",
+            headers=auth_headers,
+        )
+        assert reset_response.status_code == 200
+        assert reset_response.json() == {
+            "layout": {"direct_models": [], "direct_providers": {}, "e2e_models": []}
+        }
 
 
 class TestConcurrentAPIKeyCreation:

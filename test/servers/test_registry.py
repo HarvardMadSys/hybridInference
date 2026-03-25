@@ -75,3 +75,109 @@ def test_make_adapter_unknown_kind_raises():
                 "base_url": "http://x",
             },
         )
+
+
+@pytest.mark.unit
+def test_make_adapter_deepseek_uses_openai_compat_with_profile():
+    """kind: deepseek routes through OpenAICompatAdapter with DeepSeek profile."""
+    adapter = registry._make_adapter(
+        "deepseek",
+        {
+            "id": "deepseek-chat",
+            "name": "DeepSeek Chat",
+            "provider": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "test-key",
+        },
+    )
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    assert isinstance(adapter, OpenAICompatAdapter)
+    assert adapter.config.provider_profile == "deepseek"
+
+
+@pytest.mark.unit
+def test_make_adapter_zhipu_uses_openai_compat_with_chat_path():
+    """kind: zhipu routes through OpenAICompatAdapter with Zhipu chat path override."""
+    adapter = registry._make_adapter(
+        "zhipu",
+        {
+            "id": "glm-5",
+            "name": "GLM-5",
+            "provider": "zhipu",
+            "base_url": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key": "test-key",
+        },
+    )
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    assert isinstance(adapter, OpenAICompatAdapter)
+    assert adapter.config.provider_profile == "zhipu"
+    assert adapter.config.chat_path == "/chat/completions"
+
+
+@pytest.mark.unit
+def test_make_adapter_llama_uses_openai_compat_with_profile():
+    """kind: llama routes through OpenAICompatAdapter with Llama profile."""
+    adapter = registry._make_adapter(
+        "llama",
+        {
+            "id": "llama-4-scout",
+            "name": "Llama 4 Scout",
+            "provider": "llama",
+            "base_url": "https://api.llama.com/compat/v1",
+            "api_key": " test-key\n",
+        },
+    )
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    assert isinstance(adapter, OpenAICompatAdapter)
+    assert adapter.config.provider_profile == "llama"
+    assert adapter.config.chat_path == "/chat/completions"
+
+
+@pytest.mark.unit
+def test_make_adapter_openai_uses_openai_compat_with_azure_profile():
+    """kind: openai routes through OpenAICompatAdapter with Azure-specific config."""
+    adapter = registry._make_adapter(
+        "openai",
+        {
+            "id": "gpt-5-test",
+            "name": "Azure OpenAI Test",
+            "provider": "openai",
+            "base_url": "https://example.openai.azure.com/openai/deployments/gpt-5-test",
+            "api_key": "test-key",
+        },
+    )
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    assert isinstance(adapter, OpenAICompatAdapter)
+    assert adapter.config.provider_profile == "azure_openai"
+    assert adapter.config.chat_path == "/chat/completions"
+    assert adapter.config.use_bearer_auth is False
+    assert adapter.config.auth_header_name == "api-key"
+    assert adapter.config.auth_format == "{api_key}"
+    assert adapter.config.extra_query == {"api-version": "2024-12-01-preview"}
+
+
+@pytest.mark.unit
+def test_register_from_models_yaml_invalid_processor_override_raises(tmp_path):
+    yaml_text = (
+        "models:\n"
+        "  - id: glm-local\n"
+        "    name: GLM Local\n"
+        "    provider: openai_compat\n"
+        "    base_url: http://localhost:8000/v1\n"
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: http://localhost:8000/v1\n"
+        '        provider_model_id: "glm-4.7-flash"\n'
+        '        processor: "not_a_processor"\n'
+    )
+    p = tmp_path / "invalid_processor.yaml"
+    p.write_text(yaml_text)
+
+    exe = RouteExecutor()
+    with pytest.raises(ValueError, match="Unknown processor override 'not_a_processor'"):
+        registry.register_from_models_yaml(exe, Path(p))

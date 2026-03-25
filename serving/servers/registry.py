@@ -16,19 +16,18 @@ from serving.adapters import (
     ClaudeAdapter,
     ClaudeSubscriptionAdapter,
     CodexSubscriptionAdapter,
-    DeepSeekAdapter,
     GeminiAdapter,
-    LlamaAdapter,
     ModelConfig,
-    OpenAIAdapter,
     OpenAICompatAdapter,
-    ZhipuAdapter,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from routing.executor import RouteExecutor
+
+
+_LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"))
 
 
 def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
@@ -40,11 +39,12 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
     Format: "{model}:{location}"
 
     Examples:
-        - glm-4.6 + sglang + http://localhost:12003 -> "glm-4.6:local"
-        - glm-4.6 + zhipu + https://api.z.ai/v4/    -> "glm-4.6:zhipu-api"
-        - qwen3-coder + sglang + http://localhost:8003 -> "qwen3-coder:local"
-        - qwen3-coder + chutes + https://llm.chutes.ai -> "qwen3-coder:chutes-api"
-        - minimax-m2 + openai_compat + https://api.minimax.io -> "minimax-m2:minimax-api"
+        - glm-4.6 + sglang + http://localhost:12003       -> "glm-4.6:local-12003"
+        - glm-4.6 + zhipu + https://api.z.ai/v4/          -> "glm-4.6:zhipu-api"
+        - qwen3-coder + sglang + http://localhost:8003     -> "qwen3-coder:local-8003"
+        - glm-4.7 + compat + http://host.docker.internal:8004 -> "glm-4.7:local-8004"
+        - qwen3-coder + chutes + https://llm.chutes.ai    -> "qwen3-coder:chutes-api"
+        - minimax-m2.7 + compat + https://api.minimax.io  -> "minimax-m2.7:minimax-api"
 
     Args:
         model_id: The model identifier (e.g., "glm-4.6", "qwen3-coder").
@@ -60,8 +60,11 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
         parsed = urlparse(base_url)
         host = parsed.hostname or "unknown"
 
-        # Local endpoints: use "{model}:local" format
-        if host in ("localhost", "127.0.0.1", "0.0.0.0"):
+        # Local endpoints: include port to disambiguate multiple local services
+        if host in _LOCAL_HOSTS:
+            port = parsed.port
+            if port:
+                return f"{model_id}:local-{port}"
             return f"{model_id}:local"
 
         # For generic adapters, extract service name from hostname
@@ -93,24 +96,46 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     Raises:
         ValueError: When ``kind`` is unknown.
     """
+    # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
+    if kind == "deepseek":
+        cfg = {**cfg, "provider_profile": "deepseek"}
+    elif kind == "llama":
+        cfg = {**cfg, "provider_profile": "llama", "chat_path": "/chat/completions"}
+    elif kind == "openai":
+        cfg = {
+            **cfg,
+            "provider_profile": "azure_openai",
+            "chat_path": "/chat/completions",
+            "use_bearer_auth": False,
+            "auth_header_name": "api-key",
+            "auth_format": "{api_key}",
+            "extra_query": {"api-version": "2024-12-01-preview"},
+        }
+    # Zhipu routes through OpenAICompatAdapter with a non-/v1 chat path.
+    elif kind == "zhipu":
+        cfg = {**cfg, "provider_profile": "zhipu", "chat_path": "/chat/completions"}
+
     model_cfg = ModelConfig(**cfg)
 
     # All OpenAI-compatible services use the same adapter
-    if kind in ("vllm", "sglang", "chutes", "featherless", "ollama", "openai_compat"):
+    if kind in (
+        "vllm",
+        "sglang",
+        "chutes",
+        "featherless",
+        "ollama",
+        "openai_compat",
+        "deepseek",
+        "llama",
+        "openai",
+        "zhipu",
+    ):
         return OpenAICompatAdapter(model_cfg)
 
     if kind == "claude":
         return ClaudeAdapter(model_cfg)
-    if kind == "deepseek":
-        return DeepSeekAdapter(model_cfg)
     if kind == "gemini":
         return GeminiAdapter(model_cfg)
-    if kind == "llama":
-        return LlamaAdapter(model_cfg)
-    if kind == "openai":
-        return OpenAIAdapter(model_cfg)
-    if kind == "zhipu":
-        return ZhipuAdapter(model_cfg)
     if kind == "codex_sub":
         return CodexSubscriptionAdapter(model_cfg)
     if kind == "claude_sub":
@@ -229,6 +254,10 @@ def register_from_models_yaml(
             # Route-level pricing override (key for cost-aware routing in Phase 2)
             if "pricing" in r:
                 adapter_cfg["pricing"] = r["pricing"]
+
+            # Route-level processor override (bypasses model-ID auto-detection)
+            if "processor" in r:
+                adapter_cfg["processor"] = r["processor"]
 
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
