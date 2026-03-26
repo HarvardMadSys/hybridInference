@@ -202,7 +202,7 @@ async def login(
     async with db_logger.pool.acquire() as conn:
         user_row = await conn.fetchrow(
             """
-            SELECT id, email, password_hash, user_name, status, email_verified, created_at
+            SELECT id, email, password_hash, user_name, status, email_verified, created_at, role
             FROM users
             WHERE email = $1
             """,
@@ -249,22 +249,44 @@ async def login(
             detail=f"Account is {user_row['status']}. Please contact support.",
         )
 
-    # Update last login timestamp
+    # Update last login timestamp and fetch API key tier
     async with db_logger.pool.acquire() as conn:
         await conn.execute(
             "UPDATE users SET last_login_at = NOW() WHERE id = $1",
             user_row["id"],
         )
+        key_row = await conn.fetchrow(
+            "SELECT tier FROM api_keys WHERE (account_id = $1 OR user_id = $1) AND status = 'active' LIMIT 1",
+            user_row["id"],
+        )
 
     # Create session and tokens
     session_id = generate_session_id()
-    is_admin = is_admin_email(user_row["email"])
+    user_role = user_row["role"] or "free"
+    user_tier = (key_row["tier"] if key_row else None) or "free"
+
+    # Bootstrap seed: promote ADMIN_EMAILS users to admin when their role is
+    # still at the default 'free' (i.e. never explicitly assigned a higher
+    # role).  Users demoted to internal will NOT be re-promoted.  Edge case:
+    # demotion back to 'free' while email remains in ADMIN_EMAILS will
+    # trigger re-promotion — remove the email from the env to prevent this.
+    if is_admin_email(user_row["email"]) and user_role == "free":
+        user_role = "admin"
+        async with db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET role = 'admin' WHERE id = $1",
+                user_row["id"],
+            )
+        logger.info(f"Bootstrap-seeded user {user_row['id']} to admin (ADMIN_EMAILS)")
+
+    is_admin = user_role == "admin"
     access_token, jti = create_access_token(
         user_id=user_row["id"],
         email=user_row["email"],
-        tier="free",  # TODO: Get from user record
+        tier=user_tier,
         session_id=session_id,
         is_admin=is_admin,
+        role=user_role,
     )
     refresh_token = create_refresh_token()
     refresh_token_hash_str = hash_refresh_token(refresh_token)
@@ -312,7 +334,8 @@ async def login(
             id=user_row["id"],
             email=user_row["email"],
             user_name=user_row["user_name"],
-            tier="free",
+            tier=user_tier,
+            role=user_role,
             status=user_row["status"],
             email_verified=user_row["email_verified"],
             created_at=user_row["created_at"],
@@ -409,11 +432,11 @@ async def refresh(
             detail="Refresh token has expired. Please login again.",
         )
 
-    # Get user info
+    # Get user info and API key tier
     async with db_logger.pool.acquire() as conn:
         user_row = await conn.fetchrow(
             """
-            SELECT id, email, status, email_verified
+            SELECT id, email, status, email_verified, role
             FROM users
             WHERE id = $1
             """,
@@ -434,14 +457,35 @@ async def refresh(
             detail="Email not verified. Please verify your email to continue.",
         )
 
+    # Fetch API key tier
+    async with db_logger.pool.acquire() as conn:
+        key_row = await conn.fetchrow(
+            "SELECT tier FROM api_keys WHERE (account_id = $1 OR user_id = $1) AND status = 'active' LIMIT 1",
+            user_row["id"],
+        )
+    user_tier = (key_row["tier"] if key_row else None) or "free"
+
     # Create new access token
-    is_admin = is_admin_email(user_row["email"])
+    user_role = user_row["role"] or "free"
+
+    # Bootstrap seed on refresh (same logic as login — only when role is 'free')
+    if is_admin_email(user_row["email"]) and user_role == "free":
+        user_role = "admin"
+        async with db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET role = 'admin' WHERE id = $1",
+                user_row["id"],
+            )
+        logger.info(f"Bootstrap-seeded user {user_row['id']} to admin on refresh (ADMIN_EMAILS)")
+
+    is_admin = user_role == "admin"
     access_token, jti = create_access_token(
         user_id=user_row["id"],
         email=user_row["email"],
-        tier="free",
+        tier=user_tier,
         session_id=session_row["sid"],
         is_admin=is_admin,
+        role=user_role,
     )
 
     # Generate new refresh token for rotation

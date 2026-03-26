@@ -83,10 +83,19 @@ async def auth_db_logger(auth_env):
     Note: This requires a test database to be set up.
     Set TEST_DB_NAME env var to use a different database.
     """
+    test_db_name = os.getenv("TEST_DB_NAME", "freeinference_test_db")
+
+    # Pre-flight: reject before initialize() can run CREATE/ALTER/UPDATE
+    if _ALLOWED_TEST_DB_PATTERN not in (test_db_name or ""):
+        pytest.fail(
+            f"SAFETY: TEST_DB_NAME='{test_db_name}' does not contain "
+            f"'{_ALLOWED_TEST_DB_PATTERN}'. Refusing to initialize."
+        )
+
     db_config = {
         "host": os.getenv("TEST_DB_HOST", "localhost"),
         "port": int(os.getenv("TEST_DB_PORT", "5432")),
-        "database": os.getenv("TEST_DB_NAME", "freeinference_test_db"),
+        "database": test_db_name,
         "user": os.getenv("TEST_DB_USER", "postgres"),
         "password": os.getenv("TEST_DB_PASSWORD", "postgres"),  # Default to 'postgres' for Docker
     }
@@ -98,16 +107,38 @@ async def auth_db_logger(auth_env):
     except Exception as e:
         pytest.skip(f"PostgreSQL not available: {e}")
 
+    # Post-startup: verify the live connection matches
+    if logger.pool:
+        async with logger.pool.acquire() as conn:
+            await _guard_test_db_only(conn)
+
     yield logger
 
     # Cleanup
     await logger.cleanup()
 
 
+_ALLOWED_TEST_DB_PATTERN = "_test_"
+
+
+async def _guard_test_db_only(conn) -> None:
+    """Fail fast unless the connection points at a dedicated test database."""
+    db_name = await conn.fetchval("SELECT current_database()")
+    if _ALLOWED_TEST_DB_PATTERN not in (db_name or ""):
+        pytest.fail(
+            f"SAFETY: refusing to run destructive operations against "
+            f"database '{db_name}' (name does not contain "
+            f"'{_ALLOWED_TEST_DB_PATTERN}'). "
+            f"Set TEST_DB_NAME to a dedicated test database."
+        )
+
+
 @pytest_asyncio.fixture
 async def clean_auth_tables(auth_db_logger):
     """Clean auth-related tables before each test."""
     async with auth_db_logger.pool.acquire() as conn:
+        # Layer 3: hard guard before any destructive operation
+        await _guard_test_db_only(conn)
         # Delete in reverse order of dependencies
         await conn.execute("DELETE FROM email_verification_tokens")
         await conn.execute("DELETE FROM password_reset_tokens")
@@ -121,6 +152,7 @@ async def clean_auth_tables(auth_db_logger):
 
     # Cleanup after test
     async with auth_db_logger.pool.acquire() as conn:
+        await _guard_test_db_only(conn)
         await conn.execute("DELETE FROM email_verification_tokens")
         await conn.execute("DELETE FROM password_reset_tokens")
         await conn.execute("DELETE FROM auth_sessions")

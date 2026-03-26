@@ -47,6 +47,7 @@ class RouteConfig:
 
     adapters: list[tuple[BaseAdapter, float]]
     admin_only: bool = False
+    required_role: str = "free"
 
 
 class RouteExecutor:
@@ -74,6 +75,7 @@ class RouteExecutor:
         *,
         aliases: list[str] | None = None,
         admin_only: bool = False,
+        required_role: str = "free",
     ) -> None:
         """Register a weighted route for a model.
 
@@ -84,12 +86,23 @@ class RouteExecutor:
             aliases: Optional alias model IDs that share the same RouteConfig.
                 Updates to the canonical route automatically apply to aliases.
             admin_only: If True, only admin users may access this route.
+                Deprecated: use required_role="admin" instead.
+            required_role: Minimum role required to access this model
+                (free/internal/admin).
         """
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
             return
         normalized = [(adapter, weight / total_weight) for adapter, weight in adapters_with_weights]
-        route_cfg = RouteConfig(adapters=normalized, admin_only=admin_only)
+        # Backward compat: admin_only=True implies required_role="admin"
+        effective_role = required_role
+        if admin_only and effective_role == "free":
+            effective_role = "admin"
+        route_cfg = RouteConfig(
+            adapters=normalized,
+            admin_only=admin_only,
+            required_role=effective_role,
+        )
         self.routes[model_id] = route_cfg
         for alias in aliases or []:
             self.routes[alias] = route_cfg  # shared reference, not a copy

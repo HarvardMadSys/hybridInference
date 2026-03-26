@@ -592,7 +592,7 @@ async def test_admin_only_rejected_for_non_admin(mock_rate_limiter, mock_db_logg
 async def test_admin_only_allowed_for_admin(mock_rate_limiter, mock_db_logger):
     """Admin user calling admin_only model gets 200."""
     app = _build_admin_gate_app(
-        {"user_id": "admin1", "authenticated": True, "is_admin": True},
+        {"user_id": "admin1", "authenticated": True, "is_admin": True, "role": "admin"},
         mock_rate_limiter,
         mock_db_logger,
     )

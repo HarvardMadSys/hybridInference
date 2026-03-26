@@ -20,6 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from serving.config.settings import has_role
 from serving.schemas import ModelItem, ModelList
 from serving.servers.auth import optional_verify_api_key
 from serving.servers.deps import get_embedding_adapters, get_router
@@ -45,12 +46,13 @@ async def list_models(
     conservative limits (minimum across adapters) to ensure compatibility
     regardless of the routed backend.
     """
-    is_admin = bool(user_ctx and user_ctx.get("is_admin"))
+    user_role = (user_ctx or {}).get("role", "free")
     models: list[ModelItem] = []
     emitted_ids: set[str] = set()
 
     for model_id, route in router_exec.routes.items():
-        if route.admin_only and not is_admin:
+        required = route.required_role or ("admin" if route.admin_only else "free")
+        if not has_role(user_role, required):
             continue
         configs = [adapter.config for adapter, _ in route.adapters]
         if not configs:

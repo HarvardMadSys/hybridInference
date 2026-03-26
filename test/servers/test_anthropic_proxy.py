@@ -84,7 +84,9 @@ async def test_anthropic_admin_only_allowed_for_admin():
     """
     from serving.adapters.codex_token import NoHealthyAccountError
 
-    app = _build_app({"user_id": "admin1", "authenticated": True, "is_admin": True})
+    app = _build_app(
+        {"user_id": "admin1", "authenticated": True, "is_admin": True, "role": "admin"}
+    )
     transport = ASGITransport(app=app)
 
     with patch(

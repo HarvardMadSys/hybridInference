@@ -68,6 +68,7 @@ class UserInfo(BaseModel):
     email: str
     user_name: str | None = None
     tier: str = "free"
+    role: str = "free"
     status: str = "active"
     email_verified: bool = False
     is_admin: bool = False
