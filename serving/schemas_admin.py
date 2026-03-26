@@ -185,6 +185,7 @@ class UserListItem(BaseModel):
     key_tier: str | None = None
     usage_today_usd: Decimal = Field(default=Decimal("0"))
     usage_month_usd: Decimal = Field(default=Decimal("0"))
+    usage_alltime_usd: Decimal = Field(default=Decimal("0"))
 
 
 class StatusCounts(BaseModel):

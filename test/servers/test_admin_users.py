@@ -557,3 +557,270 @@ async def test_patch_user_rejects_deleted_status(admin_client):
 
     # Schema validation rejects 'deleted' (pattern only allows active|suspended)
     assert response.status_code == 422
+
+
+# ========================================================================
+# Feature 4: Sort by Usage
+# ========================================================================
+
+
+def _user_row_with_usage(
+    *,
+    uid: str = "u1",
+    email: str = "alice@example.com",
+    status: str = "active",
+    role: str = "free",
+    usage_today: Decimal = Decimal("0"),
+    usage_month: Decimal = Decimal("0"),
+    usage_alltime: Decimal = Decimal("0"),
+    key_prefix: str | None = "hyi-abc",
+    last_login_at: datetime | None = None,
+) -> dict[str, Any]:
+    """User row with optional CTE usage columns."""
+    row: dict[str, Any] = {
+        "id": uid,
+        "email": email,
+        "user_name": "Alice",
+        "role": role,
+        "status": status,
+        "email_verified": True,
+        "approval_note": None,
+        "reviewed_at": None,
+        "reviewed_by": None,
+        "created_at": _NOW,
+        "last_login_at": last_login_at,
+        "key_prefix": key_prefix,
+        "key_status": "active" if key_prefix else None,
+        "key_tier": "free" if key_prefix else None,
+    }
+    # CTE columns (only present in CTE path)
+    if usage_today is not None:
+        row["usage_today"] = usage_today
+    if usage_month is not None:
+        row["usage_month"] = usage_month
+    if usage_alltime is not None:
+        row["usage_alltime"] = usage_alltime
+    return row
+
+
+@pytest.mark.asyncio
+async def test_sort_by_default_no_cte(admin_client):
+    """Default sort_by=created uses no CTEs — same path as before."""
+    client, connection, _log = admin_client
+    connection.fetchrow.reset_mock()
+    connection.fetchrow.return_value = {"total": 1}
+
+    connection.fetch.reset_mock()
+    connection.fetch.side_effect = [
+        [{"status": "active", "cnt": 1}],
+        [_user_row()],
+        [],  # usage today batch
+        [],  # usage month batch
+    ]
+
+    response = await client.get("/admin/users", headers=AUTH)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["users"]) == 1
+
+    # Verify the query uses ORDER BY created_at (simple path, no WITH)
+    fetch_calls = connection.fetch.await_args_list
+    user_query_sql = fetch_calls[1].args[0]  # 2nd fetch = user rows
+    assert "WITH" not in user_query_sql
+    assert "created_at DESC" in user_query_sql
+
+
+@pytest.mark.asyncio
+async def test_sort_by_cost_today(admin_client):
+    """sort_by=cost_today uses CTE path with usage_today."""
+    client, connection, _log = admin_client
+    connection.fetchrow.reset_mock()
+    connection.fetchrow.return_value = {"total": 2}
+
+    connection.fetch.reset_mock()
+    connection.fetch.side_effect = [
+        [{"status": "active", "cnt": 2}],
+        # CTE query returns user rows with usage_today column
+        [
+            _user_row_with_usage(uid="u1", email="big@e.com", usage_today=Decimal("50.00")),
+            _user_row_with_usage(uid="u2", email="small@e.com", usage_today=Decimal("1.00")),
+        ],
+        # Batch: usage_month (today was in CTE, month still batch-fetched)
+        [],
+    ]
+
+    response = await client.get("/admin/users?sort_by=cost_today", headers=AUTH)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["users"]) == 2
+    # First user should have higher usage
+    assert float(data["users"][0]["usage_today_usd"]) == 50.0
+    assert float(data["users"][1]["usage_today_usd"]) == 1.0
+
+    # Verify CTE SQL structure
+    fetch_calls = connection.fetch.await_args_list
+    cte_sql = fetch_calls[1].args[0]
+    assert "WITH" in cte_sql
+    assert "filtered_users" in cte_sql
+    assert "usage_today" in cte_sql
+    assert "COALESCE(ut.cost, 0) DESC" in cte_sql
+
+
+@pytest.mark.asyncio
+async def test_sort_by_cost_alltime(admin_client):
+    """sort_by=cost_alltime uses all 3 CTEs, no batch queries needed."""
+    client, connection, _log = admin_client
+    connection.fetchrow.reset_mock()
+    connection.fetchrow.return_value = {"total": 2}
+
+    connection.fetch.reset_mock()
+    connection.fetch.side_effect = [
+        [{"status": "active", "cnt": 2}],
+        # CTE query returns all 3 usage columns
+        [
+            _user_row_with_usage(
+                uid="u1", email="whale@e.com",
+                usage_today=Decimal("10"), usage_month=Decimal("100"),
+                usage_alltime=Decimal("5000"),
+            ),
+            _user_row_with_usage(
+                uid="u2", email="small@e.com",
+                usage_today=Decimal("1"), usage_month=Decimal("5"),
+                usage_alltime=Decimal("20"),
+            ),
+        ],
+        # No batch queries — all dimensions in CTEs
+    ]
+
+    response = await client.get("/admin/users?sort_by=cost_alltime", headers=AUTH)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["users"]) == 2
+    assert float(data["users"][0]["usage_alltime_usd"]) == 5000.0
+    assert float(data["users"][1]["usage_alltime_usd"]) == 20.0
+
+    # Verify all 3 CTEs present
+    cte_sql = connection.fetch.await_args_list[1].args[0]
+    assert "usage_today" in cte_sql
+    assert "usage_month" in cte_sql
+    assert "usage_alltime" in cte_sql
+    assert "COALESCE(ua.cost, 0) DESC" in cte_sql
+
+    # Only 2 fetch calls: status counts + CTE query (no batch)
+    assert len(connection.fetch.await_args_list) == 2
+
+
+@pytest.mark.asyncio
+async def test_sort_by_last_login_no_cte(admin_client):
+    """sort_by=last_login uses simple path (no CTEs)."""
+    client, connection, _log = admin_client
+    connection.fetchrow.reset_mock()
+    connection.fetchrow.return_value = {"total": 1}
+
+    connection.fetch.reset_mock()
+    connection.fetch.side_effect = [
+        [{"status": "active", "cnt": 1}],
+        [_user_row()],
+        [],  # usage today batch
+        [],  # usage month batch
+    ]
+
+    response = await client.get("/admin/users?sort_by=last_login", headers=AUTH)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["users"]) == 1
+
+    user_query_sql = connection.fetch.await_args_list[1].args[0]
+    assert "WITH" not in user_query_sql
+    assert "last_login_at DESC NULLS LAST" in user_query_sql
+
+
+@pytest.mark.asyncio
+async def test_sort_by_combined_with_filter_and_search(admin_client):
+    """sort_by + status + search all work together."""
+    client, connection, _log = admin_client
+    connection.fetchrow.reset_mock()
+    connection.fetchrow.return_value = {"total": 1}
+
+    connection.fetch.reset_mock()
+    connection.fetch.side_effect = [
+        [{"status": "active", "cnt": 5}],
+        [_user_row_with_usage(uid="u1", email="john@e.com", usage_month=Decimal("42"))],
+        [],  # batch: usage_today
+    ]
+
+    response = await client.get(
+        "/admin/users?status=active&search=john&sort_by=cost_month",
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["users"]) == 1
+    assert float(data["users"][0]["usage_month_usd"]) == 42.0
+
+    # Verify the CTE SQL has both filter predicates
+    cte_sql = connection.fetch.await_args_list[1].args[0]
+    assert "u.status" in cte_sql
+    assert "ILIKE" in cte_sql
+    assert "COALESCE(um.cost, 0) DESC" in cte_sql
+
+
+@pytest.mark.asyncio
+async def test_sort_by_invalid_value_returns_422(admin_client):
+    """sort_by=invalid returns 422 validation error."""
+    client, _connection, _log = admin_client
+
+    response = await client.get("/admin/users?sort_by=invalid", headers=AUTH)
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_sort_tie_breaker_in_order_clause(admin_client):
+    """All sort options include tie-breaker columns for pagination stability."""
+    client, connection, _log = admin_client
+
+    for sort_val, expect_primary in [
+        ("created", "created_at DESC"),
+        ("cost_today", "COALESCE(ut.cost, 0) DESC"),
+        ("cost_month", "COALESCE(um.cost, 0) DESC"),
+        ("cost_alltime", "COALESCE(ua.cost, 0) DESC"),
+        ("last_login", "last_login_at DESC NULLS LAST"),
+    ]:
+        connection.fetchrow.reset_mock()
+        connection.fetchrow.return_value = {"total": 0}
+        connection.fetch.reset_mock()
+        connection.fetch.side_effect = [
+            [{"status": "active", "cnt": 0}],
+            [],  # empty result
+        ]
+
+        response = await client.get(f"/admin/users?sort_by={sort_val}", headers=AUTH)
+        assert response.status_code == 200, f"Failed for sort_by={sort_val}"
+
+
+@pytest.mark.asyncio
+async def test_sort_alltime_usage_zero_without_sort(admin_client):
+    """usage_alltime_usd defaults to 0 when not sorting by cost_alltime."""
+    client, connection, _log = admin_client
+    connection.fetchrow.reset_mock()
+    connection.fetchrow.return_value = {"total": 1}
+
+    connection.fetch.reset_mock()
+    connection.fetch.side_effect = [
+        [{"status": "active", "cnt": 1}],
+        [_user_row()],
+        [],  # usage today
+        [],  # usage month
+    ]
+
+    response = await client.get("/admin/users", headers=AUTH)
+
+    assert response.status_code == 200
+    user = response.json()["users"][0]
+    assert float(user["usage_alltime_usd"]) == 0.0

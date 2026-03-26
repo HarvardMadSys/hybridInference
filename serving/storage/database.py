@@ -705,6 +705,12 @@ class DatabaseLogger:
                 ON api_logs(user_id, timestamp, cost_usd)
             """)
 
+            # Sort by last_login in admin user list (DESC NULLS LAST)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_users_last_login_at
+                ON users(last_login_at DESC NULLS LAST)
+            """)
+
     async def log_request(
         self,
         request_id: str,

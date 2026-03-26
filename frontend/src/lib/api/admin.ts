@@ -25,7 +25,10 @@ export interface AdminUser {
   key_tier: string | null;
   usage_today_usd: number;
   usage_month_usd: number;
+  usage_alltime_usd: number;
 }
+
+export type UserSortBy = 'created' | 'cost_today' | 'cost_month' | 'cost_alltime' | 'last_login';
 
 export interface StatusCounts {
   all: number;
@@ -54,10 +57,12 @@ export async function listUsers(
   limit = 100,
   offset = 0,
   search?: string,
+  sortBy?: UserSortBy,
 ): Promise<ListUsersResponse> {
   const params = new URLSearchParams();
   if (status) params.set('status', status);
   if (search) params.set('search', search);
+  if (sortBy) params.set('sort_by', sortBy);
   params.set('limit', String(limit));
   params.set('offset', String(offset));
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);

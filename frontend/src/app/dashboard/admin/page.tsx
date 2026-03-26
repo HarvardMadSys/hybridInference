@@ -8,6 +8,7 @@ import {
   AuditLogEntry,
   StatusCounts,
   UserDetail,
+  UserSortBy,
   listUsers,
   getUserDetail,
   updateUser,
@@ -62,6 +63,7 @@ export default function AdminPage() {
   });
   const [filter, setFilter] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState<UserSortBy>('created');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -92,7 +94,13 @@ export default function AdminPage() {
     setLoading(true);
     setError(null);
     try {
-      const d = await listUsers(filter || undefined, 100, 0, searchTerm || undefined);
+      const d = await listUsers(
+        filter || undefined,
+        100,
+        0,
+        searchTerm || undefined,
+        sortBy !== 'created' ? sortBy : undefined,
+      );
       setUsers(d.users);
       setCounts(d.status_counts);
     } catch (e) {
@@ -100,7 +108,7 @@ export default function AdminPage() {
     } finally {
       setLoading(false);
     }
-  }, [filter, searchTerm]);
+  }, [filter, searchTerm, sortBy]);
 
   const loadAudit = useCallback(async () => {
     setAuditLoading(true);
@@ -345,15 +353,26 @@ export default function AdminPage() {
         {/* ========== Users Tab ========== */}
         {activeTab === 'users' && (
           <>
-            {/* Search */}
-            <div className="mt-6">
+            {/* Search + Sort */}
+            <div className="mt-6 flex items-center gap-3">
               <input
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Search by email or name..."
-                className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+                className="flex-1 rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
               />
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as UserSortBy)}
+                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-700 focus:border-gray-400 focus:outline-none"
+              >
+                <option value="created">Created</option>
+                <option value="cost_today">Cost today</option>
+                <option value="cost_month">Cost this month</option>
+                <option value="cost_alltime">Cost all-time</option>
+                <option value="last_login">Recent login</option>
+              </select>
             </div>
 
             {/* Filter tabs */}
@@ -491,11 +510,34 @@ export default function AdminPage() {
                                   {u.key_tier}
                                 </span>
                               )}
-                              {u.has_key && (
-                                <span className="tabular-nums text-gray-700">
-                                  ${Number(u.usage_today_usd ?? 0).toFixed(2)}
-                                </span>
-                              )}
+                              {(() => {
+                                const isCostSort =
+                                  sortBy === 'cost_today' ||
+                                  sortBy === 'cost_month' ||
+                                  sortBy === 'cost_alltime';
+                                const usageVal =
+                                  sortBy === 'cost_month'
+                                    ? Number(u.usage_month_usd ?? 0)
+                                    : sortBy === 'cost_alltime'
+                                      ? Number(u.usage_alltime_usd ?? 0)
+                                      : Number(u.usage_today_usd ?? 0);
+                                const suffix =
+                                  sortBy === 'cost_month'
+                                    ? '/mo'
+                                    : sortBy === 'cost_alltime'
+                                      ? '/all'
+                                      : '/today';
+                                // Cost sorts: always show usage (even without active key).
+                                // Other sorts: only show if user has an active key.
+                                if (isCostSort || u.has_key) {
+                                  return (
+                                    <span className="tabular-nums text-gray-700">
+                                      ${usageVal.toFixed(2)} {suffix}
+                                    </span>
+                                  );
+                                }
+                                return null;
+                              })()}
                             </div>
                           </div>
 

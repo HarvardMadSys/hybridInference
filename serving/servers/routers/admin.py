@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -691,16 +691,20 @@ async def list_users(
     request: Request,
     status: str | None = None,
     search: str | None = None,
+    sort_by: Literal[
+        "created", "cost_today", "cost_month", "cost_alltime", "last_login"
+    ] = "created",
     limit: int = 100,
     offset: int = 0,
     admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> ListUsersResponse:
-    """List registered users with optional status filter and search.
+    """List registered users with optional status filter, search, and sort.
 
     Query Parameters:
     - status: Filter by status (pending_approval|active|suspended|rejected|deleted)
     - search: Search by email or user_name (case-insensitive ILIKE)
+    - sort_by: Sort order (created|cost_today|cost_month|cost_alltime|last_login)
     - limit: Max results (default: 100)
     - offset: Pagination offset
 
@@ -709,29 +713,43 @@ async def list_users(
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
 
-    where_clauses = []
-    params: list[Any] = []
+    # --- Build WHERE clause (parameterized) ---
+    where_clauses: list[str] = []
+    filter_params: list[Any] = []
 
     if status:
-        where_clauses.append(f"status = ${len(params) + 1}")
-        params.append(status)
+        where_clauses.append(f"u.status = ${len(filter_params) + 1}")
+        filter_params.append(status)
 
     if search:
         search_pattern = f"%{search}%"
         where_clauses.append(
-            f"(email ILIKE ${len(params) + 1} OR user_name ILIKE ${len(params) + 1})"
+            f"(u.email ILIKE ${len(filter_params) + 1} OR u.user_name ILIKE ${len(filter_params) + 1})"
         )
-        params.append(search_pattern)
+        filter_params.append(search_pattern)
 
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-    params.append(limit)
-    params.append(offset)
+    # --- Sort clause map (hardcoded SQL — no user input) ---
+    _SORT_CLAUSES = {
+        "created": "fu.created_at DESC, fu.id",
+        "cost_today": "COALESCE(ut.cost, 0) DESC, fu.created_at DESC, fu.id",
+        "cost_month": "COALESCE(um.cost, 0) DESC, fu.created_at DESC, fu.id",
+        "cost_alltime": "COALESCE(ua.cost, 0) DESC, fu.created_at DESC, fu.id",
+        "last_login": "fu.last_login_at DESC NULLS LAST, fu.created_at DESC, fu.id",
+    }
+    order_clause = _SORT_CLAUSES[sort_by]
+
+    # Determine which usage CTEs are needed for sorting
+    needs_today_cte = sort_by in ("cost_today", "cost_alltime")
+    needs_month_cte = sort_by in ("cost_month", "cost_alltime")
+    needs_alltime_cte = sort_by == "cost_alltime"
 
     async with db_logger.pool.acquire() as conn:
+        # Total count (uses same filter)
         count_row = await conn.fetchrow(
-            f"SELECT COUNT(*) as total FROM users {where_sql}",
-            *params[: len(params) - 2],
+            f"SELECT COUNT(*) as total FROM users u {where_sql}",
+            *filter_params,
         )
         total = count_row["total"] if count_row else 0
 
@@ -748,38 +766,106 @@ async def list_users(
             deleted=sc.get("deleted", 0),
         )
 
-        # Qualify bare column names with u. for the JOIN query
-        join_where_sql = where_sql
-        if join_where_sql:
-            for col in ("status", "email", "user_name"):
-                join_where_sql = join_where_sql.replace(col, f"u.{col}")
+        # --- Build the main query with conditional CTEs ---
+        # filtered_users CTE always present when sorting by cost (filter-first aggregation).
+        # For non-cost sorts, use a simple query without CTEs (zero regression).
+        needs_any_cte = needs_today_cte or needs_month_cte or needs_alltime_cte
 
-        # LEFT JOIN api_keys to get key status per user
-        rows = await conn.fetch(
-            f"""
-            SELECT u.id, u.email, u.user_name, u.role, u.status, u.email_verified,
-                   u.approval_note, u.reviewed_at, u.reviewed_by,
-                   u.created_at, u.last_login_at,
-                   k.key_prefix, k.status AS key_status, k.tier AS key_tier
-            FROM users u
-            LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
-            {join_where_sql}
-            ORDER BY u.created_at DESC
-            LIMIT ${len(params) - 1} OFFSET ${len(params)}
-            """,
-            *params,
-        )
+        # Param indices for LIMIT/OFFSET
+        limit_idx = len(filter_params) + 1
+        offset_idx = len(filter_params) + 2
+        query_params = [*filter_params, limit, offset]
+
+        if not needs_any_cte:
+            # Simple path: no CTEs, identical to previous behavior
+            rows = await conn.fetch(
+                f"""
+                SELECT u.id, u.email, u.user_name, u.role, u.status, u.email_verified,
+                       u.approval_note, u.reviewed_at, u.reviewed_by,
+                       u.created_at, u.last_login_at,
+                       k.key_prefix, k.status AS key_status, k.tier AS key_tier
+                FROM users u
+                LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
+                {where_sql}
+                ORDER BY {_SORT_CLAUSES[sort_by].replace("fu.", "u.")}
+                LIMIT ${limit_idx} OFFSET ${offset_idx}
+                """,
+                *query_params,
+            )
+        else:
+            # CTE path: filter-first, then aggregate only for filtered users
+            cte_parts = [
+                f"""filtered_users AS (
+                    SELECT u.id, u.email, u.user_name, u.role, u.status, u.email_verified,
+                           u.approval_note, u.reviewed_at, u.reviewed_by,
+                           u.created_at, u.last_login_at,
+                           k.key_prefix, k.status AS key_status, k.tier AS key_tier
+                    FROM users u
+                    LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
+                    {where_sql}
+                )"""
+            ]
+            join_parts: list[str] = []
+            select_extras: list[str] = []
+
+            if needs_today_cte:
+                cte_parts.append("""usage_today AS (
+                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
+                    FROM api_logs
+                    WHERE user_id IN (SELECT id FROM filtered_users)
+                      AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
+                    GROUP BY user_id
+                )""")
+                join_parts.append("LEFT JOIN usage_today ut ON ut.user_id = fu.id")
+                select_extras.append("COALESCE(ut.cost, 0) AS usage_today")
+
+            if needs_month_cte:
+                cte_parts.append("""usage_month AS (
+                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
+                    FROM api_logs
+                    WHERE user_id IN (SELECT id FROM filtered_users)
+                      AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                    GROUP BY user_id
+                )""")
+                join_parts.append("LEFT JOIN usage_month um ON um.user_id = fu.id")
+                select_extras.append("COALESCE(um.cost, 0) AS usage_month")
+
+            if needs_alltime_cte:
+                cte_parts.append("""usage_alltime AS (
+                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
+                    FROM api_logs
+                    WHERE user_id IN (SELECT id FROM filtered_users)
+                    GROUP BY user_id
+                )""")
+                join_parts.append("LEFT JOIN usage_alltime ua ON ua.user_id = fu.id")
+                select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
+
+            extra_cols = ", " + ", ".join(select_extras) if select_extras else ""
+            joins = "\n                ".join(join_parts)
+            ctes = ",\n".join(cte_parts)
+
+            rows = await conn.fetch(
+                f"""
+                WITH {ctes}
+                SELECT fu.*{extra_cols}
+                FROM filtered_users fu
+                {joins}
+                ORDER BY {order_clause}
+                LIMIT ${limit_idx} OFFSET ${offset_idx}
+                """,
+                *query_params,
+            )
 
         if not rows:
             return ListUsersResponse(total=total, users=[], status_counts=status_counts)
 
-        # Batch fetch usage for all users with active keys
+        # --- Post-fetch: batch-query usage dimensions not already in CTEs ---
         user_ids = [row["id"] for row in rows if row["key_prefix"]]
 
         usage_today_map: dict[str, Decimal] = {}
         usage_month_map: dict[str, Decimal] = {}
 
-        if user_ids:
+        if user_ids and not needs_today_cte:
             usage_today_rows = await conn.fetch(
                 """
                 SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
@@ -792,6 +878,7 @@ async def list_users(
             )
             usage_today_map = {r["user_id"]: r["cost"] for r in usage_today_rows}
 
+        if user_ids and not needs_month_cte:
             usage_month_rows = await conn.fetch(
                 """
                 SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
@@ -804,28 +891,44 @@ async def list_users(
             )
             usage_month_map = {r["user_id"]: r["cost"] for r in usage_month_rows}
 
-    users = [
-        UserListItem(
-            id=row["id"],
-            email=row["email"],
-            user_name=row["user_name"],
-            role=row["role"] or "free",
-            status=row["status"],
-            email_verified=row["email_verified"],
-            approval_note=row["approval_note"],
-            reviewed_at=row["reviewed_at"],
-            reviewed_by=row["reviewed_by"],
-            created_at=row["created_at"],
-            last_login_at=row["last_login_at"],
-            has_key=row["key_prefix"] is not None,
-            key_prefix=row["key_prefix"],
-            key_status=row["key_status"],
-            key_tier=row["key_tier"],
-            usage_today_usd=Decimal(str(usage_today_map.get(row["id"], 0))),
-            usage_month_usd=Decimal(str(usage_month_map.get(row["id"], 0))),
+    # --- Assemble response ---
+    users = []
+    for row in rows:
+        # Usage from CTE columns (present when sort uses them) or batch maps
+        today = (
+            Decimal(str(row["usage_today"]))
+            if "usage_today" in row
+            else Decimal(str(usage_today_map.get(row["id"], 0)))
         )
-        for row in rows
-    ]
+        month = (
+            Decimal(str(row["usage_month"]))
+            if "usage_month" in row
+            else Decimal(str(usage_month_map.get(row["id"], 0)))
+        )
+        alltime = Decimal(str(row["usage_alltime"])) if "usage_alltime" in row else Decimal("0")
+
+        users.append(
+            UserListItem(
+                id=row["id"],
+                email=row["email"],
+                user_name=row["user_name"],
+                role=row["role"] or "free",
+                status=row["status"],
+                email_verified=row["email_verified"],
+                approval_note=row["approval_note"],
+                reviewed_at=row["reviewed_at"],
+                reviewed_by=row["reviewed_by"],
+                created_at=row["created_at"],
+                last_login_at=row["last_login_at"],
+                has_key=row["key_prefix"] is not None,
+                key_prefix=row["key_prefix"],
+                key_status=row["key_status"],
+                key_tier=row["key_tier"],
+                usage_today_usd=today,
+                usage_month_usd=month,
+                usage_alltime_usd=alltime,
+            )
+        )
 
     return ListUsersResponse(total=total, users=users, status_counts=status_counts)
 
