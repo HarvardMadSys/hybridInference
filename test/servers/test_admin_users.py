@@ -681,13 +681,17 @@ async def test_sort_by_cost_alltime(admin_client):
         # CTE query returns all 3 usage columns
         [
             _user_row_with_usage(
-                uid="u1", email="whale@e.com",
-                usage_today=Decimal("10"), usage_month=Decimal("100"),
+                uid="u1",
+                email="whale@e.com",
+                usage_today=Decimal("10"),
+                usage_month=Decimal("100"),
                 usage_alltime=Decimal("5000"),
             ),
             _user_row_with_usage(
-                uid="u2", email="small@e.com",
-                usage_today=Decimal("1"), usage_month=Decimal("5"),
+                uid="u2",
+                email="small@e.com",
+                usage_today=Decimal("1"),
+                usage_month=Decimal("5"),
                 usage_alltime=Decimal("20"),
             ),
         ],
