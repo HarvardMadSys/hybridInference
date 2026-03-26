@@ -392,7 +392,8 @@ class PersistentRateLimiter:
             in seconds.
         """
         if model_id not in self.buckets:
-            return True, 0.0
+            return False, 0.0
+        # Fail-close Policy, for better control and safety.
         async with self._lock:
             bucket = self.buckets[model_id]
             return bucket.try_consume(tokens)
