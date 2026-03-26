@@ -27,9 +27,8 @@ interface AuthContextValue {
 
 const ROLE_RANK: Record<string, number> = {
   free: 0,
-  internal_group: 1,
-  developer: 2,
-  admin: 3,
+  internal: 1,
+  admin: 2,
 };
 
 export function hasRole(userRole: string | undefined, required: string): boolean {

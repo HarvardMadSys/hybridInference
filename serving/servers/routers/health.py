@@ -173,7 +173,7 @@ async def model_activity(
 ) -> dict[str, Any]:
     """Per-model, per-provider traffic activity over a recent window.
 
-    Admin-only endpoint used by the prober to decide whether to skip
+    Internal+ endpoint used by the prober to decide whether to skip
     synthetic probes when real user traffic provides sufficient signal.
     Requires USER_AUTH_ENABLED=1 — always returns 403 in auth-disabled
     deployments to prevent unintentional exposure of traffic stats.
@@ -182,8 +182,8 @@ async def model_activity(
         raise HTTPException(status_code=403, detail="Requires USER_AUTH_ENABLED=1")
 
     user_role = (user_ctx or {}).get("role", "free")
-    if not user_ctx or not has_role(user_role, "developer"):
-        raise HTTPException(status_code=403, detail="Developer access required")
+    if not user_ctx or not has_role(user_role, "internal"):
+        raise HTTPException(status_code=403, detail="Internal access required")
     if not db_logger:
         raise HTTPException(status_code=503, detail="Database not available")
     routes = await db_logger.get_model_activity(window_minutes=window)

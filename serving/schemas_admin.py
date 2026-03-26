@@ -195,6 +195,7 @@ class StatusCounts(BaseModel):
     active: int = 0
     suspended: int = 0
     rejected: int = 0
+    deleted: int = 0
 
 
 class ListUsersResponse(BaseModel):
@@ -266,7 +267,7 @@ class UserDetailResponse(BaseModel):
 class UpdateUserRequest(BaseModel):
     """Request payload for updating user/key settings."""
 
-    role: str | None = Field(None, pattern="^(free|internal_group|developer|admin)$")
+    role: str | None = Field(None, pattern="^(free|internal|admin)$")
     tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
@@ -281,6 +282,61 @@ class UpdateUserResponse(BaseModel):
     message: str
 
 
+# ========================================
+# Audit Log Schemas
+# ========================================
+
+
+class AuditLogEntry(BaseModel):
+    """Single entry from the admin audit log."""
+
+    id: int
+    timestamp: datetime
+    admin_ip: str
+    action: str
+    target_user_id: str | None = None
+    details: dict[str, Any] | None = None
+    success: bool = True
+
+
+class ListAuditLogResponse(BaseModel):
+    """Response payload for listing audit log entries."""
+
+    total: int
+    entries: list[AuditLogEntry]
+
+
+# ========================================
+# Delete User Schemas
+# ========================================
+
+
+class DeleteUserRequest(BaseModel):
+    """Request payload for soft-deleting a user."""
+
+    reason: str = Field(
+        ..., min_length=1, max_length=500, description="Reason for deletion (audit trail)"
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def reason_not_blank(cls, v: str) -> str:
+        """Strip whitespace and reject blank reasons."""
+        v = v.strip()
+        if not v:
+            raise ValueError("Reason must not be blank")
+        return v
+
+
+class DeleteUserResponse(BaseModel):
+    """Response payload for successful user deletion."""
+
+    user_id: str
+    email: str
+    status: str
+    message: str
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -288,9 +344,13 @@ __all__ = [
     "APIKeyListItem",
     "ApproveUserRequest",
     "ApproveUserResponse",
+    "AuditLogEntry",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
+    "DeleteUserRequest",
+    "DeleteUserResponse",
     "ListAPIKeysResponse",
+    "ListAuditLogResponse",
     "ListUsersResponse",
     "RegenerateAPIKeyResponse",
     "RejectUserRequest",

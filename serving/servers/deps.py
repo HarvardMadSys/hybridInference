@@ -194,7 +194,7 @@ async def require_admin(
 def require_role(min_role: str):
     """Dependency factory: require a minimum role level.
 
-    Usage: ``Depends(require_role("developer"))``
+    Usage: ``Depends(require_role("internal"))``
     """
 
     async def _check(

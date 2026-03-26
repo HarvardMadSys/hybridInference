@@ -267,10 +267,9 @@ async def login(
 
     # Bootstrap seed: promote ADMIN_EMAILS users to admin when their role is
     # still at the default 'free' (i.e. never explicitly assigned a higher
-    # role).  Users demoted to developer/internal_group will NOT be
-    # re-promoted.  Edge case: demotion back to 'free' while email remains in
-    # ADMIN_EMAILS will trigger re-promotion — remove the email from the env
-    # to prevent this.
+    # role).  Users demoted to internal will NOT be re-promoted.  Edge case:
+    # demotion back to 'free' while email remains in ADMIN_EMAILS will
+    # trigger re-promotion — remove the email from the env to prevent this.
     if is_admin_email(user_row["email"]) and user_role == "free":
         user_role = "admin"
         async with db_logger.pool.acquire() as conn:

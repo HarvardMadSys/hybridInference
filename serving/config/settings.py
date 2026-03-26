@@ -136,7 +136,7 @@ def is_admin_email(email: str) -> bool:
     return email.strip().lower() in _parse_admin_emails(settings.admin_emails)
 
 
-ROLE_RANK: dict[str, int] = {"free": 0, "internal_group": 1, "developer": 2, "admin": 3}
+ROLE_RANK: dict[str, int] = {"free": 0, "internal": 1, "admin": 2}
 
 VALID_ROLES = frozenset(ROLE_RANK)
 

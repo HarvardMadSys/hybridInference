@@ -360,7 +360,7 @@ class TestRoleBootstrap:
     ) -> None:
         """Login should not overwrite an explicitly assigned non-free role."""
         monkeypatch.setattr(settings_module.settings, "admin_emails", auth_test_user["email"])
-        await _set_user_role(auth_db_logger, auth_test_user["id"], "internal_group")
+        await _set_user_role(auth_db_logger, auth_test_user["id"], "internal")
 
         response = await auth_app_client.post(
             "/auth/login",
@@ -372,9 +372,9 @@ class TestRoleBootstrap:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["user"]["role"] == "internal_group"
+        assert data["user"]["role"] == "internal"
         assert data["user"]["is_admin"] is False
-        assert await _get_user_role(auth_db_logger, auth_test_user["id"]) == "internal_group"
+        assert await _get_user_role(auth_db_logger, auth_test_user["id"]) == "internal"
 
     @pytest.mark.asyncio
     async def test_refresh_bootstrap_promotes_free_user_to_admin(
@@ -415,9 +415,9 @@ class TestRoleBootstrap:
         monkeypatch,
     ) -> None:
         """Refresh should not overwrite an explicitly assigned non-free role."""
-        refresh_token = "test-refresh-bootstrap-developer"
+        refresh_token = "test-refresh-bootstrap-internal"
         monkeypatch.setattr(settings_module.settings, "admin_emails", auth_test_user["email"])
-        await _set_user_role(auth_db_logger, auth_test_user["id"], "developer")
+        await _set_user_role(auth_db_logger, auth_test_user["id"], "internal")
         await _create_refresh_session(auth_db_logger, auth_test_user["id"], refresh_token)
 
         response = await auth_app_client.post(
@@ -426,14 +426,14 @@ class TestRoleBootstrap:
         )
 
         assert response.status_code == 200
-        assert await _get_user_role(auth_db_logger, auth_test_user["id"]) == "developer"
+        assert await _get_user_role(auth_db_logger, auth_test_user["id"]) == "internal"
 
         me_response = await auth_app_client.get(
             "/user/me",
             headers={"Authorization": f"Bearer {response.json()['access_token']}"},
         )
         assert me_response.status_code == 200
-        assert me_response.json()["role"] == "developer"
+        assert me_response.json()["role"] == "internal"
         assert me_response.json()["is_admin"] is False
 
 

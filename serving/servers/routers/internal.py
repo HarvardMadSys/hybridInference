@@ -63,15 +63,15 @@ async def verify_grafana(
     refresh_token: str | None = Cookie(None),
     db_logger=Depends(get_db_logger),
 ) -> Response:
-    """Verify that the caller has developer+ role via their refresh_token cookie.
+    """Verify that the caller has internal+ role via their refresh_token cookie.
 
     Used by Nginx ``auth_request`` to gate access to Grafana, LLM Prober, etc.
-    Returns 200 for developer/admin, 401/403 otherwise.
+    Returns 200 for internal/admin, 401/403 otherwise.
     """
     user = await _validate_session(refresh_token, db_logger)
 
-    if not has_role(user["role"] or "free", "developer"):
-        raise HTTPException(status_code=403, detail="Developer access required.")
+    if not has_role(user["role"] or "free", "internal"):
+        raise HTTPException(status_code=403, detail="Internal access required.")
 
     return Response(status_code=200)
 
