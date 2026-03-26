@@ -185,7 +185,7 @@ class _VTCModelState:
             user_counter = self.counters[user_id]
             total_waiting = sum(len(q) for q in self._waiting_queues.values())
             logger.debug(
-                "[VTC:%s] acquire user=%s counter=%.1f tokens=%d "
+                "[VTC:%s] Trying to acquire capacity user=%s counter=%.1f tokens=%d "
                 "waiting_users=%d total_waiting=%d",
                 self.model_id,
                 user_id,
@@ -516,7 +516,7 @@ class _VTCModelState:
                     len(self._waiting_queues),
                 )
 
-                success, remaining = await self._try_consume(entry.estimated_tokens)
+                success, value = await self._try_consume(entry.estimated_tokens)
 
                 if success:
                     self._waiting_queues[next_user].popleft()
@@ -544,11 +544,19 @@ class _VTCModelState:
 
                 # Not enough capacity yet — estimate how long to sleep
                 sleep_for = self._estimate_refill_sleep(entry.estimated_tokens)
+                wait_s = float(value)
+                bucket = (
+                    None
+                    if self._rate_limiter is None
+                    else self._rate_limiter.buckets.get(self.model_id)
+                )
+                tokens_available = None if bucket is None else float(bucket.tokens)
                 logger.debug(
-                    "[VTC:%s] No capacity for %d tokens (remaining=%.0f), " "sleeping %.2fs",
+                    "[VTC:%s] No capacity for %d tokens (tokens_available=%s, wait_s=%.1f), sleeping %.2fs",
                     self.model_id,
                     entry.estimated_tokens,
-                    remaining,
+                    "unknown" if tokens_available is None else f"{tokens_available:.0f}",
+                    wait_s,
                     sleep_for,
                 )
 
@@ -608,7 +616,7 @@ class VTCFairnessScheduler(FairnessScheduler):
     ) -> tuple[bool, dict[str, Any]]:
         """Acquire capacity for *user_id* on *model_id* using VTC ordering."""
         logger.debug(
-            "[VTC] acquire model=%s user=%s tokens=%d timeout=%.1f",
+            "[VTC] Trying to acquire capacity model=%s user=%s tokens=%d timeout=%.1f",
             model_id,
             user_id,
             estimated_tokens,
