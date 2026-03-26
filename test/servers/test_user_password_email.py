@@ -136,9 +136,7 @@ async def test_change_password_weak_new_password(test_app, test_client):
 
         # Setup mock database for user lookup
         mock_conn = MagicMock()
-        mock_conn.fetchrow = AsyncMock(
-            return_value=_mock_authenticated_user("test@example.com")
-        )
+        mock_conn.fetchrow = AsyncMock(return_value=_mock_authenticated_user("test@example.com"))
         test_app.state.services.db_logger.pool.acquire.return_value.__aenter__.return_value = (
             mock_conn
         )

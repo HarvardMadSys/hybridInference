@@ -78,10 +78,7 @@ class TestRoleMigration:
 
         # Verify we have old roles before migration
         async with pool.acquire() as conn:
-            old_roles = {
-                r["role"]
-                for r in await conn.fetch("SELECT DISTINCT role FROM users")
-            }
+            old_roles = {r["role"] for r in await conn.fetch("SELECT DISTINCT role FROM users")}
         assert "internal_group" in old_roles
         assert "developer" in old_roles
 
@@ -135,8 +132,5 @@ class TestRoleMigration:
         assert pool is not None
 
         async with pool.acquire() as conn:
-            roles = {
-                r["role"]
-                for r in await conn.fetch("SELECT DISTINCT role FROM users")
-            }
+            roles = {r["role"] for r in await conn.fetch("SELECT DISTINCT role FROM users")}
         assert roles == {"free", "internal", "admin"}
