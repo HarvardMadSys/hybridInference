@@ -351,6 +351,17 @@ async def initialize() -> AppServices:
         await rate_limiter.initialize()
         logger.info("Rate limiter initialized with persistence")
 
+    # Fairness scheduler (optional; requires rate_limiter for capacity checks)
+    fairness_scheduler = None
+    if os.getenv("FAIRNESS_ENABLED", "1") == "1":
+        from .fairness import VTCFairnessScheduler
+
+        fairness_scheduler = VTCFairnessScheduler(rate_limiter)
+        logger.info(
+            "VTC fairness scheduler initialised (rate_limiter=%s)",
+            "attached" if rate_limiter is not None else "none",
+        )
+
     # User statistics collector (optional)
     user_stats_collector = None
     if os.getenv("METRICS_ENABLED", "1") == "1" and db_logger:
@@ -371,6 +382,7 @@ async def initialize() -> AppServices:
         db_logger=db_logger,
         routing_manager=routing_manager,
         user_stats_collector=user_stats_collector,
+        fairness_scheduler=fairness_scheduler,
     )
 
 
