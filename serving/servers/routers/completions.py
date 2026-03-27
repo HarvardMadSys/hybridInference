@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from routing.executor import ProviderPinError
+from routing.routers import RoutingObservation
 from serving.config.settings import has_role
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
@@ -26,7 +27,13 @@ from serving.schemas import (
     ErrorResponse,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.deps import get_db_logger, get_fairness_scheduler, get_rate_limiter, get_router
+from serving.servers.deps import (
+    get_db_logger,
+    get_fairness_scheduler,
+    get_model_router_registry,
+    get_rate_limiter,
+    get_router,
+)
 from serving.servers.rate_limiter import TokenCounter
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
@@ -61,6 +68,39 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
     asyncio.create_task(log_to_db_background())  # noqa: RUF006
 
 
+def _record_routing_observation(
+    active_router,
+    model_id: str,
+    routing_info: dict[str, Any] | None,
+    *,
+    ttft_ms: float | None,
+    total_latency_ms: float,
+    prompt_tokens: int,
+    completion_tokens: int,
+    success: bool,
+) -> None:
+    """Emit a RoutingObservation for online learning routers (RouteWise)."""
+    endpoint_id = (routing_info or {}).get("provider", "unknown")
+    rw = (routing_info or {}).get("routewise", {})
+    obs = RoutingObservation(
+        model_id=model_id,
+        endpoint_id=endpoint_id,
+        ttft_ms=ttft_ms,
+        total_latency_ms=total_latency_ms,
+        token_count=prompt_tokens + completion_tokens,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        success=success,
+        quota_committed=rw.get("quota_committed", 0.0),
+        selected_tier=rw.get("selected_tier"),
+        sc_committed=rw.get("sc_committed", False),
+        hedged=rw.get("hedged", False),
+        backup_won=rw.get("backup_won", False),
+        lp_status=rw.get("lp_status"),
+    )
+    active_router.record_observation(obs)
+
+
 @router.post(
     "/v1/chat/completions",
     response_model=ChatCompletionResponse,
@@ -81,6 +121,7 @@ async def chat_completions(
     rate_limiter=Depends(get_rate_limiter),
     db_logger=Depends(get_db_logger),
     fairness_scheduler=Depends(get_fairness_scheduler),
+    model_router_registry=Depends(get_model_router_registry),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
 
@@ -348,6 +389,12 @@ async def chat_completions(
                 detail=f"Pinned provider '{pin_provider}' not found for model {model}",
             )
 
+    # Per-model routing strategy via ModelRouterRegistry.
+    # pin_provider always bypasses RouteWise → goes direct to FixedRouter.
+    active_router = router_exec
+    if model_router_registry is not None and not pin_provider:
+        active_router = model_router_registry.get_router(model)
+
     # Streaming path
     if payload.stream:
 
@@ -393,9 +440,13 @@ async def chat_completions(
 
                 async def _adapter_reader():
                     try:
-                        async for item in router_exec.stream_chat_completion(
-                            model, messages, pin_provider=pin_provider, **params
-                        ):
+                        if active_router is router_exec:
+                            stream = router_exec.stream_chat_completion(
+                                model, messages, pin_provider=pin_provider, **params
+                            )
+                        else:
+                            stream = active_router.stream_chat_completion(model, messages, **params)
+                        async for item in stream:
                             await chunk_queue.put(item)
                     except Exception as exc:
                         await chunk_queue.put(exc)
@@ -671,6 +722,20 @@ async def chat_completions(
                         actual_output_tokens=int(_actual_usage.get("completion_tokens") or 0),
                     )
 
+                # Record routing observation for online learning (RouteWise)
+                if not is_synthetic_probe:
+                    stream_usage = normalize_usage(usage_data) if usage_data else {}
+                    _record_routing_observation(
+                        active_router,
+                        model,
+                        routing_info,
+                        ttft_ms=float(ttft_ms) if ttft_ms is not None else None,
+                        total_latency_ms=(time.time() - start_time) * 1000,
+                        prompt_tokens=int(stream_usage.get("prompt_tokens", 0) or 0),
+                        completion_tokens=int(stream_usage.get("completion_tokens", 0) or 0),
+                        success=True,
+                    )
+
             except Exception as exc:
                 # Prepare error data for background logging
                 # Try to get actual provider from context even in error case
@@ -739,9 +804,12 @@ async def chat_completions(
     try:
         from serving.openai_chat_serializer import resolve_mode, sanitize_response
 
-        response = await router_exec.chat_completion(
-            model, messages, pin_provider=pin_provider, **params
-        )
+        if active_router is router_exec:
+            response = await router_exec.chat_completion(
+                model, messages, pin_provider=pin_provider, **params
+            )
+        else:
+            response = await active_router.chat_completion(model, messages, **params)
         serializer_mode = resolve_mode(request.headers)
 
         # Apply serializer: strip _routing metadata and enforce reasoning_content
@@ -894,6 +962,20 @@ async def chat_completions(
                 user_id=user_id,
                 actual_input_tokens=int(_usage.get("prompt_tokens") or 0),
                 actual_output_tokens=int(_usage.get("completion_tokens") or 0),
+            )
+
+        # Record routing observation for online learning (RouteWise)
+        if not is_synthetic_probe:
+            ns_usage = normalize_usage(raw_usage) or {}
+            _record_routing_observation(
+                active_router,
+                model,
+                routing_info if isinstance(response, dict) else None,
+                ttft_ms=None,
+                total_latency_ms=(time.time() - start_time) * 1000,
+                prompt_tokens=int(ns_usage.get("prompt_tokens", 0) or 0),
+                completion_tokens=int(ns_usage.get("completion_tokens", 0) or 0),
+                success=True,
             )
 
         # Record 200 for non-streaming response

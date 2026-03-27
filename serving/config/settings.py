@@ -4,9 +4,17 @@ This module provides type-safe, validated configuration management.
 All environment variables are centralized here for easy tracking and testing.
 """
 
+from enum import Enum
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings
+
+
+class RoutingStrategy(Enum):
+    """Available routing strategies."""
+
+    FIXED = "fixed"
+    ROUTEWISE = "routewise"
 
 
 class Settings(BaseSettings):
@@ -92,6 +100,15 @@ class Settings(BaseSettings):
 
     # Trusted proxies (for real IP detection)
     trusted_proxies: list[str] = []
+
+    # Routing strategy: "fixed" (default) or "routewise"
+    routing_strategy: str = "fixed"
+    # Experiment mode: when True, disable fallback in BaseRouter for A/B testing
+    experiment_mode: bool = False
+
+    def get_routing_strategy(self) -> RoutingStrategy:
+        """Get the global routing strategy."""
+        return RoutingStrategy(self.routing_strategy)
 
     class Config:
         """Pydantic configuration for Settings class."""
