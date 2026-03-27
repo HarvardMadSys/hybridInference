@@ -25,6 +25,7 @@ block, covering success, error, and cancellation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -150,6 +151,8 @@ class RouteWiseRouter(BaseRouter):
         self._shadow_hedge_log_maxlen: int = 10_000  # Cap to prevent unbounded growth
         # Maps endpoint_id -> (adapter, p_in_per_token, p_out_per_token).
         self._api_endpoint_map: dict[str, tuple[Any, float, float]] = {}
+        # Track in-flight LP solves to avoid duplicate concurrent solves.
+        self._pending_lp_solves: set[str] = set()
         self._init_latency_profiles()
 
     # ------------------------------------------------------------------
@@ -350,10 +353,11 @@ class RouteWiseRouter(BaseRouter):
         predicted_output: float,
         current_time: float,
     ) -> None:
-        """Re-solve LP if enough time has elapsed since the last solve.
+        """Schedule LP re-solve if enough time has elapsed.
 
-        All LP state (last solve time, weights, status, SWRR sampler) is
-        per-model, so concurrent models never interfere with each other.
+        The LP solve runs in a thread pool to avoid blocking the event loop.
+        The current request uses cached weights; the next request after the
+        solve completes will use the updated weights.
 
         Args:
             model_id: Model identifier for per-model state lookup.
@@ -366,7 +370,52 @@ class RouteWiseRouter(BaseRouter):
         if (current_time - last_lp_time) < self.config.latency_lp_interval_sec:
             return
 
-        # Pre-filter to eligible endpoints.
+        # Skip if there's already an in-flight solve for this model.
+        if model_id in self._pending_lp_solves:
+            return
+
+        # Eagerly update timestamp to prevent duplicate triggers.
+        self._last_lp_times[model_id] = current_time
+
+        # Snapshot inputs for the thread-safe solve.
+        solve_args = self._prepare_lp_solve_args(
+            endpoint_ids, prompt_tokens, predicted_output, current_time
+        )
+        if solve_args is None:
+            return
+
+        # Try to schedule in thread pool; fall back to sync for tests.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            result = self._run_lp_solve(*solve_args)
+            self._apply_lp_result(model_id, result, current_time)
+            return
+
+        self._pending_lp_solves.add(model_id)
+
+        def _on_done(future: asyncio.Future) -> None:  # type: ignore[type-arg]
+            self._pending_lp_solves.discard(model_id)
+            try:
+                result = future.result()
+                self._apply_lp_result(model_id, result, current_time)
+            except Exception:
+                logger.warning("LP solve failed for model %s", model_id, exc_info=True)
+
+        fut = loop.run_in_executor(None, self._run_lp_solve, *solve_args)
+        fut.add_done_callback(_on_done)
+
+    def _prepare_lp_solve_args(
+        self,
+        endpoint_ids: list[str],
+        prompt_tokens: int,
+        predicted_output: float,
+        current_time: float,
+    ) -> tuple[list[str], dict[str, float], float, float, float, tuple[float, ...]] | None:
+        """Prepare arguments for the LP solve (read-only snapshot).
+
+        Returns None if no eligible endpoints are available.
+        """
         profiles_subset = {
             eid: self._latency_profiles[eid]
             for eid in endpoint_ids
@@ -375,8 +424,9 @@ class RouteWiseRouter(BaseRouter):
         eligible = pre_filter_providers(profiles_subset, current_time)
         if not eligible:
             eligible = list(profiles_subset.keys())
+        if not eligible:
+            return None
 
-        # Compute per-request costs for each endpoint.
         costs: dict[str, float] = {}
         for eid in eligible:
             if eid in self._api_endpoint_map:
@@ -385,31 +435,65 @@ class RouteWiseRouter(BaseRouter):
             else:
                 costs[eid] = 1.0
 
-        # Parse relaxation factors.
         try:
             factors = tuple(float(f) for f in self.config.latency_relaxation_factors.split(","))
         except (ValueError, AttributeError):
             factors = (1.2, 1.5, 2.0)
 
-        weights, status = solve_provider_lp_with_relaxation(
+        return (
+            eligible,
+            costs,
+            self.config.latency_slo_sec,
+            current_time,
+            self.config.latency_target_cdf,
+            factors,
+        )
+
+    def _run_lp_solve(
+        self,
+        eligible: list[str],
+        costs: dict[str, float],
+        slo_sec: float,
+        current_time: float,
+        target_cdf: float,
+        factors: tuple[float, ...],
+    ) -> tuple[dict[str, float], str]:
+        """Execute LP solve (CPU-bound, thread-safe).
+
+        This method accesses ``_latency_profiles`` read-only.  Profile
+        updates from ``record_observation`` on the event loop are atomic
+        (deque append + scalar update), so data races are benign.
+        """
+        return solve_provider_lp_with_relaxation(
             endpoint_ids=eligible,
-            profiles={eid: self._latency_profiles[eid] for eid in eligible},
+            profiles={
+                eid: self._latency_profiles[eid]
+                for eid in eligible
+                if eid in self._latency_profiles
+            },
             costs=costs,
-            slo_sec=self.config.latency_slo_sec,
+            slo_sec=slo_sec,
             current_time=current_time,
-            target_cdf=self.config.latency_target_cdf,
+            target_cdf=target_cdf,
             kappa=self.config.latency_error_penalty,
             relaxation_factors=factors,
         )
 
-        # Update per-model state.
+    def _apply_lp_result(
+        self,
+        model_id: str,
+        result: tuple[dict[str, float], str],
+        current_time: float,
+    ) -> None:
+        """Apply LP solve result to per-model state (event-loop thread only)."""
+        weights, status = result
+
         sampler = self._swrr_samplers.get(model_id)
         if sampler is None:
             sampler = SWRRSampler(alpha=self.config.latency_swrr_alpha)
             self._swrr_samplers[model_id] = sampler
         sampler.update_weights(weights)
 
-        self._last_lp_times[model_id] = current_time
         self._last_lp_weights[model_id] = weights
         self._last_lp_statuses[model_id] = status
 
