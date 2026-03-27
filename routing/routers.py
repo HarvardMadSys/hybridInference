@@ -409,8 +409,11 @@ class BaseRouter:
                     resp["_routing"] = {
                         "provider": primary.config.provider,
                         "base_url": primary.config.base_url,
-                        "endpoint_id": getattr(primary.config, "endpoint_id", None),
                     }
+                # Always inject endpoint_id so observation keys match latency profiles.
+                resp["_routing"].setdefault(
+                    "endpoint_id", getattr(primary.config, "endpoint_id", None)
+                )
                 return resp
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason=primary_error.__class__.__name__)
@@ -426,9 +429,12 @@ class BaseRouter:
                                 resp["_routing"] = {
                                     "provider": adapter.config.provider,
                                     "base_url": adapter.config.base_url,
-                                    "endpoint_id": getattr(adapter.config, "endpoint_id", None),
                                     "fallback": True,
                                 }
+                            resp["_routing"].setdefault(
+                                "endpoint_id",
+                                getattr(adapter.config, "endpoint_id", None),
+                            )
                             API_FALLBACKS.labels(
                                 from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                                 to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
@@ -677,6 +683,8 @@ class FixedRouter(BaseRouter):
                     "provider": primary.config.provider,
                     "base_url": primary.config.base_url,
                 }
+            # Always inject endpoint_id so observation keys match latency profiles.
+            resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(primary))
             return resp
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
@@ -707,6 +715,7 @@ class FixedRouter(BaseRouter):
                             "base_url": adapter.config.base_url,
                             "fallback": True,
                         }
+                    resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(adapter))
                     API_FALLBACKS.labels(
                         from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                         to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
