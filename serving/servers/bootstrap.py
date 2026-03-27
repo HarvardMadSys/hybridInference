@@ -380,6 +380,10 @@ async def initialize() -> AppServices:
                     model_router_registry.register(info.model_id, routewise_router)
                     for alias in info.aliases:
                         model_router_registry.register(alias, routewise_router)
+            # TODO: Wire canary rollout from routewise.yaml canary section.
+            # Currently configure_canary() is never called; canary config is dead.
+            # rw_config has canary fields; call model_router_registry.configure_canary()
+            # once canary rollout is ready for production.
             rw_models = [i.model_id for i in model_infos if i.strategy == "routewise"]
             logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
         except Exception as exc:

@@ -298,6 +298,12 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         labelnames=("model", "status"),
         registry=REGISTRY,
     )
+    ROUTEWISE_CANARY_DECISIONS = Counter(
+        "routewise_canary_decisions_total",
+        "Canary gate decisions (experimental = sent to RouteWise, default = sent to Fixed)",
+        labelnames=("model", "outcome"),
+        registry=REGISTRY,
+    )
 
     # Register runtime collectors for process/GC/platform if available
     try:  # pragma: no cover - environment dependent
@@ -439,6 +445,9 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     ROUTEWISE_LP_STATUS = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
+    ROUTEWISE_CANARY_DECISIONS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
     DATABASE_CONNECTED = type("NoopGauge", (), {"set": _noop})()
     USERS_TOTAL = type("NoopGauge", (), {"set": _noop})()
     USERS_ACTIVE_DAILY = type("NoopGauge", (), {"set": _noop})()
@@ -501,6 +510,7 @@ __all__ = [
     "RATE_LIMIT_QUEUE_WAIT",
     # RouteWise metrics
     "ROUTEWISE_BACKUP_WINS",
+    "ROUTEWISE_CANARY_DECISIONS",
     "ROUTEWISE_HEDGE_DECISIONS",
     "ROUTEWISE_LP_STATUS",
     "ROUTEWISE_QUOTA_REMAINING",

@@ -80,7 +80,9 @@ def _record_routing_observation(
     success: bool,
 ) -> None:
     """Emit a RoutingObservation for online learning routers (RouteWise)."""
-    endpoint_id = (routing_info or {}).get("provider", "unknown")
+    ri = routing_info or {}
+    # Prefer endpoint_id (RouteWise profile key) > base_url > provider as fallback.
+    endpoint_id = ri.get("endpoint_id") or ri.get("base_url") or ri.get("provider", "unknown")
     rw = (routing_info or {}).get("routewise", {})
     obs = RoutingObservation(
         model_id=model_id,
@@ -737,6 +739,20 @@ async def chat_completions(
                     )
 
             except Exception as exc:
+                # Record failure observation for online learning (RouteWise)
+                if not is_synthetic_probe:
+                    exc_routing = getattr(exc, "_routing", None)
+                    _record_routing_observation(
+                        active_router,
+                        model,
+                        exc_routing or routing_info,
+                        ttft_ms=float(ttft_ms) if ttft_ms is not None else None,
+                        total_latency_ms=(time.time() - start_time) * 1000,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        success=False,
+                    )
+
                 # Prepare error data for background logging
                 # Try to get actual provider from context even in error case
                 from serving.utils import context as req_ctx
@@ -999,6 +1015,20 @@ async def chat_completions(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     except Exception as exc:
+        # Record failure observation for online learning (RouteWise)
+        if not is_synthetic_probe:
+            exc_routing = getattr(exc, "_routing", None)
+            _record_routing_observation(
+                active_router,
+                model,
+                exc_routing,
+                ttft_ms=None,
+                total_latency_ms=(time.time() - start_time) * 1000,
+                prompt_tokens=0,
+                completion_tokens=0,
+                success=False,
+            )
+
         # Best-effort extraction of status code from exception
         # Different HTTP client libraries store status codes in different places:
         # - OpenAI/Anthropic SDK: exc.status_code

@@ -409,6 +409,7 @@ class BaseRouter:
                     resp["_routing"] = {
                         "provider": primary.config.provider,
                         "base_url": primary.config.base_url,
+                        "endpoint_id": getattr(primary.config, "endpoint_id", None),
                     }
                 return resp
             except Exception as primary_error:
@@ -425,6 +426,7 @@ class BaseRouter:
                                 resp["_routing"] = {
                                     "provider": adapter.config.provider,
                                     "base_url": adapter.config.base_url,
+                                    "endpoint_id": getattr(adapter.config, "endpoint_id", None),
                                     "fallback": True,
                                 }
                             API_FALLBACKS.labels(
@@ -442,6 +444,7 @@ class BaseRouter:
                 e._routing = {  # type: ignore[attr-defined]
                     "provider": last_attempted.config.provider,
                     "base_url": last_attempted.config.base_url,
+                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
                 }
             raise
 
@@ -499,6 +502,7 @@ class BaseRouter:
                 e._routing = {  # type: ignore[attr-defined]
                     "provider": last_attempted.config.provider,
                     "base_url": last_attempted.config.base_url,
+                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
                 }
             raise
 
@@ -570,7 +574,7 @@ class FixedRouter(BaseRouter):
         for alias in aliases or []:
             self.routes[alias] = route_cfg  # shared reference, not a copy
 
-    def _select_adapter(
+    def _select_adapter(  # type: ignore[override]  # intentionally different signature
         self, model_id: str, *, pin_provider: str | None = None
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection.

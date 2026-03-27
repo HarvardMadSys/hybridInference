@@ -147,6 +147,7 @@ class RouteWiseRouter(BaseRouter):
         self._last_lp_weights: dict[str, dict[str, float]] = {}
         self._last_lp_statuses: dict[str, str] = {}
         self._shadow_hedge_log: list[ShadowHedgeDecision] = []
+        self._shadow_hedge_log_maxlen: int = 10_000  # Cap to prevent unbounded growth
         # Maps endpoint_id -> (adapter, p_in_per_token, p_out_per_token).
         self._api_endpoint_map: dict[str, tuple[Any, float, float]] = {}
         self._init_latency_profiles()
@@ -419,6 +420,13 @@ class RouteWiseRouter(BaseRouter):
             weights,
         )
 
+    def _log_shadow_hedge(self, decision: ShadowHedgeDecision) -> None:
+        """Append shadow hedge decision with bounded log size."""
+        if len(self._shadow_hedge_log) >= self._shadow_hedge_log_maxlen:
+            # Evict oldest half to amortize cost
+            self._shadow_hedge_log = self._shadow_hedge_log[self._shadow_hedge_log_maxlen // 2 :]
+        self._shadow_hedge_log.append(decision)
+
     def _compute_shadow_hedge(
         self,
         model_id: str,
@@ -440,7 +448,7 @@ class RouteWiseRouter(BaseRouter):
         """
         backups = [eid for eid in candidate_eids if eid != primary_eid]
         if not backups:
-            self._shadow_hedge_log.append(
+            self._log_shadow_hedge(
                 ShadowHedgeDecision(
                     model_id=model_id,
                     primary_endpoint=primary_eid,
@@ -468,7 +476,7 @@ class RouteWiseRouter(BaseRouter):
             or primary_profile is None
             or backup_profile.sample_count(current_time) < self.config.latency_min_samples
         ):
-            self._shadow_hedge_log.append(
+            self._log_shadow_hedge(
                 ShadowHedgeDecision(
                     model_id=model_id,
                     primary_endpoint=primary_eid,
@@ -496,7 +504,7 @@ class RouteWiseRouter(BaseRouter):
             reason = "hedge_warranted"
             hedge_threshold = h_star
 
-        self._shadow_hedge_log.append(
+        self._log_shadow_hedge(
             ShadowHedgeDecision(
                 model_id=model_id,
                 primary_endpoint=primary_eid,

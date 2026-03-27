@@ -35,6 +35,8 @@ class QuotaManager:
     """
 
     def __init__(self, config) -> None:
+        if config.daily_quota <= 0:
+            raise ValueError(f"daily_quota must be positive, got {config.daily_quota}")
         self._daily_quota: int = config.daily_quota
         self._used_today: int = 0
         self._L: float = max(config.shadow_price_L_seed, 1e-9)

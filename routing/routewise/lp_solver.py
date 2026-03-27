@@ -71,6 +71,9 @@ def solve_provider_lp(
     prob += pulp.lpSum(pi_vars) == 1.0
 
     # Solve silently.
+    # TODO: prob.solve() is synchronous and blocks the event loop (~1-10ms).
+    # Called from _maybe_update_lp() which runs periodically (not per-request),
+    # but should be wrapped in asyncio.to_thread() for production workloads.
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
 
     if prob.status != pulp.constants.LpStatusOptimal:
