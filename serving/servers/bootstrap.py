@@ -274,7 +274,15 @@ def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
     if glm_key:
         glm_tph = int(os.getenv("GLM_TPH_LIMIT", "1000000"))  # 1M tokens per hour
         if glm_tph > 0:
-            for model_id in ("glm-4.5", "glm-4.6"):
+            for model_id in (
+                "glm-4.5",
+                "glm-4.6",
+                "glm-4.7",
+                "glm-4.7-flash",
+                "glm-5",
+                "glm-5-turbo",
+                "glm-5.1",
+            ):
                 cfg = RateLimitConfig(
                     model_id=model_id,
                     window_seconds=3600,  # 1 hour
@@ -284,7 +292,9 @@ def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
                     enable_persistence=True,
                 )
                 limiter.configure(cfg)
-            logger.info(f"Configured GLM limits: {glm_tph:,}/hour (glm-4.5, glm-4.6)")
+            logger.info(
+                f"Configured GLM limits: {glm_tph:,}/hour (glm-4.5, glm-4.6, glm-4.7, glm-4.7-flash, glm-5, glm-5-turbo, glm-5.1)"
+            )
 
 
 async def initialize() -> AppServices:
