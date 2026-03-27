@@ -337,3 +337,5 @@ storybook-static/
 **/public/worker-*.js.map
 
 .MEMORY/
+
+llm-prober-state.json
