@@ -392,8 +392,10 @@ class PersistentRateLimiter:
             in seconds.
         """
         if model_id not in self.buckets:
-            return False, 0.0
-        # Fail-close Policy, for better control and safety.
+            # Model has no rate-limit bucket configured → unlimited capacity.
+            # Returning True here is consistent with acquire_tokens() which
+            # also grants immediately when model_id is not in self.configs.
+            return True, 0.0
         async with self._lock:
             bucket = self.buckets[model_id]
             return bucket.try_consume(tokens)

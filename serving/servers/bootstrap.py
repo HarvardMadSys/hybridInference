@@ -363,7 +363,7 @@ async def initialize() -> AppServices:
 
     # Fairness scheduler (optional; requires rate_limiter for capacity checks)
     fairness_scheduler = None
-    if os.getenv("FAIRNESS_ENABLED", "1") == "1":
+    if os.getenv("FAIRNESS_ENABLED", "0") == "1":
         from .fairness import VTCFairnessScheduler
 
         fairness_scheduler = VTCFairnessScheduler(rate_limiter)
