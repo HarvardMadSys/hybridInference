@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from serving.observability.user_stats import UserStatsCollector
     from serving.storage.database import DatabaseLogger
 
+    from .fairness import FairnessScheduler
     from .rate_limiter import PersistentRateLimiter
 
 
@@ -40,6 +41,7 @@ class AppServices:
     db_logger: DatabaseLogger | None = None
     routing_manager: RoutingManager | None = None
     user_stats_collector: UserStatsCollector | None = None
+    fairness_scheduler: FairnessScheduler | None = None
 
 
 def get_services(request: Request) -> AppServices:
@@ -71,6 +73,13 @@ def get_db_logger(
 ) -> DatabaseLogger | None:
     """Dependency to obtain the database logger (if configured)."""
     return services.db_logger
+
+
+def get_fairness_scheduler(
+    services: AppServices = Depends(get_services),
+) -> FairnessScheduler | None:
+    """Dependency to obtain the fairness scheduler (if configured)."""
+    return services.fairness_scheduler
 
 
 def is_database_connected(db_logger: DatabaseLogger | None) -> bool:

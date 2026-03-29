@@ -377,6 +377,29 @@ class PersistentRateLimiter:
             "retry_after": int(max(1, wait_or_remaining)),
         }
 
+    async def try_consume_tokens(self, model_id: str, tokens: int) -> tuple[bool, float]:
+        """Non-blocking attempt to consume *tokens* from the bucket for *model_id*.
+
+        Intended for use by the fairness scheduler, which needs a cheap
+        capacity check without the cooperative-wait logic of
+        :meth:`acquire_tokens`.
+
+        Returns
+        -------
+        (success, value)
+            When *success* is ``True``, *value* is the tokens remaining after
+            consumption.  When ``False``, *value* is the estimated wait time
+            in seconds.
+        """
+        if model_id not in self.buckets:
+            # Model has no rate-limit bucket configured → unlimited capacity.
+            # Returning True here is consistent with acquire_tokens() which
+            # also grants immediately when model_id is not in self.configs.
+            return True, 0.0
+        async with self._lock:
+            bucket = self.buckets[model_id]
+            return bucket.try_consume(tokens)
+
     async def release_tokens(self, model_id: str, tokens: int):
         """Release tokens back to the bucket (on error)."""
         if model_id not in self.buckets:
