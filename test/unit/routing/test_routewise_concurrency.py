@@ -19,7 +19,6 @@ def _make_config(limit: int = 8) -> MagicMock:
 
 @pytest.mark.unit
 class TestConcurrencyManager:
-
     def test_initial_available(self):
         """Full capacity available at start."""
         mgr = ConcurrencyManager(_make_config(limit=4))

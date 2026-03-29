@@ -21,6 +21,7 @@ from routing.routewise.router import RouteWiseRouter, SubscriptionType
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_model_config(
     model_id: str = "test-model",
     provider: str = "openai_compat",
@@ -71,9 +72,7 @@ class _FakeFixedRouter:
     def __init__(self) -> None:
         self.routes: dict[str, _FakeRouteConfig] = {}
 
-    def add(
-        self, model_id: str, adapters_with_weights: list[tuple[Any, float]]
-    ) -> None:
+    def add(self, model_id: str, adapters_with_weights: list[tuple[Any, float]]) -> None:
         self.routes[model_id] = _FakeRouteConfig(adapters=adapters_with_weights)
 
 
@@ -113,27 +112,23 @@ def _make_router_with_quota_and_api(
 # Scaffold tests (retained from PR-2)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 class TestRouteWiseRouterScaffold:
-
     def test_scaffold_selects_adapter(self):
         """Router returns an adapter for a registered model."""
         adapter = _make_adapter()
         fr = _FakeFixedRouter()
         fr.add("test-model", [(adapter, 1.0)])
 
-        router = RouteWiseRouter(
-            fixed_router=fr, config=RouteWiseConfig()
-        )
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         selected = router._select_adapter("test-model", {})
         assert selected is adapter
 
     def test_unregistered_model_raises(self):
         """Requesting an unknown model raises ValueError."""
         fr = _FakeFixedRouter()
-        router = RouteWiseRouter(
-            fixed_router=fr, config=RouteWiseConfig()
-        )
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         with pytest.raises(ValueError, match="no route"):
             router._select_adapter("nonexistent", {})
 
@@ -145,9 +140,7 @@ class TestRouteWiseRouterScaffold:
         fr = _FakeFixedRouter()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
-        router = RouteWiseRouter(
-            fixed_router=fr, config=RouteWiseConfig()
-        )
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         entries = router.classified["test-model"]
         types = {s for _, _, s in entries}
         assert SubscriptionType.QUOTA in types
@@ -160,20 +153,22 @@ class TestRouteWiseRouterScaffold:
         predictor (q50=500), v_t = 15/1M * 500 = 0.0075 > L_seed=0.001.
         """
         quota_adapter = _make_adapter(
-            subscription_type="quota", prompt_price="3.0", completion_price="15.0",
+            subscription_type="quota",
+            prompt_price="3.0",
+            completion_price="15.0",
             endpoint_id="test-model:quota-provider",
         )
         api_adapter = _make_adapter(
-            subscription_type="api", prompt_price="3.0", completion_price="15.0",
+            subscription_type="api",
+            prompt_price="3.0",
+            completion_price="15.0",
             endpoint_id="test-model:api-provider",
         )
 
         fr = _FakeFixedRouter()
         fr.add("test-model", [(api_adapter, 0.5), (quota_adapter, 0.5)])
 
-        router = RouteWiseRouter(
-            fixed_router=fr, config=RouteWiseConfig()
-        )
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         selected = router._select_adapter("test-model", {})
         assert selected is quota_adapter
 
@@ -196,9 +191,7 @@ class TestRouteWiseRouterScaffold:
         fr = _FakeFixedRouter()
         fr.add("test-model", [(provider_a, 0.5), (provider_b, 0.5)])
 
-        router = RouteWiseRouter(
-            fixed_router=fr, config=RouteWiseConfig()
-        )
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         selected = router._select_adapter("test-model", {})
         assert selected is provider_b
 
@@ -212,10 +205,14 @@ class TestRouteWiseRouterScaffold:
         With small prompt_tokens and large predicted output, B is cheaper.
         """
         provider_a = _make_adapter(
-            subscription_type="api", prompt_price="0.5", completion_price="20.0",
+            subscription_type="api",
+            prompt_price="0.5",
+            completion_price="20.0",
         )
         provider_b = _make_adapter(
-            subscription_type="api", prompt_price="5.0", completion_price="5.0",
+            subscription_type="api",
+            prompt_price="5.0",
+            completion_price="5.0",
         )
 
         fr = _FakeFixedRouter()
@@ -242,9 +239,7 @@ class TestRouteWiseRouterScaffold:
         fr = _FakeFixedRouter()
         fr.add("test-model", [(a1, 0.5), (a2, 0.5)])
 
-        router = RouteWiseRouter(
-            fixed_router=fr, config=RouteWiseConfig()
-        )
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         fallbacks = router._get_fallback_adapters("test-model", a1)
         assert a1 not in fallbacks
         assert a2 in fallbacks
@@ -252,9 +247,7 @@ class TestRouteWiseRouterScaffold:
     def test_fallback_empty_for_unknown_model(self):
         """Fallback returns empty list for an unregistered model."""
         fr = _FakeFixedRouter()
-        router = RouteWiseRouter(
-            fixed_router=fr, config=RouteWiseConfig()
-        )
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         assert router._get_fallback_adapters("nonexistent", MagicMock()) == []
 
     def test_unknown_subscription_type_defaults_to_api(self):
@@ -263,9 +256,7 @@ class TestRouteWiseRouterScaffold:
         fr = _FakeFixedRouter()
         fr.add("test-model", [(adapter, 1.0)])
 
-        router = RouteWiseRouter(
-            fixed_router=fr, config=RouteWiseConfig()
-        )
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         entries = router.classified["test-model"]
         assert entries[0][2] is SubscriptionType.API
 
@@ -326,9 +317,15 @@ class TestRouteWiseRouterScaffold:
         api_b = _make_adapter(subscription_type="api", provider="provider_b")
 
         fr = _FakeFixedRouter()
-        fr.add("test-model", [
-            (quota, 0.2), (conc, 0.2), (api_a, 0.3), (api_b, 0.3),
-        ])
+        fr.add(
+            "test-model",
+            [
+                (quota, 0.2),
+                (conc, 0.2),
+                (api_a, 0.3),
+                (api_b, 0.3),
+            ],
+        )
 
         config = RouteWiseConfig(concurrency_enabled=True)
         router = RouteWiseRouter(fixed_router=fr, config=config)
@@ -351,9 +348,9 @@ class TestRouteWiseRouterScaffold:
 # PD / LA-PD decision logic tests (PR-3)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 class TestRouteWisePDDecision:
-
     def test_pd_routes_to_quota_when_value_exceeds_threshold(self):
         """When v_t >= theta_Q and quota remains, PD selects S_Q adapter."""
         config = RouteWiseConfig(
@@ -504,7 +501,6 @@ class TestRouteWisePDDecision:
 
 @pytest.mark.unit
 class TestRouteWiseObservation:
-
     def test_record_observation_updates_predictor(self):
         """Predictor state changes after recording an observation."""
         router, _, _ = _make_router_with_quota_and_api()
@@ -631,7 +627,6 @@ def _make_router_with_two_api(
 
 @pytest.mark.unit
 class TestRouteWiseLayer2:
-
     def test_layer2_uses_lp_when_warmed(self):
         """After profile warmup, LP path is used for S_A selection."""
         config = RouteWiseConfig(
@@ -747,7 +742,9 @@ class TestRouteWiseLayer2:
         entry = router._shadow_hedge_log[0]
         assert entry.model_id == "test-model"
         assert entry.reason in (
-            "no_backup", "hedge_not_justified", "hedge_warranted",
+            "no_backup",
+            "hedge_not_justified",
+            "hedge_warranted",
             "insufficient_samples",
         )
 
@@ -787,19 +784,27 @@ class TestRouteWiseLayer2:
 
         # Two models, each with two S_A endpoints.
         a1 = _make_adapter(
-            subscription_type="api", prompt_price="3.0", completion_price="15.0",
+            subscription_type="api",
+            prompt_price="3.0",
+            completion_price="15.0",
             endpoint_id="model-a:ep1",
         )
         a2 = _make_adapter(
-            subscription_type="api", prompt_price="4.0", completion_price="20.0",
+            subscription_type="api",
+            prompt_price="4.0",
+            completion_price="20.0",
             endpoint_id="model-a:ep2",
         )
         b1 = _make_adapter(
-            subscription_type="api", prompt_price="5.0", completion_price="10.0",
+            subscription_type="api",
+            prompt_price="5.0",
+            completion_price="10.0",
             endpoint_id="model-b:ep1",
         )
         b2 = _make_adapter(
-            subscription_type="api", prompt_price="6.0", completion_price="12.0",
+            subscription_type="api",
+            prompt_price="6.0",
+            completion_price="12.0",
             endpoint_id="model-b:ep2",
         )
 
@@ -917,9 +922,14 @@ def _make_router_three_tier(
         endpoint_id="test-model:api-provider",
     )
     fr = _FakeFixedRouter()
-    fr.add("test-model", [
-        (conc_adapter, 0.3), (quota_adapter, 0.3), (api_adapter, 0.4),
-    ])
+    fr.add(
+        "test-model",
+        [
+            (conc_adapter, 0.3),
+            (quota_adapter, 0.3),
+            (api_adapter, 0.4),
+        ],
+    )
     router = RouteWiseRouter(fixed_router=fr, config=config)
     return router, conc_adapter, quota_adapter, api_adapter
 
@@ -1084,7 +1094,9 @@ class TestRouteWiseSCLifecycle:
             return_value={"choices": [{"message": {"content": "ok"}}]},
         ):
             await router._execute_adapter(
-                conc_adapter, "test-model", [{"role": "user", "content": "hi"}],
+                conc_adapter,
+                "test-model",
+                [{"role": "user", "content": "hi"}],
             )
         assert router.conc_mgr.active == 0
 
@@ -1108,7 +1120,9 @@ class TestRouteWiseSCLifecycle:
         ):
             with pytest.raises(RuntimeError, match="provider error"):
                 await router._execute_adapter(
-                    conc_adapter, "test-model", [{"role": "user", "content": "hi"}],
+                    conc_adapter,
+                    "test-model",
+                    [{"role": "user", "content": "hi"}],
                 )
         assert router.conc_mgr.active == 0
 
@@ -1132,7 +1146,9 @@ class TestRouteWiseSCLifecycle:
         ):
             with pytest.raises(asyncio.CancelledError):
                 await router._execute_adapter(
-                    conc_adapter, "test-model", [{"role": "user", "content": "hi"}],
+                    conc_adapter,
+                    "test-model",
+                    [{"role": "user", "content": "hi"}],
                 )
         assert router.conc_mgr.active == 0
 
@@ -1159,7 +1175,9 @@ class TestRouteWiseSCLifecycle:
         ):
             chunks = []
             async for chunk in router._execute_stream_adapter(
-                conc_adapter, "test-model", [{"role": "user", "content": "hi"}],
+                conc_adapter,
+                "test-model",
+                [{"role": "user", "content": "hi"}],
             ):
                 chunks.append(chunk)
             assert len(chunks) == 2
@@ -1190,7 +1208,9 @@ class TestRouteWiseSCLifecycle:
             return_value={"choices": [{"message": {"content": "ok"}}]},
         ):
             await router._execute_adapter(
-                api_adapter, "test-model", [{"role": "user", "content": "hi"}],
+                api_adapter,
+                "test-model",
+                [{"role": "user", "content": "hi"}],
             )
         # conc_mgr unchanged -- S_A doesn't release.
         assert router.conc_mgr.active == 1
@@ -1226,7 +1246,9 @@ class TestRouteWiseSCLifecycle:
             return_value={"choices": [{"message": {"content": "ok"}}]},
         ):
             await router._execute_adapter(
-                quota_adapter, "test-model", [{"role": "user", "content": "hi"}],
+                quota_adapter,
+                "test-model",
+                [{"role": "user", "content": "hi"}],
             )
         # conc_mgr unchanged -- S_Q doesn't release.
         assert router.conc_mgr.active == 4
@@ -1599,7 +1621,9 @@ class TestRouteWiseDecisionMetadata:
 
         # Execute through RouteWise's _execute_adapter
         result = await router._execute_adapter(
-            hedged, "test-model", [{"role": "user", "content": "hi"}],
+            hedged,
+            "test-model",
+            [{"role": "user", "content": "hi"}],
             request_id=request_id,
         )
 

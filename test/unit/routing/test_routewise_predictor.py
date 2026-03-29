@@ -9,7 +9,6 @@ from routing.routewise.predictor import EMAOutputPredictor, EMAState, QuantilePr
 
 @pytest.mark.unit
 class TestEMAState:
-
     def test_first_update_sets_mean(self):
         """First observation sets the mean directly."""
         state = EMAState()
@@ -69,7 +68,6 @@ class TestEMAState:
 
 @pytest.mark.unit
 class TestQuantilePrediction:
-
     def test_aliases(self):
         """lcb, median, ucb are aliases for q10, q50, q90."""
         pred = QuantilePrediction(q10=10.0, q50=50.0, q90=90.0, is_warmed_up=True)
@@ -80,7 +78,6 @@ class TestQuantilePrediction:
 
 @pytest.mark.unit
 class TestEMAOutputPredictor:
-
     def test_cold_start_prediction(self):
         """Returns default-based prediction before any updates."""
         predictor = EMAOutputPredictor(default_output=500.0)

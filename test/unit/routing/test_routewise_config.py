@@ -137,9 +137,7 @@ class TestLoadFromYAML:
         assert cfg == RouteWiseConfig()
         assert "must be a mapping at the root" in caplog.text
 
-    def test_non_mapping_routewise_section_uses_defaults(
-        self, tmp_path: Path, caplog
-    ):
+    def test_non_mapping_routewise_section_uses_defaults(self, tmp_path: Path, caplog):
         """A non-mapping `routewise` section falls back to defaults."""
         p = tmp_path / "bad_section.yaml"
         p.write_text("routewise:\n  - not\n  - a_map\n")
@@ -150,11 +148,7 @@ class TestLoadFromYAML:
 
     def test_unknown_top_level_key_warns(self, tmp_path: Path, caplog):
         """Unrecognized top-level keys emit a warning."""
-        yaml_content = (
-            "routewise:\n"
-            "  decision_rule: pd\n"
-            "  unknown_future_key: 42\n"
-        )
+        yaml_content = "routewise:\n  decision_rule: pd\n  unknown_future_key: 42\n"
         p = tmp_path / "routewise.yaml"
         p.write_text(yaml_content)
 
@@ -165,12 +159,7 @@ class TestLoadFromYAML:
 
     def test_unknown_nested_key_warns(self, tmp_path: Path, caplog):
         """Unrecognized keys inside nested sections emit a warning."""
-        yaml_content = (
-            "routewise:\n"
-            "  quota:\n"
-            "    daily_quota: 5000\n"
-            "    bogus_field: true\n"
-        )
+        yaml_content = "routewise:\n  quota:\n    daily_quota: 5000\n    bogus_field: true\n"
         p = tmp_path / "routewise.yaml"
         p.write_text(yaml_content)
 
@@ -209,11 +198,7 @@ class TestLoadFromYAML:
 
     def test_load_flat_latency_keys(self, tmp_path: Path):
         """Flat latency_* keys also load correctly."""
-        yaml_content = (
-            "routewise:\n"
-            "  latency_slo_sec: 2.0\n"
-            "  latency_min_samples: 5\n"
-        )
+        yaml_content = "routewise:\n  latency_slo_sec: 2.0\n  latency_min_samples: 5\n"
         p = tmp_path / "routewise.yaml"
         p.write_text(yaml_content)
 

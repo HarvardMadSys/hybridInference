@@ -14,7 +14,6 @@ from routing.routewise.latency import ProviderProfile, SWRRSampler, ShadowHedgeD
 
 @pytest.mark.unit
 class TestProviderProfile:
-
     def test_cdf_basic(self):
         """Known samples produce correct CDF values."""
         profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
@@ -125,7 +124,6 @@ class TestProviderProfile:
 
 @pytest.mark.unit
 class TestSWRRSampler:
-
     def test_single_provider(self):
         """Single provider always selected."""
         sampler = SWRRSampler(alpha=0.3)
@@ -189,7 +187,6 @@ class TestSWRRSampler:
 
 @pytest.mark.unit
 class TestShadowHedgeDecision:
-
     def test_dataclass_creation(self):
         """ShadowHedgeDecision can be instantiated with all fields."""
         decision = ShadowHedgeDecision(

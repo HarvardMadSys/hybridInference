@@ -132,7 +132,6 @@ def _make_fake_adapter(
 
 @pytest.mark.unit
 class TestSurvivalFunctions:
-
     def test_empty_profile_survival_is_one(self):
         """Empty profile returns S=1.0 (no data, assume high latency)."""
         profile = _make_profile()
@@ -207,7 +206,6 @@ class TestSurvivalFunctions:
 
 @pytest.mark.unit
 class TestComputeHedgeThreshold:
-
     def test_primary_fast_returns_inf(self):
         """If primary is always fast, hedge is never justified -> h*=inf."""
         primary = _make_profile(endpoint_id="primary")
@@ -359,7 +357,6 @@ class TestComputeHedgeThreshold:
 
 @pytest.mark.unit
 class TestHedgedAdapterNonStreaming:
-
     @pytest.mark.asyncio
     async def test_primary_fast_no_hedge_triggered(self):
         """Primary returns before h* -> primary wins."""
@@ -488,7 +485,6 @@ class TestHedgedAdapterNonStreaming:
 
 @pytest.mark.unit
 class TestHedgedAdapterStreaming:
-
     @pytest.mark.asyncio
     async def test_primary_content_before_threshold(self):
         """Primary produces content before h* -> primary stream forwarded."""
@@ -516,9 +512,7 @@ class TestHedgedAdapterStreaming:
             event_sink=sink,
         )
         chunks = []
-        async for chunk in hedged.stream_chat_completion(
-            [{"role": "user", "content": "hi"}]
-        ):
+        async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
             chunks.append(chunk)
 
         # Should contain primary's content.
@@ -553,9 +547,7 @@ class TestHedgedAdapterStreaming:
             event_sink=sink,
         )
         chunks = []
-        async for chunk in hedged.stream_chat_completion(
-            [{"role": "user", "content": "hi"}]
-        ):
+        async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
             chunks.append(chunk)
 
         combined = "".join(chunks)
@@ -588,9 +580,7 @@ class TestHedgedAdapterStreaming:
             event_sink=sink,
         )
         chunks = []
-        async for chunk in hedged.stream_chat_completion(
-            [{"role": "user", "content": "hi"}]
-        ):
+        async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
             chunks.append(chunk)
 
         combined = "".join(chunks)
@@ -619,9 +609,7 @@ class TestHedgedAdapterStreaming:
             event_sink=sink,
         )
         chunks = []
-        async for chunk in hedged.stream_chat_completion(
-            [{"role": "user", "content": "hi"}]
-        ):
+        async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
             chunks.append(chunk)
 
         # Should see at least role chunk + content chunk + DONE.
@@ -655,9 +643,7 @@ class TestHedgedAdapterStreaming:
             event_sink=sink,
         )
         chunks = []
-        async for chunk in hedged.stream_chat_completion(
-            [{"role": "user", "content": "hi"}]
-        ):
+        async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
             chunks.append(chunk)
 
         combined = "".join(chunks)
@@ -691,9 +677,7 @@ class TestHedgedAdapterStreaming:
 
         async def _consume() -> list[str]:
             chunks: list[str] = []
-            async for chunk in hedged.stream_chat_completion(
-                [{"role": "user", "content": "hi"}]
-            ):
+            async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
                 chunks.append(chunk)
             return chunks
 
@@ -720,16 +704,12 @@ def _make_router_with_two_api(
         config = RouteWiseConfig()
 
     api_a = MagicMock()
-    api_a.config = _make_model_config(
-        provider="provider-a", endpoint_id="test-model:api-a"
-    )
+    api_a.config = _make_model_config(provider="provider-a", endpoint_id="test-model:api-a")
     api_a.config.pricing = {"prompt": "3.0", "completion": "15.0"}
     api_a.config.subscription_type = "api"
 
     api_b = MagicMock()
-    api_b.config = _make_model_config(
-        provider="provider-b", endpoint_id="test-model:api-b"
-    )
+    api_b.config = _make_model_config(provider="provider-b", endpoint_id="test-model:api-b")
     api_b.config.pricing = {"prompt": "4.0", "completion": "20.0"}
     api_b.config.subscription_type = "api"
 
@@ -752,7 +732,6 @@ def _make_router_with_two_api(
 
 @pytest.mark.unit
 class TestRouterHedgeMode:
-
     def test_economic_mode_returns_hedged_adapter(self):
         """Economic mode returns HedgedAdapter when hedge is justified."""
         config = RouteWiseConfig(
@@ -779,8 +758,10 @@ class TestRouterHedgeMode:
 
         # Test _maybe_create_hedged_adapter directly for reliability.
         hedged = router._maybe_create_hedged_adapter(
-            "test-model", "test-model:api-a",
-            ["test-model:api-a", "test-model:api-b"], now,
+            "test-model",
+            "test-model:api-a",
+            ["test-model:api-a", "test-model:api-b"],
+            now,
         )
         assert hedged is not None
         assert isinstance(hedged, HedgedAdapter)
@@ -803,8 +784,10 @@ class TestRouterHedgeMode:
             router._latency_profiles["test-model:api-b"].record(now, 300.0)
 
         hedged = router._maybe_create_hedged_adapter(
-            "test-model", "test-model:api-a",
-            ["test-model:api-a", "test-model:api-b"], now,
+            "test-model",
+            "test-model:api-a",
+            ["test-model:api-a", "test-model:api-b"],
+            now,
         )
         assert hedged is None
 
@@ -834,8 +817,10 @@ class TestRouterHedgeMode:
         assert len(router._shadow_hedge_log) >= 1
         entry = router._shadow_hedge_log[-1]
         assert entry.reason in (
-            "hedge_warranted", "hedge_not_justified",
-            "no_backup", "insufficient_samples",
+            "hedge_warranted",
+            "hedge_not_justified",
+            "no_backup",
+            "insufficient_samples",
         )
 
 
@@ -846,7 +831,6 @@ class TestRouterHedgeMode:
 
 @pytest.mark.unit
 class TestProviderEventSinkProtocol:
-
     def test_fake_event_sink_satisfies_protocol(self):
         """_FakeEventSink satisfies ProviderEventSink protocol."""
         sink = _FakeEventSink()
@@ -956,9 +940,7 @@ class TestWinnerAttribution:
         assert hedged.config.provider == "slow-primary"
 
         chunks = []
-        async for chunk in hedged.stream_chat_completion(
-            [{"role": "user", "content": "hi"}]
-        ):
+        async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
             chunks.append(chunk)
 
         combined = "".join(chunks)
@@ -982,8 +964,7 @@ class TestToolCallsWinnerDetection:
         """A stream chunk with tool_calls in delta counts as first content."""
         sink = _FakeEventSink()
         tool_chunk = (
-            'data: {"choices":[{"delta":{"tool_calls":'
-            '[{"function":{"name":"get_weather"}}]}}]}\n\n'
+            'data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"get_weather"}}]}}]}\n\n'
         )
         primary = _make_fake_adapter(
             provider="tool-primary",
@@ -1004,9 +985,7 @@ class TestToolCallsWinnerDetection:
             event_sink=sink,
         )
         chunks = []
-        async for chunk in hedged.stream_chat_completion(
-            [{"role": "user", "content": "weather?"}]
-        ):
+        async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "weather?"}]):
             chunks.append(chunk)
 
         combined = "".join(chunks)
@@ -1017,9 +996,7 @@ class TestToolCallsWinnerDetection:
     async def test_reasoning_content_detected(self):
         """A stream chunk with reasoning_content counts as first content."""
         sink = _FakeEventSink()
-        reasoning_chunk = (
-            'data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}\n\n'
-        )
+        reasoning_chunk = 'data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}\n\n'
         primary = _make_fake_adapter(
             provider="reasoning-primary",
             stream_chunks=[reasoning_chunk, "data: [DONE]\n\n"],
@@ -1039,9 +1016,7 @@ class TestToolCallsWinnerDetection:
             event_sink=sink,
         )
         chunks = []
-        async for chunk in hedged.stream_chat_completion(
-            [{"role": "user", "content": "think"}]
-        ):
+        async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "think"}]):
             chunks.append(chunk)
 
         combined = "".join(chunks)
@@ -1139,9 +1114,7 @@ class TestStreamingReqCtxUpdate:
             endpoint_id="ep:slow",
         ):
             ctx_snapshots: list[dict[str, Any]] = []
-            async for chunk in hedged.stream_chat_completion(
-                [{"role": "user", "content": "hi"}]
-            ):
+            async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
                 # Capture ctx on first real chunk.
                 if not ctx_snapshots:
                     ctx_snapshots.append(dict(req_ctx.get()))
@@ -1187,9 +1160,7 @@ class TestStreamingReqCtxUpdate:
             endpoint_id="ep:fast",
         ):
             ctx_snapshots: list[dict[str, Any]] = []
-            async for chunk in hedged.stream_chat_completion(
-                [{"role": "user", "content": "hi"}]
-            ):
+            async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
                 if not ctx_snapshots:
                     ctx_snapshots.append(dict(req_ctx.get()))
 

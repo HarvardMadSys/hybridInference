@@ -26,7 +26,6 @@ def _make_config(**overrides) -> RouteWiseConfig:
 
 @pytest.mark.unit
 class TestQuotaManager:
-
     def test_initial_remaining(self):
         """Full quota available at start."""
         mgr = QuotaManager(_make_config(daily_quota=5000))
@@ -51,10 +50,12 @@ class TestQuotaManager:
 
     def test_shadow_price_at_zero_usage(self):
         """At zero usage, shadow price equals L_seed."""
-        mgr = QuotaManager(_make_config(
-            shadow_price_L_seed=0.001,
-            shadow_price_U_seed=0.500,
-        ))
+        mgr = QuotaManager(
+            _make_config(
+                shadow_price_L_seed=0.001,
+                shadow_price_U_seed=0.500,
+            )
+        )
         price = mgr.get_shadow_price()
         assert price == pytest.approx(0.001)
 
@@ -80,7 +81,7 @@ class TestQuotaManager:
 
         for i in range(1, len(prices)):
             assert prices[i] >= prices[i - 1], (
-                f"Price at step {i} ({prices[i]}) < step {i-1} ({prices[i-1]})"
+                f"Price at step {i} ({prices[i]}) < step {i - 1} ({prices[i - 1]})"
             )
 
     def test_shadow_price_at_half_usage(self):

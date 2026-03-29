@@ -40,7 +40,6 @@ def _make_profile(
 
 @pytest.mark.unit
 class TestSolveProviderLP:
-
     def test_single_feasible(self):
         """Single provider meeting CDF target gets weight 1.0."""
         result = solve_provider_lp(
@@ -129,7 +128,6 @@ class TestSolveProviderLP:
 
 @pytest.mark.unit
 class TestRelaxation:
-
     def test_original_slo_feasible(self):
         """Returns 'optimal' when original SLO is feasible."""
         profiles = {
@@ -204,7 +202,6 @@ class TestRelaxation:
 
 @pytest.mark.unit
 class TestPreFilter:
-
     def test_high_error_rate_filtered(self):
         """Providers with error_rate > threshold are filtered out."""
         profiles = {
