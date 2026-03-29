@@ -176,6 +176,8 @@ class RouteWiseRouter(BaseRouter):
         for model_id, route_cfg in self.fixed_router.routes.items():
             entries: list[tuple[Any, float, SubscriptionType]] = []
             for adapter, weight in route_cfg.adapters:
+                if weight <= 0:
+                    continue  # Respect FixedRouter's disabled-route convention
                 sub_str = getattr(adapter.config, "subscription_type", "api")
                 try:
                     sub_type = SubscriptionType(sub_str)
