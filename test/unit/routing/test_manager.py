@@ -11,9 +11,6 @@ from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from serving.servers.registry import register_from_models_yaml
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 @pytest.mark.unit
 def test_apply_keeps_alias_and_canonical_route_in_sync(tmp_path: Path):
