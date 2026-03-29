@@ -104,10 +104,21 @@ def _claude_stream_events(
     stop_reason: str = "end_turn",
     input_tokens: int = 10,
     output_tokens: int = 5,
+    cache_read: int = 0,
+    cache_write: int = 0,
 ) -> list[str]:
     """Build standard Claude SSE event lines for streaming."""
+    message_start_usage: dict[str, Any] = {
+        "input_tokens": input_tokens,
+        "output_tokens": 0,
+    }
+    if cache_read:
+        message_start_usage["cache_read_input_tokens"] = cache_read
+    if cache_write:
+        message_start_usage["cache_creation_input_tokens"] = cache_write
+
     events = [
-        f"data: {json.dumps({'type': 'message_start', 'message': {'id': 'msg_1', 'role': 'assistant', 'model': 'claude-sonnet-4-6-20250514', 'usage': {'input_tokens': input_tokens, 'output_tokens': 0}}})}",
+        f"data: {json.dumps({'type': 'message_start', 'message': {'id': 'msg_1', 'role': 'assistant', 'model': 'claude-sonnet-4-6-20250514', 'usage': message_start_usage}})}",
         f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}",
     ]
     # Split text into word-level deltas
@@ -502,6 +513,40 @@ class TestStreamChatCompletion:
         final = json.loads(chunks[-2][6:])
         assert final["_routing"]["provider"] == "anthropic"
         assert final["_routing"]["fallback"] is True
+
+    @pytest.mark.asyncio
+    async def test_stream_with_cache_tokens(self):
+        """Verify cache tokens flow through handle_stream_event into final usage."""
+        adapter = _make_adapter_initialized()
+
+        events = _claude_stream_events(
+            text="Cached reply",
+            input_tokens=400,
+            output_tokens=20,
+            cache_read=150,
+            cache_write=80,
+        )
+
+        async def mock_stream(*args, **kwargs):
+            for line in events:
+                yield line
+
+        adapter.http.stream_post = mock_stream
+
+        chunks = []
+        async for chunk in adapter.stream_chat_completion(
+            [{"role": "user", "content": "test"}]
+        ):
+            chunks.append(chunk)
+
+        # Final usage chunk (before [DONE])
+        final = json.loads(chunks[-2][6:])
+        usage = final["usage"]
+        assert usage["prompt_tokens"] == 250  # 400 - 150 cache_read
+        assert usage["completion_tokens"] == 20
+        assert usage["total_tokens"] == 420  # 400 + 20
+        assert usage["cache_read_tokens"] == 150
+        assert usage["cache_write_tokens"] == 80
 
 
 # ---------------------------------------------------------------------------
