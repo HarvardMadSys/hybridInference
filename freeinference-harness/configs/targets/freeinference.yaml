@@ -85,6 +85,20 @@ targets:
       admin_required: false
     tags: [glm, public]
 
+  - name: glm-5.1-public
+    model: glm-5.1
+    suite_type: gateway-public
+    sampling_count: 10
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      structured_output: true
+      embeddings: false
+      anthropic_messages: false
+      admin_required: false
+    tags: [glm, public]
+
   - name: qwen3.5-27b-public
     model: qwen3.5-27b
     suite_type: gateway-public

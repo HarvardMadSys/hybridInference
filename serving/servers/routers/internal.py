@@ -1,25 +1,23 @@
 """Internal endpoints for Nginx auth_request subrequests."""
 
+from __future__ import annotations
+
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 
-from serving.config.settings import is_admin_email
+from serving.config.settings import has_role
 from serving.servers.deps import get_db_logger
 from serving.servers.routers.auth_routes import hash_refresh_token
 
 router = APIRouter(prefix="/internal", tags=["Internal"])
 
 
-@router.get("/verify-grafana")
-async def verify_grafana(
-    refresh_token: str | None = Cookie(None),
-    db_logger=Depends(get_db_logger),
-) -> Response:
-    """Verify that the caller is an admin via their refresh_token cookie.
+async def _validate_session(refresh_token: str | None, db_logger: Any) -> dict[str, Any]:
+    """Validate a refresh_token cookie and return the associated user row.
 
-    Used by Nginx ``auth_request`` to gate access to Grafana.
-    Returns 200 for admins, 401/403 otherwise.
+    Raises HTTPException on any authentication failure.
     """
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Not authenticated.")
@@ -48,17 +46,49 @@ async def verify_grafana(
     if session_row["expires_at"] < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Session expired.")
 
-    # Look up user email
     async with db_logger.pool.acquire() as conn:
         user_row = await conn.fetchrow(
-            "SELECT email FROM users WHERE id = $1",
+            "SELECT email, role FROM users WHERE id = $1",
             session_row["user_id"],
         )
 
     if not user_row:
         raise HTTPException(status_code=401, detail="User not found.")
 
-    if not is_admin_email(user_row["email"]):
+    return dict(user_row)
+
+
+@router.get("/verify-grafana")
+async def verify_grafana(
+    refresh_token: str | None = Cookie(None),
+    db_logger=Depends(get_db_logger),
+) -> Response:
+    """Verify that the caller has internal+ role via their refresh_token cookie.
+
+    Used by Nginx ``auth_request`` to gate access to Grafana, LLM Prober, etc.
+    Returns 200 for internal/admin, 401/403 otherwise.
+    """
+    user = await _validate_session(refresh_token, db_logger)
+
+    if not has_role(user["role"] or "free", "internal"):
+        raise HTTPException(status_code=403, detail="Internal access required.")
+
+    return Response(status_code=200)
+
+
+@router.get("/verify-admin")
+async def verify_admin(
+    refresh_token: str | None = Cookie(None),
+    db_logger=Depends(get_db_logger),
+) -> Response:
+    """Verify that the caller has admin role via their refresh_token cookie.
+
+    Used by Nginx ``auth_request`` to gate access to pgAdmin.
+    Returns 200 for admin only, 401/403 otherwise.
+    """
+    user = await _validate_session(refresh_token, db_logger)
+
+    if (user["role"] or "free") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required.")
 
     return Response(status_code=200)

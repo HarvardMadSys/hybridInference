@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 import pytest
 
-from serving.config.settings import Settings, get_settings
+from serving.config.settings import Settings, get_settings, has_role
 
 # =============================================================================
 # Fixtures
@@ -154,3 +154,23 @@ def test_get_settings_cached() -> None:
     s1 = get_settings()
     s2 = get_settings()
     assert s1 is s2
+
+
+def test_has_role_enforces_rank_order() -> None:
+    """has_role should honor the configured role hierarchy."""
+    assert has_role("admin", "internal") is True
+    assert has_role("internal", "internal") is True
+    assert has_role("internal", "free") is True
+    assert has_role("free", "internal") is False
+    assert has_role("internal", "admin") is False
+
+
+def test_has_role_fails_closed_for_unknown_required_role() -> None:
+    """Unknown required roles should never be treated as allowed."""
+    assert has_role("admin", "super_admin") is False
+
+
+def test_has_role_treats_unknown_user_role_as_free() -> None:
+    """Unknown user roles should receive the lowest rank."""
+    assert has_role("typo-role", "free") is True
+    assert has_role("typo-role", "internal") is False

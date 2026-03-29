@@ -11,6 +11,7 @@ export interface AdminUser {
   id: string;
   email: string;
   user_name: string | null;
+  role: string;
   status: string;
   email_verified: boolean;
   approval_note: string | null;
@@ -24,7 +25,10 @@ export interface AdminUser {
   key_tier: string | null;
   usage_today_usd: number;
   usage_month_usd: number;
+  usage_alltime_usd: number;
 }
+
+export type UserSortBy = 'created' | 'cost_today' | 'cost_month' | 'cost_alltime' | 'last_login';
 
 export interface StatusCounts {
   all: number;
@@ -32,6 +36,7 @@ export interface StatusCounts {
   active: number;
   suspended: number;
   rejected: number;
+  deleted: number;
 }
 
 export interface ListUsersResponse {
@@ -51,9 +56,13 @@ export async function listUsers(
   status?: string,
   limit = 100,
   offset = 0,
+  search?: string,
+  sortBy?: UserSortBy,
 ): Promise<ListUsersResponse> {
   const params = new URLSearchParams();
   if (status) params.set('status', status);
+  if (search) params.set('search', search);
+  if (sortBy) params.set('sort_by', sortBy);
   params.set('limit', String(limit));
   params.set('offset', String(offset));
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);
@@ -184,6 +193,7 @@ export interface UserDetail {
   id: string;
   email: string;
   user_name: string | null;
+  role: string;
   status: string;
   email_verified: boolean;
   created_at: string;
@@ -207,6 +217,7 @@ export async function getUserDetail(userId: string): Promise<UserDetail> {
 }
 
 export interface UpdateUserData {
+  role?: string;
   tier?: string;
   status?: string;
   quota_daily_cost_usd?: number;
@@ -223,4 +234,47 @@ export async function updateUser(
     body: JSON.stringify(data),
   });
   return jsonOrThrow<{ user_id: string; updated_fields: string[]; message: string }>(resp);
+}
+
+export async function deleteUser(userId: string, reason: string): Promise<ApproveRejectResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+  return jsonOrThrow<ApproveRejectResponse>(resp);
+}
+
+// ========================================
+// Audit Log
+// ========================================
+
+export interface AuditLogEntry {
+  id: number;
+  timestamp: string;
+  admin_ip: string;
+  action: string;
+  target_user_id: string | null;
+  details: Record<string, unknown> | null;
+  success: boolean;
+}
+
+export interface ListAuditLogResponse {
+  total: number;
+  entries: AuditLogEntry[];
+}
+
+export async function listAuditLog(
+  action?: string,
+  targetUserId?: string,
+  limit = 50,
+  offset = 0,
+): Promise<ListAuditLogResponse> {
+  const params = new URLSearchParams();
+  if (action) params.set('action', action);
+  if (targetUserId) params.set('target_user_id', targetUserId);
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  const resp = await fetchWithAuth(API_BASE, `/admin/audit-log?${params.toString()}`);
+  return jsonOrThrow<ListAuditLogResponse>(resp);
 }

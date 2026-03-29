@@ -118,6 +118,17 @@ targets:
       streaming: true
       tools: true
 
+  # ── glm-5.1: zhipu only ─────────────────────────────────────────────
+  - name: glm-5.1@zhipu-gw
+    model: glm-5.1
+    tags: [zhipu, glm, pinned]
+    extra_headers:
+      X-Route-Pin: zhipu
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
   # ── llama-3.3-70b: llama API + featherless ──────────────────────────
   - name: llama-3.3-70b@llama-gw
     model: llama-3.3-70b-instruct

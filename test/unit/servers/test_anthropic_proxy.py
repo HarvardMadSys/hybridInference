@@ -60,6 +60,7 @@ class _FakeAdapter:
 class _FakeRouteConfig:
     adapters: list = field(default_factory=list)
     admin_only: bool = False
+    required_role: str = "free"
 
 
 def _make_router_exec(

@@ -134,3 +134,19 @@ def _parse_admin_emails(raw: str) -> list[str]:
 def is_admin_email(email: str) -> bool:
     """Check if the given email is in the admin list."""
     return email.strip().lower() in _parse_admin_emails(settings.admin_emails)
+
+
+ROLE_RANK: dict[str, int] = {"free": 0, "internal": 1, "admin": 2}
+
+VALID_ROLES = frozenset(ROLE_RANK)
+
+
+def has_role(user_role: str, required: str) -> bool:
+    """Check if user_role meets or exceeds the required role level.
+
+    Fail-closed: unknown *required* role is treated as rank infinity (never passes).
+    Unknown *user_role* is treated as rank 0 (free).
+    """
+    if required not in ROLE_RANK:
+        return False
+    return ROLE_RANK.get(user_role, 0) >= ROLE_RANK[required]

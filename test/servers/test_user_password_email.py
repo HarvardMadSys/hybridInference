@@ -8,6 +8,17 @@ import pytest
 MOCK_PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$somebase64salt$somebase64hash"
 
 
+def _mock_authenticated_user(email: str) -> dict[str, str | bool]:
+    """Build a current-user row that matches get_current_user() expectations."""
+    return {
+        "id": "user123",
+        "email": email,
+        "status": "active",
+        "email_verified": True,
+        "role": "free",
+    }
+
+
 @pytest.mark.asyncio
 async def test_change_password_success(test_app, test_client):
     """Test successful password change."""
@@ -23,13 +34,7 @@ async def test_change_password_success(test_app, test_client):
         # First call: get user from JWT, second call: get password hash
         mock_conn.fetchrow = AsyncMock(
             side_effect=[
-                {
-                    "user_id": "user123",
-                    "email": "test@example.com",
-                    "status": "active",
-                    "tier": "free",
-                    "email_verified": True,
-                },  # User lookup
+                _mock_authenticated_user("test@example.com"),  # User lookup
                 {"password_hash": MOCK_PASSWORD_HASH},  # Password hash lookup
             ]
         )
@@ -66,13 +71,7 @@ async def test_change_password_wrong_old_password(test_app, test_client):
         mock_conn = MagicMock()
         mock_conn.fetchrow = AsyncMock(
             side_effect=[
-                {
-                    "user_id": "user123",
-                    "email": "test@example.com",
-                    "status": "active",
-                    "tier": "free",
-                    "email_verified": True,
-                },
+                _mock_authenticated_user("test@example.com"),
                 {"password_hash": MOCK_PASSWORD_HASH},
             ]
         )
@@ -107,13 +106,7 @@ async def test_change_password_same_as_old(test_app, test_client):
         mock_conn = MagicMock()
         mock_conn.fetchrow = AsyncMock(
             side_effect=[
-                {
-                    "user_id": "user123",
-                    "email": "test@example.com",
-                    "status": "active",
-                    "tier": "free",
-                    "email_verified": True,
-                },
+                _mock_authenticated_user("test@example.com"),
                 {"password_hash": MOCK_PASSWORD_HASH},
             ]
         )
@@ -143,15 +136,7 @@ async def test_change_password_weak_new_password(test_app, test_client):
 
         # Setup mock database for user lookup
         mock_conn = MagicMock()
-        mock_conn.fetchrow = AsyncMock(
-            return_value={
-                "user_id": "user123",
-                "email": "test@example.com",
-                "status": "active",
-                "tier": "free",
-                "email_verified": True,
-            }
-        )
+        mock_conn.fetchrow = AsyncMock(return_value=_mock_authenticated_user("test@example.com"))
         test_app.state.services.db_logger.pool.acquire.return_value.__aenter__.return_value = (
             mock_conn
         )
@@ -188,13 +173,7 @@ async def test_change_email_success(test_app, test_client):
         # Calls: user lookup, get current email/password, check if new email exists
         mock_conn.fetchrow = AsyncMock(
             side_effect=[
-                {
-                    "user_id": "user123",
-                    "email": "old@example.com",
-                    "status": "active",
-                    "tier": "free",
-                    "email_verified": True,
-                },  # User lookup
+                _mock_authenticated_user("old@example.com"),  # User lookup
                 {"email": "old@example.com", "password_hash": MOCK_PASSWORD_HASH},  # Current user
                 None,  # New email not in use
             ]
@@ -233,13 +212,7 @@ async def test_change_email_wrong_password(test_app, test_client):
         mock_conn = MagicMock()
         mock_conn.fetchrow = AsyncMock(
             side_effect=[
-                {
-                    "user_id": "user123",
-                    "email": "old@example.com",
-                    "status": "active",
-                    "tier": "free",
-                    "email_verified": True,
-                },
+                _mock_authenticated_user("old@example.com"),
                 {"email": "old@example.com", "password_hash": MOCK_PASSWORD_HASH},
             ]
         )
@@ -274,13 +247,7 @@ async def test_change_email_same_as_current(test_app, test_client):
         mock_conn = MagicMock()
         mock_conn.fetchrow = AsyncMock(
             side_effect=[
-                {
-                    "user_id": "user123",
-                    "email": "same@example.com",
-                    "status": "active",
-                    "tier": "free",
-                    "email_verified": True,
-                },
+                _mock_authenticated_user("same@example.com"),
                 {"email": "same@example.com", "password_hash": MOCK_PASSWORD_HASH},
             ]
         )
@@ -316,13 +283,7 @@ async def test_change_email_already_in_use(test_app, test_client):
         # Calls: user lookup, get current email/password, check if new email exists
         mock_conn.fetchrow = AsyncMock(
             side_effect=[
-                {
-                    "user_id": "user123",
-                    "email": "old@example.com",
-                    "status": "active",
-                    "tier": "free",
-                    "email_verified": True,
-                },  # User lookup
+                _mock_authenticated_user("old@example.com"),  # User lookup
                 {"email": "old@example.com", "password_hash": MOCK_PASSWORD_HASH},  # Current user
                 {"id": "other_user"},  # New email already in use
             ]

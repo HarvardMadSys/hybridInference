@@ -54,7 +54,13 @@ async def verify_api_key(
     # Check if auth is enabled
     if os.getenv("USER_AUTH_ENABLED", "0") != "1":
         # Auth disabled - allow all, mark as anonymous
-        return {"user_id": "anonymous", "tier": "free", "authenticated": False, "is_admin": True}
+        return {
+            "user_id": "anonymous",
+            "tier": "free",
+            "role": "admin",
+            "authenticated": False,
+            "is_admin": True,
+        }
 
     # Extract API key from headers
     api_key = None
@@ -94,12 +100,13 @@ async def verify_api_key(
             user_row = await conn.fetchrow(
                 """
                 SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, k.tier,
-                       u.email
+                       u.email, u.role
                 FROM api_keys k
                 LEFT JOIN users u ON u.id = k.user_id
                 WHERE k.key_hash = $1
                   AND k.status = 'active'
                   AND (k.expires_at IS NULL OR k.expires_at > NOW())
+                  AND (u.id IS NULL OR u.status = 'active')
                 """,
                 key_hash,
             )
@@ -194,21 +201,16 @@ async def verify_api_key(
         )
 
     # Return user context
+    user_role = user.get("role") or "free"
     return {
         "user_id": user["user_id"],
         "user_name": user["user_name"],
         "tier": user["tier"],
+        "role": user_role,
         "authenticated": True,
         "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,
-        "is_admin": _check_admin(user.get("email") or ""),
+        "is_admin": user_role == "admin",
     }
-
-
-def _check_admin(email: str) -> bool:
-    """Lazy wrapper around is_admin_email to avoid top-level pydantic_settings import."""
-    from serving.config.settings import is_admin_email
-
-    return is_admin_email(email)
 
 
 async def optional_verify_api_key(
@@ -226,7 +228,7 @@ async def optional_verify_api_key(
     """
     # Auth disabled — treat caller as anonymous admin
     if os.getenv("USER_AUTH_ENABLED", "0") != "1":
-        return {"user_id": "anonymous", "authenticated": False, "is_admin": True}
+        return {"user_id": "anonymous", "role": "admin", "authenticated": False, "is_admin": True}
 
     # Extract API key from headers
     api_key = None
@@ -255,12 +257,13 @@ async def optional_verify_api_key(
         async with db_logger.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT k.user_id, u.email
+                SELECT k.user_id, u.email, u.role
                 FROM api_keys k
                 LEFT JOIN users u ON u.id = k.user_id
                 WHERE k.key_hash = $1
                   AND k.status = 'active'
                   AND (k.expires_at IS NULL OR k.expires_at > NOW())
+                  AND (u.id IS NULL OR u.status = 'active')
                 """,
                 key_hash,
             )
@@ -271,10 +274,12 @@ async def optional_verify_api_key(
     if not row:
         return None  # Key invalid or expired — treat as anonymous
 
+    user_role = row["role"] or "free"
     return {
         "user_id": row["user_id"],
+        "role": user_role,
         "authenticated": True,
-        "is_admin": _check_admin(row["email"] or ""),
+        "is_admin": user_role == "admin",
     }
 
 

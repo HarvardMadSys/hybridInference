@@ -257,21 +257,18 @@ class TestAdminModeUnit:
     """Unit tests that do not require a real database."""
 
     @pytest.mark.asyncio
-    async def test_require_admin_allows_configured_admin(self, monkeypatch):
-        monkeypatch.setattr(settings_module.settings, "admin_emails", "admin@example.com")
-        current_user = {"email": "admin@example.com", "user_id": "u1"}
+    async def test_require_admin_allows_admin_role(self):
+        current_user = {"email": "admin@example.com", "user_id": "u1", "role": "admin"}
 
         result = await deps_module.require_admin(current_user=current_user)
 
         assert result is current_user
 
     @pytest.mark.asyncio
-    async def test_require_admin_rejects_non_admin(self, monkeypatch):
-        monkeypatch.setattr(settings_module.settings, "admin_emails", "admin@example.com")
-
+    async def test_require_admin_rejects_non_admin(self):
         with pytest.raises(HTTPException) as exc:
             await deps_module.require_admin(
-                current_user={"email": "user@example.com", "user_id": "u1"}
+                current_user={"email": "user@example.com", "user_id": "u1", "role": "free"}
             )
 
         assert exc.value.status_code == 403
@@ -398,7 +395,7 @@ class TestPlaygroundAccess:
         assert model["providers"] == [{"id": "test", "name": "test"}]
 
     @pytest.mark.asyncio
-    async def test_playground_models_uses_db_email_for_admin_check(
+    async def test_playground_models_uses_db_role_for_admin_check(
         self,
         admin_mode_client: AsyncClient,
         auth_db_logger,
@@ -421,7 +418,7 @@ class TestPlaygroundAccess:
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
-        assert response.status_code == 403
+        assert response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_playground_chat_strips_internal_routing_metadata(

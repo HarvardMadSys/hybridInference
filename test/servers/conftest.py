@@ -35,29 +35,79 @@ def event_loop() -> Generator:
     loop.close()
 
 
+_ALLOWED_TEST_DB_PATTERN = "_test_"
+
+
+def _assert_test_db_name(db_name: str, context: str = "") -> None:
+    """Fail if *db_name* does not look like a dedicated test database.
+
+    Allowlist approach: the database name must contain '_test_' (e.g.
+    ``freeinference_test_db``).  This catches production, staging, copies,
+    and any other non-test database.
+    """
+    if _ALLOWED_TEST_DB_PATTERN not in (db_name or ""):
+        pytest.fail(
+            f"SAFETY: refusing to run tests against database '{db_name}' "
+            f"(name does not contain '{_ALLOWED_TEST_DB_PATTERN}')"
+            f"{f' [{context}]' if context else ''}. "
+            f"Set TEST_DB_NAME / DB_NAME to a dedicated test database."
+        )
+
+
+async def _assert_test_db_from_pool(pool, context: str = "") -> None:
+    """Query the connection pool and verify it points at a test database."""
+    async with pool.acquire() as conn:
+        db_name = await conn.fetchval("SELECT current_database()")
+    _assert_test_db_name(db_name, context)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def auth_test_env():
-    """Set required environment variables for auth tests.
+    """Force-set environment variables so tests never hit production.
 
-    This fixture runs automatically and ensures auth-related
-    environment variables are set for all tests.
+    Uses direct assignment (NOT setdefault) to guarantee test values
+    override any .env / inherited env regardless of load order.
+    Original values are restored when the session ends.
     """
-    # Database configuration
-    os.environ.setdefault("DB_HOST", "localhost")
-    os.environ.setdefault("DB_PORT", "5432")
-    os.environ.setdefault("DB_NAME", "freeinference_test_db")
-    os.environ.setdefault("DB_USER", "postgres")
-    os.environ.setdefault("DB_PASSWORD", "postgres")
-    # Auth configuration
-    os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-32-chars-long!!")
-    os.environ.setdefault("API_KEY_SECRET", "test-api-key-secret")
-    os.environ.setdefault("ADMIN_TOKEN", "test-admin-token")
-    os.environ.setdefault("BASE_URL", "http://test")
-    os.environ.setdefault("COOKIE_SECURE", "0")
-    os.environ.setdefault("SIGNUP_ENABLED", "1")
-    os.environ.setdefault("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "10.00")
-    # Disabled by default for backward compatibility with existing tests
-    os.environ.setdefault("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "0")
+    _TEST_DB_VARS = {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "freeinference_test_db",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "postgres",
+        # Mirror for fixtures that read TEST_DB_* directly
+        "TEST_DB_HOST": "localhost",
+        "TEST_DB_PORT": "5432",
+        "TEST_DB_NAME": "freeinference_test_db",
+        "TEST_DB_USER": "postgres",
+        "TEST_DB_PASSWORD": "postgres",
+    }
+    _AUTH_VARS = {
+        "JWT_SECRET_KEY": "test-secret-key-32-chars-long!!",
+        "API_KEY_SECRET": "test-api-key-secret",
+        "ADMIN_TOKEN": "test-admin-token",
+        "BASE_URL": "http://test",
+        "COOKIE_SECURE": "0",
+        "SIGNUP_ENABLED": "1",
+        "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "10.00",
+        # Disabled by default for backward compatibility with existing tests
+        "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
+    }
+
+    all_vars = {**_TEST_DB_VARS, **_AUTH_VARS}
+    saved = {k: os.environ.get(k) for k in all_vars}
+
+    for key, value in all_vars.items():
+        os.environ[key] = value
+
+    yield
+
+    # Restore original environment
+    for key, original in saved.items():
+        if original is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = original
 
 
 # ============================================================================
@@ -232,6 +282,10 @@ async def auth_app(auth_test_env):
     Returns:
         FastAPI: App instance with initialized services in app.state.services
     """
+    # Layer 2a: pre-flight check BEFORE create_app() / lifespan can run
+    # DB init (CREATE TABLE, ALTER, admin seed) to prevent schema side-effects.
+    _assert_test_db_name(os.environ.get("DB_NAME", ""), context="auth_app pre-flight DB_NAME")
+
     # Clear settings cache to pick up test environment variables
     from serving.config.settings import get_settings
     from serving.servers.app import create_app
@@ -242,6 +296,11 @@ async def auth_app(auth_test_env):
 
     # Manually trigger lifespan startup
     async with app.router.lifespan_context(app):
+        # Layer 2b: post-startup verification against the live connection
+        # in case settings/dotenv overrode the env var during bootstrap.
+        db_logger = getattr(getattr(app.state, "services", None), "db_logger", None)
+        if db_logger and getattr(db_logger, "pool", None):
+            await _assert_test_db_from_pool(db_logger.pool, context="auth_app fixture")
         yield app
 
 

@@ -281,6 +281,7 @@ def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
                 "glm-4.7-flash",
                 "glm-5",
                 "glm-5-turbo",
+                "glm-5.1",
             ):
                 cfg = RateLimitConfig(
                     model_id=model_id,
@@ -293,7 +294,7 @@ def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
                 limiter.configure(cfg)
             logger.info(
                 f"Configured GLM limits: {glm_tph:,}/hour "
-                "(glm-4.5, glm-4.6, glm-4.7, glm-4.7-flash, glm-5, glm-5-turbo)"
+                "(glm-4.5, glm-4.6, glm-4.7, glm-4.7-flash, glm-5, glm-5-turbo, glm-5.1)"
             )
 
 

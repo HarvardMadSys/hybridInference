@@ -279,8 +279,25 @@ def register_from_models_yaml(
         else:
             # Chat models go through the full RouteExecutor
             admin_only = bool(m.get("admin_only", False))
+            required_role = str(m.get("required_role", "free"))
+            # Validate required_role to prevent fail-open on typos
+            from serving.config.settings import VALID_ROLES
+
+            if required_role not in VALID_ROLES:
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "Model %s has invalid required_role '%s', defaulting to 'admin'",
+                    model_id,
+                    required_role,
+                )
+                required_role = "admin"
             router.register_route(
-                model_id, adapters_with_weights, aliases=aliases, admin_only=admin_only
+                model_id,
+                adapters_with_weights,
+                aliases=aliases,
+                admin_only=admin_only,
+                required_role=required_role,
             )
             count += 1 + len(aliases)
 

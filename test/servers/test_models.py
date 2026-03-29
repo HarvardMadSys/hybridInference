@@ -227,7 +227,7 @@ async def test_admin_only_hidden_no_auth():
 @pytest.mark.asyncio
 async def test_admin_only_visible_to_admin():
     """Admin-only route listed when user_ctx has is_admin=True."""
-    app = _build_admin_app(user_ctx={"is_admin": True, "user_id": "admin-user"})
+    app = _build_admin_app(user_ctx={"is_admin": True, "role": "admin", "user_id": "admin-user"})
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/v1/models")

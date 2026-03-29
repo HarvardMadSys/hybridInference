@@ -1,12 +1,85 @@
 """Integration tests for authentication routes."""
 
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient
 
-from test.fixtures.auth_factories import create_signup_request
+import serving.config.settings as settings_module
+from serving.servers.routers.auth_routes import hash_refresh_token
+from test.fixtures.auth_factories import create_signup_request, create_test_user
 
 # Import fixtures from conftest_auth
 pytest_plugins = ["test.servers.conftest_auth"]
+
+
+async def _set_user_role(auth_db_logger, user_id: str, role: str) -> None:
+    """Update the user's role for a test scenario."""
+    async with auth_db_logger.pool.acquire() as conn:
+        await conn.execute("UPDATE users SET role = $1 WHERE id = $2", role, user_id)
+
+
+async def _get_user_role(auth_db_logger, user_id: str) -> str:
+    """Fetch the current role for a user."""
+    async with auth_db_logger.pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT role FROM users WHERE id = $1", user_id)
+    return row["role"]
+
+
+async def _create_refresh_session(auth_db_logger, user_id: str, refresh_token: str) -> None:
+    """Insert a valid refresh session for the given user."""
+    async with auth_db_logger.pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO auth_sessions (id, user_id, refresh_token_hash, jti, sid, expires_at, revoked)
+            VALUES ($1, $2, $3, $4, $5, $6, FALSE)
+            """,
+            str(uuid4()),
+            user_id,
+            hash_refresh_token(refresh_token),
+            str(uuid4()),
+            str(uuid4()),
+            datetime.now(timezone.utc) + timedelta(days=1),
+        )
+
+
+@pytest_asyncio.fixture
+async def auth_test_user(auth_db_logger):
+    """Create a user backed by the auth-specific DB fixtures."""
+    if not auth_db_logger or not auth_db_logger.pool:
+        pytest.skip("PostgreSQL auth test database is not available.")
+
+    user_data = create_test_user()
+
+    async with auth_db_logger.pool.acquire() as conn:
+        await conn.execute("DELETE FROM email_verification_tokens")
+        await conn.execute("DELETE FROM password_reset_tokens")
+        await conn.execute("DELETE FROM auth_sessions")
+        await conn.execute("DELETE FROM api_keys WHERE account_id IS NOT NULL")
+        await conn.execute("DELETE FROM users")
+        await conn.execute(
+            """
+            INSERT INTO users (id, email, password_hash, user_name, status, email_verified)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            user_data["id"],
+            user_data["email"].lower(),
+            user_data["password_hash"],
+            user_data["user_name"],
+            user_data["status"],
+            user_data["email_verified"],
+        )
+
+    yield user_data
+
+    async with auth_db_logger.pool.acquire() as conn:
+        await conn.execute("DELETE FROM email_verification_tokens")
+        await conn.execute("DELETE FROM password_reset_tokens")
+        await conn.execute("DELETE FROM auth_sessions")
+        await conn.execute("DELETE FROM api_keys WHERE account_id IS NOT NULL")
+        await conn.execute("DELETE FROM users")
 
 
 class TestSignup:
@@ -246,6 +319,122 @@ class TestRefreshToken:
         )
 
         assert response.status_code == 401
+
+
+class TestRoleBootstrap:
+    """Test bootstrap promotion from ADMIN_EMAILS."""
+
+    @pytest.mark.asyncio
+    async def test_login_bootstrap_promotes_free_user_to_admin(
+        self,
+        auth_app_client: AsyncClient,
+        auth_db_logger,
+        auth_test_user,
+        monkeypatch,
+    ) -> None:
+        """Login should promote matching free users to admin."""
+        monkeypatch.setattr(settings_module.settings, "admin_emails", auth_test_user["email"])
+        await _set_user_role(auth_db_logger, auth_test_user["id"], "free")
+
+        response = await auth_app_client.post(
+            "/auth/login",
+            json={
+                "email": auth_test_user["email"],
+                "password": auth_test_user["password"],
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["user"]["role"] == "admin"
+        assert data["user"]["is_admin"] is True
+        assert await _get_user_role(auth_db_logger, auth_test_user["id"]) == "admin"
+
+    @pytest.mark.asyncio
+    async def test_login_bootstrap_does_not_repromote_non_free_user(
+        self,
+        auth_app_client: AsyncClient,
+        auth_db_logger,
+        auth_test_user,
+        monkeypatch,
+    ) -> None:
+        """Login should not overwrite an explicitly assigned non-free role."""
+        monkeypatch.setattr(settings_module.settings, "admin_emails", auth_test_user["email"])
+        await _set_user_role(auth_db_logger, auth_test_user["id"], "internal")
+
+        response = await auth_app_client.post(
+            "/auth/login",
+            json={
+                "email": auth_test_user["email"],
+                "password": auth_test_user["password"],
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["user"]["role"] == "internal"
+        assert data["user"]["is_admin"] is False
+        assert await _get_user_role(auth_db_logger, auth_test_user["id"]) == "internal"
+
+    @pytest.mark.asyncio
+    async def test_refresh_bootstrap_promotes_free_user_to_admin(
+        self,
+        auth_app_client: AsyncClient,
+        auth_db_logger,
+        auth_test_user,
+        monkeypatch,
+    ) -> None:
+        """Refresh should promote matching free users to admin."""
+        refresh_token = "test-refresh-bootstrap-admin"
+        monkeypatch.setattr(settings_module.settings, "admin_emails", auth_test_user["email"])
+        await _set_user_role(auth_db_logger, auth_test_user["id"], "free")
+        await _create_refresh_session(auth_db_logger, auth_test_user["id"], refresh_token)
+
+        response = await auth_app_client.post(
+            "/auth/refresh",
+            cookies={"refresh_token": refresh_token},
+        )
+
+        assert response.status_code == 200
+        assert await _get_user_role(auth_db_logger, auth_test_user["id"]) == "admin"
+
+        me_response = await auth_app_client.get(
+            "/user/me",
+            headers={"Authorization": f"Bearer {response.json()['access_token']}"},
+        )
+        assert me_response.status_code == 200
+        assert me_response.json()["role"] == "admin"
+        assert me_response.json()["is_admin"] is True
+
+    @pytest.mark.asyncio
+    async def test_refresh_bootstrap_does_not_repromote_non_free_user(
+        self,
+        auth_app_client: AsyncClient,
+        auth_db_logger,
+        auth_test_user,
+        monkeypatch,
+    ) -> None:
+        """Refresh should not overwrite an explicitly assigned non-free role."""
+        refresh_token = "test-refresh-bootstrap-internal"
+        monkeypatch.setattr(settings_module.settings, "admin_emails", auth_test_user["email"])
+        await _set_user_role(auth_db_logger, auth_test_user["id"], "internal")
+        await _create_refresh_session(auth_db_logger, auth_test_user["id"], refresh_token)
+
+        response = await auth_app_client.post(
+            "/auth/refresh",
+            cookies={"refresh_token": refresh_token},
+        )
+
+        assert response.status_code == 200
+        assert await _get_user_role(auth_db_logger, auth_test_user["id"]) == "internal"
+
+        me_response = await auth_app_client.get(
+            "/user/me",
+            headers={"Authorization": f"Bearer {response.json()['access_token']}"},
+        )
+        assert me_response.status_code == 200
+        assert me_response.json()["role"] == "internal"
+        assert me_response.json()["is_admin"] is False
 
 
 class TestEmailVerification:

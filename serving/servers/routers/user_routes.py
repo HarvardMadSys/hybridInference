@@ -78,7 +78,7 @@ async def get_current_user_info(
 ) -> UserInfo:
     """Get current user information.
 
-    Returns user profile including email, tier, status, and account creation date.
+    Returns user profile including email, tier, role, status, and account creation date.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -86,7 +86,7 @@ async def get_current_user_info(
     async with db_logger.pool.acquire() as conn:
         user_row = await conn.fetchrow(
             """
-            SELECT id, email, user_name, status, email_verified, created_at, last_login_at
+            SELECT id, email, user_name, role, status, email_verified, created_at, last_login_at
             FROM users
             WHERE id = $1
             """,
@@ -101,6 +101,7 @@ async def get_current_user_info(
         email=user_row["email"],
         user_name=user_row["user_name"],
         tier=current_user.get("tier", "free"),
+        role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
         is_admin=current_user.get("is_admin", False),
