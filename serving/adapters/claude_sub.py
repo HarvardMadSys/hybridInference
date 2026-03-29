@@ -443,14 +443,10 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
                     input_tokens = result.input_tokens
                 if result.output_tokens:
                     output_tokens = result.output_tokens
-
-                # Track cache tokens from message_start
-                if event.get("type") == "message_start":
-                    msg_usage = event.get("message", {}).get("usage", {})
-                    cache_read_input_tokens = int(msg_usage.get("cache_read_input_tokens", 0) or 0)
-                    cache_creation_input_tokens = int(
-                        msg_usage.get("cache_creation_input_tokens", 0) or 0
-                    )
+                if result.cache_read_tokens:
+                    cache_read_input_tokens = result.cache_read_tokens
+                if result.cache_write_tokens:
+                    cache_creation_input_tokens = result.cache_write_tokens
 
                 # Emit text deltas
                 if result.text_delta:
@@ -557,13 +553,10 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
                 input_tokens = result.input_tokens
             if result.output_tokens:
                 output_tokens = result.output_tokens
-
-            if event.get("type") == "message_start":
-                msg_usage = event.get("message", {}).get("usage", {})
-                cache_read_input_tokens = int(msg_usage.get("cache_read_input_tokens", 0) or 0)
-                cache_creation_input_tokens = int(
-                    msg_usage.get("cache_creation_input_tokens", 0) or 0
-                )
+            if result.cache_read_tokens:
+                cache_read_input_tokens = result.cache_read_tokens
+            if result.cache_write_tokens:
+                cache_creation_input_tokens = result.cache_write_tokens
 
             if result.text_delta:
                 total_content += result.text_delta
