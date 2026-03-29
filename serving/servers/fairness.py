@@ -200,7 +200,7 @@ class _VTCModelState:
                 success, remaining = await self._try_consume(estimated_tokens)
                 if success:
                     logger.info(
-                        "[VTC:%s] Fast dispatch user=%s counter=%.1f " "tokens=%d remaining=%.0f",
+                        "[VTC:%s] Fast dispatch user=%s counter=%.1f tokens=%d remaining=%.0f",
                         self.model_id,
                         user_id,
                         user_counter,
@@ -227,7 +227,7 @@ class _VTCModelState:
             self.active_users.add(user_id)
 
             logger.info(
-                "[VTC:%s] Queued user=%s counter=%.1f tokens=%d " "queue_depth=%d waiting_users=%d",
+                "[VTC:%s] Queued user=%s counter=%.1f tokens=%d queue_depth=%d waiting_users=%d",
                 self.model_id,
                 user_id,
                 user_counter,
@@ -251,7 +251,7 @@ class _VTCModelState:
                     sorted(self.active_users),
                 )
             logger.warning(
-                "[VTC:%s] Timeout user=%s after %.1fs " "(counter=%.1f tokens=%d)",
+                "[VTC:%s] Timeout user=%s after %.1fs (counter=%.1f tokens=%d)",
                 self.model_id,
                 user_id,
                 timeout,
@@ -307,7 +307,7 @@ class _VTCModelState:
             self.counters[user_id] = old_counter + cost
 
             logger.info(
-                "[VTC:%s] Counter update user=%s %.1f → %.1f " "(cost=%.0f, input=%d, output=%d)",
+                "[VTC:%s] Counter update user=%s %.1f → %.1f (cost=%.0f, input=%d, output=%d)",
                 self.model_id,
                 user_id,
                 old_counter,
@@ -391,7 +391,7 @@ class _VTCModelState:
         else:
             lifted = max(current, self.last_active_counter)
             logger.debug(
-                "[VTC:%s] Counter lift user=%s: %.1f → %.1f " "(idle system, last=%.1f)",
+                "[VTC:%s] Counter lift user=%s: %.1f → %.1f (idle system, last=%.1f)",
                 self.model_id,
                 user_id,
                 current,
