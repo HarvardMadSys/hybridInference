@@ -557,7 +557,13 @@ def handle_stream_event(
         message = event.get("message", {})
         usage_data = message.get("usage", {})
         input_tokens = int(usage_data.get("input_tokens", 0) or 0)
-        return StreamEventResult(input_tokens=input_tokens)
+        cache_read = int(usage_data.get("cache_read_input_tokens", 0) or 0)
+        cache_write = int(usage_data.get("cache_creation_input_tokens", 0) or 0)
+        return StreamEventResult(
+            input_tokens=input_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
 
     if event_type == "content_block_start":
         block = event.get("content_block", {})
@@ -603,6 +609,8 @@ class StreamEventResult:
     """Result from processing a single Claude SSE event."""
 
     __slots__ = (
+        "cache_read_tokens",
+        "cache_write_tokens",
         "finish_reason",
         "input_tokens",
         "is_done",
@@ -616,12 +624,16 @@ class StreamEventResult:
         text_delta: str | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
         finish_reason: str | None = None,
         is_done: bool = False,
     ) -> None:
         self.text_delta = text_delta
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.cache_read_tokens = cache_read_tokens
+        self.cache_write_tokens = cache_write_tokens
         self.finish_reason = finish_reason
         self.is_done = is_done
 
