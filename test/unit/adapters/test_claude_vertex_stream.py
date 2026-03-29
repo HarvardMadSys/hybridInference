@@ -552,6 +552,19 @@ class TestClaudeAdapterVertexMessage:
     """Test ClaudeAdapter handling of Vertex's one-shot 'message' type response."""
 
     @pytest.mark.asyncio
+    async def test_nonstream_upstream_error_raises(self):
+        """Non-streaming Vertex API error payloads should raise."""
+        adapter = _make_vertex_adapter()
+
+        async def mock_json_post(*args, **kwargs):
+            return {"Code": "10001", "Error": "Resource key unavailable"}
+
+        adapter.http.json_post_with_retry = mock_json_post
+
+        with pytest.raises(RuntimeError, match="Upstream API error: Resource key unavailable"):
+            await adapter.chat_completion([{"role": "user", "content": "test"}])
+
+    @pytest.mark.asyncio
     async def test_message_type_text(self):
         adapter = _make_vertex_adapter()
 

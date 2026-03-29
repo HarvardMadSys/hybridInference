@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 from serving.stream import done_sentinel, make_final_usage_chunk
+from serving.utils.logging import get_logger
 
 from .base import BaseAdapter
 from .claude_format import (
@@ -42,6 +43,8 @@ from .claude_format import (
     parse_response_content,
     parse_usage,
 )
+
+logger = get_logger(__name__)
 
 
 class ClaudeAdapter(BaseAdapter):
@@ -134,6 +137,12 @@ class ClaudeAdapter(BaseAdapter):
             endpoint, json=payload, headers=headers, timeout=None, retries=3
         )
 
+        if "Code" in data and "Error" in data:
+            error_code = data.get("Code")
+            error_msg = data.get("Error")
+            logger.error(f"[CLAUDE UPSTREAM ERROR] Code: {error_code}, Error: {error_msg}")
+            raise RuntimeError(f"Upstream API error: {error_msg}")
+
         content, tool_calls = parse_response_content(data.get("content", []))
         usage = parse_usage(data.get("usage", {}))
         finish_reason = map_stop_reason(data.get("stop_reason", "end_turn"))
@@ -215,9 +224,6 @@ class ClaudeAdapter(BaseAdapter):
 
         accumulator = ToolCallAccumulator()
 
-        from serving.utils.logging import get_logger
-
-        logger = get_logger(__name__)
         logger.debug(f"Starting stream to: {endpoint}")
         logger.debug(f"Payload summary: {json.dumps(self._summarize_messages(converted_msgs))}")
 
