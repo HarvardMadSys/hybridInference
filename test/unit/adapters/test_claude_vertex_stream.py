@@ -74,91 +74,115 @@ def _vertex_stream_events(
         message_start_usage["cache_creation_input_tokens"] = cache_write
 
     events = [
-        json.dumps({
-            "type": "message_start",
-            "message": {
-                "id": "msg_vertex_1",
-                "role": "assistant",
-                "model": "claude-sonnet-4-6-20250514",
-                "usage": message_start_usage,
-            },
-        }),
-        json.dumps({
-            "type": "content_block_start",
-            "index": 0,
-            "content_block": {"type": "text", "text": ""},
-        }),
+        json.dumps(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_vertex_1",
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6-20250514",
+                    "usage": message_start_usage,
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            }
+        ),
     ]
     # Split text into word-level deltas
     for word in text.split():
         events.append(
-            json.dumps({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": word + " "},
-            })
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": word + " "},
+                }
+            )
         )
-    events.extend([
-        json.dumps({"type": "content_block_stop", "index": 0}),
-        json.dumps({
-            "type": "message_delta",
-            "delta": {"stop_reason": stop_reason},
-            "usage": {"output_tokens": output_tokens},
-        }),
-        json.dumps({"type": "message_stop"}),
-    ])
+    events.extend(
+        [
+            json.dumps({"type": "content_block_stop", "index": 0}),
+            json.dumps(
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": stop_reason},
+                    "usage": {"output_tokens": output_tokens},
+                }
+            ),
+            json.dumps({"type": "message_stop"}),
+        ]
+    )
     return events
 
 
 def _vertex_stream_with_tools() -> list[str]:
     """Build Vertex streaming events with tool_use blocks."""
     return [
-        json.dumps({
-            "type": "message_start",
-            "message": {
-                "id": "msg_vertex_1",
-                "role": "assistant",
-                "model": "claude-sonnet-4-6-20250514",
-                "usage": {"input_tokens": 50, "output_tokens": 0},
-            },
-        }),
-        json.dumps({
-            "type": "content_block_start",
-            "index": 0,
-            "content_block": {"type": "text", "text": ""},
-        }),
-        json.dumps({
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {"type": "text_delta", "text": "Let me check."},
-        }),
+        json.dumps(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_vertex_1",
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6-20250514",
+                    "usage": {"input_tokens": 50, "output_tokens": 0},
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "Let me check."},
+            }
+        ),
         json.dumps({"type": "content_block_stop", "index": 0}),
-        json.dumps({
-            "type": "content_block_start",
-            "index": 1,
-            "content_block": {
-                "type": "tool_use",
-                "id": "toolu_vertex_1",
-                "name": "get_weather",
-                "input": {},
-            },
-        }),
-        json.dumps({
-            "type": "content_block_delta",
-            "index": 1,
-            "delta": {"type": "input_json_delta", "partial_json": '{"city":'},
-        }),
-        json.dumps({
-            "type": "content_block_delta",
-            "index": 1,
-            "delta": {"type": "input_json_delta", "partial_json": '"Paris"}'},
-        }),
+        json.dumps(
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_vertex_1",
+                    "name": "get_weather",
+                    "input": {},
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": '{"city":'},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": '"Paris"}'},
+            }
+        ),
         json.dumps({"type": "content_block_stop", "index": 1}),
-        json.dumps({
-            "type": "message_delta",
-            "delta": {"stop_reason": "tool_use"},
-            "usage": {"output_tokens": 30},
-        }),
+        json.dumps(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use"},
+                "usage": {"output_tokens": 30},
+            }
+        ),
         json.dumps({"type": "message_stop"}),
     ]
 
@@ -191,14 +215,16 @@ def _vertex_message_response(
     if thinking_tokens:
         usage["thinking_tokens"] = thinking_tokens
 
-    return json.dumps({
-        "id": "msg_vertex_complete",
-        "type": "message",
-        "role": "assistant",
-        "content": content,
-        "stop_reason": stop_reason,
-        "usage": usage,
-    })
+    return json.dumps(
+        {
+            "id": "msg_vertex_complete",
+            "type": "message",
+            "role": "assistant",
+            "content": content,
+            "stop_reason": stop_reason,
+            "usage": usage,
+        }
+    )
 
 
 # ===========================================================================
@@ -326,15 +352,24 @@ class TestToolCallAccumulator:
         acc = ToolCallAccumulator()
 
         handle_stream_event(
-            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1", "name": "fn1"}},
+            {
+                "type": "content_block_start",
+                "content_block": {"type": "tool_use", "id": "t1", "name": "fn1"},
+            },
             acc,
         )
         handle_stream_event(
-            {"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '{"a":'}},
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "input_json_delta", "partial_json": '{"a":'},
+            },
             acc,
         )
         handle_stream_event(
-            {"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '1}'}},
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "input_json_delta", "partial_json": "1}"},
+            },
             acc,
         )
         handle_stream_event({"type": "content_block_stop"}, acc)
@@ -351,22 +386,34 @@ class TestToolCallAccumulator:
 
         # Tool 1
         handle_stream_event(
-            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1", "name": "fn1"}},
+            {
+                "type": "content_block_start",
+                "content_block": {"type": "tool_use", "id": "t1", "name": "fn1"},
+            },
             acc,
         )
         handle_stream_event(
-            {"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "input_json_delta", "partial_json": "{}"},
+            },
             acc,
         )
         handle_stream_event({"type": "content_block_stop"}, acc)
 
         # Tool 2
         handle_stream_event(
-            {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t2", "name": "fn2"}},
+            {
+                "type": "content_block_start",
+                "content_block": {"type": "tool_use", "id": "t2", "name": "fn2"},
+            },
             acc,
         )
         handle_stream_event(
-            {"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '{"x":2}'}},
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "input_json_delta", "partial_json": '{"x":2}'},
+            },
             acc,
         )
         handle_stream_event({"type": "content_block_stop"}, acc)
@@ -423,9 +470,7 @@ class TestClaudeAdapterStream:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "Hi"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "Hi"}]):
             chunks.append(chunk)
 
         # Should have text deltas + final usage + [DONE]
@@ -471,9 +516,7 @@ class TestClaudeAdapterStream:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         final = json.loads(chunks[-2][6:])
@@ -534,9 +577,7 @@ class TestClaudeAdapterStream:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         final = json.loads(chunks[-2][6:])
@@ -580,9 +621,7 @@ class TestClaudeAdapterVertexMessage:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         # Should have text chunk + final usage + [DONE]
@@ -617,9 +656,7 @@ class TestClaudeAdapterVertexMessage:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         # Final usage chunk (before [DONE])
@@ -692,9 +729,7 @@ class TestClaudeAdapterVertexMessage:
         adapter.http.stream_post = mock_stream
 
         with pytest.raises(RuntimeError, match="Upstream API error"):
-            async for _ in adapter.stream_chat_completion(
-                [{"role": "user", "content": "test"}]
-            ):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
                 pass
 
 
@@ -712,20 +747,24 @@ class TestClaudeAdapterEdgeCases:
         adapter = _make_vertex_adapter()
 
         events = [
-            json.dumps({
-                "type": "message_start",
-                "message": {
-                    "id": "msg_empty",
-                    "role": "assistant",
-                    "model": "claude-sonnet-4-6-20250514",
-                    "usage": {"input_tokens": 50, "output_tokens": 0},
-                },
-            }),
-            json.dumps({
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn"},
-                "usage": {"output_tokens": 0},
-            }),
+            json.dumps(
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_empty",
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-6-20250514",
+                        "usage": {"input_tokens": 50, "output_tokens": 0},
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 0},
+                }
+            ),
             json.dumps({"type": "message_stop"}),
         ]
 
@@ -736,9 +775,7 @@ class TestClaudeAdapterEdgeCases:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         # Should still emit final usage + [DONE] without crashing
@@ -754,32 +791,40 @@ class TestClaudeAdapterEdgeCases:
         adapter = _make_vertex_adapter()
 
         events = [
-            json.dumps({
-                "type": "message_start",
-                "message": {
-                    "id": "msg_1",
-                    "role": "assistant",
-                    "model": "claude-sonnet-4-6-20250514",
-                    "usage": {"input_tokens": 10, "output_tokens": 0},
-                },
-            }),
-            json.dumps({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }),
+            json.dumps(
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-6-20250514",
+                        "usage": {"input_tokens": 10, "output_tokens": 0},
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                }
+            ),
             "this is not valid json {{{",  # corrupted line
-            json.dumps({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": "Hello"},
-            }),
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "Hello"},
+                }
+            ),
             json.dumps({"type": "content_block_stop", "index": 0}),
-            json.dumps({
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn"},
-                "usage": {"output_tokens": 5},
-            }),
+            json.dumps(
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 5},
+                }
+            ),
             json.dumps({"type": "message_stop"}),
         ]
 
@@ -790,9 +835,7 @@ class TestClaudeAdapterEdgeCases:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         # Should complete successfully with the text that came after the bad line
@@ -811,44 +854,56 @@ class TestClaudeAdapterEdgeCases:
         adapter = _make_vertex_adapter()
 
         events = [
-            json.dumps({
-                "type": "message_start",
-                "message": {
-                    "id": "msg_1",
-                    "role": "assistant",
-                    "model": "claude-sonnet-4-6-20250514",
-                    "usage": {"input_tokens": 10, "output_tokens": 0},
-                },
-            }),
+            json.dumps(
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-6-20250514",
+                        "usage": {"input_tokens": 10, "output_tokens": 0},
+                    },
+                }
+            ),
             # First text block
-            json.dumps({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            json.dumps({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": "Part one. "},
-            }),
+            json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "Part one. "},
+                }
+            ),
             json.dumps({"type": "content_block_stop", "index": 0}),
             # Second text block
-            json.dumps({
-                "type": "content_block_start",
-                "index": 1,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            json.dumps({
-                "type": "content_block_delta",
-                "index": 1,
-                "delta": {"type": "text_delta", "text": "Part two."},
-            }),
+            json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {"type": "text", "text": ""},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "text_delta", "text": "Part two."},
+                }
+            ),
             json.dumps({"type": "content_block_stop", "index": 1}),
-            json.dumps({
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn"},
-                "usage": {"output_tokens": 10},
-            }),
+            json.dumps(
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 10},
+                }
+            ),
             json.dumps({"type": "message_stop"}),
         ]
 
@@ -859,9 +914,7 @@ class TestClaudeAdapterEdgeCases:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         # Both parts should appear
@@ -882,32 +935,40 @@ class TestClaudeAdapterEdgeCases:
         events = [
             "",
             "   ",
-            json.dumps({
-                "type": "message_start",
-                "message": {
-                    "id": "msg_1",
-                    "role": "assistant",
-                    "model": "claude-sonnet-4-6-20250514",
-                    "usage": {"input_tokens": 10, "output_tokens": 0},
-                },
-            }),
+            json.dumps(
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-6-20250514",
+                        "usage": {"input_tokens": 10, "output_tokens": 0},
+                    },
+                }
+            ),
             "",
-            json.dumps({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            json.dumps({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": "OK"},
-            }),
+            json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "OK"},
+                }
+            ),
             json.dumps({"type": "content_block_stop", "index": 0}),
-            json.dumps({
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn"},
-                "usage": {"output_tokens": 1},
-            }),
+            json.dumps(
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 1},
+                }
+            ),
             json.dumps({"type": "message_stop"}),
         ]
 
@@ -918,9 +979,7 @@ class TestClaudeAdapterEdgeCases:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         assert chunks[-1].strip() == "data: [DONE]"

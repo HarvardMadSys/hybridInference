@@ -534,9 +534,7 @@ class TestStreamChatCompletion:
         adapter.http.stream_post = mock_stream
 
         chunks = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "test"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
 
         # Final usage chunk (before [DONE])
