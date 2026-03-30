@@ -19,6 +19,7 @@ from routing.manager import RoutingManager
 from serving.adapters import ClaudeSubscriptionAdapter, CodexSubscriptionAdapter
 from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
+from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
@@ -380,13 +381,15 @@ async def initialize() -> AppServices:
     log_store = None
     if db_logger and db_logger.pool:
         settings = get_settings()
-        operational_store = PostgresOperationalStore(db_logger.pool)
+        pg_operational = PostgresOperationalStore(db_logger.pool)
+        operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
         log_store = PostgresLogStore(
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
             use_chunked_hash=True,
         )
-        logger.info("Operational and log stores initialized (Postgres)")
+        logger.info("Operational store initialized (Postgres + in-memory cache)")
+        logger.info("Log store initialized (Postgres)")
 
     # User statistics collector (optional)
     user_stats_collector = None

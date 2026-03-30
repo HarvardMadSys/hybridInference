@@ -8,6 +8,7 @@ connection is needed — these are purely structural checks.
 import inspect
 
 from serving.storage.base import LogStore, OperationalStore
+from serving.storage.cache import CachedOperationalStore
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
 
@@ -30,22 +31,49 @@ class TestPostgresOperationalStoreProtocol:
         implemented = set(dir(PostgresOperationalStore))
 
         missing = required - implemented
-        assert not missing, (
-            f"PostgresOperationalStore is missing methods: {sorted(missing)}"
-        )
+        assert not missing, f"PostgresOperationalStore is missing methods: {sorted(missing)}"
 
     def test_no_abstractmethod_flag_remains(self):
         """The concrete class should have zero unresolved abstract methods."""
         remaining = getattr(PostgresOperationalStore, "__abstractmethods__", set())
-        assert not remaining, (
-            f"Unresolved abstract methods: {sorted(remaining)}"
-        )
+        assert not remaining, f"Unresolved abstract methods: {sorted(remaining)}"
 
     def test_method_signatures_match(self):
         """Concrete method signatures must accept the same parameters as the ABC."""
         for name in _get_abstract_methods(OperationalStore):
             abc_sig = inspect.signature(getattr(OperationalStore, name))
             impl_sig = inspect.signature(getattr(PostgresOperationalStore, name))
+
+            abc_params = set(abc_sig.parameters.keys())
+            impl_params = set(impl_sig.parameters.keys())
+
+            assert abc_params == impl_params, (
+                f"{name}: signature mismatch — "
+                f"ABC has {sorted(abc_params)}, impl has {sorted(impl_params)}"
+            )
+
+
+class TestCachedOperationalStoreProtocol:
+    """Verify CachedOperationalStore satisfies OperationalStore."""
+
+    def test_implements_all_abstract_methods(self):
+        """Every OperationalStore abstract method has a concrete override."""
+        required = _get_abstract_methods(OperationalStore)
+        implemented = set(dir(CachedOperationalStore))
+
+        missing = required - implemented
+        assert not missing, f"CachedOperationalStore is missing methods: {sorted(missing)}"
+
+    def test_no_abstractmethod_flag_remains(self):
+        """The concrete class should have zero unresolved abstract methods."""
+        remaining = getattr(CachedOperationalStore, "__abstractmethods__", set())
+        assert not remaining, f"Unresolved abstract methods: {sorted(remaining)}"
+
+    def test_method_signatures_match(self):
+        """Concrete method signatures must accept the same parameters as the ABC."""
+        for name in _get_abstract_methods(OperationalStore):
+            abc_sig = inspect.signature(getattr(OperationalStore, name))
+            impl_sig = inspect.signature(getattr(CachedOperationalStore, name))
 
             abc_params = set(abc_sig.parameters.keys())
             impl_params = set(impl_sig.parameters.keys())
@@ -65,16 +93,12 @@ class TestPostgresLogStoreProtocol:
         implemented = set(dir(PostgresLogStore))
 
         missing = required - implemented
-        assert not missing, (
-            f"PostgresLogStore is missing methods: {sorted(missing)}"
-        )
+        assert not missing, f"PostgresLogStore is missing methods: {sorted(missing)}"
 
     def test_no_abstractmethod_flag_remains(self):
         """The concrete class should have zero unresolved abstract methods."""
         remaining = getattr(PostgresLogStore, "__abstractmethods__", set())
-        assert not remaining, (
-            f"Unresolved abstract methods: {sorted(remaining)}"
-        )
+        assert not remaining, f"Unresolved abstract methods: {sorted(remaining)}"
 
     def test_method_signatures_match(self):
         """Concrete method signatures must accept the same parameters as the ABC."""
