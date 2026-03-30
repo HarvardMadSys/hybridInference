@@ -1,0 +1,46 @@
+# RouteWise cost-aware routing configuration.
+#
+# Structure follows the ADR (docs/algorithm/routewise_nimbus_main_integration_plan.md).
+# All values shown below are defaults.  Override individual fields as needed;
+# any key omitted will use its default value.
+
+routewise:
+  # Decision algorithm: "pd" (primal-dual) or "lapd" (look-ahead primal-dual).
+  decision_rule: pd
+
+  # Latency predictor type: "ema" (exponential moving average) or "histogram".
+  predictor: ema
+
+  # Quantile for lower confidence bound when decision_rule is "lapd".
+  risk_quantile: 0.10
+
+  # --- S_Q (quota) subscription parameters ---
+  quota:
+    daily_quota: 5000             # requests per day
+    monthly_fee: 20.0             # for amortized cost reporting only
+    reset_timezone: UTC           # daily quota reset boundary
+
+  # --- S_C (concurrency) subscription parameters ---
+  # Stage 2 feature; disabled by default in Stage 1.
+  concurrency:
+    enabled: false
+    limit: 8                      # max concurrent requests
+    monthly_fee: 25.0
+
+  # --- Shadow price search bounds ---
+  shadow_price:
+    L_seed: 0.001                 # initial lower bound (USD)
+    U_seed: 0.500                 # initial upper bound (USD)
+    adaptive: true                # update L/U from sliding window
+    window_hours: 24              # sliding window for L/U adaptation
+    min_ratio: 10                 # floor for U/L to prevent degenerate thresholds
+
+  # --- Canary rollout (future — not yet wired in bootstrap) ---
+  # NOTE: configure_canary() is not called during startup yet.
+  # These fields are reserved for future canary rollout support.
+  # See TODO in serving/servers/bootstrap.py for wiring plan.
+  canary:
+    enabled: false
+    # enabled_models: null = all routewise models; [] = no models; [model-a] = specific models
+    enabled_models: null
+    traffic_fraction: 1.0

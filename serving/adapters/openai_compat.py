@@ -561,6 +561,7 @@ class OpenAICompatAdapter(BaseAdapter):
             "_routing": {
                 "provider": self.config.provider,
                 "base_url": self.config.base_url,
+                "endpoint_id": getattr(self.config, "endpoint_id", None) or self.config.provider,
             },
         }
         return f"data: {json.dumps(chunk)}\n\n"

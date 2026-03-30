@@ -320,6 +320,210 @@ class BaseRouter:
     def record_observation(self, obs: RoutingObservation) -> None:
         """Record a routing observation. No-op by default; override in online learning routers."""
 
+    # ------------------------------------------------------------------
+    # Adapter execution helpers (overridable by subclasses)
+    # ------------------------------------------------------------------
+
+    async def _execute_adapter(
+        self,
+        adapter: BaseAdapter,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Execute a request through an adapter with monitoring.
+
+        Provides a single-adapter execution path with context, health checks,
+        and latency tracking. Subclasses (e.g. RouteWiseRouter) can override
+        to add slot lifecycle management.
+        """
+        endpoint_id = _get_endpoint_id(adapter)
+        with req_ctx.push(model=model_id, provider=adapter.config.provider):
+            self._ensure_health(endpoint_id)
+            started = time.perf_counter()
+            resp = await adapter.chat_completion(messages, **params)
+            PROVIDER_LATENCY.labels(
+                provider=normalize_provider_label(endpoint_id),
+                model=normalize_model_label(model_id),
+                operation="chat_completion",
+            ).observe(time.perf_counter() - started)
+            self._on_success(endpoint_id)
+        return resp
+
+    async def _execute_stream_adapter(
+        self,
+        adapter: BaseAdapter,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> AsyncIterator[Any]:
+        """Execute a streaming request through an adapter with monitoring.
+
+        Parallel to ``_execute_adapter`` for streaming. Subclasses can
+        override for per-adapter instrumentation (e.g. S_C slot cleanup).
+        """
+        endpoint_id = _get_endpoint_id(adapter)
+        with req_ctx.push(model=model_id, provider=adapter.config.provider):
+            self._ensure_health(endpoint_id)
+            first = True
+            started = time.perf_counter()
+            async for chunk in adapter.stream_chat_completion(messages, **params):
+                if first and _has_non_empty_content(chunk):
+                    first = False
+                    API_TTFT.labels(
+                        provider=normalize_provider_label(endpoint_id),
+                        model=normalize_model_label(model_id),
+                    ).observe(time.perf_counter() - started)
+                    self._on_success(endpoint_id)
+                yield chunk
+
+    # ------------------------------------------------------------------
+    # Chat completion with fallback (used by RouteWiseRouter via super())
+    # ------------------------------------------------------------------
+
+    async def chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Execute chat completion with automatic fallback.
+
+        Subclass-agnostic orchestration: calls ``_select_adapter`` (subclass)
+        then ``_execute_adapter`` (overridable) with fallback logic.
+        """
+        context = {
+            "messages": messages,
+            "params": params,
+            "request_id": params.get("request_id"),
+        }
+        primary = self._select_adapter(model_id, context)
+        if not primary:
+            raise ValueError(f"No route configured for model {model_id}")
+
+        last_attempted = primary
+        try:
+            try:
+                resp = await self._execute_adapter(primary, model_id, messages, **params)
+                if "_routing" not in resp:
+                    resp["_routing"] = {
+                        "provider": primary.config.provider,
+                        "base_url": primary.config.base_url,
+                    }
+                # Always inject endpoint_id so observation keys match latency profiles.
+                resp["_routing"].setdefault(
+                    "endpoint_id", getattr(primary.config, "endpoint_id", None)
+                )
+                return resp
+            except Exception as primary_error:
+                self._on_failure(_get_endpoint_id(primary), reason=primary_error.__class__.__name__)
+                if not self.experiment_mode:
+                    fallback_adapters = self._get_fallback_adapters(model_id, primary)
+                    for adapter in fallback_adapters:
+                        last_attempted = adapter
+                        try:
+                            resp = await self._execute_adapter(
+                                adapter, model_id, messages, **params
+                            )
+                            if "_routing" not in resp:
+                                resp["_routing"] = {
+                                    "provider": adapter.config.provider,
+                                    "base_url": adapter.config.base_url,
+                                    "fallback": True,
+                                }
+                            resp["_routing"].setdefault(
+                                "endpoint_id",
+                                getattr(adapter.config, "endpoint_id", None),
+                            )
+                            API_FALLBACKS.labels(
+                                from_provider=normalize_provider_label(_get_endpoint_id(primary)),
+                                to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
+                                reason=primary_error.__class__.__name__,
+                            ).inc()
+                            return resp
+                        except Exception:
+                            self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
+                            continue
+                raise primary_error
+        except BaseException as e:
+            if not hasattr(e, "_routing"):
+                e._routing = {  # type: ignore[attr-defined]
+                    "provider": last_attempted.config.provider,
+                    "base_url": last_attempted.config.base_url,
+                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
+                }
+            raise
+
+    async def stream_chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> AsyncIterator[Any]:
+        """Stream chat completion with automatic fallback.
+
+        Subclass-agnostic orchestration: calls ``_select_adapter`` (subclass)
+        then ``_execute_stream_adapter`` (overridable) with fallback logic.
+        """
+        context = {
+            "messages": messages,
+            "params": params,
+            "request_id": params.get("request_id"),
+        }
+        primary = self._select_adapter(model_id, context)
+        if not primary:
+            raise ValueError(f"No route configured for model {model_id}")
+
+        last_attempted = primary
+        try:
+            try:
+                async for chunk in self._execute_stream_adapter(
+                    primary, model_id, messages, **params
+                ):
+                    yield chunk
+                return
+            except Exception as primary_error:
+                self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+                if not self.experiment_mode:
+                    fallback_adapters = self._get_fallback_adapters(model_id, primary)
+                    for adapter in fallback_adapters:
+                        last_attempted = adapter
+                        try:
+                            async for chunk in self._execute_stream_adapter(
+                                adapter, model_id, messages, **params
+                            ):
+                                yield chunk
+                            API_FALLBACKS.labels(
+                                from_provider=normalize_provider_label(_get_endpoint_id(primary)),
+                                to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
+                                reason=primary_error.__class__.__name__,
+                            ).inc()
+                            return
+                        except Exception:
+                            self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
+                            continue
+                raise primary_error
+        except BaseException as e:
+            if not hasattr(e, "_routing"):
+                e._routing = {  # type: ignore[attr-defined]
+                    "provider": last_attempted.config.provider,
+                    "base_url": last_attempted.config.base_url,
+                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
+                }
+            raise
+
+    def _select_adapter(
+        self, model_id: str, context: dict[str, Any] | None = None, **kwargs: Any
+    ) -> BaseAdapter | None:
+        """Select an adapter for the given model. Override in subclasses."""
+        return None
+
+    def _get_fallback_adapters(
+        self, model_id: str, failed_adapter: BaseAdapter
+    ) -> list[BaseAdapter]:
+        """Return fallback adapters after primary failure. Override in subclasses."""
+        return []
+
 
 # ============================================================================
 # FixedRouter
@@ -376,7 +580,7 @@ class FixedRouter(BaseRouter):
         for alias in aliases or []:
             self.routes[alias] = route_cfg  # shared reference, not a copy
 
-    def _select_adapter(
+    def _select_adapter(  # type: ignore[override]  # intentionally different signature
         self, model_id: str, *, pin_provider: str | None = None
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection.
@@ -479,6 +683,8 @@ class FixedRouter(BaseRouter):
                     "provider": primary.config.provider,
                     "base_url": primary.config.base_url,
                 }
+            # Always inject endpoint_id so observation keys match latency profiles.
+            resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(primary))
             return resp
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
@@ -509,6 +715,7 @@ class FixedRouter(BaseRouter):
                             "base_url": adapter.config.base_url,
                             "fallback": True,
                         }
+                    resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(adapter))
                     API_FALLBACKS.labels(
                         from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                         to_provider=normalize_provider_label(_get_endpoint_id(adapter)),

@@ -327,6 +327,7 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
         result["_routing"] = {
             "provider": "claude_sub",
             "base_url": self.config.base_url,
+            "endpoint_id": getattr(self.config, "endpoint_id", None) or "claude_sub",
             "pricing": self.config.pricing,
             "account_id": account.id,
         }
@@ -358,6 +359,7 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
         result["_routing"] = {
             "provider": "anthropic",
             "base_url": f"{base}/v1/messages",
+            "endpoint_id": getattr(self.config, "endpoint_id", None) or "anthropic",
             "fallback": True,
             "pricing": self.config.pricing,
         }
@@ -505,6 +507,7 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
             "_routing": {
                 "provider": "claude_sub",
                 "base_url": self.config.base_url,
+                "endpoint_id": getattr(self.config, "endpoint_id", None) or "claude_sub",
                 "pricing": self.config.pricing,
                 "account_id": account.id,
             },
@@ -590,6 +593,7 @@ class ClaudeSubscriptionAdapter(BaseAdapter):
             "_routing": {
                 "provider": "anthropic",
                 "base_url": f"{base}/v1/messages",
+                "endpoint_id": getattr(self.config, "endpoint_id", None) or "anthropic",
                 "fallback": True,
                 "pricing": self.config.pricing,
             },
