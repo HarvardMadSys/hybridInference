@@ -64,9 +64,12 @@ class HealthMonitor:
         timeout = aiohttp.ClientTimeout(total=self.timeout_s)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             while True:
-                for ep in endpoints:
-                    ok = await self._check_once(session, ep)
-                    self._status[ep] = ok
+                results = await asyncio.gather(
+                    *(self._check_once(session, ep) for ep in endpoints),
+                    return_exceptions=True,
+                )
+                for ep, ok in zip(endpoints, results, strict=False):
+                    self._status[ep] = bool(ok) if not isinstance(ok, Exception) else False
                 await asyncio.sleep(self.interval_s)
 
     def start(self, endpoints: list[str]) -> None:
