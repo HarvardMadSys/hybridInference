@@ -96,13 +96,15 @@ def extract_cache_tokens(
     # --- cache read tokens ---
     cache_read: int | None = None
 
-    # Direct fields (Anthropic style, then generic)
+    # Direct fields (Anthropic style, then generic).
+    # val >= 0 so that an explicit 0 ("cache supported but no hit") is recorded
+    # rather than falling through to the next field or returning None.
     for field in ("cache_read_input_tokens", "cache_read_tokens", "prompt_cache_hit_tokens"):
         val = usage.get(field)
         if val is not None:
             try:
                 val = int(val)
-                if val > 0:
+                if val >= 0:
                     cache_read = val
                     break
             except (TypeError, ValueError):
@@ -116,7 +118,7 @@ def extract_cache_tokens(
             if val is not None:
                 try:
                     val = int(val)
-                    if val > 0:
+                    if val >= 0:
                         cache_read = val
                 except (TypeError, ValueError):
                     pass
@@ -129,7 +131,7 @@ def extract_cache_tokens(
         if val is not None:
             try:
                 val = int(val)
-                if val > 0:
+                if val >= 0:
                     cache_write = val
                     break
             except (TypeError, ValueError):
