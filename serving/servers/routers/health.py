@@ -3,55 +3,39 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from serving.config.settings import has_role
 from serving.observability.metrics import DATABASE_CONNECTED
 from serving.servers.auth import optional_verify_api_key
-from serving.servers.deps import get_db_logger, get_router, get_services
-
-if TYPE_CHECKING:
-    from serving.storage.database import DatabaseLogger
+from serving.servers.deps import get_log_store, get_operational_store, get_router, get_services
 
 router = APIRouter()
 
 
-async def _test_database_connection(db_logger: DatabaseLogger | None) -> bool:
-    """Actively test database connection with a lightweight query.
-
-    This performs a real database query to detect runtime connection failures,
-    not just checking if the pool object exists.
+async def _test_store_health(op_store: Any, log_store: Any) -> bool:
+    """Actively test database connection via store health checks.
 
     Args:
-        db_logger: DatabaseLogger instance from get_db_logger dependency
+        op_store: OperationalStore instance
+        log_store: LogStore instance
 
     Returns:
-        True if database responds successfully, False otherwise
+        True if at least one store is reachable and healthy, False otherwise
     """
-    if not db_logger or not db_logger.pool:
-        return False
-
+    healthy = False
     try:
-        import asyncpg
-
-        # Execute lightweight query with timeout to test connection
-        async with db_logger.pool.acquire() as conn:
-            await conn.fetchval("SELECT 1", timeout=2.0)
-
-        # Database is healthy - mark metric as connected
-        DATABASE_CONNECTED.set(1)
-        return True
-
-    except asyncpg.PostgresError:
-        # Database-specific error - mark as disconnected
-        DATABASE_CONNECTED.set(0)
-        return False
+        if op_store and await op_store.health_check():
+            healthy = True
+        if log_store and await log_store.health_check():
+            healthy = True
     except Exception:
-        # Other errors (timeout, etc.) - also consider as unhealthy
-        DATABASE_CONNECTED.set(0)
-        return False
+        pass
+
+    DATABASE_CONNECTED.set(1 if healthy else 0)
+    return healthy
 
 
 @router.get("/")
@@ -86,17 +70,17 @@ async def root() -> dict[str, Any]:
 async def health(
     response: Response,
     router_exec=Depends(get_router),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> dict[str, Any]:
     """Health check endpoint with active database connection test.
 
-    Performs a lightweight SELECT 1 query to detect runtime database failures.
+    Performs a lightweight query to detect runtime database failures.
     Returns 200 OK if service is healthy, 503 Service Unavailable if database is disconnected.
     """
     routes_count = len(router_exec.routes)
 
-    # Actively test database connection (metric is updated inside _test_database_connection)
-    db_connected = await _test_database_connection(db_logger)
+    db_connected = await _test_store_health(op_store, log_store)
 
     if not db_connected:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -119,7 +103,8 @@ async def deep_health(
     response: Response,
     router_exec=Depends(get_router),
     services=Depends(get_services),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> dict[str, Any]:
     """Deep health check with provider/circuit and rate limiter info.
 
@@ -127,8 +112,7 @@ async def deep_health(
     """
     routes_count = len(router_exec.routes)
 
-    # Actively test database connection (metric is updated inside _test_database_connection)
-    db_connected = await _test_database_connection(db_logger)
+    db_connected = await _test_store_health(op_store, log_store)
 
     provider_status = (
         router_exec.get_provider_status() if hasattr(router_exec, "get_provider_status") else {}
@@ -169,7 +153,7 @@ async def deep_health(
 async def model_activity(
     window: int = Query(default=10, ge=1, le=60),
     user_ctx: dict[str, Any] | None = Depends(optional_verify_api_key),
-    db_logger: DatabaseLogger | None = Depends(get_db_logger),
+    log_store=Depends(get_log_store),
 ) -> dict[str, Any]:
     """Per-model, per-provider traffic activity over a recent window.
 
@@ -184,9 +168,9 @@ async def model_activity(
     user_role = (user_ctx or {}).get("role", "free")
     if not user_ctx or not has_role(user_role, "internal"):
         raise HTTPException(status_code=403, detail="Internal access required")
-    if not db_logger:
+    if not log_store:
         raise HTTPException(status_code=503, detail="Database not available")
-    routes = await db_logger.get_model_activity(window_minutes=window)
+    routes = await log_store.get_model_activity(window_minutes=window)
     return {"window_minutes": window, "routes": routes}
 
 

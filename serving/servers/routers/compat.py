@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import (
-    get_db_logger,
     get_fairness_scheduler,
+    get_log_store,
     get_rate_limiter,
     get_router,
 )
@@ -27,7 +27,7 @@ async def single_completion(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     rate_limiter=Depends(get_rate_limiter),
-    db_logger=Depends(get_db_logger),
+    log_store=Depends(get_log_store),
     fairness_scheduler=Depends(get_fairness_scheduler),
 ):
     """Compatibility alias for single-shot completion requests.
@@ -41,7 +41,7 @@ async def single_completion(
         user_ctx=user_ctx,
         router_exec=router_exec,
         rate_limiter=rate_limiter,
-        db_logger=db_logger,
+        log_store=log_store,
         fairness_scheduler=fairness_scheduler,
     )
 
@@ -54,7 +54,7 @@ async def legacy_completions(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     rate_limiter=Depends(get_rate_limiter),
-    db_logger=Depends(get_db_logger),
+    log_store=Depends(get_log_store),
     fairness_scheduler=Depends(get_fairness_scheduler),
 ):
     """OpenAI-style legacy completions endpoint: convert to chat format."""
@@ -71,6 +71,6 @@ async def legacy_completions(
         user_ctx=user_ctx,
         router_exec=router_exec,
         rate_limiter=rate_limiter,
-        db_logger=db_logger,
+        log_store=log_store,
         fairness_scheduler=fairness_scheduler,
     )

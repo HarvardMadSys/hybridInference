@@ -20,6 +20,8 @@ from serving.adapters import ClaudeSubscriptionAdapter, CodexSubscriptionAdapter
 from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
+from serving.storage.postgres_log import PostgresLogStore
+from serving.storage.postgres_operational import PostgresOperationalStore
 from serving.utils.logging import get_logger, setup_logging
 
 from .deps import AppServices
@@ -373,13 +375,26 @@ async def initialize() -> AppServices:
             "attached" if rate_limiter is not None else "none",
         )
 
+    # Build store abstractions from the shared pool
+    operational_store = None
+    log_store = None
+    if db_logger and db_logger.pool:
+        settings = get_settings()
+        operational_store = PostgresOperationalStore(db_logger.pool)
+        log_store = PostgresLogStore(
+            db_logger.pool,
+            store_full_prompts=settings.db_store_full_content,
+            use_chunked_hash=True,
+        )
+        logger.info("Operational and log stores initialized (Postgres)")
+
     # User statistics collector (optional)
     user_stats_collector = None
-    if os.getenv("METRICS_ENABLED", "1") == "1" and db_logger:
+    if os.getenv("METRICS_ENABLED", "1") == "1" and operational_store:
         from serving.observability.user_stats import UserStatsCollector
 
         interval = int(os.getenv("USER_STATS_INTERVAL_SECONDS", "60"))
-        user_stats_collector = UserStatsCollector(db_logger, interval_seconds=interval)
+        user_stats_collector = UserStatsCollector(operational_store, interval_seconds=interval)
         user_stats_collector.start()
         logger.info(f"User stats collector started (interval: {interval}s)")
 
@@ -391,6 +406,8 @@ async def initialize() -> AppServices:
         embedding_adapters=embedding_adapters or None,
         rate_limiter=rate_limiter,
         db_logger=db_logger,
+        operational_store=operational_store,
+        log_store=log_store,
         routing_manager=routing_manager,
         user_stats_collector=user_stats_collector,
         fairness_scheduler=fairness_scheduler,

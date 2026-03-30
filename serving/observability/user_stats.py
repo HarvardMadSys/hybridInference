@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from serving.storage.database import DatabaseLogger
+    from serving.storage.base import OperationalStore
 
 logger = get_logger(__name__)
 
@@ -24,23 +24,23 @@ class UserStatsCollector:
 
     def __init__(
         self,
-        db_logger: DatabaseLogger | None,
+        operational_store: OperationalStore | None,
         interval_seconds: int = 60,
     ) -> None:
         """Initialize the user stats collector.
 
         Args:
-            db_logger: Database logger instance for querying user data.
+            operational_store: OperationalStore instance for querying user data.
             interval_seconds: How often to update metrics (default: 60s).
         """
-        self.db_logger = db_logger
+        self._op_store = operational_store
         self.interval_seconds = interval_seconds
         self._task: asyncio.Task | None = None
         self._enabled = os.getenv("METRICS_ENABLED", "1") == "1"
 
     async def _update_metrics(self) -> None:
         """Query database and update Prometheus metrics."""
-        if not self.db_logger or not self.db_logger.pool:
+        if not self._op_store:
             logger.debug("Database not available, skipping user stats update")
             return
 
@@ -51,34 +51,10 @@ class UserStatsCollector:
                 USERS_TOTAL,
             )
 
-            async with self.db_logger.pool.acquire() as conn:
-                # Total registered users
-                total_users_row = await conn.fetchrow(
-                    "SELECT COUNT(*) as count FROM users WHERE status = 'active'"
-                )
-                total_users = total_users_row["count"] if total_users_row else 0
-
-                # Daily active users (users who logged in within last 24 hours)
-                dau_row = await conn.fetchrow(
-                    """
-                    SELECT COUNT(DISTINCT id) as count
-                    FROM users
-                    WHERE status = 'active'
-                      AND last_login_at >= NOW() - INTERVAL '24 hours'
-                    """
-                )
-                dau = dau_row["count"] if dau_row else 0
-
-                # Monthly active users (users who logged in within last 30 days)
-                mau_row = await conn.fetchrow(
-                    """
-                    SELECT COUNT(DISTINCT id) as count
-                    FROM users
-                    WHERE status = 'active'
-                      AND last_login_at >= NOW() - INTERVAL '30 days'
-                    """
-                )
-                mau = mau_row["count"] if mau_row else 0
+            counts = await self._op_store.get_active_user_counts()
+            total_users = counts.get("total", 0)
+            dau = counts.get("dau", 0)
+            mau = counts.get("mau", 0)
 
             # Update Prometheus metrics
             USERS_TOTAL.set(total_users)
@@ -106,7 +82,7 @@ class UserStatsCollector:
             logger.warning("User stats collector already running")
             return
 
-        if not self.db_logger:
+        if not self._op_store:
             logger.warning("Database not available, user stats collector disabled")
             return
 

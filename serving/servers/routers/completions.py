@@ -26,7 +26,7 @@ from serving.schemas import (
     ErrorResponse,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.deps import get_db_logger, get_fairness_scheduler, get_rate_limiter, get_router
+from serving.servers.deps import get_fairness_scheduler, get_log_store, get_rate_limiter, get_router
 from serving.servers.rate_limiter import TokenCounter
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
@@ -35,11 +35,11 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) -> None:
+def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
     """Schedule a background task to log request to database without blocking HTTP response.
 
     Args:
-        db_logger: Database logger instance
+        log_store: LogStore instance
         request_id: Request identifier for logging
         log_data: Dictionary containing all log request parameters
     """
@@ -47,7 +47,7 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
     async def log_to_db_background():
         """Background task to log request to database."""
         try:
-            await db_logger.log_request(**log_data)
+            await log_store.log_request(**log_data)
             logger.debug(f"Background DB logging completed for request {request_id}")
         except Exception as e:
             # Log error but don't fail the request - it's already sent to client
@@ -79,7 +79,7 @@ async def chat_completions(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     rate_limiter=Depends(get_rate_limiter),
-    db_logger=Depends(get_db_logger),
+    log_store=Depends(get_log_store),
     fairness_scheduler=Depends(get_fairness_scheduler),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
@@ -615,9 +615,9 @@ async def chat_completions(
                     logger.debug(f"Using provider from context for DB logging: {provider}")
 
                 # Prepare data for background database logging (don't await here!)
-                if db_logger and not is_synthetic_probe:
+                if log_store and not is_synthetic_probe:
                     _schedule_db_log_task(
-                        db_logger,
+                        log_store,
                         request_id,
                         {
                             "request_id": request_id,
@@ -679,9 +679,9 @@ async def chat_completions(
                 ctx = req_ctx.get()
                 provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-                if db_logger and not is_synthetic_probe:
+                if log_store and not is_synthetic_probe:
                     _schedule_db_log_task(
-                        db_logger,
+                        log_store,
                         request_id,
                         {
                             "request_id": request_id,
@@ -769,13 +769,13 @@ async def chat_completions(
                     f"Using provider from context for non-streaming DB logging: {provider}"
                 )
 
-        # Move db_logger.log_request() out of the stream_generator
+        # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
-        if db_logger and not is_synthetic_probe:
+        if log_store and not is_synthetic_probe:
             # Prefer embedded pricing (e.g. adapter-internal fallback)
             pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
             _schedule_db_log_task(
-                db_logger,
+                log_store,
                 request_id,
                 {
                     "request_id": request_id,
@@ -945,7 +945,7 @@ async def chat_completions(
         if exc_status_code is None:
             exc_status_code = 500
 
-        # Move db_logger.log_request() out of the stream_generator
+        # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
         # Try to get actual provider from context even in error case
         from serving.utils import context as req_ctx
@@ -953,9 +953,9 @@ async def chat_completions(
         ctx = req_ctx.get()
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-        if db_logger and not is_synthetic_probe:
+        if log_store and not is_synthetic_probe:
             _schedule_db_log_task(
-                db_logger,
+                log_store,
                 request_id,
                 {
                     "request_id": request_id,
