@@ -4,9 +4,10 @@ This simulates a real upgrade path: a database that already has the old
 ``users_role_check`` constraint allowing ``('free','internal_group','developer','admin')``
 and rows with those old role values.  After ``_create_tables()`` runs, all rows
 must have been migrated to the new 3-role set and the new constraint must be in place.
-"""
 
-from datetime import datetime, timezone
+Requires a running PostgreSQL test database (see TEST_DB_* env vars).
+Run with: make test-db
+"""
 
 import pytest
 import pytest_asyncio
@@ -16,6 +17,8 @@ from serving.storage.database import DatabaseLogger
 from test.fixtures.auth_factories import create_test_user
 
 pytest_plugins = ["test.servers.conftest_auth"]
+
+pytestmark = pytest.mark.dbtest
 
 
 @pytest_asyncio.fixture

@@ -20,6 +20,7 @@ from httpx import AsyncClient
 from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices
 from serving.servers.rate_limiter import PersistentRateLimiter
+from serving.storage.base import LogStore, OperationalStore
 from serving.storage.database import DatabaseLogger
 
 # ============================================================================
@@ -204,13 +205,54 @@ def mock_rate_limiter():
     return limiter
 
 
+@pytest.fixture
+def mock_operational_store():
+    """Create a mock operational store with all methods as AsyncMock."""
+    store = MagicMock(spec=OperationalStore)
+    for attr_name in dir(OperationalStore):
+        if not attr_name.startswith("_"):
+            method = getattr(OperationalStore, attr_name)
+            if callable(method):
+                setattr(store, attr_name, AsyncMock())
+    return store
+
+
+@pytest.fixture
+def mock_log_store():
+    """Create a mock log store with all methods as AsyncMock."""
+    store = MagicMock(spec=LogStore)
+    for attr_name in dir(LogStore):
+        if not attr_name.startswith("_"):
+            method = getattr(LogStore, attr_name)
+            if callable(method):
+                setattr(store, attr_name, AsyncMock())
+    # Sensible defaults
+    store.get_user_cost_today = AsyncMock(return_value=0.0)
+    store.get_user_cost_period = AsyncMock(return_value=0.0)
+    store.get_batch_usage = AsyncMock(return_value={})
+    store.get_user_usage_detail = AsyncMock(
+        return_value={
+            "today": {"cost_usd": 0.0, "requests": 0},
+            "week": {"cost_usd": 0.0, "requests": 0},
+            "month": {"cost_usd": 0.0, "requests": 0},
+            "alltime": {"cost_usd": 0.0, "requests": 0},
+        }
+    )
+    store.log_request = AsyncMock()
+    return store
+
+
 @pytest_asyncio.fixture
-async def app_services(mock_router, mock_db_logger, mock_rate_limiter):
+async def app_services(
+    mock_router, mock_db_logger, mock_rate_limiter, mock_operational_store, mock_log_store
+):
     """Create AppServices instance for testing."""
     services = AppServices(
         router=mock_router,
         db_logger=mock_db_logger,
         rate_limiter=mock_rate_limiter,
+        operational_store=mock_operational_store,
+        log_store=mock_log_store,
         routing_manager=None,
     )
     yield services

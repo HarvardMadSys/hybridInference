@@ -63,6 +63,7 @@ markers = [
   "unit: marks tests as unit tests",
   "perf: performance regression tests",
   "external: tests that hit external/local servers",
+  "dbtest: tests that require a running PostgreSQL test database",
 ]
 
 [tool.ruff]

@@ -1,4 +1,8 @@
-"""Integration tests for internal auth_request endpoints."""
+"""Integration tests for internal auth_request endpoints.
+
+Requires a running PostgreSQL test database (see TEST_DB_* env vars).
+Run with: make test-db
+"""
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -14,6 +18,8 @@ from serving.servers.routers.auth_routes import hash_refresh_token
 from test.fixtures.auth_factories import create_test_user
 
 pytest_plugins = ["test.servers.conftest_auth"]
+
+pytestmark = pytest.mark.dbtest
 
 
 async def _set_user_role(auth_db_logger, user_id: str, role: str) -> None:

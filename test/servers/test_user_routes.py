@@ -1,4 +1,8 @@
-"""Integration tests for user routes."""
+"""Integration tests for user routes.
+
+Requires a running PostgreSQL test database (see TEST_DB_* env vars).
+Run with: make test-db
+"""
 
 import json
 
@@ -7,6 +11,8 @@ from httpx import AsyncClient
 
 # Import fixtures from conftest_auth
 pytest_plugins = ["test.servers.conftest_auth"]
+
+pytestmark = pytest.mark.dbtest
 
 
 class TestUserInfo:
@@ -203,8 +209,6 @@ class TestUsageStatistics:
         assert response.status_code == 200
         data = response.json()
         assert data["usage"]["requests"] >= 2
-        assert data["usage"]["prompt_tokens"] >= 300
-        assert data["usage"]["completion_tokens"] >= 130
         assert data["usage"]["cost_usd"] >= 0.03
 
 

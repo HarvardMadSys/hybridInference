@@ -224,9 +224,21 @@ async def admin_mode_app(auth_db_logger):
     rate_limiter.initialize = AsyncMock()
     rate_limiter._persist_state = AsyncMock()
 
+    from serving.storage.cache import CachedOperationalStore, InMemoryCache
+    from serving.storage.postgres_log import PostgresLogStore
+    from serving.storage.postgres_operational import PostgresOperationalStore
+
+    pg_op = PostgresOperationalStore(auth_db_logger.pool)
+    op_store = CachedOperationalStore(pg_op, InMemoryCache())
+    log_store = PostgresLogStore(
+        auth_db_logger.pool, store_full_prompts=True, use_chunked_hash=True
+    )
+
     services = AppServices(
         router=router,
         db_logger=auth_db_logger,
+        operational_store=op_store,
+        log_store=log_store,
         rate_limiter=rate_limiter,
         routing_manager=None,
     )
@@ -276,12 +288,19 @@ class TestAdminModeUnit:
     @pytest.mark.asyncio
     async def test_verify_grafana_rejects_revoked_session(self, monkeypatch):
         monkeypatch.setattr(settings_module.settings, "admin_emails", "admin@example.com")
-        db_logger, _ = _mock_db_logger_with_rows(
-            {"user_id": "u1", "expires_at": "9999-01-01T00:00:00+00:00", "revoked": True}
+        mock_op_store = MagicMock()
+        mock_op_store.get_session_by_token_hash = AsyncMock(
+            return_value={
+                "user_id": "u1",
+                "expires_at": "9999-01-01T00:00:00+00:00",
+                "revoked": True,
+                "id": "session-1",
+                "sid": "s1",
+            }
         )
 
         with pytest.raises(HTTPException) as exc:
-            await internal.verify_grafana(refresh_token="token", db_logger=db_logger)
+            await internal.verify_grafana(refresh_token="token", op_store=mock_op_store)
 
         assert exc.value.status_code == 401
 
@@ -299,8 +318,9 @@ class TestAdminModeUnit:
         assert parsed["choices"][0]["delta"]["content"] == "hello"
 
 
+@pytest.mark.dbtest
 class TestGrafanaVerification:
-    """Tests for the internal Grafana auth endpoint."""
+    """Tests for the internal Grafana auth endpoint (requires PostgreSQL)."""
 
     @pytest.mark.asyncio
     async def test_verify_grafana_returns_401_without_cookie(self, admin_mode_client: AsyncClient):
@@ -346,8 +366,9 @@ class TestGrafanaVerification:
         assert response.status_code == 200
 
 
+@pytest.mark.dbtest
 class TestPlaygroundAccess:
-    """Tests for admin-only playground endpoints."""
+    """Tests for admin-only playground endpoints (requires PostgreSQL)."""
 
     @pytest.mark.asyncio
     async def test_playground_models_returns_403_for_non_admin(

@@ -249,16 +249,38 @@ async def auth_headers(test_user, auth_app_client):
 
 @pytest_asyncio.fixture
 async def auth_app_services(auth_db_logger):
-    """Create AppServices for auth testing."""
+    """Create AppServices for auth testing.
+
+    Wires up real store abstractions from the shared DB pool so that route
+    handlers that depend on ``operational_store`` / ``log_store`` work
+    correctly in integration tests.
+    """
+    from serving.config.settings import get_settings
+    from serving.storage.cache import CachedOperationalStore, InMemoryCache
+    from serving.storage.postgres_log import PostgresLogStore
+    from serving.storage.postgres_operational import PostgresOperationalStore
+
     # Mock router and rate limiter (not needed for auth tests)
     mock_router = MagicMock()
     mock_rate_limiter = MagicMock()
     mock_rate_limiter.initialize = AsyncMock()
     mock_rate_limiter._persist_state = AsyncMock()
 
+    # Build real store abstractions from the shared pool
+    settings = get_settings()
+    pg_op = PostgresOperationalStore(auth_db_logger.pool)
+    operational_store = CachedOperationalStore(pg_op, InMemoryCache())
+    log_store = PostgresLogStore(
+        auth_db_logger.pool,
+        store_full_prompts=settings.db_store_full_content,
+        use_chunked_hash=True,
+    )
+
     services = AppServices(
         router=mock_router,
         db_logger=auth_db_logger,
+        operational_store=operational_store,
+        log_store=log_store,
         rate_limiter=mock_rate_limiter,
         routing_manager=None,
     )

@@ -1,4 +1,8 @@
-"""Integration tests for authentication routes."""
+"""Integration tests for authentication routes.
+
+Requires a running PostgreSQL test database (see TEST_DB_* env vars).
+Run with: make test-db
+"""
 
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -13,6 +17,8 @@ from test.fixtures.auth_factories import create_signup_request, create_test_user
 
 # Import fixtures from conftest_auth
 pytest_plugins = ["test.servers.conftest_auth"]
+
+pytestmark = pytest.mark.dbtest
 
 
 async def _set_user_role(auth_db_logger, user_id: str, role: str) -> None:

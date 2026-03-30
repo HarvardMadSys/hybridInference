@@ -10,6 +10,39 @@ from httpx import ASGITransport, AsyncClient
 
 from serving.servers.middleware.request_log import RequestLogMiddleware
 
+_LOGGER_NAME = "serving.servers.middleware.request_log"
+
+
+@pytest.fixture(autouse=True)
+def _reset_logging_state():
+    """Ensure the target logger and root logger are in a clean state.
+
+    Other test modules (e.g., server integration tests) may trigger
+    ``setup_logging()`` which installs a JsonFormatter and changes the
+    root logger level.  This fixture resets both so caplog works
+    correctly regardless of test ordering.
+    """
+    target = logging.getLogger(_LOGGER_NAME)
+    root = logging.getLogger()
+
+    saved_root_level = root.level
+    saved_root_handlers = root.handlers[:]
+    saved_target_level = target.level
+    saved_target_propagate = target.propagate
+
+    # Reset root to default state so caplog captures behave predictably
+    root.setLevel(logging.WARNING)
+    for h in root.handlers:
+        h.setFormatter(logging.Formatter())
+
+    yield
+
+    # Restore
+    root.setLevel(saved_root_level)
+    root.handlers = saved_root_handlers
+    target.setLevel(saved_target_level)
+    target.propagate = saved_target_propagate
+
 
 @pytest.fixture
 def app_with_middleware():

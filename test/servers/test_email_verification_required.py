@@ -2,14 +2,16 @@
 
 This test ensures that users with unverified emails cannot login,
 fixing the security vulnerability where unverified users could access the system.
+
+Requires a running PostgreSQL test database (see TEST_DB_* env vars).
+Run with: make test-db
 """
 
 import os
 
 import pytest
 
-# Mark all tests in this file as requiring database
-pytestmark = pytest.mark.asyncio
+pytestmark = pytest.mark.dbtest
 
 
 # New helper and fixture
