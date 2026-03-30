@@ -19,8 +19,16 @@ class Settings(BaseSettings):
     db_user: str = "postgres"
     db_password: str = ""
 
+    # Database backend: "postgres" (default) or "d1" (Cloudflare D1 for operational tables)
+    db_backend: str = "postgres"
+
     # Database privacy settings
     db_store_full_content: bool = True
+
+    # Cloudflare D1 (used when db_backend = "d1")
+    d1_account_id: str = ""
+    d1_database_id: str = ""
+    d1_api_token: str = ""
 
     # Admin
     admin_token: str = ""

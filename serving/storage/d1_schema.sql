@@ -1,0 +1,127 @@
+-- Cloudflare D1 schema for operational tables.
+--
+-- SQLite dialect translation of the 6 PostgreSQL operational tables.
+-- Run via D1OperationalStore.initialize() or manually via Cloudflare dashboard.
+--
+-- Tables: users, api_keys, auth_sessions,
+--         email_verification_tokens, password_reset_tokens, admin_audit_log
+--
+-- NOT migrated (remain in PostgreSQL): api_logs, api_stats_hourly
+
+-- -------------------------------------------------------------------
+-- users
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id                TEXT PRIMARY KEY,
+    email             TEXT NOT NULL UNIQUE,
+    password_hash     TEXT NOT NULL,
+    user_name         TEXT,
+    preferences       TEXT NOT NULL DEFAULT '{}',
+    role              TEXT NOT NULL DEFAULT 'free'
+                      CHECK (role IN ('free', 'internal', 'admin')),
+    email_verified    INTEGER DEFAULT 0,
+    status            TEXT DEFAULT 'active'
+                      CHECK (status IN ('active', 'suspended', 'deleted',
+                                        'pending_approval', 'rejected')),
+    approval_note     TEXT,
+    reviewed_at       TEXT,
+    reviewed_by       TEXT,
+    created_at        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_login_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_users_last_login_at ON users(last_login_at DESC);
+
+-- -------------------------------------------------------------------
+-- api_keys
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS api_keys (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_hash                 TEXT NOT NULL UNIQUE,
+    key_prefix               TEXT NOT NULL,
+    user_id                  TEXT NOT NULL,
+    user_name                TEXT,
+    status                   TEXT NOT NULL DEFAULT 'active',
+    quota_daily_cost_usd     REAL DEFAULT 1000.00,
+    quota_monthly_cost_usd   REAL,
+    created_at               TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at               TEXT,
+    last_used_at             TEXT,
+    tier                     TEXT DEFAULT 'free',
+    notes                    TEXT,
+    metadata                 TEXT,
+    account_id               TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix_unique ON api_keys(key_prefix);
+CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id);
+
+-- -------------------------------------------------------------------
+-- auth_sessions
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id                  TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL,
+    refresh_token_hash  TEXT NOT NULL UNIQUE,
+    jti                 TEXT,
+    sid                 TEXT NOT NULL,
+    created_at          TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_used_at        TEXT,
+    expires_at          TEXT NOT NULL,
+    revoked             INTEGER DEFAULT 0,
+    user_agent          TEXT,
+    ip_address          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti ON auth_sessions(jti);
+
+-- -------------------------------------------------------------------
+-- email_verification_tokens
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+    token       TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at  TEXT NOT NULL,
+    used_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_verification_user ON email_verification_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_email_verification_expires ON email_verification_tokens(expires_at);
+
+-- -------------------------------------------------------------------
+-- password_reset_tokens
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    token       TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at  TEXT NOT NULL,
+    used_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_password_reset_expires ON password_reset_tokens(expires_at);
+
+-- -------------------------------------------------------------------
+-- admin_audit_log
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    admin_ip         TEXT NOT NULL,
+    action           TEXT NOT NULL,
+    target_user_id   TEXT,
+    details          TEXT,
+    success          INTEGER DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_timestamp ON admin_audit_log(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_user ON admin_audit_log(target_user_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action, timestamp DESC);
