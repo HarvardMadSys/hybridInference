@@ -4,7 +4,7 @@
 #
 # Usage:
 #   # Recommended: download first, inspect, then run
-#   curl -fsSL -o setup_claude_code.sh https://raw.githubusercontent.com/HarvardSys/hybridInference/main/scripts/setup_claude_code.sh
+#   curl -fsSL -o setup_claude_code.sh https://raw.githubusercontent.com/HarvardMadSys/hybridInference/main/scripts/setup_claude_code.sh
 #   bash setup_claude_code.sh
 #
 #   # Or from a cloned repo:

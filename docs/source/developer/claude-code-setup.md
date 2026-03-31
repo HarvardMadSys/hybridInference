@@ -6,7 +6,7 @@ Use Claude Code with FreeInference — no Anthropic API key needed.
 
 ```bash
 # Download and run the setup script:
-curl -fsSL -o setup_claude_code.sh https://raw.githubusercontent.com/HarvardSys/hybridInference/main/scripts/setup_claude_code.sh
+curl -fsSL -o setup_claude_code.sh https://raw.githubusercontent.com/HarvardMadSys/hybridInference/main/scripts/setup_claude_code.sh
 bash setup_claude_code.sh
 ```
 
