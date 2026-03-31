@@ -14,12 +14,12 @@ class BurstGPTLoader(DataLoader):
     """Loader for BurstGPT dataset with time-based replay."""
 
     def __init__(self, trace_file: str, time_scale: float = 100.0, max_requests: int | None = None):
-        """Initialize the BurstGPT loader.
+        """Initialize from a BurstGPT trace file.
 
         Args:
-            trace_file: Path to BurstGPT CSV trace file
-            time_scale: Speed multiplier (100 = 100x faster than original)
-            max_requests: Limit number of requests
+            trace_file: Path to BurstGPT CSV trace file.
+            time_scale: Speed multiplier (100 = 100x faster than original).
+            max_requests: Limit number of requests.
         """
         self.trace_file = trace_file
         self.time_scale = time_scale
@@ -94,12 +94,12 @@ class SplitwiseLoader(DataLoader):
     """Loader for Splitwise/Vidur trace format."""
 
     def __init__(self, trace_file: str, time_scale: float = 1.0, max_requests: int | None = None):
-        """Initialize the Splitwise loader.
+        """Initialize from a Splitwise/Vidur trace file.
 
         Args:
-            trace_file: Path to Splitwise CSV trace file
-            time_scale: Speed multiplier (1 = original speed)
-            max_requests: Limit number of requests
+            trace_file: Path to Splitwise CSV trace file.
+            time_scale: Speed multiplier (1 = original speed).
+            max_requests: Limit number of requests.
         """
         self.trace_file = trace_file
         self.time_scale = time_scale

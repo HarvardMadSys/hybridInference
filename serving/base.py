@@ -1,4 +1,4 @@
-"""Base types and abstract interface for LLM providers."""
+"""Base types and abstract provider interface for LLM serving."""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -7,7 +7,7 @@ from typing import Any
 
 @dataclass
 class LLMRequest:
-    """Represents a single LLM completion request."""
+    """Request payload for a single LLM completion."""
 
     prompt: str
     model: str
@@ -17,7 +17,7 @@ class LLMRequest:
 
 @dataclass
 class LLMResponse:
-    """Represents a single LLM completion response."""
+    """Response from an LLM completion."""
 
     text: str
     model: str

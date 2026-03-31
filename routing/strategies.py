@@ -1,4 +1,4 @@
-"""Routing weight distribution strategies."""
+"""Weight assignment strategies for routing between local and remote adapters."""
 
 from __future__ import annotations
 

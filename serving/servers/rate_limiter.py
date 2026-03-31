@@ -38,7 +38,7 @@ class TokenCounter:
 
     @staticmethod
     def estimate_tokens(messages: list[dict[str, Any]], max_tokens: int | None = None) -> int:
-        """Estimate total tokens for the given messages and optional max_tokens budget."""
+        """Estimate total tokens for the given messages and optional max_tokens cap."""
         return int(estimate_total_tokens(messages, max_tokens))
 
 
@@ -143,7 +143,8 @@ class PersistentRateLimiter:
                         conn.execute("ALTER TABLE rate_limit_state ADD COLUMN last_refill REAL")
                 else:
                     # Create new table with all columns.
-                    conn.execute("""
+                    conn.execute(
+                        """
                         CREATE TABLE rate_limit_state (
                             model_id TEXT PRIMARY KEY,
                             tokens_used REAL,
@@ -153,7 +154,8 @@ class PersistentRateLimiter:
                             tokens REAL,
                             last_refill REAL
                         )
-                        """)
+                        """
+                    )
                 conn.commit()
 
                 await self._restore_state(conn)
@@ -166,14 +168,24 @@ class PersistentRateLimiter:
 
     async def _restore_state(self, conn: sqlite3.Connection):
         """Restore rate limit state from database."""
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT model_id, tokens_used, window_start, last_update, metrics, tokens, last_refill
             FROM rate_limit_state
-            """)
+            """
+        )
 
         now = time.time()
         for row in cursor:
-            model_id, tokens_used, window_start, _, metrics_json, tokens_val, last_refill_val = row
+            (
+                model_id,
+                tokens_used,
+                window_start,
+                _,
+                metrics_json,
+                tokens_val,
+                last_refill_val,
+            ) = row
 
             if model_id not in self.configs:
                 continue
@@ -198,7 +210,10 @@ class PersistentRateLimiter:
                 ):
                     bucket.tokens = max(
                         0.0,
-                        min(float(config.capacity_tokens - tokens_used), float(bucket.capacity)),
+                        min(
+                            float(config.capacity_tokens - tokens_used),
+                            float(bucket.capacity),
+                        ),
                     )
                     bucket.last_refill = float(window_start)
 

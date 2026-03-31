@@ -1,4 +1,4 @@
-"""Incremental SSE parser and message types."""
+"""Incremental Server-Sent Events (SSE) parser for streaming responses."""
 
 from __future__ import annotations
 

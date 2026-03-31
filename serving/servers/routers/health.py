@@ -1,4 +1,4 @@
-"""Health check endpoints."""
+"""Health, root, and routing info endpoints."""
 
 from __future__ import annotations
 
