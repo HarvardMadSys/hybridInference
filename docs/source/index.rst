@@ -19,5 +19,6 @@ see the `FreeInference docs <https://harvardsys.github.io/free_inference/>`_.
    developer/database
    developer/openrouter
    developer/freeinference
+   developer/claude-code-setup
    developer/fasrc
    developer/contributing
