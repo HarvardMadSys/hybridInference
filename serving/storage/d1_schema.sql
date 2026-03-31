@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_users_pending_approval ON users(created_at DESC) WHERE status = 'pending_approval';
 CREATE INDEX IF NOT EXISTS idx_users_last_login_at ON users(last_login_at DESC);
 
 -- -------------------------------------------------------------------
@@ -59,7 +60,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status, expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix_unique ON api_keys(key_prefix);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_active ON api_keys(user_id) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL;
 
 -- -------------------------------------------------------------------
 -- auth_sessions
@@ -79,6 +82,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_token ON auth_sessions(refresh_token_hash) WHERE NOT revoked;
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti ON auth_sessions(jti);
 
 -- -------------------------------------------------------------------

@@ -26,6 +26,7 @@ logger = get_logger(__name__)
 # D1 API limits
 MAX_BATCH_STATEMENTS = 100  # stay well under the 1000 hard limit
 MAX_BOUND_PARAMS = 100
+MAX_LIKE_PATTERN_BYTES = 50
 
 
 class D1Error(Exception):
@@ -42,6 +43,10 @@ class D1ConnectionError(D1Error):
 
 class D1QueryError(D1Error):
     """Raised when D1 rejects a query (syntax error, constraint violation, etc)."""
+
+
+class D1OverloadedError(D1Error):
+    """Raised when D1 returns HTTP 429 (too many queued requests)."""
 
 
 @dataclass
@@ -125,8 +130,15 @@ class D1Client:
             D1QueryError: On SQL or constraint errors.
             D1ConnectionError: If the API is unreachable.
         """
+        if params and len(params) > MAX_BOUND_PARAMS:
+            raise ValueError(
+                f"Query has {len(params)} params, exceeds D1 limit of {MAX_BOUND_PARAMS}"
+            )
+
         body: dict[str, Any] = {"sql": sql}
         if params:
+            # D1 throws D1_TYPE_ERROR on undefined; ensure no Python None leaks
+            # as missing. None is fine — it maps to SQL NULL.
             body["params"] = params
 
         data = await self._post("/query", body)
@@ -183,14 +195,14 @@ class D1Client:
                 f"Batch size {len(statements)} exceeds limit of {MAX_BATCH_STATEMENTS}"
             )
 
-        body = []
+        stmts = []
         for sql, params in statements:
             stmt: dict[str, Any] = {"sql": sql}
             if params:
                 stmt["params"] = params
-            body.append(stmt)
+            stmts.append(stmt)
 
-        data = await self._post("/raw", body)
+        data = await self._post("/raw", {"batch": stmts})
         raw_results = data.get("result", [])
 
         parsed: list[D1Result] = []
@@ -244,6 +256,12 @@ class D1Client:
                     raise D1QueryError(
                         f"D1 returned non-JSON response (HTTP {resp.status}): {text[:200]}"
                     ) from exc
+
+                if resp.status == 429:
+                    raise D1OverloadedError(
+                        "D1 database overloaded (HTTP 429). Too many queued requests.",
+                        code=429,
+                    )
 
                 if not data.get("success"):
                     errors = data.get("errors", [])

@@ -10,7 +10,7 @@ Key differences from PostgreSQL:
 - $1, $2 params → ?, ?
 - NOW() → strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 - ILIKE → LIKE (D1 is case-insensitive for ASCII)
-- No partial indexes, no FILTER aggregate, no FOR UPDATE
+- No FILTER aggregate, no FOR UPDATE (partial indexes are supported)
 """
 
 from __future__ import annotations
@@ -52,20 +52,28 @@ class D1OperationalStore(OperationalStore):
     # -- lifecycle -----------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Create tables/indexes by executing the D1 schema DDL."""
+        """Create tables/indexes by executing the D1 schema DDL.
+
+        Statements are executed one at a time because CREATE INDEX
+        requires the referenced table to already exist, and D1 batches
+        are atomic (tables created in a batch aren't visible to later
+        statements in the same batch).
+        """
         from pathlib import Path
 
         schema_path = Path(__file__).parent / "d1_schema.sql"
         schema_sql = schema_path.read_text()
 
-        # Split on semicolons and execute each statement
-        statements = [
-            (s.strip(), None)
-            for s in schema_sql.split(";")
-            if s.strip() and not s.strip().startswith("--")
-        ]
-        if statements:
-            await self._d1.batch(statements)
+        statements: list[str] = []
+        for segment in schema_sql.split(";"):
+            # Strip comment-only lines from the segment
+            lines = [ln for ln in segment.splitlines() if not ln.strip().startswith("--")]
+            cleaned = "\n".join(lines).strip()
+            if cleaned:
+                statements.append(cleaned)
+
+        for stmt in statements:
+            await self._d1.execute(stmt)
         logger.info("D1 schema initialized (%d statements)", len(statements))
 
     async def cleanup(self) -> None:
@@ -119,15 +127,19 @@ class D1OperationalStore(OperationalStore):
         """Update one or more columns on the users table."""
         if not fields:
             return
+        from decimal import Decimal as _Decimal
+
         set_parts = []
         params: list[Any] = []
         for col, val in fields.items():
             set_parts.append(f"{col} = ?")
-            # Convert booleans to int for SQLite
+            # Convert Python types to D1-compatible values
             if isinstance(val, bool):
                 params.append(int(val))
             elif isinstance(val, datetime):
                 params.append(_dt_to_iso(val))
+            elif isinstance(val, _Decimal):
+                params.append(float(val))
             else:
                 params.append(val)
         params.append(user_id)
@@ -197,8 +209,10 @@ class D1OperationalStore(OperationalStore):
             where_clauses.append("u.status = ?")
             params.append(status)
         if search:
+            # D1 LIKE patterns limited to 50 bytes; truncate search term
+            truncated = search[:46]  # 46 + len("%%") = 48, safely under 50
             where_clauses.append("(u.email LIKE ? OR u.user_name LIKE ?)")
-            params.extend([f"%{search}%", f"%{search}%"])
+            params.extend([f"%{truncated}%", f"%{truncated}%"])
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -452,11 +466,20 @@ class D1OperationalStore(OperationalStore):
         """Dynamically update key columns for user_id."""
         if not fields:
             return
+        from decimal import Decimal as _Decimal
+
         set_parts = []
         params: list[Any] = []
         for col, val in fields.items():
             set_parts.append(f"{col} = ?")
-            params.append(val)
+            if isinstance(val, bool):
+                params.append(int(val))
+            elif isinstance(val, datetime):
+                params.append(_dt_to_iso(val))
+            elif isinstance(val, _Decimal):
+                params.append(float(val))
+            else:
+                params.append(val)
         params.append(user_id)
         sql = f"UPDATE api_keys SET {', '.join(set_parts)} WHERE user_id = ?"
         await self._d1.execute(sql, params)
@@ -478,16 +501,24 @@ class D1OperationalStore(OperationalStore):
         new_key_hash: str,
         new_key_prefix: str,
     ) -> str:
-        """Atomically replace the key hash/prefix. Returns old key_prefix."""
+        """Atomically replace the key hash/prefix. Returns old key_prefix.
+
+        Uses a read-then-batch to minimize the race window. The read fetches
+        the old prefix, then the batch atomically updates the key.
+        """
         old_result = await self._d1.query(
             "SELECT key_prefix FROM api_keys WHERE user_id = ?", [user_id]
         )
         if not old_result.rows:
             raise ValueError(f"No key found for user_id={user_id}")
 
-        await self._d1.execute(
-            "UPDATE api_keys SET key_hash = ?, key_prefix = ? WHERE user_id = ?",
-            [new_key_hash, new_key_prefix, user_id],
+        await self._d1.batch(
+            [
+                (
+                    "UPDATE api_keys SET key_hash = ?, key_prefix = ? WHERE user_id = ?",
+                    [new_key_hash, new_key_prefix, user_id],
+                ),
+            ]
         )
         return old_result.rows[0]["key_prefix"]
 

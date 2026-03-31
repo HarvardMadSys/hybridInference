@@ -5,7 +5,7 @@
 #
 # When DB_BACKEND=d1, PostgreSQL only contains api_logs and api_stats_hourly.
 # Operational tables (users, api_keys, sessions, tokens, audit) live in D1
-# and should be backed up separately with: python scripts/d1_backup.py
+# and should be backed up separately with: python scripts/cloudflare/d1_backup.py
 #
 # Usage:
 #   ./scripts/db/backup.sh [OPTIONS]

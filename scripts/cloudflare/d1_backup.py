@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from dotenv import load_dotenv
 
