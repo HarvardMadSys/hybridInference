@@ -1,8 +1,11 @@
 #!/bin/bash
 # Database Backup Script for hybridInference
 #
-# This script backs up the PostgreSQL database (primary database for API logs,
-# metrics, and user management) and optionally uploads to S3.
+# This script backs up the PostgreSQL database and optionally uploads to S3.
+#
+# When DB_BACKEND=d1, PostgreSQL only contains api_logs and api_stats_hourly.
+# Operational tables (users, api_keys, sessions, tokens, audit) live in D1
+# and should be backed up separately with: python scripts/d1_backup.py
 #
 # Usage:
 #   ./scripts/db/backup.sh [OPTIONS]

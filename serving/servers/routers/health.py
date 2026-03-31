@@ -15,27 +15,51 @@ from serving.servers.deps import get_log_store, get_operational_store, get_route
 router = APIRouter()
 
 
-async def _test_store_health(op_store: Any, log_store: Any) -> bool:
+async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
     """Actively test database connection via store health checks.
 
-    Args:
-        op_store: OperationalStore instance
-        log_store: LogStore instance
-
     Returns:
-        True if at least one store is reachable and healthy, False otherwise
+        Dict with per-store status:
+        ``{"operational_store": {...}, "log_store": {...}, "healthy": bool}``
     """
-    healthy = False
-    try:
-        if op_store and await op_store.health_check():
-            healthy = True
-        if log_store and await log_store.health_check():
-            healthy = True
-    except Exception:
-        pass
+    from serving.storage.cache import CachedOperationalStore
+    from serving.storage.d1_operational import D1OperationalStore
+    from serving.storage.postgres_log import PostgresLogStore
+    from serving.storage.postgres_operational import PostgresOperationalStore
 
-    DATABASE_CONNECTED.set(1 if healthy else 0)
-    return healthy
+    result: dict[str, Any] = {"healthy": False}
+
+    # Operational store
+    op_status: dict[str, Any] = {"status": "unavailable", "backend": "none"}
+    if op_store:
+        # Resolve the underlying backend through CachedOperationalStore
+        inner = getattr(op_store, "_store", op_store)
+        if isinstance(inner, D1OperationalStore):
+            op_status["backend"] = "d1"
+        elif isinstance(inner, PostgresOperationalStore):
+            op_status["backend"] = "postgres"
+        try:
+            op_status["status"] = "ok" if await op_store.health_check() else "error"
+        except Exception:
+            op_status["status"] = "error"
+        if isinstance(op_store, CachedOperationalStore):
+            op_status["cache"] = "in_memory"
+    result["operational_store"] = op_status
+
+    # Log store
+    log_status: dict[str, Any] = {"status": "unavailable", "backend": "none"}
+    if log_store:
+        log_status["backend"] = "postgres" if isinstance(log_store, PostgresLogStore) else "unknown"
+        try:
+            log_status["status"] = "ok" if await log_store.health_check() else "error"
+        except Exception:
+            log_status["status"] = "error"
+    result["log_store"] = log_status
+
+    any_healthy = op_status["status"] == "ok" or log_status["status"] == "ok"
+    result["healthy"] = any_healthy
+    DATABASE_CONNECTED.set(1 if any_healthy else 0)
+    return result
 
 
 @router.get("/")
@@ -80,7 +104,8 @@ async def health(
     """
     routes_count = len(router_exec.routes)
 
-    db_connected = await _test_store_health(op_store, log_store)
+    store_health = await _test_store_health(op_store, log_store)
+    db_connected = store_health["healthy"]
 
     if not db_connected:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -89,12 +114,20 @@ async def health(
             "reason": "database_disconnected",
             "routes_configured": routes_count,
             "database_connected": False,
+            "stores": {
+                "operational_store": store_health["operational_store"],
+                "log_store": store_health["log_store"],
+            },
         }
 
     return {
         "status": "healthy",
         "routes_configured": routes_count,
         "database_connected": True,
+        "stores": {
+            "operational_store": store_health["operational_store"],
+            "log_store": store_health["log_store"],
+        },
     }
 
 
@@ -112,7 +145,8 @@ async def deep_health(
     """
     routes_count = len(router_exec.routes)
 
-    db_connected = await _test_store_health(op_store, log_store)
+    store_health = await _test_store_health(op_store, log_store)
+    db_connected = store_health["healthy"]
 
     provider_status = (
         router_exec.get_provider_status() if hasattr(router_exec, "get_provider_status") else {}
@@ -144,6 +178,10 @@ async def deep_health(
         "status": overall,
         "routes_configured": routes_count,
         "database_connected": db_connected,
+        "stores": {
+            "operational_store": store_health["operational_store"],
+            "log_store": store_health["log_store"],
+        },
         "providers": provider_status,
         "rate_limiter": rl_status,
     }
