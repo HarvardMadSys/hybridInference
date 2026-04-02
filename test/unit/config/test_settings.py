@@ -51,6 +51,7 @@ def make_settings(monkeypatch) -> Callable[[dict[str, str] | None, str | None], 
                     "SIGNUP_",
                     "COOKIE_",
                     "SMTP_",
+                    "CORS_",
                     "BASE_URL",
                 )
             ):
@@ -134,6 +135,18 @@ def test_settings_extra_fields_ignored(make_settings) -> None:
     """Unknown environment variables should be ignored."""
     settings = make_settings(env={"UNKNOWN_FIELD": "some_value"}, env_file=None)
     assert not hasattr(settings, "unknown_field")
+
+
+def test_cors_allowed_origins_accepts_comma_separated_env(make_settings) -> None:
+    """CORS origins should support simple comma-separated env overrides."""
+    settings = make_settings(
+        env={"CORS_ALLOWED_ORIGINS": "http://localhost:3002, https://staging.example.com"},
+        env_file=None,
+    )
+    assert settings.cors_allowed_origins == [
+        "http://localhost:3002",
+        "https://staging.example.com",
+    ]
 
 
 # =============================================================================
