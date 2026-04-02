@@ -63,15 +63,18 @@ ADMIN_EMAILS=you@example.com
 ## Start staging
 
 ```bash
-cd /home/dev/hybridInference-monitor/scripts/staging
-./start_staging.sh
+cd /home/dev/hybridInference-monitor
+make staging-up
 ```
 
-This script:
+This command:
 
 - pulls prebuilt infra images
 - builds the current backend and frontend from the worktree
 - starts the full staging stack with Docker Compose
+
+You can still use [start_staging.sh](/home/dev/hybridInference-monitor/scripts/staging/start_staging.sh)
+directly, but `make staging-up` is the recommended day-to-day entry point.
 
 ## SSH forwarding
 
@@ -99,14 +102,28 @@ Restart the full staging stack:
 
 ```bash
 cd /home/dev/hybridInference-monitor
-docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env up -d --build
+make staging-build
 ```
 
 Tail backend logs:
 
 ```bash
 cd /home/dev/hybridInference-monitor
-docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env logs -f backend
+make staging-logs s=backend
+```
+
+Show staging container status:
+
+```bash
+cd /home/dev/hybridInference-monitor
+make staging-ps
+```
+
+Restart a single staging service:
+
+```bash
+cd /home/dev/hybridInference-monitor
+make staging-restart s=frontend
 ```
 
 Reset the staging database completely:
@@ -114,7 +131,7 @@ Reset the staging database completely:
 ```bash
 cd /home/dev/hybridInference-monitor
 docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env down -v
-docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env up -d --build
+make staging-up
 ```
 
 ## Notes for model monitor
