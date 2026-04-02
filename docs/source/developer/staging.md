@@ -2,7 +2,7 @@
 
 This staging setup is fully Dockerized. The backend, frontend, database, and
 observability services all run under
-[docker-compose.staging.yml](/home/dev/hybridInference-monitor/infrastructure/docker/docker-compose.staging.yml).
+[docker-compose.staging.yml](docker-compose.staging.yml).
 
 ## Why this staging shape
 
@@ -25,7 +25,7 @@ observability services all run under
 Run this once on a fresh staging server:
 
 ```bash
-cd /home/dev/hybridInference-monitor/scripts/staging
+cd /home/to/dir/scripts/staging
 chmod +x *.sh
 ./bootstrap_server.sh
 newgrp docker
@@ -63,7 +63,7 @@ ADMIN_EMAILS=you@example.com
 ## Start staging
 
 ```bash
-cd /home/dev/hybridInference-monitor
+cd /path/to/dir
 make staging-up
 ```
 
@@ -73,7 +73,7 @@ This command:
 - builds the current backend and frontend from the worktree
 - starts the full staging stack with Docker Compose
 
-You can still use [start_staging.sh](/home/dev/hybridInference-monitor/scripts/staging/start_staging.sh)
+You can still use [start_staging.sh](start_staging.sh)
 directly, but `make staging-up` is the recommended day-to-day entry point.
 
 ## SSH forwarding
@@ -83,6 +83,8 @@ From your laptop:
 ```bash
 ssh -L 3002:127.0.0.1:3002 -L 8000:127.0.0.1:8000 <user>@staging-internal
 ```
+
+If using VScode-family IDE, setting forwarded ports in IDE GUI is more convenient. 
 
 Then open:
 
@@ -101,35 +103,30 @@ http://localhost:8000
 Restart the full staging stack:
 
 ```bash
-cd /home/dev/hybridInference-monitor
 make staging-build
 ```
 
 Tail backend logs:
 
 ```bash
-cd /home/dev/hybridInference-monitor
 make staging-logs s=backend
 ```
 
 Show staging container status:
 
 ```bash
-cd /home/dev/hybridInference-monitor
 make staging-ps
 ```
 
 Restart a single staging service:
 
 ```bash
-cd /home/dev/hybridInference-monitor
 make staging-restart s=frontend
 ```
 
 Reset the staging database completely:
 
 ```bash
-cd /home/dev/hybridInference-monitor
 docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env down -v
 make staging-up
 ```
