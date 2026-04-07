@@ -96,6 +96,8 @@ class Settings(BaseSettings):
         "http://freeinference.org:3001",
         "https://freeinference.org",
         "https://freeinference.org:3001",
+        "http://staging-internal.freeinference.org",
+        "https://staging-internal.freeinference.org",
     ]
 
     # Trusted proxies (for real IP detection)
