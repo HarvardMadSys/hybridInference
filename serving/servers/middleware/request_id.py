@@ -1,4 +1,4 @@
-"""Middleware to attach or propagate a per-request X-Request-ID header."""
+"""Middleware to attach and propagate X-Request-ID header."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
     header_name = "X-Request-ID"
 
     async def dispatch(self, request: Request, call_next: Callable):  # type: ignore[override]
-        """Attach a request ID to the context and response headers."""
+        """Process request: set or propagate X-Request-ID and seed request context."""
         req_id = request.headers.get(self.header_name) or secrets.token_hex(12)
         request.state.request_id = req_id
         # seed request context

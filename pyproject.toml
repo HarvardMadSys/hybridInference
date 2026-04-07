@@ -18,11 +18,10 @@ dependencies = [
     "openai>=1.0.0",
     "passlib[argon2]>=1.7.4",
     "prometheus-client>=0.20.0",
+    "pulp>=2.7.0",
     "pydantic[email]>=2.0.0",
     "pydantic-settings>=2.0.0",
     "PyJWT>=2.8.0",
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
     "python-dotenv>=1.1.1",
     "python-ulid>=2.0.0",
     "pyyaml>=6.0",
@@ -39,6 +38,8 @@ include-package-data = true
 include = [
   "serving",
   "serving.*",
+  "routing",
+  "routing.*",
   "client",
   "client.*",
   "utils",
@@ -113,7 +114,7 @@ add-ignore = [
   "D107",  # __init__ docstring not required
 ]
 match = ".+\\.py"
-match-dir = "(?!tests|test|.venv|data|frontend).*"
+match-dir = "(?!tests|test|.venv|data|node_modules|frontend).*"
 
 [dependency-groups]
 dev = [

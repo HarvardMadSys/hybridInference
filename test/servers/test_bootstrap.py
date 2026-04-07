@@ -25,7 +25,10 @@ class TestBootstrapInitialization:
         """Test that initialize returns properly typed AppServices."""
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
-            patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap._configure_rate_limiter"),
         ):
@@ -47,7 +50,10 @@ class TestBootstrapInitialization:
         monkeypatch.setenv("DB_PASSWORD", "testpass")
 
         with (
-            patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap._configure_rate_limiter"),
             patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger,
@@ -68,7 +74,10 @@ class TestBootstrapInitialization:
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
-            patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch(
                 "serving.servers.bootstrap.PersistentRateLimiter",
@@ -106,7 +115,10 @@ class TestBootstrapInitialization:
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
-            patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
             patch("serving.servers.bootstrap._configure_rate_limiter"),
         ):
             services = await bootstrap.initialize()
@@ -417,7 +429,10 @@ class TestBootstrapErrorHandling:
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
-            patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
             patch("serving.servers.bootstrap._configure_rate_limiter"),
             patch("serving.servers.bootstrap.logger") as mock_logger,
         ):

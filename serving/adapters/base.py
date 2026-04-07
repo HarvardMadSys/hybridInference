@@ -96,6 +96,9 @@ class ModelConfig:
     # Provider profile for usage extraction (e.g. "deepseek" for cache hit/miss semantics).
     # When set, OpenAICompatAdapter uses profile-specific usage normalization.
     provider_profile: str | None = None
+    # RouteWise subscription classification for this route entry.
+    # Valid values: "api" (pay-per-token), "quota" (daily quota), "concurrency".
+    subscription_type: str = "api"
 
 
 class BaseAdapter(ABC):

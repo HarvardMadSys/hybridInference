@@ -10,6 +10,8 @@ Prometheus scrapes. Database connection status is updated by:
 - Auth middleware (on request authentication failures)
 """
 
+from __future__ import annotations
+
 from fastapi import APIRouter, Response
 
 from serving.observability.metrics import render_latest

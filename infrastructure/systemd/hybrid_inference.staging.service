@@ -1,0 +1,33 @@
+[Unit]
+Description=HybridInference (staging)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+User=__USER__
+# Group defaults to the user's primary group.  Override if needed
+# (e.g. Group=cache-PG0 on CloudLab PG0 experiments).
+Type=simple
+WorkingDirectory=__REPO_ROOT__
+
+EnvironmentFile=__REPO_ROOT__/.env
+Environment=PYTHONPATH=__REPO_ROOT__
+
+# Runs on port 8000, bound to all interfaces so it's reachable on the CloudLab public IP.
+# Change --host to 127.0.0.1 if a reverse proxy is added later.
+ExecStart=__REPO_ROOT__/.venv/bin/uvicorn serving.servers.app:app \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --no-server-header
+
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

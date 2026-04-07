@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
+from routing.model_router_registry import ModelRouterRegistry
 from serving.adapters import ClaudeSubscriptionAdapter, CodexSubscriptionAdapter
 from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
@@ -27,7 +28,7 @@ from serving.utils.logging import get_logger, setup_logging
 
 from .deps import AppServices
 from .rate_limiter import PersistentRateLimiter, RateLimitConfig
-from .registry import register_from_models_yaml
+from .registry import ModelRegistrationInfo, register_from_models_yaml
 
 logger = get_logger(__name__)
 
@@ -160,7 +161,9 @@ def _warn_missing_subscription_files(router: RouteExecutor) -> None:
         )
 
 
-async def _init_router_and_models(router: RouteExecutor) -> dict:
+async def _init_router_and_models(
+    router: RouteExecutor,
+) -> tuple[dict, list[ModelRegistrationInfo]]:
     """Register models on the router from YAML configuration.
 
     All models should be configured via YAML for consistency and flexibility.
@@ -168,9 +171,10 @@ async def _init_router_and_models(router: RouteExecutor) -> dict:
     (e.g., local VLLM and remote API) for failover and load balancing.
 
     Returns:
-        dict: Embedding adapters keyed by model id.
+        Tuple of (embedding adapters dict, list of ModelRegistrationInfo).
     """
     embedding_adapters: dict = {}
+    model_infos: list[ModelRegistrationInfo] = []
 
     # Load models from YAML configuration
     try:
@@ -179,7 +183,7 @@ async def _init_router_and_models(router: RouteExecutor) -> dict:
         if models_env and not models_path.exists():
             logger.warning(f"Models config not found: {models_path}")
         elif models_path.exists():
-            registered = register_from_models_yaml(
+            registered, model_infos = register_from_models_yaml(
                 router, models_path, embedding_adapters=embedding_adapters
             )
             if registered:
@@ -205,7 +209,7 @@ async def _init_router_and_models(router: RouteExecutor) -> dict:
             logger.info("OFFLOAD=1 but LOCAL_BASE_URL not set; no adapters filtered")
 
     _warn_missing_subscription_files(router)
-    return embedding_adapters
+    return embedding_adapters, model_infos
 
 
 def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
@@ -352,10 +356,42 @@ async def initialize() -> AppServices:
                     DATABASE_CONNECTED.set(0)
 
     # Models into router
-    embedding_adapters = await _init_router_and_models(router)
+    embedding_adapters, model_infos = await _init_router_and_models(router)
 
     # Routing manager (optional)
     routing_manager = _apply_routing_manager(router)
+
+    # RouteWise router (optional, per-model opt-in via models.yaml routing_strategy)
+    model_router_registry: ModelRouterRegistry | None = None
+    settings = get_settings()
+    needs_routewise = settings.enable_routewise or any(
+        info.strategy == "routewise" for info in model_infos
+    )
+    if needs_routewise:
+        try:
+            from routing.routewise import RouteWiseRouter, load_routewise_config
+
+            rw_config = load_routewise_config()
+            routewise_router = RouteWiseRouter(
+                fixed_router=router,
+                config=rw_config,
+                experiment_mode=settings.experiment_mode,
+            )
+            model_router_registry = ModelRouterRegistry(default_router=router)
+            for info in model_infos:
+                if info.strategy == "routewise":
+                    model_router_registry.register(info.model_id, routewise_router)
+                    for alias in info.aliases:
+                        model_router_registry.register(alias, routewise_router)
+            # TODO: Wire canary rollout from routewise.yaml canary section.
+            # Currently configure_canary() is never called; canary config is dead.
+            # rw_config has canary fields; call model_router_registry.configure_canary()
+            # once canary rollout is ready for production.
+            rw_models = [i.model_id for i in model_infos if i.strategy == "routewise"]
+            logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
+        except Exception as exc:
+            logger.warning(f"RouteWise initialization failed: {exc}. Using fixed routing.")
+            model_router_registry = None
 
     # Rate limiter (optional)
     rate_limiter: PersistentRateLimiter | None = None
@@ -446,6 +482,7 @@ async def initialize() -> AppServices:
         operational_store=operational_store,
         log_store=log_store,
         routing_manager=routing_manager,
+        model_router_registry=model_router_registry,
         user_stats_collector=user_stats_collector,
         fairness_scheduler=fairness_scheduler,
     )

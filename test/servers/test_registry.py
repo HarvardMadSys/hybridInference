@@ -29,7 +29,7 @@ def test_register_from_models_yaml_env_expansion_and_aliases(tmp_path, monkeypat
     monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
 
     exe = RouteExecutor()
-    count = registry.register_from_models_yaml(exe, Path(p))
+    count, _infos = registry.register_from_models_yaml(exe, Path(p))
     # Should register canonical id + alias
     assert count == 2
     assert "test-model" in exe.routes and "alias-1" in exe.routes
@@ -55,7 +55,7 @@ def test_register_defaults_to_single_route_when_no_route_list(tmp_path, monkeypa
     p.write_text(yaml_text)
 
     exe = RouteExecutor()
-    count = registry.register_from_models_yaml(exe, Path(p))
+    count, _infos = registry.register_from_models_yaml(exe, Path(p))
     assert count == 1
     assert "vllm-model" in exe.routes
     adapters = exe.routes["vllm-model"].adapters

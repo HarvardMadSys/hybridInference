@@ -174,6 +174,7 @@ class CodexSubscriptionAdapter(BaseAdapter):
         translated["_routing"] = {
             "provider": "codex_sub",
             "base_url": self.config.base_url,
+            "endpoint_id": getattr(self.config, "endpoint_id", None) or "codex_sub",
             "account_id": account.id,
         }
         return translated
@@ -250,6 +251,7 @@ class CodexSubscriptionAdapter(BaseAdapter):
         result["_routing"] = {
             "provider": "openai",
             "base_url": _OPENAI_CHAT_URL,
+            "endpoint_id": getattr(self.config, "endpoint_id", None) or "openai",
             "fallback": True,
             "pricing": {
                 "prompt": "2.50",
@@ -475,6 +477,7 @@ class CodexSubscriptionAdapter(BaseAdapter):
             "_routing": {
                 "provider": "openai",
                 "base_url": _OPENAI_CHAT_URL,
+                "endpoint_id": getattr(self.config, "endpoint_id", None) or "openai",
                 "fallback": True,
                 "pricing": {
                     "prompt": "2.50",

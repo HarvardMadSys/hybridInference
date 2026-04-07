@@ -71,14 +71,86 @@ def extract_reasoning_tokens(usage: dict[str, Any] | None) -> int | None:
     return None
 
 
+def extract_cache_tokens(
+    usage: dict[str, Any] | None,
+) -> tuple[int | None, int | None]:
+    """Extract cache read and write tokens from various provider formats.
+
+    Different providers return cache token info in different locations:
+    - usage["cache_read_input_tokens"] (Anthropic Claude)
+    - usage["cache_read_tokens"] (direct/normalized)
+    - usage["prompt_tokens_details"]["cached_tokens"] (OpenAI / Azure)
+    - usage["prompt_cache_hit_tokens"] (DeepSeek)
+    - usage["cache_creation_input_tokens"] (Anthropic Claude write)
+    - usage["cache_write_tokens"] (direct/normalized)
+
+    Args:
+        usage: Usage dictionary from model response
+
+    Returns:
+        Tuple of (cache_read_tokens, cache_write_tokens), each int or None.
+    """
+    if not usage or not isinstance(usage, dict):
+        return None, None
+
+    # --- cache read tokens ---
+    cache_read: int | None = None
+
+    # Direct fields (Anthropic style, then generic).
+    # val >= 0 so that an explicit 0 ("cache supported but no hit") is recorded
+    # rather than falling through to the next field or returning None.
+    for field in ("cache_read_input_tokens", "cache_read_tokens", "prompt_cache_hit_tokens"):
+        val = usage.get(field)
+        if val is not None:
+            try:
+                val = int(val)
+                if val >= 0:
+                    cache_read = val
+                    break
+            except (TypeError, ValueError):
+                pass
+
+    # Nested: prompt_tokens_details.cached_tokens (OpenAI / Azure style)
+    if cache_read is None and "prompt_tokens_details" in usage:
+        details = usage["prompt_tokens_details"]
+        if isinstance(details, dict):
+            val = details.get("cached_tokens")
+            if val is not None:
+                try:
+                    val = int(val)
+                    if val >= 0:
+                        cache_read = val
+                except (TypeError, ValueError):
+                    pass
+
+    # --- cache write tokens ---
+    cache_write: int | None = None
+
+    for field in ("cache_creation_input_tokens", "cache_write_tokens"):
+        val = usage.get(field)
+        if val is not None:
+            try:
+                val = int(val)
+                if val >= 0:
+                    cache_write = val
+                    break
+            except (TypeError, ValueError):
+                pass
+
+    return cache_read, cache_write
+
+
 def normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Normalize usage dict by extracting and flattening reasoning_tokens.
+    """Normalize usage dict by extracting and flattening token fields.
+
+    Extracts reasoning_tokens and cache tokens from various nested provider
+    formats and places them at the top level for consistent downstream access.
 
     Args:
         usage: Raw usage dictionary from model response
 
     Returns:
-        Normalized usage dict with reasoning_tokens at top level, or None
+        Normalized usage dict with reasoning/cache tokens at top level, or None
     """
     if not usage:
         return None
@@ -86,11 +158,20 @@ def normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     # Extract reasoning tokens from nested locations
     reasoning_tokens = extract_reasoning_tokens(usage)
 
+    # Extract cache tokens from nested locations
+    cache_read, cache_write = extract_cache_tokens(usage)
+
     # Create normalized usage dict
     normalized = dict(usage)  # Copy to avoid modifying original
 
     # Add reasoning_tokens at top level if found
     if reasoning_tokens is not None:
         normalized["reasoning_tokens"] = reasoning_tokens
+
+    # Add cache tokens at top level if found
+    if cache_read is not None:
+        normalized["cache_read_tokens"] = cache_read
+    if cache_write is not None:
+        normalized["cache_write_tokens"] = cache_write
 
     return normalized

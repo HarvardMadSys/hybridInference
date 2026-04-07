@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
+    from routing.model_router_registry import ModelRouterRegistry
     from serving.observability.user_stats import UserStatsCollector
     from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
@@ -43,6 +44,7 @@ class AppServices:
     operational_store: OperationalStore | None = None
     log_store: LogStore | None = None
     routing_manager: RoutingManager | None = None
+    model_router_registry: ModelRouterRegistry | None = None
     user_stats_collector: UserStatsCollector | None = None
     fairness_scheduler: FairnessScheduler | None = None
 
@@ -97,6 +99,13 @@ def get_fairness_scheduler(
 ) -> FairnessScheduler | None:
     """Dependency to obtain the fairness scheduler (if configured)."""
     return services.fairness_scheduler
+
+
+def get_model_router_registry(
+    services: AppServices = Depends(get_services),
+) -> ModelRouterRegistry | None:
+    """Dependency to obtain the ModelRouterRegistry (if configured)."""
+    return services.model_router_registry
 
 
 def is_database_connected(db_logger: DatabaseLogger | None) -> bool:

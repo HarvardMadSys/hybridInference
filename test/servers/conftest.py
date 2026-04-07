@@ -93,6 +93,10 @@ def auth_test_env():
         "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "10.00",
         # Disabled by default for backward compatibility with existing tests
         "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
+        # Disable SMTP in tests to avoid sending real emails
+        "SMTP_HOST": "",
+        "SMTP_USER": "",
+        "SMTP_PASSWORD": "",
     }
 
     all_vars = {**_TEST_DB_VARS, **_AUTH_VARS}

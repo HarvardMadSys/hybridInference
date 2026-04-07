@@ -250,6 +250,61 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    # RouteWise online routing metrics
+    ROUTING_STRATEGY_SELECTED = Counter(
+        "routing_strategy_selected_total",
+        "Routing strategy selected",
+        labelnames=("model", "strategy"),
+        registry=REGISTRY,
+    )
+    ROUTEWISE_TIER_DECISIONS = Counter(
+        "routewise_tier_decisions_total",
+        "RouteWise tier selection distribution",
+        labelnames=("model", "tier"),
+        registry=REGISTRY,
+    )
+    ROUTEWISE_QUOTA_REMAINING = Gauge(
+        "routewise_quota_remaining",
+        "Remaining S_Q daily quota (router-global shared resource)",
+        registry=REGISTRY,
+    )
+    ROUTEWISE_SC_ACTIVE = Gauge(
+        "routewise_sc_active",
+        "Active S_C concurrency slots (router-global shared resource)",
+        registry=REGISTRY,
+    )
+    ROUTEWISE_HEDGE_DECISIONS = Counter(
+        "routewise_hedge_decisions_total",
+        "RouteWise hedge decision outcomes",
+        labelnames=("model", "outcome"),
+        registry=REGISTRY,
+    )
+    ROUTEWISE_BACKUP_WINS = Counter(
+        "routewise_backup_wins_total",
+        "Backup adapter wins in hedge races",
+        labelnames=("model",),
+        registry=REGISTRY,
+    )
+    ROUTEWISE_VALUE_ESTIMATE = Histogram(
+        "routewise_value_estimate_usd",
+        "Per-request value estimate v_t distribution (USD)",
+        labelnames=("model",),
+        buckets=(0.0001, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0),
+        registry=REGISTRY,
+    )
+    ROUTEWISE_LP_STATUS = Counter(
+        "routewise_lp_status_total",
+        "LP solver outcome distribution",
+        labelnames=("model", "status"),
+        registry=REGISTRY,
+    )
+    ROUTEWISE_CANARY_DECISIONS = Counter(
+        "routewise_canary_decisions_total",
+        "Canary gate decisions (experimental = sent to RouteWise, default = sent to Fixed)",
+        labelnames=("model", "outcome"),
+        registry=REGISTRY,
+    )
+
     # Register runtime collectors for process/GC/platform if available
     try:  # pragma: no cover - environment dependent
         if ProcessCollector:
@@ -371,6 +426,28 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     CIRCUIT_OPEN_TOTAL = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
+    # RouteWise no-op fallbacks
+    ROUTING_STRATEGY_SELECTED = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    ROUTEWISE_TIER_DECISIONS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    ROUTEWISE_QUOTA_REMAINING = type("NoopGauge", (), {"set": _noop})()
+    ROUTEWISE_SC_ACTIVE = type("NoopGauge", (), {"set": _noop})()
+    ROUTEWISE_HEDGE_DECISIONS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    ROUTEWISE_BACKUP_WINS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    ROUTEWISE_VALUE_ESTIMATE = API_REQUEST_LATENCY  # Histogram no-op (observe)
+    ROUTEWISE_LP_STATUS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    ROUTEWISE_CANARY_DECISIONS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
     DATABASE_CONNECTED = type("NoopGauge", (), {"set": _noop})()
     USERS_TOTAL = type("NoopGauge", (), {"set": _noop})()
     USERS_ACTIVE_DAILY = type("NoopGauge", (), {"set": _noop})()
@@ -431,6 +508,17 @@ __all__ = [
     "RATE_LIMIT_HITS",
     "RATE_LIMIT_QUEUE_SIZE",
     "RATE_LIMIT_QUEUE_WAIT",
+    # RouteWise metrics
+    "ROUTEWISE_BACKUP_WINS",
+    "ROUTEWISE_CANARY_DECISIONS",
+    "ROUTEWISE_HEDGE_DECISIONS",
+    "ROUTEWISE_LP_STATUS",
+    "ROUTEWISE_QUOTA_REMAINING",
+    "ROUTEWISE_SC_ACTIVE",
+    "ROUTEWISE_TIER_DECISIONS",
+    "ROUTEWISE_VALUE_ESTIMATE",
+    # Routing strategy metrics
+    "ROUTING_STRATEGY_SELECTED",
     # Streaming metrics
     "STREAMING_INTERRUPTION",
     "USERS_ACTIVE_DAILY",
