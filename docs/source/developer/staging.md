@@ -2,7 +2,7 @@
 
 This staging setup is fully Dockerized. The backend, frontend, database, and
 observability services all run under
-[docker-compose.staging.yml](docker-compose.staging.yml).
+[docker-compose.staging.yml](../../../infrastructure/docker/docker-compose.staging.yml).
 
 ## Why this staging shape
 
@@ -35,7 +35,7 @@ newgrp docker
 
 In `.env`, set at least:
 
-```env
+```bash
 DB_NAME=freeinference_db
 DB_USER=postgres
 DB_PASSWORD=...
@@ -56,7 +56,7 @@ SIGNUP_REQUIRE_EMAIL_VERIFICATION=0
 
 If you want admin bootstrap on login, also set:
 
-```env
+```bash
 ADMIN_EMAILS=you@example.com
 ```
 
@@ -73,7 +73,7 @@ This command:
 - builds the current backend and frontend from the worktree
 - starts the full staging stack with Docker Compose
 
-You can still use [start_staging.sh](start_staging.sh)
+You can still use [start_staging.sh](../../../scripts/staging/start_staging.sh)
 directly, but `make staging-up` is the recommended day-to-day entry point.
 
 ## SSH forwarding
