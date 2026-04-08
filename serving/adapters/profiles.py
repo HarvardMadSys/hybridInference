@@ -41,6 +41,13 @@ def transform_payload_for_profile(
     profile: ProviderProfile, payload: dict[str, Any], *, stream: bool
 ) -> dict[str, Any]:
     """Apply provider-specific payload transforms."""
+    if profile == ProviderProfile.DEFAULT:
+        if stream:
+            transformed = dict(payload)
+            transformed["stream_options"] = {"include_usage": True}
+            return transformed
+        return payload
+
     if profile != ProviderProfile.AZURE_OPENAI:
         return payload
 
