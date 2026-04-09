@@ -22,6 +22,7 @@ def mock_op_store():
     store = MagicMock()
     store.get_auth_context_by_key_hash = AsyncMock()
     store.update_key_last_used = AsyncMock()
+    store.get_user_cost_today = AsyncMock(return_value=0.0)
     return store
 
 
@@ -84,7 +85,7 @@ async def test_auth_authorization_bearer_valid(monkeypatch, mock_request, mock_o
         "role": "free",
         "email": "test@example.com",
     }
-    mock_ls.get_user_cost_today.return_value = 10.0
+    mock_op_store.get_user_cost_today.return_value = 10.0
 
     result = await verify_api_key(
         request=mock_request,
@@ -97,7 +98,7 @@ async def test_auth_authorization_bearer_valid(monkeypatch, mock_request, mock_o
     assert result["authenticated"] is True
     assert pytest.approx(result["quota_remaining_cost_usd"], rel=1e-6) == 990.0
     mock_op_store.get_auth_context_by_key_hash.assert_awaited_once_with(hashed_key)
-    mock_ls.get_user_cost_today.assert_awaited_once_with("user123")
+    mock_op_store.get_user_cost_today.assert_awaited_once_with("user123")
     mock_op_store.update_key_last_used.assert_awaited_once_with(1)
 
 
@@ -116,7 +117,7 @@ async def test_auth_x_api_key_header_valid(monkeypatch, mock_request, mock_op_st
         "role": "free",
         "email": "x@example.com",
     }
-    mock_ls.get_user_cost_today.return_value = 100.0
+    mock_op_store.get_user_cost_today.return_value = 100.0
 
     result = await verify_api_key(
         request=mock_request,
@@ -165,7 +166,7 @@ async def test_auth_quota_exceeded_returns_429(monkeypatch, mock_request, mock_o
         "role": "free",
         "email": "heavy@example.com",
     }
-    mock_ls.get_user_cost_today.return_value = 1000.0
+    mock_op_store.get_user_cost_today.return_value = 1000.0
 
     with pytest.raises(HTTPException) as exc:
         await verify_api_key(
@@ -195,7 +196,7 @@ async def test_auth_quota_null_uses_default_1000(monkeypatch, mock_request, mock
         "role": "free",
         "email": "null@example.com",
     }
-    mock_ls.get_user_cost_today.return_value = 0.5
+    mock_op_store.get_user_cost_today.return_value = 0.5
 
     result = await verify_api_key(
         request=mock_request,
@@ -238,7 +239,7 @@ async def test_auth_updates_last_used_at(monkeypatch, mock_request, mock_op_stor
         "role": "free",
         "email": "updated@example.com",
     }
-    mock_ls.get_user_cost_today.return_value = 50.0
+    mock_op_store.get_user_cost_today.return_value = 50.0
 
     await verify_api_key(
         request=mock_request,

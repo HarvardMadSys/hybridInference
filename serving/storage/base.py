@@ -381,6 +381,63 @@ class OperationalStore(ABC):
     ) -> tuple[int, list[Row]]:
         """Return ``(total_count, audit_rows)`` with optional filters."""
 
+    # -- cost counters (user_daily_cost table) ---------------------------------
+
+    @abstractmethod
+    async def increment_user_cost(
+        self,
+        user_id: str,
+        cost_usd: float,
+        *,
+        day: str | None = None,
+    ) -> None:
+        """Atomically increment the daily cost counter for *user_id*.
+
+        Uses upsert: inserts a new row if none exists for (user_id, day),
+        otherwise adds *cost_usd* to the existing total and increments
+        the request count.
+
+        Only call this for billed requests (successful responses where
+        cost > 0), not for auth failures or 4xx errors.
+
+        Args:
+            user_id: The user whose cost to increment.
+            cost_usd: Amount to add (must be >= 0).
+            day: Date string (YYYY-MM-DD). Defaults to UTC today.
+        """
+
+    @abstractmethod
+    async def get_user_cost_today(self, user_id: str) -> float:
+        """Return total cost_usd for *user_id* since UTC midnight today.
+
+        Reads from the ``user_daily_cost`` counter table, not from logs.
+        """
+
+    @abstractmethod
+    async def get_user_cost_period(
+        self,
+        user_id: str,
+        period: Literal["today", "month"],
+    ) -> float:
+        """Return total cost_usd for *user_id* within the given period.
+
+        Reads from the ``user_daily_cost`` counter table.
+        ``today`` returns the current day's total.
+        ``month`` sums all days in the current UTC month.
+        """
+
+    @abstractmethod
+    async def get_batch_usage(
+        self,
+        user_ids: list[str],
+        period: Literal["today", "month"],
+    ) -> dict[str, float]:
+        """Return ``{user_id: cost_usd}`` for a batch of users.
+
+        Reads from the ``user_daily_cost`` counter table.
+        Used by admin list endpoints to avoid N+1 queries.
+        """
+
     # -- user preferences (JSONB on users table) -----------------------------
 
     @abstractmethod

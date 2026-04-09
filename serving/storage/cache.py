@@ -502,3 +502,25 @@ class CachedOperationalStore(OperationalStore):
     async def update_user_preferences(self, user_id: str, preferences: dict[str, Any]) -> None:
         """Delegate to wrapped store."""
         return await self._store.update_user_preferences(user_id, preferences)
+
+    # -- cost counters (pass-through) ----------------------------------------
+
+    async def increment_user_cost(
+        self, user_id: str, cost_usd: float, *, day: str | None = None
+    ) -> None:
+        """Delegate to wrapped store."""
+        return await self._store.increment_user_cost(user_id, cost_usd, day=day)
+
+    async def get_user_cost_today(self, user_id: str) -> float:
+        """Delegate to wrapped store."""
+        return await self._store.get_user_cost_today(user_id)
+
+    async def get_user_cost_period(self, user_id: str, period: Literal["today", "month"]) -> float:
+        """Delegate to wrapped store."""
+        return await self._store.get_user_cost_period(user_id, period)
+
+    async def get_batch_usage(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, float]:
+        """Delegate to wrapped store."""
+        return await self._store.get_batch_usage(user_ids, period)

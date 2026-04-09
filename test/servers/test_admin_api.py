@@ -26,9 +26,9 @@ def mock_stores():
     op_store.revoke_key = AsyncMock()
     op_store.regenerate_key = AsyncMock()
     op_store.log_admin_action = AsyncMock()
+    op_store.get_batch_usage = AsyncMock(return_value={})
 
     log_store = MagicMock()
-    log_store.get_batch_usage = AsyncMock(return_value={})
     log_store.get_key_detail_usage = AsyncMock(return_value={})
 
     return op_store, log_store
@@ -135,7 +135,7 @@ async def test_list_api_keys_batches_usage(admin_client):
             }
         ],
     )
-    log_store.get_batch_usage.side_effect = [
+    op_store.get_batch_usage.side_effect = [
         {"alice": 12.34},  # today
         {"alice": 23.45},  # month
     ]

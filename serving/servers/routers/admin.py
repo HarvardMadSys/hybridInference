@@ -251,13 +251,13 @@ async def list_api_keys(
     if not rows:
         return ListAPIKeysResponse(total=total, keys=[])
 
-    # Batch-fetch usage from log store
+    # Batch-fetch usage from operational store counter table
     user_ids = [row["user_id"] for row in rows]
     usage_today_map: dict[str, Any] = {}
     usage_month_map: dict[str, Any] = {}
-    if log_store and user_ids:
-        usage_today_map = await log_store.get_batch_usage(user_ids, period="today")
-        usage_month_map = await log_store.get_batch_usage(user_ids, period="month")
+    if op_store and user_ids:
+        usage_today_map = await op_store.get_batch_usage(user_ids, period="today")
+        usage_month_map = await op_store.get_batch_usage(user_ids, period="month")
 
     keys = []
     for row in rows:

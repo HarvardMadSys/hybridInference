@@ -31,6 +31,7 @@ from serving.servers.deps import (
     get_fairness_scheduler,
     get_log_store,
     get_model_router_registry,
+    get_operational_store,
     get_rate_limiter,
     get_router,
 )
@@ -66,6 +67,32 @@ def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) 
     # Fire-and-forget background task for non-blocking DB logging
     # We intentionally don't store the reference as we don't need to await it
     asyncio.create_task(log_to_db_background())  # noqa: RUF006
+
+
+def _schedule_cost_increment(
+    op_store: Any,
+    user_id: str,
+    usage: dict[str, int] | None,
+    pricing: dict[str, str] | None,
+) -> None:
+    """Increment the user's daily cost counter for billed requests.
+
+    Only called for successful responses where cost > 0. Runs as a
+    fire-and-forget background task to avoid blocking the response.
+    """
+    from serving.storage.database import calculate_cost
+
+    cost = calculate_cost(usage, pricing)
+    if not cost or cost <= 0 or not op_store:
+        return
+
+    async def _increment():
+        try:
+            await op_store.increment_user_cost(user_id, cost)
+        except Exception as exc:
+            logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
+
+    asyncio.create_task(_increment())  # noqa: RUF006
 
 
 def _record_routing_observation(
@@ -122,6 +149,7 @@ async def chat_completions(
     router_exec=Depends(get_router),
     rate_limiter=Depends(get_rate_limiter),
     log_store=Depends(get_log_store),
+    op_store=Depends(get_operational_store),
     fairness_scheduler=Depends(get_fairness_scheduler),
     model_router_registry=Depends(get_model_router_registry),
 ) -> dict[str, Any]:
@@ -714,6 +742,14 @@ async def chat_completions(
                         },
                     )
 
+                # Increment daily cost counter for billed requests
+                if not is_synthetic_probe and routing_info:
+                    _usage = response_for_db.get("usage") if response_for_db else usage_data
+                    _s_pricing = routing_info.get("pricing") or get_pricing_for_provider(
+                        provider, routing_info.get("base_url")
+                    )
+                    _schedule_cost_increment(op_store, user_id, _usage, _s_pricing)
+
                 # Notify fairness scheduler of actual token cost (streaming success)
                 if fairness_scheduler and not is_synthetic_probe:
                     _actual_usage = (normalize_usage(usage_data) if usage_data else {}) or {}
@@ -896,6 +932,14 @@ async def chat_completions(
                     "pricing": pricing,
                 },
             )
+
+        # Increment daily cost counter for billed requests (non-streaming)
+        if not is_synthetic_probe:
+            _ns_usage = (
+                normalize_usage(response.get("usage")) if isinstance(response, dict) else None
+            )
+            _ns_pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
+            _schedule_cost_increment(op_store, user_id, _ns_usage, _ns_pricing)
 
         # Emit token counters when usage is available, with anomaly checks
         # Normalize usage to extract reasoning_tokens from nested locations

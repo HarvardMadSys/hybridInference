@@ -764,3 +764,81 @@ class D1OperationalStore(OperationalStore):
             "UPDATE users SET preferences = ? WHERE id = ?",
             [json.dumps(preferences), user_id],
         )
+
+    # -- cost counters -------------------------------------------------------
+
+    async def increment_user_cost(
+        self,
+        user_id: str,
+        cost_usd: float,
+        *,
+        day: str | None = None,
+    ) -> None:
+        """Atomically increment the daily cost counter via upsert."""
+        if day is None:
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        now = _now_iso()
+        await self._d1.execute(
+            "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
+            "VALUES (?, ?, ?, 1, ?) "
+            "ON CONFLICT(user_id, day) DO UPDATE SET "
+            "cost_usd = cost_usd + ?, requests = requests + 1, last_request_at = ?",
+            [user_id, day, cost_usd, now, cost_usd, now],
+        )
+
+    async def get_user_cost_today(self, user_id: str) -> float:
+        """Return today's cost from the counter table."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        result = await self._d1.query(
+            "SELECT cost_usd FROM user_daily_cost WHERE user_id = ? AND day = ?",
+            [user_id, today],
+        )
+        if result.rows:
+            return float(result.rows[0]["cost_usd"])
+        return 0.0
+
+    async def get_user_cost_period(
+        self,
+        user_id: str,
+        period: Literal["today", "month"],
+    ) -> float:
+        """Return cost for a period from the counter table."""
+        if period == "today":
+            return await self.get_user_cost_today(user_id)
+        # month: sum all days in current UTC month
+        month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+        result = await self._d1.query(
+            "SELECT COALESCE(SUM(cost_usd), 0) as total "
+            "FROM user_daily_cost WHERE user_id = ? AND day LIKE ?",
+            [user_id, f"{month_prefix}%"],
+        )
+        if result.rows:
+            return float(result.rows[0]["total"])
+        return 0.0
+
+    async def get_batch_usage(
+        self,
+        user_ids: list[str],
+        period: Literal["today", "month"],
+    ) -> dict[str, float]:
+        """Return {user_id: cost_usd} for a batch of users."""
+        if not user_ids:
+            return {}
+        if period == "today":
+            day_filter = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            where = "day = ?"
+            params: list[Any] = [day_filter]
+        else:
+            month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+            where = "day LIKE ?"
+            params = [f"{month_prefix}%"]
+
+        placeholders = ",".join(["?"] * len(user_ids))
+        params.extend(user_ids)
+        result = await self._d1.query(
+            f"SELECT user_id, COALESCE(SUM(cost_usd), 0) as cost "
+            f"FROM user_daily_cost WHERE {where} AND user_id IN ({placeholders}) "
+            f"GROUP BY user_id",
+            params,
+        )
+        return {r["user_id"]: float(r["cost"]) for r in result.rows}

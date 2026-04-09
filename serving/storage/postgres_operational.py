@@ -313,6 +313,21 @@ class PostgresOperationalStore(OperationalStore):
             "ON admin_audit_log(action, timestamp DESC)"
         )
 
+        # --- user_daily_cost ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_daily_cost (
+                user_id TEXT NOT NULL,
+                day TEXT NOT NULL,
+                cost_usd DECIMAL(12, 6) NOT NULL DEFAULT 0,
+                requests INTEGER NOT NULL DEFAULT 0,
+                last_request_at TIMESTAMPTZ,
+                PRIMARY KEY (user_id, day)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day)"
+        )
+
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
 
@@ -1141,3 +1156,82 @@ class PostgresOperationalStore(OperationalStore):
                 json.dumps(preferences),
                 user_id,
             )
+
+    # -- cost counters -------------------------------------------------------
+
+    async def increment_user_cost(
+        self,
+        user_id: str,
+        cost_usd: float,
+        *,
+        day: str | None = None,
+    ) -> None:
+        """Atomically increment the daily cost counter via upsert."""
+        from datetime import datetime, timezone
+
+        if day is None:
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
+                "VALUES ($1, $2, $3, 1, NOW()) "
+                "ON CONFLICT (user_id, day) DO UPDATE SET "
+                "cost_usd = user_daily_cost.cost_usd + $3, "
+                "requests = user_daily_cost.requests + 1, "
+                "last_request_at = NOW()",
+                user_id,
+                day,
+                cost_usd,
+            )
+
+    async def get_user_cost_today(self, user_id: str) -> float:
+        """Return today's cost from the counter table."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT cost_usd FROM user_daily_cost "
+                "WHERE user_id = $1 AND day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
+                user_id,
+            )
+        return float(row["cost_usd"]) if row else 0.0
+
+    async def get_user_cost_period(
+        self,
+        user_id: str,
+        period: Literal["today", "month"],
+    ) -> float:
+        """Return cost for a period from the counter table."""
+        if period == "today":
+            return await self.get_user_cost_today(user_id)
+        # month: sum all days in current UTC month
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(cost_usd), 0) as total FROM user_daily_cost "
+                "WHERE user_id = $1 "
+                "AND day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')",
+                user_id,
+            )
+        return float(row["total"]) if row else 0.0
+
+    async def get_batch_usage(
+        self,
+        user_ids: list[str],
+        period: Literal["today", "month"],
+    ) -> dict[str, float]:
+        """Return {user_id: cost_usd} for a batch of users."""
+        if not user_ids:
+            return {}
+        if period == "today":
+            date_filter = "day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+        else:
+            date_filter = (
+                "day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+            )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT user_id, COALESCE(SUM(cost_usd), 0) as cost "
+                f"FROM user_daily_cost "
+                f"WHERE {date_filter} AND user_id = ANY($1::text[]) "
+                f"GROUP BY user_id",
+                user_ids,
+            )
+        return {r["user_id"]: float(r["cost"]) for r in rows}

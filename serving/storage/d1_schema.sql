@@ -129,3 +129,17 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
 CREATE INDEX IF NOT EXISTS idx_admin_audit_timestamp ON admin_audit_log(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_user ON admin_audit_log(target_user_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action, timestamp DESC);
+
+-- -------------------------------------------------------------------
+-- user_daily_cost (quota enforcement counters)
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_daily_cost (
+    user_id           TEXT NOT NULL,
+    day               TEXT NOT NULL,
+    cost_usd          REAL NOT NULL DEFAULT 0.0,
+    requests          INTEGER NOT NULL DEFAULT 0,
+    last_request_at   TEXT,
+    PRIMARY KEY (user_id, day)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day);

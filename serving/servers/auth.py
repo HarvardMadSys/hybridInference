@@ -116,10 +116,10 @@ async def verify_api_key(
             detail="Invalid or expired API key",
         )
 
-    # Pre-check daily cost quota via log store
+    # Pre-check daily cost quota via operational store counter table
     cost_spent = 0.0
-    if log_store:
-        cost_spent = await log_store.get_user_cost_today(user["user_id"])
+    if op_store:
+        cost_spent = await op_store.get_user_cost_today(user["user_id"])
 
     # Estimate cost for this request
     estimated_cost = 0.01
