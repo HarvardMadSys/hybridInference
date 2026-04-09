@@ -1,14 +1,24 @@
 // Centralized configuration for the application.
 //
-// For most developers, the defaults below are sufficient.
-// If you need to override (e.g., backend on different port), you can:
-// 1. Create .env.local and set NEXT_PUBLIC_API_BASE=http://localhost:YOUR_PORT
-// 2. Or set environment variable when running: NEXT_PUBLIC_API_BASE=http://localhost:3001 npm run dev
+// The frontend bundle is built once and then served statically, so deployment
+// selection must be available at build time.
+
+type DeployTarget = 'production' | 'staging';
+
+const rawDeployTarget = process.env.NEXT_PUBLIC_DEPLOY_TARGET || 'production';
+const deployTarget: DeployTarget = rawDeployTarget === 'staging' ? 'staging' : 'production';
+
+const defaultApiBaseByTarget: Record<DeployTarget, string> = {
+  production: 'https://freeinference.org',
+  staging: 'http://localhost:8000',
+};
 
 export const config = {
   // API Configuration
-  // Default: https://freeinference.org (production backend via nginx)
-  apiBase: process.env.NEXT_PUBLIC_API_BASE || 'https://freeinference.org',
+  // `NEXT_PUBLIC_API_BASE` wins if explicitly provided. Otherwise we derive a
+  // sensible default from the build target.
+  apiBase: process.env.NEXT_PUBLIC_API_BASE || defaultApiBaseByTarget[deployTarget],
+  deployTarget,
 
   // Application Configuration
   appName: process.env.NEXT_PUBLIC_APP_NAME || 'FreeInference',
@@ -21,11 +31,17 @@ export const config = {
   // Computed
   isDevelopment: process.env.NODE_ENV === 'development',
   isProduction: process.env.NODE_ENV === 'production',
+  isStagingTarget: deployTarget === 'staging',
 } as const;
 
-// Validate configuration on module load
-if (config.isProduction && config.apiBase.startsWith('http://localhost')) {
-  console.warn('Warning: Using localhost API in production. Please set NEXT_PUBLIC_API_BASE.');
+if (
+  config.isProduction &&
+  config.deployTarget === 'production' &&
+  config.apiBase.startsWith('http://localhost')
+) {
+  console.warn(
+    'Warning: Production build is using a localhost API base. Check NEXT_PUBLIC_API_BASE.',
+  );
 }
 
 export type Config = typeof config;

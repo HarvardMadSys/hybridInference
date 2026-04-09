@@ -22,3 +22,4 @@ see the `FreeInference docs <https://harvardsys.github.io/free_inference/>`_.
    developer/claude-code-setup
    developer/fasrc
    developer/contributing
+   developer/staging
