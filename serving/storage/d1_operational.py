@@ -42,6 +42,59 @@ def _dt_to_iso(dt: datetime | None) -> str | None:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _iso_to_dt(val: str | None) -> datetime | None:
+    """Parse an ISO 8601 string back to a timezone-aware datetime, or None."""
+    if val is None:
+        return None
+    # Handle both 3-digit (SQLite strftime %f) and 6-digit (Python %f) fractional seconds
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.strptime(val, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+# Columns in returned rows that should be parsed from ISO strings to datetime
+_TIMESTAMP_COLUMNS = frozenset(
+    {
+        "created_at",
+        "last_login_at",
+        "expires_at",
+        "last_used_at",
+        "reviewed_at",
+        "used_at",
+        "last_request_at",
+    }
+)
+
+
+_BOOLEAN_COLUMNS = frozenset(
+    {
+        "email_verified",
+        "revoked",
+    }
+)
+
+
+def _parse_row_timestamps(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Convert known timestamp and boolean columns in a D1 result row.
+
+    Timestamps are parsed from ISO 8601 strings to datetime objects.
+    Booleans are converted from SQLite integers (0/1) to Python bools.
+    """
+    if row is None:
+        return None
+    out = dict(row)
+    for col in _TIMESTAMP_COLUMNS:
+        if col in out and isinstance(out[col], str):
+            out[col] = _iso_to_dt(out[col])
+    for col in _BOOLEAN_COLUMNS:
+        if col in out and isinstance(out[col], int):
+            out[col] = bool(out[col])
+    return out
+
+
 class D1OperationalStore(OperationalStore):
     """OperationalStore backed by Cloudflare D1 via HTTP API."""
 
@@ -94,7 +147,7 @@ class D1OperationalStore(OperationalStore):
             "FROM users WHERE id = ?",
             [user_id],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     async def get_user_by_email(self, email: str) -> Row | None:
         """Fetch a single user row by lowercased email."""
@@ -104,7 +157,7 @@ class D1OperationalStore(OperationalStore):
             "FROM users WHERE email = ?",
             [email.lower()],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     async def create_user(
         self,
@@ -129,11 +182,16 @@ class D1OperationalStore(OperationalStore):
             return
         from decimal import Decimal as _Decimal
 
+        from .base import USERS_MUTABLE_COLUMNS
+
+        invalid = set(fields) - USERS_MUTABLE_COLUMNS.keys()
+        if invalid:
+            raise ValueError(f"Invalid column(s) for users: {invalid}")
         set_parts = []
         params: list[Any] = []
-        for col, val in fields.items():
+        for key, val in fields.items():
+            col = USERS_MUTABLE_COLUMNS[key]
             set_parts.append(f"{col} = ?")
-            # Convert Python types to D1-compatible values
             if isinstance(val, bool):
                 params.append(int(val))
             elif isinstance(val, datetime):
@@ -336,7 +394,7 @@ class D1OperationalStore(OperationalStore):
             "  AND (u.id IS NULL OR u.status = 'active')",
             [key_hash],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     async def get_auth_context_lightweight(self, key_hash: str) -> Row | None:
         """Lightweight identity lookup."""
@@ -350,7 +408,7 @@ class D1OperationalStore(OperationalStore):
             "  AND (u.id IS NULL OR u.status = 'active')",
             [key_hash],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     async def update_key_last_used(self, key_id: int) -> None:
         """Set last_used_at for the given key id."""
@@ -399,7 +457,7 @@ class D1OperationalStore(OperationalStore):
             ],
         )
         if result.rows:
-            return result.rows[0]
+            return _parse_row_timestamps(result.rows[0])
         # Fallback if RETURNING not supported in D1 version
         return {"id": result.last_row_id, "created_at": now}
 
@@ -460,7 +518,7 @@ class D1OperationalStore(OperationalStore):
             "FROM api_keys WHERE user_id = ?",
             [user_id],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     async def update_key(self, user_id: str, **fields: Any) -> None:
         """Dynamically update key columns for user_id."""
@@ -468,9 +526,15 @@ class D1OperationalStore(OperationalStore):
             return
         from decimal import Decimal as _Decimal
 
+        from .base import API_KEYS_MUTABLE_COLUMNS
+
+        invalid = set(fields) - API_KEYS_MUTABLE_COLUMNS.keys()
+        if invalid:
+            raise ValueError(f"Invalid column(s) for api_keys: {invalid}")
         set_parts = []
         params: list[Any] = []
-        for col, val in fields.items():
+        for key, val in fields.items():
+            col = API_KEYS_MUTABLE_COLUMNS[key]
             set_parts.append(f"{col} = ?")
             if isinstance(val, bool):
                 params.append(int(val))
@@ -530,7 +594,7 @@ class D1OperationalStore(OperationalStore):
             "LIMIT 1",
             [account_id, account_id],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     async def get_active_key_by_account(self, account_id: str) -> Row | None:
         """Fetch the active key for self-registered user by account_id."""
@@ -540,7 +604,7 @@ class D1OperationalStore(OperationalStore):
             "FROM api_keys WHERE account_id = ? AND status = 'active'",
             [account_id],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     # -- auth sessions -------------------------------------------------------
 
@@ -569,7 +633,7 @@ class D1OperationalStore(OperationalStore):
             "FROM auth_sessions WHERE refresh_token_hash = ?",
             [token_hash],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     async def rotate_session(
         self,
@@ -619,7 +683,7 @@ class D1OperationalStore(OperationalStore):
             "FROM email_verification_tokens WHERE token = ?",
             [token],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     async def mark_verification_used(self, token: str) -> None:
         """Set used_at on the token."""
@@ -658,7 +722,7 @@ class D1OperationalStore(OperationalStore):
             "FROM password_reset_tokens WHERE token = ?",
             [token],
         )
-        return result.rows[0] if result.rows else None
+        return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
     async def mark_reset_used(self, token: str) -> None:
         """Set used_at on the token."""

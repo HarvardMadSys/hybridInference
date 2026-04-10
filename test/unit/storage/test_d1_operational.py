@@ -393,6 +393,28 @@ class TestPreferences:
 # ------------------------------------------------------------------
 
 
+class TestColumnAllowlist:
+    """Verify that update methods reject invalid column names."""
+
+    async def test_update_user_fields_rejects_invalid_column(self, store, d1_client):
+        with pytest.raises(ValueError, match="Invalid column"):
+            await store.update_user_fields("user-1", foo="bar")
+        d1_client.execute.assert_not_called()
+
+    async def test_update_key_rejects_invalid_column(self, store, d1_client):
+        with pytest.raises(ValueError, match="Invalid column"):
+            await store.update_key("user-1", foo="bar")
+        d1_client.execute.assert_not_called()
+
+    async def test_update_user_fields_accepts_valid_column(self, store, d1_client):
+        await store.update_user_fields("user-1", status="active")
+        d1_client.execute.assert_called_once()
+
+    async def test_update_key_accepts_valid_column(self, store, d1_client):
+        await store.update_key("user-1", status="active")
+        d1_client.execute.assert_called_once()
+
+
 class TestProtocol:
     """Verify D1OperationalStore satisfies the OperationalStore ABC."""
 

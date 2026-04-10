@@ -27,11 +27,12 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
     from serving.storage.postgres_log import PostgresLogStore
     from serving.storage.postgres_operational import PostgresOperationalStore
 
-    result: dict[str, Any] = {"healthy": False}
+    result: dict[str, Any] = {"healthy": False, "database_configured": False}
 
     # Operational store
     op_status: dict[str, Any] = {"status": "unavailable", "backend": "none"}
     if op_store:
+        result["database_configured"] = True
         # Resolve the underlying backend through CachedOperationalStore
         inner = getattr(op_store, "_store", op_store)
         if isinstance(inner, D1OperationalStore):
@@ -49,6 +50,7 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
     # Log store
     log_status: dict[str, Any] = {"status": "unavailable", "backend": "none"}
     if log_store:
+        result["database_configured"] = True
         log_status["backend"] = "postgres" if isinstance(log_store, PostgresLogStore) else "unknown"
         try:
             log_status["status"] = "ok" if await log_store.health_check() else "error"
@@ -56,9 +58,14 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
             log_status["status"] = "error"
     result["log_store"] = log_status
 
-    any_healthy = op_status["status"] == "ok" or log_status["status"] == "ok"
-    result["healthy"] = any_healthy
-    DATABASE_CONNECTED.set(1 if any_healthy else 0)
+    # No stores configured = healthy (no DB to fail); stores exist but all
+    # failing = unhealthy.
+    if not result["database_configured"]:
+        result["healthy"] = True
+    else:
+        any_healthy = op_status["status"] == "ok" or log_status["status"] == "ok"
+        result["healthy"] = any_healthy
+    DATABASE_CONNECTED.set(1 if result["healthy"] else 0)
     return result
 
 
@@ -108,11 +115,20 @@ async def health(
     db_connected = store_health["healthy"]
 
     if not db_connected:
+        if not store_health["database_configured"]:
+            # No database configured — service is healthy without a DB
+            return {
+                "status": "healthy",
+                "routes_configured": routes_count,
+                "database_configured": False,
+                "database_connected": False,
+            }
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
             "status": "unhealthy",
             "reason": "database_disconnected",
             "routes_configured": routes_count,
+            "database_configured": True,
             "database_connected": False,
             "stores": {
                 "operational_store": store_health["operational_store"],
@@ -123,6 +139,7 @@ async def health(
     return {
         "status": "healthy",
         "routes_configured": routes_count,
+        "database_configured": True,
         "database_connected": True,
         "stores": {
             "operational_store": store_health["operational_store"],
@@ -161,9 +178,9 @@ async def deep_health(
             rl_status = None
 
     overall = "healthy"
-    if not db_connected:
+    if not db_connected and store_health["database_configured"]:
         overall = "unhealthy"
-    else:
+    elif db_connected:
         for _p, s in provider_status.items():
             if s.get("circuit_state") == "open" or (
                 s.get("availability") is not None and s.get("availability") < 0.9

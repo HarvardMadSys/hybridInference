@@ -70,18 +70,25 @@ def auth_test_env():
     override any .env / inherited env regardless of load order.
     Original values are restored when the session ends.
     """
+    # Respect TEST_DB_* env vars from the process (e.g. command-line overrides),
+    # falling back to Docker-friendly defaults.
+    _db_host = os.environ.get("TEST_DB_HOST", "localhost")
+    _db_port = os.environ.get("TEST_DB_PORT", "5432")
+    _db_name = os.environ.get("TEST_DB_NAME", "freeinference_test_db")
+    _db_user = os.environ.get("TEST_DB_USER", "postgres")
+    _db_pass = os.environ.get("TEST_DB_PASSWORD", "postgres")
     _TEST_DB_VARS = {
-        "DB_HOST": "localhost",
-        "DB_PORT": "5432",
-        "DB_NAME": "freeinference_test_db",
-        "DB_USER": "postgres",
-        "DB_PASSWORD": "postgres",
+        "DB_HOST": _db_host,
+        "DB_PORT": _db_port,
+        "DB_NAME": _db_name,
+        "DB_USER": _db_user,
+        "DB_PASSWORD": _db_pass,
         # Mirror for fixtures that read TEST_DB_* directly
-        "TEST_DB_HOST": "localhost",
-        "TEST_DB_PORT": "5432",
-        "TEST_DB_NAME": "freeinference_test_db",
-        "TEST_DB_USER": "postgres",
-        "TEST_DB_PASSWORD": "postgres",
+        "TEST_DB_HOST": _db_host,
+        "TEST_DB_PORT": _db_port,
+        "TEST_DB_NAME": _db_name,
+        "TEST_DB_USER": _db_user,
+        "TEST_DB_PASSWORD": _db_pass,
     }
     _AUTH_VARS = {
         "JWT_SECRET_KEY": "test-secret-key-32-chars-long!!",
@@ -125,15 +132,24 @@ def mock_env(monkeypatch):
     """Mock environment variables for testing."""
     test_env = {
         "DB_ENABLED": "false",  # Disable DB in tests by default
+        "DB_BACKEND": "postgres",  # Ensure tests default to postgres, not D1 from .env
         "RATE_LIMIT_ENABLED": "0",  # Disable rate limiting in tests
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
         "LOCAL_BASE_URL": "http://localhost:8001",
         "OFFLOAD": "0",
     }
+    # Clear D1 env vars that may leak from .env
+    for d1_var in ("D1_ACCOUNT_ID", "D1_DATABASE_ID", "D1_API_TOKEN"):
+        monkeypatch.delenv(d1_var, raising=False)
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
-    return test_env
+    # Clear cached settings so bootstrap reads the test env
+    from serving.config.settings import get_settings
+
+    get_settings.cache_clear()
+    yield test_env
+    get_settings.cache_clear()
 
 
 @pytest.fixture
@@ -393,22 +409,22 @@ async def auth_db_logger(auth_app):
 
 
 @pytest_asyncio.fixture
-async def require_db(auth_db_logger):
+async def require_db(auth_app):
     """Skip tests that require database if not available.
 
-    This fixture is mainly for local development where developers might not
-    have PostgreSQL running. In CI, the database is always available via
-    the postgres service container (see .github/workflows/ci.yml).
+    Returns the operational store from the app services, which works with
+    both PostgreSQL and D1 backends.
 
     Usage:
         async def test_user_creation(auth_client, require_db):
-            # This test will be skipped if database is not available locally
-            # In CI, it will always run since postgres service is configured
-            ...
+            # require_db is the operational store
+            await require_db.update_user_fields(user_id, email_verified=True)
     """
-    if auth_db_logger is None or not hasattr(auth_db_logger, "pool") or auth_db_logger.pool is None:
+    services = getattr(auth_app.state, "services", None)
+    op_store = getattr(services, "operational_store", None) if services else None
+    if op_store is None:
         pytest.skip("Database not available (start PostgreSQL or check DB config)")
-    return auth_db_logger
+    return op_store
 
 
 @pytest_asyncio.fixture

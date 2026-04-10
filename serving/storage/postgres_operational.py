@@ -391,9 +391,15 @@ class PostgresOperationalStore(OperationalStore):
         """Update one or more columns on the users table for *user_id*."""
         if not fields:
             return
+        from .base import USERS_MUTABLE_COLUMNS
+
+        invalid = set(fields) - USERS_MUTABLE_COLUMNS.keys()
+        if invalid:
+            raise ValueError(f"Invalid column(s) for users: {invalid}")
         set_parts = []
         params: list[Any] = [user_id]
-        for idx, (col, val) in enumerate(fields.items(), start=2):
+        for idx, (key, val) in enumerate(fields.items(), start=2):
+            col = USERS_MUTABLE_COLUMNS[key]
             set_parts.append(f"{col} = ${idx}")
             params.append(val)
         sql = f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1"
@@ -840,9 +846,15 @@ class PostgresOperationalStore(OperationalStore):
         """Dynamically update key columns for *user_id*."""
         if not fields:
             return
+        from .base import API_KEYS_MUTABLE_COLUMNS
+
+        invalid = set(fields) - API_KEYS_MUTABLE_COLUMNS.keys()
+        if invalid:
+            raise ValueError(f"Invalid column(s) for api_keys: {invalid}")
         set_parts = []
         params: list[Any] = [user_id]
-        for idx, (col, val) in enumerate(fields.items(), start=2):
+        for idx, (key, val) in enumerate(fields.items(), start=2):
+            col = API_KEYS_MUTABLE_COLUMNS[key]
             set_parts.append(f"{col} = ${idx}")
             params.append(val)
         sql = f"UPDATE api_keys SET {', '.join(set_parts)} WHERE user_id = $1"
@@ -868,7 +880,7 @@ class PostgresOperationalStore(OperationalStore):
         new_key_prefix: str,
     ) -> str:
         """Atomically replace the key hash/prefix. Returns old key_prefix."""
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
             old_row = await conn.fetchrow(
                 "SELECT key_prefix FROM api_keys WHERE user_id = $1", user_id
             )

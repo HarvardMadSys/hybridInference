@@ -312,10 +312,10 @@ async def get_api_key_detail(
 
     if log_store:
         key_usage = await log_store.get_key_detail_usage(user_id)
-        cost_today = key_usage.get("cost_today", 0.0)
-        cost_month = key_usage.get("cost_month", 0.0)
-        requests_today = key_usage.get("requests_today", 0)
-        requests_month = key_usage.get("requests_month", 0)
+        cost_today = key_usage.get("today", {}).get("cost_usd", 0.0)
+        cost_month = key_usage.get("this_month", {}).get("cost_usd", 0.0)
+        requests_today = key_usage.get("today", {}).get("requests", 0)
+        requests_month = key_usage.get("this_month", {}).get("requests", 0)
         models_used = key_usage.get("models_used", [])
         last_request_at = key_usage.get("last_request_at")
 

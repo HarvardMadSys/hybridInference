@@ -47,9 +47,19 @@ _TABLES = [
 
 
 async def _export_table(d1: Any, table: str) -> list[dict[str, Any]]:
-    """Fetch all rows from a D1 table."""
-    result = await d1.query(f"SELECT * FROM {table}")
-    return result.rows
+    """Fetch all rows from a D1 table using paginated reads."""
+    page_size = 1000
+    offset = 0
+    all_rows: list[dict[str, Any]] = []
+    while True:
+        result = await d1.query(f"SELECT * FROM {table} LIMIT ? OFFSET ?", [page_size, offset])
+        if not result.rows:
+            break
+        all_rows.extend(result.rows)
+        if len(result.rows) < page_size:
+            break
+        offset += page_size
+    return all_rows
 
 
 async def _run(args: argparse.Namespace) -> int:

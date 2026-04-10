@@ -263,6 +263,9 @@ class D1Client:
                         code=429,
                     )
 
+                if resp.status >= 500:
+                    raise D1ConnectionError(f"D1 server error (HTTP {resp.status}): {text[:200]}")
+
                 if not data.get("success"):
                     errors = data.get("errors", [])
                     error_msg = errors[0].get("message", "Unknown D1 error") if errors else text

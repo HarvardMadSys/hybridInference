@@ -26,6 +26,42 @@ Row = dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# Column allowlists for dynamic UPDATE methods
+# ---------------------------------------------------------------------------
+# Maps external field name → canonical DB column name.  Only these columns
+# may be passed to update_user_fields / update_key.  The mapping is 1:1
+# today but interpolating from .values() guarantees only known-safe
+# identifiers ever reach SQL, even if external names diverge later.
+
+USERS_MUTABLE_COLUMNS: dict[str, str] = {
+    "email": "email",
+    "password_hash": "password_hash",
+    "user_name": "user_name",
+    "preferences": "preferences",
+    "role": "role",
+    "email_verified": "email_verified",
+    "status": "status",
+    "approval_note": "approval_note",
+    "reviewed_at": "reviewed_at",
+    "reviewed_by": "reviewed_by",
+    "last_login_at": "last_login_at",
+}
+
+API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
+    "user_name": "user_name",
+    "status": "status",
+    "quota_daily_cost_usd": "quota_daily_cost_usd",
+    "quota_monthly_cost_usd": "quota_monthly_cost_usd",
+    "expires_at": "expires_at",
+    "last_used_at": "last_used_at",
+    "tier": "tier",
+    "notes": "notes",
+    "metadata": "metadata",
+    "account_id": "account_id",
+}
+
+
+# ---------------------------------------------------------------------------
 # OperationalStore — users, keys, sessions, tokens, audit
 # ---------------------------------------------------------------------------
 

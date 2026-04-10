@@ -3,7 +3,7 @@
 This test ensures that users with unverified emails cannot login,
 fixing the security vulnerability where unverified users could access the system.
 
-Requires a running PostgreSQL test database (see TEST_DB_* env vars).
+Supports both PostgreSQL and Cloudflare D1 backends.
 Run with: make test-db
 """
 
@@ -25,20 +25,15 @@ def email_verification_flag(monkeypatch):
     return _setter
 
 
-async def set_email_verified(require_db, user_id: str, verified: bool) -> None:
-    """Set user's email_verified flag.
+async def set_email_verified(op_store, user_id: str, verified: bool) -> None:
+    """Set user's email_verified flag via the operational store.
 
     Args:
-      require_db: DB fixture ensuring pool availability.
+      op_store: Operational store (from require_db fixture).
       user_id: Target user ID.
       verified: Desired verification state.
     """
-    async with require_db.pool.acquire() as conn:  # type: ignore[attr-defined]
-        await conn.execute(
-            "UPDATE users SET email_verified = $1 WHERE id = $2",
-            verified,
-            user_id,
-        )
+    await op_store.update_user_fields(user_id, email_verified=verified)
 
 
 async def test_unverified_user_cannot_login(auth_client, require_db, email_verification_flag):

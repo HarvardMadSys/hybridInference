@@ -28,6 +28,7 @@ logger = get_logger(__name__)
 
 # Buffer configuration defaults
 DEFAULT_FLUSH_INTERVAL_SECONDS = 5.0
+MAX_BUFFER_SIZE = 5000
 DEFAULT_FLUSH_SIZE = 50
 
 # D1 api_logs DDL (slim rows — no prompt/response content)
@@ -129,6 +130,27 @@ class D1LogStore(LogStore):
         """Check D1 connectivity with a trivial query."""
         return await self._d1.health_check()
 
+    # -- buffer overflow protection -------------------------------------------
+
+    def _drop_overflow(self, incoming: int = 0) -> int:
+        """Drop oldest buffer entries if over MAX_BUFFER_SIZE.
+
+        Must be called while holding ``self._lock``.  Returns the number
+        of entries dropped.  Emits a single rate-limited warning per call
+        (i.e. once per flush cycle, not per row).
+        """
+        total = len(self._buffer) + incoming
+        if total <= MAX_BUFFER_SIZE:
+            return 0
+        drop_count = total - MAX_BUFFER_SIZE
+        del self._buffer[:drop_count]
+        logger.warning(
+            "D1LogStore buffer overflow: dropped %d oldest rows (buffer capped at %d)",
+            drop_count,
+            MAX_BUFFER_SIZE,
+        )
+        return drop_count
+
     # -- buffered write ------------------------------------------------------
 
     async def log_request(
@@ -174,6 +196,7 @@ class D1LogStore(LogStore):
         should_flush = False
         async with self._lock:
             self._buffer.append(row)
+            self._drop_overflow()
             if len(self._buffer) >= self._flush_size:
                 should_flush = True
 
@@ -223,9 +246,10 @@ class D1LogStore(LogStore):
             logger.debug("Flushed %d log rows to D1", len(batch))
             return len(batch)
         except Exception:
-            # Put rows back so they aren't lost
+            # Put rows back so they aren't lost, respecting the buffer cap
             async with self._lock:
                 self._buffer = batch + self._buffer
+                self._drop_overflow()
             logger.exception("Failed to flush %d log rows to D1, re-queued", len(batch))
             raise
 

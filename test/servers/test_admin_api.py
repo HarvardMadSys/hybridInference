@@ -173,10 +173,8 @@ async def test_get_api_key_detail_success(admin_client):
         "metadata": None,
     }
     log_store.get_key_detail_usage.return_value = {
-        "cost_today": 20.0,
-        "cost_month": 50.0,
-        "requests_today": 5,
-        "requests_month": 12,
+        "today": {"cost_usd": 20.0, "requests": 5},
+        "this_month": {"cost_usd": 50.0, "requests": 12},
         "models_used": ["model-a"],
         "last_request_at": created_at,
     }
