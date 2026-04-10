@@ -438,16 +438,14 @@ async def initialize() -> AppServices:
             operational_store = CachedOperationalStore(d1_store, InMemoryCache())
             logger.info("Operational store initialized (D1 + in-memory cache)")
 
-        # Log store still requires Postgres
-        if db_logger and db_logger.pool:
-            log_store = PostgresLogStore(
-                db_logger.pool,
-                store_full_prompts=settings.db_store_full_content,
-                use_chunked_hash=True,
-            )
-            logger.info("Log store initialized (Postgres)")
-        else:
-            logger.warning("DB_BACKEND=d1 but PostgreSQL not available — log store disabled")
+        # Log store: D1 with buffered writes (slim rows, no prompt/response)
+        from serving.storage.d1_log import D1LogStore
+
+        d1_log_client = d1_client  # reuse same D1Client
+        d1_log_store = D1LogStore(d1_log_client)
+        await d1_log_store.initialize()
+        log_store = d1_log_store
+        logger.info("Log store initialized (D1 with buffered writes)")
 
     elif db_logger and db_logger.pool:
         # Default: both stores backed by Postgres
@@ -494,6 +492,13 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    # Log store (flushes D1 buffer on shutdown)
+    if services.log_store:
+        try:
+            await services.log_store.cleanup()
+        except Exception as exc:
+            logger.error(f"Log store cleanup failed: {exc}")
+
     # Operational store (closes D1 HTTP client when backend=d1)
     if services.operational_store:
         try:

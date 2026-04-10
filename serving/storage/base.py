@@ -461,7 +461,9 @@ class OperationalStore(ABC):
 class LogStore(ABC):
     """Abstract interface for request logging and usage analytics.
 
-    Always backed by PostgreSQL (api_logs grows too fast for D1).
+    Implementations:
+    - ``PostgresLogStore``: full rows in PostgreSQL (prompt/response content).
+    - ``D1LogStore``: slim rows in Cloudflare D1 (no content, buffered writes).
     """
 
     # -- lifecycle -----------------------------------------------------------

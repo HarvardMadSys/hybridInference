@@ -6,7 +6,7 @@
 -- Tables: users, api_keys, auth_sessions,
 --         email_verification_tokens, password_reset_tokens, admin_audit_log
 --
--- NOT migrated (remain in PostgreSQL): api_logs, api_stats_hourly
+-- Also: api_logs (slim rows for D1LogStore, no prompt/response content)
 
 -- -------------------------------------------------------------------
 -- users
@@ -143,3 +143,25 @@ CREATE TABLE IF NOT EXISTS user_daily_cost (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day);
+
+-- -------------------------------------------------------------------
+-- api_logs (slim rows — no prompt/response content)
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS api_logs (
+    request_id        TEXT PRIMARY KEY,
+    timestamp         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    user_id           TEXT,
+    model_id          TEXT NOT NULL,
+    provider          TEXT NOT NULL,
+    cost_usd          REAL,
+    latency_ms        INTEGER,
+    status_code       INTEGER,
+    ttft_ms           INTEGER,
+    prompt_tokens     INTEGER,
+    completion_tokens INTEGER,
+    outcome           TEXT NOT NULL DEFAULT 'success'
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_logs_timestamp ON api_logs(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_api_logs_user ON api_logs(user_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_api_logs_model ON api_logs(model_id, provider, timestamp DESC);
