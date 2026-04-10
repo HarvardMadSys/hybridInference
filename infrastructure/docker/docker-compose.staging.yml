@@ -6,9 +6,53 @@
 #   Stop all:     docker compose -f infrastructure/docker/docker-compose.staging.yml down
 #
 # All services start by default (no profiles required for core stack).
-# The FastAPI app runs on the host via systemd; Prometheus scrapes it at host.docker.internal:8000.
 
 services:
+  backend:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.backend
+    container_name: hybridinference-staging-backend
+    restart: unless-stopped
+    env_file: ../../.env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ../../config:/app/config:ro
+      - ../../var/data:/app/var/data
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - hybridinference-staging
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+        NEXT_PUBLIC_DEPLOY_TARGET: ${NEXT_PUBLIC_DEPLOY_TARGET:-staging}
+    container_name: hybridinference-staging-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3002}:3001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - hybridinference-staging
+
   # ===== Database =====
 
   postgres:

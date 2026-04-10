@@ -6,9 +6,7 @@ scrape_configs:
   - job_name: app
     metrics_path: /metrics
     static_configs:
-      # host.docker.internal resolves to the host machine from inside Docker.
-      # The extra_hosts entry in docker-compose.staging.yml makes this work on Linux too.
-      - targets: ["host.docker.internal:8000"]
+      - targets: ["backend:8080"]
 
 rule_files:
   - rules/slo_burn_rate.yml

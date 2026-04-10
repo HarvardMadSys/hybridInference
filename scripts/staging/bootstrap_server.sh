@@ -27,19 +27,5 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plu
 echo "==> Adding current user to docker group"
 sudo usermod -aG docker "$USER" || true
 
-echo "==> Installing uv"
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-if ! grep -qxF 'source $HOME/.local/bin/env' ~/.bashrc 2>/dev/null; then
-  echo 'source $HOME/.local/bin/env' >> ~/.bashrc
-fi
-
-echo "==> Installing systemd service"
-sed -e "s|__USER__|$USER|g" -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
-  "$REPO_ROOT/infrastructure/systemd/hybrid_inference.staging.service" \
-  | sudo tee /etc/systemd/system/hybrid_inference.staging.service >/dev/null
-sudo systemctl daemon-reload
-sudo systemctl enable hybrid_inference.staging
-
 echo "==> Bootstrap complete"
 echo "Reconnect to SSH or run: newgrp docker, then run start_staging.sh"

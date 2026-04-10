@@ -5,8 +5,10 @@ All environment variables are centralized here for easy tracking and testing.
 """
 
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic_settings import BaseSettings
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode
 
 
 class Settings(BaseSettings):
@@ -97,8 +99,15 @@ class Settings(BaseSettings):
     claude_sub_failure_threshold: int = 3
 
     # CORS
-    cors_allowed_origins: list[str] = [
+    cors_allowed_origins: Annotated[list[str], NoDecode] = [
         "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3002",
+        "https://localhost:8443",
+        "https://127.0.0.1:8443",
         "http://freeinference.org",
         "http://freeinference.org:3001",
         "https://freeinference.org",
@@ -122,6 +131,14 @@ class Settings(BaseSettings):
         case_sensitive = False
         # Allow extra fields for forward compatibility
         extra = "ignore"
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def parse_cors_allowed_origins(cls, value):
+        """Accept either a list or a comma-separated env var for CORS origins."""
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
 
 
 @lru_cache

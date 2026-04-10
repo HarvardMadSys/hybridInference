@@ -45,6 +45,9 @@ services:
     build:
       context: ../..
       dockerfile: infrastructure/docker/Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://freeinference.org}
+        NEXT_PUBLIC_DEPLOY_TARGET: ${NEXT_PUBLIC_DEPLOY_TARGET:-production}
     container_name: hybridinference-frontend
     restart: unless-stopped
     environment:
