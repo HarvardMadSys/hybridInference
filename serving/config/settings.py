@@ -23,6 +23,8 @@ class Settings(BaseSettings):
 
     # Database backend: "postgres" (default) or "d1" (Cloudflare D1 for operational tables)
     db_backend: str = "postgres"
+    # Dual-write: when DB_BACKEND=d1, also shadow-write to PostgreSQL as a warm standby
+    db_dual_write: bool = False
 
     # Database privacy settings
     db_store_full_content: bool = True

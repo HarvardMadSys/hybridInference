@@ -437,16 +437,50 @@ async def initialize() -> AppServices:
                 database_id=settings.d1_database_id,
                 api_token=settings.d1_api_token,
             )
-            # Operational store
-            d1_store = D1OperationalStore(d1_client)
-            await d1_store.initialize()
-            operational_store = CachedOperationalStore(d1_store, InMemoryCache())
-            logger.info("Operational store initialized (D1 + in-memory cache)")
+            # Raw D1 stores
+            d1_op_store = D1OperationalStore(d1_client)
+            await d1_op_store.initialize()
 
-            # Log store: D1 with buffered writes (slim rows, no prompt/response)
             d1_log_store = D1LogStore(d1_client)
             await d1_log_store.initialize()
+
+            # Dual-write: shadow-write to PostgreSQL when enabled
+            if settings.db_dual_write:
+                from serving.storage.dual_write import (
+                    DualWriteLogStore,
+                    DualWriteOperationalStore,
+                )
+
+                db_logger = _init_db_logger()
+                if db_logger:
+                    try:
+                        await db_logger.initialize()
+                        pg_op = PostgresOperationalStore(db_logger.pool)
+                        pg_log = PostgresLogStore(
+                            db_logger.pool,
+                            store_full_prompts=settings.db_store_full_content,
+                            use_chunked_hash=True,
+                        )
+                        d1_op_store = DualWriteOperationalStore(d1_op_store, pg_op)
+                        d1_log_store = DualWriteLogStore(d1_log_store, pg_log)
+                        logger.info("Dual-write enabled: D1 primary + PostgreSQL shadow")
+                    except Exception as exc:
+                        logger.warning(
+                            "DB_DUAL_WRITE=1 but PostgreSQL failed to initialize: %s "
+                            "— running D1-only without shadow",
+                            exc,
+                        )
+                        db_logger = None
+                else:
+                    logger.warning(
+                        "DB_DUAL_WRITE=1 but PostgreSQL unavailable — "
+                        "running D1-only without shadow"
+                    )
+
+            # Cache wraps the (possibly dual-write) operational store
+            operational_store = CachedOperationalStore(d1_op_store, InMemoryCache())
             log_store = d1_log_store
+            logger.info("Operational store initialized (D1 + in-memory cache)")
             logger.info("Log store initialized (D1 with buffered writes)")
 
     elif db_logger and db_logger.pool:

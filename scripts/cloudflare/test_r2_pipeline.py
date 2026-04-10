@@ -133,6 +133,7 @@ async def _verify_r2(day: str) -> dict:
 
 
 async def main():
+    """Insert fake api_logs into D1, run R2 archival, and verify results."""
     import argparse
 
     parser = argparse.ArgumentParser()

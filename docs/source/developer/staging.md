@@ -84,7 +84,7 @@ From your laptop:
 ssh -L 3002:127.0.0.1:3002 -L 8000:127.0.0.1:8000 <user>@staging-internal
 ```
 
-If using VScode-family IDE, setting forwarded ports in IDE GUI is more convenient. 
+If using VScode-family IDE, setting forwarded ports in IDE GUI is more convenient.
 
 Then open:
 

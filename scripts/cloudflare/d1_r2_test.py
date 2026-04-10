@@ -145,16 +145,20 @@ def _r2_delete(s3, bucket: str, key: str) -> None:
 # Test runner
 # ---------------------------------------------------------------------------
 class TestResult:
+    """Accumulator for test pass/fail results."""
+
     def __init__(self):
         self.passed = 0
         self.failed = 0
         self.errors: list[str] = []
 
     def ok(self, name: str):
+        """Record a passing check."""
         self.passed += 1
         print(f"  [OK]   {name}")
 
     def fail(self, name: str, detail: str):
+        """Record a failing check."""
         self.failed += 1
         self.errors.append(f"{name}: {detail}")
         print(f"  [FAIL] {name} — {detail}")
@@ -474,6 +478,7 @@ async def _cleanup_only():
 
 
 def main():
+    """Run R2 archival integration tests."""
     import argparse
 
     parser = argparse.ArgumentParser(description="R2 archival integration tests")
