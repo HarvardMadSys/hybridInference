@@ -28,8 +28,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
-import hmac
 import secrets
 import statistics
 import sys
@@ -53,9 +51,10 @@ _PREFIX = "d1scale"
 
 
 def _hash_key(key: str) -> str:
-    """Reproduce the API key hashing from serving.servers.auth."""
-    secret = "scale-test-secret"
-    return hmac.new(secret.encode(), key.encode(), hashlib.sha256).hexdigest()
+    """Hash an API key using the same logic as serving.servers.auth."""
+    from serving.servers.auth import hash_api_key
+
+    return hash_api_key(key)
 
 
 def _percentile(data: list[float], p: int) -> float:
