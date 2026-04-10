@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
-from serving.storage.database import (
+from serving.storage.utils import (
     calculate_cost,
     compute_prompt_hash,
     compute_prompt_hash_chunked,

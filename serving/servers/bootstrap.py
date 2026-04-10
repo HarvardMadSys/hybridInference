@@ -323,37 +323,41 @@ async def initialize() -> AppServices:
 
     router = RouteExecutor()
 
-    # Database logger with retry logic
-    db_logger = _init_db_logger()
-    if db_logger:
-        max_retries = 3
-        retry_delay = 2  # seconds
-        for attempt in range(max_retries):
-            try:
-                await db_logger.initialize()
-                logger.info("Database logger initialized successfully")
-                # Proactively update metric on successful initialization
-                from serving.observability.metrics import DATABASE_CONNECTED
-
-                DATABASE_CONNECTED.set(1)
-                break
-            except Exception as exc:
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Database initialization failed (attempt {attempt + 1}/{max_retries}): {exc}. "
-                        f"Retrying in {retry_delay}s..."
-                    )
-                    await asyncio.sleep(retry_delay)
-                else:
-                    logger.error(
-                        f"Database logger failed to initialize after {max_retries} attempts: {exc}. "
-                        "Service will start without database logging."
-                    )
-                    db_logger = None
-                    # Proactively update metric on initialization failure
+    # Database logger — only needed when DB_BACKEND is postgres (default).
+    # When DB_BACKEND=d1, all data goes to Cloudflare D1; skip Postgres entirely.
+    settings = get_settings()
+    db_logger = None
+    if settings.db_backend != "d1":
+        db_logger = _init_db_logger()
+        if db_logger:
+            max_retries = 3
+            retry_delay = 2  # seconds
+            for attempt in range(max_retries):
+                try:
+                    await db_logger.initialize()
+                    logger.info("Database logger initialized successfully")
                     from serving.observability.metrics import DATABASE_CONNECTED
 
-                    DATABASE_CONNECTED.set(0)
+                    DATABASE_CONNECTED.set(1)
+                    break
+                except Exception as exc:
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Database initialization failed (attempt {attempt + 1}/{max_retries}): "
+                            f"{exc}. Retrying in {retry_delay}s..."
+                        )
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        logger.error(
+                            f"Database logger failed to initialize after {max_retries} attempts: "
+                            f"{exc}. Service will start without database logging."
+                        )
+                        db_logger = None
+                        from serving.observability.metrics import DATABASE_CONNECTED
+
+                        DATABASE_CONNECTED.set(0)
+    else:
+        logger.info("DB_BACKEND=d1 — skipping PostgreSQL initialization")
 
     # Models into router
     embedding_adapters, model_infos = await _init_router_and_models(router)
@@ -415,11 +419,11 @@ async def initialize() -> AppServices:
     # Build store abstractions
     operational_store = None
     log_store = None
-    settings = get_settings()
 
     if settings.db_backend == "d1":
-        # D1 for operational tables, Postgres for logs
+        # D1 for both operational tables and logs — no Postgres needed
         from serving.storage.d1_client import D1Client
+        from serving.storage.d1_log import D1LogStore
         from serving.storage.d1_operational import D1OperationalStore
 
         if not all([settings.d1_account_id, settings.d1_database_id, settings.d1_api_token]):
@@ -433,19 +437,17 @@ async def initialize() -> AppServices:
                 database_id=settings.d1_database_id,
                 api_token=settings.d1_api_token,
             )
+            # Operational store
             d1_store = D1OperationalStore(d1_client)
             await d1_store.initialize()
             operational_store = CachedOperationalStore(d1_store, InMemoryCache())
             logger.info("Operational store initialized (D1 + in-memory cache)")
 
-        # Log store: D1 with buffered writes (slim rows, no prompt/response)
-        from serving.storage.d1_log import D1LogStore
-
-        d1_log_client = d1_client  # reuse same D1Client
-        d1_log_store = D1LogStore(d1_log_client)
-        await d1_log_store.initialize()
-        log_store = d1_log_store
-        logger.info("Log store initialized (D1 with buffered writes)")
+            # Log store: D1 with buffered writes (slim rows, no prompt/response)
+            d1_log_store = D1LogStore(d1_client)
+            await d1_log_store.initialize()
+            log_store = d1_log_store
+            logger.info("Log store initialized (D1 with buffered writes)")
 
     elif db_logger and db_logger.pool:
         # Default: both stores backed by Postgres

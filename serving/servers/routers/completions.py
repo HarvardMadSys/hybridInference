@@ -80,7 +80,7 @@ def _schedule_cost_increment(
     Only called for successful responses where cost > 0. Runs as a
     fire-and-forget background task to avoid blocking the response.
     """
-    from serving.storage.database import calculate_cost
+    from serving.storage.utils import calculate_cost
 
     cost = calculate_cost(usage, pricing)
     if not cost or cost <= 0 or not op_store:

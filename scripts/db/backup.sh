@@ -532,6 +532,17 @@ main() {
     # Load environment variables
     load_env || true
 
+    # When DB_BACKEND=d1, PostgreSQL is not used. Point to D1/R2 scripts instead.
+    if [[ "${DB_BACKEND:-postgres}" == "d1" ]]; then
+        log_warning "DB_BACKEND=d1 — PostgreSQL is not in use."
+        log_info "For D1 operational data:  python scripts/cloudflare/d1_backup.py"
+        log_info "For D1 log archival:      python scripts/cloudflare/r2_archive_logs.py"
+        log_info ""
+        log_info "If you still need to back up a legacy PostgreSQL instance,"
+        log_info "unset DB_BACKEND or set it to 'postgres' and re-run."
+        exit 0
+    fi
+
     # Setup backup directory
     setup_backup_dir
 

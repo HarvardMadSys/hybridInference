@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
-from serving.storage.database import calculate_cost
+from serving.storage.utils import calculate_cost
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:

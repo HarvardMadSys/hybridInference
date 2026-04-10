@@ -3,15 +3,23 @@
 This module provides a simple database logger that writes API requests,
 responses, and usage metrics into PostgreSQL tables. It is intended for
 production or staging environments where PostgreSQL is available.
+
+Pure utility functions (``calculate_cost``, ``compute_prompt_hash``, etc.)
+have been moved to ``serving.storage.utils`` so they can be imported without
+pulling in asyncpg. They are re-exported here for backward compatibility.
 """
 
-import hashlib
 import json
 import os
 from typing import Any
 
 import asyncpg
 
+from serving.storage.utils import (
+    calculate_cost,
+    compute_prompt_hash,
+    compute_prompt_hash_chunked,
+)
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -31,114 +39,6 @@ def _parse_command_tag_count(command_tag: str) -> int:
         return int(parts[-1])
     except ValueError:
         return 0
-
-
-def compute_prompt_hash(prompt: list[dict[str, Any]] | str) -> str:
-    """Compute SHA256 hash of prompt for deduplication and caching.
-
-    Args:
-        prompt: Prompt messages (list of dicts) or string.
-
-    Returns:
-        Hex-encoded SHA256 hash (64 characters).
-    """
-    # Normalize to JSON string for consistent hashing
-    if isinstance(prompt, list | dict):
-        # Sort keys for deterministic JSON output
-        # Use consistent separators for cross-version compatibility
-        prompt_str = json.dumps(prompt, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    else:
-        prompt_str = str(prompt)
-
-    return hashlib.sha256(prompt_str.encode("utf-8")).hexdigest()
-
-
-def compute_prompt_hash_chunked(
-    prompt: list[dict[str, Any]] | str,
-    chunk_size: int = 4,
-) -> str:
-    """Compute hash of prompt using 4-token chunks for privacy protection.
-
-    This function tokenizes the prompt and computes a hash for every N tokens
-    (default 4), then combines all chunk hashes into a final hash. This approach
-    provides the same privacy guarantees as full-prompt hashing while enabling
-    potential future optimizations like prefix matching.
-
-    Args:
-        prompt: Prompt messages (list of dicts) or string.
-        chunk_size: Number of tokens per chunk (default: 4).
-
-    Returns:
-        Hex-encoded SHA256 hash of all chunk hashes combined.
-
-    Raises:
-        ValueError: If chunk_size is <= 0.
-    """
-    # Validate chunk_size
-    if chunk_size <= 0:
-        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
-
-    # Import here to avoid circular dependency
-    from serving.utils.tokens import tokenize_text
-
-    # Normalize to JSON string for consistent hashing
-    if isinstance(prompt, list | dict):
-        prompt_str = json.dumps(prompt, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    else:
-        prompt_str = str(prompt)
-
-    # Tokenize the prompt
-    tokens = tokenize_text(prompt_str)
-
-    if not tokens:
-        # Empty prompt edge case
-        return hashlib.sha256(b"").hexdigest()
-
-    # Split into chunks and hash each chunk using streaming approach
-    # This is more memory-efficient than concatenating hex strings
-    final_hasher = hashlib.sha256()
-    for i in range(0, len(tokens), chunk_size):
-        chunk = tokens[i : i + chunk_size]
-        # Convert token IDs to bytes for hashing
-        chunk_bytes = b"".join(
-            token_id.to_bytes(4, byteorder="big", signed=False) for token_id in chunk
-        )
-        # Hash the chunk and update final hasher with the digest bytes
-        chunk_digest = hashlib.sha256(chunk_bytes).digest()
-        final_hasher.update(chunk_digest)
-
-    return final_hasher.hexdigest()
-
-
-def calculate_cost(
-    usage: dict[str, Any] | None,
-    pricing: dict[str, str] | None,
-) -> float | None:
-    """Compute request cost in USD based on usage and pricing tables."""
-    if not usage or not pricing:
-        return None
-
-    try:
-        prompt_tokens = float(usage.get("prompt_tokens", 0))
-        completion_tokens = float(usage.get("completion_tokens", 0))
-        reasoning_tokens = float(usage.get("reasoning_tokens", 0))
-        cache_read_tokens = float(usage.get("cache_read_tokens", 0))
-        cache_write_tokens = float(usage.get("cache_write_tokens", 0))
-
-        prompt_price = float(pricing.get("prompt", "0"))
-        completion_price = float(pricing.get("completion", "0"))
-        cache_read_price = float(pricing.get("input_cache_reads", "0"))
-        cache_write_price = float(pricing.get("input_cache_writes", "0"))
-
-        return (
-            (prompt_tokens * prompt_price / 1_000_000)
-            + (completion_tokens * completion_price / 1_000_000)
-            + (reasoning_tokens * completion_price / 1_000_000)
-            + (cache_read_tokens * cache_read_price / 1_000_000)
-            + (cache_write_tokens * cache_write_price / 1_000_000)
-        )
-    except (ValueError, TypeError):
-        return None
 
 
 class DatabaseLogger:
