@@ -357,14 +357,14 @@ class OpenAICompatAdapter(BaseAdapter):
             if fr:
                 finish_reason = fr
 
-            # Handle content (accumulate both visible content and reasoning for fallback estimation)
+            # Accumulate visible content and reasoning independently for the fallback
             content = delta.get("content")
             if isinstance(content, str) and content:
                 total_content += content
-            elif not content:
-                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                if isinstance(reasoning, str) and reasoning:
-                    total_content += reasoning
+
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if isinstance(reasoning, str) and reasoning:
+                total_content += reasoning
 
             legacy_tool_calls = function_call_delta_to_tool_calls(
                 self._usage_profile, delta.get("function_call")
