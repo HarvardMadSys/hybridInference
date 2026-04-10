@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     d1_database_id: str = ""
     d1_api_token: str = ""
 
+    # Cloudflare R2 (log archival — S3-compatible)
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = "hybridinference-logs"
+    r2_endpoint_url: str = ""  # e.g. https://<account_id>.r2.cloudflarestorage.com
+    r2_log_retention_days: int = 30  # keep logs in D1 for this many days
+
     # Admin
     admin_token: str = ""
     admin_emails: str = ""
