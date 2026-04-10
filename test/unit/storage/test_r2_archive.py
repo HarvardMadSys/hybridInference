@@ -19,6 +19,7 @@ import pytest
 # SQLite shim (same pattern as other D1 tests)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _FakeResult:
     rows: list[dict[str, Any]] = field(default_factory=list)
@@ -73,6 +74,7 @@ class _SqliteD1Client:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def d1():

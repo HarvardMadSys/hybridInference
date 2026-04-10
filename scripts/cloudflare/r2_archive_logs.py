@@ -144,9 +144,7 @@ async def _delete_day_logs(d1: D1Client, day: str) -> int:
     while True:
         # Fetch a batch of request_ids to delete
         result = await d1.query(
-            "SELECT request_id FROM api_logs "
-            "WHERE timestamp >= ? AND timestamp <= ? "
-            "LIMIT ?",
+            "SELECT request_id FROM api_logs WHERE timestamp >= ? AND timestamp <= ? LIMIT ?",
             [day_start, day_end, DELETE_BATCH_SIZE],
         )
         if not result.rows:
@@ -228,7 +226,9 @@ async def archive_day(
     }
 
     if dry_run:
-        logger.info("[DRY RUN] Would upload %d rows (%d bytes) to %s", len(rows), len(compressed), r2_key)
+        logger.info(
+            "[DRY RUN] Would upload %d rows (%d bytes) to %s", len(rows), len(compressed), r2_key
+        )
         summary["dry_run"] = True
         return summary
 
@@ -245,8 +245,13 @@ async def archive_day(
     # Delete from D1 after successful upload
     deleted = await _delete_day_logs(d1, day)
     summary["deleted"] = deleted
-    logger.info("Archived %s: %d rows, %d bytes compressed, %d deleted from D1",
-                day, len(rows), len(compressed), deleted)
+    logger.info(
+        "Archived %s: %d rows, %d bytes compressed, %d deleted from D1",
+        day,
+        len(rows),
+        len(compressed),
+        deleted,
+    )
 
     return summary
 
@@ -285,7 +290,9 @@ async def main() -> None:
     settings = get_settings()
 
     if not all([settings.d1_account_id, settings.d1_database_id, settings.d1_api_token]):
-        logger.error("D1 credentials not configured. Set D1_ACCOUNT_ID, D1_DATABASE_ID, D1_API_TOKEN.")
+        logger.error(
+            "D1 credentials not configured. Set D1_ACCOUNT_ID, D1_DATABASE_ID, D1_API_TOKEN."
+        )
         sys.exit(1)
 
     d1 = D1Client(
@@ -303,11 +310,13 @@ async def main() -> None:
             return
 
         # Validate R2 config
-        if not args.dry_run and not all([
-            settings.r2_access_key_id,
-            settings.r2_secret_access_key,
-            settings.r2_endpoint_url,
-        ]):
+        if not args.dry_run and not all(
+            [
+                settings.r2_access_key_id,
+                settings.r2_secret_access_key,
+                settings.r2_endpoint_url,
+            ]
+        ):
             logger.error(
                 "R2 credentials not configured. "
                 "Set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL."

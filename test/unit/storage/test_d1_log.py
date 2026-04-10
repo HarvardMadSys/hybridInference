@@ -20,6 +20,7 @@ from serving.storage.d1_log import D1LogStore, _derive_outcome
 # SQLite shim (reuses the same pattern as d1_operational tests)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _FakeResult:
     rows: list[dict[str, Any]] = field(default_factory=list)
@@ -80,6 +81,7 @@ class _SqliteD1Client:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def sqlite_client():
     """Create a fresh SQLite client for each test."""
@@ -92,7 +94,7 @@ async def store(sqlite_client):
     s = D1LogStore(
         sqlite_client,
         flush_interval=60.0,  # long interval — we flush manually in tests
-        flush_size=100,       # large size — we flush manually in tests
+        flush_size=100,  # large size — we flush manually in tests
     )
     await s.initialize()
     # Cancel the periodic flush so it doesn't interfere with tests
@@ -107,6 +109,7 @@ async def store(sqlite_client):
 # ---------------------------------------------------------------------------
 # Helper to insert logs directly (bypasses buffer)
 # ---------------------------------------------------------------------------
+
 
 async def _insert_log(store: D1LogStore, **overrides: Any) -> None:
     """Log a request and flush immediately."""
