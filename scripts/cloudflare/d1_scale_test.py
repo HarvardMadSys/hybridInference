@@ -386,8 +386,35 @@ async def _validate(store: Any, users: list[dict[str, str]]) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _cleanup_run(store: Any, user_ids: list[str]) -> None:
+    """Remove only the users created in this test run."""
+    print(f"  Deleting {len(user_ids)} test users from this run...")
+    batch_size = 50
+    for i in range(0, len(user_ids), batch_size):
+        batch_ids = user_ids[i : i + batch_size]
+        placeholders = ",".join(["?"] * len(batch_ids))
+        await store._d1.batch(
+            [
+                (
+                    f"DELETE FROM email_verification_tokens WHERE user_id IN ({placeholders})",
+                    batch_ids,
+                ),
+                (f"DELETE FROM password_reset_tokens WHERE user_id IN ({placeholders})", batch_ids),
+                (f"DELETE FROM auth_sessions WHERE user_id IN ({placeholders})", batch_ids),
+                (f"DELETE FROM api_keys WHERE user_id IN ({placeholders})", batch_ids),
+                (
+                    f"DELETE FROM admin_audit_log WHERE target_user_id IN ({placeholders})",
+                    batch_ids,
+                ),
+                (f"DELETE FROM users WHERE id IN ({placeholders})", batch_ids),
+            ]
+        )
+        print(f"  Deleted batch {i + 1}-{i + len(batch_ids)}")
+    print("  Cleanup complete.")
+
+
 async def _cleanup(store: Any) -> None:
-    """Remove all scale test data."""
+    """Remove all scale test data (use --cleanup flag)."""
     print("Cleaning up scale test data...")
 
     # Get all test user IDs
@@ -494,6 +521,10 @@ async def _run(args: argparse.Namespace) -> int:
             await _mixed_operations(store, users, args.concurrency)
             await _validate(store, users)
 
+        if not args.no_cleanup and users:
+            print("\nAuto-cleaning test data...")
+            await _cleanup_run(store, [u["user_id"] for u in users])
+
     finally:
         await client.close()
 
@@ -513,6 +544,7 @@ def main() -> None:
         help="Skip creation, test auth lookups with existing data",
     )
     parser.add_argument("--cleanup", action="store_true", help="Remove all scale test data")
+    parser.add_argument("--no-cleanup", action="store_true", help="Skip auto-cleanup after tests")
     args = parser.parse_args()
     sys.exit(asyncio.run(_run(args)))
 

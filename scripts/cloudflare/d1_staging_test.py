@@ -287,6 +287,65 @@ async def _test_store(r: _Results) -> dict[str, str]:
         r.check("revoke_key_invalidates", ctx_after is None, "revoked key should not resolve")
 
         # ============================================================
+        # USER DAILY COST TABLE
+        # ============================================================
+        print("\n  --- user_daily_cost ---")
+        test_day = "2020-06-15"
+
+        # increment_user_cost: first insert
+        await store.increment_user_cost(user_id, 0.05, day=test_day)
+        result = await store._d1.query(
+            "SELECT cost_usd, requests FROM user_daily_cost WHERE user_id = ? AND day = ?",
+            [user_id, test_day],
+        )
+        r.check(
+            "increment_user_cost_insert",
+            len(result.rows) == 1
+            and abs(result.rows[0]["cost_usd"] - 0.05) < 1e-6
+            and result.rows[0]["requests"] == 1,
+        )
+
+        # increment_user_cost: upsert (add to existing)
+        await store.increment_user_cost(user_id, 0.10, day=test_day)
+        result = await store._d1.query(
+            "SELECT cost_usd, requests FROM user_daily_cost WHERE user_id = ? AND day = ?",
+            [user_id, test_day],
+        )
+        r.check(
+            "increment_user_cost_upsert",
+            len(result.rows) == 1
+            and abs(result.rows[0]["cost_usd"] - 0.15) < 1e-6
+            and result.rows[0]["requests"] == 2,
+        )
+
+        # get_user_cost_period (month)
+        cost_month = await store.get_user_cost_period(user_id, "month")
+        # test_day is 2020-06, not current month, so should be 0
+        r.check("get_user_cost_period_no_match", cost_month == 0.0)
+
+        # get_batch_usage with a specific day query
+        batch_result = await store._d1.query(
+            "SELECT user_id, COALESCE(SUM(cost_usd), 0) as cost "
+            "FROM user_daily_cost WHERE day = ? AND user_id = ? GROUP BY user_id",
+            [test_day, user_id],
+        )
+        r.check(
+            "batch_usage_query",
+            len(batch_result.rows) == 1 and abs(batch_result.rows[0]["cost"] - 0.15) < 1e-6,
+        )
+
+        # Cleanup test day cost entry (only our test data)
+        await store._d1.execute(
+            "DELETE FROM user_daily_cost WHERE user_id = ? AND day = ?",
+            [user_id, test_day],
+        )
+        verify = await store._d1.query(
+            "SELECT count(*) as cnt FROM user_daily_cost WHERE user_id = ? AND day = ?",
+            [user_id, test_day],
+        )
+        r.check("user_daily_cost_cleanup", verify.rows[0]["cnt"] == 0)
+
+        # ============================================================
         # AUTH SESSIONS TABLE
         # ============================================================
         print("\n  --- auth_sessions ---")
@@ -539,6 +598,37 @@ async def _test_http(r: _Results, base_url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _cleanup_user(user_id: str) -> None:
+    """Hard-delete a single test user and all related rows created during this run."""
+    from serving.config.settings import get_settings
+    from serving.storage.d1_client import D1Client
+
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    client = D1Client(
+        account_id=settings.d1_account_id,
+        database_id=settings.d1_database_id,
+        api_token=settings.d1_api_token,
+    )
+
+    try:
+        print(f"\nAuto-cleaning test user {user_id}...")
+        await client.batch(
+            [
+                ("DELETE FROM email_verification_tokens WHERE user_id = ?", [user_id]),
+                ("DELETE FROM password_reset_tokens WHERE user_id = ?", [user_id]),
+                ("DELETE FROM auth_sessions WHERE user_id = ?", [user_id]),
+                ("DELETE FROM api_keys WHERE user_id = ?", [user_id]),
+                ("DELETE FROM admin_audit_log WHERE target_user_id = ?", [user_id]),
+                ("DELETE FROM users WHERE id = ?", [user_id]),
+            ]
+        )
+        print("  Cleanup complete.")
+    finally:
+        await client.close()
+
+
 async def _cleanup() -> None:
     """Remove all test entities with the staging prefix from D1."""
     from serving.config.settings import get_settings
@@ -565,14 +655,15 @@ async def _cleanup() -> None:
         ]
         for table, col in tables_and_cols:
             result = await client.execute(
-                f"DELETE FROM {table} WHERE {col} IN (SELECT id FROM users WHERE user_name LIKE ?)",
-                [f"{_PREFIX}%"],
+                f"DELETE FROM {table} WHERE {col} IN "
+                f"(SELECT id FROM users WHERE user_name LIKE ? OR email LIKE ?)",
+                [f"{_PREFIX}%", f"{_PREFIX}%"],
             )
             print(f"  {table}: {result.changes} rows deleted")
 
         result = await client.execute(
-            "DELETE FROM users WHERE user_name LIKE ?",
-            [f"{_PREFIX}%"],
+            "DELETE FROM users WHERE user_name LIKE ? OR email LIKE ?",
+            [f"{_PREFIX}%", f"{_PREFIX}%"],
         )
         print(f"  users: {result.changes} rows deleted")
 
@@ -600,15 +691,21 @@ async def _run(args: argparse.Namespace) -> int:
         await _cleanup()
         return 0
 
+    ids = {}
     if not args.http_only:
-        await _test_store(r)
+        ids = await _test_store(r)
 
     if not args.store_only and args.base_url:
         await _test_http(r, args.base_url)
     elif not args.store_only and not args.base_url:
         print("\nSkipping HTTP tests (no --base-url provided)")
 
-    return r.summary()
+    result = r.summary()
+
+    if not args.no_cleanup and ids.get("user_id"):
+        await _cleanup_user(ids["user_id"])
+
+    return result
 
 
 def main() -> None:
@@ -618,6 +715,7 @@ def main() -> None:
     parser.add_argument("--store-only", action="store_true", help="Only run direct store tests")
     parser.add_argument("--http-only", action="store_true", help="Only run HTTP flow tests")
     parser.add_argument("--cleanup", action="store_true", help="Remove test data from D1")
+    parser.add_argument("--no-cleanup", action="store_true", help="Skip auto-cleanup after tests")
     args = parser.parse_args()
     sys.exit(asyncio.run(_run(args)))
 
