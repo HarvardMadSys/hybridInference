@@ -366,6 +366,8 @@ async def auth_client(auth_app):
         yield ac
 
 
+# HTTP-style auth fixtures; use these for tests that should exercise the full
+# app lifespan and auth endpoints instead of DB-direct seeding from conftest_auth.py.
 @pytest_asyncio.fixture(name="auth_app_db_logger")
 async def auth_app_db_logger_fixture(auth_app):
     """Database logger from app state (initialized in lifespan).
@@ -377,8 +379,8 @@ async def auth_app_db_logger_fixture(auth_app):
     has run and app.state.services is populated.
 
     Usage:
-        async def test_example(auth_client, auth_db_logger):
-            async with auth_db_logger.pool.acquire() as conn:
+        async def test_example(auth_client, auth_app_db_logger):
+            async with auth_app_db_logger.pool.acquire() as conn:
                 result = await conn.fetchrow("SELECT 1")
     """
     # CRITICAL: Access from app.state.services, not by calling get_db_logger()
