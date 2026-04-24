@@ -61,6 +61,32 @@ async def _assert_test_db_from_pool(pool, context: str = "") -> None:
     _assert_test_db_name(db_name, context)
 
 
+async def _skip_if_test_db_unavailable(context: str = "") -> None:
+    """Skip DB-backed auth tests before full app startup starts retrying."""
+    import asyncpg
+
+    db_config = {
+        "host": os.environ.get("DB_HOST", "localhost"),
+        "port": int(os.environ.get("DB_PORT", "5432")),
+        "database": os.environ.get("DB_NAME", "freeinference_test_db"),
+        "user": os.environ.get("DB_USER", "postgres"),
+        "password": os.environ.get("DB_PASSWORD", "postgres"),
+    }
+
+    try:
+        conn = await asyncpg.connect(**db_config, timeout=1)
+    except Exception as exc:
+        pytest.skip(
+            f"PostgreSQL test database not available{f' [{context}]' if context else ''}: {exc}"
+        )
+
+    try:
+        db_name = await conn.fetchval("SELECT current_database()")
+        _assert_test_db_name(db_name, context)
+    finally:
+        await conn.close()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def auth_test_env():
     """Force-set environment variables so tests never hit production.
@@ -97,8 +123,16 @@ def auth_test_env():
         "SMTP_USER": "",
         "SMTP_PASSWORD": "",
     }
+    _SERVICE_VARS = {
+        "DB_ENABLED": "true",
+        "MODELS_CONFIG": "test/fixtures/test_models.yaml",
+        "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
+        "RATE_LIMIT_ENABLED": "0",
+        "METRICS_ENABLED": "0",
+        "OFFLOAD": "0",
+    }
 
-    all_vars = {**_TEST_DB_VARS, **_AUTH_VARS}
+    all_vars = {**_TEST_DB_VARS, **_AUTH_VARS, **_SERVICE_VARS}
     saved = {k: os.environ.get(k) for k in all_vars}
 
     for key, value in all_vars.items():
@@ -289,6 +323,7 @@ async def auth_app(auth_test_env):
     # Layer 2a: pre-flight check BEFORE create_app() / lifespan can run
     # DB init (CREATE TABLE, ALTER, admin seed) to prevent schema side-effects.
     _assert_test_db_name(os.environ.get("DB_NAME", ""), context="auth_app pre-flight DB_NAME")
+    await _skip_if_test_db_unavailable(context="auth_app pre-flight connection")
 
     # Clear settings cache to pick up test environment variables
     from serving.config.settings import get_settings
@@ -331,8 +366,8 @@ async def auth_client(auth_app):
         yield ac
 
 
-@pytest_asyncio.fixture
-async def auth_db_logger(auth_app):
+@pytest_asyncio.fixture(name="auth_app_db_logger")
+async def auth_app_db_logger_fixture(auth_app):
     """Database logger from app state (initialized in lifespan).
 
     CRITICAL: Access via app.state.services, not Depends(get_db_logger).
@@ -351,7 +386,7 @@ async def auth_db_logger(auth_app):
 
 
 @pytest_asyncio.fixture
-async def require_db(auth_db_logger):
+async def require_db(auth_app_db_logger):
     """Skip tests that require database if not available.
 
     This fixture is mainly for local development where developers might not
@@ -364,13 +399,17 @@ async def require_db(auth_db_logger):
             # In CI, it will always run since postgres service is configured
             ...
     """
-    if auth_db_logger is None or not hasattr(auth_db_logger, "pool") or auth_db_logger.pool is None:
+    if (
+        auth_app_db_logger is None
+        or not hasattr(auth_app_db_logger, "pool")
+        or auth_app_db_logger.pool is None
+    ):
         pytest.skip("Database not available (start PostgreSQL or check DB config)")
-    return auth_db_logger
+    return auth_app_db_logger
 
 
-@pytest_asyncio.fixture
-async def test_user(auth_client):
+@pytest_asyncio.fixture(name="auth_client_test_user")
+async def auth_client_test_user_fixture(auth_client):
     """Create a test user for auth tests."""
     user_data = {
         "email": f"test_{os.urandom(4).hex()}@example.com",
@@ -392,16 +431,20 @@ async def test_user(auth_client):
     }
 
 
-@pytest_asyncio.fixture
-async def authenticated_user(auth_client, test_user):
+@pytest_asyncio.fixture(name="auth_client_authenticated_user")
+async def auth_client_authenticated_user_fixture(auth_client, auth_client_test_user):
     """Create and authenticate a test user."""
     login_response = await auth_client.post(
-        "/auth/login", json={"email": test_user["email"], "password": test_user["password"]}
+        "/auth/login",
+        json={
+            "email": auth_client_test_user["email"],
+            "password": auth_client_test_user["password"],
+        },
     )
 
     assert login_response.status_code == 200
 
-    return {**test_user, "access_token": login_response.json()["access_token"]}
+    return {**auth_client_test_user, "access_token": login_response.json()["access_token"]}
 
 
 # ============================================================================
