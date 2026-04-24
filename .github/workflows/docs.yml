@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PYTHON_VERSION: "3.13"
+  PYTHON_VERSION: "3.12"
   UV_VERSION: "0.5.0"
   UV_SYSTEM_PYTHON: 1
 

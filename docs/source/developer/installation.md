@@ -24,7 +24,7 @@ See [Deployment](deployment.md) for full production setup including Nginx and mo
 
 ### System Requirements
 
-- Python 3.10 or higher
+- Python 3.10-3.13 (3.12 recommended)
 - Node.js 22+ (for frontend)
 - GPU support (recommended for local inference)
 - Linux or macOS (Windows via WSL2)
@@ -40,7 +40,7 @@ make setup-dev
 
 # Or manually:
 git submodule update --init --recursive
-uv venv -p 3.10
+uv venv -p 3.12
 source .venv/bin/activate
 uv sync
 
@@ -60,7 +60,7 @@ npm run dev
 ### Using conda
 
 ```bash
-conda create -n hybrid_inference python=3.10 -y
+conda create -n hybrid_inference python=3.12 -y
 conda activate hybrid_inference
 pip install -e .
 ```
