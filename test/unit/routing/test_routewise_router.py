@@ -16,7 +16,6 @@ from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import HedgedAdapter
 from routing.routewise.router import RouteWiseRouter, SubscriptionType
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1112,18 +1111,20 @@ class TestRouteWiseSCLifecycle:
         assert selected is conc_adapter
         assert router.conc_mgr.active == 1
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("provider error"),
+        with (
+            patch.object(
+                type(router).__mro__[1],
+                "_execute_adapter",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("provider error"),
+            ),
+            pytest.raises(RuntimeError, match="provider error"),
         ):
-            with pytest.raises(RuntimeError, match="provider error"):
-                await router._execute_adapter(
-                    conc_adapter,
-                    "test-model",
-                    [{"role": "user", "content": "hi"}],
-                )
+            await router._execute_adapter(
+                conc_adapter,
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+            )
         assert router.conc_mgr.active == 0
 
     @pytest.mark.asyncio
@@ -1138,18 +1139,20 @@ class TestRouteWiseSCLifecycle:
         assert selected is conc_adapter
         assert router.conc_mgr.active == 1
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            side_effect=asyncio.CancelledError(),
+        with (
+            patch.object(
+                type(router).__mro__[1],
+                "_execute_adapter",
+                new_callable=AsyncMock,
+                side_effect=asyncio.CancelledError(),
+            ),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                await router._execute_adapter(
-                    conc_adapter,
-                    "test-model",
-                    [{"role": "user", "content": "hi"}],
-                )
+            await router._execute_adapter(
+                conc_adapter,
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+            )
         assert router.conc_mgr.active == 0
 
     @pytest.mark.asyncio
@@ -1620,7 +1623,7 @@ class TestRouteWiseDecisionMetadata:
         backup_adapter.chat_completion = _fast_backup
 
         # Execute through RouteWise's _execute_adapter
-        result = await router._execute_adapter(
+        await router._execute_adapter(
             hedged,
             "test-model",
             [{"role": "user", "content": "hi"}],
@@ -1665,7 +1668,7 @@ class TestRouteWiseDecisionMetadata:
 
         async def _fail_stream(*args, **kwargs):
             raise RuntimeError("stream fail")
-            yield  # noqa: RET503
+            yield
 
         quota.stream_chat_completion = _fail_stream
         api.stream_chat_completion = _fail_stream

@@ -42,11 +42,9 @@ jobs:
 
       - name: Run ruff lint
         run: uv run ruff check --no-fix .
-        continue-on-error: true  # Allow minor lint issues initially
 
       - name: Run pydocstyle
         run: uv run pydocstyle
-        continue-on-error: true  # Allow docstring issues initially
 
   frontend-lint-test:
     name: Frontend Lint & Test

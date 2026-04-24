@@ -6,8 +6,6 @@ and rows with those old role values.  After ``_create_tables()`` runs, all rows
 must have been migrated to the new 3-role set and the new constraint must be in place.
 """
 
-from datetime import datetime, timezone
-
 import pytest
 import pytest_asyncio
 from ulid import ULID

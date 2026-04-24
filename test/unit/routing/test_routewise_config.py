@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from routing.routewise.config import RouteWiseConfig, load_routewise_config
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.mark.unit

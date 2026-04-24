@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from routing.routewise.latency import ProviderProfile, SWRRSampler, ShadowHedgeDecision
-
+from routing.routewise.latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
 
 # ---------------------------------------------------------------------------
 # ProviderProfile tests
