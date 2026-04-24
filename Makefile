@@ -104,12 +104,11 @@ frontend-type-check:  ## Run TypeScript type checking
 	@echo "$(GREEN)OK Type checking passed$(RESET)"
 
 frontend-test:  ## Run frontend tests
-	@echo "$(YELLOW)Running frontend tests...$(RESET)"
-	cd $(FRONTEND_DIR) && npm run test -- --run
-	@echo "$(GREEN)OK Frontend tests passed$(RESET)"
+	@echo "$(YELLOW)No frontend test script is configured; skipping.$(RESET)"
+	@echo "Add a $(FRONTEND_DIR)/package.json test script before making frontend tests blocking."
 
-frontend-check: frontend-lint frontend-type-check frontend-test  ## Run all frontend checks
-	@echo "$(GREEN)OK All frontend checks passed$(RESET)"
+frontend-check: frontend-lint frontend-type-check  ## Run all configured frontend checks
+	@echo "$(GREEN)OK All configured frontend checks passed$(RESET)"
 
 # Combined targets
 check-all: lint test frontend-check  ## Run all checks (backend + frontend)
