@@ -70,6 +70,12 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = [
+  "llm-prober",
+  "docs/free_inference",
+  "freeinference-harness",
+  ".venv",
+]
 
 [tool.ruff.lint]
 extend-select = [
