@@ -2,6 +2,7 @@
 
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
+import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
 import { UsageStats } from '@/components/features/dashboard/UsageStats';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
@@ -88,6 +89,8 @@ export default function DashboardPage() {
         <ApiKeyManager />
 
         <UsageStats />
+
+        <RecentRequests />
 
         {hasRole(state.user?.role, 'internal') && (
           <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">

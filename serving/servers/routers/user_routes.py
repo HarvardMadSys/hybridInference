@@ -12,7 +12,10 @@ from serving.exceptions import (
     UserNotFoundError,
 )
 from serving.schemas_auth import (
+    APIKeyDeleteResponse,
     APIKeyInfo,
+    APIKeyListItem,
+    APIKeyListResponse,
     APIKeyRegenerateResponse,
     APIKeyResponse,
     ChangeEmailRequest,
@@ -22,12 +25,14 @@ from serving.schemas_auth import (
     LLMProberLayoutResponse,
     LLMProberLayoutState,
     QuotaInfo,
+    RecentRequestItem,
+    RecentRequestsResponse,
     UsageResponse,
     UsageStats,
     UserInfo,
     UserProfileUpdate,
 )
-from serving.servers.auth import generate_api_key, hash_api_key
+from serving.servers.auth import decrypt_api_key, encrypt_api_key, generate_api_key, hash_api_key
 from serving.servers.deps import get_current_user, get_db_logger
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled
@@ -69,6 +74,11 @@ def get_default_daily_quota() -> Decimal:
     """Get default daily quota for new users from environment."""
     quota_str = os.getenv("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "100.00")
     return Decimal(quota_str)
+
+
+def mask_key_prefix(key_prefix: str) -> str:
+    """Mask an API key using the stored prefix."""
+    return f"{key_prefix}{'*' * 20}"
 
 
 @router.get("/me", response_model=UserInfo)
@@ -227,6 +237,7 @@ async def create_api_key(
     # Generate new API key
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
+    api_key_encrypted = encrypt_api_key(api_key)
     key_prefix = api_key[:12]  # hyi-xxxxxxxx
 
     # Get default quota
@@ -237,12 +248,13 @@ async def create_api_key(
         await conn.execute(
             """
             INSERT INTO api_keys (
-                key_hash, key_prefix, user_id, account_id,
+                key_hash, api_key_encrypted, key_prefix, user_id, account_id,
                 status, quota_daily_cost_usd, tier
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             """,
             key_hash,
+            api_key_encrypted,
             key_prefix,
             current_user["user_id"],  # user_id = account_id for self-registered users
             current_user["user_id"],  # account_id links to users table
@@ -256,7 +268,7 @@ async def create_api_key(
     return APIKeyResponse(
         api_key=api_key,
         key_prefix=key_prefix,
-        warning="Save this key now. It cannot be retrieved later.",
+        warning="You can view this key later from the dashboard.",
         created_at=datetime.now(timezone.utc),
     )
 
@@ -266,9 +278,9 @@ async def get_api_key_info(
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyInfo:
-    """Get current user's API key information (masked).
+    """Get current user's active API key information.
 
-    Never returns the full API key after creation.
+    Full keys are returned for rows created after encrypted storage was added.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -276,7 +288,7 @@ async def get_api_key_info(
     async with db_logger.pool.acquire() as conn:
         key_row = await conn.fetchrow(
             """
-            SELECT key_prefix, created_at, last_used_at, status
+            SELECT api_key_encrypted, key_prefix, created_at, last_used_at, status
             FROM api_keys
             WHERE account_id = $1 AND status = 'active'
             """,
@@ -287,17 +299,120 @@ async def get_api_key_info(
         # For test expectations, return 404 when no active key exists
         raise HTTPException(status_code=404, detail="No active API key found")
 
-    # Mask the key (show prefix + asterisks)
-    key_masked = f"{key_row['key_prefix']}{'*' * 20}"
-
     return APIKeyInfo(
         has_key=True,
+        api_key=decrypt_api_key(key_row["api_key_encrypted"]),
         key_prefix=key_row["key_prefix"],
-        key_masked=key_masked,
+        key_masked=mask_key_prefix(key_row["key_prefix"]),
         created_at=key_row["created_at"],
         last_used_at=key_row["last_used_at"],
         status=key_row["status"],
     )
+
+
+@router.get("/api-keys/all", response_model=APIKeyListResponse)
+async def list_api_keys(
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyListResponse:
+    """List all API keys owned by the current user.
+
+    Full keys are returned for rows created after encrypted storage was added.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT api_key_encrypted, key_prefix, created_at, last_used_at, status
+            FROM api_keys
+            WHERE account_id = $1
+            ORDER BY (status = 'active') DESC, created_at DESC
+            """,
+            current_user["user_id"],
+        )
+
+    keys = [
+        APIKeyListItem(
+            api_key=decrypt_api_key(row["api_key_encrypted"]),
+            key_prefix=row["key_prefix"],
+            key_masked=mask_key_prefix(row["key_prefix"]),
+            created_at=row["created_at"],
+            last_used_at=row["last_used_at"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
+    return APIKeyListResponse(keys=keys)
+
+
+@router.delete("/api-keys/{key_prefix}", response_model=APIKeyDeleteResponse)
+async def delete_api_key(
+    key_prefix: str,
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyDeleteResponse:
+    """Revoke an active key or remove a revoked key owned by the current user."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    async with db_logger.pool.acquire() as conn:
+        revoked = await conn.fetchrow(
+            """
+            UPDATE api_keys
+            SET status = 'revoked'
+            WHERE account_id = $1 AND key_prefix = $2 AND status = 'active'
+            RETURNING key_prefix, status
+            """,
+            current_user["user_id"],
+            key_prefix,
+        )
+        if revoked:
+            logger.info(
+                "API key revoked for user: %s key_prefix=%s",
+                current_user["user_id"],
+                key_prefix,
+            )
+            return APIKeyDeleteResponse(
+                key_prefix=revoked["key_prefix"],
+                status=revoked["status"],
+                message="API key revoked.",
+            )
+
+        existing = await conn.fetchrow(
+            """
+            SELECT status
+            FROM api_keys
+            WHERE account_id = $1 AND key_prefix = $2
+            """,
+            current_user["user_id"],
+            key_prefix,
+        )
+        if existing and existing["status"] == "revoked":
+            deleted = await conn.fetchrow(
+                """
+                DELETE FROM api_keys
+                WHERE account_id = $1 AND key_prefix = $2 AND status = 'revoked'
+                RETURNING key_prefix
+                """,
+                current_user["user_id"],
+                key_prefix,
+            )
+            logger.info(
+                "Revoked API key removed for user: %s key_prefix=%s",
+                current_user["user_id"],
+                key_prefix,
+            )
+            return APIKeyDeleteResponse(
+                key_prefix=deleted["key_prefix"],
+                status="deleted",
+                message="Revoked API key removed.",
+            )
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="API key not found")
+    raise HTTPException(status_code=409, detail="Only active or revoked API keys can be deleted")
 
 
 @router.post("/api-keys/regenerate", response_model=APIKeyRegenerateResponse)
@@ -329,6 +444,7 @@ async def regenerate_api_key(
     # Generate new API key
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
+    api_key_encrypted = encrypt_api_key(api_key)
     key_prefix = api_key[:12]
 
     # Get default quota
@@ -350,12 +466,13 @@ async def regenerate_api_key(
         await conn.execute(
             """
                 INSERT INTO api_keys (
-                    key_hash, key_prefix, user_id, account_id,
+                    key_hash, api_key_encrypted, key_prefix, user_id, account_id,
                     status, quota_daily_cost_usd, tier
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
             key_hash,
+            api_key_encrypted,
             key_prefix,
             current_user["user_id"],
             current_user["user_id"],
@@ -369,7 +486,7 @@ async def regenerate_api_key(
     return APIKeyRegenerateResponse(
         api_key=api_key,
         key_prefix=key_prefix,
-        warning="Save this key now. It cannot be retrieved later.",
+        warning="You can view this key later from the dashboard.",
         old_key_prefix=old_key_row["key_prefix"],
     )
 
@@ -712,3 +829,89 @@ async def change_email(
         message="Email changed successfully. Please verify your new email address.",
         new_email=body.new_email,
     )
+
+
+@router.get("/recent-requests", response_model=RecentRequestsResponse)
+async def get_recent_requests(
+    limit: int = 50,
+    offset: int = 0,
+    model_id: str | None = None,
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> RecentRequestsResponse:
+    """Get the current user's recent API requests.
+
+    Returns a paginated list of recent requests with metadata, token usage,
+    and cost information. Supports optional filtering by model_id.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    # Clamp limit to prevent excessive queries
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    async with db_logger.pool.acquire() as conn:
+        try:
+            # Build model filter clause
+            model_filter = ""
+            params: list = [current_user["user_id"], limit, offset]
+            if model_id:
+                model_filter = "AND model_id = $4"
+                params.append(model_id)
+
+            # Get total count
+            count_row = await conn.fetchrow(
+                f"""
+                SELECT COUNT(*) as total
+                FROM api_logs
+                WHERE user_id = $1 {model_filter}
+                """,
+                *([current_user["user_id"]] + ([model_id] if model_id else [])),
+            )
+            total = int(count_row["total"] or 0) if count_row else 0
+
+            # Get paginated recent requests
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    request_id, model_id, provider, timestamp,
+                    status_code, latency_ms, ttft_ms, stream,
+                    prompt_tokens, completion_tokens, reasoning_tokens,
+                    total_tokens, cost_usd, error
+                FROM api_logs
+                WHERE user_id = $1 {model_filter}
+                ORDER BY timestamp DESC
+                LIMIT $2 OFFSET $3
+                """,
+                *params,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to query recent requests for user_id=%s: %s",
+                current_user["user_id"],
+                exc,
+            )
+            return RecentRequestsResponse(requests=[], total=0, limit=limit, offset=offset)
+
+    requests = [
+        RecentRequestItem(
+            request_id=row["request_id"],
+            model_id=row["model_id"],
+            provider=row["provider"],
+            timestamp=row["timestamp"],
+            status_code=row["status_code"],
+            latency_ms=row["latency_ms"],
+            ttft_ms=row["ttft_ms"],
+            stream=row["stream"],
+            prompt_tokens=row["prompt_tokens"],
+            completion_tokens=row["completion_tokens"],
+            reasoning_tokens=row["reasoning_tokens"],
+            total_tokens=row["total_tokens"],
+            cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
+            error=row["error"],
+        )
+        for row in rows
+    ]
+
+    return RecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
