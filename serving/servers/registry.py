@@ -97,7 +97,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
-        kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"llama"``, ``"openai"``, ``"zhipu"``,
+        kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"openai"``, ``"zhipu"``,
               ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``).
         cfg: ``ModelConfig`` keyword arguments.
 
@@ -110,8 +110,6 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
     if kind == "deepseek":
         cfg = {**cfg, "provider_profile": "deepseek"}
-    elif kind == "llama":
-        cfg = {**cfg, "provider_profile": "llama", "chat_path": "/chat/completions"}
     elif kind == "openai":
         cfg = {
             **cfg,
@@ -137,7 +135,6 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "ollama",
         "openai_compat",
         "deepseek",
-        "llama",
         "openai",
         "zhipu",
     ):
@@ -165,19 +162,14 @@ def register_from_models_yaml(
     Example schema::
 
         models:
-          - id: llama-3.3-70b-instruct
-            name: Llama 3.3 70B Instruct
-            provider: llama
-            base_url: ${LLAMA_BASE_URL}
-            api_key: ${LLAMA_API_KEY}
             context_length: 131072
             max_output_length: 8192
             supports_tools: true
             supports_structured_output: true
             supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
-            aliases: ["llama-3.3-70b-instruct"]
+            aliases: ["test-model-instruct"]
             route:
-              - kind: llama
+              - kind: zhipu
                 weight: 1.0
                 base_url: ${LLAMA_BASE_URL}
                 api_key: ${LLAMA_API_KEY}

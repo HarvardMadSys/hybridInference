@@ -26,7 +26,7 @@ For service-specific deployment and routing details, refer to `docs/openrouter.m
 ### Prerequisites
 
 - Python 3.10+
-- [uv](https://github.com/astral-sh/uv) (recommended) or conda
+- [uv](https://github.com/astral-sh/uv)
 
 ### Quick Start with uv (Recommended)
 
@@ -44,17 +44,6 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 uv sync
 ```
 
-### Alternative: conda Setup
-
-```bash
-# Create and activate conda environment
-conda create -n hybrid_inference python=3.10 -y
-conda activate hybrid_inference
-
-# Install dependencies from pyproject.toml
-pip install -e .
-```
-
 ## Package Management
 
 This project uses `pyproject.toml` for dependency management (PEP 517/518 standard).
@@ -67,9 +56,6 @@ uv add fastapi httpx pydantic
 
 # Add development dependency
 uv add --group dev ruff mypy pydocstyle pytest
-
-# Update a package
-uv add fastapi --upgrade
 
 # Sync all dependencies
 uv sync
@@ -114,7 +100,6 @@ Edit `.env` and configure:
 1. **API Keys** (for external providers):
 ```env
 OPENAI_API_KEY=your-actual-openai-api-key
-LLAMA_API_KEY=your-actual-llama-api-key
 GEMINI_API_KEY=your-actual-gemini-api-key
 ```
 
@@ -138,17 +123,6 @@ route:
 ```
 
 **For SGLang:** Use `base_url: http://localhost:30000` and `kind: sglang` or `kind: openai_compat`
-
-## Code Quality Standards
-
-This project follows industry best practices:
-
-- **Code Style**: Google Python Style Guide (formatted with ruff)
-- **Linting**: ruff with extensive rule sets
-- **Type Checking**: mypy with strict mode
-- **Documentation**: Google-style docstrings (pydocstyle)
-- **Pre-commit Hooks**: Automated quality checks
-- **Security**: Secret scanning with gitleaks
 
 ### Pre-commit Hooks
 

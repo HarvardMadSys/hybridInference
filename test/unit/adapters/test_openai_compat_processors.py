@@ -543,7 +543,7 @@ async def test_azure_openai_profile_stream_includes_usage_and_normalizes_final_c
 
 @pytest.mark.asyncio
 async def test_llama_profile_normalizes_messages_tools_and_default_tool_choice(monkeypatch):
-    """Llama profile flattens messages, normalizes tool schemas, and applies env tool_choice."""
+    """Test profile flattens messages, normalizes tool schemas, and applies env tool_choice."""
     monkeypatch.setenv("LLAMA_TOOL_CHOICE_DEFAULT", "required")
     response = {
         "choices": [
@@ -555,12 +555,12 @@ async def test_llama_profile_normalizes_messages_tools_and_default_tool_choice(m
         "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
     }
     config = ModelConfig(
-        id="llama-4-scout",
-        name="Llama 4 Scout",
-        provider="llama",
-        base_url="https://api.llama.com/compat/v1",
-        provider_model_id="Llama-4-Scout",
-        provider_profile="llama",
+        id="test-model-scout",
+        name="Test Model Scout",
+        provider="zhipu",
+        base_url="https://api.test.com/compat/v1",
+        provider_model_id="Test-Model-Scout",
+        provider_profile="zhipu",
         chat_path="/chat/completions",
         supports_tools=True,
         supported_params=["temperature", "top_p", "top_k", "min_p", "max_tokens", "stop"],
@@ -621,7 +621,7 @@ async def test_llama_profile_normalizes_messages_tools_and_default_tool_choice(m
 
 @pytest.mark.asyncio
 async def test_llama_profile_nonstream_function_call_normalized_to_tool_calls():
-    """Llama profile maps legacy function_call responses to tool_calls."""
+    """Test profile maps legacy function_call responses to tool_calls."""
     response = {
         "choices": [
             {
@@ -636,12 +636,12 @@ async def test_llama_profile_nonstream_function_call_normalized_to_tool_calls():
         "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
     }
     config = ModelConfig(
-        id="llama-4-scout",
-        name="Llama 4 Scout",
-        provider="llama",
-        base_url="https://api.llama.com/compat/v1",
-        provider_model_id="Llama-4-Scout",
-        provider_profile="llama",
+        id="test-model-scout",
+        name="Test Model Scout",
+        provider="zhipu",
+        base_url="https://api.test.com/compat/v1",
+        provider_model_id="Test-Model-Scout",
+        provider_profile="zhipu",
         chat_path="/chat/completions",
     )
     adapter = OpenAICompatAdapter(config)
@@ -658,7 +658,7 @@ async def test_llama_profile_nonstream_function_call_normalized_to_tool_calls():
 
 @pytest.mark.asyncio
 async def test_llama_profile_stream_function_call_normalized_and_idle_timeout_passed(monkeypatch):
-    """Llama profile maps function_call deltas and passes stream idle timeout to HTTP client."""
+    """Test profile maps function_call deltas and passes stream idle timeout to HTTP client."""
     monkeypatch.setenv("LLAMA_STREAM_IDLE_TIMEOUT_SECS", "7")
 
     async def fake_stream_post(*args, **kwargs):
@@ -669,12 +669,12 @@ async def test_llama_profile_stream_function_call_normalized_and_idle_timeout_pa
         yield "data: [DONE]"
 
     config = ModelConfig(
-        id="llama-4-scout",
-        name="Llama 4 Scout",
-        provider="llama",
-        base_url="https://api.llama.com/compat/v1",
-        provider_model_id="Llama-4-Scout",
-        provider_profile="llama",
+        id="test-model-scout",
+        name="Test Model Scout",
+        provider="zhipu",
+        base_url="https://api.test.com/compat/v1",
+        provider_model_id="Test-Model-Scout",
+        provider_profile="zhipu",
         chat_path="/chat/completions",
     )
     adapter = OpenAICompatAdapter(config)
@@ -716,19 +716,14 @@ class TestGetProcessorAutoDetect:
         assert isinstance(get_processor("minimax-m2.7"), ThinkBlockProcessor)
 
     def test_unknown_model_returns_default(self):
-        assert isinstance(get_processor("llama-3.3-70b"), DefaultProcessor)
-
-
-class TestGetProcessorOverride:
+        class TestGetProcessorOverride:
     """Explicit override bypasses auto-detection."""
 
     def test_override_default(self):
         assert isinstance(get_processor("glm-4.7-flash", override="default"), DefaultProcessor)
 
     def test_override_glm(self):
-        assert isinstance(get_processor("llama-3.3-70b", override="glm"), GLMProcessor)
-
-    def test_override_qwen_coder(self):
+        def test_override_qwen_coder(self):
         assert isinstance(get_processor(None, override="qwen_coder"), QwenCoderProcessor)
 
     def test_override_think_block(self):

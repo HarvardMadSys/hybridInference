@@ -429,14 +429,14 @@ models:
 
   - id: test-model-2
     name: Test Model 2
-    provider: llama
+    provider: zhipu
     base_url: http://remote.test
     api_key: test-key
     context_length: 16384
     max_output_length: 8192
     aliases: ["test-alias-2"]
     route:
-      - kind: llama
+      - kind: zhipu
         weight: 1.0
         base_url: http://remote.test
         api_key: test-key
