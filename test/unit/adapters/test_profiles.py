@@ -39,7 +39,6 @@ def test_function_call_none_returns_none() -> None:
 def test_delta_first_chunk_with_name_emits_full_tool_call() -> None:
     """First streaming delta carries function name — should emit id + type."""
     result = function_call_delta_to_tool_calls(
-        ProviderProfile.LLAMA,
         {"name": "get_weather", "arguments": ""},
     )
     assert result is not None
@@ -56,7 +55,6 @@ def test_delta_continuation_with_only_arguments_emits_delta() -> None:
     returned None because _function_call_to_tool_calls required a name.
     """
     result = function_call_delta_to_tool_calls(
-        ProviderProfile.LLAMA,
         {"arguments": '{"cit'},
     )
     assert result is not None
@@ -79,7 +77,7 @@ def test_delta_split_reassembly_sequence() -> None:
     fragments: list[str] = []
     name = None
     for i, fc in enumerate(deltas):
-        result = function_call_delta_to_tool_calls(ProviderProfile.LLAMA, fc)
+        result = function_call_delta_to_tool_calls( fc)
         assert result is not None, f"delta {i} was dropped: {fc}"
         if "name" in result[0].get("function", {}):
             name = result[0]["function"]["name"]
@@ -108,5 +106,5 @@ def test_delta_non_llama_profile_returns_none() -> None:
 
 
 def test_delta_empty_dict_returns_none() -> None:
-    result = function_call_delta_to_tool_calls(ProviderProfile.LLAMA, {})
+    result = function_call_delta_to_tool_calls( {})
     assert result is None

@@ -27,25 +27,16 @@ Example:
 ```yaml
 # config/models.yaml
 models:
-  - id: llama-3.3-70b-instruct
-    name: Llama 3.3 70B Instruct
-    provider: llama
-    base_url: ${LLAMA_BASE_URL}
-    api_key: ${LLAMA_API_KEY}
+    provider: test
     context_length: 131072
     max_output_length: 8192
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
-    aliases: ["llama-3.3-70b-instruct"]
     route:
-      - kind: llama
+      - kind: test
         weight: 1.0
-        base_url: ${LLAMA_BASE_URL}
-        api_key: ${LLAMA_API_KEY}
 
-  - id: llama-4-scout
-    name: Llama 4 Scout
     provider: vllm
     base_url: ${LOCAL_BASE_URL}
     provider_model_id: "/models/meta-llama_Llama-4-Scout-17B-16E"  # backend expects this id
@@ -65,7 +56,7 @@ models:
 - `id`: Public model ID exposed by the API (what clients use to call the model)
 - `provider_model_id`: The actual model name sent to the backend provider (e.g., vLLM/freeinference's `/models/...`). If omitted, uses `id`
 - `aliases`: Additional public aliases that are registered alongside `id` to point to the same adapter
-- `provider`: Determines adapter type (`llama`, `vllm`, `deepseek`, `gemini`, etc.)
+- `provider`: Determines adapter type (`test`, `vllm`, `deepseek`, `gemini`, etc.)
 - `/v1/models` endpoint dynamically generates its response from registered adapters
 
 ## 3. routing.yaml (Optional)
@@ -97,12 +88,8 @@ logging:
 local_deployment:
   - endpoint: ${LOCAL_BASE_URL:-http://localhost:8000}
     models:
-      - llama-3.3-70b-instruct
-      - llama-4-scout
 remote_deployment:
-  - endpoint: ${LLAMA_BASE_URL}
     models:
-      - llama-3.3-70b-instruct
 ```
 
 ### How It Works:
@@ -119,8 +106,6 @@ Simply omit `routing.yaml` to use default weights from `models.yaml` (typically 
 ### Set Environment Variables:
   ```bash
   export LOCAL_BASE_URL=http://localhost:8000
-  export LLAMA_BASE_URL=https://api.llama.com/compat/v1
-  export LLAMA_API_KEY=sk-...
   ```
 
 ### Start the Server:

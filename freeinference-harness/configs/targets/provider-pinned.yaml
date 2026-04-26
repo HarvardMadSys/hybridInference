@@ -129,28 +129,6 @@ targets:
       streaming: true
       tools: true
 
-  # ── llama-3.3-70b: llama API + featherless ──────────────────────────
-  - name: llama-3.3-70b@llama-gw
-    model: llama-3.3-70b-instruct
-    tags: [llama, pinned]
-    extra_headers:
-      X-Route-Pin: llama
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  # ── llama-4-scout: llama API only ──────────────────────────────────
-  - name: llama-4-scout@llama-gw
-    model: llama-4-scout
-    tags: [llama, pinned]
-    extra_headers:
-      X-Route-Pin: llama
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
   # ── minimax-m2.7: minimax + ollama ──────────────────────────────────
   - name: minimax-m2.7@minimax-gw
     model: minimax-m2.7

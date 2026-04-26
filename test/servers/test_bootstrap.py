@@ -219,11 +219,11 @@ class TestBootstrapHelpers:
 models:
   - id: remote-model
     name: Remote Only Model
-    provider: llama
+    provider: zhipu
     context_length: 8192
     max_output_length: 4096
     route:
-      - kind: llama
+      - kind: zhipu
         weight: 1.0
         base_url: https://api.example.com
         api_key: test-key
@@ -249,11 +249,11 @@ models:
 models:
   - id: remote-model
     name: Remote Only Model
-    provider: llama
+    provider: zhipu
     context_length: 8192
     max_output_length: 4096
     route:
-      - kind: llama
+      - kind: zhipu
         weight: 1.0
         base_url: https://api.example.com
         api_key: test-key

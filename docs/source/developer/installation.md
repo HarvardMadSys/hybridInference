@@ -82,7 +82,6 @@ Required for production:
 
 Optional (enable providers as needed):
 
-- **LLM APIs**: `LLAMA_API_KEY`, `ZAI_API_KEY`, `CHUTES_API_KEY`, etc.
 
 > **Note**: When running locally without Docker, the backend connects to GPU endpoints
 > via `localhost`. In Docker, these are rewritten to `host.docker.internal` in

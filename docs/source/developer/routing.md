@@ -40,12 +40,8 @@ logging:
 local_deployment:
   - endpoint: ${LOCAL_BASE_URL:-http://localhost:8000}
     models:
-      - llama-3.3-70b-instruct
-      - llama-4-scout
 remote_deployment:
-  - endpoint: ${LLAMA_BASE_URL}
     models:
-      - llama-3.3-70b-instruct
 ```
 
 ## Running the Server

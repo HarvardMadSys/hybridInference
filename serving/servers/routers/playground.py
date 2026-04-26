@@ -45,7 +45,6 @@ _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "featherless": "Featherless AI",
     "ollama": "Ollama",
     "zhipu": "ZAI",
-    "llama": "Llama API",
     "openai_compat": "OpenAI Compatible",
     "sglang": "SGLang",
     "deepseek": "DeepSeek",
