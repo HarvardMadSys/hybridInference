@@ -15,6 +15,7 @@ import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
 
@@ -315,4 +316,5 @@ async def verify_admin_access(
             detail="Invalid authentication token.",
         )
 
-    return request.client.host if request.client else "admin-token"
+    client_ip = get_client_ip(request)
+    return client_ip if client_ip != "unknown" else "admin-token"

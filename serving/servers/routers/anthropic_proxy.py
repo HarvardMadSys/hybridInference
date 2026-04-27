@@ -36,6 +36,7 @@ from serving.observability.metrics import (
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -382,7 +383,7 @@ async def anthropic_messages(
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
-        "ip": request.client.host if request.client else None,
+        "ip": get_client_ip(request),
         "authenticated": bool(user_ctx.get("authenticated")),
         "user_id": user_ctx.get("user_id"),
         "surface": "anthropic_proxy",

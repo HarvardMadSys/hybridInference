@@ -9,6 +9,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from serving.utils import context as req_ctx
 from serving.utils.logging import _QUIET_PATHS, get_logger
+from serving.utils.request_ip import get_client_ip
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -48,7 +49,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
         # Note: ``request.client.host`` will be the proxy's IP (e.g., NGINX). The
         # original client should be available via ``X-Forwarded-For`` when the
         # proxy sets it.
-        remote_ip = getattr(getattr(request, "client", None), "host", None)
+        remote_ip = get_client_ip(request)
         xff = request.headers.get("x-forwarded-for")
         user_agent = request.headers.get("user-agent")
         host = request.headers.get("host")

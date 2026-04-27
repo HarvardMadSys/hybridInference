@@ -19,6 +19,7 @@ from serving.observability.metrics import (
 )
 from serving.servers.deps import get_db_logger
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
 
@@ -348,7 +349,7 @@ async def verify_admin_token(
         )
 
     # Extract admin IP for audit logging
-    admin_ip = request.client.host if request.client else "unknown"
+    admin_ip = get_client_ip(request)
     return admin_ip
 
 
