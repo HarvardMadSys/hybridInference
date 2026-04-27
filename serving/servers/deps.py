@@ -7,6 +7,7 @@ test and avoids hidden global state.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -184,6 +185,13 @@ async def get_current_user(
             detail=f"Account is {user_row['status']}. Please contact support.",
         )
 
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    if require_verification and not user_row["email_verified"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Please check your email for the verification link.",
+        )
+
     # Return user context — use DB email and role (authoritative) instead of JWT claims.
     user_role = user_row["role"] or "free"
     return {
@@ -262,11 +270,17 @@ async def verify_admin_access(
         if db_logger and db_logger.pool and user_id:
             async with db_logger.pool.acquire() as conn:
                 user_row = await conn.fetchrow(
-                    "SELECT email, status, role FROM users WHERE id = $1",
+                    "SELECT email, status, role, email_verified FROM users WHERE id = $1",
                     user_id,
                 )
             if not user_row or user_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="Admin account is no longer active.")
+            require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+            if require_verification and not user_row["email_verified"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Email not verified. Please verify your email to continue.",
+                )
             email = user_row["email"]
             if (user_row["role"] or "free") != "admin":
                 raise HTTPException(status_code=403, detail="Admin access required.")
