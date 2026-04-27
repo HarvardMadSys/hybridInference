@@ -18,6 +18,41 @@ The local server must expose OpenAI-compatible endpoints. The gateway forwards
 chat requests to `/v1/chat/completions` and embedding requests to `/v1/embeddings`
 when the model is registered as an embedding model.
 
+## Private Server (No Public Internet)
+
+If your model runs on a different server that is not exposed to the public
+internet, keep it private and make the gateway reach it over trusted network
+paths.
+
+Recommended options:
+
+```yaml
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: "http://10.0.12.34:8000/v1"
+        provider_model_id: "your-served-model-name"
+```
+
+Example SSH reverse tunnel (internal host -> FreeInference host):
+
+```bash
+# Run this on the INTERNAL model host
+ssh -N -R 8001:127.0.0.1:8000 user@example.org
+```
+
+Then set:
+
+```yaml
+base_url: "http://127.0.0.1:8001/v1"  # resolved on the FreeInference host
+```
+
+For reverse-tunnel setups, verify from the FreeInference side:
+
+```bash
+curl http://127.0.0.1:8001/v1/models | jq
+```
+
 ## Step 1: Start the Local Model Server
 
 Start the model with your preferred serving runtime. Example with vLLM:
@@ -190,6 +225,8 @@ route you want offloaded uses the same base URL value as `LOCAL_BASE_URL`.
 
 - From Docker, use `host.docker.internal` instead of `localhost`.
 - From bare metal, use `localhost` or the host IP.
+- For private remote servers, use private IP/hostname or a private tunnel
+  endpoint; avoid public internet exposure.
 - Confirm the local server listens on `0.0.0.0`, not only `127.0.0.1`, if it must
   be reached from a container.
 - Verify `curl <base_url>/v1/models` works from the same environment as the
