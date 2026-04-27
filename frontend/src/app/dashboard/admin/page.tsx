@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import {
@@ -38,6 +38,21 @@ function relTime(s: string | null): string {
 function previewText(value: string, maxChars: number = 280): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}...`;
+}
+
+function applyOffsetJump(
+  rawPage: string,
+  total: number,
+  pageSize: number,
+  setOffset: (offset: number) => void,
+  clearInput: () => void,
+): void {
+  const totalPages = Math.ceil(total / pageSize);
+  const n = Number.parseInt(rawPage.trim(), 10);
+  if (!Number.isFinite(n)) return;
+  const p = Math.min(Math.max(1, n), totalPages);
+  setOffset((p - 1) * pageSize);
+  clearInput();
 }
 
 function FoldedText({ label, value }: { label: string; value?: string | null }) {
@@ -138,6 +153,8 @@ export default function AdminPage() {
   const [reqModelFilter, setReqModelFilter] = useState('');
   const [reqErrorsOnly, setReqErrorsOnly] = useState(false);
   const [reqExpandedId, setReqExpandedId] = useState<string | null>(null);
+  const [reqJumpPage, setReqJumpPage] = useState('');
+  const reqJumpInputId = useId();
   const REQ_PAGE_SIZE = 50;
 
   const load = useCallback(async () => {
@@ -1198,26 +1215,73 @@ export default function AdminPage() {
 
               {/* Pagination */}
               {reqTotal > REQ_PAGE_SIZE && (
-                <div className="mt-4 flex items-center justify-between">
-                  <span className="text-[12px] text-gray-400 tabular-nums">
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="text-[12px] text-gray-400 tabular-nums text-center sm:text-left">
                     {reqOffset + 1}&ndash;{Math.min(reqOffset + REQ_PAGE_SIZE, reqTotal)} of{' '}
                     {reqTotal}
+                    <span className="ml-2 text-gray-300">
+                      (page {Math.floor(reqOffset / REQ_PAGE_SIZE) + 1} of{' '}
+                      {Math.ceil(reqTotal / REQ_PAGE_SIZE)})
+                    </span>
                   </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setReqOffset(Math.max(0, reqOffset - REQ_PAGE_SIZE))}
-                      disabled={reqOffset === 0}
-                      className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
-                    >
-                      Prev
-                    </button>
-                    <button
-                      onClick={() => setReqOffset(reqOffset + REQ_PAGE_SIZE)}
-                      disabled={reqOffset + REQ_PAGE_SIZE >= reqTotal}
-                      className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
-                    >
-                      Next
-                    </button>
+                  <div className="flex flex-wrap items-center justify-center gap-3 sm:justify-end">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setReqOffset(Math.max(0, reqOffset - REQ_PAGE_SIZE))}
+                        disabled={reqOffset === 0}
+                        className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
+                      >
+                        Prev
+                      </button>
+                      <button
+                        onClick={() => setReqOffset(reqOffset + REQ_PAGE_SIZE)}
+                        disabled={reqOffset + REQ_PAGE_SIZE >= reqTotal}
+                        className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
+                      >
+                        Next
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label
+                        htmlFor={reqJumpInputId}
+                        className="text-[12px] text-gray-400 whitespace-nowrap"
+                      >
+                        Jump to page
+                      </label>
+                      <input
+                        id={reqJumpInputId}
+                        type="number"
+                        min={1}
+                        max={Math.ceil(reqTotal / REQ_PAGE_SIZE)}
+                        inputMode="numeric"
+                        value={reqJumpPage}
+                        onChange={(e) => setReqJumpPage(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            applyOffsetJump(
+                              reqJumpPage,
+                              reqTotal,
+                              REQ_PAGE_SIZE,
+                              setReqOffset,
+                              () => setReqJumpPage(''),
+                            );
+                          }
+                        }}
+                        className="w-14 rounded-md border border-gray-200 px-2 py-1 text-center text-[12px] text-gray-900 tabular-nums focus:border-gray-400 focus:outline-none"
+                        aria-label="Page number to jump to"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          applyOffsetJump(reqJumpPage, reqTotal, REQ_PAGE_SIZE, setReqOffset, () =>
+                            setReqJumpPage(''),
+                          )
+                        }
+                        className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 ring-1 ring-inset ring-gray-200 hover:bg-gray-50"
+                      >
+                        Go
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
