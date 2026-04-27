@@ -348,6 +348,7 @@ class AdminRecentRequestItem(BaseModel):
 
     request_id: str
     user_id: str | None = None
+    user_ip: str | None = None
     model_id: str
     provider: str
     timestamp: datetime

@@ -1538,7 +1538,8 @@ async def admin_list_recent_requests(
                 request_id, user_id, model_id, provider, timestamp,
                 status_code, latency_ms, ttft_ms, stream,
                 prompt_tokens, completion_tokens, reasoning_tokens,
-                total_tokens, cost_usd, error
+                total_tokens, cost_usd, error,
+                metadata->>'ip' AS user_ip
             FROM api_logs
             {where_sql}
             ORDER BY timestamp DESC
@@ -1553,6 +1554,7 @@ async def admin_list_recent_requests(
         AdminRecentRequestItem(
             request_id=row["request_id"],
             user_id=row["user_id"],
+            user_ip=row["user_ip"],
             model_id=row["model_id"],
             provider=row["provider"],
             timestamp=row["timestamp"],

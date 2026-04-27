@@ -286,6 +286,7 @@ export async function listAuditLog(
 export interface AdminRecentRequestItem {
   request_id: string;
   user_id: string | null;
+  user_ip?: string | null;
   model_id: string;
   provider: string;
   timestamp: string;

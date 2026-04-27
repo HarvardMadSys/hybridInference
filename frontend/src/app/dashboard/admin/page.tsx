@@ -1002,6 +1002,9 @@ export default function AdminPage() {
                           User
                         </th>
                         <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          IP
+                        </th>
+                        <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                           Status
                         </th>
                         <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
@@ -1052,6 +1055,9 @@ export default function AdminPage() {
                                 ) : (
                                   <span className="text-gray-300">—</span>
                                 )}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px] font-mono text-gray-500">
+                                {req.user_ip ?? <span className="text-gray-300">—</span>}
                               </td>
                               <td className="whitespace-nowrap px-3 py-2.5 text-[12px]">
                                 {req.status_code != null ? (
@@ -1106,7 +1112,7 @@ export default function AdminPage() {
                                 key={`${req.request_id}-detail`}
                                 className="border-b border-gray-100 bg-gray-50/40"
                               >
-                                <td colSpan={7} className="px-4 py-3">
+                                <td colSpan={8} className="px-4 py-3">
                                   <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[11px] sm:grid-cols-4">
                                     <div>
                                       <span className="text-gray-500">Request ID:</span>{' '}
@@ -1120,6 +1126,12 @@ export default function AdminPage() {
                                       <span className="text-gray-500">TTFT:</span>{' '}
                                       <span className="text-gray-700">
                                         {req.ttft_ms != null ? `${req.ttft_ms}ms` : '—'}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">User IP:</span>{' '}
+                                      <span className="text-gray-700 font-mono">
+                                        {req.user_ip ?? '—'}
                                       </span>
                                     </div>
                                     <div>
