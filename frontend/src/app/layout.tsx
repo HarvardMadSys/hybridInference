@@ -1,4 +1,5 @@
 import '../styles/globals.css';
+import Script from 'next/script';
 import { config } from '@/config/env';
 import { Providers } from '@/components/providers';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
@@ -11,6 +12,16 @@ export const metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="h-full">
+      <head>
+        <Script id="statcounter-config" strategy="afterInteractive">
+          {"var sc_project=12345; var sc_invisible=1; var sc_security='example_security_key';"}
+        </Script>
+        <Script
+          id="statcounter-loader"
+          src="https://www.statcounter.com/counter/counter.js"
+          strategy="afterInteractive"
+        />
+      </head>
       <body
         className="flex min-h-screen flex-col bg-gray-50 text-black antialiased"
         suppressHydrationWarning
@@ -26,6 +37,24 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <footer className="mx-auto w-full max-w-5xl px-6 py-6 text-center text-sm text-gray-400">
               © {config.appName}
             </footer>
+            <noscript>
+              <div className="statcounter">
+                <a
+                  title="Web Analytics"
+                  href="https://statcounter.com/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    className="statcounter"
+                    src="https://c.statcounter.com/12345/0/example_security_key/1/"
+                    alt="Web Analytics"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                </a>
+              </div>
+            </noscript>
           </Providers>
         </ErrorBoundary>
       </body>
