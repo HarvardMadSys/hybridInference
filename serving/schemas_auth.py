@@ -104,11 +104,11 @@ class APIKeyCreate(BaseModel):
 
 
 class APIKeyResponse(BaseModel):
-    """API key creation response (full key shown only once)."""
+    """API key creation response."""
 
     api_key: str
     key_prefix: str
-    warning: str = "Save this key now. It cannot be retrieved later."
+    warning: str = "You can view this key later from the dashboard."
     created_at: datetime
 
 
@@ -116,6 +116,7 @@ class APIKeyInfo(BaseModel):
     """API key information (masked)."""
 
     has_key: bool
+    api_key: str | None = None
     key_prefix: str | None = None
     key_masked: str | None = None
     created_at: datetime | None = None
@@ -123,12 +124,37 @@ class APIKeyInfo(BaseModel):
     status: str | None = None
 
 
+class APIKeyListItem(BaseModel):
+    """Single API key record for the current user."""
+
+    api_key: str | None = None
+    key_prefix: str
+    key_masked: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+    status: str
+
+
+class APIKeyListResponse(BaseModel):
+    """All API keys owned by the current user."""
+
+    keys: list[APIKeyListItem]
+
+
+class APIKeyDeleteResponse(BaseModel):
+    """Response returned after revoking an API key."""
+
+    key_prefix: str
+    status: str
+    message: str
+
+
 class APIKeyRegenerateResponse(BaseModel):
     """API key regeneration response."""
 
     api_key: str
     key_prefix: str
-    warning: str = "Save this key now. It cannot be retrieved later."
+    warning: str = "You can view this key later from the dashboard."
     old_key_prefix: str
 
 
@@ -218,3 +244,32 @@ class ChangeEmailResponse(BaseModel):
 
     message: str
     new_email: str
+
+
+# Recent requests schemas
+class RecentRequestItem(BaseModel):
+    """A single API request log entry (user-facing)."""
+
+    request_id: str
+    model_id: str
+    provider: str
+    timestamp: datetime
+    status_code: int | None = None
+    latency_ms: int | None = None
+    ttft_ms: int | None = None
+    stream: bool | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    error: str | None = None
+
+
+class RecentRequestsResponse(BaseModel):
+    """Paginated list of recent requests for the current user."""
+
+    requests: list[RecentRequestItem]
+    total: int
+    limit: int
+    offset: int

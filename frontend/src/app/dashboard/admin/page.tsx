@@ -5,6 +5,7 @@ import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import {
   AdminUser,
+  AdminRecentRequestItem,
   AuditLogEntry,
   StatusCounts,
   UserDetail,
@@ -17,6 +18,7 @@ import {
   deleteUser,
   regenerateApiKeyAdmin,
   listAuditLog,
+  listRecentRequests,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -49,7 +51,15 @@ export default function AdminPage() {
   const { state } = useAuth();
 
   // Top-level tab
-  const [activeTab, setActiveTab] = useState<'users' | 'audit'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests'>('users');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    if (tab === 'users' || tab === 'audit' || tab === 'requests') {
+      setActiveTab(tab);
+    }
+  }, []);
 
   // Users state
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -90,6 +100,17 @@ export default function AdminPage() {
   const [auditOffset, setAuditOffset] = useState(0);
   const AUDIT_PAGE_SIZE = 50;
 
+  // Requests state
+  const [reqEntries, setReqEntries] = useState<AdminRecentRequestItem[]>([]);
+  const [reqTotal, setReqTotal] = useState(0);
+  const [reqLoading, setReqLoading] = useState(false);
+  const [reqOffset, setReqOffset] = useState(0);
+  const [reqUserFilter, setReqUserFilter] = useState('');
+  const [reqModelFilter, setReqModelFilter] = useState('');
+  const [reqErrorsOnly, setReqErrorsOnly] = useState(false);
+  const [reqExpandedId, setReqExpandedId] = useState<string | null>(null);
+  const REQ_PAGE_SIZE = 50;
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -129,6 +150,26 @@ export default function AdminPage() {
     }
   }, [auditFilter, auditOffset]);
 
+  const loadRequests = useCallback(async () => {
+    setReqLoading(true);
+    setError(null);
+    try {
+      const d = await listRecentRequests(
+        REQ_PAGE_SIZE,
+        reqOffset,
+        reqUserFilter || undefined,
+        reqModelFilter || undefined,
+        reqErrorsOnly,
+      );
+      setReqEntries(d.requests);
+      setReqTotal(d.total);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setReqLoading(false);
+    }
+  }, [reqOffset, reqUserFilter, reqModelFilter, reqErrorsOnly]);
+
   useEffect(() => {
     if (activeTab === 'users') load();
   }, [load, activeTab]);
@@ -136,6 +177,10 @@ export default function AdminPage() {
   useEffect(() => {
     if (activeTab === 'audit') loadAudit();
   }, [loadAudit, activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'requests') loadRequests();
+  }, [loadRequests, activeTab]);
 
   useEffect(() => {
     if (!toast) return;
@@ -279,6 +324,14 @@ export default function AdminPage() {
     { key: 'deleted', label: 'Deleted', count: counts.deleted },
   ];
 
+  const onTabChange = (tab: 'users' | 'audit' | 'requests') => {
+    setActiveTab(tab);
+    const params = new URLSearchParams(window.location.search);
+    params.set('tab', tab);
+    const next = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({}, '', next);
+  };
+
   return (
     <ProtectedRoute>
       <div className="mx-auto w-full max-w-4xl pb-20">
@@ -304,11 +357,13 @@ export default function AdminPage() {
             Dashboard
           </a>
           <button
-            onClick={activeTab === 'users' ? load : loadAudit}
-            disabled={loading || auditLoading}
+            onClick={
+              activeTab === 'users' ? load : activeTab === 'audit' ? loadAudit : loadRequests
+            }
+            disabled={loading || auditLoading || reqLoading}
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
           >
-            {loading || auditLoading ? 'Loading...' : 'Refresh'}
+            {loading || auditLoading || reqLoading ? 'Loading...' : 'Refresh'}
           </button>
         </div>
 
@@ -320,17 +375,17 @@ export default function AdminPage() {
 
         {/* Top-level tab toggle */}
         <div className="mt-6 flex items-center gap-1">
-          {(['users', 'audit'] as const).map((tab) => (
+          {(['users', 'requests', 'audit'] as const).map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => onTabChange(tab)}
               className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
                 activeTab === tab
                   ? 'bg-gray-900 text-white'
                   : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
               }`}
             >
-              {tab === 'users' ? 'Users' : 'Audit Log'}
+              {tab === 'users' ? 'Users' : tab === 'requests' ? 'Recent Requests' : 'Audit Log'}
             </button>
           ))}
         </div>
@@ -874,6 +929,248 @@ export default function AdminPage() {
                     <button
                       onClick={() => setAuditOffset(auditOffset + AUDIT_PAGE_SIZE)}
                       disabled={auditOffset + AUDIT_PAGE_SIZE >= auditTotal}
+                      className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ========== Requests Tab ========== */}
+        {activeTab === 'requests' && (
+          <div className="mt-6">
+            {/* Filters */}
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                type="text"
+                value={reqUserFilter}
+                onChange={(e) => {
+                  setReqUserFilter(e.target.value);
+                  setReqOffset(0);
+                }}
+                placeholder="Filter by user ID..."
+                className="flex-1 min-w-[160px] rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+              />
+              <input
+                type="text"
+                value={reqModelFilter}
+                onChange={(e) => {
+                  setReqModelFilter(e.target.value);
+                  setReqOffset(0);
+                }}
+                placeholder="Filter by model..."
+                className="flex-1 min-w-[160px] rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+              />
+              <label className="flex items-center gap-1.5 text-[13px] text-gray-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={reqErrorsOnly}
+                  onChange={(e) => {
+                    setReqErrorsOnly(e.target.checked);
+                    setReqOffset(0);
+                  }}
+                  className="rounded border-gray-300"
+                />
+                Errors only
+              </label>
+              <span className="text-[12px] text-gray-400 tabular-nums">{reqTotal} entries</span>
+            </div>
+
+            {/* Table */}
+            <div className="mt-4">
+              {reqLoading ? (
+                <div className="flex justify-center py-24">
+                  <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+                </div>
+              ) : reqEntries.length === 0 ? (
+                <div className="py-24 text-center">
+                  <p className="text-[13px] text-gray-400">No requests found.</p>
+                </div>
+              ) : (
+                <div className="-mx-1 overflow-x-auto">
+                  <table className="min-w-full">
+                    <thead>
+                      <tr className="border-b border-gray-200">
+                        <th className="py-2 pl-4 pr-3 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Model
+                        </th>
+                        <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          User
+                        </th>
+                        <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Status
+                        </th>
+                        <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Latency
+                        </th>
+                        <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Tokens
+                        </th>
+                        <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Cost
+                        </th>
+                        <th className="px-3 py-2 text-right text-[11px] font-medium uppercase tracking-wider text-gray-500 pr-4">
+                          Time
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reqEntries.map((req) => {
+                        const isSuccess =
+                          req.status_code != null &&
+                          req.status_code >= 200 &&
+                          req.status_code < 400;
+                        const isExpanded = reqExpandedId === req.request_id;
+                        return (
+                          <>
+                            <tr
+                              key={req.request_id}
+                              className="border-b border-gray-100 hover:bg-gray-50/60 cursor-pointer transition-colors"
+                              onClick={() => setReqExpandedId(isExpanded ? null : req.request_id)}
+                            >
+                              <td className="whitespace-nowrap py-2.5 pl-4 pr-3 text-[13px]">
+                                <div className="font-medium text-gray-900">{req.model_id}</div>
+                                <div className="text-[11px] text-gray-400">{req.provider}</div>
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px] font-mono text-gray-500">
+                                {req.user_id ? (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setReqUserFilter(req.user_id!);
+                                      setReqOffset(0);
+                                    }}
+                                    className="hover:text-gray-900 hover:underline transition truncate max-w-[120px] block"
+                                    title={req.user_id}
+                                  >
+                                    {req.user_id.slice(0, 12)}…
+                                  </button>
+                                ) : (
+                                  <span className="text-gray-300">—</span>
+                                )}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px]">
+                                {req.status_code != null ? (
+                                  <span
+                                    className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                      isSuccess
+                                        ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20'
+                                        : 'bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20'
+                                    }`}
+                                  >
+                                    {req.status_code}
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-300">—</span>
+                                )}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px] tabular-nums text-gray-600">
+                                {req.latency_ms != null
+                                  ? req.latency_ms >= 1000
+                                    ? `${(req.latency_ms / 1000).toFixed(1)}s`
+                                    : `${req.latency_ms}ms`
+                                  : '—'}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px] tabular-nums text-gray-600">
+                                {req.prompt_tokens != null || req.completion_tokens != null ? (
+                                  <>
+                                    <span className="text-gray-400">↑</span>
+                                    {(req.prompt_tokens ?? 0).toLocaleString()}
+                                    <span className="mx-0.5 text-gray-300">/</span>
+                                    <span className="text-gray-400">↓</span>
+                                    {(req.completion_tokens ?? 0).toLocaleString()}
+                                  </>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px] tabular-nums text-gray-600">
+                                {req.cost_usd != null
+                                  ? req.cost_usd < 0.01
+                                    ? `$${req.cost_usd.toFixed(4)}`
+                                    : `$${req.cost_usd.toFixed(2)}`
+                                  : '—'}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 text-right text-[12px] text-gray-400 pr-4">
+                                <span title={new Date(req.timestamp).toLocaleString()}>
+                                  {relTime(req.timestamp)}
+                                </span>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr
+                                key={`${req.request_id}-detail`}
+                                className="border-b border-gray-100 bg-gray-50/40"
+                              >
+                                <td colSpan={7} className="px-4 py-3">
+                                  <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[11px] sm:grid-cols-4">
+                                    <div>
+                                      <span className="text-gray-500">Request ID:</span>{' '}
+                                      <span className="font-mono text-gray-700">
+                                        {req.request_id.length > 24
+                                          ? `${req.request_id.slice(0, 24)}…`
+                                          : req.request_id}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">TTFT:</span>{' '}
+                                      <span className="text-gray-700">
+                                        {req.ttft_ms != null ? `${req.ttft_ms}ms` : '—'}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">Reasoning:</span>{' '}
+                                      <span className="text-gray-700">
+                                        {req.reasoning_tokens != null
+                                          ? req.reasoning_tokens.toLocaleString()
+                                          : '—'}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">Stream:</span>{' '}
+                                      <span className="text-gray-700">
+                                        {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
+                                      </span>
+                                    </div>
+                                    {req.error && (
+                                      <div className="col-span-full mt-1">
+                                        <span className="text-red-600">Error: {req.error}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Pagination */}
+              {reqTotal > REQ_PAGE_SIZE && (
+                <div className="mt-4 flex items-center justify-between">
+                  <span className="text-[12px] text-gray-400 tabular-nums">
+                    {reqOffset + 1}&ndash;{Math.min(reqOffset + REQ_PAGE_SIZE, reqTotal)} of{' '}
+                    {reqTotal}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setReqOffset(Math.max(0, reqOffset - REQ_PAGE_SIZE))}
+                      disabled={reqOffset === 0}
+                      className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
+                    >
+                      Prev
+                    </button>
+                    <button
+                      onClick={() => setReqOffset(reqOffset + REQ_PAGE_SIZE)}
+                      disabled={reqOffset + REQ_PAGE_SIZE >= reqTotal}
                       className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
                     >
                       Next

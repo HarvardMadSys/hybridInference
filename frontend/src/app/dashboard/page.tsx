@@ -2,6 +2,7 @@
 
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
+import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
 import { UsageStats } from '@/components/features/dashboard/UsageStats';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
@@ -89,6 +90,8 @@ export default function DashboardPage() {
 
         <UsageStats />
 
+        <RecentRequests />
+
         {hasRole(state.user?.role, 'internal') && (
           <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
             <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-4">
@@ -164,6 +167,20 @@ export default function DashboardPage() {
                   />
                 </svg>
                 Manage Users
+              </a>
+              <a
+                href="/dashboard/admin?tab=requests"
+                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
+              >
+                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12h6m-6 4h6M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z"
+                  />
+                </svg>
+                Recent Requests
               </a>
               <a
                 href="/pgadmin/"

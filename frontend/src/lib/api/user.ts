@@ -24,11 +24,31 @@ export interface ApiKeyResponse {
 
 export interface ApiKeyInfo {
   has_key: boolean;
+  api_key?: string | null;
   key_prefix?: string;
   key_masked?: string;
   created_at?: string;
   last_used_at?: string;
   status?: string;
+}
+
+export interface ApiKeyListItem {
+  api_key?: string | null;
+  key_prefix: string;
+  key_masked: string;
+  created_at: string;
+  last_used_at?: string | null;
+  status: string;
+}
+
+export interface ApiKeyListResponse {
+  keys: ApiKeyListItem[];
+}
+
+export interface ApiKeyDeleteResponse {
+  key_prefix: string;
+  status: string;
+  message: string;
 }
 
 export interface UsageStats {
@@ -64,6 +84,18 @@ export async function createApiKey(): Promise<ApiKeyResponse> {
 export async function getApiKey(): Promise<ApiKeyInfo> {
   const resp = await fetchWithAuth(API_BASE, '/user/api-keys');
   return jsonOrThrow<ApiKeyInfo>(resp);
+}
+
+export async function listApiKeys(): Promise<ApiKeyListResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/user/api-keys/all');
+  return jsonOrThrow<ApiKeyListResponse>(resp);
+}
+
+export async function deleteApiKey(keyPrefix: string): Promise<ApiKeyDeleteResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/user/api-keys/${encodeURIComponent(keyPrefix)}`, {
+    method: 'DELETE',
+  });
+  return jsonOrThrow<ApiKeyDeleteResponse>(resp);
 }
 
 export async function regenerateApiKey(): Promise<ApiKeyResponse> {
@@ -109,4 +141,40 @@ export async function changeEmail(
     body: JSON.stringify({ new_email: newEmail, password }),
   });
   return jsonOrThrow<{ message: string; new_email: string }>(resp);
+}
+
+// Recent requests types and API
+export interface RecentRequestItem {
+  request_id: string;
+  model_id: string;
+  provider: string;
+  timestamp: string;
+  status_code?: number | null;
+  latency_ms?: number | null;
+  ttft_ms?: number | null;
+  stream?: boolean | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  total_tokens?: number | null;
+  cost_usd?: number | null;
+  error?: string | null;
+}
+
+export interface RecentRequestsResponse {
+  requests: RecentRequestItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function getRecentRequests(
+  limit: number = 50,
+  offset: number = 0,
+  modelId?: string,
+): Promise<RecentRequestsResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (modelId) params.set('model_id', modelId);
+  const resp = await fetchWithAuth(API_BASE, `/user/recent-requests?${params.toString()}`);
+  return jsonOrThrow<RecentRequestsResponse>(resp);
 }

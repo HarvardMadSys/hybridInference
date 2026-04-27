@@ -9,6 +9,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.schemas_admin import (
+    AdminRecentRequestItem,
+    AdminRecentRequestsResponse,
     APIKeyDetailResponse,
     APIKeyDetailUsage,
     APIKeyListItem,
@@ -1461,3 +1463,111 @@ async def delete_user(
         status="deleted",
         message=f"User {user_row['email']} has been deleted.",
     )
+
+
+# ========================================
+# Recent Requests (Admin View)
+# ========================================
+
+
+@router.get("/admin/recent-requests", response_model=AdminRecentRequestsResponse)
+async def admin_list_recent_requests(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    user_id: str | None = None,
+    model_id: str | None = None,
+    status_code: int | None = None,
+    errors_only: bool = False,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminRecentRequestsResponse:
+    """List recent API requests across all users.
+
+    Query Parameters:
+    - limit: Max results (default: 50, max: 200)
+    - offset: Pagination offset
+    - user_id: Filter by user ID
+    - model_id: Filter by model ID
+    - status_code: Filter by HTTP status code
+    - errors_only: If true, only show requests with errors
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    # Build WHERE clause
+    where_clauses: list[str] = []
+    params: list[Any] = []
+
+    if user_id:
+        where_clauses.append(f"user_id = ${len(params) + 1}")
+        params.append(user_id)
+
+    if model_id:
+        where_clauses.append(f"model_id = ${len(params) + 1}")
+        params.append(model_id)
+
+    if status_code is not None:
+        where_clauses.append(f"status_code = ${len(params) + 1}")
+        params.append(status_code)
+
+    if errors_only:
+        where_clauses.append("error IS NOT NULL")
+
+    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    async with db_logger.pool.acquire() as conn:
+        # Get total count
+        count_row = await conn.fetchrow(
+            f"SELECT COUNT(*) as total FROM api_logs {where_sql}",
+            *params,
+        )
+        total = int(count_row["total"] or 0) if count_row else 0
+
+        # Get paginated results
+        limit_idx = len(params) + 1
+        offset_idx = len(params) + 2
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                request_id, user_id, model_id, provider, timestamp,
+                status_code, latency_ms, ttft_ms, stream,
+                prompt_tokens, completion_tokens, reasoning_tokens,
+                total_tokens, cost_usd, error
+            FROM api_logs
+            {where_sql}
+            ORDER BY timestamp DESC
+            LIMIT ${limit_idx} OFFSET ${offset_idx}
+            """,
+            *params,
+            limit,
+            offset,
+        )
+
+    requests = [
+        AdminRecentRequestItem(
+            request_id=row["request_id"],
+            user_id=row["user_id"],
+            model_id=row["model_id"],
+            provider=row["provider"],
+            timestamp=row["timestamp"],
+            status_code=row["status_code"],
+            latency_ms=row["latency_ms"],
+            ttft_ms=row["ttft_ms"],
+            stream=row["stream"],
+            prompt_tokens=row["prompt_tokens"],
+            completion_tokens=row["completion_tokens"],
+            reasoning_tokens=row["reasoning_tokens"],
+            total_tokens=row["total_tokens"],
+            cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
+            error=row["error"],
+        )
+        for row in rows
+    ]
+
+    return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)

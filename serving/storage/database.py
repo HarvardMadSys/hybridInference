@@ -349,6 +349,7 @@ class DatabaseLogger:
                 CREATE TABLE IF NOT EXISTS api_keys (
                     id BIGSERIAL PRIMARY KEY,
                     key_hash TEXT NOT NULL UNIQUE,
+                    api_key_encrypted TEXT,
                     key_prefix TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     user_name TEXT,
@@ -398,6 +399,11 @@ class DatabaseLogger:
             await conn.execute("""
                 ALTER TABLE api_keys
                 ADD COLUMN IF NOT EXISTS quota_monthly_cost_usd DECIMAL(10, 4)
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_keys
+                ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT
             """)
 
             # Add account_id column to link API keys to user accounts (self-registered users only)

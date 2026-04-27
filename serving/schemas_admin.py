@@ -338,11 +338,47 @@ class DeleteUserResponse(BaseModel):
     message: str
 
 
+# ========================================
+# Admin Recent Requests Schemas
+# ========================================
+
+
+class AdminRecentRequestItem(BaseModel):
+    """A single API request log entry (admin view, includes user_id)."""
+
+    request_id: str
+    user_id: str | None = None
+    model_id: str
+    provider: str
+    timestamp: datetime
+    status_code: int | None = None
+    latency_ms: int | None = None
+    ttft_ms: int | None = None
+    stream: bool | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    error: str | None = None
+
+
+class AdminRecentRequestsResponse(BaseModel):
+    """Paginated list of recent requests across all users (admin view)."""
+
+    requests: list[AdminRecentRequestItem]
+    total: int
+    limit: int
+    offset: int
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
     "APIKeyDetailUsage",
     "APIKeyListItem",
+    "AdminRecentRequestItem",
+    "AdminRecentRequestsResponse",
     "ApproveUserRequest",
     "ApproveUserResponse",
     "AuditLogEntry",

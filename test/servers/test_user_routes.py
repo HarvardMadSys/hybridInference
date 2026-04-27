@@ -83,6 +83,7 @@ class TestAPIKeyManagement:
         assert "key_prefix" in data
         assert "key_masked" in data
         assert data["key_prefix"] == test_user_with_key["key_prefix"]
+        assert data["api_key"] == test_user_with_key["api_key"]
         assert "*" in data["key_masked"]  # Should be masked
         assert "created_at" in data
         assert "status" in data
@@ -95,6 +96,104 @@ class TestAPIKeyManagement:
         response = await auth_app_client.get("/user/api-keys", headers=auth_headers)
 
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_list_api_keys_no_key(
+        self, auth_app_client: AsyncClient, test_user, auth_headers
+    ):
+        """Test listing API keys when user has no key."""
+        response = await auth_app_client.get("/user/api-keys/all", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json() == {"keys": []}
+
+    @pytest.mark.asyncio
+    async def test_list_api_keys_success(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """Test listing active and revoked API key records."""
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE api_keys
+                SET status = 'revoked'
+                WHERE key_prefix = $1
+                """,
+                test_user_with_key["key_prefix"],
+            )
+
+        response = await auth_app_client.post("/user/api-keys", headers=auth_headers)
+        assert response.status_code == 201
+
+        response = await auth_app_client.get("/user/api-keys/all", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["keys"]) == 2
+        assert data["keys"][0]["status"] == "active"
+        assert data["keys"][1]["status"] == "revoked"
+        assert data["keys"][1]["api_key"] == test_user_with_key["api_key"]
+        assert "key_masked" in data["keys"][0]
+        assert "*" in data["keys"][0]["key_masked"]
+
+    @pytest.mark.asyncio
+    async def test_delete_api_key_revokes_active_key(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """Test deleting an API key revokes the active key."""
+        response = await auth_app_client.delete(
+            f"/user/api-keys/{test_user_with_key['key_prefix']}",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["key_prefix"] == test_user_with_key["key_prefix"]
+        assert data["status"] == "revoked"
+
+        async with auth_db_logger.pool.acquire() as conn:
+            key_row = await conn.fetchrow(
+                "SELECT status FROM api_keys WHERE key_prefix = $1",
+                test_user_with_key["key_prefix"],
+            )
+        assert key_row["status"] == "revoked"
+
+    @pytest.mark.asyncio
+    async def test_delete_api_key_not_found(
+        self, auth_app_client: AsyncClient, test_user, auth_headers
+    ):
+        """Test deleting an API key that does not belong to the user."""
+        response = await auth_app_client.delete("/user/api-keys/hyi-missing", headers=auth_headers)
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_api_key_removes_revoked_key(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """Test deleting an already-revoked API key removes it."""
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET status = 'revoked' WHERE key_prefix = $1",
+                test_user_with_key["key_prefix"],
+            )
+
+        response = await auth_app_client.delete(
+            f"/user/api-keys/{test_user_with_key['key_prefix']}",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["key_prefix"] == test_user_with_key["key_prefix"]
+        assert data["status"] == "deleted"
+
+        async with auth_db_logger.pool.acquire() as conn:
+            key_row = await conn.fetchrow(
+                "SELECT status FROM api_keys WHERE key_prefix = $1",
+                test_user_with_key["key_prefix"],
+            )
+        assert key_row is None
 
     @pytest.mark.asyncio
     async def test_regenerate_api_key_success(
