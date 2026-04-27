@@ -189,7 +189,7 @@ async def login(
 ) -> LoginResponse:
     """Login with email and password.
 
-    Returns access token (15 min) and sets refresh token as HttpOnly cookie (30 days).
+    Returns access token (15 min) and sets refresh token as HttpOnly cookie (365 days by default).
 
     Rate limits:
     - 5 attempts per 15 minutes per email

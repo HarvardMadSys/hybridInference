@@ -76,7 +76,7 @@ def test_defaults_without_env_file(make_settings) -> None:
     settings = make_settings(env=None, env_file=None)
     assert settings.jwt_algorithm == "HS256"
     assert settings.jwt_access_token_expire_minutes == 15
-    assert settings.jwt_refresh_token_expire_days == 30
+    assert settings.jwt_refresh_token_expire_days == 365
     assert settings.signup_enabled is True
     assert settings.signup_default_daily_quota_usd == 100.00  # float, not Decimal
     # In production we default to secure cookies; override via env for local HTTP dev if needed.
