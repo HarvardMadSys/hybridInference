@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useRecentRequests } from '@/lib/hooks';
 import type { RecentRequestItem } from '@/lib/api/user';
 
@@ -147,10 +147,21 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
 
 export function RecentRequests(): JSX.Element {
   const [page, setPage] = useState(0);
+  const [jumpTo, setJumpTo] = useState('');
+  const jumpInputId = useId();
   const offset = page * PAGE_SIZE;
   const { data, isLoading, error } = useRecentRequests(PAGE_SIZE, offset);
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
+
+  const applyJumpToPage = (): void => {
+    if (totalPages < 2) return;
+    const n = Number.parseInt(jumpTo.trim(), 10);
+    if (!Number.isFinite(n)) return;
+    const target = Math.min(Math.max(1, n), totalPages);
+    setPage(target - 1);
+    setJumpTo('');
+  };
 
   return (
     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
@@ -233,24 +244,52 @@ export function RecentRequests(): JSX.Element {
 
           {/* Pagination */}
           {totalPages > 1 && (
-            <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-4">
-              <button
-                onClick={() => setPage(Math.max(0, page - 1))}
-                disabled={page === 0}
-                className="inline-flex items-center rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                ← Previous
-              </button>
-              <span className="text-xs text-gray-500">
-                Page {page + 1} of {totalPages}
-              </span>
-              <button
-                onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
-                disabled={page >= totalPages - 1}
-                className="inline-flex items-center rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Next →
-              </button>
+            <div className="mt-4 flex flex-col gap-3 border-t border-gray-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center justify-center gap-3 sm:justify-start">
+                <button
+                  onClick={() => setPage(Math.max(0, page - 1))}
+                  disabled={page === 0}
+                  className="inline-flex items-center rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  ← Previous
+                </button>
+                <span className="text-xs text-gray-500 tabular-nums">
+                  Page {page + 1} of {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
+                  disabled={page >= totalPages - 1}
+                  className="inline-flex items-center rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next →
+                </button>
+              </div>
+              <div className="flex items-center justify-center gap-2 sm:justify-end">
+                <label htmlFor={jumpInputId} className="text-xs text-gray-500 whitespace-nowrap">
+                  Jump to page
+                </label>
+                <input
+                  id={jumpInputId}
+                  type="number"
+                  min={1}
+                  max={totalPages}
+                  inputMode="numeric"
+                  value={jumpTo}
+                  onChange={(e) => setJumpTo(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') applyJumpToPage();
+                  }}
+                  className="w-16 rounded-md border border-gray-200 px-2 py-1 text-center text-sm text-gray-900 tabular-nums focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  aria-label="Page number to jump to"
+                />
+                <button
+                  type="button"
+                  onClick={applyJumpToPage}
+                  className="inline-flex items-center rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
+                >
+                  Go
+                </button>
+              </div>
             </div>
           )}
         </>
