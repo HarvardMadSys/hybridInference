@@ -878,7 +878,8 @@ async def get_recent_requests(
                     request_id, model_id, provider, timestamp,
                     status_code, latency_ms, ttft_ms, stream,
                     prompt_tokens, completion_tokens, reasoning_tokens,
-                    total_tokens, cost_usd, error
+                    cache_read_tokens, cache_write_tokens,
+                    total_tokens, cost_usd, prompt, error
                 FROM api_logs
                 WHERE user_id = $1 {model_filter}
                 ORDER BY timestamp DESC
@@ -907,8 +908,11 @@ async def get_recent_requests(
             prompt_tokens=row["prompt_tokens"],
             completion_tokens=row["completion_tokens"],
             reasoning_tokens=row["reasoning_tokens"],
+            cache_read_tokens=row["cache_read_tokens"],
+            cache_write_tokens=row["cache_write_tokens"],
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
+            prompt=row["prompt"],
             error=row["error"],
         )
         for row in rows
