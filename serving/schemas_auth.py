@@ -265,7 +265,6 @@ class RecentRequestItem(BaseModel):
     cache_write_tokens: int | None = None
     total_tokens: int | None = None
     cost_usd: float | None = None
-    prompt: str | None = None
     error: str | None = None
 
 

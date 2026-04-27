@@ -60,11 +60,6 @@ function formatLatency(ms: number | null | undefined): string {
   return `${ms}ms`;
 }
 
-function formatPrompt(prompt: string | null | undefined): string {
-  if (!prompt) return '—';
-  return prompt.length > 280 ? `${prompt.slice(0, 280)}...` : prompt;
-}
-
 function RequestRow({ req }: { req: RecentRequestItem }) {
   const [expanded, setExpanded] = useState(false);
   const cacheRead = req.cache_read_tokens ?? 0;
@@ -136,12 +131,6 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
               <div>
                 <span className="text-gray-500">Cached Tokens:</span>{' '}
                 <span className="text-gray-700">{formatTokens(cachedTokens)}</span>
-              </div>
-              <div className="col-span-full mt-1">
-                <span className="text-gray-500">Prompt:</span>{' '}
-                <span className="text-gray-700 whitespace-pre-wrap break-words">
-                  {formatPrompt(req.prompt)}
-                </span>
               </div>
               {req.error && (
                 <div className="col-span-full mt-1">

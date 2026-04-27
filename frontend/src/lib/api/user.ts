@@ -160,7 +160,6 @@ export interface RecentRequestItem {
   cache_write_tokens?: number | null;
   total_tokens?: number | null;
   cost_usd?: number | null;
-  prompt?: string | null;
   error?: string | null;
 }
 
