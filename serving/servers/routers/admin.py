@@ -1538,7 +1538,7 @@ async def admin_list_recent_requests(
                 request_id, user_id, model_id, provider, timestamp,
                 status_code, latency_ms, ttft_ms, stream,
                 prompt_tokens, completion_tokens, reasoning_tokens,
-                total_tokens, cost_usd, error,
+                total_tokens, cost_usd, prompt, response, error,
                 metadata->>'ip' AS user_ip
             FROM api_logs
             {where_sql}
@@ -1567,6 +1567,8 @@ async def admin_list_recent_requests(
             reasoning_tokens=row["reasoning_tokens"],
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
+            prompt=row["prompt"],
+            response=row["response"],
             error=row["error"],
         )
         for row in rows

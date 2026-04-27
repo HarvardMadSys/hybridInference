@@ -35,6 +35,35 @@ function relTime(s: string | null): string {
   return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+function previewText(value: string, maxChars: number = 280): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}...`;
+}
+
+function FoldedText({ label, value }: { label: string; value?: string | null }) {
+  if (!value) {
+    return (
+      <div className="col-span-full">
+        <span className="text-gray-500">{label}:</span> <span className="text-gray-700">—</span>
+      </div>
+    );
+  }
+
+  return (
+    <details className="col-span-full group">
+      <summary className="cursor-pointer list-none text-gray-500 flex items-center gap-2">
+        <span>{label}:</span>
+        <span className="text-gray-700 whitespace-pre-wrap break-words">{previewText(value)}</span>
+        <span className="text-[10px] text-gray-400 group-open:hidden">(show more)</span>
+        <span className="text-[10px] text-gray-400 hidden group-open:inline">(show less)</span>
+      </summary>
+      <pre className="mt-1 overflow-x-auto rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-700 whitespace-pre-wrap break-words">
+        {value}
+      </pre>
+    </details>
+  );
+}
+
 const AUDIT_ACTIONS = [
   'approve_user',
   'reject_user',
@@ -1148,6 +1177,8 @@ export default function AdminPage() {
                                         {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
                                       </span>
                                     </div>
+                                    <FoldedText label="Prompt" value={req.prompt} />
+                                    <FoldedText label="Response" value={req.response} />
                                     {req.error && (
                                       <div className="col-span-full mt-1">
                                         <span className="text-red-600">Error: {req.error}</span>

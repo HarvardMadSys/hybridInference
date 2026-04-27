@@ -299,6 +299,8 @@ export interface AdminRecentRequestItem {
   reasoning_tokens?: number | null;
   total_tokens?: number | null;
   cost_usd?: number | null;
+  prompt?: string | null;
+  response?: string | null;
   error?: string | null;
 }
 
