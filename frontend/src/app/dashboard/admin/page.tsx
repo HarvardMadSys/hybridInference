@@ -53,6 +53,14 @@ export default function AdminPage() {
   // Top-level tab
   const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests'>('users');
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    if (tab === 'users' || tab === 'audit' || tab === 'requests') {
+      setActiveTab(tab);
+    }
+  }, []);
+
   // Users state
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [counts, setCounts] = useState<StatusCounts>({
@@ -316,6 +324,14 @@ export default function AdminPage() {
     { key: 'deleted', label: 'Deleted', count: counts.deleted },
   ];
 
+  const onTabChange = (tab: 'users' | 'audit' | 'requests') => {
+    setActiveTab(tab);
+    const params = new URLSearchParams(window.location.search);
+    params.set('tab', tab);
+    const next = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({}, '', next);
+  };
+
   return (
     <ProtectedRoute>
       <div className="mx-auto w-full max-w-4xl pb-20">
@@ -362,14 +378,14 @@ export default function AdminPage() {
           {(['users', 'requests', 'audit'] as const).map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => onTabChange(tab)}
               className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
                 activeTab === tab
                   ? 'bg-gray-900 text-white'
                   : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
               }`}
             >
-              {tab === 'users' ? 'Users' : tab === 'requests' ? 'Requests' : 'Audit Log'}
+              {tab === 'users' ? 'Users' : tab === 'requests' ? 'Recent Requests' : 'Audit Log'}
             </button>
           ))}
         </div>
