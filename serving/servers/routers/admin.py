@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -11,6 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from serving.schemas_admin import (
     AdminRecentRequestItem,
     AdminRecentRequestsResponse,
+    AdminRequestMetricsBucket,
+    AdminRequestMetricsResponse,
+    AdminRequestMetricsWindow,
     APIKeyDetailResponse,
     APIKeyDetailUsage,
     APIKeyListItem,
@@ -1468,6 +1471,139 @@ async def delete_user(
 # ========================================
 # Recent Requests (Admin View)
 # ========================================
+
+
+REQUEST_METRIC_WINDOWS: tuple[tuple[str, str, int, int], ...] = (
+    ("5m", "Last 5 min", 5, 1),
+    ("1h", "Last 1 hour", 60, 5),
+    ("4h", "Last 4 hours", 240, 15),
+    ("1d", "Last 1 day", 1440, 60),
+    ("1w", "Last 1 week", 10080, 360),
+    ("1mo", "Last 1 month", 43200, 1440),
+)
+
+
+@router.get("/admin/request-metrics", response_model=AdminRequestMetricsResponse)
+async def admin_get_request_metrics(
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminRequestMetricsResponse:
+    """Return request count trends for admin dashboard lookback windows."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    windows: list[AdminRequestMetricsWindow] = []
+    async with db_logger.pool.acquire() as conn:
+        for key, label, window_minutes, bucket_minutes in REQUEST_METRIC_WINDOWS:
+            rows = await conn.fetch(
+                """
+                WITH config AS (
+                    SELECT ($2::int * 60) AS bucket_seconds
+                ),
+                bounds AS (
+                    SELECT
+                        date_trunc('minute', NOW()) AS end_time,
+                        date_trunc('minute', NOW())
+                            - ($1::int * interval '1 minute') AS start_time,
+                        to_timestamp(
+                            floor(
+                                extract(
+                                    epoch FROM date_trunc('minute', NOW())
+                                        - ($1::int * interval '1 minute')
+                                ) / config.bucket_seconds
+                            ) * config.bucket_seconds
+                        ) AS aligned_start
+                    FROM config
+                ),
+                series AS (
+                    SELECT generate_series(
+                        (SELECT aligned_start FROM bounds),
+                        (SELECT end_time FROM bounds),
+                        $2::int * interval '1 minute'
+                    ) AS bucket_start
+                ),
+                bucketed_logs AS (
+                    SELECT
+                        to_timestamp(
+                            floor(extract(epoch from timestamp) / ($2::int * 60))
+                            * ($2::int * 60)
+                        ) AS bucket_start,
+                        COUNT(*) AS request_count,
+                        COUNT(*) FILTER (
+                            WHERE status_code >= 200 AND status_code < 400
+                        ) AS success_count,
+                        COUNT(*) FILTER (
+                            WHERE error IS NOT NULL
+                               OR status_code IS NULL
+                               OR status_code < 200
+                               OR status_code >= 400
+                        ) AS error_count,
+                        AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
+                            AS avg_latency_ms
+                    FROM api_logs, bounds
+                    WHERE timestamp >= bounds.start_time
+                      AND timestamp <= bounds.end_time
+                    GROUP BY 1
+                )
+                SELECT
+                    series.bucket_start,
+                    COALESCE(bucketed_logs.request_count, 0) AS request_count,
+                    COALESCE(bucketed_logs.success_count, 0) AS success_count,
+                    COALESCE(bucketed_logs.error_count, 0) AS error_count,
+                    bucketed_logs.avg_latency_ms
+                FROM series
+                LEFT JOIN bucketed_logs
+                  ON bucketed_logs.bucket_start = series.bucket_start
+                ORDER BY series.bucket_start ASC
+                """,
+                window_minutes,
+                bucket_minutes,
+            )
+
+            buckets = [
+                AdminRequestMetricsBucket(
+                    start_time=row["bucket_start"],
+                    request_count=int(row["request_count"] or 0),
+                    success_count=int(row["success_count"] or 0),
+                    error_count=int(row["error_count"] or 0),
+                    avg_latency_ms=(
+                        round(float(row["avg_latency_ms"]), 1)
+                        if row["avg_latency_ms"] is not None
+                        else None
+                    ),
+                )
+                for row in rows
+            ]
+            total_requests = sum(bucket.request_count for bucket in buckets)
+            success_requests = sum(bucket.success_count for bucket in buckets)
+            error_requests = sum(bucket.error_count for bucket in buckets)
+            latency_values = [
+                bucket.avg_latency_ms
+                for bucket in buckets
+                if bucket.avg_latency_ms is not None and bucket.request_count > 0
+            ]
+            windows.append(
+                AdminRequestMetricsWindow(
+                    key=key,
+                    label=label,
+                    window_minutes=window_minutes,
+                    bucket_minutes=bucket_minutes,
+                    total_requests=total_requests,
+                    success_requests=success_requests,
+                    error_requests=error_requests,
+                    avg_latency_ms=(
+                        round(sum(latency_values) / len(latency_values), 1)
+                        if latency_values
+                        else None
+                    ),
+                    buckets=buckets,
+                )
+            )
+
+    return AdminRequestMetricsResponse(
+        generated_at=datetime.now(timezone.utc),
+        windows=windows,
+    )
 
 
 @router.get("/admin/recent-requests", response_model=AdminRecentRequestsResponse)

@@ -283,6 +283,36 @@ export async function listAuditLog(
 // Recent Requests (Admin View)
 // ========================================
 
+export interface AdminRequestMetricsBucket {
+  start_time: string;
+  request_count: number;
+  success_count: number;
+  error_count: number;
+  avg_latency_ms?: number | null;
+}
+
+export interface AdminRequestMetricsWindow {
+  key: string;
+  label: string;
+  window_minutes: number;
+  bucket_minutes: number;
+  total_requests: number;
+  success_requests: number;
+  error_requests: number;
+  avg_latency_ms?: number | null;
+  buckets: AdminRequestMetricsBucket[];
+}
+
+export interface AdminRequestMetricsResponse {
+  generated_at: string;
+  windows: AdminRequestMetricsWindow[];
+}
+
+export async function getRequestMetrics(): Promise<AdminRequestMetricsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/request-metrics');
+  return jsonOrThrow<AdminRequestMetricsResponse>(resp);
+}
+
 export interface AdminRecentRequestItem {
   request_id: string;
   user_id: string | null;

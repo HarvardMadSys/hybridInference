@@ -343,6 +343,37 @@ class DeleteUserResponse(BaseModel):
 # ========================================
 
 
+class AdminRequestMetricsBucket(BaseModel):
+    """A single request-count bucket for admin traffic charts."""
+
+    start_time: datetime
+    request_count: int
+    success_count: int
+    error_count: int
+    avg_latency_ms: float | None = None
+
+
+class AdminRequestMetricsWindow(BaseModel):
+    """Request metrics for a fixed lookback window."""
+
+    key: str
+    label: str
+    window_minutes: int
+    bucket_minutes: int
+    total_requests: int
+    success_requests: int
+    error_requests: int
+    avg_latency_ms: float | None = None
+    buckets: list[AdminRequestMetricsBucket]
+
+
+class AdminRequestMetricsResponse(BaseModel):
+    """Request metrics for multiple admin dashboard lookback windows."""
+
+    generated_at: datetime
+    windows: list[AdminRequestMetricsWindow]
+
+
 class AdminRecentRequestItem(BaseModel):
     """A single API request log entry (admin view, includes user identity)."""
 
@@ -384,6 +415,9 @@ __all__ = [
     "APIKeyListItem",
     "AdminRecentRequestItem",
     "AdminRecentRequestsResponse",
+    "AdminRequestMetricsBucket",
+    "AdminRequestMetricsResponse",
+    "AdminRequestMetricsWindow",
     "ApproveUserRequest",
     "ApproveUserResponse",
     "AuditLogEntry",
