@@ -48,7 +48,7 @@ class TestAPIKeyManagement:
 
     @pytest.mark.asyncio
     async def test_create_api_key_success(
-        self, auth_app_client: AsyncClient, test_user, auth_headers
+        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_db_logger
     ):
         """Test creating API key."""
         response = await auth_app_client.post("/user/api-keys", headers=auth_headers)
@@ -59,6 +59,26 @@ class TestAPIKeyManagement:
         assert data["api_key"].startswith("hyi-")  # Changed from sk-
         assert len(data["api_key"]) > 20
         assert "key_prefix" in data
+
+        async with auth_db_logger.pool.acquire() as conn:
+            audit_row = await conn.fetchrow(
+                """
+                SELECT action, details, success
+                FROM admin_audit_log
+                WHERE target_user_id = $1 AND action = 'create_key'
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                test_user["id"],
+            )
+        assert audit_row is not None
+        assert audit_row["success"] is True
+        details = audit_row["details"]
+        if isinstance(details, str):
+            details = json.loads(details)
+        assert details["actor"] == "user"
+        assert details["key_prefix"] == data["key_prefix"]
+        assert data["api_key"] not in json.dumps(details)
 
     @pytest.mark.asyncio
     async def test_create_duplicate_api_key(
@@ -197,7 +217,7 @@ class TestAPIKeyManagement:
 
     @pytest.mark.asyncio
     async def test_regenerate_api_key_success(
-        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
     ):
         """Test regenerating API key."""
         old_key_prefix = test_user_with_key["key_prefix"]
@@ -211,6 +231,27 @@ class TestAPIKeyManagement:
         assert data["old_key_prefix"] == old_key_prefix
         assert data["api_key"].startswith("hyi-")  # Changed from new_api_key
         assert data["api_key"] != test_user_with_key["api_key"]  # Changed from new_api_key
+
+        async with auth_db_logger.pool.acquire() as conn:
+            audit_row = await conn.fetchrow(
+                """
+                SELECT action, details, success
+                FROM admin_audit_log
+                WHERE target_user_id = $1 AND action = 'regenerate_key'
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                test_user_with_key["id"],
+            )
+        assert audit_row is not None
+        assert audit_row["success"] is True
+        details = audit_row["details"]
+        if isinstance(details, str):
+            details = json.loads(details)
+        assert details["actor"] == "user"
+        assert details["old_key_prefix"] == old_key_prefix
+        assert details["new_key_prefix"] == data["key_prefix"]
+        assert data["api_key"] not in json.dumps(details)
 
     @pytest.mark.asyncio
     async def test_regenerate_api_key_no_existing_key(
@@ -333,6 +374,17 @@ class TestUserProfile:
         response = await auth_app_client.patch("/user/profile", headers=auth_headers, json={})
 
         assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_update_profile_blank_username(
+        self, auth_app_client: AsyncClient, test_user, auth_headers
+    ):
+        """Test updating profile with a blank username fails."""
+        response = await auth_app_client.patch(
+            "/user/profile", headers=auth_headers, json={"user_name": "  "}
+        )
+
+        assert response.status_code == 422
 
 
 class TestLLMProberLayout:

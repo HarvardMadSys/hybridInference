@@ -1,8 +1,11 @@
 """Pydantic schemas for authentication and user management."""
 
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, StringConstraints
+
+UserName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=50)]
 
 
 # Authentication request/response schemas
@@ -11,7 +14,7 @@ class SignupRequest(BaseModel):
 
     email: EmailStr
     password: str = Field(..., min_length=8)
-    user_name: str | None = None
+    user_name: UserName
 
 
 class SignupResponse(BaseModel):
@@ -79,7 +82,7 @@ class UserInfo(BaseModel):
 class UserProfileUpdate(BaseModel):
     """User profile update request."""
 
-    user_name: str | None = None
+    user_name: UserName | None = None
 
 
 class LLMProberLayoutState(BaseModel):

@@ -80,12 +80,14 @@ function FoldedText({ label, value }: { label: string; value?: string | null }) 
 }
 
 const AUDIT_ACTIONS = [
+  'create_user',
   'approve_user',
   'reject_user',
   'update_user',
   'delete_user',
   'create_key',
   'revoke_key',
+  'delete_key',
   'hard_delete_key',
   'regenerate_key',
   'update_key',
@@ -1037,9 +1039,9 @@ export default function AdminPage() {
                   <p className="text-[13px] text-gray-400">No requests found.</p>
                 </div>
               ) : (
-                <div className="-mx-1 overflow-x-auto">
+                <div className="-mx-1 max-h-[70vh] overflow-auto overscroll-contain">
                   <table className="min-w-full">
-                    <thead>
+                    <thead className="sticky top-0 z-10 bg-gray-50">
                       <tr className="border-b border-gray-200">
                         <th className="py-2 pl-4 pr-3 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                           Model

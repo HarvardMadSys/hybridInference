@@ -23,6 +23,7 @@ from serving.schemas_auth import (
     UserInfo,
     VerifyEmailResponse,
 )
+from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_current_user, get_db_logger
 from serving.utils import password as password_utils
 from serving.utils.email import (
@@ -39,6 +40,7 @@ from serving.utils.jwt import (
     get_refresh_token_expire_days,
 )
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = get_logger(__name__)
@@ -164,6 +166,18 @@ async def signup(
             )
 
     logger.info(f"New user registered: {user_id} ({body.email}) [status={initial_status}]")
+    await log_admin_action(
+        db_logger,
+        get_client_ip(request),
+        "create_user",
+        user_id,
+        {
+            "email": body.email.lower(),
+            "user_name": body.user_name,
+            "status": initial_status,
+            "requires_approval": require_approval,
+        },
+    )
 
     if require_approval:
         message = (

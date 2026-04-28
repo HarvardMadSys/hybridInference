@@ -31,7 +31,7 @@ export default function SignupPage() {
       const result = await signup({
         email: data.email,
         password: data.password,
-        user_name: data.userName,
+        user_name: data.userName.trim(),
       });
       setSignupResult(result);
     } catch (err) {
@@ -126,6 +126,15 @@ export default function SignupPage() {
             autoComplete="email"
             error={errors.email?.message}
             {...register('email')}
+          />
+
+          <InputField
+            label="Username"
+            type="text"
+            autoComplete="username"
+            hint="This name is shown in your account and admin review."
+            error={errors.userName?.message}
+            {...register('userName')}
           />
 
           <InputField

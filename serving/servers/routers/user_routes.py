@@ -33,11 +33,18 @@ from serving.schemas_auth import (
     UserInfo,
     UserProfileUpdate,
 )
-from serving.servers.auth import decrypt_api_key, encrypt_api_key, generate_api_key, hash_api_key
+from serving.servers.auth import (
+    decrypt_api_key,
+    encrypt_api_key,
+    generate_api_key,
+    hash_api_key,
+    log_admin_action,
+)
 from serving.servers.deps import get_current_user, get_db_logger
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
@@ -227,6 +234,7 @@ async def reset_llm_prober_layout(
 
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=201)
 async def create_api_key(
+    request: Request,
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyResponse:
@@ -288,6 +296,17 @@ async def create_api_key(
         )
 
     logger.info(f"API key created for user: {current_user['user_id']}")
+    await log_admin_action(
+        db_logger,
+        get_client_ip(request),
+        "create_key",
+        current_user["user_id"],
+        {
+            "actor": "user",
+            "key_prefix": key_prefix,
+            "tier": current_user.get("tier", "free"),
+        },
+    )
 
     return APIKeyResponse(
         api_key=api_key,
@@ -373,6 +392,7 @@ async def list_api_keys(
 
 @router.delete("/api-keys/{key_prefix}", response_model=APIKeyDeleteResponse)
 async def delete_api_key(
+    request: Request,
     key_prefix: str,
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
@@ -380,6 +400,11 @@ async def delete_api_key(
     """Revoke an active key or remove a revoked key owned by the current user."""
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
+
+    existing = None
+    response: APIKeyDeleteResponse | None = None
+    audit_action: str | None = None
+    audit_details: dict[str, Any] | None = None
 
     async with db_logger.pool.acquire() as conn:
         revoked = await conn.fetchrow(
@@ -398,41 +423,55 @@ async def delete_api_key(
                 current_user["user_id"],
                 key_prefix,
             )
-            return APIKeyDeleteResponse(
+            response = APIKeyDeleteResponse(
                 key_prefix=revoked["key_prefix"],
                 status=revoked["status"],
                 message="API key revoked.",
             )
-
-        existing = await conn.fetchrow(
-            """
-            SELECT status
-            FROM api_keys
-            WHERE account_id = $1 AND key_prefix = $2
-            """,
-            current_user["user_id"],
-            key_prefix,
-        )
-        if existing and existing["status"] == "revoked":
-            deleted = await conn.fetchrow(
+            audit_action = "revoke_key"
+            audit_details = {"actor": "user", "key_prefix": revoked["key_prefix"]}
+        else:
+            existing = await conn.fetchrow(
                 """
-                DELETE FROM api_keys
-                WHERE account_id = $1 AND key_prefix = $2 AND status = 'revoked'
-                RETURNING key_prefix
+                SELECT status
+                FROM api_keys
+                WHERE account_id = $1 AND key_prefix = $2
                 """,
                 current_user["user_id"],
                 key_prefix,
             )
-            logger.info(
-                "Revoked API key removed for user: %s key_prefix=%s",
-                current_user["user_id"],
-                key_prefix,
-            )
-            return APIKeyDeleteResponse(
-                key_prefix=deleted["key_prefix"],
-                status="deleted",
-                message="Revoked API key removed.",
-            )
+            if existing and existing["status"] == "revoked":
+                deleted = await conn.fetchrow(
+                    """
+                    DELETE FROM api_keys
+                    WHERE account_id = $1 AND key_prefix = $2 AND status = 'revoked'
+                    RETURNING key_prefix
+                    """,
+                    current_user["user_id"],
+                    key_prefix,
+                )
+                logger.info(
+                    "Revoked API key removed for user: %s key_prefix=%s",
+                    current_user["user_id"],
+                    key_prefix,
+                )
+                response = APIKeyDeleteResponse(
+                    key_prefix=deleted["key_prefix"],
+                    status="deleted",
+                    message="Revoked API key removed.",
+                )
+                audit_action = "delete_key"
+                audit_details = {"actor": "user", "key_prefix": deleted["key_prefix"]}
+
+    if response and audit_action:
+        await log_admin_action(
+            db_logger,
+            get_client_ip(request),
+            audit_action,
+            current_user["user_id"],
+            audit_details,
+        )
+        return response
 
     if not existing:
         raise HTTPException(status_code=404, detail="API key not found")
@@ -441,6 +480,7 @@ async def delete_api_key(
 
 @router.post("/api-keys/regenerate", response_model=APIKeyRegenerateResponse)
 async def regenerate_api_key(
+    request: Request,
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyRegenerateResponse:
@@ -506,6 +546,17 @@ async def regenerate_api_key(
         )
 
     logger.info(f"API key regenerated for user: {current_user['user_id']}")
+    await log_admin_action(
+        db_logger,
+        get_client_ip(request),
+        "regenerate_key",
+        current_user["user_id"],
+        {
+            "actor": "user",
+            "old_key_prefix": old_key_row["key_prefix"],
+            "new_key_prefix": key_prefix,
+        },
+    )
 
     return APIKeyRegenerateResponse(
         api_key=api_key,
