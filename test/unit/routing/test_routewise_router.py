@@ -16,7 +16,6 @@ from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import HedgedAdapter
 from routing.routewise.router import RouteWiseRouter, SubscriptionType
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -359,7 +358,7 @@ class TestRouteWisePDDecision:
             shadow_price_L_seed=0.0000001,
             shadow_price_U_seed=0.001,
         )
-        router, quota_adapter, api_adapter = _make_router_with_quota_and_api(
+        router, quota_adapter, _api_adapter = _make_router_with_quota_and_api(
             config=config, prompt_price="3.0", completion_price="15.0"
         )
         # Warm the predictor so v_t is meaningful.
@@ -381,7 +380,7 @@ class TestRouteWisePDDecision:
             shadow_price_L_seed=1000.0,
             shadow_price_U_seed=10000.0,
         )
-        router, quota_adapter, api_adapter = _make_router_with_quota_and_api(
+        router, _quota_adapter, api_adapter = _make_router_with_quota_and_api(
             config=config, prompt_price="3.0", completion_price="15.0"
         )
         for _ in range(25):
@@ -396,7 +395,7 @@ class TestRouteWisePDDecision:
     def test_lapd_uses_conservative_lcb(self):
         """LA-PD uses q10 (LCB) instead of q50 for value estimation."""
         config = RouteWiseConfig(decision_rule="lapd", daily_quota=10000)
-        router, quota_adapter, api_adapter = _make_router_with_quota_and_api(config=config)
+        router, _quota_adapter, _api_adapter = _make_router_with_quota_and_api(config=config)
 
         # Warm up predictor.
         for _ in range(25):
@@ -431,7 +430,7 @@ class TestRouteWisePDDecision:
             shadow_price_L_seed=0.0000001,
             shadow_price_U_seed=0.001,
         )
-        router, quota_adapter, api_adapter = _make_router_with_quota_and_api(config=config)
+        router, _quota_adapter, api_adapter = _make_router_with_quota_and_api(config=config)
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
@@ -462,7 +461,7 @@ class TestRouteWisePDDecision:
             shadow_price_L_seed=0.0000001,
             shadow_price_U_seed=0.001,
         )
-        router, quota_adapter, api_adapter = _make_router_with_quota_and_api(config=config)
+        router, quota_adapter, _api_adapter = _make_router_with_quota_and_api(config=config)
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
@@ -486,7 +485,7 @@ class TestRouteWisePDDecision:
             shadow_price_L_seed=0.0000001,
             shadow_price_U_seed=0.001,
         )
-        router, quota_adapter, api_adapter = _make_router_with_quota_and_api(config=config)
+        router, quota_adapter, _api_adapter = _make_router_with_quota_and_api(config=config)
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
@@ -531,7 +530,7 @@ class TestRouteWiseObservation:
         double-count quota.
         """
         config = RouteWiseConfig(daily_quota=5000)
-        router, quota_adapter, api_adapter = _make_router_with_quota_and_api(config=config)
+        router, _quota_adapter, _api_adapter = _make_router_with_quota_and_api(config=config)
 
         initial_remaining = router.quota_mgr.remaining
 
@@ -555,7 +554,7 @@ class TestRouteWiseObservation:
     def test_record_observation_api_does_not_consume_quota(self):
         """Quota is untouched for S_A routed observations."""
         config = RouteWiseConfig(daily_quota=5000)
-        router, quota_adapter, api_adapter = _make_router_with_quota_and_api(config=config)
+        router, _quota_adapter, _api_adapter = _make_router_with_quota_and_api(config=config)
 
         initial_remaining = router.quota_mgr.remaining
 
@@ -634,7 +633,7 @@ class TestRouteWiseLayer2:
             latency_lp_interval_sec=0.0,  # Always re-solve.
             latency_slo_sec=2.0,
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         # Warm predictor.
         for _ in range(25):
@@ -658,7 +657,7 @@ class TestRouteWiseLayer2:
         config = RouteWiseConfig(
             latency_min_samples=100,  # Very high threshold.
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, api_a, _api_b = _make_router_with_two_api(config)
 
         # Warm predictor.
         for _ in range(25):
@@ -672,7 +671,7 @@ class TestRouteWiseLayer2:
     def test_record_observation_updates_latency_profile(self):
         """Observation flows to the endpoint's ProviderProfile."""
         config = RouteWiseConfig()
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         obs = RoutingObservation(
             model_id="test-model",
@@ -723,7 +722,7 @@ class TestRouteWiseLayer2:
             latency_slo_sec=2.0,
             latency_hedge_mode="shadow",
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         # Warm predictor.
         for _ in range(25):
@@ -751,7 +750,7 @@ class TestRouteWiseLayer2:
     def test_error_observation_updates_profile(self):
         """Failed observation records error in the profile."""
         config = RouteWiseConfig()
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         obs = RoutingObservation(
             model_id="test-model",
@@ -940,7 +939,7 @@ class TestRouteWiseSCDecision:
 
     def test_sc_routes_to_concurrency_when_available(self):
         """S_C selected when slots are available."""
-        router, conc_adapter, api_adapter = _make_router_with_conc_and_api()
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api()
 
         # Warm predictor so v_t is meaningful.
         for _ in range(25):
@@ -956,7 +955,7 @@ class TestRouteWiseSCDecision:
             concurrency_enabled=True,
             concurrency_limit=1,
         )
-        router, conc_adapter, api_adapter = _make_router_with_conc_and_api(config=config)
+        router, _conc_adapter, api_adapter = _make_router_with_conc_and_api(config=config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -976,7 +975,7 @@ class TestRouteWiseSCDecision:
             shadow_price_L_seed=0.001,
             shadow_price_U_seed=0.500,
         )
-        router, conc_adapter, quota_adapter, api_adapter = _make_router_three_tier(config=config)
+        router, conc_adapter, _quota_adapter, _api_adapter = _make_router_three_tier(config=config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -990,7 +989,7 @@ class TestRouteWiseSCDecision:
             concurrency_enabled=False,
             concurrency_limit=4,
         )
-        router, conc_adapter, api_adapter = _make_router_with_conc_and_api(config=config)
+        router, _conc_adapter, api_adapter = _make_router_with_conc_and_api(config=config)
         assert router.conc_mgr is None
 
         for _ in range(25):
@@ -1008,7 +1007,7 @@ class TestRouteWiseSCDecision:
             shadow_price_L_seed=0.0000001,
             shadow_price_U_seed=0.001,
         )
-        router, conc_adapter, quota_adapter, api_adapter = _make_router_three_tier(config=config)
+        router, _conc_adapter, quota_adapter, _api_adapter = _make_router_three_tier(config=config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1028,7 +1027,7 @@ class TestRouteWiseSCDecision:
             shadow_price_L_seed=0.0000001,
             shadow_price_U_seed=0.001,
         )
-        router, conc_adapter, quota_adapter, api_adapter = _make_router_three_tier(config=config)
+        router, _conc_adapter, _quota_adapter, api_adapter = _make_router_three_tier(config=config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1076,7 +1075,7 @@ class TestRouteWiseSCLifecycle:
     @pytest.mark.asyncio
     async def test_slot_acquired_and_released_on_success(self):
         """Slot released after successful execution."""
-        router, conc_adapter, api_adapter = _make_router_with_conc_and_api()
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api()
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1103,7 +1102,7 @@ class TestRouteWiseSCLifecycle:
     @pytest.mark.asyncio
     async def test_slot_released_on_provider_error(self):
         """Slot released even when adapter raises an exception."""
-        router, conc_adapter, api_adapter = _make_router_with_conc_and_api()
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api()
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1112,24 +1111,26 @@ class TestRouteWiseSCLifecycle:
         assert selected is conc_adapter
         assert router.conc_mgr.active == 1
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("provider error"),
+        with (
+            patch.object(
+                type(router).__mro__[1],
+                "_execute_adapter",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("provider error"),
+            ),
+            pytest.raises(RuntimeError, match="provider error"),
         ):
-            with pytest.raises(RuntimeError, match="provider error"):
-                await router._execute_adapter(
-                    conc_adapter,
-                    "test-model",
-                    [{"role": "user", "content": "hi"}],
-                )
+            await router._execute_adapter(
+                conc_adapter,
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+            )
         assert router.conc_mgr.active == 0
 
     @pytest.mark.asyncio
     async def test_slot_released_on_cancel(self):
         """Slot released on asyncio.CancelledError."""
-        router, conc_adapter, api_adapter = _make_router_with_conc_and_api()
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api()
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1138,24 +1139,26 @@ class TestRouteWiseSCLifecycle:
         assert selected is conc_adapter
         assert router.conc_mgr.active == 1
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            side_effect=asyncio.CancelledError(),
+        with (
+            patch.object(
+                type(router).__mro__[1],
+                "_execute_adapter",
+                new_callable=AsyncMock,
+                side_effect=asyncio.CancelledError(),
+            ),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                await router._execute_adapter(
-                    conc_adapter,
-                    "test-model",
-                    [{"role": "user", "content": "hi"}],
-                )
+            await router._execute_adapter(
+                conc_adapter,
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+            )
         assert router.conc_mgr.active == 0
 
     @pytest.mark.asyncio
     async def test_stream_slot_released_on_completion(self):
         """Streaming: slot released after generator exhaustion."""
-        router, conc_adapter, api_adapter = _make_router_with_conc_and_api()
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api()
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1190,7 +1193,7 @@ class TestRouteWiseSCLifecycle:
             concurrency_enabled=True,
             concurrency_limit=1,
         )
-        router, conc_adapter, api_adapter = _make_router_with_conc_and_api(config=config)
+        router, _conc_adapter, api_adapter = _make_router_with_conc_and_api(config=config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1226,7 +1229,7 @@ class TestRouteWiseSCLifecycle:
             shadow_price_U_seed=0.001,
         )
         # Need a router with S_Q + S_C + S_A.
-        router, conc_adapter, quota_adapter, api_adapter = _make_router_three_tier(config=config)
+        router, _conc_adapter, quota_adapter, _api_adapter = _make_router_three_tier(config=config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1418,7 +1421,7 @@ class TestRouteWiseDecisionMetadata:
 
     def test_sc_decision_stores_metadata(self):
         """S_C selection stores metadata with selected_tier='concurrency'."""
-        router, conc, quota, api = _make_router_with_all_tiers()
+        router, conc, _quota, _api = _make_router_with_all_tiers()
         request_id = "req-test-sc"
         context = {"request_id": request_id}
 
@@ -1435,7 +1438,7 @@ class TestRouteWiseDecisionMetadata:
 
     def test_sq_decision_stores_metadata(self):
         """S_Q selection stores metadata with selected_tier='quota'."""
-        router, quota, api = _make_router_with_quota_and_api()
+        router, quota, _api = _make_router_with_quota_and_api()
         request_id = "req-test-sq"
         context = {"request_id": request_id}
 
@@ -1454,7 +1457,7 @@ class TestRouteWiseDecisionMetadata:
         """S_A selection stores metadata with selected_tier='api'."""
         # Make quota too expensive by setting high shadow price seed.
         config = RouteWiseConfig(daily_quota=1000, shadow_price_L_seed=1000.0)
-        router, quota, api = _make_router_with_quota_and_api(config=config)
+        router, _quota, api = _make_router_with_quota_and_api(config=config)
         request_id = "req-test-sa"
         context = {"request_id": request_id}
 
@@ -1469,7 +1472,7 @@ class TestRouteWiseDecisionMetadata:
 
     def test_no_request_id_still_works(self):
         """Selection works without request_id (no metadata stored)."""
-        router, quota, api = _make_router_with_quota_and_api()
+        router, _quota, _api = _make_router_with_quota_and_api()
         # No request_id in context
         selected = router._select_adapter("test-model", {})
         assert selected is not None
@@ -1569,7 +1572,7 @@ class TestRouteWiseDecisionMetadata:
     @pytest.mark.asyncio
     async def test_backup_won_detected_on_config_swap(self):
         """backup_won is set when HedgedAdapter swaps config."""
-        router, quota, api = _make_router_with_quota_and_api()
+        router, _quota, _api = _make_router_with_quota_and_api()
 
         # Create a mock HedgedAdapter that swaps config on execution
         primary_adapter = _make_adapter(
@@ -1620,7 +1623,7 @@ class TestRouteWiseDecisionMetadata:
         backup_adapter.chat_completion = _fast_backup
 
         # Execute through RouteWise's _execute_adapter
-        result = await router._execute_adapter(
+        await router._execute_adapter(
             hedged,
             "test-model",
             [{"role": "user", "content": "hi"}],
@@ -1665,7 +1668,7 @@ class TestRouteWiseDecisionMetadata:
 
         async def _fail_stream(*args, **kwargs):
             raise RuntimeError("stream fail")
-            yield  # noqa: RET503
+            yield
 
         quota.stream_chat_completion = _fail_stream
         api.stream_chat_completion = _fail_stream
@@ -1687,7 +1690,7 @@ class TestRouteWiseDecisionMetadata:
     @pytest.mark.asyncio
     async def test_quota_committed_always_zero(self):
         """quota_committed is 0.0 for all tiers (v_t lives in its own field)."""
-        router, conc, quota, api = _make_router_with_all_tiers()
+        router, _conc, _quota, _api = _make_router_with_all_tiers()
 
         # S_C path
         meta_sc = None
@@ -1698,7 +1701,7 @@ class TestRouteWiseDecisionMetadata:
 
         # S_Q path (disable concurrency to force quota)
         config_no_conc = RouteWiseConfig(concurrency_enabled=False)
-        router2, quota2, api2 = _make_router_with_quota_and_api(config=config_no_conc)
+        router2, _quota2, _api2 = _make_router_with_quota_and_api(config=config_no_conc)
         router2._select_adapter("test-model", {"request_id": "req-sq-qc"})
         meta_sq = router2._pending_decisions.get("req-sq-qc")
         if meta_sq and meta_sq["selected_tier"] == "quota":
@@ -1707,7 +1710,7 @@ class TestRouteWiseDecisionMetadata:
 
         # S_A path
         config_sa = RouteWiseConfig(shadow_price_L_seed=1000.0)
-        router3, quota3, api3 = _make_router_with_quota_and_api(config=config_sa)
+        router3, _quota3, _api3 = _make_router_with_quota_and_api(config=config_sa)
         router3._select_adapter("test-model", {"request_id": "req-sa-qc"})
         meta_sa = router3._pending_decisions.get("req-sa-qc")
         if meta_sa:

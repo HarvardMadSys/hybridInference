@@ -5,8 +5,6 @@ message that contains tool_calls. Some clients (e.g., Codex CLI) may insert extr
 assistant "preamble" messages or user messages between tool_calls and the tool response.
 """
 
-import pytest
-
 from serving.adapters.profiles import ProviderProfile, normalize_messages_for_profile
 
 

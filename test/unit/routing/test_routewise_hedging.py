@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,6 +20,8 @@ from routing.routewise.hedging import (
 )
 from routing.routewise.latency import ProviderProfile
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -623,7 +624,7 @@ class TestHedgedAdapterStreaming:
 
         async def _fail_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
             raise ConnectionError("stream failed")
-            yield  # Make it a generator  # noqa: E501
+            yield  # Make it a generator
 
         primary = _make_fake_adapter(provider="fail-primary")
         primary.stream_chat_completion = _fail_stream
@@ -741,7 +742,7 @@ class TestRouterHedgeMode:
             latency_hedge_mode="economic",
             latency_hedge_cost_ratio=0.05,  # Low threshold -> easy to justify
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -775,7 +776,7 @@ class TestRouterHedgeMode:
             latency_hedge_mode="economic",
             latency_hedge_cost_ratio=0.9,  # Very high -> hard to justify
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         now = time.time()
         # Both providers fast.
@@ -800,7 +801,7 @@ class TestRouterHedgeMode:
             latency_hedge_mode="shadow",
             latency_hedge_cost_ratio=0.05,
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1114,7 +1115,7 @@ class TestStreamingReqCtxUpdate:
             endpoint_id="ep:slow",
         ):
             ctx_snapshots: list[dict[str, Any]] = []
-            async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            async for _chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
                 # Capture ctx on first real chunk.
                 if not ctx_snapshots:
                     ctx_snapshots.append(dict(req_ctx.get()))
@@ -1160,7 +1161,7 @@ class TestStreamingReqCtxUpdate:
             endpoint_id="ep:fast",
         ):
             ctx_snapshots: list[dict[str, Any]] = []
-            async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            async for _chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}]):
                 if not ctx_snapshots:
                     ctx_snapshots.append(dict(req_ctx.get()))
 

@@ -9,6 +9,7 @@
 # Allow overriding uv run flags, e.g.:
 #   make lint UV_RUN="uv run --active"
 UV_RUN ?= uv run
+PYTHON_VERSION ?= 3.12
 
 # Frontend directory
 FRONTEND_DIR := frontend
@@ -59,8 +60,16 @@ setup-dev:  ## Set up development environment
 	@echo "$(YELLOW)Setting up development environment...$(RESET)"
 	@# Init git submodules (e.g. docs/free_inference)
 	git submodule update --init --recursive
-	@# Create venv if it doesn't exist; keep idempotent
-	[ -d .venv ] || uv venv -p 3.10
+	@# Create venv if it doesn't exist; fail fast if an existing venv uses a different Python minor.
+	@if [ -x .venv/bin/python ]; then \
+		current="$$(.venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"; \
+		if [ "$$current" != "$(PYTHON_VERSION)" ]; then \
+			echo "Existing .venv uses Python $$current, expected $(PYTHON_VERSION). Remove .venv or rerun with PYTHON_VERSION=$$current."; \
+			exit 1; \
+		fi; \
+	else \
+		uv venv -p $(PYTHON_VERSION); \
+	fi
 	@# Install package in editable mode
 	uv pip install -e .
 	@# Install requirements.txt if it exists
@@ -97,11 +106,11 @@ frontend-type-check:  ## Run TypeScript type checking
 
 frontend-test:  ## Run frontend tests
 	@echo "$(YELLOW)Running frontend tests...$(RESET)"
-	cd $(FRONTEND_DIR) && npm run test -- --run
+	cd $(FRONTEND_DIR) && npm run test
 	@echo "$(GREEN)OK Frontend tests passed$(RESET)"
 
-frontend-check: frontend-lint frontend-type-check frontend-test  ## Run all frontend checks
-	@echo "$(GREEN)OK All frontend checks passed$(RESET)"
+frontend-check: frontend-lint frontend-type-check frontend-test  ## Run all configured frontend checks
+	@echo "$(GREEN)OK All configured frontend checks passed$(RESET)"
 
 # Combined targets
 check-all: lint test frontend-check  ## Run all checks (backend + frontend)

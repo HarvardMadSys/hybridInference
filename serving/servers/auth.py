@@ -25,6 +25,16 @@ logger = get_logger(__name__)
 QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
 
 
+def is_user_auth_enabled() -> bool:
+    """Return whether API-key user auth is enabled.
+
+    Fail closed by default: auth is enabled unless explicitly disabled with
+    USER_AUTH_ENABLED=0/false/no/off.
+    """
+    raw = os.getenv("USER_AUTH_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def generate_api_key() -> str:
     """Generate a new API key with format: hyi-{32 random bytes}."""
     random_part = secrets.token_urlsafe(32)
@@ -77,7 +87,7 @@ async def verify_api_key(
     Raises HTTPException(401/429) on auth/quota failures.
     """
     # Check if auth is enabled
-    if os.getenv("USER_AUTH_ENABLED", "0") != "1":
+    if not is_user_auth_enabled():
         # Auth disabled - allow all, mark as anonymous
         return {
             "user_id": "anonymous",
@@ -263,7 +273,7 @@ async def optional_verify_api_key(
     side-effects.
     """
     # Auth disabled — treat caller as anonymous admin
-    if os.getenv("USER_AUTH_ENABLED", "0") != "1":
+    if not is_user_auth_enabled():
         return {"user_id": "anonymous", "role": "admin", "authenticated": False, "is_admin": True}
 
     # Extract API key from headers

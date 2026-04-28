@@ -65,6 +65,24 @@ async def test_auth_disabled_returns_anonymous(monkeypatch, mock_request):
 
 
 @pytest.mark.asyncio
+async def test_auth_defaults_enabled(monkeypatch, mock_request, mock_db_with_pool):
+    """Missing USER_AUTH_ENABLED fails closed instead of granting anonymous admin."""
+    monkeypatch.delenv("USER_AUTH_ENABLED", raising=False)
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+    db_logger, _ = mock_db_with_pool
+
+    with pytest.raises(HTTPException) as exc:
+        await verify_api_key(
+            request=mock_request,
+            authorization=None,
+            x_api_key=None,
+            db_logger=db_logger,
+        )
+
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_auth_missing_headers_returns_401(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     monkeypatch.setenv("API_KEY_SECRET", "test-secret")
