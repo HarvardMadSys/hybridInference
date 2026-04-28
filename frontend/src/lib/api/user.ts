@@ -60,6 +60,10 @@ export interface UsageStats {
     spent_today_usd?: number;
     spent_month_usd?: number;
     remaining_today_usd?: number;
+    reset_at?: string | null;
+    reset_timezone?: string;
+    contact_email?: string;
+    increase_request_message?: string;
   };
   usage: {
     requests: number;

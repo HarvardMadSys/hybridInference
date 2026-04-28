@@ -171,6 +171,12 @@ class QuotaInfo(BaseModel):
     spent_today_usd: float | None = None
     spent_month_usd: float | None = None
     remaining_today_usd: float | None = None
+    reset_at: datetime | None = None
+    reset_timezone: str = "UTC"
+    contact_email: str = "admin@freeinference.org"
+    increase_request_message: str = (
+        "Need more quota? Email admin@freeinference.org and explain your use case."
+    )
 
 
 class UsageStats(BaseModel):

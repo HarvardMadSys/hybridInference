@@ -12,9 +12,23 @@ function formatUsd(amount: number): string {
   }).format(amount);
 }
 
+function formatResetAt(value?: string | null): string {
+  if (!value) return 'the next daily reset';
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  }).format(new Date(value));
+}
+
 export function UsageStats(): JSX.Element {
   const [period, setPeriod] = useState<'today' | 'month' | 'all'>('today');
   const { data: stats, isLoading, error } = useUsageStats(period);
+  const quota = stats?.quota;
+  const contactEmail = quota?.contact_email ?? 'admin@freeinference.org';
 
   return (
     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
@@ -50,6 +64,36 @@ export function UsageStats(): JSX.Element {
           {stats.quota && !stats.quota.has_key && (
             <div className="rounded-md bg-red-50 px-4 py-3 text-red-700 ring-1 ring-inset ring-red-200">
               API key not found
+            </div>
+          )}
+
+          {quota?.has_key && (
+            <div className="rounded-lg bg-blue-50 p-4 ring-1 ring-inset ring-blue-200">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-xs font-medium uppercase tracking-wide text-blue-700">
+                    Daily quota remaining
+                  </div>
+                  <div className="mt-1 text-2xl font-semibold tabular-nums text-blue-950">
+                    {formatUsd(quota.remaining_today_usd ?? 0)}
+                    {quota.daily_limit_usd != null && (
+                      <span className="ml-2 text-sm font-normal text-blue-700">
+                        of {formatUsd(quota.daily_limit_usd)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-sm text-blue-800">
+                    Resets at {formatResetAt(quota.reset_at)}.
+                  </div>
+                </div>
+                <div className="max-w-md text-sm text-blue-800">
+                  Need more quota? Email{' '}
+                  <a className="font-medium underline" href={`mailto:${contactEmail}`}>
+                    {contactEmail}
+                  </a>{' '}
+                  and explain your use case.
+                </div>
+              </div>
             </div>
           )}
 

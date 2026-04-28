@@ -228,6 +228,10 @@ async def test_auth_quota_exceeded_returns_429(monkeypatch, mock_request, mock_d
     assert exc.value.status_code == 429
     assert exc.value.headers["Retry-After"]
     assert exc.value.headers["X-RateLimit-Limit-Cost"] == "1000.0"
+    assert exc.value.headers["X-RateLimit-Reset"]
+    assert exc.value.detail["remaining_usd"] == 0
+    assert exc.value.detail["reset_at"]
+    assert exc.value.detail["contact_email"] == "admin@freeinference.org"
 
 
 @pytest.mark.asyncio

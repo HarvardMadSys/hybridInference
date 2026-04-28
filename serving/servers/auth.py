@@ -22,6 +22,7 @@ from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
+QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
 
 
 def generate_api_key() -> str:
@@ -189,6 +190,7 @@ async def verify_api_key(
     # Check cost quota
     if cost_spent + estimated_cost > quota_daily_cost_usd:
         seconds_until_midnight_utc = _seconds_until_utc_midnight()
+        quota_reset_at = _next_utc_midnight()
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
             provider=normalize_provider_label("system"),
@@ -200,20 +202,19 @@ async def verify_api_key(
                 "error": "Daily cost quota exceeded",
                 "quota_usd": quota_daily_cost_usd,
                 "spent_usd": cost_spent,
+                "remaining_usd": max(0, quota_daily_cost_usd - cost_spent),
+                "reset_at": quota_reset_at.isoformat(),
+                "contact_email": QUOTA_CONTACT_EMAIL,
+                "message": (
+                    f"Need more quota? Email {QUOTA_CONTACT_EMAIL} and explain your use case."
+                ),
                 "retry_after": seconds_until_midnight_utc,
             },
             headers={
                 "Retry-After": str(seconds_until_midnight_utc),
                 "X-RateLimit-Limit-Cost": str(quota_daily_cost_usd),
                 "X-RateLimit-Remaining-Cost": str(max(0, quota_daily_cost_usd - cost_spent)),
-                "X-RateLimit-Reset": str(
-                    int(
-                        (
-                            datetime.now(timezone.utc)
-                            + timedelta(seconds=seconds_until_midnight_utc)
-                        ).timestamp()
-                    )
-                ),
+                "X-RateLimit-Reset": str(int(quota_reset_at.timestamp())),
             },
         )
 
@@ -309,9 +310,13 @@ async def optional_verify_api_key(
 
 def _seconds_until_utc_midnight() -> int:
     """Calculate seconds until next UTC midnight."""
+    return int((_next_utc_midnight() - datetime.now(timezone.utc)).total_seconds())
+
+
+def _next_utc_midnight() -> datetime:
+    """Return the next UTC midnight timestamp."""
     now = datetime.now(timezone.utc)
-    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return int((tomorrow - now).total_seconds())
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 async def verify_admin_token(

@@ -51,6 +51,13 @@ from serving.utils.request_ip import get_client_ip
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
+QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
+
+
+def _get_daily_quota_reset_at() -> datetime:
+    """Return the next daily quota reset timestamp."""
+    now = datetime.now(timezone.utc)
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _get_usage_period_start(period: str, user_timezone: str) -> datetime | None:
@@ -618,6 +625,9 @@ async def get_usage(
                 spent_today_usd=None,
                 spent_month_usd=None,
                 remaining_today_usd=None,
+                reset_at=_get_daily_quota_reset_at(),
+                reset_timezone="UTC",
+                contact_email=QUOTA_CONTACT_EMAIL,
             ),
             usage=UsageStats(
                 requests=0,
@@ -631,8 +641,9 @@ async def get_usage(
     monthly_limit = None  # TODO: Add monthly quota support
 
     usage_start_at = _get_usage_period_start(period, timezone_name)
-    today_start_at = _get_usage_period_start("today", timezone_name)
+    quota_start_at = _get_usage_period_start("today", "UTC")
     month_start_at = _get_usage_period_start("month", timezone_name)
+    quota_reset_at = _get_daily_quota_reset_at()
 
     # Get usage statistics, tolerate missing logging table in minimal test DB
     async with db_logger.pool.acquire() as conn:
@@ -652,7 +663,7 @@ async def get_usage(
                 usage_start_at,
             )
 
-            # Get today's spending
+            # Get spending in the enforced daily quota window.
             today_row = await conn.fetchrow(
                 """
                 SELECT COALESCE(SUM(cost_usd), 0) as spent_today
@@ -661,7 +672,7 @@ async def get_usage(
                   AND timestamp >= $2::timestamptz
                 """,
                 current_user["user_id"],
-                today_start_at,
+                quota_start_at,
             )
 
             # Get month's spending
@@ -699,6 +710,9 @@ async def get_usage(
             spent_today_usd=spent_today,
             spent_month_usd=spent_month,
             remaining_today_usd=remaining_today,
+            reset_at=quota_reset_at,
+            reset_timezone="UTC",
+            contact_email=QUOTA_CONTACT_EMAIL,
         ),
         usage=UsageStats(
             requests=int(usage_row["requests"] or 0),
