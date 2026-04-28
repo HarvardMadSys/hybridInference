@@ -1,16 +1,20 @@
 """User dashboard routes for API key management and usage statistics."""
 
+import asyncio
 import csv
 import io
 import json
+import math
 import os
+import time
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 
 from serving.exceptions import (
     UserNotFoundError,
@@ -55,6 +59,29 @@ logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
 QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
 _MAX_RECENT_REQUESTS_CSV_ROWS = 100_000
+_RECENT_REQUESTS_CSV_EXPORT_COOLDOWN_SECONDS = 30
+_RECENT_REQUESTS_CSV_EXPORT_MAX_CONCURRENT = 2
+_recent_requests_csv_export_lock = asyncio.Lock()
+_recent_requests_csv_export_last_started_at: dict[str, float] = {}
+_recent_requests_csv_export_active_count = 0
+_RECENT_REQUESTS_CSV_HEADERS = [
+    "request_id",
+    "model_id",
+    "provider",
+    "timestamp",
+    "status_code",
+    "latency_ms",
+    "ttft_ms",
+    "stream",
+    "prompt_tokens",
+    "completion_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "total_tokens",
+    "cost_usd",
+    "error",
+]
 
 
 def _get_daily_quota_reset_at() -> datetime:
@@ -86,19 +113,17 @@ def _get_usage_period_start(period: str, user_timezone: str) -> datetime | None:
     return local_start.astimezone(timezone.utc)
 
 
-def _timestamp_to_csv_cell(value: datetime | object | None) -> str:
+def _timestamp_to_csv_cell(value: datetime | None) -> str:
     if value is None:
         return ""
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
+    return value.isoformat()
 
 
 def _cost_to_csv_cell(value: Decimal | float | int | None) -> str:
     if value is None:
         return ""
     if isinstance(value, Decimal):
-        return str(float(value))
+        return str(value)
     return str(float(value))
 
 
@@ -110,6 +135,97 @@ def _text_to_csv_cell(value: object | None) -> str:
     if text and text[0] in ("=", "+", "-", "@", "\t", "\r", "\n"):
         return "'" + text
     return text
+
+
+def _csv_chunk(buffer: io.StringIO, writer: csv.writer, row: list[Any]) -> bytes:
+    """Write one CSV row and return the encoded chunk."""
+    writer.writerow(row)
+    chunk = buffer.getvalue()
+    buffer.seek(0)
+    buffer.truncate(0)
+    return chunk.encode("utf-8")
+
+
+def _recent_request_csv_row(row: Any) -> list[Any]:
+    """Convert one api_logs row into a spreadsheet-safe CSV row."""
+    return [
+        _text_to_csv_cell(row["request_id"]),
+        _text_to_csv_cell(row["model_id"]),
+        _text_to_csv_cell(row["provider"]),
+        _timestamp_to_csv_cell(row["timestamp"]),
+        row["status_code"] if row["status_code"] is not None else "",
+        row["latency_ms"] if row["latency_ms"] is not None else "",
+        row["ttft_ms"] if row["ttft_ms"] is not None else "",
+        row["stream"] if row["stream"] is not None else "",
+        row["prompt_tokens"] if row["prompt_tokens"] is not None else "",
+        row["completion_tokens"] if row["completion_tokens"] is not None else "",
+        row["reasoning_tokens"] if row["reasoning_tokens"] is not None else "",
+        row["cache_read_tokens"] if row["cache_read_tokens"] is not None else "",
+        row["cache_write_tokens"] if row["cache_write_tokens"] is not None else "",
+        row["total_tokens"] if row["total_tokens"] is not None else "",
+        _cost_to_csv_cell(row["cost_usd"]),
+        _text_to_csv_cell(row["error"]),
+    ]
+
+
+async def _acquire_recent_requests_csv_export_slot(user_id: str) -> None:
+    """Reserve one process-local CSV export slot for a user."""
+    global _recent_requests_csv_export_active_count
+
+    now = time.monotonic()
+    async with _recent_requests_csv_export_lock:
+        if _recent_requests_csv_export_active_count >= _RECENT_REQUESTS_CSV_EXPORT_MAX_CONCURRENT:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many CSV exports are already running. Please try again later.",
+            )
+
+        last_started = _recent_requests_csv_export_last_started_at.get(user_id)
+        if last_started is not None:
+            retry_after = _RECENT_REQUESTS_CSV_EXPORT_COOLDOWN_SECONDS - (now - last_started)
+            if retry_after > 0:
+                retry_after_seconds = max(1, math.ceil(retry_after))
+                raise HTTPException(
+                    status_code=429,
+                    detail="CSV export is cooling down. Please try again later.",
+                    headers={"Retry-After": str(retry_after_seconds)},
+                )
+
+        _recent_requests_csv_export_active_count += 1
+        _recent_requests_csv_export_last_started_at[user_id] = now
+
+
+async def _release_recent_requests_csv_export_slot() -> None:
+    """Release one process-local CSV export slot."""
+    global _recent_requests_csv_export_active_count
+
+    async with _recent_requests_csv_export_lock:
+        _recent_requests_csv_export_active_count = max(
+            0, _recent_requests_csv_export_active_count - 1
+        )
+
+
+async def _stream_recent_requests_csv(
+    *,
+    db_logger: Any,
+    user_id: str,
+    query: str,
+    params: list[Any],
+) -> AsyncIterator[bytes]:
+    """Stream recent request rows from PostgreSQL as CSV chunks."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    yield _csv_chunk(buffer, writer, _RECENT_REQUESTS_CSV_HEADERS)
+
+    try:
+        async with db_logger.pool.acquire() as conn, conn.transaction():
+            async for row in conn.cursor(query, *params, prefetch=1000):
+                yield _csv_chunk(buffer, writer, _recent_request_csv_row(row))
+    except Exception:
+        logger.exception("Failed to stream recent requests CSV for user_id=%s", user_id)
+        raise
+    finally:
+        await _release_recent_requests_csv_export_slot()
 
 
 def _coerce_preferences(value: Any) -> dict[str, Any]:
@@ -1062,86 +1178,46 @@ async def export_recent_requests_csv(
     model_id: str | None = None,
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
-) -> Response:
+) -> StreamingResponse:
     """Export recent API requests as CSV (up to 100k rows, newest first)."""
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
 
     limit = max(1, min(limit, _MAX_RECENT_REQUESTS_CSV_ROWS))
-    params: list[Any] = [current_user["user_id"]]
-    model_clause = ""
+    user_id = current_user["user_id"]
+    await _acquire_recent_requests_csv_export_slot(user_id)
+
+    where_clauses = ["user_id = $1"]
+    params: list[Any] = [user_id]
     if model_id:
-        model_clause = " AND model_id = $2"
         params.append(model_id)
+        where_clauses.append(f"model_id = ${len(params)}")
     params.append(limit)
     limit_param = len(params)
+    where_sql = " AND ".join(where_clauses)
+    query = f"""
+        SELECT
+            request_id, model_id, provider, timestamp,
+            status_code, latency_ms, ttft_ms, stream,
+            prompt_tokens, completion_tokens, reasoning_tokens,
+            cache_read_tokens, cache_write_tokens,
+            total_tokens, cost_usd, error
+        FROM api_logs
+        WHERE {where_sql}
+        ORDER BY timestamp DESC
+        LIMIT ${limit_param}
+    """
+    filename = f"recent-requests-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.csv"
 
-    async with db_logger.pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""
-                SELECT
-                    request_id, model_id, provider, timestamp,
-                    status_code, latency_ms, ttft_ms, stream,
-                    prompt_tokens, completion_tokens, reasoning_tokens,
-                    cache_read_tokens, cache_write_tokens,
-                    total_tokens, cost_usd, error
-                FROM api_logs
-                WHERE user_id = $1{model_clause}
-                ORDER BY timestamp DESC
-                LIMIT ${limit_param}
-                """,
-            *params,
-        )
-
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(
-        [
-            "request_id",
-            "model_id",
-            "provider",
-            "timestamp",
-            "status_code",
-            "latency_ms",
-            "ttft_ms",
-            "stream",
-            "prompt_tokens",
-            "completion_tokens",
-            "reasoning_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-            "total_tokens",
-            "cost_usd",
-            "error",
-        ]
-    )
-    for row in rows:
-        writer.writerow(
-            [
-                _text_to_csv_cell(row["request_id"]),
-                _text_to_csv_cell(row["model_id"]),
-                _text_to_csv_cell(row["provider"]),
-                _timestamp_to_csv_cell(row["timestamp"]),
-                row["status_code"] if row["status_code"] is not None else "",
-                row["latency_ms"] if row["latency_ms"] is not None else "",
-                row["ttft_ms"] if row["ttft_ms"] is not None else "",
-                row["stream"] if row["stream"] is not None else "",
-                row["prompt_tokens"] if row["prompt_tokens"] is not None else "",
-                row["completion_tokens"] if row["completion_tokens"] is not None else "",
-                row["reasoning_tokens"] if row["reasoning_tokens"] is not None else "",
-                row["cache_read_tokens"] if row["cache_read_tokens"] is not None else "",
-                row["cache_write_tokens"] if row["cache_write_tokens"] is not None else "",
-                row["total_tokens"] if row["total_tokens"] is not None else "",
-                _cost_to_csv_cell(row["cost_usd"]),
-                _text_to_csv_cell(row["error"]),
-            ]
-        )
-
-    body = buffer.getvalue().encode("utf-8")
-    return Response(
-        content=body,
+    return StreamingResponse(
+        _stream_recent_requests_csv(
+            db_logger=db_logger,
+            user_id=user_id,
+            query=query,
+            params=params,
+        ),
         media_type="text/csv; charset=utf-8",
         headers={
-            "Content-Disposition": 'attachment; filename="recent-requests-export.csv"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )

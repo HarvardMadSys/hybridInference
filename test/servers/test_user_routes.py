@@ -2,12 +2,85 @@
 
 import csv
 import json
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 
 # Import fixtures from conftest_auth
 pytest_plugins = ["test.servers.conftest_auth"]
+
+
+class _AsyncRows:
+    """Minimal async iterator for fake asyncpg cursor rows."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __aiter__(self):
+        self._iterator = iter(self._rows)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iterator)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+class _AsyncContext:
+    """Simple async context manager returning a configured value."""
+
+    def __init__(self, value=None):
+        self._value = value
+
+    async def __aenter__(self):
+        return self._value
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakeCsvConnection:
+    """Small fake connection that captures cursor calls for export tests."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.cursor_calls = []
+
+    def transaction(self):
+        return _AsyncContext()
+
+    def cursor(self, query, *params, prefetch=None):
+        self.cursor_calls.append((query, params, prefetch))
+        return _AsyncRows(self._rows)
+
+
+class _FakeCsvPool:
+    """Small fake pool that returns the fake export connection."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def acquire(self):
+        return _AsyncContext(self._conn)
+
+
+async def _collect_streaming_response(response) -> str:
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8")
+
+
+def test_cost_to_csv_cell_preserves_decimal_precision():
+    """Test CSV cost formatting does not round Decimal values through float."""
+    from serving.servers.routers.user_routes import _cost_to_csv_cell
+
+    value = Decimal("0.000012345678901234")
+    assert _cost_to_csv_cell(value) == "0.000012345678901234"
 
 
 class TestUserInfo:
@@ -395,6 +468,54 @@ class TestRecentRequests:
         assert data["requests"][0]["model_id"] == model_a
 
     @pytest.mark.asyncio
+    async def test_recent_requests_csv_export_default_path_header_only(self):
+        """Test default CSV export path streams a header-only file."""
+        from serving.servers.routers.user_routes import export_recent_requests_csv
+
+        conn = _FakeCsvConnection(rows=[])
+        response = await export_recent_requests_csv(
+            current_user={"user_id": "csv-default-user"},
+            db_logger=SimpleNamespace(pool=_FakeCsvPool(conn)),
+        )
+        body = await _collect_streaming_response(response)
+
+        rows = list(csv.DictReader(body.splitlines()))
+        assert rows == []
+        query, params, prefetch = conn.cursor_calls[0]
+        assert "model_id =" not in query
+        assert params == ("csv-default-user", 100_000)
+        assert prefetch == 1000
+
+    @pytest.mark.asyncio
+    async def test_recent_requests_csv_export_clamps_upper_limit(self):
+        """Test export clamps excessive limits before opening the cursor."""
+        from serving.servers.routers.user_routes import export_recent_requests_csv
+
+        conn = _FakeCsvConnection(rows=[])
+        response = await export_recent_requests_csv(
+            limit=999_999,
+            current_user={"user_id": "csv-clamp-user"},
+            db_logger=SimpleNamespace(pool=_FakeCsvPool(conn)),
+        )
+        await _collect_streaming_response(response)
+
+        _query, params, _prefetch = conn.cursor_calls[0]
+        assert params == ("csv-clamp-user", 100_000)
+
+    @pytest.mark.asyncio
+    async def test_recent_requests_csv_export_unavailable_db_returns_500(self):
+        """Test export fails before streaming when the database is unavailable."""
+        from serving.servers.routers.user_routes import export_recent_requests_csv
+
+        with pytest.raises(HTTPException) as exc:
+            await export_recent_requests_csv(
+                current_user={"user_id": "csv-no-db-user"},
+                db_logger=SimpleNamespace(pool=None),
+            )
+
+        assert exc.value.status_code == 500
+
+    @pytest.mark.asyncio
     async def test_recent_requests_csv_export_filters_and_sanitizes(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
     ):
@@ -429,7 +550,7 @@ class TestRecentRequests:
 
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/csv")
-        assert "recent-requests-export.csv" in response.headers["content-disposition"]
+        assert "recent-requests-" in response.headers["content-disposition"]
         rows = list(csv.DictReader(response.text.splitlines()))
         assert len(rows) == 1
         assert rows[0]["request_id"] == f"'{request_id_a}"
