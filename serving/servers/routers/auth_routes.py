@@ -45,6 +45,7 @@ from serving.utils.request_ip import get_client_ip
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = get_logger(__name__)
 REFRESH_TOKEN_COOKIE = "refresh_token"
+PUBLIC_SIGNUPS_REQUIRE_ADMIN_APPROVAL = True
 
 
 def get_base_url(request: Request) -> str:
@@ -145,9 +146,8 @@ async def signup(
         # Return conflict using standard HTTPException for test apps without exception handlers
         raise HTTPException(status_code=409, detail=f"Email {body.email} already registered")
 
-    # Determine initial status based on approval setting
-    require_approval = os.getenv("SIGNUP_REQUIRE_APPROVAL", "0") == "1"
-    initial_status = "pending_approval" if require_approval else "active"
+    # Public self-service signups must be reviewed before login/API access.
+    initial_status = "pending_approval"
 
     # Create user
     user_id = generate_ulid()
@@ -191,8 +191,8 @@ async def signup(
         if not email_sent:
             logger.warning(f"Failed to send verification email to {body.email}")
 
-    # Notify admins of new registration when approval is required
-    if require_approval and is_email_enabled():
+    # Notify admins of new registrations.
+    if PUBLIC_SIGNUPS_REQUIRE_ADMIN_APPROVAL and is_email_enabled():
         admin_emails = [e.strip() for e in settings.admin_emails.split(",") if e.strip()]
         for admin_email in admin_emails:
             send_new_registration_admin_email(
@@ -212,23 +212,20 @@ async def signup(
             "email": body.email.lower(),
             "user_name": body.user_name,
             "status": initial_status,
-            "requires_approval": require_approval,
+            "requires_approval": PUBLIC_SIGNUPS_REQUIRE_ADMIN_APPROVAL,
         },
     )
 
-    if require_approval:
-        message = (
-            "Account created successfully. Your registration is pending admin approval. "
-            "You will receive an email once your account is approved."
-        )
-    else:
-        message = "Account created successfully. Please check your email to verify your account."
+    message = (
+        "Account created successfully. Your registration is pending admin approval. "
+        "You will receive an email once your account is approved."
+    )
 
     return SignupResponse(
         message=message,
         email=body.email,
         user_id=user_id,
-        requires_approval=require_approval,
+        requires_approval=PUBLIC_SIGNUPS_REQUIRE_ADMIN_APPROVAL,
     )
 
 

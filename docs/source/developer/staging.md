@@ -50,9 +50,11 @@ CORS_ALLOWED_ORIGINS=http://localhost:3002,http://localhost:3001,http://localhos
 
 USER_AUTH_ENABLED=1
 SIGNUP_ENABLED=1
-SIGNUP_REQUIRE_APPROVAL=0
 SIGNUP_REQUIRE_EMAIL_VERIFICATION=0
 ```
+
+Public self-service signups are always created as `pending_approval` and must be approved
+by an admin before login/API access.
 
 If you want admin bootstrap on login, also set:
 

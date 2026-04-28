@@ -370,7 +370,7 @@ async def require_db(auth_db_logger):
 
 
 @pytest_asyncio.fixture
-async def test_user(auth_client):
+async def test_user(auth_client, auth_db_logger):
     """Create a test user for auth tests."""
     user_data = {
         "email": f"test_{os.urandom(4).hex()}@example.com",
@@ -382,6 +382,16 @@ async def test_user(auth_client):
     assert response.status_code == 201
 
     user_id = response.json()["user_id"]
+
+    async with auth_db_logger.pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET status = 'active', reviewed_at = NOW(), reviewed_by = 'test'
+            WHERE id = $1
+            """,
+            user_id,
+        )
 
     return {
         **user_data,

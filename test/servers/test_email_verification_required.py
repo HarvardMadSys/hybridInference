@@ -39,6 +39,19 @@ async def set_email_verified(require_db, user_id: str, verified: bool) -> None:
         )
 
 
+async def approve_user_for_test(require_db, user_id: str) -> None:
+    """Approve a signed-up user so tests can isolate email verification behavior."""
+    async with require_db.pool.acquire() as conn:  # type: ignore[attr-defined]
+        await conn.execute(
+            """
+            UPDATE users
+            SET status = 'active', reviewed_at = NOW(), reviewed_by = 'test'
+            WHERE id = $1
+            """,
+            user_id,
+        )
+
+
 async def test_unverified_user_cannot_login(auth_client, require_db, email_verification_flag):
     """Test that users with unverified emails cannot login.
 
@@ -57,6 +70,9 @@ async def test_unverified_user_cannot_login(auth_client, require_db, email_verif
 
     response = await auth_client.post("/auth/signup", json=signup_data)
     assert response.status_code == 201
+    user_id = response.json()["user_id"]
+
+    await approve_user_for_test(require_db, user_id)
 
     # Try to login without verifying email
     login_data = {
@@ -88,6 +104,8 @@ async def test_verified_user_can_login(auth_client, require_db, email_verificati
     response = await auth_client.post("/auth/signup", json=signup_data)
     assert response.status_code == 201
     user_id = response.json()["user_id"]
+
+    await approve_user_for_test(require_db, user_id)
 
     # Manually verify the user's email (simulating email verification)
     await set_email_verified(require_db, user_id, True)
@@ -124,6 +142,8 @@ async def test_unverified_user_cannot_refresh_token(
     response = await auth_client.post("/auth/signup", json=signup_data)
     assert response.status_code == 201
     user_id = response.json()["user_id"]
+
+    await approve_user_for_test(require_db, user_id)
 
     # Manually verify email to allow initial login
     await set_email_verified(require_db, user_id, True)
@@ -164,6 +184,9 @@ async def test_email_verification_can_be_disabled(auth_client, require_db, email
 
     response = await auth_client.post("/auth/signup", json=signup_data)
     assert response.status_code == 201
+    user_id = response.json()["user_id"]
+
+    await approve_user_for_test(require_db, user_id)
 
     # Try to login without verifying email (should work when verification is disabled)
     login_data = {
@@ -191,6 +214,7 @@ async def test_unverified_user_cannot_access_protected_endpoint(
     assert response.status_code == 201
     user_id = response.json()["user_id"]
 
+    await approve_user_for_test(require_db, user_id)
     await set_email_verified(require_db, user_id, True)
 
     login_data = {

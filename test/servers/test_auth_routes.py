@@ -46,6 +46,19 @@ async def _create_refresh_session(auth_db_logger, user_id: str, refresh_token: s
         )
 
 
+async def _activate_user(auth_db_logger, user_id: str) -> None:
+    """Mark a signed-up user as approved for login-focused tests."""
+    async with auth_db_logger.pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET status = 'active', reviewed_at = NOW(), reviewed_by = 'test'
+            WHERE id = $1
+            """,
+            user_id,
+        )
+
+
 @pytest_asyncio.fixture
 async def auth_test_user(auth_db_logger):
     """Create a user backed by the auth-specific DB fixtures."""
@@ -100,8 +113,14 @@ class TestSignup:
         assert data["email"] == signup_data["email"]
         assert "user_id" in data
         assert "password" not in data
+        assert data["requires_approval"] is True
+        assert "pending admin approval" in data["message"]
 
         async with auth_db_logger.pool.acquire() as conn:
+            user_row = await conn.fetchrow(
+                "SELECT status FROM users WHERE id = $1",
+                data["user_id"],
+            )
             audit_row = await conn.fetchrow(
                 """
                 SELECT action, target_user_id, details, success
@@ -112,12 +131,16 @@ class TestSignup:
                 """,
                 data["user_id"],
             )
+        assert user_row is not None
+        assert user_row["status"] == "pending_approval"
         assert audit_row is not None
         assert audit_row["success"] is True
         details = audit_row["details"]
         if isinstance(details, str):
             details = json.loads(details)
         assert details["email"] == signup_data["email"].lower()
+        assert details["status"] == "pending_approval"
+        assert details["requires_approval"] is True
         assert "password" not in details
 
     @pytest.mark.asyncio
@@ -589,15 +612,19 @@ class TestAuthFlow:
 
     @pytest.mark.asyncio
     async def test_complete_signup_login_flow(
-        self, auth_app_client: AsyncClient, mock_email_service
+        self, auth_app_client: AsyncClient, mock_email_service, auth_db_logger
     ):
-        """Test complete flow: signup -> login -> access protected endpoint."""
+        """Test complete flow: signup -> approval -> login -> protected endpoint."""
         # 1. Signup
         signup_data = create_signup_request()
         signup_response = await auth_app_client.post("/auth/signup", json=signup_data)
         assert signup_response.status_code == 201
+        user_id = signup_response.json()["user_id"]
 
-        # 2. Login
+        # 2. Approve the account before login.
+        await _activate_user(auth_db_logger, user_id)
+
+        # 3. Login
         login_response = await auth_app_client.post(
             "/auth/login",
             json={
@@ -608,7 +635,7 @@ class TestAuthFlow:
         assert login_response.status_code == 200
         access_token = login_response.json()["access_token"]
 
-        # 3. Access protected endpoint
+        # 4. Access protected endpoint
         headers = {"Authorization": f"Bearer {access_token}"}
         me_response = await auth_app_client.get("/user/me", headers=headers)
         assert me_response.status_code == 200
