@@ -5,6 +5,8 @@ import json
 import pytest
 from httpx import AsyncClient
 
+from serving.servers.auth import hash_api_key
+
 # Import fixtures from conftest_auth
 pytest_plugins = ["test.servers.conftest_auth"]
 
@@ -61,6 +63,24 @@ class TestAPIKeyManagement:
         assert "key_prefix" in data
 
         async with auth_db_logger.pool.acquire() as conn:
+            key_row = await conn.fetchrow(
+                """
+                SELECT key_hash, key_prefix
+                FROM api_keys
+                WHERE account_id = $1 AND status = 'active'
+                """,
+                test_user["id"],
+            )
+            encrypted_column_exists = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'api_keys'
+                      AND column_name = 'api_key_encrypted'
+                )
+                """
+            )
             audit_row = await conn.fetchrow(
                 """
                 SELECT action, details, success
@@ -71,6 +91,10 @@ class TestAPIKeyManagement:
                 """,
                 test_user["id"],
             )
+        assert key_row is not None
+        assert key_row["key_hash"] == hash_api_key(data["api_key"])
+        assert key_row["key_prefix"] == data["key_prefix"]
+        assert encrypted_column_exists is False
         assert audit_row is not None
         assert audit_row["success"] is True
         details = audit_row["details"]

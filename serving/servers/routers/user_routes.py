@@ -35,7 +35,6 @@ from serving.schemas_auth import (
     UserProfileUpdate,
 )
 from serving.servers.auth import (
-    encrypt_api_key,
     generate_api_key,
     hash_api_key,
     log_admin_action,
@@ -291,7 +290,6 @@ async def create_api_key(
     # Generate new API key
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
-    api_key_encrypted = encrypt_api_key(api_key)
     key_prefix = api_key[:12]  # hyi-xxxxxxxx
 
     # Get default quota
@@ -302,13 +300,12 @@ async def create_api_key(
         await conn.execute(
             """
             INSERT INTO api_keys (
-                key_hash, api_key_encrypted, key_prefix, user_id, account_id,
+                key_hash, key_prefix, user_id, account_id,
                 status, quota_daily_cost_usd, tier
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             """,
             key_hash,
-            api_key_encrypted,
             key_prefix,
             current_user["user_id"],  # user_id = account_id for self-registered users
             current_user["user_id"],  # account_id links to users table
@@ -530,7 +527,6 @@ async def regenerate_api_key(
     # Generate new API key
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
-    api_key_encrypted = encrypt_api_key(api_key)
     key_prefix = api_key[:12]
 
     # Get default quota
@@ -552,13 +548,12 @@ async def regenerate_api_key(
         await conn.execute(
             """
                 INSERT INTO api_keys (
-                    key_hash, api_key_encrypted, key_prefix, user_id, account_id,
+                    key_hash, key_prefix, user_id, account_id,
                     status, quota_daily_cost_usd, tier
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 """,
             key_hash,
-            api_key_encrypted,
             key_prefix,
             current_user["user_id"],
             current_user["user_id"],

@@ -196,25 +196,23 @@ async def test_user_with_key(auth_db_logger, test_user):
     Returns:
         dict with user data and api_key_data
     """
-    from serving.servers.auth import encrypt_api_key, generate_api_key, hash_api_key
+    from serving.servers.auth import generate_api_key, hash_api_key
 
     # Generate API key
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
-    api_key_encrypted = encrypt_api_key(api_key)
     key_prefix = api_key[:12]
 
     async with auth_db_logger.pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO api_keys (
-                key_hash, api_key_encrypted, key_prefix, user_id, account_id,
+                key_hash, key_prefix, user_id, account_id,
                 status, quota_daily_cost_usd, tier
             )
-            VALUES ($1, $2, $3, $4, $5, 'active', 100.00, 'free')
+            VALUES ($1, $2, $3, $4, 'active', 100.00, 'free')
             """,
             key_hash,
-            api_key_encrypted,
             key_prefix,
             test_user["id"],
             test_user["id"],

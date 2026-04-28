@@ -349,7 +349,6 @@ class DatabaseLogger:
                 CREATE TABLE IF NOT EXISTS api_keys (
                     id BIGSERIAL PRIMARY KEY,
                     key_hash TEXT NOT NULL UNIQUE,
-                    api_key_encrypted TEXT,
                     key_prefix TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     user_name TEXT,
@@ -401,9 +400,12 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS quota_monthly_cost_usd DECIMAL(10, 4)
             """)
 
+            # Legacy reversible API key storage is intentionally removed.
+            # Authentication only requires key_hash; plaintext keys are shown
+            # once at creation/regeneration and never persisted recoverably.
             await conn.execute("""
                 ALTER TABLE api_keys
-                ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT
+                DROP COLUMN IF EXISTS api_key_encrypted
             """)
 
             # Add account_id column to link API keys to user accounts (self-registered users only)

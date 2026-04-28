@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException, Request
 
-from serving.servers.auth import decrypt_api_key, encrypt_api_key, hash_api_key, verify_api_key
+from serving.servers.auth import hash_api_key, verify_api_key
 from serving.storage.database import DatabaseLogger
 
 
@@ -121,16 +121,6 @@ def _setup_fetch_side_effects(
 def _hashed_key(monkeypatch, plaintext: str) -> str:
     monkeypatch.setenv("API_KEY_SECRET", "test-secret")
     return hash_api_key(plaintext)
-
-
-def test_api_key_encryption_round_trip(monkeypatch):
-    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
-    plaintext_key = "hyi-valid-key"
-
-    encrypted_key = encrypt_api_key(plaintext_key)
-
-    assert encrypted_key != plaintext_key
-    assert decrypt_api_key(encrypted_key) == plaintext_key
 
 
 @pytest.mark.asyncio

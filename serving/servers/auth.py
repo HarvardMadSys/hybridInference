@@ -4,11 +4,9 @@ import hashlib
 import hmac
 import os
 import secrets
-from base64 import urlsafe_b64encode
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving.observability.metrics import (
@@ -47,27 +45,6 @@ def hash_api_key(plaintext_key: str) -> str:
     if not secret:
         raise ValueError("API_KEY_SECRET must be set in environment")
     return hmac.new(secret, plaintext_key.encode(), hashlib.sha256).hexdigest()
-
-
-def _api_key_cipher() -> Fernet:
-    """Build a reversible cipher from the API key secret."""
-    secret = os.getenv("API_KEY_SECRET", "").encode()
-    if not secret:
-        raise ValueError("API_KEY_SECRET must be set in environment")
-    key = urlsafe_b64encode(hashlib.sha256(secret).digest())
-    return Fernet(key)
-
-
-def encrypt_api_key(plaintext_key: str) -> str:
-    """Encrypt an API key for user-facing display later."""
-    return _api_key_cipher().encrypt(plaintext_key.encode()).decode()
-
-
-def decrypt_api_key(encrypted_key: str | None) -> str | None:
-    """Decrypt a stored API key, returning None for legacy rows."""
-    if not encrypted_key:
-        return None
-    return _api_key_cipher().decrypt(encrypted_key.encode()).decode()
 
 
 def constant_time_compare(a: str, b: str) -> bool:

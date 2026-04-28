@@ -889,7 +889,6 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncpg" },
-    { name = "cryptography" },
     { name = "fastapi" },
     { name = "google-genai" },
     { name = "httpx" },
@@ -932,7 +931,6 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.8.0" },
     { name = "asyncpg", specifier = ">=0.28.0" },
-    { name = "cryptography", specifier = ">=47.0.0" },
     { name = "fastapi", specifier = ">=0.110.0" },
     { name = "google-genai", specifier = ">=1.33.0" },
     { name = "httpx", specifier = ">=0.28.1" },
