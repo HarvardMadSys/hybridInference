@@ -115,7 +115,7 @@ export function ApiKeyManager(): JSX.Element {
       {showKey && newApiKey && (
         <div className="mb-6 rounded-lg bg-yellow-50 p-4 ring-1 ring-inset ring-yellow-200">
           <p className="text-sm font-medium text-yellow-800 mb-2">
-            This key is now available in your API key list below.
+            Save this key now. It will only be shown once.
           </p>
           <div className="flex items-center gap-2">
             <code className="flex-1 break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
@@ -163,7 +163,7 @@ export function ApiKeyManager(): JSX.Element {
                   </code>
                   {!apiKey.api_key && (
                     <p className="mt-1 text-xs text-gray-500">
-                      Full key unavailable for keys created before encrypted storage.
+                      Full key is only shown immediately after creation or regeneration.
                     </p>
                   )}
                 </div>

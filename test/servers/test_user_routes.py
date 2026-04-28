@@ -103,7 +103,7 @@ class TestAPIKeyManagement:
         assert "key_prefix" in data
         assert "key_masked" in data
         assert data["key_prefix"] == test_user_with_key["key_prefix"]
-        assert data["api_key"] == test_user_with_key["api_key"]
+        assert data["api_key"] is None
         assert "*" in data["key_masked"]  # Should be masked
         assert "created_at" in data
         assert "status" in data
@@ -152,7 +152,7 @@ class TestAPIKeyManagement:
         assert len(data["keys"]) == 2
         assert data["keys"][0]["status"] == "active"
         assert data["keys"][1]["status"] == "revoked"
-        assert data["keys"][1]["api_key"] == test_user_with_key["api_key"]
+        assert data["keys"][1]["api_key"] is None
         assert "key_masked" in data["keys"][0]
         assert "*" in data["keys"][0]["key_masked"]
 
@@ -350,6 +350,48 @@ class TestUsageStatistics:
         assert data["usage"]["prompt_tokens"] >= 300
         assert data["usage"]["completion_tokens"] >= 130
         assert data["usage"]["cost_usd"] >= 0.03
+
+
+class TestRecentRequests:
+    """Test recent request listing endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_recent_requests_filters_by_model(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """Test model_id filtering uses correct SQL parameter binding."""
+        model_a = f"model-a-{test_user_with_key['id']}"
+        model_b = f"model-b-{test_user_with_key['id']}"
+        request_id_a = f"req-recent-{test_user_with_key['id']}-a"
+        request_id_b = f"req-recent-{test_user_with_key['id']}-b"
+
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO api_logs (
+                    request_id, model_id, provider, user_id, status_code
+                )
+                VALUES
+                    ($1, $2, 'test-provider', $3, 200),
+                    ($4, $5, 'test-provider', $3, 200)
+                """,
+                request_id_a,
+                model_a,
+                test_user_with_key["id"],
+                request_id_b,
+                model_b,
+            )
+
+        response = await auth_app_client.get(
+            f"/user/recent-requests?model_id={model_a}",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert [request["request_id"] for request in data["requests"]] == [request_id_a]
+        assert data["requests"][0]["model_id"] == model_a
 
 
 class TestUserProfile:

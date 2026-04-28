@@ -782,6 +782,10 @@ async def resend_verification(
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
 
+    generic_response = ResendVerificationResponse(
+        message="If this email requires verification, a verification email has been sent."
+    )
+
     # Find user
     async with db_logger.pool.acquire() as conn:
         user_row = await conn.fetchrow(
@@ -790,16 +794,10 @@ async def resend_verification(
         )
 
     if not user_row:
-        raise HTTPException(
-            status_code=404,
-            detail="No account found with this email.",
-        )
+        return generic_response
 
     if user_row["email_verified"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Email is already verified.",
-        )
+        return generic_response
 
     # Generate new verification token
     verification_token = secrets.token_urlsafe(32)
@@ -829,6 +827,4 @@ async def resend_verification(
 
     logger.info(f"Verification email resent for user: {user_row['id']}")
 
-    return ResendVerificationResponse(
-        message="Verification email has been sent. Please check your inbox."
-    )
+    return generic_response

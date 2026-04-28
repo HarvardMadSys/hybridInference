@@ -1538,6 +1538,10 @@ async def admin_get_request_metrics(
                                OR status_code < 200
                                OR status_code >= 400
                         ) AS error_count,
+                        COUNT(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
+                            AS latency_count,
+                        SUM(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
+                            AS latency_sum_ms,
                         AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
                             AS avg_latency_ms
                     FROM api_logs, bounds
@@ -1550,6 +1554,8 @@ async def admin_get_request_metrics(
                     COALESCE(bucketed_logs.request_count, 0) AS request_count,
                     COALESCE(bucketed_logs.success_count, 0) AS success_count,
                     COALESCE(bucketed_logs.error_count, 0) AS error_count,
+                    COALESCE(bucketed_logs.latency_count, 0) AS latency_count,
+                    COALESCE(bucketed_logs.latency_sum_ms, 0) AS latency_sum_ms,
                     bucketed_logs.avg_latency_ms
                 FROM series
                 LEFT JOIN bucketed_logs
@@ -1577,11 +1583,8 @@ async def admin_get_request_metrics(
             total_requests = sum(bucket.request_count for bucket in buckets)
             success_requests = sum(bucket.success_count for bucket in buckets)
             error_requests = sum(bucket.error_count for bucket in buckets)
-            latency_values = [
-                bucket.avg_latency_ms
-                for bucket in buckets
-                if bucket.avg_latency_ms is not None and bucket.request_count > 0
-            ]
+            latency_count = sum(int(row["latency_count"] or 0) for row in rows)
+            latency_sum_ms = sum(float(row["latency_sum_ms"] or 0) for row in rows)
             windows.append(
                 AdminRequestMetricsWindow(
                     key=key,
@@ -1592,9 +1595,7 @@ async def admin_get_request_metrics(
                     success_requests=success_requests,
                     error_requests=error_requests,
                     avg_latency_ms=(
-                        round(sum(latency_values) / len(latency_values), 1)
-                        if latency_values
-                        else None
+                        round(latency_sum_ms / latency_count, 1) if latency_count else None
                     ),
                     buckets=buckets,
                 )
@@ -1653,7 +1654,10 @@ async def admin_list_recent_requests(
         params.append(status_code)
 
     if errors_only:
-        where_clauses.append("l.error IS NOT NULL")
+        where_clauses.append(
+            "(l.error IS NOT NULL OR l.status_code IS NULL "
+            "OR l.status_code < 200 OR l.status_code >= 400)"
+        )
 
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 

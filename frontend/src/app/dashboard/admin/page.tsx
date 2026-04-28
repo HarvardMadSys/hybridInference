@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useId, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useState } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import {
@@ -1186,9 +1186,8 @@ export default function AdminPage() {
                           req.status_code < 400;
                         const isExpanded = reqExpandedId === req.request_id;
                         return (
-                          <>
+                          <Fragment key={req.request_id}>
                             <tr
-                              key={req.request_id}
                               className="border-b border-gray-100 hover:bg-gray-50/60 cursor-pointer transition-colors"
                               onClick={() => setReqExpandedId(isExpanded ? null : req.request_id)}
                             >
@@ -1278,10 +1277,7 @@ export default function AdminPage() {
                               </td>
                             </tr>
                             {isExpanded && (
-                              <tr
-                                key={`${req.request_id}-detail`}
-                                className="border-b border-gray-100 bg-gray-50/40"
-                              >
+                              <tr className="border-b border-gray-100 bg-gray-50/40">
                                 <td colSpan={8} className="px-4 py-3">
                                   <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[11px] sm:grid-cols-4">
                                     <div>
@@ -1339,7 +1335,7 @@ export default function AdminPage() {
                                 </td>
                               </tr>
                             )}
-                          </>
+                          </Fragment>
                         );
                       })}
                     </tbody>
