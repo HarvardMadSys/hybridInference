@@ -1,5 +1,6 @@
 """Integration tests for user routes."""
 
+import csv
 import json
 
 import pytest
@@ -392,6 +393,80 @@ class TestRecentRequests:
         assert data["total"] == 1
         assert [request["request_id"] for request in data["requests"]] == [request_id_a]
         assert data["requests"][0]["model_id"] == model_a
+
+    @pytest.mark.asyncio
+    async def test_recent_requests_csv_export_filters_and_sanitizes(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """Test CSV export filtering and spreadsheet formula hardening."""
+        model_a = f"csv-model-a-{test_user_with_key['id']}"
+        model_b = f"csv-model-b-{test_user_with_key['id']}"
+        request_id_a = f"=csv-export-{test_user_with_key['id']}-a"
+        request_id_b = f"csv-export-{test_user_with_key['id']}-b"
+
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO api_logs (
+                    request_id, model_id, provider, user_id, status_code, error,
+                    prompt_tokens, completion_tokens, total_tokens, cost_usd
+                )
+                VALUES
+                    ($1, $2, '@provider', $3, 500, '=boom', 10, 5, 15, 0.01),
+                    ($4, $5, 'provider-b', $3, 200, NULL, 1, 1, 2, 0.001)
+                """,
+                request_id_a,
+                model_a,
+                test_user_with_key["id"],
+                request_id_b,
+                model_b,
+            )
+
+        response = await auth_app_client.get(
+            f"/user/recent-requests/export.csv?model_id={model_a}&limit=10",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert "recent-requests-export.csv" in response.headers["content-disposition"]
+        rows = list(csv.DictReader(response.text.splitlines()))
+        assert len(rows) == 1
+        assert rows[0]["request_id"] == f"'{request_id_a}"
+        assert rows[0]["model_id"] == model_a
+        assert rows[0]["provider"] == "'@provider"
+        assert rows[0]["error"] == "'=boom"
+        assert "prompt" not in rows[0]
+        assert "response" not in rows[0]
+
+    @pytest.mark.asyncio
+    async def test_recent_requests_csv_export_clamps_limit(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """Test CSV export applies the requested positive row limit."""
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO api_logs (
+                    request_id, model_id, provider, user_id, status_code
+                )
+                VALUES
+                    ($1, 'limit-model', 'provider', $3, 200),
+                    ($2, 'limit-model', 'provider', $3, 200)
+                """,
+                f"csv-limit-{test_user_with_key['id']}-a",
+                f"csv-limit-{test_user_with_key['id']}-b",
+                test_user_with_key["id"],
+            )
+
+        response = await auth_app_client.get(
+            "/user/recent-requests/export.csv?limit=1",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        rows = list(csv.DictReader(response.text.splitlines()))
+        assert len(rows) == 1
 
 
 class TestUserProfile:

@@ -214,3 +214,29 @@ export async function getRecentRequests(
   const resp = await fetchWithAuth(API_BASE, `/user/recent-requests?${params.toString()}`);
   return jsonOrThrow<RecentRequestsResponse>(resp);
 }
+
+/** Matches backend `_MAX_RECENT_REQUESTS_CSV_ROWS` in user_routes. */
+export const MAX_RECENT_REQUESTS_CSV_EXPORT = 100_000;
+
+/** Downloads up to `limit` recent requests as CSV (newest first). */
+export async function downloadRecentRequestsCsvExport(
+  limit: number = MAX_RECENT_REQUESTS_CSV_EXPORT,
+): Promise<void> {
+  const safeLimit = Math.min(Math.max(1, limit), MAX_RECENT_REQUESTS_CSV_EXPORT);
+  const params = new URLSearchParams({ limit: String(safeLimit) });
+  const resp = await fetchWithAuth(API_BASE, `/user/recent-requests/export.csv?${params}`);
+  if (!resp.ok) {
+    await jsonOrThrow(resp);
+  }
+  const blob = await resp.blob();
+  const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `recent-requests-${stamp}.csv`;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

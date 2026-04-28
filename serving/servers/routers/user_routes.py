@@ -1,5 +1,7 @@
 """User dashboard routes for API key management and usage statistics."""
 
+import csv
+import io
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -8,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 
 from serving.exceptions import (
     UserNotFoundError,
@@ -51,6 +54,7 @@ router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
 QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
+_MAX_RECENT_REQUESTS_CSV_ROWS = 100_000
 
 
 def _get_daily_quota_reset_at() -> datetime:
@@ -80,6 +84,32 @@ def _get_usage_period_start(period: str, user_timezone: str) -> datetime | None:
         return None
 
     return local_start.astimezone(timezone.utc)
+
+
+def _timestamp_to_csv_cell(value: datetime | object | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _cost_to_csv_cell(value: Decimal | float | int | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, Decimal):
+        return str(float(value))
+    return str(float(value))
+
+
+def _text_to_csv_cell(value: object | None) -> str:
+    """Return text safe for spreadsheet CSV import."""
+    if value is None:
+        return ""
+    text = str(value)
+    if text and text[0] in ("=", "+", "-", "@", "\t", "\r", "\n"):
+        return "'" + text
+    return text
 
 
 def _coerce_preferences(value: Any) -> dict[str, Any]:
@@ -1024,3 +1054,94 @@ async def get_recent_requests(
     ]
 
     return RecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+
+
+@router.get("/recent-requests/export.csv")
+async def export_recent_requests_csv(
+    limit: int = _MAX_RECENT_REQUESTS_CSV_ROWS,
+    model_id: str | None = None,
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> Response:
+    """Export recent API requests as CSV (up to 100k rows, newest first)."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    limit = max(1, min(limit, _MAX_RECENT_REQUESTS_CSV_ROWS))
+    params: list[Any] = [current_user["user_id"]]
+    model_clause = ""
+    if model_id:
+        model_clause = " AND model_id = $2"
+        params.append(model_id)
+    params.append(limit)
+    limit_param = len(params)
+
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+                SELECT
+                    request_id, model_id, provider, timestamp,
+                    status_code, latency_ms, ttft_ms, stream,
+                    prompt_tokens, completion_tokens, reasoning_tokens,
+                    cache_read_tokens, cache_write_tokens,
+                    total_tokens, cost_usd, error
+                FROM api_logs
+                WHERE user_id = $1{model_clause}
+                ORDER BY timestamp DESC
+                LIMIT ${limit_param}
+                """,
+            *params,
+        )
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "request_id",
+            "model_id",
+            "provider",
+            "timestamp",
+            "status_code",
+            "latency_ms",
+            "ttft_ms",
+            "stream",
+            "prompt_tokens",
+            "completion_tokens",
+            "reasoning_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "total_tokens",
+            "cost_usd",
+            "error",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                _text_to_csv_cell(row["request_id"]),
+                _text_to_csv_cell(row["model_id"]),
+                _text_to_csv_cell(row["provider"]),
+                _timestamp_to_csv_cell(row["timestamp"]),
+                row["status_code"] if row["status_code"] is not None else "",
+                row["latency_ms"] if row["latency_ms"] is not None else "",
+                row["ttft_ms"] if row["ttft_ms"] is not None else "",
+                row["stream"] if row["stream"] is not None else "",
+                row["prompt_tokens"] if row["prompt_tokens"] is not None else "",
+                row["completion_tokens"] if row["completion_tokens"] is not None else "",
+                row["reasoning_tokens"] if row["reasoning_tokens"] is not None else "",
+                row["cache_read_tokens"] if row["cache_read_tokens"] is not None else "",
+                row["cache_write_tokens"] if row["cache_write_tokens"] is not None else "",
+                row["total_tokens"] if row["total_tokens"] is not None else "",
+                _cost_to_csv_cell(row["cost_usd"]),
+                _text_to_csv_cell(row["error"]),
+            ]
+        )
+
+    body = buffer.getvalue().encode("utf-8")
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="recent-requests-export.csv"',
+        },
+    )

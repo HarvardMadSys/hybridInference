@@ -1,8 +1,11 @@
 'use client';
 
 import { useId, useState } from 'react';
+import toast from 'react-hot-toast';
 import { useRecentRequests } from '@/lib/hooks';
+import { downloadRecentRequestsCsvExport } from '@/lib/api/user';
 import type { RecentRequestItem } from '@/lib/api/user';
+import { getErrorMessage } from '@/lib/utils/errors';
 
 const PAGE_SIZE = 20;
 
@@ -134,11 +137,24 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
 export function RecentRequests(): JSX.Element {
   const [page, setPage] = useState(0);
   const [jumpTo, setJumpTo] = useState('');
+  const [exporting, setExporting] = useState(false);
   const jumpInputId = useId();
   const offset = page * PAGE_SIZE;
   const { data, isLoading, error } = useRecentRequests(PAGE_SIZE, offset);
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
+
+  const handleExportLog = async (): Promise<void> => {
+    setExporting(true);
+    try {
+      await downloadRecentRequestsCsvExport();
+      toast.success('Recent requests CSV export started.');
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const applyJumpToPage = (): void => {
     if (totalPages < 2) return;
@@ -151,15 +167,28 @@ export function RecentRequests(): JSX.Element {
 
   return (
     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <h2 className="text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
           Recent Requests
         </h2>
-        {data && (
-          <span className="text-xs text-gray-500">
-            {data.total.toLocaleString()} total request{data.total !== 1 ? 's' : ''}
-          </span>
-        )}
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {data && data.total > 0 && (
+            <button
+              type="button"
+              onClick={() => void handleExportLog()}
+              disabled={exporting || isLoading}
+              title="Download up to 100,000 most recent requests as CSV"
+              className="inline-flex items-center rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {exporting ? 'Exporting…' : 'Export log'}
+            </button>
+          )}
+          {data && (
+            <span className="text-xs text-gray-500">
+              {data.total.toLocaleString()} total request{data.total !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
       </div>
 
       {error && (
