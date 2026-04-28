@@ -58,7 +58,7 @@ all: format check  ## Format code and run all checks
 
 setup-dev:  ## Set up development environment
 	@echo "$(YELLOW)Setting up development environment...$(RESET)"
-	@# Init git submodules (e.g. docs/free_inference)
+	@# Init git submodules (e.g. llm-prober)
 	git submodule update --init --recursive
 	@# Create venv if it doesn't exist; fail fast if an existing venv uses a different Python minor.
 	@if [ -x .venv/bin/python ]; then \

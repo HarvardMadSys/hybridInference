@@ -97,21 +97,23 @@ make check         # Run all checks
 
 ## Documentation Structure
 
-This repo contains **developer documentation** only (deployment, architecture, internals).
+This repository hosts both documentation sites used by the project:
 
-**User-facing documentation** (API quickstart, models, IDE integrations) lives in the
-[free_inference](https://github.com/HarvardMadSys/free_inference) repo, included here
-as a git submodule at `docs/free_inference/`. To update user docs:
+- **Developer documentation** (deployment, architecture, internals) lives at
+  `docs/source/` and is published to <https://internal-docs.example.org/>.
+- **User-facing documentation** (API quickstart, models, IDE integrations)
+  lives at `docs/free_inference/docs/source/` and is published to
+  <https://doc.freeinference.org/>.
 
-```bash
-cd docs/free_inference
-# edit docs/source/*.md
-git add . && git commit -m "docs: ..."
-git push origin main
-```
+Both sites are deployed automatically by Cloudflare Pages on push to `main`.
+To update either site, edit the relevant Markdown/reStructuredText files and
+open a pull request against this repository; no submodule sync step is
+required. The CI workflow `.github/workflows/docs.yml` builds both sites on
+every push and fails the job if Sphinx reports warnings.
 
-After `git pull`, run `git submodule update` to sync the submodule (or use
-`make setup-dev` which does this automatically).
+The repository still uses `git submodule` for the `llm-prober` benchmarking
+tool. After `git pull`, run `git submodule update --init --recursive` (or
+`make setup-dev`) to keep that submodule in sync.
 
 ## Troubleshooting
 

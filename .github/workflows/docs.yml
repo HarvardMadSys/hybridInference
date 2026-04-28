@@ -49,14 +49,26 @@ jobs:
           uv venv
           uv sync --group dev
 
-      - name: Build Sphinx documentation
+      - name: Build developer documentation
         run: |
           cd docs
           uv run sphinx-build -b html source build/html -W --keep-going
 
-      - name: Upload build artifact
+      - name: Build user documentation
+        run: |
+          cd docs/free_inference/docs
+          uv run sphinx-build -b html source build/html -W --keep-going
+
+      - name: Upload developer docs artifact
         uses: actions/upload-artifact@v4
         with:
-          name: documentation
+          name: developer-documentation
           path: docs/build/html
+          retention-days: 7
+
+      - name: Upload user docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-documentation
+          path: docs/free_inference/docs/build/html
           retention-days: 7
