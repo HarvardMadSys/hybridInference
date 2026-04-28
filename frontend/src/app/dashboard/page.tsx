@@ -9,6 +9,7 @@ import { hasRole } from '@/components/providers/AuthProvider';
 
 export default function DashboardPage() {
   const { state } = useAuth();
+  const displayName = state.user?.user_name || state.user?.email;
 
   return (
     <ProtectedRoute>
@@ -17,7 +18,7 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-              <p className="mt-1 text-sm text-gray-600">Welcome back, {state.user?.email}</p>
+              <p className="mt-1 text-sm text-gray-600">Welcome back, {displayName}</p>
             </div>
             <div className="flex items-center gap-2">
               <a
@@ -71,6 +72,10 @@ export default function DashboardPage() {
             Account Information
           </h2>
           <div className="space-y-3 text-sm">
+            <div className="flex justify-between">
+              <span className="text-gray-600">Username:</span>
+              <span className="font-medium">{state.user?.user_name || 'Not set'}</span>
+            </div>
             <div className="flex justify-between">
               <span className="text-gray-600">Email:</span>
               <span className="font-medium">{state.user?.email}</span>

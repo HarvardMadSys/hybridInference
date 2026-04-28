@@ -7,6 +7,7 @@ import { getMe } from '@/lib/api/user';
 interface User {
   id: string;
   email: string;
+  user_name?: string | null;
   tier: string;
   role: string;
   is_admin: boolean;
@@ -54,6 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user: {
           id: me.id,
           email: me.email,
+          user_name: me.user_name,
           tier: me.tier,
           role: me.role || 'free',
           is_admin: me.is_admin,

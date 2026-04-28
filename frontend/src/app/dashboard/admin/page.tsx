@@ -1095,10 +1095,23 @@ export default function AdminPage() {
                                       setReqUserFilter(req.user_id!);
                                       setReqOffset(0);
                                     }}
-                                    className="hover:text-gray-900 hover:underline transition truncate max-w-[120px] block"
-                                    title={req.user_id}
+                                    className="block max-w-[220px] text-left transition hover:text-gray-900 hover:underline"
+                                    title={`${req.user_name || req.user_id}${
+                                      req.user_email ? ` <${req.user_email}>` : ''
+                                    }`}
                                   >
-                                    {req.user_id.slice(0, 12)}…
+                                    <span className="block truncate font-sans text-[13px] font-medium text-gray-800">
+                                      {req.user_name || req.user_id}
+                                    </span>
+                                    {req.user_email ? (
+                                      <span className="block truncate text-[11px] text-gray-400">
+                                        {req.user_email}
+                                      </span>
+                                    ) : (
+                                      <span className="block truncate text-[11px] text-gray-400">
+                                        {req.user_id.slice(0, 12)}…
+                                      </span>
+                                    )}
                                   </button>
                                 ) : (
                                   <span className="text-gray-300">—</span>
@@ -1175,6 +1188,16 @@ export default function AdminPage() {
                                       <span className="text-gray-700">
                                         {req.ttft_ms != null ? `${req.ttft_ms}ms` : '—'}
                                       </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">User:</span>{' '}
+                                      <span className="text-gray-700">
+                                        {req.user_name || req.user_id || '—'}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">Email:</span>{' '}
+                                      <span className="text-gray-700">{req.user_email || '—'}</span>
                                     </div>
                                     <div>
                                       <span className="text-gray-500">User IP:</span>{' '}

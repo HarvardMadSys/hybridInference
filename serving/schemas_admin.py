@@ -344,10 +344,12 @@ class DeleteUserResponse(BaseModel):
 
 
 class AdminRecentRequestItem(BaseModel):
-    """A single API request log entry (admin view, includes user_id)."""
+    """A single API request log entry (admin view, includes user identity)."""
 
     request_id: str
     user_id: str | None = None
+    user_name: str | None = None
+    user_email: str | None = None
     user_ip: str | None = None
     model_id: str
     provider: str

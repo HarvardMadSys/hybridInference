@@ -1505,26 +1505,26 @@ async def admin_list_recent_requests(
     params: list[Any] = []
 
     if user_id:
-        where_clauses.append(f"user_id = ${len(params) + 1}")
+        where_clauses.append(f"l.user_id = ${len(params) + 1}")
         params.append(user_id)
 
     if model_id:
-        where_clauses.append(f"model_id = ${len(params) + 1}")
+        where_clauses.append(f"l.model_id = ${len(params) + 1}")
         params.append(model_id)
 
     if status_code is not None:
-        where_clauses.append(f"status_code = ${len(params) + 1}")
+        where_clauses.append(f"l.status_code = ${len(params) + 1}")
         params.append(status_code)
 
     if errors_only:
-        where_clauses.append("error IS NOT NULL")
+        where_clauses.append("l.error IS NOT NULL")
 
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
     async with db_logger.pool.acquire() as conn:
         # Get total count
         count_row = await conn.fetchrow(
-            f"SELECT COUNT(*) as total FROM api_logs {where_sql}",
+            f"SELECT COUNT(*) as total FROM api_logs l {where_sql}",
             *params,
         )
         total = int(count_row["total"] or 0) if count_row else 0
@@ -1535,14 +1535,16 @@ async def admin_list_recent_requests(
         rows = await conn.fetch(
             f"""
             SELECT
-                request_id, user_id, model_id, provider, timestamp,
-                status_code, latency_ms, ttft_ms, stream,
-                prompt_tokens, completion_tokens, reasoning_tokens,
-                total_tokens, cost_usd, prompt, response, error,
-                metadata->>'ip' AS user_ip
-            FROM api_logs
+                l.request_id, l.user_id, u.user_name, u.email AS user_email,
+                l.model_id, l.provider, l.timestamp,
+                l.status_code, l.latency_ms, l.ttft_ms, l.stream,
+                l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
+                l.total_tokens, l.cost_usd, l.prompt, l.response, l.error,
+                l.metadata->>'ip' AS user_ip
+            FROM api_logs l
+            LEFT JOIN users u ON u.id = l.user_id
             {where_sql}
-            ORDER BY timestamp DESC
+            ORDER BY l.timestamp DESC
             LIMIT ${limit_idx} OFFSET ${offset_idx}
             """,
             *params,
@@ -1554,6 +1556,8 @@ async def admin_list_recent_requests(
         AdminRecentRequestItem(
             request_id=row["request_id"],
             user_id=row["user_id"],
+            user_name=row["user_name"],
+            user_email=row["user_email"],
             user_ip=row["user_ip"],
             model_id=row["model_id"],
             provider=row["provider"],
