@@ -1,5 +1,5 @@
 .PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
-       sync-subscriptions up down restart ps logs build \
+       docker-volumes sync-subscriptions up down restart ps logs build \
        staging-up staging-down staging-restart staging-ps staging-logs staging-build \
        stop-host-grafana
 
@@ -112,6 +112,17 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 # ─── Docker / Production ─────────────────────────────────────────────────────
 COMPOSE := docker compose -f infrastructure/docker/docker-compose.yml --env-file .env
 STAGING_COMPOSE := docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env
+DOCKER_VOLUMES := hybridinference_postgres_data hybridinference_prometheus_data \
+                  hybridinference_alertmanager_data hybridinference_alert_log_data \
+                  hybridinference_grafana_data
+
+docker-volumes:  ## Create external Docker volumes required by production compose
+	@for volume in $(DOCKER_VOLUMES); do \
+		if ! docker volume inspect "$$volume" >/dev/null 2>&1; then \
+			echo "$(YELLOW)Creating Docker volume $$volume...$(RESET)"; \
+			docker volume create "$$volume" >/dev/null; \
+		fi; \
+	done
 
 sync-subscriptions:  ## Import CLI OAuth credentials for subscription adapters
 	@mkdir -p var/data
@@ -131,7 +142,7 @@ sync-subscriptions:  ## Import CLI OAuth credentials for subscription adapters
 		echo "  claude: skipped (~/.claude/ credentials not found; run claude login)"; \
 	fi
 
-up: sync-subscriptions  ## Start all services
+up: docker-volumes sync-subscriptions  ## Start all services
 	$(COMPOSE) up -d
 
 down:  ## Stop all services
@@ -160,7 +171,7 @@ stop-host-grafana:  ## Stop host grafana-server if active (frees port 3000)
 		systemctl stop grafana-server; \
 	fi
 
-build: stop-host-grafana  ## Rebuild images and restart (or: make build s=backend)
+build: stop-host-grafana docker-volumes  ## Rebuild images and restart (or: make build s=backend)
 ifdef s
 	$(COMPOSE) up -d --build $(s)
 else

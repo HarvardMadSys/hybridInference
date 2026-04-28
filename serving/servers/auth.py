@@ -125,7 +125,7 @@ async def verify_api_key(
             user_row = await conn.fetchrow(
                 """
                 SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, k.tier,
-                       u.email, u.role
+                       u.email, u.role, u.email_verified
                 FROM api_keys k
                 LEFT JOIN users u ON u.id = k.user_id
                 WHERE k.key_hash = $1
@@ -162,6 +162,17 @@ async def verify_api_key(
         )
 
     user = dict(user_row)
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    if require_verification and user.get("email") and not user.get("email_verified"):
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label("unknown"),
+            provider=normalize_provider_label("system"),
+            status_code="403",
+        ).inc()
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Please verify your email to continue.",
+        )
 
     # Pre-check daily cost quota
     # Get cost usage since UTC midnight today
@@ -282,7 +293,7 @@ async def optional_verify_api_key(
         async with db_logger.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT k.user_id, u.email, u.role
+                SELECT k.user_id, u.email, u.role, u.email_verified
                 FROM api_keys k
                 LEFT JOIN users u ON u.id = k.user_id
                 WHERE k.key_hash = $1
@@ -298,6 +309,10 @@ async def optional_verify_api_key(
 
     if not row:
         return None  # Key invalid or expired — treat as anonymous
+
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    if require_verification and row["email"] and not row["email_verified"]:
+        return None
 
     user_role = row["role"] or "free"
     return {

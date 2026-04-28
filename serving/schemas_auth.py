@@ -111,7 +111,7 @@ class APIKeyResponse(BaseModel):
 
     api_key: str
     key_prefix: str
-    warning: str = "You can view this key later from the dashboard."
+    warning: str = "Save this API key now. It will not be shown again."
     created_at: datetime
 
 
@@ -157,7 +157,7 @@ class APIKeyRegenerateResponse(BaseModel):
 
     api_key: str
     key_prefix: str
-    warning: str = "You can view this key later from the dashboard."
+    warning: str = "Save this API key now. It will not be shown again."
     old_key_prefix: str
 
 

@@ -181,6 +181,40 @@ async def test_auth_x_api_key_header_valid(monkeypatch, mock_request, mock_db_wi
 
 
 @pytest.mark.asyncio
+async def test_auth_unverified_user_key_returns_403(monkeypatch, mock_request, mock_db_with_pool):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1")
+    plaintext_key = "hyi-unverified"
+    _hashed_key(monkeypatch, plaintext_key)
+    db_logger, connection = mock_db_with_pool
+
+    _setup_fetch_side_effects(
+        connection,
+        {
+            "id": 7,
+            "user_id": "unverified-user",
+            "user_name": "Unverified",
+            "quota_daily_cost_usd": 1000.0,
+            "tier": "free",
+            "email": "unverified@test.example.com",
+            "email_verified": False,
+        },
+        None,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await verify_api_key(
+            request=mock_request,
+            authorization=f"Bearer {plaintext_key}",
+            db_logger=db_logger,
+        )
+
+    assert exc.value.status_code == 403
+    assert connection.fetchrow.await_count == 1
+    connection.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_auth_invalid_key_hash_returns_401(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     plaintext_key = "hyi-invalid"

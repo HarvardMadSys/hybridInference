@@ -123,22 +123,6 @@ export default function DashboardPage() {
                 Grafana Dashboard
               </a>
               <a
-                href="/llm-prober/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-              >
-                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M3 3v18h18M7 15l3-3 3 2 4-6"
-                  />
-                </svg>
-                Probe Dashboard
-              </a>
-              <a
                 href="/dashboard/playground"
                 className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
               >
