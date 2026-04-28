@@ -13,6 +13,18 @@ from httpx import AsyncClient
 pytest_plugins = ["test.servers.conftest_auth"]
 
 
+@pytest.fixture(autouse=True)
+def reset_recent_requests_csv_export_state():
+    """Reset process-local CSV export guardrails between tests."""
+    from serving.servers.routers import user_routes
+
+    user_routes._recent_requests_csv_export_last_started_at.clear()
+    user_routes._recent_requests_csv_export_active_count = 0
+    yield
+    user_routes._recent_requests_csv_export_last_started_at.clear()
+    user_routes._recent_requests_csv_export_active_count = 0
+
+
 class _AsyncRows:
     """Minimal async iterator for fake asyncpg cursor rows."""
 
@@ -81,6 +93,38 @@ def test_cost_to_csv_cell_preserves_decimal_precision():
 
     value = Decimal("0.000012345678901234")
     assert _cost_to_csv_cell(value) == "0.000012345678901234"
+
+
+@pytest.mark.asyncio
+async def test_recent_requests_csv_export_cooldown_returns_retry_after():
+    """Test repeated exports by one user hit the process-local cooldown."""
+    from serving.servers.routers import user_routes
+
+    await user_routes._acquire_recent_requests_csv_export_slot("cooldown-user")
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await user_routes._acquire_recent_requests_csv_export_slot("cooldown-user")
+    finally:
+        await user_routes._release_recent_requests_csv_export_slot()
+
+    assert exc.value.status_code == 429
+    assert exc.value.headers["Retry-After"]
+
+
+@pytest.mark.asyncio
+async def test_recent_requests_csv_export_concurrency_limit():
+    """Test process-local export concurrency rejects excess users."""
+    from serving.servers.routers import user_routes
+
+    user_routes._recent_requests_csv_export_active_count = (
+        user_routes._RECENT_REQUESTS_CSV_EXPORT_MAX_CONCURRENT
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await user_routes._acquire_recent_requests_csv_export_slot("busy-user")
+
+    assert exc.value.status_code == 429
+    assert not exc.value.headers
 
 
 class TestUserInfo:

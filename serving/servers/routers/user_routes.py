@@ -169,11 +169,19 @@ def _recent_request_csv_row(row: Any) -> list[Any]:
 
 
 async def _acquire_recent_requests_csv_export_slot(user_id: str) -> None:
-    """Reserve one process-local CSV export slot for a user."""
+    """Reserve one process-local, best-effort CSV export slot for a user."""
     global _recent_requests_csv_export_active_count
 
     now = time.monotonic()
     async with _recent_requests_csv_export_lock:
+        stale_user_ids = [
+            stored_user_id
+            for stored_user_id, started_at in _recent_requests_csv_export_last_started_at.items()
+            if now - started_at > _RECENT_REQUESTS_CSV_EXPORT_COOLDOWN_SECONDS
+        ]
+        for stored_user_id in stale_user_ids:
+            _recent_requests_csv_export_last_started_at.pop(stored_user_id, None)
+
         if _recent_requests_csv_export_active_count >= _RECENT_REQUESTS_CSV_EXPORT_MAX_CONCURRENT:
             raise HTTPException(
                 status_code=429,
