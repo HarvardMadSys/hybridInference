@@ -82,7 +82,6 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
               </span>
             )}
           </div>
-          <div className="mt-0.5 text-xs text-gray-500">{req.provider}</div>
         </td>
         <td className="whitespace-nowrap px-3 py-3 text-sm">
           <StatusBadge code={req.status_code} />
