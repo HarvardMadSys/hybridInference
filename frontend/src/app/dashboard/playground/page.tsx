@@ -44,6 +44,7 @@ interface PlaygroundSession {
   id: string;
   title: string;
   selectedModelId: string;
+  selectedProvider: string | null;
   systemPrompt: string;
   temperature: number;
   reasoningEffort: ReasoningEffort;
@@ -56,6 +57,7 @@ function createSession(id: string, defaultModelId = ''): PlaygroundSession {
     id,
     title: 'New session',
     selectedModelId: defaultModelId,
+    selectedProvider: null,
     systemPrompt: '',
     temperature: 0.7,
     reasoningEffort: null,
@@ -112,6 +114,8 @@ export default function PlaygroundPage() {
   const input = session?.input || '';
   const model = models.find((m) => m.id === modelId) ?? null;
   const reasoningEffort = session?.reasoningEffort ?? null;
+  const selectedProvider = session?.selectedProvider ?? null;
+  const modelProviders = model?.providers ?? [];
   const isCodexModel = model?.provider === 'codex_sub';
 
   const patch = useCallback(
@@ -273,6 +277,7 @@ export default function PlaygroundPage() {
           messages: newMsgs.map((m) => ({ role: m.role, content: m.content })),
           temperature: temp,
           ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+          ...(selectedProvider ? { provider: selectedProvider } : {}),
         }),
         signal: ctrl.signal,
       });
@@ -365,6 +370,7 @@ export default function PlaygroundPage() {
     sysPrompt,
     temp,
     reasoningEffort,
+    selectedProvider,
     patch,
     flushDelta,
     scheduleFlush,
@@ -514,6 +520,7 @@ export default function PlaygroundPage() {
                       patch((s) => ({
                         ...s,
                         selectedModelId: newId,
+                        selectedProvider: null,
                         reasoningEffort:
                           newModel?.provider === 'codex_sub' ? s.reasoningEffort : null,
                       }));
@@ -528,6 +535,32 @@ export default function PlaygroundPage() {
                     ))}
                   </select>
                 </div>
+
+                {modelProviders.length > 1 && (
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
+                      Provider
+                    </label>
+                    <select
+                      value={selectedProvider ?? ''}
+                      onChange={(e) =>
+                        patch((s) => ({
+                          ...s,
+                          selectedProvider: e.target.value || null,
+                        }))
+                      }
+                      disabled={streaming}
+                      className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
+                    >
+                      <option value="">Auto</option>
+                      {modelProviders.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
                 <div>
                   <div className="mb-1.5 flex items-center justify-between">
@@ -746,6 +779,7 @@ export default function PlaygroundPage() {
                       {(() => {
                         if (!model) return 'Loading...';
                         const parts = [model.name];
+                        if (selectedProvider) parts.push(selectedProvider);
                         if (reasoningEffort) {
                           parts.push(`reasoning: ${reasoningEffort}`);
                         } else {

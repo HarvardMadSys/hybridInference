@@ -54,12 +54,6 @@ function formatCost(cost: number | null | undefined): string {
   return `$${cost.toFixed(2)}`;
 }
 
-function formatLatency(ms: number | null | undefined): string {
-  if (ms == null) return '—';
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${ms}ms`;
-}
-
 function RequestRow({ req }: { req: RecentRequestItem }) {
   const [expanded, setExpanded] = useState(false);
   const cacheRead = req.cache_read_tokens ?? 0;
@@ -87,9 +81,6 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
           <StatusBadge code={req.status_code} />
         </td>
         <td className="whitespace-nowrap px-3 py-3 text-sm text-gray-600">
-          {formatLatency(req.latency_ms)}
-        </td>
-        <td className="whitespace-nowrap px-3 py-3 text-sm text-gray-600">
           <div className="flex items-center gap-1">
             <span className="text-gray-400">↑</span>
             {formatTokens(req.prompt_tokens)}
@@ -109,15 +100,11 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
       </tr>
       {expanded && (
         <tr className="border-b border-gray-100 bg-gray-50/40">
-          <td colSpan={6} className="px-4 py-3">
-            <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs sm:grid-cols-4">
+          <td colSpan={5} className="px-4 py-3">
+            <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs sm:grid-cols-3">
               <div>
                 <span className="text-gray-500">Request ID:</span>{' '}
                 <span className="font-mono text-gray-700">{req.request_id.slice(0, 16)}…</span>
-              </div>
-              <div>
-                <span className="text-gray-500">TTFT:</span>{' '}
-                <span className="text-gray-700">{formatLatency(req.ttft_ms)}</span>
               </div>
               <div>
                 <span className="text-gray-500">Reasoning:</span>{' '}
@@ -218,9 +205,6 @@ export function RecentRequests(): JSX.Element {
                   </th>
                   <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                     Status
-                  </th>
-                  <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Latency
                   </th>
                   <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                     Tokens
