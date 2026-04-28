@@ -13,8 +13,8 @@ function formatTokenLimit(value: number): string {
 function formatPricing(model: ModelCatalogItem): string {
   const prompt = model.pricing.prompt;
   const completion = model.pricing.completion;
-  if (!prompt && !completion) return 'No pricing';
-  return `$${prompt ?? '0'} in / $${completion ?? '0'} out per 1M tokens`;
+  if (!prompt && !completion) return '—';
+  return `$${prompt ?? '0'} / $${completion ?? '0'} / 1M`;
 }
 
 function copyModelId(modelId: string): void {
@@ -22,83 +22,27 @@ function copyModelId(modelId: string): void {
   toast.success('Model ID copied to clipboard');
 }
 
-function ModelCard({ model }: { model: ModelCatalogItem }): JSX.Element {
-  const features = model.supported_features.filter((feature) => feature !== 'structured_outputs');
-  const modalities = Array.from(new Set([...model.input_modalities, ...model.output_modalities]));
-
-  return (
-    <div className="rounded-lg bg-gray-50 p-4 ring-1 ring-inset ring-gray-200">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="truncate text-sm font-semibold text-gray-900">{model.name}</h3>
-          <button
-            type="button"
-            onClick={() => copyModelId(model.id)}
-            className="mt-1 block max-w-full truncate font-mono text-xs text-blue-700 hover:text-blue-900"
-            title="Copy model ID"
-          >
-            {model.id}
-          </button>
-        </div>
-        <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-xs font-medium capitalize text-gray-600 ring-1 ring-inset ring-gray-200">
-          {model.owned_by}
-        </span>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-        <div>
-          <div className="text-xs text-gray-500">Context</div>
-          <div className="font-medium text-gray-900">{formatTokenLimit(model.context_length)}</div>
-        </div>
-        <div>
-          <div className="text-xs text-gray-500">Max Output</div>
-          <div className="font-medium text-gray-900">
-            {formatTokenLimit(model.max_output_length)}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3 text-xs text-gray-600">{formatPricing(model)}</div>
-
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        <span className="rounded-md bg-white px-2 py-1 text-xs text-gray-600 ring-1 ring-inset ring-gray-200">
-          {model.quantization}
-        </span>
-        {modalities.map((modality) => (
-          <span
-            key={`${model.id}-${modality}`}
-            className="rounded-md bg-white px-2 py-1 text-xs text-gray-600 ring-1 ring-inset ring-gray-200"
-          >
-            {modality}
-          </span>
-        ))}
-        {features.map((feature) => (
-          <span
-            key={`${model.id}-${feature}`}
-            className="rounded-md bg-blue-50 px-2 py-1 text-xs text-blue-700 ring-1 ring-inset ring-blue-200"
-          >
-            {feature.replaceAll('_', ' ')}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
+/** Hide first-party OpenAI / Anthropic catalog entries from the dashboard list. */
+function isDashboardModelVisible(model: ModelCatalogItem): boolean {
+  const p = model.owned_by.toLowerCase();
+  if (p === 'codex_sub' || p === 'claude_sub') return false;
+  if (p.includes('openai')) return false;
+  if (p.includes('anthropic')) return false;
+  return true;
 }
 
 export function ModelsSection(): JSX.Element {
   const { data, isLoading, error } = useModels();
-  const models = data?.data ?? [];
+  const models = (data?.data ?? []).filter(isDashboardModelVisible);
 
   return (
-    <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
-      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-5">
+      <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 className="text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
+          <h2 className="text-sm font-semibold tracking-tight text-gray-900 sm:text-base">
             Models
           </h2>
-          <p className="mt-1 text-sm text-gray-500">
-            Available model IDs and limits for your FreeInference API requests.
-          </p>
+          <p className="text-xs text-gray-500">Model IDs and token limits for API requests.</p>
         </div>
         {models.length > 0 && (
           <span className="text-xs text-gray-500">
@@ -108,28 +52,58 @@ export function ModelsSection(): JSX.Element {
       </div>
 
       {error && (
-        <div className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-inset ring-red-200">
+        <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 ring-1 ring-inset ring-red-200">
           Failed to load models. Please try again later.
         </div>
       )}
 
       {isLoading && (
-        <div className="flex justify-center py-8">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600" />
+        <div className="flex justify-center py-4">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
         </div>
       )}
 
       {!isLoading && !error && models.length === 0 && (
-        <div className="rounded-lg bg-gray-50 px-4 py-5 text-sm text-gray-600 ring-1 ring-inset ring-gray-200">
+        <div className="rounded-lg bg-gray-50 px-3 py-3 text-xs text-gray-600 ring-1 ring-inset ring-gray-200">
           No models are currently available for your account.
         </div>
       )}
 
       {!isLoading && !error && models.length > 0 && (
-        <div className="grid gap-4 md:grid-cols-2">
-          {models.map((model) => (
-            <ModelCard key={model.id} model={model} />
-          ))}
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full min-w-[22rem] border-collapse text-left text-xs">
+            <thead>
+              <tr className="border-b border-gray-200 text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                <th className="py-1.5 pr-2">Model</th>
+                <th className="py-1.5 pr-2 whitespace-nowrap">Ctx / out</th>
+                <th className="hidden py-1.5 text-right sm:table-cell">$/1M</th>
+              </tr>
+            </thead>
+            <tbody className="text-gray-800">
+              {models.map((model) => (
+                <tr key={model.id} className="border-b border-gray-100 last:border-0">
+                  <td className="max-w-[14rem] py-1 pr-2 align-top">
+                    <button
+                      type="button"
+                      onClick={() => copyModelId(model.id)}
+                      className="block max-w-full truncate text-left font-mono text-[11px] text-blue-700 hover:text-blue-900"
+                      title="Copy model ID"
+                    >
+                      {model.id}
+                    </button>
+                    <div className="truncate text-[11px] text-gray-500">{model.name}</div>
+                  </td>
+                  <td className="whitespace-nowrap py-1 pr-2 align-top tabular-nums text-gray-700">
+                    {formatTokenLimit(model.context_length)} /{' '}
+                    {formatTokenLimit(model.max_output_length)}
+                  </td>
+                  <td className="hidden py-1 align-top text-right text-[11px] text-gray-600 sm:table-cell">
+                    {formatPricing(model)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
