@@ -106,7 +106,10 @@ export async function regenerateApiKey(): Promise<ApiKeyResponse> {
 }
 
 export async function getUsage(period: 'today' | 'month' | 'all' = 'today'): Promise<UsageStats> {
-  const resp = await fetchWithAuth(API_BASE, `/user/usage?period=${period}`);
+  const params = new URLSearchParams({ period });
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (timeZone) params.set('timezone', timeZone);
+  const resp = await fetchWithAuth(API_BASE, `/user/usage?${params.toString()}`);
   return jsonOrThrow<UsageStats>(resp);
 }
 

@@ -5,8 +5,9 @@ import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from serving.exceptions import (
     UserNotFoundError,
@@ -41,6 +42,29 @@ from serving.utils.logging import get_logger
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
+
+
+def _get_usage_period_start(period: str, user_timezone: str) -> datetime | None:
+    """Return the UTC start timestamp for a user-visible usage period."""
+    if period == "all":
+        return None
+    if period == "week":
+        return datetime.now(timezone.utc) - timedelta(days=7)
+
+    try:
+        tz = ZoneInfo(user_timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(status_code=400, detail="Invalid timezone") from exc
+
+    now = datetime.now(tz)
+    if period == "today":
+        local_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "month":
+        local_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        return None
+
+    return local_start.astimezone(timezone.utc)
 
 
 def _coerce_preferences(value: Any) -> dict[str, Any]:
@@ -494,6 +518,7 @@ async def regenerate_api_key(
 @router.get("/usage", response_model=UsageResponse)
 async def get_usage(
     period: str = "today",
+    timezone_name: str = Query("UTC", alias="timezone"),
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
 ) -> UsageResponse:
@@ -538,33 +563,26 @@ async def get_usage(
     daily_limit = float(key_row["quota_daily_cost_usd"] or 0)
     monthly_limit = None  # TODO: Add monthly quota support
 
-    # Calculate date range based on period.
-    # Usage data in api_logs is tracked by UTC timestamps.
-    if period == "today":
-        date_filter = "timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
-    elif period == "week":
-        date_filter = "timestamp >= NOW() - INTERVAL '7 days'"
-    elif period == "month":
-        date_filter = (
-            "timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
-        )
-    else:  # all
-        date_filter = "TRUE"
+    usage_start_at = _get_usage_period_start(period, timezone_name)
+    today_start_at = _get_usage_period_start("today", timezone_name)
+    month_start_at = _get_usage_period_start("month", timezone_name)
 
     # Get usage statistics, tolerate missing logging table in minimal test DB
     async with db_logger.pool.acquire() as conn:
         try:
             usage_row = await conn.fetchrow(
-                f"""
+                """
                 SELECT
                     COUNT(*) as requests,
                     COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
                     COALESCE(SUM(completion_tokens), 0) as completion_tokens,
                     COALESCE(SUM(cost_usd), 0) as cost_usd
                 FROM api_logs
-                WHERE user_id = $1 AND {date_filter}
+                WHERE user_id = $1
+                  AND ($2::timestamptz IS NULL OR timestamp >= $2::timestamptz)
                 """,
                 current_user["user_id"],
+                usage_start_at,
             )
 
             # Get today's spending
@@ -573,9 +591,10 @@ async def get_usage(
                 SELECT COALESCE(SUM(cost_usd), 0) as spent_today
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                  AND timestamp >= $2::timestamptz
                 """,
                 current_user["user_id"],
+                today_start_at,
             )
 
             # Get month's spending
@@ -584,9 +603,10 @@ async def get_usage(
                 SELECT COALESCE(SUM(cost_usd), 0) as spent_month
                 FROM api_logs
                 WHERE user_id = $1
-                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                  AND timestamp >= $2::timestamptz
                 """,
                 current_user["user_id"],
+                month_start_at,
             )
         except Exception as exc:
             # Missing api_logs table or other query issues - return zeroed stats.
