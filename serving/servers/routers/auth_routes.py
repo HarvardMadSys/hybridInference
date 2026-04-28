@@ -44,6 +44,7 @@ from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = get_logger(__name__)
+REFRESH_TOKEN_COOKIE = "refresh_token"
 
 
 def get_base_url(request: Request) -> str:
@@ -58,6 +59,42 @@ def get_base_url(request: Request) -> str:
 def hash_refresh_token(token: str) -> str:
     """Hash refresh token for storage."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    """Read a boolean-like environment flag."""
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+
+
+def _refresh_cookie_options() -> dict[str, object]:
+    """Return shared options for refresh-token cookie operations."""
+    return {
+        "httponly": True,
+        "secure": _env_flag("COOKIE_SECURE"),
+        "samesite": os.getenv("COOKIE_SAMESITE", "lax"),
+        "domain": os.getenv("COOKIE_DOMAIN"),
+        "path": "/",
+    }
+
+
+def set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
+    """Set the persistent refresh-token cookie."""
+    refresh_token_max_age = get_refresh_token_expire_days() * 24 * 60 * 60
+    response.set_cookie(
+        key=REFRESH_TOKEN_COOKIE,
+        value=refresh_token,
+        max_age=refresh_token_max_age,
+        expires=datetime.now(timezone.utc) + timedelta(seconds=refresh_token_max_age),
+        **_refresh_cookie_options(),
+    )
+
+
+def delete_refresh_token_cookie(response: Response) -> None:
+    """Delete the refresh-token cookie using the same domain/path settings."""
+    response.delete_cookie(
+        key=REFRESH_TOKEN_COOKIE,
+        **_refresh_cookie_options(),
+    )
 
 
 @router.post("/signup", response_model=SignupResponse, status_code=201)
@@ -322,21 +359,7 @@ async def login(
             False,
         )
 
-    # Set refresh token as HttpOnly cookie
-    cookie_secure = os.getenv("COOKIE_SECURE", "0") == "1"
-    cookie_domain = os.getenv("COOKIE_DOMAIN")
-    cookie_samesite = os.getenv("COOKIE_SAMESITE", "lax")
-
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        secure=cookie_secure,
-        samesite=cookie_samesite,
-        domain=cookie_domain,
-        max_age=get_refresh_token_expire_days() * 24 * 60 * 60,
-        path="/",
-    )
+    set_refresh_token_cookie(response, refresh_token)
 
     logger.info(f"User logged in: {user_row['id']} ({user_row['email']})")
 
@@ -388,8 +411,7 @@ async def logout(
                 current_user["user_id"],
             )
 
-    # Clear refresh token cookie
-    response.delete_cookie(key="refresh_token", path="/")
+    delete_refresh_token_cookie(response)
 
     logger.info(f"User logged out: {current_user['user_id']}")
 
@@ -519,21 +541,7 @@ async def refresh(
             session_row["id"],
         )
 
-    # Set new refresh token as HttpOnly cookie
-    cookie_secure = os.getenv("COOKIE_SECURE", "0") == "1"
-    cookie_domain = os.getenv("COOKIE_DOMAIN")
-    cookie_samesite = os.getenv("COOKIE_SAMESITE", "lax")
-
-    response.set_cookie(
-        key="refresh_token",
-        value=new_refresh_token,
-        httponly=True,
-        secure=cookie_secure,
-        samesite=cookie_samesite,
-        domain=cookie_domain,
-        max_age=get_refresh_token_expire_days() * 24 * 60 * 60,
-        path="/",
-    )
+    set_refresh_token_cookie(response, new_refresh_token)
 
     logger.info(f"Token refreshed for user: {user_row['id']}")
 
