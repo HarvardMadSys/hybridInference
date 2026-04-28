@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.config.settings import get_settings
 from serving.schemas_admin import (
     AdminRecentRequestItem,
     AdminRecentRequestsResponse,
@@ -1661,6 +1662,13 @@ async def admin_list_recent_requests(
 
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
+    show_request_content = get_settings().admin_show_request_content
+    content_select = (
+        "l.prompt, l.response"
+        if show_request_content
+        else "NULL::text AS prompt, NULL::text AS response"
+    )
+
     async with db_logger.pool.acquire() as conn:
         # Get total count
         count_row = await conn.fetchrow(
@@ -1679,7 +1687,7 @@ async def admin_list_recent_requests(
                 l.model_id, l.provider, l.timestamp,
                 l.status_code, l.latency_ms, l.ttft_ms, l.stream,
                 l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
-                l.total_tokens, l.cost_usd, l.prompt, l.response, l.error,
+                l.total_tokens, l.cost_usd, {content_select}, l.error,
                 l.metadata->>'ip' AS user_ip
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
@@ -1711,8 +1719,9 @@ async def admin_list_recent_requests(
             reasoning_tokens=row["reasoning_tokens"],
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
-            prompt=row["prompt"],
-            response=row["response"],
+            prompt=row["prompt"] if show_request_content else None,
+            response=row["response"] if show_request_content else None,
+            content_hidden=not show_request_content,
             error=row["error"],
         )
         for row in rows

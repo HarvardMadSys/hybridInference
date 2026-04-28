@@ -147,7 +147,7 @@ class DatabaseLogger:
     def __init__(
         self,
         db_config: dict[str, str],
-        store_full_prompts: bool = True,
+        store_full_prompts: bool = False,
         use_chunked_hash: bool = False,
     ):
         """Initialize the logger with a DSN/config mapping.

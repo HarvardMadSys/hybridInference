@@ -396,6 +396,7 @@ class AdminRecentRequestItem(BaseModel):
     cost_usd: float | None = None
     prompt: str | None = None
     response: str | None = None
+    content_hidden: bool = False
     error: str | None = None
 
 

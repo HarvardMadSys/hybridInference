@@ -22,7 +22,8 @@ class Settings(BaseSettings):
     db_password: str = ""
 
     # Database privacy settings
-    db_store_full_content: bool = True
+    db_store_full_content: bool = False
+    admin_show_request_content: bool = False
 
     # Admin
     admin_token: str = ""

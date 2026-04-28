@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException, Request
 
+from serving.config.settings import get_settings
 from serving.servers.auth import log_admin_action, verify_admin_token
 from serving.servers.routers import admin as admin_router
 
@@ -51,6 +52,32 @@ def db_logger_with_pool():
     pool.acquire.return_value = _AcquireContext(connection)
     logger.pool = pool
     return logger, connection
+
+
+def _recent_request_row() -> dict[str, Any]:
+    """Return a request row containing stored prompt/response content."""
+    return {
+        "request_id": "req_123",
+        "user_id": "user_123",
+        "user_name": "Test User",
+        "user_email": "user@example.com",
+        "user_ip": "203.0.113.10",
+        "model_id": "test-model",
+        "provider": "test-provider",
+        "timestamp": datetime.now(timezone.utc),
+        "status_code": 200,
+        "latency_ms": 123,
+        "ttft_ms": 45,
+        "stream": False,
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "reasoning_tokens": 0,
+        "total_tokens": 30,
+        "cost_usd": Decimal("0.01"),
+        "prompt": "sensitive prompt",
+        "response": "sensitive response",
+        "error": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -133,3 +160,56 @@ async def test_log_admin_action_no_pool(monkeypatch):
     logger.pool = None
     # Should not raise even if pool missing
     await log_admin_action(logger, admin_ip="0.0.0.0", action="noop")
+
+
+@pytest.mark.asyncio
+async def test_admin_recent_requests_hides_stored_content_by_default(
+    monkeypatch, mock_request, db_logger_with_pool
+):
+    monkeypatch.delenv("ADMIN_SHOW_REQUEST_CONTENT", raising=False)
+    get_settings.cache_clear()
+    logger, connection = db_logger_with_pool
+    connection.fetchrow.return_value = {"total": 1}
+    connection.fetch.return_value = [_recent_request_row()]
+
+    try:
+        result = await admin_router.admin_list_recent_requests(
+            request=mock_request,
+            admin_id="admin",
+            db_logger=logger,
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert result.requests[0].prompt is None
+    assert result.requests[0].response is None
+    assert result.requests[0].content_hidden is True
+    query = connection.fetch.await_args.args[0]
+    assert "NULL::text AS prompt" in query
+    assert "NULL::text AS response" in query
+
+
+@pytest.mark.asyncio
+async def test_admin_recent_requests_can_opt_in_to_content_visibility(
+    monkeypatch, mock_request, db_logger_with_pool
+):
+    monkeypatch.setenv("ADMIN_SHOW_REQUEST_CONTENT", "1")
+    get_settings.cache_clear()
+    logger, connection = db_logger_with_pool
+    connection.fetchrow.return_value = {"total": 1}
+    connection.fetch.return_value = [_recent_request_row()]
+
+    try:
+        result = await admin_router.admin_list_recent_requests(
+            request=mock_request,
+            admin_id="admin",
+            db_logger=logger,
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert result.requests[0].prompt == "sensitive prompt"
+    assert result.requests[0].response == "sensitive response"
+    assert result.requests[0].content_hidden is False
+    query = connection.fetch.await_args.args[0]
+    assert "l.prompt, l.response" in query

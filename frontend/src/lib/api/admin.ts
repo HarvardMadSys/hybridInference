@@ -333,6 +333,7 @@ export interface AdminRecentRequestItem {
   cost_usd?: number | null;
   prompt?: string | null;
   response?: string | null;
+  content_hidden?: boolean;
   error?: string | null;
 }
 

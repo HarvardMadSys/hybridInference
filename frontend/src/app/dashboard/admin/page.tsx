@@ -1324,8 +1324,16 @@ export default function AdminPage() {
                                         {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
                                       </span>
                                     </div>
-                                    <FoldedText label="Prompt" value={req.prompt} />
-                                    <FoldedText label="Response" value={req.response} />
+                                    {req.content_hidden ? (
+                                      <div className="col-span-full mt-1 rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500">
+                                        Prompt and response content are hidden by privacy settings.
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <FoldedText label="Prompt" value={req.prompt} />
+                                        <FoldedText label="Response" value={req.response} />
+                                      </>
+                                    )}
                                     {req.error && (
                                       <div className="col-span-full mt-1">
                                         <span className="text-red-600">Error: {req.error}</span>
