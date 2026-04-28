@@ -1,5 +1,5 @@
 .PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
-       sync-subscriptions up down restart ps logs build \
+       docker-volumes sync-subscriptions up down restart ps logs build \
        staging-up staging-down staging-restart staging-ps staging-logs staging-build \
        stop-host-grafana
 
@@ -9,6 +9,7 @@
 # Allow overriding uv run flags, e.g.:
 #   make lint UV_RUN="uv run --active"
 UV_RUN ?= uv run
+PYTHON_VERSION ?= 3.12
 
 # Frontend directory
 FRONTEND_DIR := frontend
@@ -57,10 +58,18 @@ all: format check  ## Format code and run all checks
 
 setup-dev:  ## Set up development environment
 	@echo "$(YELLOW)Setting up development environment...$(RESET)"
-	@# Init git submodules (e.g. docs/free_inference)
+	@# Init git submodules (e.g. llm-prober)
 	git submodule update --init --recursive
-	@# Create venv if it doesn't exist; keep idempotent
-	[ -d .venv ] || uv venv -p 3.10
+	@# Create venv if it doesn't exist; fail fast if an existing venv uses a different Python minor.
+	@if [ -x .venv/bin/python ]; then \
+		current="$$(.venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"; \
+		if [ "$$current" != "$(PYTHON_VERSION)" ]; then \
+			echo "Existing .venv uses Python $$current, expected $(PYTHON_VERSION). Remove .venv or rerun with PYTHON_VERSION=$$current."; \
+			exit 1; \
+		fi; \
+	else \
+		uv venv -p $(PYTHON_VERSION); \
+	fi
 	@# Install package in editable mode
 	uv pip install -e .
 	@# Install requirements.txt if it exists
@@ -97,11 +106,11 @@ frontend-type-check:  ## Run TypeScript type checking
 
 frontend-test:  ## Run frontend tests
 	@echo "$(YELLOW)Running frontend tests...$(RESET)"
-	cd $(FRONTEND_DIR) && npm run test -- --run
+	cd $(FRONTEND_DIR) && npm run test
 	@echo "$(GREEN)OK Frontend tests passed$(RESET)"
 
-frontend-check: frontend-lint frontend-type-check frontend-test  ## Run all frontend checks
-	@echo "$(GREEN)OK All frontend checks passed$(RESET)"
+frontend-check: frontend-lint frontend-type-check frontend-test  ## Run all configured frontend checks
+	@echo "$(GREEN)OK All configured frontend checks passed$(RESET)"
 
 # Combined targets
 check-all: lint test frontend-check  ## Run all checks (backend + frontend)
@@ -112,6 +121,17 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 # ─── Docker / Production ─────────────────────────────────────────────────────
 COMPOSE := docker compose -f infrastructure/docker/docker-compose.yml --env-file .env
 STAGING_COMPOSE := docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env
+DOCKER_VOLUMES := hybridinference_postgres_data hybridinference_prometheus_data \
+                  hybridinference_alertmanager_data hybridinference_alert_log_data \
+                  hybridinference_grafana_data
+
+docker-volumes:  ## Create external Docker volumes required by production compose
+	@for volume in $(DOCKER_VOLUMES); do \
+		if ! docker volume inspect "$$volume" >/dev/null 2>&1; then \
+			echo "$(YELLOW)Creating Docker volume $$volume...$(RESET)"; \
+			docker volume create "$$volume" >/dev/null; \
+		fi; \
+	done
 
 sync-subscriptions:  ## Import CLI OAuth credentials for subscription adapters
 	@mkdir -p var/data
@@ -131,7 +151,7 @@ sync-subscriptions:  ## Import CLI OAuth credentials for subscription adapters
 		echo "  claude: skipped (~/.claude/ credentials not found; run claude login)"; \
 	fi
 
-up: sync-subscriptions  ## Start all services
+up: docker-volumes sync-subscriptions  ## Start all services
 	$(COMPOSE) up -d
 
 down:  ## Stop all services
@@ -160,7 +180,7 @@ stop-host-grafana:  ## Stop host grafana-server if active (frees port 3000)
 		systemctl stop grafana-server; \
 	fi
 
-build: stop-host-grafana  ## Rebuild images and restart (or: make build s=backend)
+build: stop-host-grafana docker-volumes  ## Rebuild images and restart (or: make build s=backend)
 ifdef s
 	$(COMPOSE) up -d --build $(s)
 else

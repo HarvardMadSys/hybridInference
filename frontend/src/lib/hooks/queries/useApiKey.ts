@@ -31,6 +31,7 @@ export function useCreateApiKey() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKey'] });
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
+      queryClient.invalidateQueries({ queryKey: ['usage'] });
     },
   });
 }
@@ -56,6 +57,7 @@ export function useRegenerateApiKey() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKey'] });
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
+      queryClient.invalidateQueries({ queryKey: ['usage'] });
     },
   });
 }

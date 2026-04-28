@@ -65,6 +65,24 @@ async def test_auth_disabled_returns_anonymous(monkeypatch, mock_request):
 
 
 @pytest.mark.asyncio
+async def test_auth_defaults_enabled(monkeypatch, mock_request, mock_db_with_pool):
+    """Missing USER_AUTH_ENABLED fails closed instead of granting anonymous admin."""
+    monkeypatch.delenv("USER_AUTH_ENABLED", raising=False)
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+    db_logger, _ = mock_db_with_pool
+
+    with pytest.raises(HTTPException) as exc:
+        await verify_api_key(
+            request=mock_request,
+            authorization=None,
+            x_api_key=None,
+            db_logger=db_logger,
+        )
+
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_auth_missing_headers_returns_401(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     monkeypatch.setenv("API_KEY_SECRET", "test-secret")
@@ -178,6 +196,40 @@ async def test_auth_x_api_key_header_valid(monkeypatch, mock_request, mock_db_wi
     assert result["user_id"] == "user456"
     assert result["authenticated"] is True
     assert pytest.approx(result["quota_remaining_cost_usd"], rel=1e-6) == 400.0
+
+
+@pytest.mark.asyncio
+async def test_auth_unverified_user_key_returns_403(monkeypatch, mock_request, mock_db_with_pool):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1")
+    plaintext_key = "hyi-unverified"
+    _hashed_key(monkeypatch, plaintext_key)
+    db_logger, connection = mock_db_with_pool
+
+    _setup_fetch_side_effects(
+        connection,
+        {
+            "id": 7,
+            "user_id": "unverified-user",
+            "user_name": "Unverified",
+            "quota_daily_cost_usd": 1000.0,
+            "tier": "free",
+            "email": "unverified@test.example.com",
+            "email_verified": False,
+        },
+        None,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await verify_api_key(
+            request=mock_request,
+            authorization=f"Bearer {plaintext_key}",
+            db_logger=db_logger,
+        )
+
+    assert exc.value.status_code == 403
+    assert connection.fetchrow.await_count == 1
+    connection.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

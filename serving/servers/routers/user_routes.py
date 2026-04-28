@@ -35,7 +35,6 @@ from serving.schemas_auth import (
     UserProfileUpdate,
 )
 from serving.servers.auth import (
-    decrypt_api_key,
     encrypt_api_key,
     generate_api_key,
     hash_api_key,
@@ -334,7 +333,7 @@ async def create_api_key(
     return APIKeyResponse(
         api_key=api_key,
         key_prefix=key_prefix,
-        warning="You can view this key later from the dashboard.",
+        warning="Save this API key now. It will not be shown again.",
         created_at=datetime.now(timezone.utc),
     )
 
@@ -346,7 +345,7 @@ async def get_api_key_info(
 ) -> APIKeyInfo:
     """Get current user's active API key information.
 
-    Full keys are returned for rows created after encrypted storage was added.
+    Full keys are only returned at creation/regeneration time.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -354,7 +353,7 @@ async def get_api_key_info(
     async with db_logger.pool.acquire() as conn:
         key_row = await conn.fetchrow(
             """
-            SELECT api_key_encrypted, key_prefix, created_at, last_used_at, status
+            SELECT key_prefix, created_at, last_used_at, status
             FROM api_keys
             WHERE account_id = $1 AND status = 'active'
             """,
@@ -367,7 +366,7 @@ async def get_api_key_info(
 
     return APIKeyInfo(
         has_key=True,
-        api_key=decrypt_api_key(key_row["api_key_encrypted"]),
+        api_key=None,
         key_prefix=key_row["key_prefix"],
         key_masked=mask_key_prefix(key_row["key_prefix"]),
         created_at=key_row["created_at"],
@@ -383,7 +382,7 @@ async def list_api_keys(
 ) -> APIKeyListResponse:
     """List all API keys owned by the current user.
 
-    Full keys are returned for rows created after encrypted storage was added.
+    Only masked identifiers are returned after creation/regeneration.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -391,7 +390,7 @@ async def list_api_keys(
     async with db_logger.pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT api_key_encrypted, key_prefix, created_at, last_used_at, status
+            SELECT key_prefix, created_at, last_used_at, status
             FROM api_keys
             WHERE account_id = $1
             ORDER BY (status = 'active') DESC, created_at DESC
@@ -401,7 +400,7 @@ async def list_api_keys(
 
     keys = [
         APIKeyListItem(
-            api_key=decrypt_api_key(row["api_key_encrypted"]),
+            api_key=None,
             key_prefix=row["key_prefix"],
             key_masked=mask_key_prefix(row["key_prefix"]),
             created_at=row["created_at"],
@@ -584,7 +583,7 @@ async def regenerate_api_key(
     return APIKeyRegenerateResponse(
         api_key=api_key,
         key_prefix=key_prefix,
-        warning="You can view this key later from the dashboard.",
+        warning="Save this API key now. It will not be shown again.",
         old_key_prefix=old_key_row["key_prefix"],
     )
 
@@ -753,7 +752,7 @@ async def update_profile(
         # Fetch updated user info
         user_row = await conn.fetchrow(
             """
-            SELECT id, email, user_name, status, email_verified, created_at, last_login_at
+            SELECT id, email, user_name, status, email_verified, role, created_at, last_login_at
             FROM users
             WHERE id = $1
             """,
@@ -770,8 +769,10 @@ async def update_profile(
         email=user_row["email"],
         user_name=user_row["user_name"],
         tier=current_user.get("tier", "free"),
+        role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
+        is_admin=(user_row["role"] or "free") == "admin",
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
     )
@@ -954,21 +955,25 @@ async def get_recent_requests(
 
     async with db_logger.pool.acquire() as conn:
         try:
-            # Build model filter clause
-            model_filter = ""
-            params: list = [current_user["user_id"], limit, offset]
+            where_clauses = ["user_id = $1"]
+            params: list[Any] = [current_user["user_id"]]
             if model_id:
-                model_filter = "AND model_id = $4"
                 params.append(model_id)
+                where_clauses.append(f"model_id = ${len(params)}")
+            where_sql = " AND ".join(where_clauses)
+
+            limit_idx = len(params) + 1
+            offset_idx = len(params) + 2
+            page_params = [*params, limit, offset]
 
             # Get total count
             count_row = await conn.fetchrow(
                 f"""
                 SELECT COUNT(*) as total
                 FROM api_logs
-                WHERE user_id = $1 {model_filter}
+                WHERE {where_sql}
                 """,
-                *([current_user["user_id"]] + ([model_id] if model_id else [])),
+                *params,
             )
             total = int(count_row["total"] or 0) if count_row else 0
 
@@ -982,11 +987,11 @@ async def get_recent_requests(
                     cache_read_tokens, cache_write_tokens,
                     total_tokens, cost_usd, error
                 FROM api_logs
-                WHERE user_id = $1 {model_filter}
+                WHERE {where_sql}
                 ORDER BY timestamp DESC
-                LIMIT $2 OFFSET $3
+                LIMIT ${limit_idx} OFFSET ${offset_idx}
                 """,
-                *params,
+                *page_params,
             )
         except Exception as exc:
             logger.warning(

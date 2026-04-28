@@ -25,8 +25,8 @@ For service-specific deployment and routing details, refer to `docs/openrouter.m
 
 ### Prerequisites
 
-- Python 3.10+
-- [uv](https://github.com/astral-sh/uv)
+- Python 3.10-3.13 (3.12 recommended)
+- [uv](https://github.com/astral-sh/uv) (recommended) or conda
 
 ### Quick Start with uv (Recommended)
 
@@ -39,9 +39,20 @@ cd hybridInference
 make setup-dev
 
 # Or manually:
-uv venv -p 3.10
+uv venv -p 3.12
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 uv sync
+```
+
+### Alternative: conda Setup
+
+```bash
+# Create and activate conda environment
+conda create -n hybrid_inference python=3.12 -y
+conda activate hybrid_inference
+
+# Install dependencies from pyproject.toml
+pip install -e .
 ```
 
 ## Package Management

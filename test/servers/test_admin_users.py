@@ -14,7 +14,6 @@ from httpx import ASGITransport, AsyncClient
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 
-
 # ---------------------------------------------------------------------------
 # Helpers / Fixtures
 # ---------------------------------------------------------------------------
@@ -806,6 +805,8 @@ async def test_sort_tie_breaker_in_order_clause(admin_client):
 
         response = await client.get(f"/admin/users?sort_by={sort_val}", headers=AUTH)
         assert response.status_code == 200, f"Failed for sort_by={sort_val}"
+        query_sql = connection.fetch.await_args_list[1].args[0]
+        assert expect_primary in query_sql
 
 
 @pytest.mark.asyncio

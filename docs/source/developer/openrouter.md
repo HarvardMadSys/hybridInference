@@ -43,7 +43,7 @@ hybridInference/
 ## Development Setup
 
 ### Prerequisites
-- Python 3.10 or newer
+- Python 3.10-3.13 (3.12 recommended)
 - [uv](https://github.com/astral-sh/uv) (recommended) or conda
 
 ### Create Environment
@@ -51,7 +51,7 @@ hybridInference/
 # Clone and bootstrap
 git clone <repository-url>
 cd hybridInference
-uv venv -p 3.10
+uv venv -p 3.12
 source .venv/bin/activate
 uv sync
 ```
