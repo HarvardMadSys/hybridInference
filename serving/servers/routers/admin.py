@@ -1654,7 +1654,10 @@ async def admin_list_recent_requests(
         params.append(status_code)
 
     if errors_only:
-        where_clauses.append("l.error IS NOT NULL")
+        where_clauses.append(
+            "(l.error IS NOT NULL OR l.status_code IS NULL "
+            "OR l.status_code < 200 OR l.status_code >= 400)"
+        )
 
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 

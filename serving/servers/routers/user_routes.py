@@ -333,7 +333,7 @@ async def create_api_key(
     return APIKeyResponse(
         api_key=api_key,
         key_prefix=key_prefix,
-        warning="You can view this key later from the dashboard.",
+        warning="Save this API key now. It will not be shown again.",
         created_at=datetime.now(timezone.utc),
     )
 
@@ -583,7 +583,7 @@ async def regenerate_api_key(
     return APIKeyRegenerateResponse(
         api_key=api_key,
         key_prefix=key_prefix,
-        warning="You can view this key later from the dashboard.",
+        warning="Save this API key now. It will not be shown again.",
         old_key_prefix=old_key_row["key_prefix"],
     )
 
