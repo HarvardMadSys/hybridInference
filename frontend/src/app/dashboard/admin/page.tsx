@@ -1039,9 +1039,9 @@ export default function AdminPage() {
                   <p className="text-[13px] text-gray-400">No requests found.</p>
                 </div>
               ) : (
-                <div className="-mx-1 max-h-[70vh] overflow-auto overscroll-contain">
+                <div className="-mx-1">
                   <table className="min-w-full">
-                    <thead className="sticky top-0 z-10 bg-gray-50">
+                    <thead className="bg-gray-50">
                       <tr className="border-b border-gray-200">
                         <th className="py-2 pl-4 pr-3 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                           Model

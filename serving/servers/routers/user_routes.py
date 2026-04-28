@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from serving.exceptions import (
     UserNotFoundError,
 )
+from serving.schemas import ModelList
 from serving.schemas_auth import (
     APIKeyDeleteResponse,
     APIKeyInfo,
@@ -40,7 +41,8 @@ from serving.servers.auth import (
     hash_api_key,
     log_admin_action,
 )
-from serving.servers.deps import get_current_user, get_db_logger
+from serving.servers.deps import get_current_user, get_db_logger, get_embedding_adapters, get_router
+from serving.servers.routers.models import build_model_list
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled
 from serving.utils.logging import get_logger
@@ -148,6 +150,20 @@ async def get_current_user_info(
         is_admin=current_user.get("is_admin", False),
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
+    )
+
+
+@router.get("/models", response_model=ModelList)
+async def get_user_models(
+    current_user=Depends(get_current_user),
+    router_exec=Depends(get_router),
+    embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+) -> ModelList:
+    """List models available to the current dashboard user."""
+    return build_model_list(
+        router_exec=router_exec,
+        embedding_adapters=embedding_adapters,
+        user_role=current_user.get("role", "free"),
     )
 
 

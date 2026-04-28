@@ -47,6 +47,15 @@ async def list_models(
     regardless of the routed backend.
     """
     user_role = (user_ctx or {}).get("role", "free")
+    return build_model_list(router_exec, embedding_adapters, user_role)
+
+
+def build_model_list(
+    router_exec: Any,
+    embedding_adapters: dict[str, Any],
+    user_role: str,
+) -> ModelList:
+    """Build the model catalog visible to the given user role."""
     models: list[ModelItem] = []
     emitted_ids: set[str] = set()
 

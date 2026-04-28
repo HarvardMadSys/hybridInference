@@ -69,9 +69,36 @@ export interface UsageStats {
   };
 }
 
+export interface ModelCatalogItem {
+  id: string;
+  name: string;
+  object: 'model';
+  created: number;
+  owned_by: string;
+  input_modalities: string[];
+  output_modalities: string[];
+  quantization: string;
+  context_length: number;
+  max_output_length: number;
+  pricing: Record<string, string>;
+  supported_sampling_parameters: string[];
+  supported_features: string[];
+  openrouter?: Record<string, unknown> | null;
+}
+
+export interface ModelCatalogResponse {
+  object: 'list';
+  data: ModelCatalogItem[];
+}
+
 export async function getMe(): Promise<User> {
   const resp = await fetchWithAuth(API_BASE, '/user/me');
   return jsonOrThrow<User>(resp);
+}
+
+export async function getModels(): Promise<ModelCatalogResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/user/models');
+  return jsonOrThrow<ModelCatalogResponse>(resp);
 }
 
 export async function createApiKey(): Promise<ApiKeyResponse> {

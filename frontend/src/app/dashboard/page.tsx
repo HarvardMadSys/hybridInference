@@ -2,6 +2,7 @@
 
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
+import { ModelsSection } from '@/components/features/dashboard/ModelsSection';
 import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
 import { UsageStats } from '@/components/features/dashboard/UsageStats';
 import { useAuth } from '@/components/providers';
@@ -92,6 +93,8 @@ export default function DashboardPage() {
         </div>
 
         <ApiKeyManager />
+
+        <ModelsSection />
 
         <UsageStats />
 
