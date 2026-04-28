@@ -15,8 +15,8 @@ def test_register_from_models_yaml_env_expansion_and_aliases(tmp_path, monkeypat
         "models:\n"
         "  - id: test-model\n"
         "    name: Test Model\n"
-        "    provider: llama\n"
-        "    base_url: ${LLAMA_BASE_URL}\n"
+        "    provider: zhipu\n"
+        "    base_url: ${ZHIPU_BASE_URL}\n"
         "    api_key: ${LLAMA_API_KEY}\n"
         "    context_length: 8192\n"
         "    max_output_length: 1024\n"
@@ -25,7 +25,7 @@ def test_register_from_models_yaml_env_expansion_and_aliases(tmp_path, monkeypat
     p = tmp_path / "models.yaml"
     p.write_text(yaml_text)
 
-    monkeypatch.setenv("LLAMA_BASE_URL", "http://llama.local")
+    monkeypatch.setenv("ZHIPU_BASE_URL", "http://zhipu.local")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
 
     exe = RouteExecutor()
@@ -38,7 +38,7 @@ def test_register_from_models_yaml_env_expansion_and_aliases(tmp_path, monkeypat
     adapters = exe.routes["test-model"].adapters
     assert adapters
     adapter = adapters[0][0]
-    assert adapter.config.base_url == "http://llama.local"
+    assert adapter.config.base_url == "http://zhipu.local"
     assert adapter.config.api_key == "sk-test"
 
 
@@ -113,26 +113,6 @@ def test_make_adapter_zhipu_uses_openai_compat_with_chat_path():
 
     assert isinstance(adapter, OpenAICompatAdapter)
     assert adapter.config.provider_profile == "zhipu"
-    assert adapter.config.chat_path == "/chat/completions"
-
-
-@pytest.mark.unit
-def test_make_adapter_llama_uses_openai_compat_with_profile():
-    """kind: llama routes through OpenAICompatAdapter with Llama profile."""
-    adapter = registry._make_adapter(
-        "llama",
-        {
-            "id": "llama-4-scout",
-            "name": "Llama 4 Scout",
-            "provider": "llama",
-            "base_url": "https://api.llama.com/compat/v1",
-            "api_key": " test-key\n",
-        },
-    )
-    from serving.adapters.openai_compat import OpenAICompatAdapter
-
-    assert isinstance(adapter, OpenAICompatAdapter)
-    assert adapter.config.provider_profile == "llama"
     assert adapter.config.chat_path == "/chat/completions"
 
 

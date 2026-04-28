@@ -742,7 +742,7 @@ class TestRouterHedgeMode:
             latency_hedge_mode="economic",
             latency_hedge_cost_ratio=0.05,  # Low threshold -> easy to justify
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -776,7 +776,7 @@ class TestRouterHedgeMode:
             latency_hedge_mode="economic",
             latency_hedge_cost_ratio=0.9,  # Very high -> hard to justify
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         now = time.time()
         # Both providers fast.
@@ -801,7 +801,7 @@ class TestRouterHedgeMode:
             latency_hedge_mode="shadow",
             latency_hedge_cost_ratio=0.05,
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)

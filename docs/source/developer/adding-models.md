@@ -7,14 +7,14 @@ Reference PR for provider integration example: https://github.com/HarvardSys/hyb
 ## Overview
 
 There is a single guide for both needs. Depending on your case, follow one of:
-1) Use an existing provider adapter (vLLM, DeepSeek, Gemini, Llama, Zhipu) — only YAML + env changes.
+1) Use an existing provider adapter (vLLM, DeepSeek, Gemini, Test, Zhipu) — only YAML + env changes.
 2) Integrate a new provider — add an adapter class + small registration changes, then YAML + env.
 
 ## Quick Start
 
 ### Adding a Model with an Existing Provider
 
-If the provider is already supported (vLLM, DeepSeek, Gemini, Llama, Zhipu), you only need to add configuration.
+If the provider is already supported (vLLM, DeepSeek, Gemini, Test, Zhipu), you only need to add configuration.
 
 > **Subscription providers** (Claude, Codex) use OAuth account pools instead of API keys. See `developer/configuration.md`, section `Subscription Adapters (Claude / Codex)`, for setup instructions. The rest of this guide covers API-key-based providers.
 

@@ -23,6 +23,7 @@ from serving.schemas_auth import (
     UserInfo,
     VerifyEmailResponse,
 )
+from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_current_user, get_db_logger
 from serving.utils import password as password_utils
 from serving.utils.email import (
@@ -39,9 +40,11 @@ from serving.utils.jwt import (
     get_refresh_token_expire_days,
 )
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = get_logger(__name__)
+REFRESH_TOKEN_COOKIE = "refresh_token"
 
 
 def get_base_url(request: Request) -> str:
@@ -56,6 +59,42 @@ def get_base_url(request: Request) -> str:
 def hash_refresh_token(token: str) -> str:
     """Hash refresh token for storage."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    """Read a boolean-like environment flag."""
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+
+
+def _refresh_cookie_options() -> dict[str, object]:
+    """Return shared options for refresh-token cookie operations."""
+    return {
+        "httponly": True,
+        "secure": _env_flag("COOKIE_SECURE"),
+        "samesite": os.getenv("COOKIE_SAMESITE", "lax"),
+        "domain": os.getenv("COOKIE_DOMAIN"),
+        "path": "/",
+    }
+
+
+def set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
+    """Set the persistent refresh-token cookie."""
+    refresh_token_max_age = get_refresh_token_expire_days() * 24 * 60 * 60
+    response.set_cookie(
+        key=REFRESH_TOKEN_COOKIE,
+        value=refresh_token,
+        max_age=refresh_token_max_age,
+        expires=datetime.now(timezone.utc) + timedelta(seconds=refresh_token_max_age),
+        **_refresh_cookie_options(),
+    )
+
+
+def delete_refresh_token_cookie(response: Response) -> None:
+    """Delete the refresh-token cookie using the same domain/path settings."""
+    response.delete_cookie(
+        key=REFRESH_TOKEN_COOKIE,
+        **_refresh_cookie_options(),
+    )
 
 
 @router.post("/signup", response_model=SignupResponse, status_code=201)
@@ -164,6 +203,18 @@ async def signup(
             )
 
     logger.info(f"New user registered: {user_id} ({body.email}) [status={initial_status}]")
+    await log_admin_action(
+        db_logger,
+        get_client_ip(request),
+        "create_user",
+        user_id,
+        {
+            "email": body.email.lower(),
+            "user_name": body.user_name,
+            "status": initial_status,
+            "requires_approval": require_approval,
+        },
+    )
 
     if require_approval:
         message = (
@@ -189,7 +240,7 @@ async def login(
 ) -> LoginResponse:
     """Login with email and password.
 
-    Returns access token (15 min) and sets refresh token as HttpOnly cookie (30 days).
+    Returns access token (15 min) and sets refresh token as HttpOnly cookie (365 days by default).
 
     Rate limits:
     - 5 attempts per 15 minutes per email
@@ -308,21 +359,7 @@ async def login(
             False,
         )
 
-    # Set refresh token as HttpOnly cookie
-    cookie_secure = os.getenv("COOKIE_SECURE", "0") == "1"
-    cookie_domain = os.getenv("COOKIE_DOMAIN")
-    cookie_samesite = os.getenv("COOKIE_SAMESITE", "lax")
-
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        secure=cookie_secure,
-        samesite=cookie_samesite,
-        domain=cookie_domain,
-        max_age=get_refresh_token_expire_days() * 24 * 60 * 60,
-        path="/",
-    )
+    set_refresh_token_cookie(response, refresh_token)
 
     logger.info(f"User logged in: {user_row['id']} ({user_row['email']})")
 
@@ -374,8 +411,7 @@ async def logout(
                 current_user["user_id"],
             )
 
-    # Clear refresh token cookie
-    response.delete_cookie(key="refresh_token", path="/")
+    delete_refresh_token_cookie(response)
 
     logger.info(f"User logged out: {current_user['user_id']}")
 
@@ -505,21 +541,7 @@ async def refresh(
             session_row["id"],
         )
 
-    # Set new refresh token as HttpOnly cookie
-    cookie_secure = os.getenv("COOKIE_SECURE", "0") == "1"
-    cookie_domain = os.getenv("COOKIE_DOMAIN")
-    cookie_samesite = os.getenv("COOKIE_SAMESITE", "lax")
-
-    response.set_cookie(
-        key="refresh_token",
-        value=new_refresh_token,
-        httponly=True,
-        secure=cookie_secure,
-        samesite=cookie_samesite,
-        domain=cookie_domain,
-        max_age=get_refresh_token_expire_days() * 24 * 60 * 60,
-        path="/",
-    )
+    set_refresh_token_cookie(response, new_refresh_token)
 
     logger.info(f"Token refreshed for user: {user_row['id']}")
 
@@ -760,6 +782,10 @@ async def resend_verification(
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
 
+    generic_response = ResendVerificationResponse(
+        message="If this email requires verification, a verification email has been sent."
+    )
+
     # Find user
     async with db_logger.pool.acquire() as conn:
         user_row = await conn.fetchrow(
@@ -768,16 +794,10 @@ async def resend_verification(
         )
 
     if not user_row:
-        raise HTTPException(
-            status_code=404,
-            detail="No account found with this email.",
-        )
+        return generic_response
 
     if user_row["email_verified"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Email is already verified.",
-        )
+        return generic_response
 
     # Generate new verification token
     verification_token = secrets.token_urlsafe(32)
@@ -807,6 +827,4 @@ async def resend_verification(
 
     logger.info(f"Verification email resent for user: {user_row['id']}")
 
-    return ResendVerificationResponse(
-        message="Verification email has been sent. Please check your inbox."
-    )
+    return generic_response

@@ -174,3 +174,38 @@ async def test_email_verification_can_be_disabled(auth_client, require_db, email
     response = await auth_client.post("/auth/login", json=login_data)
     assert response.status_code == 200
     assert "access_token" in response.json()
+
+
+async def test_unverified_user_cannot_access_protected_endpoint(
+    auth_client, require_db, email_verification_flag
+):
+    """Test that unverified users cannot call protected user endpoints."""
+    email_verification_flag(True)
+
+    signup_data = {
+        "email": f"protected_{os.urandom(4).hex()}@example.com",
+        "password": "SecurePass123!",
+        "user_name": "Protected User",
+    }
+    response = await auth_client.post("/auth/signup", json=signup_data)
+    assert response.status_code == 201
+    user_id = response.json()["user_id"]
+
+    await set_email_verified(require_db, user_id, True)
+
+    login_data = {
+        "email": signup_data["email"],
+        "password": signup_data["password"],
+    }
+    response = await auth_client.post("/auth/login", json=login_data)
+    assert response.status_code == 200
+    access_token = response.json()["access_token"]
+
+    await set_email_verified(require_db, user_id, False)
+
+    response = await auth_client.get(
+        "/user/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == 403
+    assert "Email not verified" in response.text

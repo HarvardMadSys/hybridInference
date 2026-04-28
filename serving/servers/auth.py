@@ -4,9 +4,11 @@ import hashlib
 import hmac
 import os
 import secrets
+from base64 import urlsafe_b64encode
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving.observability.metrics import (
@@ -17,8 +19,10 @@ from serving.observability.metrics import (
 )
 from serving.servers.deps import get_db_logger
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
+QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
 
 
 def is_user_auth_enabled() -> bool:
@@ -43,6 +47,27 @@ def hash_api_key(plaintext_key: str) -> str:
     if not secret:
         raise ValueError("API_KEY_SECRET must be set in environment")
     return hmac.new(secret, plaintext_key.encode(), hashlib.sha256).hexdigest()
+
+
+def _api_key_cipher() -> Fernet:
+    """Build a reversible cipher from the API key secret."""
+    secret = os.getenv("API_KEY_SECRET", "").encode()
+    if not secret:
+        raise ValueError("API_KEY_SECRET must be set in environment")
+    key = urlsafe_b64encode(hashlib.sha256(secret).digest())
+    return Fernet(key)
+
+
+def encrypt_api_key(plaintext_key: str) -> str:
+    """Encrypt an API key for user-facing display later."""
+    return _api_key_cipher().encrypt(plaintext_key.encode()).decode()
+
+
+def decrypt_api_key(encrypted_key: str | None) -> str | None:
+    """Decrypt a stored API key, returning None for legacy rows."""
+    if not encrypted_key:
+        return None
+    return _api_key_cipher().decrypt(encrypted_key.encode()).decode()
 
 
 def constant_time_compare(a: str, b: str) -> bool:
@@ -110,7 +135,7 @@ async def verify_api_key(
             user_row = await conn.fetchrow(
                 """
                 SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, k.tier,
-                       u.email, u.role
+                       u.email, u.role, u.email_verified
                 FROM api_keys k
                 LEFT JOIN users u ON u.id = k.user_id
                 WHERE k.key_hash = $1
@@ -147,6 +172,17 @@ async def verify_api_key(
         )
 
     user = dict(user_row)
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    if require_verification and user.get("email") and not user.get("email_verified"):
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label("unknown"),
+            provider=normalize_provider_label("system"),
+            status_code="403",
+        ).inc()
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Please verify your email to continue.",
+        )
 
     # Pre-check daily cost quota
     # Get cost usage since UTC midnight today
@@ -175,6 +211,7 @@ async def verify_api_key(
     # Check cost quota
     if cost_spent + estimated_cost > quota_daily_cost_usd:
         seconds_until_midnight_utc = _seconds_until_utc_midnight()
+        quota_reset_at = _next_utc_midnight()
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
             provider=normalize_provider_label("system"),
@@ -186,20 +223,19 @@ async def verify_api_key(
                 "error": "Daily cost quota exceeded",
                 "quota_usd": quota_daily_cost_usd,
                 "spent_usd": cost_spent,
+                "remaining_usd": max(0, quota_daily_cost_usd - cost_spent),
+                "reset_at": quota_reset_at.isoformat(),
+                "contact_email": QUOTA_CONTACT_EMAIL,
+                "message": (
+                    f"Need more quota? Email {QUOTA_CONTACT_EMAIL} and explain your use case."
+                ),
                 "retry_after": seconds_until_midnight_utc,
             },
             headers={
                 "Retry-After": str(seconds_until_midnight_utc),
                 "X-RateLimit-Limit-Cost": str(quota_daily_cost_usd),
                 "X-RateLimit-Remaining-Cost": str(max(0, quota_daily_cost_usd - cost_spent)),
-                "X-RateLimit-Reset": str(
-                    int(
-                        (
-                            datetime.now(timezone.utc)
-                            + timedelta(seconds=seconds_until_midnight_utc)
-                        ).timestamp()
-                    )
-                ),
+                "X-RateLimit-Reset": str(int(quota_reset_at.timestamp())),
             },
         )
 
@@ -267,7 +303,7 @@ async def optional_verify_api_key(
         async with db_logger.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT k.user_id, u.email, u.role
+                SELECT k.user_id, u.email, u.role, u.email_verified
                 FROM api_keys k
                 LEFT JOIN users u ON u.id = k.user_id
                 WHERE k.key_hash = $1
@@ -284,6 +320,10 @@ async def optional_verify_api_key(
     if not row:
         return None  # Key invalid or expired — treat as anonymous
 
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    if require_verification and row["email"] and not row["email_verified"]:
+        return None
+
     user_role = row["role"] or "free"
     return {
         "user_id": row["user_id"],
@@ -295,9 +335,13 @@ async def optional_verify_api_key(
 
 def _seconds_until_utc_midnight() -> int:
     """Calculate seconds until next UTC midnight."""
+    return int((_next_utc_midnight() - datetime.now(timezone.utc)).total_seconds())
+
+
+def _next_utc_midnight() -> datetime:
+    """Return the next UTC midnight timestamp."""
     now = datetime.now(timezone.utc)
-    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return int((tomorrow - now).total_seconds())
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 async def verify_admin_token(
@@ -335,7 +379,7 @@ async def verify_admin_token(
         )
 
     # Extract admin IP for audit logging
-    admin_ip = request.client.host if request.client else "unknown"
+    admin_ip = get_client_ip(request)
     return admin_ip
 
 

@@ -32,8 +32,8 @@ def get_access_token_expire_minutes() -> int:
 
 
 def get_refresh_token_expire_days() -> int:
-    """Get refresh token expiration time in days (default: 30)."""
-    return int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+    """Get refresh token expiration time in days (default: 365)."""
+    return int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "365"))
 
 
 def generate_ulid() -> str:

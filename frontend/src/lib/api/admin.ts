@@ -278,3 +278,82 @@ export async function listAuditLog(
   const resp = await fetchWithAuth(API_BASE, `/admin/audit-log?${params.toString()}`);
   return jsonOrThrow<ListAuditLogResponse>(resp);
 }
+
+// ========================================
+// Recent Requests (Admin View)
+// ========================================
+
+export interface AdminRequestMetricsBucket {
+  start_time: string;
+  request_count: number;
+  success_count: number;
+  error_count: number;
+  avg_latency_ms?: number | null;
+}
+
+export interface AdminRequestMetricsWindow {
+  key: string;
+  label: string;
+  window_minutes: number;
+  bucket_minutes: number;
+  total_requests: number;
+  success_requests: number;
+  error_requests: number;
+  avg_latency_ms?: number | null;
+  buckets: AdminRequestMetricsBucket[];
+}
+
+export interface AdminRequestMetricsResponse {
+  generated_at: string;
+  windows: AdminRequestMetricsWindow[];
+}
+
+export async function getRequestMetrics(): Promise<AdminRequestMetricsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/request-metrics');
+  return jsonOrThrow<AdminRequestMetricsResponse>(resp);
+}
+
+export interface AdminRecentRequestItem {
+  request_id: string;
+  user_id: string | null;
+  user_name?: string | null;
+  user_email?: string | null;
+  user_ip?: string | null;
+  model_id: string;
+  provider: string;
+  timestamp: string;
+  status_code?: number | null;
+  latency_ms?: number | null;
+  ttft_ms?: number | null;
+  stream?: boolean | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  total_tokens?: number | null;
+  cost_usd?: number | null;
+  prompt?: string | null;
+  response?: string | null;
+  error?: string | null;
+}
+
+export interface AdminRecentRequestsResponse {
+  requests: AdminRecentRequestItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function listRecentRequests(
+  limit = 50,
+  offset = 0,
+  userId?: string,
+  modelId?: string,
+  errorsOnly = false,
+): Promise<AdminRecentRequestsResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (userId) params.set('user_id', userId);
+  if (modelId) params.set('model_id', modelId);
+  if (errorsOnly) params.set('errors_only', 'true');
+  const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
+  return jsonOrThrow<AdminRecentRequestsResponse>(resp);
+}

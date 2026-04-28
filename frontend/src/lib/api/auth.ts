@@ -6,7 +6,7 @@ const API_BASE = config.apiBase;
 export interface SignupRequest {
   email: string;
   password: string;
-  user_name?: string;
+  user_name: string;
 }
 
 export interface SignupResponse {

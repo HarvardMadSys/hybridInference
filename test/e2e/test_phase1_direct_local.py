@@ -443,7 +443,7 @@ def test_all_servers_summary(server_configs):
         ======================================================================
         Local SGLang Servers Health Summary
         ======================================================================
-        UP           llama-3.2-3b-local      http://localhost:8001      (1 models)
+        UP           qwen-2.5-3b-local      http://localhost:8001      (1 models)
         DOWN         qwen-2.5-7b-local       http://localhost:8002
         ======================================================================
     """

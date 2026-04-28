@@ -541,162 +541,6 @@ async def test_azure_openai_profile_stream_includes_usage_and_normalizes_final_c
     assert final_usage["cache_read_tokens"] == 40
 
 
-@pytest.mark.asyncio
-async def test_llama_profile_normalizes_messages_tools_and_default_tool_choice(monkeypatch):
-    """Llama profile flattens messages, normalizes tool schemas, and applies env tool_choice."""
-    monkeypatch.setenv("LLAMA_TOOL_CHOICE_DEFAULT", "required")
-    response = {
-        "choices": [
-            {
-                "message": {"role": "assistant", "content": "hi"},
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
-    }
-    config = ModelConfig(
-        id="llama-4-scout",
-        name="Llama 4 Scout",
-        provider="llama",
-        base_url="https://api.llama.com/compat/v1",
-        provider_model_id="Llama-4-Scout",
-        provider_profile="llama",
-        chat_path="/chat/completions",
-        supports_tools=True,
-        supported_params=["temperature", "top_p", "top_k", "min_p", "max_tokens", "stop"],
-    )
-    adapter = OpenAICompatAdapter(config)
-    mock_post = AsyncMock(return_value=response)
-    adapter.http = MagicMock()
-    adapter.http.json_post_with_retry = mock_post
-
-    messages = [
-        {"role": "system", "content": [{"type": "text", "text": "rules"}]},
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "hello"},
-                {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
-            ],
-        },
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read_file"}}],
-        },
-        {"role": "tool", "content": None, "tool_call_id": "call_1", "name": "read_file"},
-        {"role": "user", "content": None},
-    ]
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "search",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "paths": {
-                            "type": "array",
-                        }
-                    },
-                },
-            },
-        }
-    ]
-
-    await adapter.chat_completion(messages, tools=tools)
-
-    payload = mock_post.call_args.kwargs["json"]
-    assert payload["tool_choice"] == "required"
-    assert payload["messages"][0]["content"] == "rules"
-    assert payload["messages"][1]["content"] == "hello"
-    assert payload["messages"][2]["content"] is None
-    assert payload["messages"][3]["role"] == "tool"
-    assert payload["messages"][3]["content"] == ""
-    assert len(payload["messages"]) == 4
-    assert payload["tools"][0]["function"]["parameters"]["properties"]["paths"]["items"] == {
-        "type": "string"
-    }
-
-
-@pytest.mark.asyncio
-async def test_llama_profile_nonstream_function_call_normalized_to_tool_calls():
-    """Llama profile maps legacy function_call responses to tool_calls."""
-    response = {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "function_call": {"name": "search", "arguments": '{"query":"hi"}'},
-                },
-                "finish_reason": "tool_calls",
-            }
-        ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
-    }
-    config = ModelConfig(
-        id="llama-4-scout",
-        name="Llama 4 Scout",
-        provider="llama",
-        base_url="https://api.llama.com/compat/v1",
-        provider_model_id="Llama-4-Scout",
-        provider_profile="llama",
-        chat_path="/chat/completions",
-    )
-    adapter = OpenAICompatAdapter(config)
-    adapter.http = MagicMock()
-    adapter.http.json_post_with_retry = AsyncMock(return_value=response)
-
-    result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
-
-    tool_calls = result["choices"][0]["message"]["tool_calls"]
-    assert tool_calls[0]["function"]["name"] == "search"
-    assert tool_calls[0]["function"]["arguments"] == '{"query":"hi"}'
-    assert result["choices"][0]["finish_reason"] == "tool_calls"
-
-
-@pytest.mark.asyncio
-async def test_llama_profile_stream_function_call_normalized_and_idle_timeout_passed(monkeypatch):
-    """Llama profile maps function_call deltas and passes stream idle timeout to HTTP client."""
-    monkeypatch.setenv("LLAMA_STREAM_IDLE_TIMEOUT_SECS", "7")
-
-    async def fake_stream_post(*args, **kwargs):
-        yield _make_chunk(
-            delta={"function_call": {"name": "search", "arguments": '{"query":"hi"}'}}
-        )
-        yield _make_chunk(delta={}, finish_reason="stop")
-        yield "data: [DONE]"
-
-    config = ModelConfig(
-        id="llama-4-scout",
-        name="Llama 4 Scout",
-        provider="llama",
-        base_url="https://api.llama.com/compat/v1",
-        provider_model_id="Llama-4-Scout",
-        provider_profile="llama",
-        chat_path="/chat/completions",
-    )
-    adapter = OpenAICompatAdapter(config)
-    adapter.http = MagicMock()
-    adapter.http.stream_post = MagicMock(side_effect=fake_stream_post)
-
-    chunks = [c async for c in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])]
-
-    payloads = [json.loads(c[6:]) for c in chunks[:-1] if c.startswith("data: ")]
-    tool_payloads = [
-        p
-        for p in payloads
-        if p.get("choices") and p["choices"][0].get("delta", {}).get("tool_calls")
-    ]
-    assert tool_payloads
-    assert tool_payloads[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "search"
-    assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
-    timeout = adapter.http.stream_post.call_args.kwargs["timeout"]
-    assert timeout is not None
-    assert timeout.sock_read == 7
-
-
 # --- get_processor factory tests ---
 
 
@@ -716,7 +560,7 @@ class TestGetProcessorAutoDetect:
         assert isinstance(get_processor("minimax-m2.7"), ThinkBlockProcessor)
 
     def test_unknown_model_returns_default(self):
-        assert isinstance(get_processor("llama-3.3-70b"), DefaultProcessor)
+        assert isinstance(get_processor("some-random-model"), DefaultProcessor)
 
 
 class TestGetProcessorOverride:
@@ -726,7 +570,7 @@ class TestGetProcessorOverride:
         assert isinstance(get_processor("glm-4.7-flash", override="default"), DefaultProcessor)
 
     def test_override_glm(self):
-        assert isinstance(get_processor("llama-3.3-70b", override="glm"), GLMProcessor)
+        assert isinstance(get_processor("some-model", override="glm"), GLMProcessor)
 
     def test_override_qwen_coder(self):
         assert isinstance(get_processor(None, override="qwen_coder"), QwenCoderProcessor)

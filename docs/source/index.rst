@@ -14,6 +14,7 @@ see the `FreeInference docs <https://harvardsys.github.io/free_inference/>`_.
    developer/deployment
    developer/architecture
    developer/routing
+   developer/add-local-model
    developer/adding-models
    developer/configuration
    developer/database

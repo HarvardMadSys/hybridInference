@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException, Request
 
-from serving.servers.auth import hash_api_key, verify_api_key
+from serving.servers.auth import decrypt_api_key, encrypt_api_key, hash_api_key, verify_api_key
 from serving.storage.database import DatabaseLogger
 
 
@@ -123,6 +123,16 @@ def _hashed_key(monkeypatch, plaintext: str) -> str:
     return hash_api_key(plaintext)
 
 
+def test_api_key_encryption_round_trip(monkeypatch):
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+    plaintext_key = "hyi-valid-key"
+
+    encrypted_key = encrypt_api_key(plaintext_key)
+
+    assert encrypted_key != plaintext_key
+    assert decrypt_api_key(encrypted_key) == plaintext_key
+
+
 @pytest.mark.asyncio
 async def test_auth_authorization_bearer_valid(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
@@ -189,6 +199,40 @@ async def test_auth_x_api_key_header_valid(monkeypatch, mock_request, mock_db_wi
 
 
 @pytest.mark.asyncio
+async def test_auth_unverified_user_key_returns_403(monkeypatch, mock_request, mock_db_with_pool):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1")
+    plaintext_key = "hyi-unverified"
+    _hashed_key(monkeypatch, plaintext_key)
+    db_logger, connection = mock_db_with_pool
+
+    _setup_fetch_side_effects(
+        connection,
+        {
+            "id": 7,
+            "user_id": "unverified-user",
+            "user_name": "Unverified",
+            "quota_daily_cost_usd": 1000.0,
+            "tier": "free",
+            "email": "unverified@test.example.com",
+            "email_verified": False,
+        },
+        None,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await verify_api_key(
+            request=mock_request,
+            authorization=f"Bearer {plaintext_key}",
+            db_logger=db_logger,
+        )
+
+    assert exc.value.status_code == 403
+    assert connection.fetchrow.await_count == 1
+    connection.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_auth_invalid_key_hash_returns_401(monkeypatch, mock_request, mock_db_with_pool):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     plaintext_key = "hyi-invalid"
@@ -236,6 +280,10 @@ async def test_auth_quota_exceeded_returns_429(monkeypatch, mock_request, mock_d
     assert exc.value.status_code == 429
     assert exc.value.headers["Retry-After"]
     assert exc.value.headers["X-RateLimit-Limit-Cost"] == "1000.0"
+    assert exc.value.headers["X-RateLimit-Reset"]
+    assert exc.value.detail["remaining_usd"] == 0
+    assert exc.value.detail["reset_at"]
+    assert exc.value.detail["contact_email"] == "admin@freeinference.org"
 
 
 @pytest.mark.asyncio

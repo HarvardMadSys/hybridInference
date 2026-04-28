@@ -36,6 +36,7 @@ from serving.servers.deps import (
 )
 from serving.servers.rate_limiter import TokenCounter
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
@@ -306,7 +307,7 @@ async def chat_completions(
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
-        "ip": request.client.host if request.client else None,
+        "ip": get_client_ip(request),
         # Preserve legacy field but treat either auth header as authenticated
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,

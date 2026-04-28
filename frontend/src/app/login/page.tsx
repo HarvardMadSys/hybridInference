@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -14,7 +14,7 @@ import { Card } from '@/components/ui/Card';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, state } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,6 +25,12 @@ export default function LoginPage() {
   } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
   });
+
+  useEffect(() => {
+    if (!state.loading && state.isAuthenticated) {
+      router.replace('/dashboard');
+    }
+  }, [state.loading, state.isAuthenticated, router]);
 
   const onSubmit = async (data: LoginFormData) => {
     setIsLoading(true);
@@ -42,6 +48,14 @@ export default function LoginPage() {
       setIsLoading(false);
     }
   };
+
+  if (state.loading || state.isAuthenticated) {
+    return (
+      <div className="flex w-full items-center justify-center">
+        <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto w-full max-w-md">
