@@ -29,6 +29,7 @@ jobs:
           PROD_HOST_KEY: ${{ secrets.PROD_HOST_KEY }}
           PROD_PORT: ${{ secrets.PROD_PORT || '22' }}
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_USER: ${{ secrets.PROD_USER }}
         run: |
           set -euo pipefail
 
@@ -40,6 +41,27 @@ jobs:
 
           printf '%s\n' "${PROD_HOST_KEY}" > "${HOME}/.ssh/known_hosts"
           chmod 600 "${HOME}/.ssh/known_hosts"
+
+          for var in PROD_HOST PROD_HOST_KEY PROD_USER PROD_SSH_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error title=Missing secret::${var} is not configured for the 'production' environment"
+              exit 1
+            fi
+          done
+
+          LOOKUP_KEY="${PROD_HOST}"
+          if [ "${PROD_PORT}" != "22" ]; then
+            LOOKUP_KEY="[${PROD_HOST}]:${PROD_PORT}"
+          fi
+
+          if ! ssh-keygen -F "${LOOKUP_KEY}" -f "${HOME}/.ssh/known_hosts" >/dev/null; then
+            echo "::error title=Invalid PROD_HOST_KEY::known_hosts has no entry for ${LOOKUP_KEY}"
+            echo "Re-generate the secret with: ssh-keyscan -p ${PROD_PORT} -t ed25519,rsa,ecdsa ${PROD_HOST}"
+            exit 1
+          fi
+
+          echo "known_hosts entries:"
+          awk 'NF>=3 && $1 !~ /^#/ {printf "  %s %s\n", $1, $2}' "${HOME}/.ssh/known_hosts"
 
       - name: Deploy on production host
         env:
