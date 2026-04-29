@@ -8,6 +8,13 @@ on:
       - 'serving/**'
       - 'routing/**'
       - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'docs/**'
+      - 'serving/**'
+      - 'routing/**'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:  # Allow manual trigger
 
 # NOTE: Documentation is deployed via Cloudflare Pages:

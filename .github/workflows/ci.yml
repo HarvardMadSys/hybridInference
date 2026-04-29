@@ -163,6 +163,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install gitleaks
         run: |
@@ -178,7 +180,7 @@ jobs:
           gitleaks version
 
       - name: Run gitleaks
-        run: gitleaks detect --source . --no-git --redact --verbose --no-banner
+        run: gitleaks detect --source . --redact --verbose --no-banner
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -186,4 +188,6 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Security audit
-        run: uvx pip-audit --progress-spinner off
+        run: |
+          uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
+          uvx pip-audit --progress-spinner off -r /tmp/audit-requirements.txt
