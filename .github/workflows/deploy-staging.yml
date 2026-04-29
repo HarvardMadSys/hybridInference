@@ -1,0 +1,61 @@
+name: Deploy Staging
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [dev]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Docker Compose stack
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 30
+
+    steps:
+      - name: Configure SSH
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_HOST_KEY: ${{ secrets.STAGING_HOST_KEY }}
+          STAGING_PORT: ${{ secrets.STAGING_PORT || '22' }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${HOME}/.ssh"
+          chmod 700 "${HOME}/.ssh"
+
+          printf '%s\n' "${STAGING_SSH_KEY}" > "${HOME}/.ssh/staging_deploy_key"
+          chmod 600 "${HOME}/.ssh/staging_deploy_key"
+
+          printf '%s\n' "${STAGING_HOST_KEY}" > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+      - name: Deploy on staging host
+        env:
+          # workflow_run deploys the CI-validated commit; manual dispatch uses
+          # the workflow file revision selected in the GitHub UI.
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_PORT: ${{ secrets.STAGING_PORT || '22' }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -i "${HOME}/.ssh/staging_deploy_key" \
+            -p "${STAGING_PORT}" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "${STAGING_USER}@${STAGING_HOST}" \
+            "cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} bash scripts/deploy_staging.sh"
