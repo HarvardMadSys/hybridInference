@@ -65,7 +65,7 @@ log "Syncing subscription credentials."
 make sync-subscriptions
 
 log "Rebuilding and restarting Docker Compose services."
-make staging-build
+make build
 
 log "Current service state:"
 "${COMPOSE[@]}" ps
