@@ -80,4 +80,4 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "${STAGING_USER}@${STAGING_HOST}" \
-            "cd /srv/hybridInference && git fetch origin dev && git reset --hard ${DEPLOY_SHA} && DEPLOY_SHA=${DEPLOY_SHA} bash scripts/deploy_staging.sh"
+            "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && git fetch origin dev && git reset --hard ${DEPLOY_SHA} && DEPLOY_SHA=${DEPLOY_SHA} bash scripts/deploy_staging.sh"
