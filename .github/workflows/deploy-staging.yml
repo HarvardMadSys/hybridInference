@@ -49,6 +49,9 @@ jobs:
             fi
           done
 
+          echo "known_hosts entries (host_token algorithm):"
+          awk 'NF>=3 && $1 !~ /^#/ {printf "  %s %s\n", $1, $2}' "${HOME}/.ssh/known_hosts"
+
           LOOKUP_KEY="${STAGING_HOST}"
           if [ "${STAGING_PORT}" != "22" ]; then
             LOOKUP_KEY="[${STAGING_HOST}]:${STAGING_PORT}"
@@ -59,9 +62,6 @@ jobs:
             echo "Re-generate the secret with: ssh-keyscan -p ${STAGING_PORT} -t ed25519,rsa,ecdsa ${STAGING_HOST}"
             exit 1
           fi
-
-          echo "known_hosts entries:"
-          awk 'NF>=3 && $1 !~ /^#/ {printf "  %s %s\n", $1, $2}' "${HOME}/.ssh/known_hosts"
 
       - name: Deploy on staging host
         env:
