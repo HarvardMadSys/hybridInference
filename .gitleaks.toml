@@ -10,12 +10,3 @@ regexes = [
   '''(?i)^(DB_PASSWORD|PGADMIN_PASSWORD)=\s*$''',
   '''(?i)DB_PASSWORD=\s*\nDB_ENABLED=true''',
 ]
-
-# Public ShareGPT-derived dataset. Tokens inside its `prompt_text` fields are
-# example credentials embedded in user conversations, not org secrets. New
-# real org secrets must not be added to this file.
-[[allowlists]]
-description = "ShareGPT training dataset (external content)"
-paths = [
-  '''^dataset/sharegpt_direct\.jsonl$''',
-]
