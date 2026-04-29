@@ -1,0 +1,11 @@
+# Allowlisted gitleaks findings. Each entry is a finding fingerprint.
+#
+# TODO(secret-rotation): The two Slack incoming-webhook URLs below were
+# committed to infrastructure/alertmanager/alertmanager.yml and remain
+# recoverable from git history. The file itself was later replaced with an
+# .example pattern, but the webhooks have NOT been rotated in Slack.
+# Action required: Slack admin -> app -> Incoming Webhooks -> revoke each
+# of these and regenerate fresh URLs for the current alertmanager config.
+# After rotation, keep these fingerprints here as a permanent record.
+9da2adaacfdfa1526f6064d4bc94b40396246296:infrastructure/alertmanager/alertmanager.yml:slack-webhook-url:14
+a06984d3f3bc89cc1acdbae6dd744bbbb20f80ef:infrastructure/alertmanager/alertmanager.yml:slack-webhook-url:14
