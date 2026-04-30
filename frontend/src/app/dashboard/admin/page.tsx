@@ -23,6 +23,7 @@ import {
   getRequestMetrics,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { AnalyticsTab } from './AnalyticsTab';
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -151,12 +152,12 @@ export default function AdminPage() {
   const { state } = useAuth();
 
   // Top-level tab
-  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests' | 'analytics'>('users');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
-    if (tab === 'users' || tab === 'audit' || tab === 'requests') {
+    if (tab === 'users' || tab === 'audit' || tab === 'requests' || tab === 'analytics') {
       setActiveTab(tab);
     }
   }, []);
@@ -444,7 +445,7 @@ export default function AdminPage() {
     { key: 'deleted', label: 'Deleted', count: counts.deleted },
   ];
 
-  const onTabChange = (tab: 'users' | 'audit' | 'requests') => {
+  const onTabChange = (tab: 'users' | 'audit' | 'requests' | 'analytics') => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
     params.set('tab', tab);
@@ -506,7 +507,7 @@ export default function AdminPage() {
 
         {/* Top-level tab toggle */}
         <div className="mt-6 flex items-center gap-1">
-          {(['users', 'requests', 'audit'] as const).map((tab) => (
+          {(['users', 'requests', 'audit', 'analytics'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => onTabChange(tab)}
@@ -516,7 +517,13 @@ export default function AdminPage() {
                   : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
               }`}
             >
-              {tab === 'users' ? 'Users' : tab === 'requests' ? 'Recent Requests' : 'Audit Log'}
+              {tab === 'users'
+  ? 'Users'
+  : tab === 'requests'
+    ? 'Recent Requests'
+    : tab === 'audit'
+      ? 'Audit Log'
+      : 'Analytics'}
             </button>
           ))}
         </div>
@@ -1418,6 +1425,7 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+        {activeTab === 'analytics' && <AnalyticsTab />}
       </div>
 
       {/* Reject modal */}
