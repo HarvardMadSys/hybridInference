@@ -193,3 +193,73 @@ class TestFetchMinimax:
         # used = total - remain
         assert u.used == 280.0
         assert u.limit == 1000.0
+
+
+from serving.admin.provider_quotas import fetch_ollama
+
+
+class TestFetchOllama:
+    @pytest.mark.asyncio
+    async def test_not_configured_when_cookie_missing(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+        result = await fetch_ollama()
+        assert result.ok is False
+        assert result.error == "not_configured"
+        assert result.name == "ollama"
+
+    @pytest.mark.asyncio
+    async def test_redirected_to_login_returns_auth_failed(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        # If cookie is invalid, ollama.com redirects to a sign-in page.
+        # We simulate by returning HTML with no usage data and a sign-in link.
+        html = "<html><body><a href='/signin'>Sign in</a></body></html>"
+        response_mock = MagicMock()
+        response_mock.status = 200
+        response_mock.text = AsyncMock(return_value=html)
+        response_mock.json = AsyncMock(return_value={})
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=response_mock)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        session = MagicMock()
+        session.get = MagicMock(return_value=cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=session_cm):
+            result = await fetch_ollama()
+        assert result.ok is False
+        assert result.error in ("auth_failed", "parse_error")
+
+    @pytest.mark.asyncio
+    async def test_parses_session_and_weekly_usage(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        # Simulated HTML with the usage labels we look for.
+        html = """
+        <html><body>
+          <h2>Usage</h2>
+          <div>Session usage: 42 of 100 requests</div>
+          <div>Weekly usage: 320 of 5000 requests</div>
+        </body></html>
+        """
+        response_mock = MagicMock()
+        response_mock.status = 200
+        response_mock.text = AsyncMock(return_value=html)
+        response_mock.json = AsyncMock(return_value={})
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=response_mock)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        session = MagicMock()
+        session.get = MagicMock(return_value=cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=session_cm):
+            result = await fetch_ollama()
+        assert result.ok is True
+        assert len(result.usages) >= 2
+        labels = [u.label.lower() for u in result.usages]
+        assert any("session" in label for label in labels)
+        assert any("week" in label for label in labels)
+        session_use = next(u for u in result.usages if "session" in u.label.lower())
+        assert session_use.used == 42.0
+        assert session_use.limit == 100.0

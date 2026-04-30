@@ -316,3 +316,108 @@ async def fetch_minimax() -> ProviderQuotaResult:
         error=None,
         usages=usages,
     )
+
+
+import re
+
+from bs4 import BeautifulSoup
+
+
+_USAGE_PATTERN = re.compile(
+    r"(?P<label>session|weekly|monthly|daily)\s+usage[:\s]+(?P<used>[\d,]+)\s+of\s+(?P<limit>[\d,]+)\s+(?P<unit>requests?|tokens?|messages?)",
+    re.IGNORECASE,
+)
+
+
+async def fetch_ollama() -> ProviderQuotaResult:
+    """Scrape Ollama Cloud usage from the settings page (cookie-authenticated).
+
+    Ollama exposes no quota API; we GET https://ollama.com/settings with the
+    admin's session cookie and parse usage figures from the HTML. If the
+    page structure changes, the fetcher returns parse_error so the admin
+    knows the parser needs updating.
+    """
+    cookie = os.getenv("OLLAMA_SESSION_COOKIE", "")
+    if not cookie:
+        return ProviderQuotaResult(
+            name="ollama",
+            display_name="Ollama Cloud",
+            key_configured=False,
+            key_masked=None,
+            fetched_at=_now(),
+            ok=False,
+            error="not_configured",
+            usages=[],
+        )
+
+    url = "https://ollama.com/settings"
+    headers = {
+        "Cookie": cookie,
+        "User-Agent": "Mozilla/5.0 (compatible; freeinference-admin/1.0)",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                    return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
+                if resp.status >= 400:
+                    return _err("ollama", "Ollama Cloud", cookie, "unexpected")
+                html = await resp.text()
+    except asyncio.TimeoutError:
+        return _err("ollama", "Ollama Cloud", cookie, "timeout")
+    except aiohttp.ClientError:
+        return _err("ollama", "Ollama Cloud", cookie, "unexpected")
+    except Exception:
+        logger.exception("fetch_ollama: unexpected error")
+        return _err("ollama", "Ollama Cloud", cookie, "unexpected")
+
+    usages = _parse_ollama_html(html)
+    if not usages:
+        # Authenticated pages have usage figures; their absence usually
+        # means cookie expired and we got a sign-in page instead.
+        if "sign in" in html.lower() or "login" in html.lower():
+            return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
+        return _err("ollama", "Ollama Cloud", cookie, "parse_error")
+
+    return ProviderQuotaResult(
+        name="ollama",
+        display_name="Ollama Cloud",
+        key_configured=True,
+        key_masked=_mask_key(cookie),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
+
+
+def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
+    """Best-effort extraction of usage figures from the Ollama settings page.
+
+    Looks for text matches like 'Session usage: 42 of 100 requests'. Returns
+    empty list if no recognizable usage rows found.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    usages: list[ProviderQuotaUsage] = []
+    for match in _USAGE_PATTERN.finditer(text):
+        try:
+            used = float(match.group("used").replace(",", ""))
+            limit = float(match.group("limit").replace(",", ""))
+        except ValueError:
+            continue
+        unit = match.group("unit").lower().rstrip("s") + "s"  # normalize plural
+        label = f"{match.group('label').capitalize()} usage"
+        usages.append(
+            ProviderQuotaUsage(
+                label=label,
+                used=used,
+                limit=limit,
+                unit=unit,
+                reset_at=None,
+            )
+        )
+    return usages
