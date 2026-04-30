@@ -357,3 +357,127 @@ export async function listRecentRequests(
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
+
+// ========================================
+// Broadcast Email
+// ========================================
+
+export interface BroadcastPreviewRequest {
+  template_key?: string | null;
+  template_vars?: Record<string, string>;
+  subject?: string;
+  body_html?: string;
+  body_text?: string;
+  target_roles: string[];
+  target_statuses: string[];
+}
+
+export interface BroadcastPreviewResponse {
+  recipient_count: number;
+  rendered_subject: string;
+  rendered_body_html: string;
+  rendered_body_text: string;
+}
+
+export interface CreateBroadcastRequest extends BroadcastPreviewRequest {
+  scheduled_at?: string | null;
+}
+
+export interface CreateBroadcastResponse {
+  id: string;
+  status: string;
+  recipient_count: number;
+  scheduled_at: string | null;
+}
+
+export interface BroadcastListItem {
+  id: string;
+  subject: string;
+  status: string;
+  recipient_count: number;
+  scheduled_at: string | null;
+  sent_at: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface ListBroadcastsResponse {
+  total: number;
+  broadcasts: BroadcastListItem[];
+}
+
+export interface BroadcastRecipientItem {
+  user_id: string;
+  email: string;
+  status: string;
+  error: string | null;
+  sent_at: string | null;
+}
+
+export interface BroadcastDetailResponse {
+  broadcast: BroadcastListItem;
+  recipients: BroadcastRecipientItem[];
+  total_recipients: number;
+}
+
+export async function previewBroadcast(
+  req: BroadcastPreviewRequest,
+): Promise<BroadcastPreviewResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/broadcast-email/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  return jsonOrThrow<BroadcastPreviewResponse>(resp);
+}
+
+export async function sendTestBroadcastEmail(req: BroadcastPreviewRequest): Promise<void> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/broadcast-email/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  await jsonOrThrow<{ message: string }>(resp);
+}
+
+export async function createBroadcast(
+  req: CreateBroadcastRequest,
+): Promise<CreateBroadcastResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/broadcast-email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  return jsonOrThrow<CreateBroadcastResponse>(resp);
+}
+
+export async function listBroadcasts(
+  limit = 50,
+  offset = 0,
+): Promise<ListBroadcastsResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const resp = await fetchWithAuth(API_BASE, `/admin/broadcast-email?${params}`);
+  return jsonOrThrow<ListBroadcastsResponse>(resp);
+}
+
+export async function getBroadcastDetail(
+  id: string,
+  limit = 100,
+  offset = 0,
+): Promise<BroadcastDetailResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/broadcast-email/${encodeURIComponent(id)}?${params}`,
+  );
+  return jsonOrThrow<BroadcastDetailResponse>(resp);
+}
+
+export async function cancelBroadcast(id: string): Promise<void> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/broadcast-email/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  );
+  await jsonOrThrow<{ message: string }>(resp);
+}
