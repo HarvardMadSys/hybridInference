@@ -451,10 +451,7 @@ export async function createBroadcast(
   return jsonOrThrow<CreateBroadcastResponse>(resp);
 }
 
-export async function listBroadcasts(
-  limit = 50,
-  offset = 0,
-): Promise<ListBroadcastsResponse> {
+export async function listBroadcasts(limit = 50, offset = 0): Promise<ListBroadcastsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const resp = await fetchWithAuth(API_BASE, `/admin/broadcast-email?${params}`);
   return jsonOrThrow<ListBroadcastsResponse>(resp);
@@ -474,10 +471,8 @@ export async function getBroadcastDetail(
 }
 
 export async function cancelBroadcast(id: string): Promise<void> {
-  const resp = await fetchWithAuth(
-    API_BASE,
-    `/admin/broadcast-email/${encodeURIComponent(id)}`,
-    { method: 'DELETE' },
-  );
+  const resp = await fetchWithAuth(API_BASE, `/admin/broadcast-email/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
   await jsonOrThrow<{ message: string }>(resp);
 }

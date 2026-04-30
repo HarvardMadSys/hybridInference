@@ -444,6 +444,7 @@ __all__ = [
 
 # ── Broadcast Email Schemas ────────────────────────────────────────────────
 
+
 class BroadcastPreviewRequest(BaseModel):
     template_key: str | None = None
     template_vars: dict = Field(default_factory=dict)

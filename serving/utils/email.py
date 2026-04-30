@@ -416,8 +416,10 @@ Review at: {admin_url}
 
 # ── Broadcast email templates ──────────────────────────────────────────────
 
+
 class _SafeDict(dict):
     """dict subclass that returns '{key}' for missing keys instead of raising KeyError."""
+
     def __missing__(self, key: str) -> str:
         return "{" + key + "}"
 

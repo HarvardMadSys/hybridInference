@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -18,13 +19,21 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
-_db_pool: "asyncpg.Pool | None" = None
+_db_pool: asyncpg.Pool | None = None
+_background_tasks: set[asyncio.Task] = set()
 
 BATCH_SIZE = 50
 BATCH_DELAY_SECONDS = 1.0
 
 
-def start_scheduler(db_pool: "asyncpg.Pool") -> None:
+def _spawn_background(coro) -> None:
+    """Create an asyncio task and hold a reference until done."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+def start_scheduler(db_pool: asyncpg.Pool) -> None:
     """Start APScheduler and store the DB pool for use by scheduled jobs."""
     global _scheduler, _db_pool
     _db_pool = db_pool
@@ -56,7 +65,7 @@ async def rehydrate_scheduled_broadcasts() -> None:
         run_at = row["scheduled_at"]
         if run_at is None or run_at <= now:
             logger.info(f"Rehydrating missed broadcast {broadcast_id} — firing immediately")
-            asyncio.create_task(execute_broadcast(broadcast_id))
+            _spawn_background(execute_broadcast(broadcast_id))
         else:
             _add_scheduler_job(broadcast_id, run_at)
             logger.info(f"Rehydrated scheduled broadcast {broadcast_id} for {run_at}")
@@ -65,7 +74,7 @@ async def rehydrate_scheduled_broadcasts() -> None:
 def schedule_broadcast(broadcast_id: str, run_at: datetime | None) -> None:
     """Schedule a broadcast. If run_at is None, fire immediately as a background task."""
     if run_at is None:
-        asyncio.create_task(execute_broadcast(broadcast_id))
+        _spawn_background(execute_broadcast(broadcast_id))
     else:
         _add_scheduler_job(broadcast_id, run_at)
 
@@ -73,10 +82,8 @@ def schedule_broadcast(broadcast_id: str, run_at: datetime | None) -> None:
 def cancel_broadcast_job(broadcast_id: str) -> None:
     """Remove a scheduled APScheduler job. No-op if not found."""
     if _scheduler:
-        try:
+        with contextlib.suppress(Exception):
             _scheduler.remove_job(broadcast_id)
-        except Exception:
-            pass
 
 
 def _add_scheduler_job(broadcast_id: str, run_at: datetime) -> None:
@@ -93,7 +100,7 @@ def _add_scheduler_job(broadcast_id: str, run_at: datetime) -> None:
 
 def _run_broadcast_sync(broadcast_id: str) -> None:
     """Sync wrapper called by APScheduler — creates asyncio task."""
-    asyncio.create_task(execute_broadcast(broadcast_id))
+    _spawn_background(execute_broadcast(broadcast_id))
 
 
 async def execute_broadcast(broadcast_id: str) -> None:
@@ -103,9 +110,7 @@ async def execute_broadcast(broadcast_id: str) -> None:
         return
 
     async with _db_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM email_broadcasts WHERE id = $1", broadcast_id
-        )
+        row = await conn.fetchrow("SELECT * FROM email_broadcasts WHERE id = $1", broadcast_id)
         if not row:
             logger.error(f"Broadcast {broadcast_id} not found")
             return

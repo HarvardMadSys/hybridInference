@@ -202,7 +202,6 @@ export default function AdminPage() {
 
   // Broadcast email state
   const [broadcasts, setBroadcasts] = useState<BroadcastListItem[]>([]);
-  const [broadcastTotal, setBroadcastTotal] = useState(0);
   const [broadcastLoading, setBroadcastLoading] = useState(false);
   const [broadcastDetail, setBroadcastDetail] = useState<BroadcastDetailResponse | null>(null);
   const [broadcastDetailLoading, setBroadcastDetailLoading] = useState(false);
@@ -212,7 +211,11 @@ export default function AdminPage() {
   const [bcBodyHtml, setBcBodyHtml] = useState('');
   const [bcScheduleMode, setBcScheduleMode] = useState<'now' | 'later'>('now');
   const [bcScheduledAt, setBcScheduledAt] = useState('');
-  const [bcPreview, setBcPreview] = useState<{ recipient_count: number; rendered_subject: string; rendered_body_html: string } | null>(null);
+  const [bcPreview, setBcPreview] = useState<{
+    recipient_count: number;
+    rendered_subject: string;
+    rendered_body_html: string;
+  } | null>(null);
   const [bcPreviewLoading, setBcPreviewLoading] = useState(false);
   const [bcSending, setBcSending] = useState(false);
   const [bcConfirm, setBcConfirm] = useState(false);
@@ -335,6 +338,22 @@ export default function AdminPage() {
     const t = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(t);
   }, [toast]);
+
+  const loadBroadcasts = useCallback(async () => {
+    setBroadcastLoading(true);
+    try {
+      const res = await listBroadcasts(50, 0);
+      setBroadcasts(res.broadcasts);
+    } catch {
+      // non-fatal
+    } finally {
+      setBroadcastLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'broadcast') loadBroadcasts();
+  }, [loadBroadcasts, activeTab]);
 
   const toggleDetail = async (uid: string) => {
     if (expandedId === uid) {
@@ -472,23 +491,6 @@ export default function AdminPage() {
     { key: 'deleted', label: 'Deleted', count: counts.deleted },
   ];
 
-  const loadBroadcasts = useCallback(async () => {
-    setBroadcastLoading(true);
-    try {
-      const res = await listBroadcasts(50, 0);
-      setBroadcasts(res.broadcasts);
-      setBroadcastTotal(res.total);
-    } catch {
-      // non-fatal
-    } finally {
-      setBroadcastLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (activeTab === 'broadcast') loadBroadcasts();
-  }, [loadBroadcasts, activeTab]);
-
   const onTabChange = (tab: 'users' | 'audit' | 'requests' | 'broadcast') => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
@@ -498,9 +500,18 @@ export default function AdminPage() {
   };
 
   const refreshActiveTab = () => {
-    if (activeTab === 'users') { load(); return; }
-    if (activeTab === 'audit') { loadAudit(); return; }
-    if (activeTab === 'broadcast') { loadBroadcasts(); return; }
+    if (activeTab === 'users') {
+      load();
+      return;
+    }
+    if (activeTab === 'audit') {
+      loadAudit();
+      return;
+    }
+    if (activeTab === 'broadcast') {
+      loadBroadcasts();
+      return;
+    }
     loadRequests();
     loadRequestMetrics();
   };
@@ -556,7 +567,13 @@ export default function AdminPage() {
                   : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
               }`}
             >
-              {tab === 'users' ? 'Users' : tab === 'requests' ? 'Recent Requests' : tab === 'audit' ? 'Audit Log' : 'Broadcast Email'}
+              {tab === 'users'
+                ? 'Users'
+                : tab === 'requests'
+                  ? 'Recent Requests'
+                  : tab === 'audit'
+                    ? 'Audit Log'
+                    : 'Broadcast Email'}
             </button>
           ))}
         </div>
@@ -1469,7 +1486,9 @@ export default function AdminPage() {
 
                 {/* Template selector */}
                 <div className="mb-4">
-                  <label className="block text-[12px] font-medium text-gray-600 mb-1">Template</label>
+                  <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                    Template
+                  </label>
                   <select
                     value={bcTemplateKey}
                     onChange={(e) => {
@@ -1492,7 +1511,9 @@ export default function AdminPage() {
                 {bcTemplateKey === 'maintenance' && (
                   <div className="mb-4 grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Date</label>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Date
+                      </label>
                       <input
                         className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
                         placeholder="e.g. May 1, 2026"
@@ -1501,12 +1522,16 @@ export default function AdminPage() {
                       />
                     </div>
                     <div>
-                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Duration</label>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Duration
+                      </label>
                       <input
                         className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
                         placeholder="e.g. 2 hours"
                         value={bcTemplateVars['duration'] ?? ''}
-                        onChange={(e) => setBcTemplateVars((v) => ({ ...v, duration: e.target.value }))}
+                        onChange={(e) =>
+                          setBcTemplateVars((v) => ({ ...v, duration: e.target.value }))
+                        }
                       />
                     </div>
                   </div>
@@ -1514,41 +1539,55 @@ export default function AdminPage() {
                 {bcTemplateKey === 'announcement' && (
                   <div className="mb-4 space-y-3">
                     <div>
-                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Feature Name</label>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Feature Name
+                      </label>
                       <input
                         className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
                         placeholder="e.g. GPT-5 Support"
                         value={bcTemplateVars['feature_name'] ?? ''}
-                        onChange={(e) => setBcTemplateVars((v) => ({ ...v, feature_name: e.target.value }))}
+                        onChange={(e) =>
+                          setBcTemplateVars((v) => ({ ...v, feature_name: e.target.value }))
+                        }
                       />
                     </div>
                     <div>
-                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Description</label>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Description
+                      </label>
                       <textarea
                         rows={3}
                         className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
                         placeholder="Describe the new feature..."
                         value={bcTemplateVars['description'] ?? ''}
-                        onChange={(e) => setBcTemplateVars((v) => ({ ...v, description: e.target.value }))}
+                        onChange={(e) =>
+                          setBcTemplateVars((v) => ({ ...v, description: e.target.value }))
+                        }
                       />
                     </div>
                   </div>
                 )}
                 {bcTemplateKey === 'quota_change' && (
                   <div className="mb-4">
-                    <label className="block text-[12px] font-medium text-gray-600 mb-1">New Quota</label>
+                    <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                      New Quota
+                    </label>
                     <input
                       className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
                       placeholder="e.g. $50/day"
                       value={bcTemplateVars['new_quota'] ?? ''}
-                      onChange={(e) => setBcTemplateVars((v) => ({ ...v, new_quota: e.target.value }))}
+                      onChange={(e) =>
+                        setBcTemplateVars((v) => ({ ...v, new_quota: e.target.value }))
+                      }
                     />
                   </div>
                 )}
                 {bcTemplateKey === 'custom' && (
                   <div className="mb-4 space-y-3">
                     <div>
-                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Subject</label>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Subject
+                      </label>
                       <input
                         className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
                         placeholder="Email subject"
@@ -1557,7 +1596,9 @@ export default function AdminPage() {
                       />
                     </div>
                     <div>
-                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Body (HTML)</label>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Body (HTML)
+                      </label>
                       <textarea
                         rows={6}
                         className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-mono focus:outline-none focus:ring-2 focus:ring-gray-900"
@@ -1572,15 +1613,20 @@ export default function AdminPage() {
                 {/* Recipient filters */}
                 <div className="mb-4 grid grid-cols-2 gap-6">
                   <div>
-                    <label className="block text-[12px] font-medium text-gray-600 mb-2">Roles</label>
+                    <label className="block text-[12px] font-medium text-gray-600 mb-2">
+                      Roles
+                    </label>
                     {['free', 'internal', 'admin'].map((role) => (
-                      <label key={role} className="flex items-center gap-2 text-[13px] text-gray-700 mb-1">
+                      <label
+                        key={role}
+                        className="flex items-center gap-2 text-[13px] text-gray-700 mb-1"
+                      >
                         <input
                           type="checkbox"
                           checked={bcTargetRoles.includes(role)}
                           onChange={(e) =>
                             setBcTargetRoles((prev) =>
-                              e.target.checked ? [...prev, role] : prev.filter((r) => r !== role)
+                              e.target.checked ? [...prev, role] : prev.filter((r) => r !== role),
                             )
                           }
                         />
@@ -1589,15 +1635,22 @@ export default function AdminPage() {
                     ))}
                   </div>
                   <div>
-                    <label className="block text-[12px] font-medium text-gray-600 mb-2">Statuses</label>
+                    <label className="block text-[12px] font-medium text-gray-600 mb-2">
+                      Statuses
+                    </label>
                     {['active', 'suspended', 'pending_approval', 'rejected'].map((status) => (
-                      <label key={status} className="flex items-center gap-2 text-[13px] text-gray-700 mb-1">
+                      <label
+                        key={status}
+                        className="flex items-center gap-2 text-[13px] text-gray-700 mb-1"
+                      >
                         <input
                           type="checkbox"
                           checked={bcTargetStatuses.includes(status)}
                           onChange={(e) =>
                             setBcTargetStatuses((prev) =>
-                              e.target.checked ? [...prev, status] : prev.filter((s) => s !== status)
+                              e.target.checked
+                                ? [...prev, status]
+                                : prev.filter((s) => s !== status),
                             )
                           }
                         />
@@ -1609,7 +1662,9 @@ export default function AdminPage() {
 
                 {/* Schedule toggle */}
                 <div className="mb-4">
-                  <label className="block text-[12px] font-medium text-gray-600 mb-2">Send Timing</label>
+                  <label className="block text-[12px] font-medium text-gray-600 mb-2">
+                    Send Timing
+                  </label>
                   <div className="flex items-center gap-4">
                     <label className="flex items-center gap-2 text-[13px] text-gray-700">
                       <input
@@ -1705,9 +1760,12 @@ export default function AdminPage() {
                 {bcPreview && (
                   <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-4">
                     <div className="text-[13px] font-medium text-blue-800 mb-1">
-                      {bcPreview.recipient_count} recipient{bcPreview.recipient_count !== 1 ? 's' : ''} match your filters
+                      {bcPreview.recipient_count} recipient
+                      {bcPreview.recipient_count !== 1 ? 's' : ''} match your filters
                     </div>
-                    <div className="text-[12px] text-blue-700">Subject: {bcPreview.rendered_subject}</div>
+                    <div className="text-[12px] text-blue-700">
+                      Subject: {bcPreview.rendered_subject}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1716,12 +1774,18 @@ export default function AdminPage() {
               {bcConfirm && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
                   <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
-                    <h3 className="text-[15px] font-semibold text-gray-900 mb-2">Confirm Broadcast</h3>
+                    <h3 className="text-[15px] font-semibold text-gray-900 mb-2">
+                      Confirm Broadcast
+                    </h3>
                     <p className="text-[13px] text-gray-600 mb-1">
-                      {bcPreview ? `This will send to ${bcPreview.recipient_count} recipient(s).` : 'Send broadcast email?'}
+                      {bcPreview
+                        ? `This will send to ${bcPreview.recipient_count} recipient(s).`
+                        : 'Send broadcast email?'}
                     </p>
                     {bcScheduleMode === 'later' && bcScheduledAt && (
-                      <p className="text-[12px] text-gray-500 mb-4">Scheduled for: {new Date(bcScheduledAt).toLocaleString()}</p>
+                      <p className="text-[12px] text-gray-500 mb-4">
+                        Scheduled for: {new Date(bcScheduledAt).toLocaleString()}
+                      </p>
                     )}
                     <div className="flex justify-end gap-3 mt-4">
                       <button
@@ -1749,7 +1813,11 @@ export default function AdminPage() {
                                   ? new Date(bcScheduledAt).toISOString()
                                   : null,
                             });
-                            setToast(bcScheduleMode === 'later' ? 'Broadcast scheduled' : 'Broadcast queued');
+                            setToast(
+                              bcScheduleMode === 'later'
+                                ? 'Broadcast scheduled'
+                                : 'Broadcast queued',
+                            );
                             await loadBroadcasts();
                           } catch (err) {
                             setToast(getErrorMessage(err));
@@ -1814,12 +1882,12 @@ export default function AdminPage() {
                                   bc.status === 'sent'
                                     ? 'bg-green-50 text-green-700'
                                     : bc.status === 'failed'
-                                    ? 'bg-red-50 text-red-700'
-                                    : bc.status === 'sending'
-                                    ? 'bg-blue-50 text-blue-700'
-                                    : bc.status === 'cancelled'
-                                    ? 'bg-gray-100 text-gray-500'
-                                    : 'bg-yellow-50 text-yellow-700'
+                                      ? 'bg-red-50 text-red-700'
+                                      : bc.status === 'sending'
+                                        ? 'bg-blue-50 text-blue-700'
+                                        : bc.status === 'cancelled'
+                                          ? 'bg-gray-100 text-gray-500'
+                                          : 'bg-yellow-50 text-yellow-700'
                                 }`}
                               >
                                 {bc.status}
@@ -1830,8 +1898,8 @@ export default function AdminPage() {
                               {bc.sent_at
                                 ? relTime(bc.sent_at)
                                 : bc.scheduled_at
-                                ? new Date(bc.scheduled_at).toLocaleString()
-                                : '—'}
+                                  ? new Date(bc.scheduled_at).toLocaleString()
+                                  : '—'}
                             </td>
                             <td className="px-6 py-3">
                               {bc.status === 'scheduled' && (
@@ -1859,7 +1927,9 @@ export default function AdminPage() {
                             <tr>
                               <td colSpan={5} className="bg-gray-50 px-6 py-4">
                                 {broadcastDetailLoading ? (
-                                  <span className="text-[12px] text-gray-400">Loading recipients…</span>
+                                  <span className="text-[12px] text-gray-400">
+                                    Loading recipients…
+                                  </span>
                                 ) : (
                                   <>
                                     <div className="text-[12px] font-medium text-gray-600 mb-2">
@@ -1877,7 +1947,10 @@ export default function AdminPage() {
                                         </thead>
                                         <tbody>
                                           {broadcastDetail.recipients.map((r) => (
-                                            <tr key={r.user_id} className="border-t border-gray-100">
+                                            <tr
+                                              key={r.user_id}
+                                              className="border-t border-gray-100"
+                                            >
                                               <td className="pr-4 py-1 text-gray-700">{r.email}</td>
                                               <td className="pr-4 py-1">
                                                 <span
@@ -1885,14 +1958,16 @@ export default function AdminPage() {
                                                     r.status === 'sent'
                                                       ? 'text-green-600'
                                                       : r.status === 'failed'
-                                                      ? 'text-red-500'
-                                                      : 'text-gray-400'
+                                                        ? 'text-red-500'
+                                                        : 'text-gray-400'
                                                   }
                                                 >
                                                   {r.status}
                                                 </span>
                                               </td>
-                                              <td className="pr-4 py-1 text-red-400">{r.error ?? '—'}</td>
+                                              <td className="pr-4 py-1 text-red-400">
+                                                {r.error ?? '—'}
+                                              </td>
                                               <td className="pr-4 py-1 text-gray-400">
                                                 {r.sent_at ? relTime(r.sent_at) : '—'}
                                               </td>

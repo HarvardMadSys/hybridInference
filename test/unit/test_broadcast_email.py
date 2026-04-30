@@ -1,4 +1,5 @@
 """Unit tests for broadcast email feature."""
+
 from __future__ import annotations
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 
 def test_email_templates_keys_exist():
     from serving.utils.email import EMAIL_TEMPLATES
+
     assert "maintenance" in EMAIL_TEMPLATES
     assert "announcement" in EMAIL_TEMPLATES
     assert "quota_change" in EMAIL_TEMPLATES
@@ -13,6 +15,7 @@ def test_email_templates_keys_exist():
 
 def test_render_broadcast_template_substitutes_vars():
     from serving.utils.email import render_broadcast_template
+
     result = render_broadcast_template("maintenance", {"date": "May 1", "duration": "2 hours"})
     assert "May 1" in result["subject"] or "May 1" in result["body_html"]
     assert "2 hours" in result["body_html"] or "2 hours" in result["body_text"]
@@ -20,6 +23,7 @@ def test_render_broadcast_template_substitutes_vars():
 
 def test_render_broadcast_template_missing_var_leaves_placeholder():
     from serving.utils.email import render_broadcast_template
+
     result = render_broadcast_template("maintenance", {})
     # Missing vars should appear as {var_name} — no KeyError raised
     assert "{date}" in result["body_html"] or "{duration}" in result["body_html"]
@@ -27,6 +31,7 @@ def test_render_broadcast_template_missing_var_leaves_placeholder():
 
 def test_render_broadcast_template_custom_passthrough():
     from serving.utils.email import render_broadcast_template
+
     result = render_broadcast_template(
         None,
         {},
@@ -40,13 +45,13 @@ def test_render_broadcast_template_custom_passthrough():
 
 def test_render_broadcast_template_unknown_key_raises():
     from serving.utils.email import render_broadcast_template
+
     with pytest.raises(ValueError, match="Unknown template"):
         render_broadcast_template("nonexistent", {})
 
 
 # ── Scheduler / execute_broadcast tests ───────────────────────────────────
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -97,7 +102,7 @@ async def test_execute_broadcast_sends_and_updates_recipients():
         await email_scheduler.execute_broadcast("bc1")
 
     assert mock_send.call_count == 2
-    # At minimum: status→sending, insert recipients, per-recipient update×2, status→sent
+    # At minimum: status->sending, insert recipients, per-recipient update x2, status->sent
     assert conn.execute.call_count >= 4
 
 

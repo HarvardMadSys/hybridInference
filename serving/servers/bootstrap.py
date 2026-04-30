@@ -21,8 +21,8 @@ from serving.adapters import ClaudeSubscriptionAdapter, CodexSubscriptionAdapter
 from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
-from serving.utils.logging import get_logger, setup_logging
 from serving.utils import email_scheduler
+from serving.utils.logging import get_logger, setup_logging
 
 from .deps import AppServices
 from .rate_limiter import PersistentRateLimiter, RateLimitConfig

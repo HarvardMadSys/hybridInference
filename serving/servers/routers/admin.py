@@ -47,8 +47,6 @@ from serving.schemas_admin import (
     UserDetailResponse,
     UserListItem,
 )
-from serving.utils.email import render_broadcast_template
-from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 from serving.servers.auth import (
     generate_api_key,
     hash_api_key,
@@ -61,6 +59,8 @@ from serving.servers.deps import (
     get_services,
     verify_admin_access,
 )
+from serving.utils.email import render_broadcast_template
+from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 
 router = APIRouter()
 
@@ -1785,9 +1785,7 @@ async def test_broadcast_email(
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     async with db.pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT email FROM users WHERE email = $1", admin
-        )
+        row = await conn.fetchrow("SELECT email FROM users WHERE email = $1", admin)
     admin_email = row["email"] if row else admin
 
     if not admin_email or "@" not in admin_email:
@@ -1870,7 +1868,13 @@ async def create_broadcast(
     recipient_count = row["cnt"] if row else 0
 
     schedule_broadcast(broadcast_id, req.scheduled_at)
-    await log_admin_action(db, admin, "broadcast_email_create", None, {"broadcast_id": broadcast_id, "subject": rendered["subject"]})
+    await log_admin_action(
+        db,
+        admin,
+        "broadcast_email_create",
+        None,
+        {"broadcast_id": broadcast_id, "subject": rendered["subject"]},
+    )
 
     return CreateBroadcastResponse(
         id=broadcast_id,
@@ -2003,9 +2007,7 @@ async def cancel_broadcast(
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     async with db.pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT status FROM email_broadcasts WHERE id = $1", broadcast_id
-        )
+        row = await conn.fetchrow("SELECT status FROM email_broadcasts WHERE id = $1", broadcast_id)
         if not row:
             raise HTTPException(status_code=404, detail="Broadcast not found")
         if row["status"] != "scheduled":
@@ -2018,5 +2020,7 @@ async def cancel_broadcast(
         )
 
     cancel_broadcast_job(broadcast_id)
-    await log_admin_action(db, admin, "broadcast_email_cancel", None, {"broadcast_id": broadcast_id})
+    await log_admin_action(
+        db, admin, "broadcast_email_cancel", None, {"broadcast_id": broadcast_id}
+    )
     return {"message": "Broadcast cancelled"}
