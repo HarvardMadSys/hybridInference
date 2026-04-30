@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import os
 import sys
+import tempfile
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -108,6 +109,8 @@ def auth_test_env():
         "TEST_DB_USER": "postgres",
         "TEST_DB_PASSWORD": "postgres",
     }
+    _signup_limit_dir = tempfile.mkdtemp(prefix="signup_rl_")
+    _signup_limit_db = os.path.join(_signup_limit_dir, "signup_rate_limits.db")
     _AUTH_VARS = {
         "JWT_SECRET_KEY": "test-secret-key-32-chars-long!!",
         "API_KEY_SECRET": "test-api-key-secret",
@@ -118,6 +121,10 @@ def auth_test_env():
         "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "10.00",
         # Disabled by default for backward compatibility with existing tests
         "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
+        # Turnstile disabled by default; per-test setenv to enable verification.
+        "TURNSTILE_SECRET_KEY": "",
+        # Per-session sqlite path so tests cannot pollute shared state.
+        "SIGNUP_RATE_LIMIT_DB": _signup_limit_db,
         # Disable SMTP in tests to avoid sending real emails
         "SMTP_HOST": "",
         "SMTP_USER": "",
@@ -146,6 +153,27 @@ def auth_test_env():
             os.environ.pop(key, None)
         else:
             os.environ[key] = original
+
+    import shutil
+
+    shutil.rmtree(_signup_limit_dir, ignore_errors=True)
+
+
+# ============================================================================
+# Per-test signup rate-limit reset (prevents bleed across tests since
+# ASGITransport gives every request the same default client host).
+# ============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _reset_signup_rate_limit():
+    import sqlite3
+
+    from serving.utils.signup_rate_limit import reset_rate_limit_db
+
+    with contextlib.suppress(FileNotFoundError, sqlite3.OperationalError):
+        reset_rate_limit_db()
+    yield
 
 
 # ============================================================================
@@ -414,7 +442,7 @@ async def require_db(auth_app_db_logger):
 async def auth_client_test_user_fixture(auth_client):
     """Create a test user for auth tests."""
     user_data = {
-        "email": f"test_{os.urandom(4).hex()}@example.com",
+        "email": f"test_{os.urandom(4).hex()}@signuptest.dev",
         "password": "TestPass123!",
         "user_name": "Test User",
     }

@@ -31,6 +31,7 @@ from serving.utils.email import (
     send_new_registration_admin_email,
     send_verification_email,
 )
+from serving.utils.email_blocklist import is_email_domain_blocked
 from serving.utils.jwt import (
     create_access_token,
     create_refresh_token,
@@ -41,6 +42,8 @@ from serving.utils.jwt import (
 )
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
+from serving.utils.signup_rate_limit import check_and_record_signup
+from serving.utils.turnstile import verify_turnstile_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = get_logger(__name__)
@@ -118,6 +121,23 @@ async def signup(
             status_code=403,
             detail="Public signup is currently disabled. Please contact administrator.",
         )
+
+    # Record on entry so probing with varied payloads cannot bypass the limit.
+    client_ip = get_client_ip(request)
+    allowed, reason = await check_and_record_signup(client_ip)
+    if not allowed:
+        retry_after = "3600" if reason == "hour" else "86400"
+        raise HTTPException(
+            status_code=429,
+            detail="Too many signup attempts. Please try again later.",
+            headers={"Retry-After": retry_after},
+        )
+
+    if not await verify_turnstile_token(body.turnstile_token, client_ip):
+        raise HTTPException(status_code=400, detail="Captcha verification failed")
+
+    if is_email_domain_blocked(body.email):
+        raise HTTPException(status_code=400, detail="This email domain is not allowed")
 
     # Validate password strength
     is_valid, error_msg = password_utils.validate_password_strength(body.password)
@@ -205,7 +225,7 @@ async def signup(
     logger.info(f"New user registered: {user_id} ({body.email}) [status={initial_status}]")
     await log_admin_action(
         db_logger,
-        get_client_ip(request),
+        client_ip,
         "create_user",
         user_id,
         {
