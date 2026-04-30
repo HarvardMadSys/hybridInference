@@ -119,3 +119,72 @@ class UserConcurrencyLimiter:
         """Return the role label captured at slot creation, or None."""
         slot = self._slots.get(user_id)
         return slot.role if slot is not None else None
+
+
+# Dependency lives at the bottom of the module so it can reference the
+# limiter class and metrics defined above.
+
+from collections.abc import AsyncGenerator
+from typing import Any
+
+from fastapi import Depends, HTTPException
+
+from .auth import verify_api_key
+from .deps import get_user_concurrency_limiter
+
+
+async def enforce_user_concurrency(
+    user: dict[str, Any] = Depends(verify_api_key),
+    limiter: UserConcurrencyLimiter | None = Depends(get_user_concurrency_limiter),
+) -> AsyncGenerator[None, None]:
+    """Acquire a per-user concurrency slot or raise 429.
+
+    Uses ``yield`` so FastAPI runs the cleanup ``finally`` block after the
+    response (including streaming body) is fully sent, on exception, or
+    on client disconnect.
+    """
+    if limiter is None:
+        # If the limiter isn't configured (e.g., misconfigured deployment),
+        # fail open — never block requests when the gate itself is broken.
+        logger.warning(
+            "user_concurrency: limiter is None; passing request through unguarded"
+        )
+        yield
+        return
+
+    user_id = user["user_id"]
+    role = user.get("role", "free") or "free"
+    is_admin = bool(user.get("is_admin", False))
+
+    granted = await limiter.try_acquire(user_id, role, is_admin)
+    if not granted:
+        limit = limiter.limit_for(role, is_admin)
+        role_label = limiter.role_label(role, is_admin)
+        logger.info(
+            "per-user concurrency limit hit",
+            extra={"user_id": user_id, "role": role_label, "limit": limit},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": {
+                    "code": "concurrency_limit_exceeded",
+                    "message": f"Too many concurrent requests (limit: {limit})",
+                    "limit": limit,
+                    "role": role_label,
+                }
+            },
+            headers={"Retry-After": "1"},
+        )
+
+    try:
+        yield
+    finally:
+        try:
+            limiter.release(user_id)
+        except Exception:
+            # Never let cleanup break the request lifecycle.
+            logger.exception(
+                "user_concurrency: release failed",
+                extra={"user_id": user_id},
+            )
