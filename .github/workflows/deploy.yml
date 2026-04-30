@@ -80,4 +80,4 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "${PROD_USER}@${PROD_HOST}" \
-            "git config --global --add safe.directory /srv/hybridInference && mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts && if ! ssh-keygen -F github.com -f ~/.ssh/known_hosts >/dev/null; then printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVxK79ZlX9Q1v6V0W1Zf6x5b6G0t5vM0L4w0lK' >> ~/.ssh/known_hosts; fi && cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} bash scripts/deploy_production.sh"
+            "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} bash scripts/deploy_production.sh"

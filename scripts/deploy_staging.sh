@@ -5,8 +5,10 @@
 set -Eeuo pipefail
 
 APP_DIR="${APP_DIR:-/srv/hybridInference}"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/health}"
-FRONTEND_HEALTH_URL="${FRONTEND_HEALTH_URL:-http://127.0.0.1:3001/}"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_PORT="${FRONTEND_PORT:-3002}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${BACKEND_PORT}/health}"
+FRONTEND_HEALTH_URL="${FRONTEND_HEALTH_URL:-http://127.0.0.1:${FRONTEND_PORT}/}"
 TARGET_BRANCH="${TARGET_BRANCH:-dev}"
 DEPLOY_SHA="${DEPLOY_SHA:-}"
 COMPOSE=(docker compose -f infrastructure/docker/docker-compose.yml --env-file .env)
