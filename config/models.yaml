@@ -513,14 +513,17 @@ models:
         weight: 1.0
         base_url: https://chatgpt.com/backend-api/codex
 
-  # ── Claude Subscription ────────────────────────────────────
+  # ── Anthropic via local cli-proxy ──────────────────────────
+  # These models are upstream Anthropic Claude models served through the local
+  # cli-proxy-api (OpenAI-compatible). The route's `kind` is what registers as
+  # the provider, so the top-level `provider` is set to `openai_compat` to
+  # match — `anthropic` would be cosmetic only and disagree with /v1/models.
   #
   - id: claude-sonnet-4.6
     name: Claude Sonnet 4.6
-    provider: claude_sub
+    provider: openai_compat
     required_role: internal
     provider_model_id: "claude-sonnet-4-6"
-    base_url: https://api.anthropic.com
     context_length: 200000
     max_output_length: 64000
     supports_tools: true
@@ -537,16 +540,18 @@ models:
       input_cache_reads: "0.30"
       input_cache_writes: "3.75"
     route:
-      - kind: claude_sub
+      # Local cli-proxy-api (OpenAI-compatible) fronting Anthropic credentials
+      - kind: openai_compat
         weight: 1.0
-        base_url: https://api.anthropic.com
+        base_url: "http://host.docker.internal:8317/v1"
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "claude-sonnet-4-6"
   #
   - id: claude-opus-4.6
     name: Claude Opus 4.6
-    provider: claude_sub
+    provider: openai_compat
     required_role: internal
     provider_model_id: "claude-opus-4-6"
-    base_url: https://api.anthropic.com
     context_length: 200000
     max_output_length: 128000
     supports_tools: true
@@ -563,6 +568,37 @@ models:
       input_cache_reads: "0.50"
       input_cache_writes: "6.25"
     route:
-      - kind: claude_sub
+      # Local cli-proxy-api (OpenAI-compatible) fronting Anthropic credentials
+      - kind: openai_compat
         weight: 1.0
-        base_url: https://api.anthropic.com
+        base_url: "http://host.docker.internal:8317/v1"
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "claude-opus-4-6"
+  #
+  - id: claude-opus-4.7
+    name: Claude Opus 4.7
+    provider: openai_compat
+    required_role: internal
+    provider_model_id: "claude-opus-4-7"
+    context_length: 200000
+    max_output_length: 128000
+    supports_tools: true
+    supported_params: [temperature, max_tokens, stop, tools, tool_choice, top_p]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    quantization: "none"
+    # Pricing mirrors claude-opus-4.6 until official 4.7 numbers are published.
+    pricing:
+      prompt: "5.00"
+      completion: "25.00"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.50"
+      input_cache_writes: "6.25"
+    route:
+      # Local cli-proxy-api (OpenAI-compatible) fronting Anthropic credentials
+      - kind: openai_compat
+        weight: 1.0
+        base_url: "http://host.docker.internal:8317/v1"
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "claude-opus-4-7"

@@ -520,6 +520,52 @@ export async function cancelBroadcast(id: string): Promise<void> {
 }
 
 // ========================================
+// Request Export
+// ========================================
+
+export interface ExportRequestsParams {
+  startTime: string;
+  endTime?: string;
+  userId?: string;
+  modelId?: string;
+  errorsOnly?: boolean;
+  includeContent?: boolean;
+}
+
+export async function exportRequests(params: ExportRequestsParams): Promise<void> {
+  const qs = new URLSearchParams({
+    start_time: params.startTime,
+  });
+  if (params.endTime) qs.set('end_time', params.endTime);
+  if (params.userId) qs.set('user_id', params.userId);
+  if (params.modelId) qs.set('model_id', params.modelId);
+  if (params.errorsOnly) qs.set('errors_only', 'true');
+  if (params.includeContent) qs.set('include_content', 'true');
+
+  const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    const message = (err as { detail?: string }).detail ?? `Export failed (HTTP ${resp.status})`;
+    throw new Error(message);
+  }
+
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const startDate = params.startTime.slice(0, 10).replace(/-/g, '');
+  const endDate = (params.endTime ?? new Date().toISOString()).slice(0, 10).replace(/-/g, '');
+  a.href = url;
+  a.download = `requests-${startDate}-${endDate}.jsonl`;
+  try {
+    document.body.appendChild(a);
+    a.click();
+  } finally {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+}
+
+// ========================================
 // Provider Quotas
 // ========================================
 
