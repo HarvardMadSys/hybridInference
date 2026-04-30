@@ -244,3 +244,21 @@ def test_cooldown_recovers_after_time_passes(monkeypatch):
     fake_now[0] += 31
     k, _ = pool.acquire("user-B")
     assert k == "k0"
+
+
+def test_affinity_sweep_drops_expired_entries(monkeypatch):
+    pool = KeyPool(keys=["k0"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    # Seed affinity dict with 1500 expired-soon entries
+    for i in range(1500):
+        pool.acquire(f"user-{i}")
+
+    fake_now[0] += 301  # everything expired now
+    pool.acquire("trigger-sweep")
+
+    # Sweep happened: expired entries should be gone, only the new one remains
+    # plus any whose affinity wasn't expired (none, since we advanced past TTL)
+    assert len(pool._affinity) == 1
+    assert "trigger-sweep" in pool._affinity
