@@ -21,6 +21,7 @@ import {
   listAuditLog,
   listRecentRequests,
   getRequestMetrics,
+  exportRequests,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -214,6 +215,13 @@ export default function AdminPage() {
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
   const reqJumpInputId = useId();
   const REQ_PAGE_SIZE = 50;
+  const [showExportPanel, setShowExportPanel] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState(
+    () => new Date().toISOString().slice(0, 10),
+  );
+  const [exportIncludeContent, setExportIncludeContent] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1135,7 +1143,91 @@ export default function AdminPage() {
                 Errors only
               </label>
               <span className="text-[12px] text-gray-400 tabular-nums">{reqTotal} entries</span>
+              <button
+                type="button"
+                onClick={() => setShowExportPanel((v) => !v)}
+                className="ml-auto rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50"
+              >
+                Export JSONL
+              </button>
             </div>
+
+            {showExportPanel && (
+              <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[12px] text-gray-500">Start date</label>
+                    <input
+                      type="date"
+                      value={exportStartDate}
+                      onChange={(e) => setExportStartDate(e.target.value)}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[12px] text-gray-500">End date</label>
+                    <input
+                      type="date"
+                      value={exportEndDate}
+                      onChange={(e) => setExportEndDate(e.target.value)}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    />
+                  </div>
+                  <label className="flex items-center gap-1.5 pb-2 text-[13px] text-gray-600 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={exportIncludeContent}
+                      onChange={(e) => setExportIncludeContent(e.target.checked)}
+                      className="rounded border-gray-300"
+                    />
+                    Include prompt &amp; response
+                  </label>
+                  <div className="ml-auto flex items-center gap-2 pb-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowExportPanel(false);
+                        setExportStartDate('');
+                        setExportEndDate(new Date().toISOString().slice(0, 10));
+                        setExportIncludeContent(false);
+                      }}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!exportStartDate || exportLoading}
+                      onClick={async () => {
+                        if (!exportStartDate) return;
+                        setExportLoading(true);
+                        try {
+                          await exportRequests({
+                            startTime: new Date(exportStartDate + 'T00:00:00').toISOString(),
+                            endTime: new Date(exportEndDate + 'T23:59:59').toISOString(),
+                            userId: reqUserFilter || undefined,
+                            modelId: reqModelFilter || undefined,
+                            errorsOnly: reqErrorsOnly || undefined,
+                            includeContent: exportIncludeContent || undefined,
+                          });
+                          setShowExportPanel(false);
+                        } catch (err) {
+                          setToast(
+                            'Export failed: ' +
+                              (err instanceof Error ? err.message : 'Unknown error'),
+                          );
+                        } finally {
+                          setExportLoading(false);
+                        }
+                      }}
+                      className="rounded-lg bg-gray-900 px-3 py-2 text-[13px] text-white hover:bg-gray-700 disabled:opacity-50"
+                    >
+                      {exportLoading ? 'Exporting…' : 'Export'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Table */}
             <div className="mt-4">
