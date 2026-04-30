@@ -158,9 +158,17 @@ def is_admin_email(email: str) -> bool:
     return email.strip().lower() in _parse_admin_emails(settings.admin_emails)
 
 
-ROLE_RANK: dict[str, int] = {"free": 0, "internal": 1, "admin": 2}
+ROLE_RANK: dict[str, int] = {"free": 0, "pro": 1, "internal": 2, "admin": 3}
 
 VALID_ROLES = frozenset(ROLE_RANK)
+
+# Per-user concurrency caps by role. Used by serving/servers/concurrency.py.
+USER_CONCURRENCY_LIMITS: dict[str, int] = {
+    "free": 1,
+    "pro": 3,
+    "internal": 10,
+    "admin": 10,
+}
 
 
 def has_role(user_role: str, required: str) -> bool:
