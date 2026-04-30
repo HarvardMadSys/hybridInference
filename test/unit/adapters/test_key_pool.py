@@ -59,3 +59,46 @@ def test_acquire_increments_request_count_on_each_call():
     # Internal inspection — the bound key has count=3, the other has 0.
     counts = sorted(s.request_count for s in pool._keys)
     assert counts == [0, 3]
+
+
+def test_same_user_keeps_same_key_within_ttl(monkeypatch):
+    """Same affinity_key returns the same index for 5 minutes."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+
+    # Freeze time at t0
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    k1, _ = pool.acquire("user-A")
+    fake_now[0] += 60  # +60s
+    k2, _ = pool.acquire("user-A")
+    fake_now[0] += 200  # +200s — still within 300s
+    k3, _ = pool.acquire("user-A")
+
+    assert k1 == k2 == k3
+
+
+def test_affinity_expires_after_ttl(monkeypatch):
+    """After 5 minutes, the user may land on a different key."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    k_first, _ = pool.acquire("user-A")
+    # Advance well past 300s
+    fake_now[0] += 301
+    # Make k0 look heavily loaded so the new pick goes to k1
+    pool._keys[0].request_count = 1000
+
+    k_second, _ = pool.acquire("user-A")
+    assert k_first == "k0"
+    assert k_second == "k1"
+
+
+def test_different_users_can_share_or_split_keys():
+    """Two new users in a 2-key pool end up on different keys (load-spread)."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    a, _ = pool.acquire("user-A")
+    b, _ = pool.acquire("user-B")
+    assert {a, b} == {"k0", "k1"}
