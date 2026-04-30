@@ -198,9 +198,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         return headers
 
-    async def _post_with_pool(
-        self, url: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def _post_with_pool(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         """POST JSON with key-pool rotation on 429s.
 
         When ``self._key_pool`` is None, falls through to the legacy single-key
@@ -240,9 +238,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     raise last_429_error from exhausted
                 raise
 
-            KEY_POOL_REQUESTS.labels(
-                provider=provider, key_index=str(lease.key_index)
-            ).inc()
+            KEY_POOL_REQUESTS.labels(provider=provider, key_index=str(lease.key_index)).inc()
 
             headers = self._build_headers(api_key_override=api_key)
             try:
@@ -257,9 +253,7 @@ class OpenAICompatAdapter(BaseAdapter):
             except aiohttp.ClientResponseError as e:
                 if e.status == 429:
                     retry_after = e.headers.get("Retry-After") if e.headers else None
-                    self._key_pool.release(
-                        lease, status_code=429, retry_after=retry_after
-                    )
+                    self._key_pool.release(lease, status_code=429, retry_after=retry_after)
                     reason = "retry_after" if retry_after else "default_2min"
                     KEY_POOL_COOLDOWNS.labels(
                         provider=provider,
@@ -330,9 +324,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     raise last_429 from exhausted
                 raise
 
-            KEY_POOL_REQUESTS.labels(
-                provider=provider, key_index=str(lease.key_index)
-            ).inc()
+            KEY_POOL_REQUESTS.labels(provider=provider, key_index=str(lease.key_index)).inc()
 
             headers = self._build_headers(api_key_override=api_key)
             stream_iter = self.http.stream_post(
@@ -350,9 +342,7 @@ class OpenAICompatAdapter(BaseAdapter):
             except aiohttp.ClientResponseError as e:
                 if e.status == 429:
                     retry_after = e.headers.get("Retry-After") if e.headers else None
-                    self._key_pool.release(
-                        lease, status_code=429, retry_after=retry_after
-                    )
+                    self._key_pool.release(lease, status_code=429, retry_after=retry_after)
                     reason = "retry_after" if retry_after else "default_2min"
                     KEY_POOL_COOLDOWNS.labels(
                         provider=provider,
@@ -635,16 +625,14 @@ class OpenAICompatAdapter(BaseAdapter):
             )
         finally:
             if active_lease is not None and self._key_pool is not None:
-                self._key_pool.release(
-                    active_lease, status_code=200, retry_after=None
-                )
+                self._key_pool.release(active_lease, status_code=200, retry_after=None)
                 from serving.observability.metrics import (
                     KEY_POOL_ACTIVE_AFFINITIES,
                 )
 
-                KEY_POOL_ACTIVE_AFFINITIES.labels(
-                    provider=self.config.provider
-                ).set(self._key_pool.affinity_count())
+                KEY_POOL_ACTIVE_AFFINITIES.labels(provider=self.config.provider).set(
+                    self._key_pool.affinity_count()
+                )
 
         # Flush processor buffer at end of stream
         # This is crucial for buffered tool calls (e.g. GLM XML, Qwen XML)

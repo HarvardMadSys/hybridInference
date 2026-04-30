@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import textwrap
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from routing.executor import RouteExecutor
 from serving.servers.registry import register_from_models_yaml
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _write_yaml(tmp_path: Path, body: str) -> Path:
@@ -74,7 +77,7 @@ def test_api_key_and_api_keys_both_set_raises(tmp_path, monkeypatch):
     )
 
     router = RouteExecutor()
-    with pytest.raises(ValueError, match="api_key.*api_keys"):
+    with pytest.raises(ValueError, match=r"api_key.*api_keys"):
         register_from_models_yaml(router, yaml_path)
 
 

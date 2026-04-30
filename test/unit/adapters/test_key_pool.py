@@ -164,8 +164,8 @@ def test_retry_after_negative_falls_back_to_default(monkeypatch):
 
 def test_retry_after_http_date_format(monkeypatch):
     """RFC 7231 allows HTTP-date format; we honor it."""
+    from datetime import datetime, timedelta, timezone
     from email.utils import format_datetime
-    from datetime import datetime, timezone, timedelta
 
     pool = KeyPool(keys=["k0"], provider_label="test")
     base_real = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)

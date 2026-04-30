@@ -431,7 +431,9 @@ else:  # No-op fallbacks to avoid hard dependency during tests
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
     KEY_POOL_ACTIVE_AFFINITIES = type(
-        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"set": _noop, "inc": _noop, "dec": _noop})()}
+        "Noop",
+        (),
+        {"labels": lambda *a, **k: type("L", (), {"set": _noop, "inc": _noop, "dec": _noop})()},
     )()
     API_TOKENS = type("Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()})()
     API_TOKEN_ANOMALIES = type(

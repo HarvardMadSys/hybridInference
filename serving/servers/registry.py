@@ -257,9 +257,7 @@ def register_from_models_yaml(
             api_keys: list[str] | None = None
             if raw_api_keys is not None:
                 if not isinstance(raw_api_keys, list):
-                    raise ValueError(
-                        f"api_keys for {top_cfg.get('id')!r} must be a list"
-                    )
+                    raise ValueError(f"api_keys for {top_cfg.get('id')!r} must be a list")
                 expanded = [expand_env(k) for k in raw_api_keys]
                 kept: list[str] = []
                 for raw, val in zip(raw_api_keys, expanded, strict=True):

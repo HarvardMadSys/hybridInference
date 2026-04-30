@@ -88,9 +88,11 @@ async def test_multi_key_pool_exhausted_propagates():
     async def always_429(url, json, headers, timeout):
         raise _make_response_error(429, retry_after="1")
 
-    with patch.object(adapter.http, "json_post", side_effect=always_429):
-        with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-            await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    with (
+        patch.object(adapter.http, "json_post", side_effect=always_429),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
     assert exc_info.value.status == 429
 
@@ -136,9 +138,11 @@ async def test_non_429_error_does_not_cooldown():
     async def server_err(url, json, headers, timeout):
         raise _make_response_error(500)
 
-    with patch.object(adapter.http, "json_post", side_effect=server_err):
-        with pytest.raises(aiohttp.ClientResponseError):
-            await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    with (
+        patch.object(adapter.http, "json_post", side_effect=server_err),
+        pytest.raises(aiohttp.ClientResponseError),
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
     # Neither key entered cooldown.
     assert adapter._key_pool is not None
@@ -188,25 +192,15 @@ async def test_streaming_rotates_on_429_at_open():
             return _make_stream_gen(status=429, retry_after="1")
         return _make_stream_gen(chunks=sse_chunks)
 
-    with patch.object(
-        adapter.http, "stream_post", side_effect=stream_side_effect
-    ) as mock_stream:
+    with patch.object(adapter.http, "stream_post", side_effect=stream_side_effect) as mock_stream:
         collected: list[str] = []
-        async for chunk in adapter.stream_chat_completion(
-            [{"role": "user", "content": "hi"}]
-        ):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
             collected.append(chunk)
 
     assert call_count["n"] == 2
     # Verify the auth header rotated between the two attempts.
-    assert (
-        mock_stream.call_args_list[0].kwargs["headers"]["Authorization"]
-        == "Bearer k1"
-    )
-    assert (
-        mock_stream.call_args_list[1].kwargs["headers"]["Authorization"]
-        == "Bearer k2"
-    )
+    assert mock_stream.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer k1"
+    assert mock_stream.call_args_list[1].kwargs["headers"]["Authorization"] == "Bearer k2"
 
     # k1 is in cooldown; k2 is clean.
     assert adapter._key_pool is not None
@@ -225,12 +219,12 @@ async def test_streaming_pool_exhausted_propagates():
     def always_429(*args, **kwargs):
         return _make_stream_gen(status=429, retry_after="1")
 
-    with patch.object(adapter.http, "stream_post", side_effect=always_429):
-        with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-            async for _ in adapter.stream_chat_completion(
-                [{"role": "user", "content": "hi"}]
-            ):
-                pass  # pragma: no cover — generator is expected to raise before yielding
+    with (
+        patch.object(adapter.http, "stream_post", side_effect=always_429),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
+    ):
+        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass  # pragma: no cover — generator is expected to raise before yielding
 
     assert exc_info.value.status == 429
     # Both keys cooled down.
