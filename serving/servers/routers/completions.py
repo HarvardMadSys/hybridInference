@@ -27,6 +27,7 @@ from serving.schemas import (
     ErrorResponse,
 )
 from serving.servers.auth import verify_api_key
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
     get_db_logger,
     get_fairness_scheduler,
@@ -125,6 +126,7 @@ async def chat_completions(
     db_logger=Depends(get_db_logger),
     fairness_scheduler=Depends(get_fairness_scheduler),
     model_router_registry=Depends(get_model_router_registry),
+    _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
 
@@ -224,6 +226,12 @@ async def chat_completions(
 
     # Stable user identifier used by the fairness scheduler
     user_id: str = user_ctx.get("user_id") or "anonymous"
+
+    # Affinity key for multi-key API rotation — pinned to the specific
+    # hyi-xxx key in use (not user_id, since a user may have multiple keys).
+    from serving.utils import context as req_ctx
+
+    req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
 
     # Capacity gate: fairness scheduler (VTC) sits before the rate limiter.
     # When the fairness scheduler is active it owns ALL capacity acquisition

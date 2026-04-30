@@ -15,6 +15,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     user_name: UserName
+    turnstile_token: str | None = None
 
 
 class SignupResponse(BaseModel):

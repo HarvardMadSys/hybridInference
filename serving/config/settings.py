@@ -49,7 +49,12 @@ class Settings(BaseSettings):
 
     # Rate limiting
     signup_rate_limit_per_hour: int = 5
+    signup_rate_limit_per_day: int = 10
     login_rate_limit_per_15min: int = 5
+
+    # Cloudflare Turnstile (signup captcha)
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = ""
 
     # Email (optional)
     smtp_host: str = "smtp.resend.com"
@@ -82,6 +87,12 @@ class Settings(BaseSettings):
     claude_sub_token_refresh_margin: int = 300  # 5 min (tokens last ~1 hour)
     claude_sub_account_cooldown: int = 60
     claude_sub_failure_threshold: int = 3
+
+    # Provider quota cookies (admin dashboard "Providers" tab)
+    # Pasted from browser DevTools after logging into the provider's web dashboard.
+    # Re-paste when the cookie expires.
+    minimax_session_cookie: str = ""
+    ollama_session_cookie: str = ""
 
     # CORS
     cors_allowed_origins: Annotated[list[str], NoDecode] = [
@@ -158,9 +169,17 @@ def is_admin_email(email: str) -> bool:
     return email.strip().lower() in _parse_admin_emails(settings.admin_emails)
 
 
-ROLE_RANK: dict[str, int] = {"free": 0, "internal": 1, "admin": 2}
+ROLE_RANK: dict[str, int] = {"free": 0, "pro": 1, "internal": 2, "admin": 3}
 
 VALID_ROLES = frozenset(ROLE_RANK)
+
+# Per-user concurrency caps by role. Used by serving/servers/concurrency.py.
+USER_CONCURRENCY_LIMITS: dict[str, int] = {
+    "free": 1,
+    "pro": 3,
+    "internal": 10,
+    "admin": 10,
+}
 
 
 def has_role(user_role: str, required: str) -> bool:

@@ -50,7 +50,7 @@ async def test_unverified_user_cannot_login(auth_client, require_db, email_verif
 
     # Sign up a new user
     signup_data = {
-        "email": f"unverified_{os.urandom(4).hex()}@example.com",
+        "email": f"unverified_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Unverified User",
     }
@@ -80,7 +80,7 @@ async def test_verified_user_can_login(auth_client, require_db, email_verificati
 
     # Sign up a new user
     signup_data = {
-        "email": f"verified_{os.urandom(4).hex()}@example.com",
+        "email": f"verified_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Verified User",
     }
@@ -116,7 +116,7 @@ async def test_unverified_user_cannot_refresh_token(
 
     # Sign up a new user
     signup_data = {
-        "email": f"unverified2_{os.urandom(4).hex()}@example.com",
+        "email": f"unverified2_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Unverified User 2",
     }
@@ -157,7 +157,7 @@ async def test_email_verification_can_be_disabled(auth_client, require_db, email
 
     # Sign up a new user
     signup_data = {
-        "email": f"noverify_{os.urandom(4).hex()}@example.com",
+        "email": f"noverify_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "No Verify User",
     }
@@ -183,7 +183,7 @@ async def test_unverified_user_cannot_access_protected_endpoint(
     email_verification_flag(True)
 
     signup_data = {
-        "email": f"protected_{os.urandom(4).hex()}@example.com",
+        "email": f"protected_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Protected User",
     }
