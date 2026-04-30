@@ -1,78 +1,39 @@
-"""IP-based sliding-window rate limiter for the signup endpoint.
+"""In-memory IP-based sliding-window rate limiter for the signup endpoint.
 
-Backed by a small SQLite database so limits survive process restarts. Keeps a
-per-IP log of attempt timestamps and counts attempts inside the 1h and 24h
-windows on each call.
+State is a per-process dict and is intentionally lost on restart: signup
+abuse is a rate problem, not an audit problem, so durability is not worth
+the cost of disk I/O. With multiple uvicorn workers the effective limit
+multiplies by the worker count, which is acceptable.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
-import sqlite3
 import time
-from pathlib import Path
+from collections import deque
 
 from serving.config.settings import settings
 
-_DEFAULT_DB_PATH = "data/db/signup_rate_limits.db"
 _HOUR_SECONDS = 3600
 _DAY_SECONDS = 86400
+_SWEEP_EVERY = 1024
+
+_attempts: dict[str, deque[float]] = {}
+_lock = asyncio.Lock()
+_sweep_counter = 0
 
 
 def _now() -> float:
     return time.time()
 
 
-def _db_path() -> str:
-    return os.getenv("SIGNUP_RATE_LIMIT_DB", _DEFAULT_DB_PATH)
-
-
-def _ensure_schema(path: str) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS signup_attempts (
-                ip TEXT NOT NULL,
-                ts REAL NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_signup_attempts_ip ON signup_attempts(ip)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_signup_attempts_ts ON signup_attempts(ts)")
-
-
-def _check_and_record_sync(ip: str, now: float) -> tuple[bool, str | None]:
-    path = _db_path()
-    _ensure_schema(path)
-    cutoff = now - _DAY_SECONDS
-    per_hour = settings.signup_rate_limit_per_hour
-    per_day = settings.signup_rate_limit_per_day
-
-    with sqlite3.connect(path) as conn:
-        conn.execute("DELETE FROM signup_attempts WHERE ts < ?", (cutoff,))
-        cur = conn.execute(
-            "SELECT ts FROM signup_attempts WHERE ip = ? AND ts >= ?",
-            (ip, cutoff),
-        )
-        timestamps = [row[0] for row in cur.fetchall()]
-
-        hour_cutoff = now - _HOUR_SECONDS
-        hour_count = sum(1 for t in timestamps if t >= hour_cutoff)
-        day_count = len(timestamps)
-
-        conn.execute(
-            "INSERT INTO signup_attempts (ip, ts) VALUES (?, ?)",
-            (ip, now),
-        )
-        conn.commit()
-
-    if hour_count >= per_hour:
-        return False, "hour"
-    if day_count >= per_day:
-        return False, "day"
-    return True, None
+def _sweep_inactive(cutoff: float) -> None:
+    for ip in list(_attempts):
+        bucket = _attempts[ip]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if not bucket:
+            del _attempts[ip]
 
 
 async def check_and_record_signup(ip: str) -> tuple[bool, str | None]:
@@ -81,13 +42,41 @@ async def check_and_record_signup(ip: str) -> tuple[bool, str | None]:
     Returns (True, None) if the IP is under both the per-hour and per-day
     limits, or (False, "hour"|"day") indicating which window tripped.
     """
-    return await asyncio.to_thread(_check_and_record_sync, ip, _now())
+    global _sweep_counter
+
+    now = _now()
+    day_cutoff = now - _DAY_SECONDS
+    hour_cutoff = now - _HOUR_SECONDS
+    per_hour = settings.signup_rate_limit_per_hour
+    per_day = settings.signup_rate_limit_per_day
+
+    async with _lock:
+        _sweep_counter += 1
+        if _sweep_counter >= _SWEEP_EVERY:
+            _sweep_counter = 0
+            _sweep_inactive(day_cutoff)
+
+        bucket = _attempts.get(ip)
+        if bucket is None:
+            bucket = deque()
+            _attempts[ip] = bucket
+
+        while bucket and bucket[0] < day_cutoff:
+            bucket.popleft()
+
+        hour_count = sum(1 for t in bucket if t >= hour_cutoff)
+        day_count = len(bucket)
+        bucket.append(now)
+
+    if hour_count >= per_hour:
+        return False, "hour"
+    if day_count >= per_day:
+        return False, "day"
+    return True, None
 
 
-def reset_rate_limit_db() -> None:
+def reset_signup_rate_limit_state() -> None:
     """Wipe all recorded attempts. Test-only helper."""
-    path = _db_path()
-    _ensure_schema(path)
-    with sqlite3.connect(path) as conn:
-        conn.execute("DELETE FROM signup_attempts")
-        conn.commit()
+    global _sweep_counter
+    _attempts.clear()
+    _sweep_counter = 0
