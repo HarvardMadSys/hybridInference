@@ -408,11 +408,52 @@ class AdminRecentRequestsResponse(BaseModel):
     offset: int
 
 
+# ========================================
+# Provider Quotas (Admin Dashboard)
+# ========================================
+
+
+class ProviderQuotaUsage(BaseModel):
+    """A single usage measurement for a provider (e.g. monthly cost, request count)."""
+
+    label: str = Field(..., description="Human-readable label, e.g. 'Monthly', '4-hour window'")
+    used: float | None = Field(None, description="Amount consumed (None if unknown)")
+    limit: float | None = Field(
+        None, description="Total quota limit (None if unlimited or unknown)"
+    )
+    unit: str = Field(..., description="Unit string, e.g. 'USD', 'tokens', 'requests'")
+    reset_at: datetime | None = Field(None, description="When this usage window resets (UTC)")
+
+
+class ProviderQuotaResult(BaseModel):
+    """Result of querying a single upstream provider's quota."""
+
+    name: str = Field(..., description="Lowercase identifier: chutes | zai | minimax | ollama")
+    display_name: str = Field(..., description="Human-readable name")
+    key_configured: bool = Field(..., description="True if credentials are present in env")
+    key_masked: str | None = Field(None, description="Masked key/cookie (None if not configured)")
+    fetched_at: datetime | None = Field(None, description="When the quota was fetched (UTC)")
+    ok: bool = Field(..., description="True if quota fetch succeeded")
+    error: str | None = Field(
+        None,
+        description="Short reason code if !ok: 'auth_failed' | 'timeout' | 'not_configured' | 'parse_error' | 'unexpected'",
+    )
+    usages: list[ProviderQuotaUsage] = Field(default_factory=list)
+
+
+class AdminProviderQuotasResponse(BaseModel):
+    """Aggregated response for the admin provider-quotas endpoint."""
+
+    generated_at: datetime
+    providers: list[ProviderQuotaResult]
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
     "APIKeyDetailUsage",
     "APIKeyListItem",
+    "AdminProviderQuotasResponse",
     "AdminRecentRequestItem",
     "AdminRecentRequestsResponse",
     "AdminRequestMetricsBucket",
@@ -428,6 +469,8 @@ __all__ = [
     "ListAPIKeysResponse",
     "ListAuditLogResponse",
     "ListUsersResponse",
+    "ProviderQuotaResult",
+    "ProviderQuotaUsage",
     "RegenerateAPIKeyResponse",
     "RejectUserRequest",
     "RejectUserResponse",

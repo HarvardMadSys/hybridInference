@@ -13,7 +13,9 @@ if TYPE_CHECKING:
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from serving.admin.provider_quotas import gather_all
 from serving.schemas_admin import (
+    AdminProviderQuotasResponse,
     AdminRecentRequestItem,
     AdminRecentRequestsResponse,
     AdminRequestMetricsBucket,
@@ -1861,4 +1863,16 @@ async def admin_export_requests(
         generate(),
         media_type="application/x-ndjson",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/admin/provider-quotas", response_model=AdminProviderQuotasResponse)
+async def admin_provider_quotas(
+    _admin_id: str = Depends(verify_admin_access),
+) -> AdminProviderQuotasResponse:
+    """Return current quota status for each upstream LLM provider."""
+    providers = await gather_all()
+    return AdminProviderQuotasResponse(
+        generated_at=datetime.now(timezone.utc),
+        providers=providers,
     )

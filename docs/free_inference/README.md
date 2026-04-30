@@ -8,7 +8,8 @@ FreeInference provides free access to state-of-the-art language models specifica
 
 ## Documentation
 
-Visit our documentation at: https://doc.freeinference.org/
+- Production: https://doc.freeinference.org/
+- Staging (tracks `dev` branch): https://doc.staging.freeinference.org/
 
 ## Supported IDEs & Coding Agents
 
@@ -65,13 +66,14 @@ export FREEINFERENCE_API_KEY="Bearer your-api-key-here"
 
 ## Available Models
 
-- **GLM-4.7** - 200K context, best for long context and bilingual support
-- **GLM-4.7-Flash** - 200K context, fast and cost-effective
-- **MiniMax M2** - 196K context, best for very large codebases
-- **Qwen3 Coder 30B** - 32K context, specialized for code generation
-- **Llama 3.3 70B** - 131K context, general coding (limited capacity)
-- **Llama 4 Scout** - 128K context, optimized for speed (limited capacity)
-- **Llama 4 Maverick** - 128K context, multimodal support (limited capacity)
+- **GLM-4.7** - 200K context, bilingual coding assistant
+- **GLM-5** - 200K context, latest generation
+- **GLM-5.1** - 200K context, enhanced version
+- **GLM-5 Turbo** - 200K context, performance variant
+- **Qwen3.6 27B** - 65K context, self-hosted
+- **Qwen3.6 35B** - 65K context, self-hosted
+- **MiniMax M2.7** - 196K context
+- **MiniMax M2.5** - 1M context, multimodal (text + image)
 
 See the [Models documentation](https://doc.freeinference.org/models.html) for the complete list.
 

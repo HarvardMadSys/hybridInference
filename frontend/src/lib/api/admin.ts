@@ -403,3 +403,36 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
     URL.revokeObjectURL(url);
   }
 }
+
+// ========================================
+// Provider Quotas
+// ========================================
+
+export interface ProviderQuotaUsage {
+  label: string;
+  used: number | null;
+  limit: number | null;
+  unit: string;
+  reset_at: string | null;
+}
+
+export interface ProviderQuotaResult {
+  name: string;
+  display_name: string;
+  key_configured: boolean;
+  key_masked: string | null;
+  fetched_at: string | null;
+  ok: boolean;
+  error: string | null;
+  usages: ProviderQuotaUsage[];
+}
+
+export interface AdminProviderQuotasResponse {
+  generated_at: string;
+  providers: ProviderQuotaResult[];
+}
+
+export async function getProviderQuotas(): Promise<AdminProviderQuotasResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-quotas');
+  return jsonOrThrow<AdminProviderQuotasResponse>(resp);
+}
