@@ -12,11 +12,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import {
-  AdminAnalyticsResponse,
-  AnalyticsPeriod,
-  getAnalytics,
-} from '@/lib/api/admin';
+import { AdminAnalyticsResponse, AnalyticsPeriod, getAnalytics } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 const PERIODS: { key: AnalyticsPeriod; label: string }[] = [
@@ -27,9 +23,16 @@ const PERIODS: { key: AnalyticsPeriod; label: string }[] = [
 ];
 
 const CHART_COLORS = [
-  '#3b82f6', '#f59e0b', '#10b981', '#8b5cf6',
-  '#ec4899', '#06b6d4', '#f97316', '#84cc16',
-  '#e11d48', '#7c3aed',
+  '#3b82f6',
+  '#f59e0b',
+  '#10b981',
+  '#8b5cf6',
+  '#ec4899',
+  '#06b6d4',
+  '#f97316',
+  '#84cc16',
+  '#e11d48',
+  '#7c3aed',
 ];
 const OTHERS_COLOR = '#9ca3af';
 
@@ -58,9 +61,7 @@ function ActiveUsersCard({
       <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
         Active Users
       </p>
-      <p className="mt-1 text-[40px] font-bold leading-none text-gray-900">
-        {data.active_users}
-      </p>
+      <p className="mt-1 text-[40px] font-bold leading-none text-gray-900">{data.active_users}</p>
       <p className="mt-1 text-[12px] text-gray-400">unique users · past {period}</p>
       <div className="mt-4 h-10">
         <ResponsiveContainer width="100%" height="100%">
