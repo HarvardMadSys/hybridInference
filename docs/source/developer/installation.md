@@ -108,8 +108,8 @@ This repository hosts both documentation sites used by the project:
 Both sites are deployed automatically by Cloudflare Pages on push to `main`.
 To update either site, edit the relevant Markdown/reStructuredText files and
 open a pull request against this repository; no submodule sync step is
-required. The CI workflow `.github/workflows/docs.yml` builds both sites on
-every push and fails the job if Sphinx reports warnings.
+required. Cloudflare Pages builds both sites on each push and surfaces
+Sphinx errors as failed deployments.
 
 The repository still uses `git submodule` for the `llm-prober` benchmarking
 tool. After `git pull`, run `git submodule update --init --recursive` (or

@@ -7,11 +7,14 @@ configuration. Prefer YAML (``config/models.yaml``) for reproducibility.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 from serving.adapters import (
     ClaudeAdapter,
@@ -239,8 +242,55 @@ def register_from_models_yaml(
         for r in routes:
             kind = r.get("kind") or top_cfg.get("provider")
             base_url = expand_env(r.get("base_url") or top_cfg.get("base_url"))
-            api_key = expand_env(r.get("api_key") or top_cfg.get("api_key"))
             weight = float(r.get("weight", 1.0))
+
+            raw_api_keys = r.get("api_keys")
+            raw_api_key = r.get("api_key") or top_cfg.get("api_key")
+
+            if raw_api_keys is not None and r.get("api_key") is not None:
+                raise ValueError(
+                    f"Route for model {top_cfg.get('id')!r} sets both "
+                    f"api_key and api_keys; pick one."
+                )
+
+            api_key: str | None = None
+            api_keys: list[str] | None = None
+            if raw_api_keys is not None:
+                if not isinstance(raw_api_keys, list):
+                    raise ValueError(f"api_keys for {top_cfg.get('id')!r} must be a list")
+                expanded = [expand_env(k) for k in raw_api_keys]
+                kept: list[str] = []
+                for raw, val in zip(raw_api_keys, expanded, strict=True):
+                    if val is None or val == "":
+                        logger.warning(
+                            "Dropping blank api_keys entry for model %s "
+                            "(template: %s) - env var unset or empty",
+                            top_cfg.get("id"),
+                            raw,
+                        )
+                        continue
+                    if not isinstance(val, str):
+                        raise ValueError(
+                            f"api_keys entry for {top_cfg.get('id')!r} resolved to "
+                            f"non-string value {val!r} (template: {raw!r})"
+                        )
+                    normalized = val.strip()
+                    if not normalized:
+                        logger.warning(
+                            "Dropping whitespace-only api_keys entry for model %s (template: %s)",
+                            top_cfg.get("id"),
+                            raw,
+                        )
+                        continue
+                    kept.append(normalized)
+                if not kept:
+                    raise ValueError(
+                        f"api_keys for {top_cfg.get('id')!r} resolved to "
+                        f"empty list after env expansion"
+                    )
+                api_keys = kept
+            else:
+                api_key = expand_env(raw_api_key)
 
             # Adapter config inherits from top-level model config
             adapter_cfg = dict(top_cfg)
@@ -248,6 +298,7 @@ def register_from_models_yaml(
             adapter_cfg.pop("type", None)
             adapter_cfg["base_url"] = base_url
             adapter_cfg["api_key"] = api_key
+            adapter_cfg["api_keys"] = api_keys
             adapter_cfg["provider"] = kind
             # Generate unique endpoint_id for availability tracking and circuit breaker
             adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)

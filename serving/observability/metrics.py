@@ -90,6 +90,34 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    KEY_POOL_REQUESTS = Counter(
+        "key_pool_requests_total",
+        "Acquires from the per-provider API key pool",
+        labelnames=("provider", "key_index"),
+        registry=REGISTRY,
+    )
+
+    KEY_POOL_COOLDOWNS = Counter(
+        "key_pool_cooldowns_total",
+        "Cooldowns triggered on multi-key API pool",
+        labelnames=("provider", "key_index", "reason"),
+        registry=REGISTRY,
+    )
+
+    KEY_POOL_EXHAUSTED = Counter(
+        "key_pool_exhausted_total",
+        "KeyPoolExhausted occurrences (all keys cooled down)",
+        labelnames=("provider",),
+        registry=REGISTRY,
+    )
+
+    KEY_POOL_ACTIVE_AFFINITIES = Gauge(
+        "key_pool_active_affinities",
+        "Active per-user affinity entries in the multi-key pool",
+        labelnames=("provider",),
+        registry=REGISTRY,
+    )
+
     API_FALLBACKS = Counter(
         "api_fallbacks_total",
         "Total routing fallbacks between providers",
@@ -305,6 +333,26 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    # Per-user concurrency limiter metrics (#242)
+    USER_CONCURRENCY_IN_FLIGHT = Gauge(
+        "user_concurrency_in_flight",
+        "Active concurrent inference requests, by role",
+        labelnames=("role",),
+        registry=REGISTRY,
+    )
+    USER_CONCURRENCY_ACQUIRES_TOTAL = Counter(
+        "user_concurrency_acquires_total",
+        "Total per-user concurrency slot acquire attempts",
+        labelnames=("role", "outcome"),  # outcome ∈ {"granted", "rejected"}
+        registry=REGISTRY,
+    )
+    USER_CONCURRENCY_REJECTED_TOTAL = Counter(
+        "user_concurrency_rejected_total",
+        "Requests rejected due to per-user concurrency limit",
+        labelnames=("role",),
+        registry=REGISTRY,
+    )
+
     # Register runtime collectors for process/GC/platform if available
     try:  # pragma: no cover - environment dependent
         if ProcessCollector:
@@ -393,6 +441,20 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     PROVIDER_LATENCY = API_REQUEST_LATENCY
     API_RETRIES = type("Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()})()
     API_FALLBACKS = type("Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()})()
+    KEY_POOL_REQUESTS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    KEY_POOL_COOLDOWNS = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    KEY_POOL_EXHAUSTED = type(
+        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
+    )()
+    KEY_POOL_ACTIVE_AFFINITIES = type(
+        "Noop",
+        (),
+        {"labels": lambda *a, **k: type("L", (), {"set": _noop, "inc": _noop, "dec": _noop})()},
+    )()
     API_TOKENS = type("Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()})()
     API_TOKEN_ANOMALIES = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
@@ -452,6 +514,21 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     USERS_TOTAL = type("NoopGauge", (), {"set": _noop})()
     USERS_ACTIVE_DAILY = type("NoopGauge", (), {"set": _noop})()
     USERS_ACTIVE_MONTHLY = type("NoopGauge", (), {"set": _noop})()
+    USER_CONCURRENCY_IN_FLIGHT = type(
+        "NoopGauge",
+        (),
+        {"labels": lambda *a, **k: type("L", (), {"inc": _noop, "dec": _noop, "set": _noop})()},
+    )()
+    USER_CONCURRENCY_ACQUIRES_TOTAL = type(
+        "NoopCounter",
+        (),
+        {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()},
+    )()
+    USER_CONCURRENCY_REJECTED_TOTAL = type(
+        "NoopCounter",
+        (),
+        {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()},
+    )()
 
     def render_latest() -> bytes:  # pragma: no cover
         """Return a minimal body when metrics are disabled."""
@@ -501,6 +578,11 @@ __all__ = [
     "CIRCUIT_STATE",
     # Database metrics
     "DATABASE_CONNECTED",
+    # Key pool metrics
+    "KEY_POOL_ACTIVE_AFFINITIES",
+    "KEY_POOL_COOLDOWNS",
+    "KEY_POOL_EXHAUSTED",
+    "KEY_POOL_REQUESTS",
     # Provider metrics
     "PROVIDER_AVAILABILITY",
     "PROVIDER_LATENCY",
@@ -525,6 +607,10 @@ __all__ = [
     "USERS_ACTIVE_MONTHLY",
     # User statistics metrics
     "USERS_TOTAL",
+    # Per-user concurrency metrics
+    "USER_CONCURRENCY_ACQUIRES_TOTAL",
+    "USER_CONCURRENCY_IN_FLIGHT",
+    "USER_CONCURRENCY_REJECTED_TOTAL",
     # Helper functions
     "latency_timer",
     "normalize_model_label",

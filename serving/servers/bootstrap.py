@@ -18,12 +18,13 @@ from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from serving.adapters import ClaudeSubscriptionAdapter, CodexSubscriptionAdapter
-from serving.config.settings import get_settings
+from serving.config.settings import USER_CONCURRENCY_LIMITS, get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
 from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
 
+from .concurrency import UserConcurrencyLimiter
 from .deps import AppServices
 from .rate_limiter import PersistentRateLimiter, RateLimitConfig
 from .registry import ModelRegistrationInfo, register_from_models_yaml
@@ -427,6 +428,10 @@ async def initialize() -> AppServices:
             "attached" if rate_limiter is not None else "none",
         )
 
+    # Per-user concurrency limiter (always on; in-process)
+    user_concurrency_limiter = UserConcurrencyLimiter(USER_CONCURRENCY_LIMITS)
+    logger.info("User concurrency limiter initialized: %s", USER_CONCURRENCY_LIMITS)
+
     # User statistics collector (optional)
     user_stats_collector = None
     if os.getenv("METRICS_ENABLED", "1") == "1" and db_logger:
@@ -449,6 +454,7 @@ async def initialize() -> AppServices:
         model_router_registry=model_router_registry,
         user_stats_collector=user_stats_collector,
         fairness_scheduler=fairness_scheduler,
+        user_concurrency_limiter=user_concurrency_limiter,
     )
 
 

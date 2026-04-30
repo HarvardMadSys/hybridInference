@@ -7,6 +7,7 @@ export interface SignupRequest {
   email: string;
   password: string;
   user_name: string;
+  turnstileToken?: string;
 }
 
 export interface SignupResponse {
@@ -35,10 +36,15 @@ export interface LoginResponse {
 }
 
 export async function signup(data: SignupRequest): Promise<SignupResponse> {
+  const { turnstileToken, ...rest } = data;
+  const body = {
+    ...rest,
+    ...(turnstileToken ? { turnstile_token: turnstileToken } : {}),
+  };
   const resp = await fetch(`${API_BASE}/auth/signup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(body),
     credentials: 'include',
   });
 

@@ -10,3 +10,10 @@ regexes = [
   '''(?i)^(DB_PASSWORD|PGADMIN_PASSWORD)=\s*$''',
   '''(?i)DB_PASSWORD=\s*\nDB_ENABLED=true''',
 ]
+
+[[allowlists]]
+description = "Test fixtures and design plan/spec markdown — fake credentials in code samples."
+paths = [
+  '''^test/.*\.py$''',
+  '''^docs/superpowers/(plans|specs)/.*\.md$''',
+]

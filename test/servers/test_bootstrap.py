@@ -108,6 +108,29 @@ class TestBootstrapInitialization:
             assert "test-alias-1" in services.router.routes
 
     @pytest.mark.asyncio
+    async def test_initialize_constructs_user_concurrency_limiter(self, mock_env):
+        """services.user_concurrency_limiter must be a UserConcurrencyLimiter
+        with caps for free/pro/internal/admin."""
+        from serving.servers.concurrency import UserConcurrencyLimiter
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch("serving.servers.bootstrap._configure_rate_limiter"),
+        ):
+            services = await bootstrap.initialize()
+
+            assert isinstance(services.user_concurrency_limiter, UserConcurrencyLimiter)
+            for role in ("free", "pro", "internal", "admin"):
+                assert services.user_concurrency_limiter.limit_for(role, is_admin=False) >= 1
+            # is_admin=True must yield admin cap
+            assert services.user_concurrency_limiter.limit_for("free", is_admin=True) == 10
+
+    @pytest.mark.asyncio
     async def test_initialize_with_routing_manager(self, mock_env, temp_routing_yaml, monkeypatch):
         """Test initialization with routing manager."""
         monkeypatch.setenv("ROUTING_CONFIG", temp_routing_yaml)

@@ -8,7 +8,9 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.admin.provider_quotas import gather_all
 from serving.schemas_admin import (
+    AdminProviderQuotasResponse,
     AdminRecentRequestItem,
     AdminRecentRequestsResponse,
     AdminRequestMetricsBucket,
@@ -2060,3 +2062,15 @@ async def cancel_broadcast(
         db, admin, "broadcast_email_cancel", None, {"broadcast_id": broadcast_id}
     )
     return {"message": "Broadcast cancelled"}
+
+
+@router.get("/admin/provider-quotas", response_model=AdminProviderQuotasResponse)
+async def admin_provider_quotas(
+    _admin_id: str = Depends(verify_admin_access),
+) -> AdminProviderQuotasResponse:
+    """Return current quota status for each upstream LLM provider."""
+    providers = await gather_all()
+    return AdminProviderQuotasResponse(
+        generated_at=datetime.now(timezone.utc),
+        providers=providers,
+    )
