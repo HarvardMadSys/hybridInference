@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Literal
@@ -1741,8 +1742,6 @@ async def admin_get_analytics(
     db_logger=Depends(get_db_logger),
 ) -> AdminAnalyticsResponse:
     """Return analytics summary for the admin analytics tab."""
-    import asyncio
-
     if period not in _ANALYTICS_PERIODS:
         raise HTTPException(400, f"period must be one of: {', '.join(_ANALYTICS_PERIODS)}")
     if not db_logger or not db_logger.pool:
@@ -1863,11 +1862,14 @@ async def admin_get_analytics(
             rows = await conn.fetch(
                 """
                 WITH series AS (
-                    SELECT generate_series(
-                        date_trunc('minute', NOW() - ($1 * interval '1 minute')),
-                        date_trunc('minute', NOW()),
-                        $2 * interval '1 minute'
+                    SELECT to_timestamp(
+                        gs * ($2 * 60)
                     ) AS bucket_start
+                    FROM generate_series(
+                        (floor(extract(epoch FROM NOW() - ($1 * interval '1 minute')) / ($2 * 60)))::bigint,
+                        (floor(extract(epoch FROM NOW()) / ($2 * 60)))::bigint,
+                        1
+                    ) AS gs
                 ),
                 bucketed AS (
                     SELECT
