@@ -59,7 +59,7 @@ from serving.servers.deps import (
     get_services,
     verify_admin_access,
 )
-from serving.utils.email import render_broadcast_template
+from serving.utils.email import render_broadcast_template, send_email
 from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 
 router = APIRouter()
@@ -1734,6 +1734,20 @@ async def admin_list_recent_requests(
 # ── Broadcast Email Endpoints ──────────────────────────────────────────────
 
 
+def _render_or_422(req: BroadcastPreviewRequest) -> dict[str, str]:
+    """Render template (or pass through custom content), mapping ValueError to 422."""
+    try:
+        return render_broadcast_template(
+            req.template_key,
+            req.template_vars,
+            custom_subject=req.subject,
+            custom_body_html=req.body_html,
+            custom_body_text=req.body_text,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/admin/broadcast-email/preview", response_model=BroadcastPreviewResponse)
 async def preview_broadcast(
     req: BroadcastPreviewRequest,
@@ -1744,13 +1758,7 @@ async def preview_broadcast(
     if not db or not db.pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
-    rendered = render_broadcast_template(
-        req.template_key,
-        req.template_vars,
-        custom_subject=req.subject,
-        custom_body_html=req.body_html,
-        custom_body_text=req.body_text,
-    )
+    rendered = _render_or_422(req)
 
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -1779,25 +1787,20 @@ async def test_broadcast_email(
     db=Depends(get_db_logger),
 ):
     """Send a test email to the requesting admin's address only."""
-    from serving.utils.email import send_email
-
     if not db or not db.pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
+    rendered = _render_or_422(req)
+    if not rendered["subject"] or not rendered["body_html"]:
+        raise HTTPException(status_code=422, detail="subject and body_html are required")
+
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow("SELECT email FROM users WHERE email = $1", admin)
-    admin_email = row["email"] if row else admin
-
-    if not admin_email or "@" not in admin_email:
-        raise HTTPException(status_code=400, detail="Cannot determine admin email address")
-
-    rendered = render_broadcast_template(
-        req.template_key,
-        req.template_vars,
-        custom_subject=req.subject,
-        custom_body_html=req.body_html,
-        custom_body_text=req.body_text,
-    )
+    if not row:
+        raise HTTPException(
+            status_code=400, detail="Admin user not found — cannot resolve email address"
+        )
+    admin_email = row["email"]
 
     ok = send_email(
         admin_email,
@@ -1816,33 +1819,26 @@ async def create_broadcast(
     admin: str = Depends(verify_admin_access),
     db=Depends(get_db_logger),
 ):
-    """Create and schedule (or immediately send) a broadcast email."""
+    """Create a broadcast, snapshot its recipients, and schedule (or fire immediately)."""
     import uuid as _uuid
 
     if not db or not db.pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
-    rendered = render_broadcast_template(
-        req.template_key,
-        req.template_vars,
-        custom_subject=req.subject,
-        custom_body_html=req.body_html,
-        custom_body_text=req.body_text,
-    )
-
+    rendered = _render_or_422(req)
     if not rendered["subject"] or not rendered["body_html"]:
         raise HTTPException(status_code=422, detail="subject and body_html are required")
 
     broadcast_id = str(_uuid.uuid4())
 
-    async with db.pool.acquire() as conn:
+    async with db.pool.acquire() as conn, conn.transaction():
         await conn.execute(
             """
-            INSERT INTO email_broadcasts
-                (id, subject, body_html, body_text, template_key, template_vars,
-                 target_roles, target_statuses, status, scheduled_at, created_by)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-            """,
+                INSERT INTO email_broadcasts
+                    (id, subject, body_html, body_text, template_key, template_vars,
+                     target_roles, target_statuses, status, scheduled_at, created_by)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                """,
             broadcast_id,
             rendered["subject"],
             rendered["body_html"],
@@ -1856,16 +1852,31 @@ async def create_broadcast(
             admin,
         )
 
-        row = await conn.fetchrow(
+        # Snapshot recipients at create time so the audience matches what the admin
+        # previewed and can't drift between scheduling and execution.
+        recipients = await conn.fetch(
             """
-            SELECT COUNT(*) as cnt FROM users
-            WHERE role = ANY($1::text[])
-              AND status = ANY($2::text[])
-            """,
+                SELECT id, email FROM users
+                WHERE role = ANY($1::text[])
+                  AND status = ANY($2::text[])
+                """,
             req.target_roles or [],
             req.target_statuses or [],
         )
-    recipient_count = row["cnt"] if row else 0
+        if recipients:
+            await conn.executemany(
+                """
+                    INSERT INTO email_broadcast_recipients (broadcast_id, user_id, email, status)
+                    VALUES ($1, $2, $3, 'pending')
+                    ON CONFLICT DO NOTHING
+                    """,
+                [(broadcast_id, r["id"], r["email"]) for r in recipients],
+            )
+        await conn.execute(
+            "UPDATE email_broadcasts SET recipient_count = $1 WHERE id = $2",
+            len(recipients),
+            broadcast_id,
+        )
 
     schedule_broadcast(broadcast_id, req.scheduled_at)
     await log_admin_action(
@@ -1879,7 +1890,7 @@ async def create_broadcast(
     return CreateBroadcastResponse(
         id=broadcast_id,
         status="scheduled",
-        recipient_count=recipient_count,
+        recipient_count=len(recipients),
         scheduled_at=req.scheduled_at,
     )
 

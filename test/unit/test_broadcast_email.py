@@ -72,26 +72,25 @@ def _make_pool(conn):
     return pool
 
 
-@pytest.mark.asyncio
-async def test_execute_broadcast_sends_and_updates_recipients():
-    """execute_broadcast marks recipients sent/failed and updates broadcast status."""
-    from serving.utils import email_scheduler
-
-    conn = AsyncMock()
-    # broadcast row
-    conn.fetchrow.return_value = {
-        "id": "bc1",
+def _broadcast_row(bid: str = "bc1") -> dict:
+    return {
+        "id": bid,
         "subject": "Hello",
         "body_html": "<p>Hi</p>",
         "body_text": "Hi",
-        "target_roles": ["free"],
-        "target_statuses": ["active"],
-        "status": "scheduled",
     }
-    # recipient users
+
+
+@pytest.mark.asyncio
+async def test_execute_broadcast_sends_and_updates_recipients():
+    """execute_broadcast claims atomically, sends, and updates recipient statuses."""
+    from serving.utils import email_scheduler
+
+    conn = AsyncMock()
+    conn.fetchrow.return_value = _broadcast_row("bc1")
     conn.fetch.return_value = [
-        {"id": "u1", "email": "a@example.com"},
-        {"id": "u2", "email": "b@example.com"},
+        {"user_id": "u1", "email": "a@example.com"},
+        {"user_id": "u2", "email": "b@example.com"},
     ]
     conn.execute = AsyncMock()
 
@@ -102,8 +101,28 @@ async def test_execute_broadcast_sends_and_updates_recipients():
         await email_scheduler.execute_broadcast("bc1")
 
     assert mock_send.call_count == 2
-    # At minimum: status->sending, insert recipients, per-recipient update x2, status->sent
-    assert conn.execute.call_count >= 4
+    # Atomic claim returns row; fetch returns recipients; one batch update + final status.
+    calls = " ".join(str(c) for c in conn.execute.call_args_list)
+    assert "sent" in calls
+
+
+@pytest.mark.asyncio
+async def test_execute_broadcast_skips_when_not_scheduled():
+    """If atomic claim returns no row (already claimed), execute_broadcast is a no-op."""
+    from serving.utils import email_scheduler
+
+    conn = AsyncMock()
+    conn.fetchrow.return_value = None  # atomic claim found no 'scheduled' row
+    conn.execute = AsyncMock()
+    pool = _make_pool(conn)
+    email_scheduler._db_pool = pool
+
+    with patch("serving.utils.email_scheduler.send_email", return_value=True) as mock_send:
+        await email_scheduler.execute_broadcast("bc-already-claimed")
+
+    assert mock_send.call_count == 0
+    # No recipient fetch, no status updates after the claim attempt.
+    conn.fetch.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -112,18 +131,10 @@ async def test_execute_broadcast_partial_failure():
     from serving.utils import email_scheduler
 
     conn = AsyncMock()
-    conn.fetchrow.return_value = {
-        "id": "bc2",
-        "subject": "Hi",
-        "body_html": "<p>Hi</p>",
-        "body_text": "Hi",
-        "target_roles": ["free"],
-        "target_statuses": ["active"],
-        "status": "scheduled",
-    }
+    conn.fetchrow.return_value = _broadcast_row("bc2")
     conn.fetch.return_value = [
-        {"id": "u1", "email": "ok@example.com"},
-        {"id": "u2", "email": "fail@example.com"},
+        {"user_id": "u1", "email": "ok@example.com"},
+        {"user_id": "u2", "email": "fail@example.com"},
     ]
     conn.execute = AsyncMock()
     pool = _make_pool(conn)
@@ -135,7 +146,6 @@ async def test_execute_broadcast_partial_failure():
     with patch("serving.utils.email_scheduler.send_email", side_effect=_send):
         await email_scheduler.execute_broadcast("bc2")
 
-    # Find the final status update — should be 'sent', not 'failed'
     calls = [str(c) for c in conn.execute.call_args_list]
     assert any("'sent'" in c or "sent" in c for c in calls)
 
@@ -146,16 +156,8 @@ async def test_execute_broadcast_all_fail_marks_failed():
     from serving.utils import email_scheduler
 
     conn = AsyncMock()
-    conn.fetchrow.return_value = {
-        "id": "bc3",
-        "subject": "Hi",
-        "body_html": "<p>Hi</p>",
-        "body_text": "Hi",
-        "target_roles": ["free"],
-        "target_statuses": ["active"],
-        "status": "scheduled",
-    }
-    conn.fetch.return_value = [{"id": "u1", "email": "bad@example.com"}]
+    conn.fetchrow.return_value = _broadcast_row("bc3")
+    conn.fetch.return_value = [{"user_id": "u1", "email": "bad@example.com"}]
     conn.execute = AsyncMock()
     pool = _make_pool(conn)
     email_scheduler._db_pool = pool
@@ -165,3 +167,30 @@ async def test_execute_broadcast_all_fail_marks_failed():
 
     calls = " ".join(str(c) for c in conn.execute.call_args_list)
     assert "failed" in calls
+
+
+@pytest.mark.asyncio
+async def test_execute_broadcast_offloads_smtp_to_thread():
+    """SMTP send_email is dispatched via asyncio.to_thread so it doesn't block the loop."""
+    import asyncio
+
+    from serving.utils import email_scheduler
+
+    conn = AsyncMock()
+    conn.fetchrow.return_value = _broadcast_row("bc4")
+    conn.fetch.return_value = [{"user_id": "u1", "email": "a@example.com"}]
+    conn.execute = AsyncMock()
+    pool = _make_pool(conn)
+    email_scheduler._db_pool = pool
+
+    real_to_thread = asyncio.to_thread
+    with (
+        patch("serving.utils.email_scheduler.send_email", return_value=True),
+        patch(
+            "serving.utils.email_scheduler.asyncio.to_thread",
+            side_effect=real_to_thread,
+        ) as mock_to_thread,
+    ):
+        await email_scheduler.execute_broadcast("bc4")
+
+    assert mock_to_thread.called, "send_email must be wrapped in asyncio.to_thread"

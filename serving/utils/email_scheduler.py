@@ -104,91 +104,92 @@ def _run_broadcast_sync(broadcast_id: str) -> None:
 
 
 async def execute_broadcast(broadcast_id: str) -> None:
-    """Send emails for a broadcast and update per-recipient + broadcast status in DB."""
+    """Send emails for a broadcast using a pre-snapshotted recipient list.
+
+    Atomically claims the broadcast via UPDATE...RETURNING so concurrent replicas
+    cannot double-send. SMTP I/O is dispatched to a thread pool so it doesn't
+    block the event loop.
+    """
     if not _db_pool:
         logger.error(f"Cannot execute broadcast {broadcast_id}: no DB pool")
         return
 
+    # Atomically claim — only one replica wins, even on rehydration races.
     async with _db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM email_broadcasts WHERE id = $1", broadcast_id)
-        if not row:
-            logger.error(f"Broadcast {broadcast_id} not found")
-            return
-
-        await conn.execute(
-            "UPDATE email_broadcasts SET status = 'sending' WHERE id = $1", broadcast_id
-        )
-
-        roles = list(row["target_roles"]) or []
-        statuses = list(row["target_statuses"]) or []
-
-        recipients = await conn.fetch(
+        row = await conn.fetchrow(
             """
-            SELECT id, email FROM users
-            WHERE role = ANY($1::text[])
-              AND status = ANY($2::text[])
+            UPDATE email_broadcasts
+            SET status = 'sending'
+            WHERE id = $1 AND status = 'scheduled'
+            RETURNING id, subject, body_html, body_text
             """,
-            roles,
-            statuses,
-        )
-
-        if recipients:
-            await conn.executemany(
-                """
-                INSERT INTO email_broadcast_recipients (broadcast_id, user_id, email, status)
-                VALUES ($1, $2, $3, 'pending')
-                ON CONFLICT DO NOTHING
-                """,
-                [(broadcast_id, r["id"], r["email"]) for r in recipients],
-            )
-
-        await conn.execute(
-            "UPDATE email_broadcasts SET recipient_count = $1 WHERE id = $2",
-            len(recipients),
             broadcast_id,
         )
+
+    if not row:
+        logger.info(
+            f"Broadcast {broadcast_id} not in 'scheduled' state — already claimed or not found"
+        )
+        return
 
     subject = row["subject"]
     body_html = row["body_html"]
     body_text = row["body_text"]
+
+    # Recipients were snapshotted at create time.
+    async with _db_pool.acquire() as conn:
+        recipients = await conn.fetch(
+            """
+            SELECT user_id, email FROM email_broadcast_recipients
+            WHERE broadcast_id = $1 AND status = 'pending'
+            ORDER BY id
+            """,
+            broadcast_id,
+        )
 
     sent_count = 0
     failed_count = 0
 
     for i in range(0, len(recipients), BATCH_SIZE):
         batch = recipients[i : i + BATCH_SIZE]
+
+        # SMTP is sync; offload to a thread so it doesn't block the event loop.
+        sent_user_ids: list[str] = []
+        failed_user_ids: list[str] = []
         for recipient in batch:
-            user_id = recipient["id"]
+            user_id = recipient["user_id"]
             email = recipient["email"]
             try:
-                ok = send_email(email, subject, body_html, body_text)
+                ok = await asyncio.to_thread(send_email, email, subject, body_html, body_text)
             except Exception as exc:
                 ok = False
                 logger.warning(f"send_email raised for {email}: {exc}")
+            (sent_user_ids if ok else failed_user_ids).append(user_id)
 
-            async with _db_pool.acquire() as conn:
-                if ok:
-                    sent_count += 1
-                    await conn.execute(
-                        """
-                        UPDATE email_broadcast_recipients
-                        SET status = 'sent', sent_at = NOW()
-                        WHERE broadcast_id = $1 AND user_id = $2
-                        """,
-                        broadcast_id,
-                        user_id,
-                    )
-                else:
-                    failed_count += 1
-                    await conn.execute(
-                        """
-                        UPDATE email_broadcast_recipients
-                        SET status = 'failed', error = 'send_email returned False'
-                        WHERE broadcast_id = $1 AND user_id = $2
-                        """,
-                        broadcast_id,
-                        user_id,
-                    )
+        # One connection acquisition per batch, not per recipient.
+        async with _db_pool.acquire() as conn:
+            if sent_user_ids:
+                await conn.execute(
+                    """
+                    UPDATE email_broadcast_recipients
+                    SET status = 'sent', sent_at = NOW()
+                    WHERE broadcast_id = $1 AND user_id = ANY($2::text[])
+                    """,
+                    broadcast_id,
+                    sent_user_ids,
+                )
+                sent_count += len(sent_user_ids)
+            if failed_user_ids:
+                await conn.execute(
+                    """
+                    UPDATE email_broadcast_recipients
+                    SET status = 'failed', error = 'send_email returned False'
+                    WHERE broadcast_id = $1 AND user_id = ANY($2::text[])
+                    """,
+                    broadcast_id,
+                    failed_user_ids,
+                )
+                failed_count += len(failed_user_ids)
 
         if i + BATCH_SIZE < len(recipients):
             await asyncio.sleep(BATCH_DELAY_SECONDS)
