@@ -262,3 +262,40 @@ def test_affinity_sweep_drops_expired_entries(monkeypatch):
     # plus any whose affinity wasn't expired (none, since we advanced past TTL)
     assert len(pool._affinity) == 1
     assert "trigger-sweep" in pool._affinity
+
+
+def test_concurrent_acquires_distribute_evenly():
+    """Many threads acquiring as new users spread across keys without race."""
+    import threading
+
+    NUM_KEYS = 4
+    NUM_USERS = 400
+
+    pool = KeyPool(keys=[f"k{i}" for i in range(NUM_KEYS)], provider_label="test")
+
+    results: list[int] = []
+    lock = threading.Lock()
+
+    def worker(uid: int) -> None:
+        _, lease = pool.acquire(f"user-{uid}")
+        with lock:
+            results.append(lease.key_index)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(NUM_USERS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Total acquires == users
+    assert len(results) == NUM_USERS
+    # request_count totals across keys equals NUM_USERS (no double-counting,
+    # no lost increments)
+    assert sum(s.request_count for s in pool._keys) == NUM_USERS
+
+    # Distribution is reasonably balanced — each key gets within +/-20% of mean
+    expected = NUM_USERS / NUM_KEYS
+    for s in pool._keys:
+        assert 0.8 * expected <= s.request_count <= 1.2 * expected, (
+            f"unbalanced: {[k.request_count for k in pool._keys]}"
+        )
