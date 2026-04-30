@@ -1815,14 +1815,22 @@ async def admin_get_analytics(
                     GROUP BY model_id
                     ORDER BY req_count DESC
                     LIMIT 5
+                ),
+                top_total AS (
+                    SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
                 )
-                SELECT
-                    r.name,
-                    r.req_count,
-                    CASE WHEN t.grand_total > 0
-                         THEN r.req_count::float / t.grand_total
-                         ELSE 0 END AS fraction
+                SELECT r.name, r.req_count,
+                    CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
                 FROM ranked r, totals t
+                UNION ALL
+                SELECT 'others',
+                    GREATEST(t.grand_total - tt.top_req_count, 0),
+                    CASE WHEN t.grand_total > 0
+                         THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
+                         ELSE 0 END
+                FROM totals t, top_total tt
+                WHERE t.grand_total > tt.top_req_count
+                ORDER BY req_count DESC
                 """,
                 lookback_minutes,
             )
@@ -1844,14 +1852,22 @@ async def admin_get_analytics(
                     GROUP BY provider
                     ORDER BY req_count DESC
                     LIMIT 4
+                ),
+                top_total AS (
+                    SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
                 )
-                SELECT
-                    r.name,
-                    r.req_count,
-                    CASE WHEN t.grand_total > 0
-                         THEN r.req_count::float / t.grand_total
-                         ELSE 0 END AS fraction
+                SELECT r.name, r.req_count,
+                    CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
                 FROM ranked r, totals t
+                UNION ALL
+                SELECT 'others',
+                    GREATEST(t.grand_total - tt.top_req_count, 0),
+                    CASE WHEN t.grand_total > 0
+                         THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
+                         ELSE 0 END
+                FROM totals t, top_total tt
+                WHERE t.grand_total > tt.top_req_count
+                ORDER BY req_count DESC
                 """,
                 lookback_minutes,
             )
