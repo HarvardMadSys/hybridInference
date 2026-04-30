@@ -179,18 +179,16 @@ Two changes:
 
 ```json
 {
-  "detail": {
-    "error": {
-      "code": "concurrency_limit_exceeded",
-      "message": "Too many concurrent requests (limit: 1)",
-      "limit": 1,
-      "role": "free"
-    }
+  "error": {
+    "code": "concurrency_limit_exceeded",
+    "message": "Too many concurrent requests (limit: 1)",
+    "limit": 1,
+    "role": "free"
   }
 }
 ```
 
-Headers: `Retry-After: 1`. (FastAPI nests under `detail` by default for `HTTPException`; we keep that shape to match the existing 429 patterns from the rate limiter and quota.)
+Headers: `Retry-After: 1`. (FastAPI's `HTTPException(detail={"error": ...})` is unwrapped to `{"error": ...}` at the top level by the application's error middleware.)
 
 No changes to the success-path response.
 

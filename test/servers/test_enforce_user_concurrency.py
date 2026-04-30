@@ -81,6 +81,10 @@ async def test_grant_then_reject_for_free_user():
         resp2 = await client.get("/probe")
         assert resp2.status_code == 429
         body = resp2.json()
+        # Note: response shape is {"detail": {"error": ...}} in this ad-hoc app
+        # because we don't include the production error middleware that unwraps
+        # the inner "error" key. See test/servers/test_concurrency_endpoint.py
+        # for the production shape ({"error": ...}).
         assert body["detail"]["error"]["code"] == "concurrency_limit_exceeded"
         assert body["detail"]["error"]["limit"] == 1
         assert body["detail"]["error"]["role"] == "free"
