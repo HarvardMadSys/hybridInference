@@ -37,6 +37,12 @@ done
 
 log "Installing cloudflared..."
 
+# Prerequisites — required even on minimal/fresh hosts so the apt key fetch and
+# HTTPS apt source below work.
+log "Installing prerequisites (curl, gnupg, ca-certificates)..."
+apt-get update -q
+apt-get install -y curl gnupg ca-certificates
+
 if ! command -v cloudflared &>/dev/null; then
     curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
         | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
@@ -51,6 +57,13 @@ else
 fi
 
 # ── 2. Install as systemd service ────────────────────────────────────────────
+
+# `cloudflared service install` fails if the service unit already exists, so
+# uninstall first when present to keep the script idempotent on re-runs.
+if systemctl list-unit-files 2>/dev/null | grep -q '^cloudflared\.service'; then
+    log "Existing cloudflared service detected — uninstalling before reinstall."
+    cloudflared service uninstall || true
+fi
 
 log "Installing cloudflared service..."
 cloudflared service install "$TUNNEL_TOKEN"
