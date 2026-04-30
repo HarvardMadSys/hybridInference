@@ -28,4 +28,4 @@ echo "==> Adding current user to docker group"
 sudo usermod -aG docker "$USER" || true
 
 echo "==> Bootstrap complete"
-echo "Reconnect to SSH or run: newgrp docker, then run start_staging.sh"
+echo "Reconnect to SSH or run: newgrp docker, then run: make build"
