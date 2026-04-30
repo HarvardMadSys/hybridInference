@@ -336,8 +336,11 @@ async def initialize() -> AppServices:
                 DATABASE_CONNECTED.set(1)
                 # Start broadcast email scheduler
                 if db_logger.pool:
-                    email_scheduler.start_scheduler(db_logger.pool)
-                    await email_scheduler.rehydrate_scheduled_broadcasts()
+                    try:
+                        email_scheduler.start_scheduler(db_logger.pool)
+                        await email_scheduler.rehydrate_scheduled_broadcasts()
+                    except Exception as sched_exc:
+                        logger.error(f"Email scheduler startup failed: {sched_exc}")
                 break
             except Exception as exc:
                 if attempt < max_retries - 1:
