@@ -1617,10 +1617,10 @@ async def admin_get_request_metrics(
 
 
 # Inner edges for histogram buckets, passed to width_bucket(x, ARRAY[...]).
-# 8 inner edges => 9 buckets, but we drop the underflow bucket (idx 0,
-# which captures negative values; the metrics here are never negative).
-# Bucket index k (1..8) maps to [edges[k-1], edges[k]); the last bucket
-# is open-ended ([edges[-1], +inf)).
+# With N = len(edges), width_bucket returns bucket 0 for x < edges[0]
+# (underflow; ignored here because these metrics are never negative),
+# buckets 1..N-1 for bounded ranges [edges[k-1], edges[k]), and bucket N
+# for the final open-ended overflow bucket [edges[-1], +inf).
 _TOKEN_HISTOGRAM_EDGES: tuple[float, ...] = (0, 32, 128, 512, 2048, 8192, 32768, 131072)
 _LATENCY_HISTOGRAM_EDGES: tuple[float, ...] = (0, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
 
@@ -1663,21 +1663,6 @@ def _build_histogram(
     return buckets
 
 
-def _empty_distribution(edges: tuple[float, ...]) -> AdminMetricDistribution:
-    """Return a zero-count distribution with the canonical bucket layout."""
-    return AdminMetricDistribution(
-        count=0,
-        mean=None,
-        min=None,
-        max=None,
-        p50=None,
-        p90=None,
-        p95=None,
-        p99=None,
-        histogram=_build_histogram(edges, {}),
-    )
-
-
 def _round_or_none(value: Any, digits: int = 2) -> float | None:
     """Coerce a numeric DB value to float and round, or return None."""
     if value is None:
@@ -1703,6 +1688,44 @@ def _distribution_from_row(
         p99=_round_or_none(row[f"{prefix}_p99"]),
         histogram=_build_histogram(edges, bucket_counts),
     )
+
+
+# Shared CTE prefix used by both the stats query and the histogram query for
+# each window. Defining it once keeps the row filter / TBT derivation in sync
+# so the "histogram sums to count" invariant cannot drift.
+_PERF_METRICS_CTE = """
+WITH base AS (
+    SELECT
+        prompt_tokens,
+        completion_tokens,
+        ttft_ms,
+        latency_ms,
+        stream
+    FROM api_logs
+    WHERE timestamp >= NOW() - ($1::int * interval '1 minute')
+      AND status_code BETWEEN 200 AND 399
+),
+derived AS (
+    SELECT
+        prompt_tokens,
+        completion_tokens,
+        CASE
+            WHEN stream = TRUE AND ttft_ms IS NOT NULL
+                THEN ttft_ms::float
+        END AS ttft_ms,
+        CASE
+            WHEN stream = TRUE
+                AND ttft_ms IS NOT NULL
+                AND completion_tokens IS NOT NULL
+                AND completion_tokens > 1
+                AND latency_ms IS NOT NULL
+                AND latency_ms >= ttft_ms
+                THEN (latency_ms - ttft_ms)::float
+                     / NULLIF(completion_tokens - 1, 0)
+        END AS tbt_ms
+    FROM base
+)
+"""
 
 
 @router.get("/admin/performance-metrics", response_model=AdminPerformanceMetricsResponse)
@@ -1734,38 +1757,8 @@ async def admin_get_performance_metrics(
         for key, label, window_minutes, _bucket_minutes in REQUEST_METRIC_WINDOWS:
             # Aggregate stats — one row, one query per window.
             stats_row = await conn.fetchrow(
-                """
-                WITH base AS (
-                    SELECT
-                        prompt_tokens,
-                        completion_tokens,
-                        ttft_ms,
-                        latency_ms,
-                        stream
-                    FROM api_logs
-                    WHERE timestamp >= NOW() - ($1::int * interval '1 minute')
-                      AND status_code BETWEEN 200 AND 399
-                ),
-                derived AS (
-                    SELECT
-                        prompt_tokens,
-                        completion_tokens,
-                        CASE
-                            WHEN stream = TRUE AND ttft_ms IS NOT NULL
-                                THEN ttft_ms::float
-                        END AS ttft_ms,
-                        CASE
-                            WHEN stream = TRUE
-                                AND ttft_ms IS NOT NULL
-                                AND completion_tokens IS NOT NULL
-                                AND completion_tokens > 1
-                                AND latency_ms IS NOT NULL
-                                AND latency_ms >= ttft_ms
-                                THEN (latency_ms - ttft_ms)::float
-                                     / NULLIF(completion_tokens - 1, 0)
-                        END AS tbt_ms
-                    FROM base
-                )
+                _PERF_METRICS_CTE
+                + """
                 SELECT
                     COUNT(*) FILTER (
                         WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
@@ -1865,38 +1858,8 @@ async def admin_get_performance_metrics(
 
             # Histogram counts — one row per (metric, bucket).
             hist_rows = await conn.fetch(
-                """
-                WITH base AS (
-                    SELECT
-                        prompt_tokens,
-                        completion_tokens,
-                        ttft_ms,
-                        latency_ms,
-                        stream
-                    FROM api_logs
-                    WHERE timestamp >= NOW() - ($1::int * interval '1 minute')
-                      AND status_code BETWEEN 200 AND 399
-                ),
-                derived AS (
-                    SELECT
-                        prompt_tokens,
-                        completion_tokens,
-                        CASE
-                            WHEN stream = TRUE AND ttft_ms IS NOT NULL
-                                THEN ttft_ms::float
-                        END AS ttft_ms,
-                        CASE
-                            WHEN stream = TRUE
-                                AND ttft_ms IS NOT NULL
-                                AND completion_tokens IS NOT NULL
-                                AND completion_tokens > 1
-                                AND latency_ms IS NOT NULL
-                                AND latency_ms >= ttft_ms
-                                THEN (latency_ms - ttft_ms)::float
-                                     / NULLIF(completion_tokens - 1, 0)
-                        END AS tbt_ms
-                    FROM base
-                )
+                _PERF_METRICS_CTE
+                + """
                 SELECT 'prompt_tokens' AS metric,
                        width_bucket(prompt_tokens::float, $2::float[]) AS bucket,
                        COUNT(*) AS cnt
@@ -1947,34 +1910,25 @@ async def admin_get_performance_metrics(
                 target = bucket if bucket >= 1 else 1
                 histograms[metric][target] = histograms[metric].get(target, 0) + cnt
 
-            if stats_row is None:
-                window = AdminPerformanceMetricsWindow(
-                    key=key,
-                    label=label,
-                    window_minutes=window_minutes,
-                    prompt_tokens=_empty_distribution(_TOKEN_HISTOGRAM_EDGES),
-                    completion_tokens=_empty_distribution(_TOKEN_HISTOGRAM_EDGES),
-                    ttft_ms=_empty_distribution(_LATENCY_HISTOGRAM_EDGES),
-                    tbt_ms=_empty_distribution(_LATENCY_HISTOGRAM_EDGES),
-                )
-            else:
-                window = AdminPerformanceMetricsWindow(
-                    key=key,
-                    label=label,
-                    window_minutes=window_minutes,
-                    prompt_tokens=_distribution_from_row(
-                        stats_row, "pt", _TOKEN_HISTOGRAM_EDGES, histograms["prompt_tokens"]
-                    ),
-                    completion_tokens=_distribution_from_row(
-                        stats_row, "ct", _TOKEN_HISTOGRAM_EDGES, histograms["completion_tokens"]
-                    ),
-                    ttft_ms=_distribution_from_row(
-                        stats_row, "tt", _LATENCY_HISTOGRAM_EDGES, histograms["ttft_ms"]
-                    ),
-                    tbt_ms=_distribution_from_row(
-                        stats_row, "tb", _LATENCY_HISTOGRAM_EDGES, histograms["tbt_ms"]
-                    ),
-                )
+            # `stats_row` is always non-None: an aggregate SELECT without
+            # GROUP BY returns exactly one row even when `derived` is empty.
+            window = AdminPerformanceMetricsWindow(
+                key=key,
+                label=label,
+                window_minutes=window_minutes,
+                prompt_tokens=_distribution_from_row(
+                    stats_row, "pt", _TOKEN_HISTOGRAM_EDGES, histograms["prompt_tokens"]
+                ),
+                completion_tokens=_distribution_from_row(
+                    stats_row, "ct", _TOKEN_HISTOGRAM_EDGES, histograms["completion_tokens"]
+                ),
+                ttft_ms=_distribution_from_row(
+                    stats_row, "tt", _LATENCY_HISTOGRAM_EDGES, histograms["ttft_ms"]
+                ),
+                tbt_ms=_distribution_from_row(
+                    stats_row, "tb", _LATENCY_HISTOGRAM_EDGES, histograms["tbt_ms"]
+                ),
+            )
             windows.append(window)
 
     return AdminPerformanceMetricsResponse(

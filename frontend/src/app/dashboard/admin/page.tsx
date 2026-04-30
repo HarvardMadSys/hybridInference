@@ -136,8 +136,7 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
   );
 }
 
-function formatTokens(n?: number | null): string {
-  if (n == null) return '—';
+function formatTokens(n: number): string {
   return Math.round(n).toLocaleString();
 }
 

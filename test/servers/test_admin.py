@@ -143,7 +143,9 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
     now = datetime.now(timezone.utc)
 
     # Tag every test row with a unique model_id so concurrent tests don't
-    # pollute each other.  We'll filter on model_id in the assertions.
+    # pollute each other.  Assertions rely on per-window invariants
+    # (histogram-sums-to-count, percentile ordering) plus `>=` lower bounds
+    # on the 5m window, so they tolerate other rows already in the DB.
     tag = f"perf-test-{uuid.uuid4().hex[:10]}"
 
     # Clean any prior leftovers (paranoia: should be unique already)
@@ -151,8 +153,9 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
         await conn.execute("DELETE FROM api_logs WHERE model_id = $1", tag)
 
     # 10 streaming successful rows with varied numbers, 1 errored row
-    # (should be excluded), 1 non-stream row (excluded from ttft/tbt), and
-    # 1 stale row outside the 5m window.
+    # (should be excluded by status_code filter), 1 non-stream row
+    # (excluded from ttft/tbt), and 1 buggy row with latency < ttft
+    # (tbt should clamp to NULL).
     rows: list[dict[str, Any]] = []
     for i in range(10):
         rows.append(
