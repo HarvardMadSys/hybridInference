@@ -7,6 +7,7 @@ import json
 from fastapi import APIRouter, Depends, Header, Request, Response
 
 from serving.servers.auth import verify_api_key
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
     get_db_logger,
     get_fairness_scheduler,
@@ -31,6 +32,7 @@ async def single_completion(
     db_logger=Depends(get_db_logger),
     fairness_scheduler=Depends(get_fairness_scheduler),
     model_router_registry=Depends(get_model_router_registry),
+    _concurrency_slot=Depends(enforce_user_concurrency),
 ):
     """Compatibility alias for single-shot completion requests.
 
@@ -60,6 +62,7 @@ async def legacy_completions(
     db_logger=Depends(get_db_logger),
     fairness_scheduler=Depends(get_fairness_scheduler),
     model_router_registry=Depends(get_model_router_registry),
+    _concurrency_slot=Depends(enforce_user_concurrency),
 ):
     """OpenAI-style legacy completions endpoint: convert to chat format."""
     body = await request.json()
