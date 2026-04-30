@@ -243,7 +243,10 @@ class OpenAICompatAdapter(BaseAdapter):
             headers = self._build_headers(api_key_override=api_key)
             try:
                 response = await self.http.json_post(
-                    url=url, json=payload, headers=headers, timeout=None
+                    url=url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=120),
                 )
                 self._key_pool.release(lease, status_code=200, retry_after=None)
                 KEY_POOL_ACTIVE_AFFINITIES.labels(provider=provider).set(

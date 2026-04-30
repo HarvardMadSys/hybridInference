@@ -261,15 +261,28 @@ def register_from_models_yaml(
                 expanded = [expand_env(k) for k in raw_api_keys]
                 kept: list[str] = []
                 for raw, val in zip(raw_api_keys, expanded, strict=True):
-                    if val:
-                        kept.append(val)
-                    else:
+                    if val is None or val == "":
                         logger.warning(
                             "Dropping blank api_keys entry for model %s "
                             "(template: %s) - env var unset or empty",
                             top_cfg.get("id"),
                             raw,
                         )
+                        continue
+                    if not isinstance(val, str):
+                        raise ValueError(
+                            f"api_keys entry for {top_cfg.get('id')!r} resolved to "
+                            f"non-string value {val!r} (template: {raw!r})"
+                        )
+                    normalized = val.strip()
+                    if not normalized:
+                        logger.warning(
+                            "Dropping whitespace-only api_keys entry for model %s (template: %s)",
+                            top_cfg.get("id"),
+                            raw,
+                        )
+                        continue
+                    kept.append(normalized)
                 if not kept:
                     raise ValueError(
                         f"api_keys for {top_cfg.get('id')!r} resolved to "

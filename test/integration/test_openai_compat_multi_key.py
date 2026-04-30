@@ -166,9 +166,11 @@ def _make_stream_gen(
     async def gen():
         if status is not None:
             raise _make_response_error(status, retry_after=retry_after)
-            yield  # pragma: no cover — unreachable; makes this an async generator
-        for c in chunks:
-            yield c
+        else:
+            # Reachable yield keeps `gen` an async generator so the error case
+            # surfaces on the first ``__anext__`` call rather than at construction.
+            for c in chunks:
+                yield c
 
     return gen()
 
