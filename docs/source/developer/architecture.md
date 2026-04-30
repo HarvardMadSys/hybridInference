@@ -26,13 +26,16 @@ HybridInference is designed as a modular, high-performance inference gateway.
      ▼          ▼
 ┌───────────────────────┐
 │    LLM Providers      │
-│ ┌───────────────────┐ │
-│ │ Local vLLM        │ │
-│ │ OpenAI API        │ │
-│ │ Gemini API        │ │
-│ │ Claude Sub (OAuth)│ │
-│ │ Codex Sub (OAuth) │ │
-│ └───────────────────┘ │
+│ ┌────────────────────────┐ │
+│ │ vLLM / SGLang (local)  │ │
+│ │ Ollama (local/remote)  │ │
+│ │ OpenAI-compat APIs     │ │
+│ │ (DeepSeek, Zhipu,      │ │
+│ │  Chutes, Featherless)  │ │
+│ │ Gemini API             │ │
+│ │ Claude Sub (OAuth)     │ │
+│ │ Codex Sub (OAuth)      │ │
+│ └────────────────────────┘ │
 └───────────────────────┘
 ```
 
@@ -137,9 +140,7 @@ The gateway currently exposes more than one client-facing protocol surface:
 
 The Anthropic surface is an **identity surface translator**: the client-facing and upstream protocols are both Anthropic Messages API, so the route mainly performs auth, rate limiting, model resolution, credential injection, and usage logging.
 
-For design details, see:
-- repository design doc `docs/claude-account-lifecycle.md` — account state machine, error handling, data model
-- repository design doc `docs/subscription-adapter-architecture.md` — long-term multi-provider architecture
+For account lifecycle and credential management details, see [Configuration Guide](configuration.md) §5.
 
 ## Key Design Principles
 
