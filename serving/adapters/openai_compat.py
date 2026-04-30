@@ -234,10 +234,10 @@ class OpenAICompatAdapter(BaseAdapter):
         for _ in range(max_attempts):
             try:
                 api_key, lease = self._key_pool.acquire(affinity_key)
-            except KeyPoolExhausted:
+            except KeyPoolExhausted as exhausted:
                 KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
                 if last_429_error is not None:
-                    raise last_429_error
+                    raise last_429_error from exhausted
                 raise
 
             KEY_POOL_REQUESTS.labels(
@@ -324,10 +324,10 @@ class OpenAICompatAdapter(BaseAdapter):
         for _ in range(max_attempts):
             try:
                 api_key, lease = self._key_pool.acquire(affinity_key)
-            except KeyPoolExhausted:
+            except KeyPoolExhausted as exhausted:
                 KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
                 if last_429 is not None:
-                    raise last_429
+                    raise last_429 from exhausted
                 raise
 
             KEY_POOL_REQUESTS.labels(

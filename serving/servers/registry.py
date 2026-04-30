@@ -262,7 +262,7 @@ def register_from_models_yaml(
                     )
                 expanded = [expand_env(k) for k in raw_api_keys]
                 kept: list[str] = []
-                for raw, val in zip(raw_api_keys, expanded):
+                for raw, val in zip(raw_api_keys, expanded, strict=True):
                     if val:
                         kept.append(val)
                     else:
