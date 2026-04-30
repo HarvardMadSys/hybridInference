@@ -222,7 +222,6 @@ export function AnalyticsTab() {
 
   const handlePeriod = (p: AnalyticsPeriod) => {
     setPeriod(p);
-    load(p);
   };
 
   return (

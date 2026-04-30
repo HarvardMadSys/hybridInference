@@ -518,12 +518,12 @@ export default function AdminPage() {
               }`}
             >
               {tab === 'users'
-  ? 'Users'
-  : tab === 'requests'
-    ? 'Recent Requests'
-    : tab === 'audit'
-      ? 'Audit Log'
-      : 'Analytics'}
+                ? 'Users'
+                : tab === 'requests'
+                  ? 'Recent Requests'
+                  : tab === 'audit'
+                    ? 'Audit Log'
+                    : 'Analytics'}
             </button>
           ))}
         </div>
