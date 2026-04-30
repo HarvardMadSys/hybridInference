@@ -60,19 +60,6 @@ class _PlaygroundAdapter(BaseAdapter):
         yield done_sentinel()
 
 
-class _AcquireContext:
-    """Async context manager for mocked database connections."""
-
-    def __init__(self, connection: AsyncMock) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> AsyncMock:
-        return self._connection
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        return None
-
-
 def _cfg(model_id: str) -> ModelConfig:
     return ModelConfig(
         id=model_id,
@@ -129,17 +116,6 @@ async def _login(client: AsyncClient, email: str, password: str) -> tuple[str, s
     refresh_token = response.cookies.get("refresh_token")
     assert refresh_token is not None
     return access_token, refresh_token
-
-
-def _mock_db_logger_with_rows(*rows: Any):
-    """Create a db logger whose fetchrow returns the provided rows in order."""
-    connection = AsyncMock()
-    connection.fetchrow = AsyncMock(side_effect=list(rows))
-    pool = MagicMock()
-    pool.acquire.return_value = _AcquireContext(connection)
-    logger = MagicMock()
-    logger.pool = pool
-    return logger, connection
 
 
 @pytest.fixture
