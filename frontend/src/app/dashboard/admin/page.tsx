@@ -1203,8 +1203,8 @@ export default function AdminPage() {
                         setExportLoading(true);
                         try {
                           await exportRequests({
-                            startTime: new Date(exportStartDate + 'T00:00:00').toISOString(),
-                            endTime: new Date(exportEndDate + 'T23:59:59').toISOString(),
+                            startTime: new Date(exportStartDate + 'T00:00:00Z').toISOString(),
+                            endTime: new Date(exportEndDate + 'T23:59:59Z').toISOString(),
                             userId: reqUserFilter || undefined,
                             modelId: reqModelFilter || undefined,
                             errorsOnly: reqErrorsOnly || undefined,

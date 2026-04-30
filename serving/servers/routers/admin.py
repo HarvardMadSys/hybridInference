@@ -1789,7 +1789,7 @@ async def admin_export_requests(
                         l.request_id, l.user_id, u.user_name, u.email AS user_email,
                         l.model_id, l.provider, l.timestamp,
                         l.status_code, l.latency_ms, l.ttft_ms,
-                        l.prompt_tokens, l.completion_tokens, l.total_tokens,
+                        l.prompt_tokens, l.completion_tokens, l.reasoning_tokens, l.total_tokens,
                         l.cost_usd, l.error{content_cols}
                     FROM api_logs l
                     LEFT JOIN users u ON u.id = l.user_id
@@ -1816,10 +1816,9 @@ async def admin_export_requests(
                     "latency_ms": row["latency_ms"],
                     "prompt_tokens": row["prompt_tokens"],
                     "completion_tokens": row["completion_tokens"],
+                    "reasoning_tokens": row["reasoning_tokens"],
                     "total_tokens": row["total_tokens"],
-                    "cost_usd": (
-                        float(row["cost_usd"]) if row["cost_usd"] is not None else None
-                    ),
+                    "cost_usd": str(row["cost_usd"]) if row["cost_usd"] is not None else None,
                     "status_code": row["status_code"],
                     "error": row["error"],
                 }
@@ -1838,7 +1837,13 @@ async def admin_export_requests(
         admin_id,
         "export_requests",
         None,
-        {"range": f"{start_str}-{end_str}", "include_content": include_content},
+        {
+            "range": f"{start_str}-{end_str}",
+            "include_content": include_content,
+            "user_id": user_id,
+            "model_id": model_id,
+            "errors_only": errors_only,
+        },
     )
 
     return StreamingResponse(

@@ -24,6 +24,7 @@ def _make_mock_row(
     ttft_ms: int = 300,
     prompt_tokens: int = 50,
     completion_tokens: int = 100,
+    reasoning_tokens: int | None = None,
     total_tokens: int = 150,
     cost_usd: Decimal = Decimal("0.00120000"),
     error: str | None = None,
@@ -43,6 +44,7 @@ def _make_mock_row(
         "ttft_ms": ttft_ms,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
+        "reasoning_tokens": reasoning_tokens,
         "total_tokens": total_tokens,
         "cost_usd": cost_usd,
         "error": error,
@@ -103,7 +105,10 @@ def test_export_streams_jsonl():
     assert record["latency_ms"] == 1200
     assert record["prompt_tokens"] == 50
     assert record["completion_tokens"] == 100
+    assert "reasoning_tokens" in record  # field present (may be None)
     assert record["total_tokens"] == 150
+    assert isinstance(record["cost_usd"], str)
+    assert record["cost_usd"] == "0.00120000"
     assert record["status_code"] == 200
     assert record["error"] is None
     assert "prompt" not in record
