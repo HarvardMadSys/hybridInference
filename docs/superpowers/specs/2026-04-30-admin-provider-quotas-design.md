@@ -181,13 +181,13 @@ State additions in `AdminPage`:
 
 ## Error handling
 
-Each fetcher catches `httpx.TimeoutException`, `httpx.HTTPStatusError`, `json.JSONDecodeError`, and a generic `Exception` fallback — converting each into a `ProviderQuotaResult` with `ok=False` and a short reason code:
+Each fetcher catches `asyncio.TimeoutError`, `aiohttp.ClientError`, JSON decode failures, and a generic `Exception` fallback — converting each into a `ProviderQuotaResult` with `ok=False` and a short reason code:
 
 | Reason | Trigger |
 |---|---|
 | `not_configured` | env var missing/empty |
 | `timeout` | request exceeded 8s |
-| `auth_failed` | HTTP 401 / 403 / cookie-rejected JSON body |
+| `auth_failed` | HTTP 3xx redirect / 401 / 403 / cookie-rejected JSON body |
 | `parse_error` | response body doesn't match expected shape (e.g. Ollama HTML scrape can't find usage rows) |
 | `unexpected` | anything else (caught and logged at backend with traceback) |
 
@@ -204,8 +204,8 @@ The admin endpoint never returns HTTP 500 from a provider failure; one bad provi
 
 New test file: [test/servers/test_admin_provider_quotas.py](test/servers/test_admin_provider_quotas.py).
 
-- **Route auth:** request without admin role returns 403; with admin role returns the response shape.
-- **Per-fetcher unit tests** using `respx`/`httpx` mock for each provider:
+- **Route auth:** request without admin credentials returns 401; with admin role returns the response shape.
+- **Per-fetcher unit tests** using `unittest.mock.AsyncMock` to patch `aiohttp.ClientSession`:
   - Success path returns parsed usages.
   - 401/403 → `auth_failed`.
   - Timeout → `timeout`.

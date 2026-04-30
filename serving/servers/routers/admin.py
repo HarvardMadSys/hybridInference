@@ -1725,7 +1725,7 @@ async def admin_list_recent_requests(
 
 @router.get("/admin/provider-quotas", response_model=AdminProviderQuotasResponse)
 async def admin_provider_quotas(
-    admin_ip: str = Depends(verify_admin_access),
+    _admin_id: str = Depends(verify_admin_access),
 ) -> AdminProviderQuotasResponse:
     """Return current quota status for each upstream LLM provider."""
     providers = await gather_all()
