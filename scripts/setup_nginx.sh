@@ -130,8 +130,8 @@ fi
 
 # ── 4. Install nginx config ───────────────────────────────────────────────────
 
-log "Installing nginx config..."
-cp "$NGINX_CONF_SRC" "$NGINX_AVAILABLE"
+log "Installing nginx config (domain: $DOMAIN)..."
+sed "s/freeinference\.org/$DOMAIN/g" "$NGINX_CONF_SRC" > "$NGINX_AVAILABLE"
 
 # Remove the default site if present
 rm -f /etc/nginx/sites-enabled/default
