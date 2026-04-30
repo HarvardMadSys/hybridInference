@@ -421,3 +421,44 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
             )
         )
     return usages
+
+
+async def gather_all() -> list[ProviderQuotaResult]:
+    """Run all 4 provider fetchers in parallel; never raise.
+
+    If a fetcher raises (rather than returning an error result), the
+    exception is caught and converted to a `ProviderQuotaResult(ok=False,
+    error='unexpected')` so the admin endpoint can always respond with a
+    well-formed payload.
+    """
+    fetchers = [
+        ("chutes", "Chutes", fetch_chutes),
+        ("zai", "ZAI", fetch_zai),
+        ("minimax", "MiniMax", fetch_minimax),
+        ("ollama", "Ollama Cloud", fetch_ollama),
+    ]
+    raw = await asyncio.gather(
+        *(f() for _, _, f in fetchers),
+        return_exceptions=True,
+    )
+    out: list[ProviderQuotaResult] = []
+    for (name, display_name, _), result in zip(fetchers, raw, strict=True):
+        if isinstance(result, ProviderQuotaResult):
+            out.append(result)
+        else:
+            logger.exception(
+                "gather_all: %s fetcher raised", name, exc_info=result
+            )
+            out.append(
+                ProviderQuotaResult(
+                    name=name,
+                    display_name=display_name,
+                    key_configured=False,
+                    key_masked=None,
+                    fetched_at=_now(),
+                    ok=False,
+                    error="unexpected",
+                    usages=[],
+                )
+            )
+    return out

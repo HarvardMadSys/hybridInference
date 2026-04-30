@@ -9,6 +9,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.schemas_admin import (
+    AdminProviderQuotasResponse,
     AdminRecentRequestItem,
     AdminRecentRequestsResponse,
     AdminRequestMetricsBucket,
@@ -1719,3 +1720,19 @@ async def admin_list_recent_requests(
     ]
 
     return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+
+
+@router.get("/admin/provider-quotas", response_model=AdminProviderQuotasResponse)
+async def admin_provider_quotas(
+    admin_ip: str = Depends(verify_admin_access),
+) -> AdminProviderQuotasResponse:
+    """Return current quota status for each upstream LLM provider."""
+    from datetime import datetime, timezone
+
+    from serving.admin.provider_quotas import gather_all
+
+    providers = await gather_all()
+    return AdminProviderQuotasResponse(
+        generated_at=datetime.now(timezone.utc),
+        providers=providers,
+    )

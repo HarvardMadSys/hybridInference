@@ -263,3 +263,95 @@ class TestFetchOllama:
         session_use = next(u for u in result.usages if "session" in u.label.lower())
         assert session_use.used == 42.0
         assert session_use.limit == 100.0
+
+
+from serving.admin.provider_quotas import gather_all
+
+
+class TestGatherAll:
+    @pytest.mark.asyncio
+    async def test_gather_all_returns_four_results_even_if_one_raises(self, monkeypatch):
+        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+
+        results = await gather_all()
+        assert len(results) == 4
+        names = {r.name for r in results}
+        assert names == {"chutes", "zai", "minimax", "ollama"}
+        assert all(r.error == "not_configured" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_gather_all_handles_unexpected_exception(self, monkeypatch):
+        async def boom():
+            raise RuntimeError("simulated failure")
+
+        # Patch one fetcher to raise; the gather should still return 4 results
+        monkeypatch.setattr("serving.admin.provider_quotas.fetch_chutes", boom)
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+
+        results = await gather_all()
+        assert len(results) == 4
+        chutes = next(r for r in results if r.name == "chutes")
+        assert chutes.ok is False
+        assert chutes.error == "unexpected"
+
+
+class TestProviderQuotasRoute:
+    @pytest.fixture
+    def admin_app(self):
+        """Build a minimal FastAPI app with the admin router mounted."""
+        from fastapi import FastAPI
+        from unittest.mock import MagicMock
+
+        from serving.servers.deps import AppServices
+        from serving.servers.routers import admin as admin_router
+
+        app = FastAPI(title="Admin Provider Quotas Test")
+        services = AppServices(
+            router=MagicMock(),
+            db_logger=None,
+            rate_limiter=None,
+            routing_manager=None,
+        )
+        app.state.services = services  # type: ignore[attr-defined]
+        app.include_router(admin_router.router)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_route_requires_admin_auth(self, admin_app):
+        from httpx import ASGITransport, AsyncClient
+
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/admin/provider-quotas")
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_route_returns_aggregated_response(self, admin_app, monkeypatch):
+        from httpx import ASGITransport, AsyncClient
+
+        from serving.servers.deps import verify_admin_access
+
+        async def _fake_admin() -> str:
+            return "admin@test"
+
+        admin_app.dependency_overrides[verify_admin_access] = _fake_admin
+
+        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/admin/provider-quotas")
+        admin_app.dependency_overrides.clear()
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "generated_at" in body
+        assert len(body["providers"]) == 4
+        assert {p["name"] for p in body["providers"]} == {"chutes", "zai", "minimax", "ollama"}
