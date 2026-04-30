@@ -34,7 +34,7 @@ from .profiles import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
 logger = get_logger(__name__)
 
@@ -277,6 +277,103 @@ class OpenAICompatAdapter(BaseAdapter):
         assert last_429_error is not None
         raise last_429_error
 
+    async def _open_stream_with_pool(
+        self, url: str, payload: dict[str, Any], timeout: Any = None
+    ) -> AsyncGenerator[tuple[Any, Any, str], None]:
+        """Open a streaming POST with key-pool rotation on opening 429s.
+
+        Yields exactly one tuple: ``(stream_iter, lease, first_chunk)``.
+
+        - ``stream_iter`` is the underlying async iterator from ``stream_post``;
+          the caller should continue iterating it after processing
+          ``first_chunk``.
+        - ``lease`` is the ``Lease`` to release (status 200) when the stream
+          ends, or ``None`` when no pool is configured.
+        - ``first_chunk`` is the first chunk already pulled from the iterator
+          (must be processed first by the caller).
+
+        Rotates keys internally on opening 429s (status check happens before
+        any chunk is yielded). Mid-stream errors are not classified — they
+        propagate to the caller as today.
+        """
+        if self._key_pool is None:
+            headers = self._build_headers()
+            stream_iter = self.http.stream_post(
+                url=url, json=payload, headers=headers, timeout=timeout
+            )
+            try:
+                first = await stream_iter.__anext__()
+            except StopAsyncIteration:
+                return  # empty stream — nothing to yield, fall out
+            yield stream_iter, None, first
+            return
+
+        from serving.observability.metrics import (
+            KEY_POOL_ACTIVE_AFFINITIES,
+            KEY_POOL_COOLDOWNS,
+            KEY_POOL_EXHAUSTED,
+            KEY_POOL_REQUESTS,
+        )
+        from serving.utils import context as req_ctx
+
+        affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
+        provider = self.config.provider
+        max_attempts = self._key_pool.size()
+        last_429: aiohttp.ClientResponseError | None = None
+
+        for _ in range(max_attempts):
+            try:
+                api_key, lease = self._key_pool.acquire(affinity_key)
+            except KeyPoolExhausted:
+                KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+                if last_429 is not None:
+                    raise last_429
+                raise
+
+            KEY_POOL_REQUESTS.labels(
+                provider=provider, key_index=str(lease.key_index)
+            ).inc()
+
+            headers = self._build_headers(api_key_override=api_key)
+            stream_iter = self.http.stream_post(
+                url=url, json=payload, headers=headers, timeout=timeout
+            )
+            try:
+                first = await stream_iter.__anext__()
+            except StopAsyncIteration:
+                # Empty stream — treat as success
+                self._key_pool.release(lease, status_code=200, retry_after=None)
+                KEY_POOL_ACTIVE_AFFINITIES.labels(provider=provider).set(
+                    self._key_pool.affinity_count()
+                )
+                return
+            except aiohttp.ClientResponseError as e:
+                if e.status == 429:
+                    retry_after = e.headers.get("Retry-After") if e.headers else None
+                    self._key_pool.release(
+                        lease, status_code=429, retry_after=retry_after
+                    )
+                    reason = "retry_after" if retry_after else "default_2min"
+                    KEY_POOL_COOLDOWNS.labels(
+                        provider=provider,
+                        key_index=str(lease.key_index),
+                        reason=reason,
+                    ).inc()
+                    last_429 = e
+                    continue
+                # Non-429 — release without cooldown, propagate
+                self._key_pool.release(lease, status_code=e.status, retry_after=None)
+                raise
+
+            # First chunk read successfully — commit the lease (caller releases on stream end)
+            yield stream_iter, lease, first
+            return
+
+        # Loop exhausted — every key returned 429
+        KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+        assert last_429 is not None
+        raise last_429
+
     def _build_url(self) -> str:
         """Build full endpoint URL (standard OpenAI path)."""
         base = (self.config.base_url or "").rstrip("/")
@@ -399,7 +496,7 @@ class OpenAICompatAdapter(BaseAdapter):
         payload = transform_payload_for_profile(self._usage_profile, payload, stream=True)
 
         url = self._build_url()
-        headers = self._build_headers()
+        # NOTE: headers are built per-attempt inside _open_stream_with_pool
 
         # Fresh processor per request — avoids shared mutable state across concurrent streams
         processor = get_processor(self._processor_model_id, override=self._processor_override)
@@ -482,11 +579,32 @@ class OpenAICompatAdapter(BaseAdapter):
 
         stream_timeout = self._build_stream_timeout()
 
+        # Open the stream via the key-pool-aware helper. The helper performs
+        # 429 rotation BEFORE the first chunk is yielded; once we receive the
+        # primed first chunk, the lease is committed for the lifetime of the
+        # stream and any mid-stream errors propagate as before.
+        primed: str | None = None
+        stream_iter: AsyncIterator[str] | None = None
+        active_lease = None
+
+        async for it, lease, first in self._open_stream_with_pool(
+            url, payload, timeout=stream_timeout
+        ):
+            stream_iter = it
+            active_lease = lease
+            primed = first
+            break  # helper yields exactly once
+
+        async def _drain() -> AsyncIterator[str]:
+            if primed is not None:
+                yield primed
+            if stream_iter is not None:
+                async for c in stream_iter:
+                    yield c
+
         # Stream response
         try:
-            async for chunk in self.http.stream_post(
-                url=url, json=payload, headers=headers, timeout=stream_timeout
-            ):
+            async for chunk in _drain():
                 if not chunk.strip():
                     continue
 
@@ -515,6 +633,18 @@ class OpenAICompatAdapter(BaseAdapter):
                 self.config.id,
                 getattr(stream_timeout, "sock_read", -1.0) if stream_timeout else -1.0,
             )
+        finally:
+            if active_lease is not None and self._key_pool is not None:
+                self._key_pool.release(
+                    active_lease, status_code=200, retry_after=None
+                )
+                from serving.observability.metrics import (
+                    KEY_POOL_ACTIVE_AFFINITIES,
+                )
+
+                KEY_POOL_ACTIVE_AFFINITIES.labels(
+                    provider=self.config.provider
+                ).set(self._key_pool.affinity_count())
 
         # Flush processor buffer at end of stream
         # This is crucial for buffered tool calls (e.g. GLM XML, Qwen XML)
