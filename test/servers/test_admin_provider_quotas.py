@@ -144,3 +144,52 @@ class TestFetchZai:
         # No "limits" key — we treat as parse_error
         assert result.ok is False
         assert result.error == "parse_error"
+
+
+from serving.admin.provider_quotas import fetch_minimax
+
+
+class TestFetchMinimax:
+    @pytest.mark.asyncio
+    async def test_not_configured_when_cookie_missing(self, monkeypatch):
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        result = await fetch_minimax()
+        assert result.ok is False
+        assert result.error == "not_configured"
+        assert result.name == "minimax"
+
+    @pytest.mark.asyncio
+    async def test_auth_failed_on_cookie_rejected(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        # MiniMax returns HTTP 200 with status_code 1004 in body when cookie missing
+        payload = {"base_resp": {"status_code": 1004, "status_msg": "cookie is missing, log in again"}}
+        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data=payload)):
+            result = await fetch_minimax()
+        assert result.ok is False
+        assert result.error == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_success_parses_remains(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "data": {
+                "model_remains": [
+                    {
+                        "model_name": "MiniMax-M2.7",
+                        "remain_count": 720,
+                        "total_count": 1000,
+                        "start_time": "2026-04-29T00:00:00Z",
+                        "end_time": "2026-04-30T00:00:00Z",
+                    }
+                ]
+            },
+        }
+        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data=payload)):
+            result = await fetch_minimax()
+        assert result.ok is True
+        assert len(result.usages) >= 1
+        u = result.usages[0]
+        # used = total - remain
+        assert u.used == 280.0
+        assert u.limit == 1000.0

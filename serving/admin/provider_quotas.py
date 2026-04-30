@@ -221,3 +221,98 @@ async def fetch_zai() -> ProviderQuotaResult:
         error=None,
         usages=usages,
     )
+
+
+async def fetch_minimax() -> ProviderQuotaResult:
+    """Fetch coding-plan quota from MiniMax via cookie-authed endpoint.
+
+    The endpoint requires browser session cookies; API key auth returns
+    `{"base_resp": {"status_code": 1004, "status_msg": "cookie missing"}}`.
+    """
+    cookie = os.getenv("MINIMAX_SESSION_COOKIE", "")
+    if not cookie:
+        return ProviderQuotaResult(
+            name="minimax",
+            display_name="MiniMax",
+            key_configured=False,
+            key_masked=None,
+            fetched_at=_now(),
+            ok=False,
+            error="not_configured",
+            usages=[],
+        )
+
+    url = "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
+    headers = {"Cookie": cookie}
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status in (401, 403):
+                    return _err("minimax", "MiniMax", cookie, "auth_failed")
+                if resp.status >= 400:
+                    return _err("minimax", "MiniMax", cookie, "unexpected")
+                try:
+                    data: dict[str, Any] = await resp.json()
+                except Exception:
+                    return _err("minimax", "MiniMax", cookie, "parse_error")
+    except asyncio.TimeoutError:
+        return _err("minimax", "MiniMax", cookie, "timeout")
+    except aiohttp.ClientError:
+        return _err("minimax", "MiniMax", cookie, "unexpected")
+    except Exception:
+        logger.exception("fetch_minimax: unexpected error")
+        return _err("minimax", "MiniMax", cookie, "unexpected")
+
+    base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else None
+    if base_resp and base_resp.get("status_code") == 1004:
+        return _err("minimax", "MiniMax", cookie, "auth_failed")
+    if base_resp and base_resp.get("status_code") not in (None, 0):
+        return _err("minimax", "MiniMax", cookie, "unexpected")
+
+    body = data.get("data") if isinstance(data.get("data"), dict) else data
+    model_remains = body.get("model_remains") if isinstance(body, dict) else None
+    if not isinstance(model_remains, list) or not model_remains:
+        return _err("minimax", "MiniMax", cookie, "parse_error")
+
+    usages: list[ProviderQuotaUsage] = []
+    for entry in model_remains:
+        if not isinstance(entry, dict):
+            continue
+        model_name = str(entry.get("model_name", "Coding plan"))
+        remain = entry.get("remain_count")
+        total = entry.get("total_count")
+        end = entry.get("end_time")
+        reset_dt = None
+        if isinstance(end, str):
+            try:
+                reset_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+            except ValueError:
+                reset_dt = None
+        used = None
+        if isinstance(remain, (int, float)) and isinstance(total, (int, float)):
+            used = float(total - remain)
+        usages.append(
+            ProviderQuotaUsage(
+                label=model_name,
+                used=used,
+                limit=float(total) if isinstance(total, (int, float)) else None,
+                unit="requests",
+                reset_at=reset_dt,
+            )
+        )
+
+    if not usages:
+        return _err("minimax", "MiniMax", cookie, "parse_error")
+
+    return ProviderQuotaResult(
+        name="minimax",
+        display_name="MiniMax",
+        key_configured=True,
+        key_masked=_mask_key(cookie),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
