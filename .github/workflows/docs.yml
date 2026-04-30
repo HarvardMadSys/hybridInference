@@ -11,9 +11,10 @@ on:
   workflow_dispatch:  # Allow manual trigger
 
 # NOTE: Documentation is deployed via Cloudflare Pages:
-#   - User docs: https://doc.freeinference.org/
-#   - Developer docs: https://internaldoc.freeinference.org/
-# Cloudflare automatically builds and deploys on push to main.
+#   - User docs (prod):    https://doc.freeinference.org/        (tracks main)
+#   - User docs (staging): https://doc.staging.freeinference.org/ (tracks dev)
+#   - Developer docs:      https://internaldoc.freeinference.org/ (tracks main)
+# Cloudflare Pages builds and deploys automatically: main → production, dev → staging (CF Pages branch config, not this workflow).
 # This workflow only validates that documentation builds without errors.
 permissions:
   contents: read

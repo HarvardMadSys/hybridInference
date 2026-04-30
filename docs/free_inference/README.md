@@ -8,7 +8,8 @@ FreeInference provides free access to state-of-the-art language models specifica
 
 ## Documentation
 
-Visit our documentation at: https://doc.freeinference.org/
+- Production: https://doc.freeinference.org/
+- Staging (tracks `dev` branch): https://doc.staging.freeinference.org/
 
 ## Supported IDEs & Coding Agents
 
