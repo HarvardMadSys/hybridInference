@@ -152,7 +152,7 @@ function TopUsersCard({ entries }: { entries: AdminAnalyticsResponse['top_users'
             <BarChart
               layout="vertical"
               data={entries.map((e) => ({
-                email: e.email.length > 22 ? e.email.slice(0, 20) + '…' : e.email,
+                email: e.email.length > 22 ? `${e.email.slice(0, 20)}…` : e.email,
                 requests: e.requests,
                 pct: parseFloat((e.fraction * 100).toFixed(1)),
               }))}

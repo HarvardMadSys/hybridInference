@@ -1,4 +1,5 @@
 """Unit tests for AdminAnalyticsResponse schema."""
+
 from datetime import datetime, timezone
 
 import pytest
@@ -42,9 +43,7 @@ def test_admin_analytics_response_full():
         active_users=47,
         sparkline=[SparklineBucket(start_time=_now(), request_count=10)],
         top_users=[
-            AnalyticsUserEntry(
-                email="alice@example.com", user_id="u1", requests=200, fraction=0.5
-            )
+            AnalyticsUserEntry(email="alice@example.com", user_id="u1", requests=200, fraction=0.5)
         ],
         by_model=[AnalyticsBreakdownEntry(name="claude-sonnet-4-6", requests=200, fraction=0.5)],
         by_provider=[AnalyticsBreakdownEntry(name="anthropic", requests=200, fraction=0.5)],

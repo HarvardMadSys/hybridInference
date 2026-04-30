@@ -410,6 +410,7 @@ class AdminRecentRequestsResponse(BaseModel):
 
 # ── Analytics Dashboard ──────────────────────────────────────────────────────
 
+
 class SparklineBucket(BaseModel):
     """One time bucket for the active-users sparkline."""
 
@@ -423,7 +424,7 @@ class AnalyticsUserEntry(BaseModel):
     email: str
     user_id: str
     requests: int
-    fraction: float  # share of ALL requests in the period (0.0–1.0)
+    fraction: float  # share of ALL requests in the period (0.0-1.0)
 
 
 class AnalyticsBreakdownEntry(BaseModel):

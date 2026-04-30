@@ -1728,9 +1728,9 @@ async def admin_list_recent_requests(
 
 # Period → (lookback_minutes, bucket_minutes)
 _ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
-    "hour":  (60,    5),
-    "day":   (1440,  60),
-    "week":  (10080, 1440),
+    "hour": (60, 5),
+    "day": (1440, 60),
+    "week": (10080, 1440),
     "month": (43200, 1440),
 }
 
