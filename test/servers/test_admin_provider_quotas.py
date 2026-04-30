@@ -97,3 +97,50 @@ class TestFetchChutes:
             result = await fetch_chutes()
         assert result.ok is False
         assert result.error == "timeout"
+
+
+from serving.admin.provider_quotas import fetch_zai
+
+
+class TestFetchZai:
+    @pytest.mark.asyncio
+    async def test_not_configured_when_key_missing(self, monkeypatch):
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        result = await fetch_zai()
+        assert result.ok is False
+        assert result.error == "not_configured"
+        assert result.name == "zai"
+
+    @pytest.mark.asyncio
+    async def test_success_parses_token_and_time_limits(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
+        payload = {
+            "limits": [
+                {"type": "TOKENS_LIMIT", "percentage": 0.42, "currentValue": 4200, "limit": 10000},
+                {"type": "TIME_LIMIT", "percentage": 0.10, "currentValue": 6, "limit": 60},
+            ]
+        }
+        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data=payload)):
+            result = await fetch_zai()
+        assert result.ok is True
+        assert len(result.usages) == 2
+        labels = [u.label for u in result.usages]
+        assert any("Token" in label for label in labels)
+        assert any("Time" in label for label in labels)
+
+    @pytest.mark.asyncio
+    async def test_auth_failed_on_401(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
+        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=401)):
+            result = await fetch_zai()
+        assert result.ok is False
+        assert result.error == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_parse_error_on_unexpected_shape(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
+        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data={"unrelated": "junk"})):
+            result = await fetch_zai()
+        # No "limits" key — we treat as parse_error
+        assert result.ok is False
+        assert result.error == "parse_error"

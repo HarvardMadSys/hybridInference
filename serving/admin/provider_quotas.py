@@ -133,3 +133,91 @@ def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
             )
         )
     return usages
+
+
+async def fetch_zai() -> ProviderQuotaResult:
+    """Fetch quota usage from ZAI via /api/monitor/usage/quota/limit.
+
+    Endpoint discovered from ZAI's official `glm-plan-usage` plugin. The
+    plugin uses `ANTHROPIC_AUTH_TOKEN`; we attempt with `ZAI_API_KEY`. If
+    the API key is rejected we surface `auth_failed`.
+    """
+    key = os.getenv("ZAI_API_KEY", "")
+    if not key:
+        return ProviderQuotaResult(
+            name="zai",
+            display_name="ZAI",
+            key_configured=False,
+            key_masked=None,
+            fetched_at=_now(),
+            ok=False,
+            error="not_configured",
+            usages=[],
+        )
+
+    url = "https://api.z.ai/api/monitor/usage/quota/limit"
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Accept-Language": "en-US,en",
+        "Content-Type": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status in (401, 403):
+                    return _err("zai", "ZAI", key, "auth_failed")
+                if resp.status >= 400:
+                    return _err("zai", "ZAI", key, "unexpected")
+                try:
+                    data: dict[str, Any] = await resp.json()
+                except Exception:
+                    return _err("zai", "ZAI", key, "parse_error")
+    except asyncio.TimeoutError:
+        return _err("zai", "ZAI", key, "timeout")
+    except aiohttp.ClientError:
+        return _err("zai", "ZAI", key, "unexpected")
+    except Exception:
+        logger.exception("fetch_zai: unexpected error")
+        return _err("zai", "ZAI", key, "unexpected")
+
+    # Some ZAI responses wrap data in a "data" key
+    body = data.get("data") if isinstance(data.get("data"), dict) else data
+    limits = body.get("limits") if isinstance(body, dict) else None
+    if not isinstance(limits, list):
+        return _err("zai", "ZAI", key, "parse_error")
+
+    usages: list[ProviderQuotaUsage] = []
+    for entry in limits:
+        if not isinstance(entry, dict):
+            continue
+        kind = str(entry.get("type", "")).upper()
+        used = entry.get("currentValue") if "currentValue" in entry else entry.get("used")
+        limit = entry.get("limit") if "limit" in entry else None
+        if kind == "TOKENS_LIMIT":
+            label, unit = "Tokens", "tokens"
+        elif kind == "TIME_LIMIT":
+            label, unit = "Time", "minutes"
+        else:
+            label, unit = kind.replace("_", " ").title() or "Quota", ""
+        usages.append(
+            ProviderQuotaUsage(
+                label=label,
+                used=float(used) if isinstance(used, (int, float)) else None,
+                limit=float(limit) if isinstance(limit, (int, float)) else None,
+                unit=unit,
+                reset_at=None,
+            )
+        )
+
+    return ProviderQuotaResult(
+        name="zai",
+        display_name="ZAI",
+        key_configured=True,
+        key_masked=_mask_key(key),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
