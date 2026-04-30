@@ -83,9 +83,11 @@ def schedule_broadcast(broadcast_id: str, run_at: datetime | None) -> None:
 
 
 def cancel_broadcast_job(broadcast_id: str) -> None:
-    """Remove a scheduled APScheduler job. No-op if the job was never registered
-    on this replica (a different replica may own the job, or it may have already
-    fired)."""
+    """Remove a scheduled APScheduler job, no-op if the job is unknown.
+
+    The job may not exist locally because a different replica owns it, or
+    because it has already fired.
+    """
     if not _scheduler:
         return
     try:
