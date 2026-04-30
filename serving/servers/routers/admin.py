@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, AsyncGenerator, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-import json
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -1830,6 +1832,14 @@ async def admin_export_requests(
     start_str = start_time.strftime("%Y%m%d")
     end_str = end_time.strftime("%Y%m%d")
     filename = f"requests-{start_str}-{end_str}.jsonl"
+
+    await log_admin_action(
+        db_logger,
+        admin_id,
+        "export_requests",
+        None,
+        {"range": f"{start_str}-{end_str}", "include_content": include_content},
+    )
 
     return StreamingResponse(
         generate(),
