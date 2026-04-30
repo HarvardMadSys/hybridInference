@@ -9,11 +9,14 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.schemas_admin import (
+    AdminAnalyticsResponse,
     AdminRecentRequestItem,
     AdminRecentRequestsResponse,
     AdminRequestMetricsBucket,
     AdminRequestMetricsResponse,
     AdminRequestMetricsWindow,
+    AnalyticsBreakdownEntry,
+    AnalyticsUserEntry,
     APIKeyDetailResponse,
     APIKeyDetailUsage,
     APIKeyListItem,
@@ -31,6 +34,7 @@ from serving.schemas_admin import (
     RejectUserRequest,
     RejectUserResponse,
     RevokeAPIKeyResponse,
+    SparklineBucket,
     StatusCounts,
     UpdateAPIKeyRequest,
     UpdateAPIKeyResponse,
@@ -1719,3 +1723,222 @@ async def admin_list_recent_requests(
     ]
 
     return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+
+
+# Period → (lookback_minutes, bucket_minutes)
+_ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
+    "hour":  (60,    5),
+    "day":   (1440,  60),
+    "week":  (10080, 1440),
+    "month": (43200, 1440),
+}
+
+
+@router.get("/admin/analytics", response_model=AdminAnalyticsResponse)
+async def admin_get_analytics(
+    period: str = "day",
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminAnalyticsResponse:
+    """Return analytics summary for the admin analytics tab."""
+    import asyncio
+
+    if period not in _ANALYTICS_PERIODS:
+        raise HTTPException(400, f"period must be one of: {', '.join(_ANALYTICS_PERIODS)}")
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    lookback_minutes, bucket_minutes = _ANALYTICS_PERIODS[period]
+    pool = db_logger.pool
+
+    async def q_active_users() -> int:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(DISTINCT user_id) AS cnt
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                  AND user_id IS NOT NULL
+                """,
+                lookback_minutes,
+            )
+            return int(row["cnt"] or 0)
+
+    async def q_top_users() -> list[dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH totals AS (
+                    SELECT COUNT(*) AS grand_total
+                    FROM api_logs
+                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                      AND user_id IS NOT NULL
+                ),
+                ranked AS (
+                    SELECT
+                        l.user_id,
+                        COALESCE(u.email, l.user_id) AS email,
+                        COUNT(*) AS req_count
+                    FROM api_logs l
+                    LEFT JOIN users u ON u.id = l.user_id
+                    WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
+                      AND l.user_id IS NOT NULL
+                    GROUP BY l.user_id, u.email
+                    ORDER BY req_count DESC
+                    LIMIT 10
+                )
+                SELECT
+                    r.user_id,
+                    r.email,
+                    r.req_count,
+                    CASE WHEN t.grand_total > 0
+                         THEN r.req_count::float / t.grand_total
+                         ELSE 0 END AS fraction
+                FROM ranked r, totals t
+                """,
+                lookback_minutes,
+            )
+            return [dict(r) for r in rows]
+
+    async def q_by_model() -> list[dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH totals AS (
+                    SELECT COUNT(*) AS grand_total
+                    FROM api_logs
+                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                ),
+                ranked AS (
+                    SELECT model_id AS name, COUNT(*) AS req_count
+                    FROM api_logs
+                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                    GROUP BY model_id
+                    ORDER BY req_count DESC
+                    LIMIT 5
+                )
+                SELECT
+                    r.name,
+                    r.req_count,
+                    CASE WHEN t.grand_total > 0
+                         THEN r.req_count::float / t.grand_total
+                         ELSE 0 END AS fraction
+                FROM ranked r, totals t
+                """,
+                lookback_minutes,
+            )
+            return [dict(r) for r in rows]
+
+    async def q_by_provider() -> list[dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH totals AS (
+                    SELECT COUNT(*) AS grand_total
+                    FROM api_logs
+                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                ),
+                ranked AS (
+                    SELECT provider AS name, COUNT(*) AS req_count
+                    FROM api_logs
+                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                    GROUP BY provider
+                    ORDER BY req_count DESC
+                    LIMIT 4
+                )
+                SELECT
+                    r.name,
+                    r.req_count,
+                    CASE WHEN t.grand_total > 0
+                         THEN r.req_count::float / t.grand_total
+                         ELSE 0 END AS fraction
+                FROM ranked r, totals t
+                """,
+                lookback_minutes,
+            )
+            return [dict(r) for r in rows]
+
+    async def q_sparkline() -> list[dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH series AS (
+                    SELECT generate_series(
+                        date_trunc('minute', NOW() - ($1 * interval '1 minute')),
+                        date_trunc('minute', NOW()),
+                        $2 * interval '1 minute'
+                    ) AS bucket_start
+                ),
+                bucketed AS (
+                    SELECT
+                        to_timestamp(
+                            floor(extract(epoch FROM timestamp) / ($2 * 60)) * ($2 * 60)
+                        ) AS bucket_start,
+                        COUNT(*) AS request_count
+                    FROM api_logs
+                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                    GROUP BY 1
+                )
+                SELECT
+                    series.bucket_start,
+                    COALESCE(bucketed.request_count, 0) AS request_count
+                FROM series
+                LEFT JOIN bucketed ON bucketed.bucket_start = series.bucket_start
+                ORDER BY series.bucket_start ASC
+                """,
+                lookback_minutes,
+                bucket_minutes,
+            )
+            return [dict(r) for r in rows]
+
+    (
+        active_users,
+        top_users_rows,
+        by_model_rows,
+        by_provider_rows,
+        sparkline_rows,
+    ) = await asyncio.gather(
+        q_active_users(),
+        q_top_users(),
+        q_by_model(),
+        q_by_provider(),
+        q_sparkline(),
+    )
+
+    return AdminAnalyticsResponse(
+        period=period,
+        active_users=active_users,
+        sparkline=[
+            SparklineBucket(
+                start_time=row["bucket_start"],
+                request_count=int(row["request_count"] or 0),
+            )
+            for row in sparkline_rows
+        ],
+        top_users=[
+            AnalyticsUserEntry(
+                email=str(row["email"]),
+                user_id=str(row["user_id"]),
+                requests=int(row["req_count"]),
+                fraction=float(row["fraction"]),
+            )
+            for row in top_users_rows
+        ],
+        by_model=[
+            AnalyticsBreakdownEntry(
+                name=str(row["name"]) if row["name"] else "unknown",
+                requests=int(row["req_count"]),
+                fraction=float(row["fraction"]),
+            )
+            for row in by_model_rows
+        ],
+        by_provider=[
+            AnalyticsBreakdownEntry(
+                name=str(row["name"]) if row["name"] else "unknown",
+                requests=int(row["req_count"]),
+                fraction=float(row["fraction"]),
+            )
+            for row in by_provider_rows
+        ],
+        generated_at=datetime.now(timezone.utc),
+    )
