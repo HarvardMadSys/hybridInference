@@ -3,6 +3,7 @@ import Script from 'next/script';
 import { config } from '@/config/env';
 import { Providers } from '@/components/providers';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { BuildInfo } from '@/components/ui/BuildInfo';
 
 export const metadata = {
   title: config.appName,
@@ -35,7 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               {children}
             </main>
             <footer className="mx-auto w-full max-w-5xl px-6 py-6 text-center text-sm text-gray-400">
-              © {config.appName}
+              © {config.appName} · <BuildInfo />
             </footer>
             <noscript>
               <div className="statcounter">

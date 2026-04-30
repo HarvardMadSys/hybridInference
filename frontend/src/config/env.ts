@@ -24,6 +24,10 @@ export const config = {
   appName: process.env.NEXT_PUBLIC_APP_NAME || 'FreeInference',
   environment: process.env.NODE_ENV || 'development',
 
+  // Build Identity (baked in at build time by deploy scripts)
+  buildSha: process.env.NEXT_PUBLIC_BUILD_SHA || '',
+  buildTimestamp: process.env.NEXT_PUBLIC_BUILD_TIMESTAMP || '',
+
   // Feature Flags (can be toggled via environment variables if needed)
   enableAnalytics: process.env.NEXT_PUBLIC_ENABLE_ANALYTICS === 'true',
   enableDarkMode: process.env.NEXT_PUBLIC_ENABLE_DARK_MODE !== 'false',
