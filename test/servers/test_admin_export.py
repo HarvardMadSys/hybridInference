@@ -170,7 +170,7 @@ def test_export_missing_start_time_returns_422():
     from serving.servers.deps import get_db_logger, verify_admin_access
 
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
-    app.dependency_overrides[get_db_logger] = lambda: MagicMock()
+    app.dependency_overrides[get_db_logger] = MagicMock
     try:
         client = TestClient(app)
         resp = client.get("/admin/export/requests")

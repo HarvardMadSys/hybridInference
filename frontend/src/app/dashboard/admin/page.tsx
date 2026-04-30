@@ -1338,7 +1338,9 @@ export default function AdminPage() {
                         try {
                           await exportRequests({
                             startTime: new Date(`${exportStartDate}T00:00:00Z`).toISOString(),
-                            endTime: new Date(`${exportEndDate}T23:59:59Z`).toISOString(),
+                            endTime: exportEndDate
+                              ? new Date(`${exportEndDate}T23:59:59Z`).toISOString()
+                              : undefined,
                             userId: reqUserFilter || undefined,
                             modelId: reqModelFilter || undefined,
                             errorsOnly: reqErrorsOnly || undefined,

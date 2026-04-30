@@ -1862,7 +1862,11 @@ async def admin_export_requests(
     return StreamingResponse(
         generate(),
         media_type="application/x-ndjson",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+        },
     )
 
 

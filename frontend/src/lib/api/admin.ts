@@ -364,7 +364,7 @@ export async function listRecentRequests(
 
 export interface ExportRequestsParams {
   startTime: string;
-  endTime: string;
+  endTime?: string;
   userId?: string;
   modelId?: string;
   errorsOnly?: boolean;
@@ -374,8 +374,8 @@ export interface ExportRequestsParams {
 export async function exportRequests(params: ExportRequestsParams): Promise<void> {
   const qs = new URLSearchParams({
     start_time: params.startTime,
-    end_time: params.endTime,
   });
+  if (params.endTime) qs.set('end_time', params.endTime);
   if (params.userId) qs.set('user_id', params.userId);
   if (params.modelId) qs.set('model_id', params.modelId);
   if (params.errorsOnly) qs.set('errors_only', 'true');
@@ -392,7 +392,7 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   const startDate = params.startTime.slice(0, 10).replace(/-/g, '');
-  const endDate = params.endTime.slice(0, 10).replace(/-/g, '');
+  const endDate = (params.endTime ?? new Date().toISOString()).slice(0, 10).replace(/-/g, '');
   a.href = url;
   a.download = `requests-${startDate}-${endDate}.jsonl`;
   try {
