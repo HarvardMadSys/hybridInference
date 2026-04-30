@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     claude_sub_account_cooldown: int = 60
     claude_sub_failure_threshold: int = 3
 
+    # Provider quota cookies (admin dashboard "Providers" tab)
+    # Pasted from browser DevTools after logging into the provider's web dashboard.
+    # Re-paste when the cookie expires.
+    minimax_session_cookie: str = ""
+    ollama_session_cookie: str = ""
+
     # CORS
     cors_allowed_origins: Annotated[list[str], NoDecode] = [
         "http://localhost:3000",
