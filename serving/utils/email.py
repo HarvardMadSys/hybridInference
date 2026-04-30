@@ -67,7 +67,7 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: str | Non
         msg.attach(MIMEText(html_body, "html"))
 
         # Send email
-        with smtplib.SMTP(config["host"], config["port"]) as server:
+        with smtplib.SMTP(config["host"], config["port"], timeout=10) as server:
             server.starttls()
             server.login(config["user"], config["password"])
             server.send_message(msg)

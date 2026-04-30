@@ -5,7 +5,7 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request, Response
 
 from serving.config.settings import is_admin_email, settings
 from serving.schemas_auth import (
@@ -104,6 +104,7 @@ def delete_refresh_token_cookie(response: Response) -> None:
 async def signup(
     request: Request,
     body: SignupRequest,
+    background_tasks: BackgroundTasks,
     db_logger=Depends(get_db_logger),
 ) -> SignupResponse:
     """Register a new user account.
@@ -166,6 +167,7 @@ async def signup(
 
     # Determine initial status based on approval setting
     require_approval = os.getenv("SIGNUP_REQUIRE_APPROVAL", "0") == "1"
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
     initial_status = "pending_approval" if require_approval else "active"
 
     # Create user
@@ -186,8 +188,10 @@ async def signup(
             initial_status,
         )
 
-    # Send verification email if SMTP is configured
-    if is_email_enabled():
+    # Send verification email only when verification is required and SMTP is configured.
+    # Skipping the email when SIGNUP_REQUIRE_EMAIL_VERIFICATION=false avoids burning
+    # SMTP quota on emails that the login flow does not require.
+    if require_verification and is_email_enabled():
         # Generate verification token
         verification_token = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
@@ -203,18 +207,16 @@ async def signup(
                 expires_at,
             )
 
-        # Send email
+        # Send email in background so signup returns even if SMTP is slow
         base_url = get_base_url(request)
-        email_sent = send_verification_email(body.email, verification_token, base_url)
-
-        if not email_sent:
-            logger.warning(f"Failed to send verification email to {body.email}")
+        background_tasks.add_task(send_verification_email, body.email, verification_token, base_url)
 
     # Notify admins of new registration when approval is required
     if require_approval and is_email_enabled():
         admin_emails = [e.strip() for e in settings.admin_emails.split(",") if e.strip()]
         for admin_email in admin_emails:
-            send_new_registration_admin_email(
+            background_tasks.add_task(
+                send_new_registration_admin_email,
                 to_email=admin_email,
                 user_email=body.email,
                 user_name=body.user_name,
@@ -240,8 +242,10 @@ async def signup(
             "Account created successfully. Your registration is pending admin approval. "
             "You will receive an email once your account is approved."
         )
-    else:
+    elif require_verification:
         message = "Account created successfully. Please check your email to verify your account."
+    else:
+        message = "Account created successfully. You can now log in."
 
     return SignupResponse(
         message=message,
@@ -645,6 +649,7 @@ async def verify_email(
 async def forgot_password(
     request: Request,
     body: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
     db_logger=Depends(get_db_logger),
 ) -> PasswordResetResponse:
     """Request password reset email.
@@ -689,10 +694,9 @@ async def forgot_password(
         from serving.utils.email import send_password_reset_email
 
         base_url = get_base_url(request)
-        email_sent = send_password_reset_email(user_row["email"], reset_token, base_url)
-
-        if not email_sent:
-            logger.warning(f"Failed to send password reset email to {user_row['email']}")
+        background_tasks.add_task(
+            send_password_reset_email, user_row["email"], reset_token, base_url
+        )
 
     logger.info(f"Password reset requested for user: {user_row['id']}")
 
@@ -792,6 +796,7 @@ async def reset_password(
 async def resend_verification(
     request: Request,
     body: ResendVerificationRequest,
+    background_tasks: BackgroundTasks,
     db_logger=Depends(get_db_logger),
 ) -> ResendVerificationResponse:
     """Resend email verification link.
@@ -833,15 +838,12 @@ async def resend_verification(
             expires_at,
         )
 
-    # Send email
+    # Send email in background so the request returns even if SMTP is slow
     if is_email_enabled():
         base_url = get_base_url(request)
-        email_sent = send_verification_email(user_row["email"], verification_token, base_url)
-
-        if not email_sent:
-            logger.warning(f"Failed to resend verification email to {user_row['email']}")
-            # Do not fail hard when email service fails in tests or dev
-            # Simply log and continue to return success message.
+        background_tasks.add_task(
+            send_verification_email, user_row["email"], verification_token, base_url
+        )
     # If email is not enabled, still return success to avoid leaking state
 
     logger.info(f"Verification email resent for user: {user_row['id']}")
