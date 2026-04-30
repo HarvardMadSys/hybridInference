@@ -8,6 +8,8 @@ import {
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
   AuditLogEntry,
+  BroadcastDetailResponse,
+  BroadcastListItem,
   StatusCounts,
   UserDetail,
   UserSortBy,
@@ -21,6 +23,12 @@ import {
   listAuditLog,
   listRecentRequests,
   getRequestMetrics,
+  previewBroadcast,
+  sendTestBroadcastEmail,
+  createBroadcast,
+  listBroadcasts,
+  getBroadcastDetail,
+  cancelBroadcast,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -151,13 +159,13 @@ export default function AdminPage() {
   const { state } = useAuth();
 
   // Top-level tab
-  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests' | 'broadcast'>('users');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
-    if (tab === 'users' || tab === 'audit' || tab === 'requests') {
-      setActiveTab(tab);
+    if (tab === 'users' || tab === 'audit' || tab === 'requests' || tab === 'broadcast') {
+      setActiveTab(tab as 'users' | 'audit' | 'requests' | 'broadcast');
     }
   }, []);
 
@@ -191,6 +199,26 @@ export default function AdminPage() {
   const [editTier, setEditTier] = useState('');
   const [editQuota, setEditQuota] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Broadcast email state
+  const [broadcasts, setBroadcasts] = useState<BroadcastListItem[]>([]);
+  const [broadcastTotal, setBroadcastTotal] = useState(0);
+  const [broadcastLoading, setBroadcastLoading] = useState(false);
+  const [broadcastDetail, setBroadcastDetail] = useState<BroadcastDetailResponse | null>(null);
+  const [broadcastDetailLoading, setBroadcastDetailLoading] = useState(false);
+  const [bcTemplateKey, setBcTemplateKey] = useState<string>('custom');
+  const [bcTemplateVars, setBcTemplateVars] = useState<Record<string, string>>({});
+  const [bcSubject, setBcSubject] = useState('');
+  const [bcBodyHtml, setBcBodyHtml] = useState('');
+  const [bcScheduleMode, setBcScheduleMode] = useState<'now' | 'later'>('now');
+  const [bcScheduledAt, setBcScheduledAt] = useState('');
+  const [bcPreview, setBcPreview] = useState<{ recipient_count: number; rendered_subject: string; rendered_body_html: string } | null>(null);
+  const [bcPreviewLoading, setBcPreviewLoading] = useState(false);
+  const [bcSending, setBcSending] = useState(false);
+  const [bcConfirm, setBcConfirm] = useState(false);
+  const [bcTestLoading, setBcTestLoading] = useState(false);
+  const [bcTargetRoles, setBcTargetRoles] = useState<string[]>(['free', 'internal', 'admin']);
+  const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
 
   // Audit log state
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
@@ -444,7 +472,24 @@ export default function AdminPage() {
     { key: 'deleted', label: 'Deleted', count: counts.deleted },
   ];
 
-  const onTabChange = (tab: 'users' | 'audit' | 'requests') => {
+  const loadBroadcasts = useCallback(async () => {
+    setBroadcastLoading(true);
+    try {
+      const res = await listBroadcasts(50, 0);
+      setBroadcasts(res.broadcasts);
+      setBroadcastTotal(res.total);
+    } catch {
+      // non-fatal
+    } finally {
+      setBroadcastLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'broadcast') loadBroadcasts();
+  }, [loadBroadcasts, activeTab]);
+
+  const onTabChange = (tab: 'users' | 'audit' | 'requests' | 'broadcast') => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
     params.set('tab', tab);
@@ -453,14 +498,9 @@ export default function AdminPage() {
   };
 
   const refreshActiveTab = () => {
-    if (activeTab === 'users') {
-      load();
-      return;
-    }
-    if (activeTab === 'audit') {
-      loadAudit();
-      return;
-    }
+    if (activeTab === 'users') { load(); return; }
+    if (activeTab === 'audit') { loadAudit(); return; }
+    if (activeTab === 'broadcast') { loadBroadcasts(); return; }
     loadRequests();
     loadRequestMetrics();
   };
@@ -506,7 +546,7 @@ export default function AdminPage() {
 
         {/* Top-level tab toggle */}
         <div className="mt-6 flex items-center gap-1">
-          {(['users', 'requests', 'audit'] as const).map((tab) => (
+          {(['users', 'requests', 'audit', 'broadcast'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => onTabChange(tab)}
@@ -516,7 +556,7 @@ export default function AdminPage() {
                   : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
               }`}
             >
-              {tab === 'users' ? 'Users' : tab === 'requests' ? 'Recent Requests' : 'Audit Log'}
+              {tab === 'users' ? 'Users' : tab === 'requests' ? 'Recent Requests' : tab === 'audit' ? 'Audit Log' : 'Broadcast Email'}
             </button>
           ))}
         </div>
@@ -1417,6 +1457,463 @@ export default function AdminPage() {
               )}
             </div>
           </div>
+        )}
+
+        {/* ========== Broadcast Email Tab ========== */}
+        {activeTab === 'broadcast' && (
+          <>
+            <div className="mt-8 space-y-6">
+              {/* Composer */}
+              <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                <h2 className="text-[15px] font-semibold text-gray-900 mb-4">Compose Broadcast</h2>
+
+                {/* Template selector */}
+                <div className="mb-4">
+                  <label className="block text-[12px] font-medium text-gray-600 mb-1">Template</label>
+                  <select
+                    value={bcTemplateKey}
+                    onChange={(e) => {
+                      setBcTemplateKey(e.target.value);
+                      setBcTemplateVars({});
+                      setBcSubject('');
+                      setBcBodyHtml('');
+                      setBcPreview(null);
+                    }}
+                    className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                  >
+                    <option value="custom">Custom</option>
+                    <option value="maintenance">Maintenance Notice</option>
+                    <option value="announcement">Announcement</option>
+                    <option value="quota_change">Quota Change</option>
+                  </select>
+                </div>
+
+                {/* Template variable fields */}
+                {bcTemplateKey === 'maintenance' && (
+                  <div className="mb-4 grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Date</label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="e.g. May 1, 2026"
+                        value={bcTemplateVars['date'] ?? ''}
+                        onChange={(e) => setBcTemplateVars((v) => ({ ...v, date: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Duration</label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="e.g. 2 hours"
+                        value={bcTemplateVars['duration'] ?? ''}
+                        onChange={(e) => setBcTemplateVars((v) => ({ ...v, duration: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                )}
+                {bcTemplateKey === 'announcement' && (
+                  <div className="mb-4 space-y-3">
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Feature Name</label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="e.g. GPT-5 Support"
+                        value={bcTemplateVars['feature_name'] ?? ''}
+                        onChange={(e) => setBcTemplateVars((v) => ({ ...v, feature_name: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Description</label>
+                      <textarea
+                        rows={3}
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="Describe the new feature..."
+                        value={bcTemplateVars['description'] ?? ''}
+                        onChange={(e) => setBcTemplateVars((v) => ({ ...v, description: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                )}
+                {bcTemplateKey === 'quota_change' && (
+                  <div className="mb-4">
+                    <label className="block text-[12px] font-medium text-gray-600 mb-1">New Quota</label>
+                    <input
+                      className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                      placeholder="e.g. $50/day"
+                      value={bcTemplateVars['new_quota'] ?? ''}
+                      onChange={(e) => setBcTemplateVars((v) => ({ ...v, new_quota: e.target.value }))}
+                    />
+                  </div>
+                )}
+                {bcTemplateKey === 'custom' && (
+                  <div className="mb-4 space-y-3">
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Subject</label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="Email subject"
+                        value={bcSubject}
+                        onChange={(e) => setBcSubject(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">Body (HTML)</label>
+                      <textarea
+                        rows={6}
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-mono focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="<p>Your message here...</p>"
+                        value={bcBodyHtml}
+                        onChange={(e) => setBcBodyHtml(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Recipient filters */}
+                <div className="mb-4 grid grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-[12px] font-medium text-gray-600 mb-2">Roles</label>
+                    {['free', 'internal', 'admin'].map((role) => (
+                      <label key={role} className="flex items-center gap-2 text-[13px] text-gray-700 mb-1">
+                        <input
+                          type="checkbox"
+                          checked={bcTargetRoles.includes(role)}
+                          onChange={(e) =>
+                            setBcTargetRoles((prev) =>
+                              e.target.checked ? [...prev, role] : prev.filter((r) => r !== role)
+                            )
+                          }
+                        />
+                        {role}
+                      </label>
+                    ))}
+                  </div>
+                  <div>
+                    <label className="block text-[12px] font-medium text-gray-600 mb-2">Statuses</label>
+                    {['active', 'suspended', 'pending_approval', 'rejected'].map((status) => (
+                      <label key={status} className="flex items-center gap-2 text-[13px] text-gray-700 mb-1">
+                        <input
+                          type="checkbox"
+                          checked={bcTargetStatuses.includes(status)}
+                          onChange={(e) =>
+                            setBcTargetStatuses((prev) =>
+                              e.target.checked ? [...prev, status] : prev.filter((s) => s !== status)
+                            )
+                          }
+                        />
+                        {status.replace('_', ' ')}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Schedule toggle */}
+                <div className="mb-4">
+                  <label className="block text-[12px] font-medium text-gray-600 mb-2">Send Timing</label>
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-[13px] text-gray-700">
+                      <input
+                        type="radio"
+                        checked={bcScheduleMode === 'now'}
+                        onChange={() => setBcScheduleMode('now')}
+                      />
+                      Send now
+                    </label>
+                    <label className="flex items-center gap-2 text-[13px] text-gray-700">
+                      <input
+                        type="radio"
+                        checked={bcScheduleMode === 'later'}
+                        onChange={() => setBcScheduleMode('later')}
+                      />
+                      Schedule for later
+                    </label>
+                  </div>
+                  {bcScheduleMode === 'later' && (
+                    <input
+                      type="datetime-local"
+                      className="mt-2 rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                      value={bcScheduledAt}
+                      onChange={(e) => setBcScheduledAt(e.target.value)}
+                    />
+                  )}
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    disabled={bcPreviewLoading}
+                    onClick={async () => {
+                      setBcPreviewLoading(true);
+                      try {
+                        const res = await previewBroadcast({
+                          template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+                          template_vars: bcTemplateVars,
+                          subject: bcSubject,
+                          body_html: bcBodyHtml,
+                          body_text: '',
+                          target_roles: bcTargetRoles,
+                          target_statuses: bcTargetStatuses,
+                        });
+                        setBcPreview(res);
+                      } catch (err) {
+                        setToast(getErrorMessage(err));
+                      } finally {
+                        setBcPreviewLoading(false);
+                      }
+                    }}
+                    className="rounded-md border border-gray-300 px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    {bcPreviewLoading ? 'Loading…' : 'Preview & Count'}
+                  </button>
+
+                  <button
+                    disabled={bcTestLoading}
+                    onClick={async () => {
+                      setBcTestLoading(true);
+                      try {
+                        await sendTestBroadcastEmail({
+                          template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+                          template_vars: bcTemplateVars,
+                          subject: bcSubject,
+                          body_html: bcBodyHtml,
+                          body_text: '',
+                          target_roles: bcTargetRoles,
+                          target_statuses: bcTargetStatuses,
+                        });
+                        setToast('Test email sent to your address');
+                      } catch (err) {
+                        setToast(getErrorMessage(err));
+                      } finally {
+                        setBcTestLoading(false);
+                      }
+                    }}
+                    className="rounded-md border border-gray-300 px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    {bcTestLoading ? 'Sending…' : 'Send Test to Me'}
+                  </button>
+
+                  <button
+                    onClick={() => setBcConfirm(true)}
+                    disabled={bcSending}
+                    className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+                  >
+                    {bcScheduleMode === 'later' ? 'Schedule' : 'Send Now'}
+                  </button>
+                </div>
+
+                {/* Preview panel */}
+                {bcPreview && (
+                  <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-4">
+                    <div className="text-[13px] font-medium text-blue-800 mb-1">
+                      {bcPreview.recipient_count} recipient{bcPreview.recipient_count !== 1 ? 's' : ''} match your filters
+                    </div>
+                    <div className="text-[12px] text-blue-700">Subject: {bcPreview.rendered_subject}</div>
+                  </div>
+                )}
+              </div>
+
+              {/* Confirmation modal */}
+              {bcConfirm && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                  <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
+                    <h3 className="text-[15px] font-semibold text-gray-900 mb-2">Confirm Broadcast</h3>
+                    <p className="text-[13px] text-gray-600 mb-1">
+                      {bcPreview ? `This will send to ${bcPreview.recipient_count} recipient(s).` : 'Send broadcast email?'}
+                    </p>
+                    {bcScheduleMode === 'later' && bcScheduledAt && (
+                      <p className="text-[12px] text-gray-500 mb-4">Scheduled for: {new Date(bcScheduledAt).toLocaleString()}</p>
+                    )}
+                    <div className="flex justify-end gap-3 mt-4">
+                      <button
+                        onClick={() => setBcConfirm(false)}
+                        className="rounded-md border border-gray-200 px-4 py-2 text-[13px] text-gray-700 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        disabled={bcSending}
+                        onClick={async () => {
+                          setBcSending(true);
+                          setBcConfirm(false);
+                          try {
+                            await createBroadcast({
+                              template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+                              template_vars: bcTemplateVars,
+                              subject: bcSubject,
+                              body_html: bcBodyHtml,
+                              body_text: '',
+                              target_roles: bcTargetRoles,
+                              target_statuses: bcTargetStatuses,
+                              scheduled_at:
+                                bcScheduleMode === 'later' && bcScheduledAt
+                                  ? new Date(bcScheduledAt).toISOString()
+                                  : null,
+                            });
+                            setToast(bcScheduleMode === 'later' ? 'Broadcast scheduled' : 'Broadcast queued');
+                            await loadBroadcasts();
+                          } catch (err) {
+                            setToast(getErrorMessage(err));
+                          } finally {
+                            setBcSending(false);
+                          }
+                        }}
+                        className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+                      >
+                        Confirm
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* History table */}
+              <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+                <div className="px-6 py-4 border-b border-gray-100">
+                  <h2 className="text-[15px] font-semibold text-gray-900">Send History</h2>
+                </div>
+                {broadcastLoading ? (
+                  <div className="px-6 py-8 text-[13px] text-gray-400">Loading…</div>
+                ) : broadcasts.length === 0 ? (
+                  <div className="px-6 py-8 text-[13px] text-gray-400">No broadcasts yet.</div>
+                ) : (
+                  <table className="w-full text-[13px]">
+                    <thead>
+                      <tr className="border-b border-gray-100 text-left text-[11px] font-medium text-gray-500">
+                        <th className="px-6 py-3">Subject</th>
+                        <th className="px-6 py-3">Status</th>
+                        <th className="px-6 py-3">Recipients</th>
+                        <th className="px-6 py-3">Sent / Scheduled</th>
+                        <th className="px-6 py-3">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {broadcasts.map((bc) => (
+                        <Fragment key={bc.id}>
+                          <tr
+                            className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
+                            onClick={async () => {
+                              if (broadcastDetail?.broadcast.id === bc.id) {
+                                setBroadcastDetail(null);
+                                return;
+                              }
+                              setBroadcastDetailLoading(true);
+                              try {
+                                const detail = await getBroadcastDetail(bc.id);
+                                setBroadcastDetail(detail);
+                              } catch {
+                                /* ignore */
+                              } finally {
+                                setBroadcastDetailLoading(false);
+                              }
+                            }}
+                          >
+                            <td className="px-6 py-3 max-w-[200px] truncate">{bc.subject}</td>
+                            <td className="px-6 py-3">
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                  bc.status === 'sent'
+                                    ? 'bg-green-50 text-green-700'
+                                    : bc.status === 'failed'
+                                    ? 'bg-red-50 text-red-700'
+                                    : bc.status === 'sending'
+                                    ? 'bg-blue-50 text-blue-700'
+                                    : bc.status === 'cancelled'
+                                    ? 'bg-gray-100 text-gray-500'
+                                    : 'bg-yellow-50 text-yellow-700'
+                                }`}
+                              >
+                                {bc.status}
+                              </span>
+                            </td>
+                            <td className="px-6 py-3">{bc.recipient_count.toLocaleString()}</td>
+                            <td className="px-6 py-3 text-gray-500">
+                              {bc.sent_at
+                                ? relTime(bc.sent_at)
+                                : bc.scheduled_at
+                                ? new Date(bc.scheduled_at).toLocaleString()
+                                : '—'}
+                            </td>
+                            <td className="px-6 py-3">
+                              {bc.status === 'scheduled' && (
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (!confirm('Cancel this scheduled broadcast?')) return;
+                                    try {
+                                      await cancelBroadcast(bc.id);
+                                      setToast('Broadcast cancelled');
+                                      await loadBroadcasts();
+                                    } catch (err) {
+                                      setToast(getErrorMessage(err));
+                                    }
+                                  }}
+                                  className="text-red-500 hover:underline text-[12px]"
+                                >
+                                  Cancel
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                          {/* Detail drawer */}
+                          {broadcastDetail?.broadcast.id === bc.id && (
+                            <tr>
+                              <td colSpan={5} className="bg-gray-50 px-6 py-4">
+                                {broadcastDetailLoading ? (
+                                  <span className="text-[12px] text-gray-400">Loading recipients…</span>
+                                ) : (
+                                  <>
+                                    <div className="text-[12px] font-medium text-gray-600 mb-2">
+                                      Recipients ({broadcastDetail.total_recipients})
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-[12px]">
+                                        <thead>
+                                          <tr className="text-left text-[10px] font-medium text-gray-400">
+                                            <th className="pr-4 py-1">Email</th>
+                                            <th className="pr-4 py-1">Status</th>
+                                            <th className="pr-4 py-1">Error</th>
+                                            <th className="pr-4 py-1">Sent At</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {broadcastDetail.recipients.map((r) => (
+                                            <tr key={r.user_id} className="border-t border-gray-100">
+                                              <td className="pr-4 py-1 text-gray-700">{r.email}</td>
+                                              <td className="pr-4 py-1">
+                                                <span
+                                                  className={
+                                                    r.status === 'sent'
+                                                      ? 'text-green-600'
+                                                      : r.status === 'failed'
+                                                      ? 'text-red-500'
+                                                      : 'text-gray-400'
+                                                  }
+                                                >
+                                                  {r.status}
+                                                </span>
+                                              </td>
+                                              <td className="pr-4 py-1 text-red-400">{r.error ?? '—'}</td>
+                                              <td className="pr-4 py-1 text-gray-400">
+                                                {r.sent_at ? relTime(r.sent_at) : '—'}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </>
         )}
       </div>
 
