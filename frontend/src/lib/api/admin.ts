@@ -313,6 +313,48 @@ export async function getRequestMetrics(): Promise<AdminRequestMetricsResponse> 
   return jsonOrThrow<AdminRequestMetricsResponse>(resp);
 }
 
+// ----------------------------------------------------------------------------
+// Performance metrics — prompt/response length, TTFT, TBT distributions
+// ----------------------------------------------------------------------------
+
+export interface AdminHistogramBucket {
+  lower_bound: number;
+  upper_bound: number | null;
+  count: number;
+}
+
+export interface AdminMetricDistribution {
+  count: number;
+  mean: number | null;
+  min: number | null;
+  max: number | null;
+  p50: number | null;
+  p90: number | null;
+  p95: number | null;
+  p99: number | null;
+  histogram: AdminHistogramBucket[];
+}
+
+export interface AdminPerformanceMetricsWindow {
+  key: string;
+  label: string;
+  window_minutes: number;
+  prompt_tokens: AdminMetricDistribution;
+  completion_tokens: AdminMetricDistribution;
+  ttft_ms: AdminMetricDistribution;
+  tbt_ms: AdminMetricDistribution;
+}
+
+export interface AdminPerformanceMetricsResponse {
+  generated_at: string;
+  windows: AdminPerformanceMetricsWindow[];
+}
+
+export async function getPerformanceMetrics(): Promise<AdminPerformanceMetricsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/performance-metrics');
+  return jsonOrThrow<AdminPerformanceMetricsResponse>(resp);
+}
+
 export interface AdminRecentRequestItem {
   request_id: string;
   user_id: string | null;

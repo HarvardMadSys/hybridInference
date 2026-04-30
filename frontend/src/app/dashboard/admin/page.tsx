@@ -4,6 +4,8 @@ import { Fragment, useCallback, useEffect, useId, useState } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import {
+  AdminMetricDistribution,
+  AdminPerformanceMetricsWindow,
   AdminUser,
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
@@ -30,6 +32,7 @@ import {
   listBroadcasts,
   getBroadcastDetail,
   cancelBroadcast,
+  getPerformanceMetrics,
   getProviderQuotas,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -138,6 +141,94 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
             />
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function formatTokens(n: number): string {
+  return Math.round(n).toLocaleString();
+}
+
+function formatBucketEdge(value: number, kind: 'tokens' | 'ms'): string {
+  if (kind === 'tokens') {
+    if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`;
+    return value.toLocaleString();
+  }
+  if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}s`;
+  return `${value}ms`;
+}
+
+function MetricSubPanel({
+  title,
+  dist,
+  kind,
+}: {
+  title: string;
+  dist: AdminMetricDistribution;
+  kind: 'tokens' | 'ms';
+}) {
+  const formatValue = (v: number | null | undefined): string => {
+    if (v == null) return '—';
+    return kind === 'ms' ? formatLatency(v) : formatTokens(v);
+  };
+  const maxBucket = Math.max(...dist.histogram.map((b) => b.count), 1);
+
+  return (
+    <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="text-[12px] font-medium text-gray-700">{title}</div>
+        <div className="text-[11px] tabular-nums text-gray-400">
+          n={dist.count.toLocaleString()}
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] tabular-nums text-gray-600">
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-400">p50</div>
+          <div className="font-medium text-gray-900">{formatValue(dist.p50)}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-400">p95</div>
+          <div className="font-medium text-gray-900">{formatValue(dist.p95)}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-400">p99</div>
+          <div className="font-medium text-gray-900">{formatValue(dist.p99)}</div>
+        </div>
+      </div>
+      <div className="mt-2 flex h-10 items-end gap-px overflow-hidden rounded-md bg-white px-1 py-1">
+        {dist.histogram.map((b, idx) => {
+          const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
+          const upperLabel = b.upper_bound == null ? '∞' : formatBucketEdge(b.upper_bound, kind);
+          const lowerLabel = formatBucketEdge(b.lower_bound, kind);
+          return (
+            <div
+              key={`${idx}-${b.lower_bound}`}
+              className={`min-w-0 flex-1 rounded-t-sm ${
+                b.count === 0 ? 'bg-gray-200' : 'bg-gray-700'
+              }`}
+              style={{ height: `${height}%` }}
+              title={`[${lowerLabel}, ${upperLabel}): ${b.count.toLocaleString()}`}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div className="text-[13px] font-semibold text-gray-900">{metric.label}</div>
+        <div className="text-[11px] text-gray-400">{metric.window_minutes}m window</div>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <MetricSubPanel title="Prompt tokens" dist={metric.prompt_tokens} kind="tokens" />
+        <MetricSubPanel title="Response tokens" dist={metric.completion_tokens} kind="tokens" />
+        <MetricSubPanel title="TTFT" dist={metric.ttft_ms} kind="ms" />
+        <MetricSubPanel title="TBT" dist={metric.tbt_ms} kind="ms" />
       </div>
     </div>
   );
@@ -319,6 +410,8 @@ export default function AdminPage() {
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
+  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
+  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
   const reqJumpInputId = useId();
   const REQ_PAGE_SIZE = 50;
 
@@ -398,6 +491,19 @@ export default function AdminPage() {
     }
   }, []);
 
+  const loadPerformanceMetrics = useCallback(async () => {
+    setPerfMetricsLoading(true);
+    setError(null);
+    try {
+      const d = await getPerformanceMetrics();
+      setPerfMetrics(d.windows);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setPerfMetricsLoading(false);
+    }
+  }, []);
+
   const loadProviderQuotas = useCallback(async () => {
     setProviderQuotasLoading(true);
     setError(null);
@@ -423,8 +529,9 @@ export default function AdminPage() {
     if (activeTab === 'requests') {
       loadRequests();
       loadRequestMetrics();
+      loadPerformanceMetrics();
     }
-  }, [loadRequests, loadRequestMetrics, activeTab]);
+  }, [loadRequests, loadRequestMetrics, loadPerformanceMetrics, activeTab]);
 
   useEffect(() => {
     if (activeTab === 'providers') loadProviderQuotas();
@@ -615,6 +722,7 @@ export default function AdminPage() {
     }
     loadRequests();
     loadRequestMetrics();
+    loadPerformanceMetrics();
   };
 
   return (
@@ -644,11 +752,21 @@ export default function AdminPage() {
           <button
             onClick={refreshActiveTab}
             disabled={
-              loading || auditLoading || reqLoading || reqMetricsLoading || providerQuotasLoading
+              loading ||
+              auditLoading ||
+              reqLoading ||
+              reqMetricsLoading ||
+              perfMetricsLoading ||
+              providerQuotasLoading
             }
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
           >
-            {loading || auditLoading || reqLoading || reqMetricsLoading || providerQuotasLoading
+            {loading ||
+            auditLoading ||
+            reqLoading ||
+            reqMetricsLoading ||
+            perfMetricsLoading ||
+            providerQuotasLoading
               ? 'Loading...'
               : 'Refresh'}
           </button>
@@ -1281,6 +1399,33 @@ export default function AdminPage() {
               ) : !reqMetricsLoading ? (
                 <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
                   <p className="text-[13px] text-gray-400">No request metrics available.</p>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Performance metrics */}
+            <div className="mb-6">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-[15px] font-semibold text-gray-900">Performance metrics</h2>
+                  <p className="text-[12px] text-gray-400">
+                    Prompt/response length, time-to-first-token, and inter-token latency
+                    distributions.
+                  </p>
+                </div>
+                {perfMetricsLoading && (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+                )}
+              </div>
+              {perfMetrics.length > 0 ? (
+                <div className="grid gap-3">
+                  {perfMetrics.map((metric) => (
+                    <PerformanceMetricsCard key={metric.key} metric={metric} />
+                  ))}
+                </div>
+              ) : !perfMetricsLoading ? (
+                <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+                  <p className="text-[13px] text-gray-400">No performance metrics available.</p>
                 </div>
               ) : null}
             </div>
