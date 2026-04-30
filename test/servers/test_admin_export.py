@@ -141,13 +141,14 @@ def test_export_includes_content_when_requested():
 
 
 def test_export_streams_multiple_batches():
-    """Generator continues fetching until an empty batch is returned."""
+    """Generator continues fetching after a full batch and stops on a partial batch."""
     from serving.servers.app import app
     from serving.servers.deps import get_db_logger, verify_admin_access
 
-    batch1 = [_make_mock_row(request_id=f"req-{i}") for i in range(3)]
-    batch2 = [_make_mock_row(request_id=f"req-{i}") for i in range(3, 5)]
-    db = _make_mock_db([batch1, batch2, []])
+    # batch_size in the route is 500; a full batch must equal that size to keep paging.
+    full_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500)]
+    partial_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500, 502)]
+    db = _make_mock_db([full_batch, partial_batch])
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.dependency_overrides[get_db_logger] = lambda: db
     try:
@@ -160,7 +161,7 @@ def test_export_streams_multiple_batches():
 
     assert resp.status_code == 200
     lines = [line for line in resp.text.strip().split("\n") if line]
-    assert len(lines) == 5
+    assert len(lines) == 502
 
 
 def test_export_missing_start_time_returns_422():
@@ -227,3 +228,65 @@ def test_export_applies_user_id_filter():
     assert call_args is not None
     query = call_args[0][0]
     assert "l.user_id = $3" in query
+
+
+def test_export_applies_model_id_filter():
+    """model_id filter is passed through to the SQL query."""
+    from serving.servers.app import app
+    from serving.servers.deps import get_db_logger, verify_admin_access
+
+    row = _make_mock_row(model_id="gpt-4o")
+    db = _make_mock_db([[row], []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z"
+            "&model_id=gpt-4o",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    lines = [line for line in resp.text.strip().split("\n") if line]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["model_id"] == "gpt-4o"
+    # Verify mock was actually called (filter was applied)
+    mock_conn = db.pool.acquire.return_value.__aenter__.return_value
+    call_args = mock_conn.fetch.call_args
+    assert call_args is not None
+    query = call_args[0][0]
+    assert "l.model_id = $3" in query
+
+
+def test_export_applies_errors_only_filter():
+    """errors_only filter adds an error/status predicate to the SQL query."""
+    from serving.servers.app import app
+    from serving.servers.deps import get_db_logger, verify_admin_access
+
+    row = _make_mock_row(error="boom", status_code=500)
+    db = _make_mock_db([[row], []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z"
+            "&errors_only=true",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    lines = [line for line in resp.text.strip().split("\n") if line]
+    assert len(lines) == 1
+    # Verify mock was actually called (filter was applied)
+    mock_conn = db.pool.acquire.return_value.__aenter__.return_value
+    call_args = mock_conn.fetch.call_args
+    assert call_args is not None
+    query = call_args[0][0]
+    assert "l.error IS NOT NULL" in query

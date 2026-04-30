@@ -1728,7 +1728,6 @@ async def admin_list_recent_requests(
 
 @router.get("/admin/export/requests")
 async def admin_export_requests(
-    request: Request,
     start_time: datetime,
     end_time: datetime | None = None,
     user_id: str | None = None,
@@ -1773,16 +1772,30 @@ async def admin_export_requests(
             "OR l.status_code < 200 OR l.status_code >= 400)"
         )
 
-    where_sql = "WHERE " + " AND ".join(where_clauses)
     content_cols = ", l.prompt, l.response" if include_content else ""
     batch_size = 500
 
+    start_str = start_time.strftime("%Y%m%d")
+    end_str = end_time.strftime("%Y%m%d")
+    filename = f"requests-{start_str}-{end_str}.jsonl"
+
     async def generate() -> AsyncGenerator[str, None]:
-        offset = 0
-        while True:
-            limit_idx = len(params) + 1
-            offset_idx = len(params) + 2
-            async with db_logger.pool.acquire() as conn:
+        cursor_ts: datetime | None = None
+        cursor_id: str | None = None
+        async with db_logger.pool.acquire() as conn:
+            while True:
+                local_clauses = list(where_clauses)
+                local_params = list(params)
+                if cursor_ts is not None:
+                    cursor_ts_idx = len(local_params) + 1
+                    cursor_id_idx = len(local_params) + 2
+                    local_clauses.append(
+                        f"(l.timestamp, l.request_id) < (${cursor_ts_idx}, ${cursor_id_idx})"
+                    )
+                    local_params.append(cursor_ts)
+                    local_params.append(cursor_id)
+                limit_idx = len(local_params) + 1
+                local_where = "WHERE " + " AND ".join(local_clauses)
                 rows = await conn.fetch(
                     f"""
                     SELECT
@@ -1793,58 +1806,56 @@ async def admin_export_requests(
                         l.cost_usd, l.error{content_cols}
                     FROM api_logs l
                     LEFT JOIN users u ON u.id = l.user_id
-                    {where_sql}
-                    ORDER BY l.timestamp DESC
-                    LIMIT ${limit_idx} OFFSET ${offset_idx}
+                    {local_where}
+                    ORDER BY l.timestamp DESC, l.request_id DESC
+                    LIMIT ${limit_idx}
                     """,
-                    *params,
+                    *local_params,
                     batch_size,
-                    offset,
                 )
-            if not rows:
-                break
-            for row in rows:
-                record: dict[str, Any] = {
-                    "request_id": row["request_id"],
-                    "timestamp": row["timestamp"].isoformat(),
-                    "user_id": row["user_id"],
-                    "user_name": row["user_name"],
-                    "user_email": row["user_email"],
-                    "model_id": row["model_id"],
-                    "provider": row["provider"],
-                    "ttft_ms": row["ttft_ms"],
-                    "latency_ms": row["latency_ms"],
-                    "prompt_tokens": row["prompt_tokens"],
-                    "completion_tokens": row["completion_tokens"],
-                    "reasoning_tokens": row["reasoning_tokens"],
-                    "total_tokens": row["total_tokens"],
-                    "cost_usd": str(row["cost_usd"]) if row["cost_usd"] is not None else None,
-                    "status_code": row["status_code"],
-                    "error": row["error"],
-                }
-                if include_content:
-                    record["prompt"] = row["prompt"]
-                    record["response"] = row["response"]
-                yield json.dumps(record) + "\n"
-            offset += batch_size
+                if not rows:
+                    break
+                for row in rows:
+                    record: dict[str, Any] = {
+                        "request_id": row["request_id"],
+                        "timestamp": row["timestamp"].isoformat(),
+                        "user_id": row["user_id"],
+                        "user_name": row["user_name"],
+                        "user_email": row["user_email"],
+                        "model_id": row["model_id"],
+                        "provider": row["provider"],
+                        "ttft_ms": row["ttft_ms"],
+                        "latency_ms": row["latency_ms"],
+                        "prompt_tokens": row["prompt_tokens"],
+                        "completion_tokens": row["completion_tokens"],
+                        "reasoning_tokens": row["reasoning_tokens"],
+                        "total_tokens": row["total_tokens"],
+                        "cost_usd": (str(row["cost_usd"]) if row["cost_usd"] is not None else None),
+                        "status_code": row["status_code"],
+                        "error": row["error"],
+                    }
+                    if include_content:
+                        record["prompt"] = row["prompt"]
+                        record["response"] = row["response"]
+                    yield json.dumps(record) + "\n"
+                if len(rows) < batch_size:
+                    break
+                cursor_ts = rows[-1]["timestamp"]
+                cursor_id = rows[-1]["request_id"]
 
-    start_str = start_time.strftime("%Y%m%d")
-    end_str = end_time.strftime("%Y%m%d")
-    filename = f"requests-{start_str}-{end_str}.jsonl"
-
-    await log_admin_action(
-        db_logger,
-        admin_id,
-        "export_requests",
-        None,
-        {
-            "range": f"{start_str}-{end_str}",
-            "include_content": include_content,
-            "user_id": user_id,
-            "model_id": model_id,
-            "errors_only": errors_only,
-        },
-    )
+        await log_admin_action(
+            db_logger,
+            admin_id,
+            "export_requests",
+            None,
+            {
+                "range": f"{start_str}-{end_str}",
+                "include_content": include_content,
+                "user_id": user_id,
+                "model_id": model_id,
+                "errors_only": errors_only,
+            },
+        )
 
     return StreamingResponse(
         generate(),
