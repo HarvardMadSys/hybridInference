@@ -230,10 +230,10 @@ async def test_metrics_appear_in_render_latest():
     """The metrics must be registered in the project's REGISTRY so they
     are visible in /metrics scrapes (regression for the Critical issue
     where they were registered against the default global registry only)."""
-    import os
+    from serving.observability.metrics import _ENABLED as _METRICS_ENABLED
 
-    if os.getenv("METRICS_ENABLED", "1") != "1":
-        pytest.skip("Metrics disabled in this environment")
+    if not _METRICS_ENABLED:
+        pytest.skip("Metrics disabled at module import time")
 
     from serving.observability.metrics import render_latest
 
