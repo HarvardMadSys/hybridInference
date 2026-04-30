@@ -71,16 +71,18 @@ async def fetch_chutes() -> ProviderQuotaResult:
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers, allow_redirects=False) as resp:
-                if resp.status in (301, 302, 303, 307, 308, 401, 403):
-                    return _err("chutes", "Chutes", key, "auth_failed")
-                if resp.status >= 400:
-                    return _err("chutes", "Chutes", key, "unexpected")
-                try:
-                    data: dict[str, Any] = await resp.json()
-                except Exception:
-                    return _err("chutes", "Chutes", key, "parse_error")
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(url, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("chutes", "Chutes", key, "auth_failed")
+            if resp.status >= 400:
+                return _err("chutes", "Chutes", key, "unexpected")
+            try:
+                data: dict[str, Any] = await resp.json()
+            except Exception:
+                return _err("chutes", "Chutes", key, "parse_error")
     except asyncio.TimeoutError:
         return _err("chutes", "Chutes", key, "timeout")
     except aiohttp.ClientError:
@@ -166,16 +168,18 @@ async def fetch_zai() -> ProviderQuotaResult:
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers, allow_redirects=False) as resp:
-                if resp.status in (301, 302, 303, 307, 308, 401, 403):
-                    return _err("zai", "ZAI", key, "auth_failed")
-                if resp.status >= 400:
-                    return _err("zai", "ZAI", key, "unexpected")
-                try:
-                    data: dict[str, Any] = await resp.json()
-                except Exception:
-                    return _err("zai", "ZAI", key, "parse_error")
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(url, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("zai", "ZAI", key, "auth_failed")
+            if resp.status >= 400:
+                return _err("zai", "ZAI", key, "unexpected")
+            try:
+                data: dict[str, Any] = await resp.json()
+            except Exception:
+                return _err("zai", "ZAI", key, "parse_error")
     except asyncio.TimeoutError:
         return _err("zai", "ZAI", key, "timeout")
     except aiohttp.ClientError:
@@ -249,16 +253,18 @@ async def fetch_minimax() -> ProviderQuotaResult:
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers, allow_redirects=False) as resp:
-                if resp.status in (301, 302, 303, 307, 308, 401, 403):
-                    return _err("minimax", "MiniMax", cookie, "auth_failed")
-                if resp.status >= 400:
-                    return _err("minimax", "MiniMax", cookie, "unexpected")
-                try:
-                    data: dict[str, Any] = await resp.json()
-                except Exception:
-                    return _err("minimax", "MiniMax", cookie, "parse_error")
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(url, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("minimax", "MiniMax", cookie, "auth_failed")
+            if resp.status >= 400:
+                return _err("minimax", "MiniMax", cookie, "unexpected")
+            try:
+                data: dict[str, Any] = await resp.json()
+            except Exception:
+                return _err("minimax", "MiniMax", cookie, "parse_error")
     except asyncio.TimeoutError:
         return _err("minimax", "MiniMax", cookie, "timeout")
     except aiohttp.ClientError:
@@ -356,13 +362,15 @@ async def fetch_ollama() -> ProviderQuotaResult:
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers, allow_redirects=False) as resp:
-                if resp.status in (301, 302, 303, 307, 308, 401, 403):
-                    return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
-                if resp.status >= 400:
-                    return _err("ollama", "Ollama Cloud", cookie, "unexpected")
-                html = await resp.text()
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(url, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
+            if resp.status >= 400:
+                return _err("ollama", "Ollama Cloud", cookie, "unexpected")
+            html = await resp.text()
     except asyncio.TimeoutError:
         return _err("ollama", "Ollama Cloud", cookie, "timeout")
     except aiohttp.ClientError:
