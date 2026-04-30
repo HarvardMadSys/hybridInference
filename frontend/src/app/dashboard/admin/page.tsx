@@ -326,12 +326,20 @@ export default function AdminPage() {
   const { state } = useAuth();
 
   // Top-level tab
-  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests' | 'broadcast' | 'providers'>('users');
+  const [activeTab, setActiveTab] = useState<
+    'users' | 'audit' | 'requests' | 'broadcast' | 'providers'
+  >('users');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
-    if (tab === 'users' || tab === 'audit' || tab === 'requests' || tab === 'broadcast' || tab === 'providers') {
+    if (
+      tab === 'users' ||
+      tab === 'audit' ||
+      tab === 'requests' ||
+      tab === 'broadcast' ||
+      tab === 'providers'
+    ) {
       setActiveTab(tab as 'users' | 'audit' | 'requests' | 'broadcast' | 'providers');
     }
   }, []);
