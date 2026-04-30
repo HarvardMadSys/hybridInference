@@ -43,7 +43,9 @@ class TestMaskKey:
         assert len(result) == 8 + 3 + 4
 
 
-def _mock_aiohttp_get(*, status: int = 200, json_data: dict | None = None, raise_exc: Exception | None = None):
+def _mock_aiohttp_get(
+    *, status: int = 200, json_data: dict | None = None, raise_exc: Exception | None = None
+):
     """Build a context-manager mock for `aiohttp.ClientSession().get(...)`."""
     response = MagicMock()
     response.status = status
@@ -84,7 +86,10 @@ class TestFetchChutes:
             "monthly": {"used": 4.20, "limit": 100.0, "reset_at": "2026-05-01T00:00:00Z"},
             "rolling": {"used": 1.10, "limit": 10.0, "window": "4h"},
         }
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data=payload)):
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
             result = await fetch_chutes()
         assert result.ok is True
         assert result.key_configured is True
@@ -95,7 +100,10 @@ class TestFetchChutes:
     @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
         monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=401)):
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=401),
+        ):
             result = await fetch_chutes()
         assert result.ok is False
         assert result.error == "auth_failed"
@@ -103,7 +111,10 @@ class TestFetchChutes:
     @pytest.mark.asyncio
     async def test_timeout_returns_timeout_error(self, monkeypatch):
         monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError())):
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError()),
+        ):
             result = await fetch_chutes()
         assert result.ok is False
         assert result.error == "timeout"
@@ -127,7 +138,10 @@ class TestFetchZai:
                 {"type": "TIME_LIMIT", "percentage": 0.10, "currentValue": 6, "limit": 60},
             ]
         }
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data=payload)):
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
             result = await fetch_zai()
         assert result.ok is True
         assert len(result.usages) == 2
@@ -138,7 +152,10 @@ class TestFetchZai:
     @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
         monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=401)):
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=401),
+        ):
             result = await fetch_zai()
         assert result.ok is False
         assert result.error == "auth_failed"
@@ -146,7 +163,10 @@ class TestFetchZai:
     @pytest.mark.asyncio
     async def test_parse_error_on_unexpected_shape(self, monkeypatch):
         monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data={"unrelated": "junk"})):
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data={"unrelated": "junk"}),
+        ):
             result = await fetch_zai()
         # No "limits" key — we treat as parse_error
         assert result.ok is False
@@ -166,8 +186,13 @@ class TestFetchMinimax:
     async def test_auth_failed_on_cookie_rejected(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
         # MiniMax returns HTTP 200 with status_code 1004 in body when cookie missing
-        payload = {"base_resp": {"status_code": 1004, "status_msg": "cookie is missing, log in again"}}
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data=payload)):
+        payload = {
+            "base_resp": {"status_code": 1004, "status_msg": "cookie is missing, log in again"}
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
             result = await fetch_minimax()
         assert result.ok is False
         assert result.error == "auth_failed"
@@ -189,7 +214,10 @@ class TestFetchMinimax:
                 ]
             },
         }
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data=payload)):
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
             result = await fetch_minimax()
         assert result.ok is True
         assert len(result.usages) >= 1

@@ -418,7 +418,9 @@ class ProviderQuotaUsage(BaseModel):
 
     label: str = Field(..., description="Human-readable label, e.g. 'Monthly', '4-hour window'")
     used: float | None = Field(None, description="Amount consumed (None if unknown)")
-    limit: float | None = Field(None, description="Total quota limit (None if unlimited or unknown)")
+    limit: float | None = Field(
+        None, description="Total quota limit (None if unlimited or unknown)"
+    )
     unit: str = Field(..., description="Unit string, e.g. 'USD', 'tokens', 'requests'")
     reset_at: datetime | None = Field(None, description="When this usage window resets (UTC)")
 

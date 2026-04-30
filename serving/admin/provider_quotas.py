@@ -443,9 +443,7 @@ async def gather_all() -> list[ProviderQuotaResult]:
         if isinstance(result, ProviderQuotaResult):
             out.append(result)
         else:
-            logger.error(
-                "gather_all: %s fetcher raised", name, exc_info=result
-            )
+            logger.error("gather_all: %s fetcher raised", name, exc_info=result)
             out.append(
                 ProviderQuotaResult(
                     name=name,

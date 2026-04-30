@@ -181,9 +181,7 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
                       <span className="tabular-nums text-gray-700">
                         {formatNum(u.used)}
                         {u.limit != null && ` / ${formatNum(u.limit)}`} {u.unit}
-                        {p != null && (
-                          <span className="ml-1 text-gray-400">({p.toFixed(0)}%)</span>
-                        )}
+                        {p != null && <span className="ml-1 text-gray-400">({p.toFixed(0)}%)</span>}
                       </span>
                     </div>
                     {p != null && (
@@ -229,9 +227,7 @@ export default function AdminPage() {
   const { state } = useAuth();
 
   // Top-level tab
-  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests' | 'providers'>(
-    'users',
-  );
+  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests' | 'providers'>('users');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
