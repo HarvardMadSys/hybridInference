@@ -15,6 +15,7 @@ from .middleware.error import install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
+from .middleware.timeout import TimeoutMiddleware
 from .routers import (
     admin,
     anthropic_proxy,
@@ -67,8 +68,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Request ID and request log middlewares
+    # Request ID, timeout, and request log middlewares
     app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(TimeoutMiddleware)
     app.add_middleware(RequestLogMiddleware)
 
     # Error handlers
