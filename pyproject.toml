@@ -17,7 +17,6 @@ dependencies = [
     "google-genai>=1.33.0",
     "openai>=1.0.0",
     "passlib[argon2]>=1.7.4",
-    "prometheus-client>=0.20.0",
     "pulp>=2.7.0",
     "pydantic[email]>=2.0.0",
     "pydantic-settings>=2.0.0",

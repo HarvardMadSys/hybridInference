@@ -1011,7 +1011,7 @@ class RouteWiseRouter(BaseRouter):
             ttft = obs.ttft_ms if obs.ttft_ms is not None else -1.0
             self._latency_profiles[obs.endpoint_id].record(now, ttft, error_type)
 
-        # Emit Prometheus metrics for this observation.
+        # Emit metrics for this observation (no-op shims today).
         self._emit_metrics(obs)
 
         logger.debug(
@@ -1023,10 +1023,12 @@ class RouteWiseRouter(BaseRouter):
         )
 
     def _emit_metrics(self, obs: RoutingObservation) -> None:
-        """Emit Prometheus counters from a completed observation.
+        """Emit routing metrics from a completed observation.
 
-        Uses lazy imports to avoid circular dependency
-        (routing -> serving -> routing).
+        The metric symbols are no-op shims after Prometheus was removed,
+        but the call structure is preserved so that re-introducing real
+        metrics later requires no callsite changes. Uses lazy imports to
+        avoid circular dependency (routing -> serving -> routing).
         """
         from serving.observability.metrics import (
             ROUTEWISE_BACKUP_WINS,

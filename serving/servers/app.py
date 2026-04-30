@@ -13,7 +13,6 @@ from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap
 from .middleware.error import install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
-from .middleware.metrics import MetricsMiddleware
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
 from .routers import (
@@ -25,7 +24,6 @@ from .routers import (
     embeddings,
     health,
     internal,
-    metrics,
     models,
     playground,
     qdrant_proxy,
@@ -69,9 +67,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Request ID and metrics middlewares
+    # Request ID and request log middlewares
     app.add_middleware(RequestIdMiddleware)
-    app.add_middleware(MetricsMiddleware)
     app.add_middleware(RequestLogMiddleware)
 
     # Error handlers
@@ -82,7 +79,6 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(health.router)
-    app.include_router(metrics.router)
     app.include_router(models.router)
     app.include_router(completions.router)
     app.include_router(embeddings.router)

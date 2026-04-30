@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
-    from serving.observability.user_stats import UserStatsCollector
     from serving.storage.database import DatabaseLogger
 
     from .fairness import FairnessScheduler
@@ -44,7 +43,6 @@ class AppServices:
     db_logger: DatabaseLogger | None = None
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
-    user_stats_collector: UserStatsCollector | None = None
     fairness_scheduler: FairnessScheduler | None = None
 
 
