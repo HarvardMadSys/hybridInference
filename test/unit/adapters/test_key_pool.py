@@ -299,3 +299,15 @@ def test_concurrent_acquires_distribute_evenly():
         assert 0.8 * expected <= s.request_count <= 1.2 * expected, (
             f"unbalanced: {[k.request_count for k in pool._keys]}"
         )
+
+
+@pytest.mark.parametrize("bad_value", ["abc", "tomorrow", "", "   ", "nan", "inf nope", "NaN"])
+def test_release_malformed_retry_after_falls_back_to_default(monkeypatch, bad_value):
+    """Per spec: malformed/non-finite Retry-After → 2-min default cooldown."""
+    pool = KeyPool(keys=["k0"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429, retry_after=bad_value)
+    assert pool._keys[0].cooldown_until == pytest.approx(1120.0)

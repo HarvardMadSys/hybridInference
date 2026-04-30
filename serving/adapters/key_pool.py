@@ -9,6 +9,7 @@ See docs/superpowers/specs/2026-04-30-multi-key-rotation-design.md
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -33,7 +34,7 @@ class _Affinity:
 
 
 @dataclass
-class _Lease:
+class Lease:
     key_index: int
     affinity_key: str
 
@@ -60,7 +61,7 @@ class KeyPool:
     def affinity_count(self) -> int:
         return len(self._affinity)
 
-    def acquire(self, affinity_key: str) -> tuple[str, _Lease]:
+    def acquire(self, affinity_key: str) -> tuple[str, Lease]:
         """Return (api_key, lease) for the caller, creating affinity as needed.
 
         Raises:
@@ -80,7 +81,7 @@ class KeyPool:
                 ):
                     idx = existing.key_index
                     self._keys[idx].request_count += 1
-                    return self._keys[idx].key, _Lease(idx, affinity_key)
+                    return self._keys[idx].key, Lease(idx, affinity_key)
                 # Drop stale or unusable affinity; we'll re-pick below.
                 del self._affinity[affinity_key]
 
@@ -96,7 +97,7 @@ class KeyPool:
                 expires_at=now + self.AFFINITY_TTL_SECONDS,
             )
             self._keys[idx].request_count += 1
-            return self._keys[idx].key, _Lease(idx, affinity_key)
+            return self._keys[idx].key, Lease(idx, affinity_key)
 
     def _pick_least_loaded_locked(self, now: float) -> int | None:
         """Return the index of the lowest-request_count non-cooled key, or None."""
@@ -120,7 +121,7 @@ class KeyPool:
 
     def release(
         self,
-        lease: _Lease,
+        lease: Lease,
         *,
         status_code: int,
         retry_after: str | None,
@@ -162,6 +163,6 @@ class KeyPool:
             except (TypeError, ValueError, IndexError):
                 return self.DEFAULT_COOLDOWN_SECONDS
 
-        if seconds is None or seconds < 0:
+        if seconds is None or not math.isfinite(seconds) or seconds < 0:
             return self.DEFAULT_COOLDOWN_SECONDS
         return min(seconds, self.MAX_COOLDOWN_SECONDS)
