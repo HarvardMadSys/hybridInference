@@ -73,7 +73,7 @@ curl -fsS --retry 30 --retry-delay 5 --retry-connrefused "$HEALTH_URL"
 printf '\n'
 
 log "Checking frontend health at ${FRONTEND_HEALTH_URL}."
-curl -fsS --retry 30 --retry-delay 5 --retry-connrefused --output /dev/null \
+curl -fsS --retry 30 --retry-delay 5 --retry-connrefused --retry-all-errors --output /dev/null \
   "$FRONTEND_HEALTH_URL"
 
 log "Staging deployment completed."
