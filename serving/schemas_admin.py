@@ -408,16 +408,57 @@ class AdminRecentRequestsResponse(BaseModel):
     offset: int
 
 
+# ── Analytics Dashboard ──────────────────────────────────────────────────────
+
+class SparklineBucket(BaseModel):
+    """One time bucket for the active-users sparkline."""
+
+    start_time: datetime
+    request_count: int
+
+
+class AnalyticsUserEntry(BaseModel):
+    """One row in the top-users horizontal bar chart."""
+
+    email: str
+    user_id: str
+    requests: int
+    fraction: float  # share of ALL requests in the period (0.0–1.0)
+
+
+class AnalyticsBreakdownEntry(BaseModel):
+    """One slice in a model or provider donut chart."""
+
+    name: str  # model_id / provider name; "others" for the collapsed remainder
+    requests: int
+    fraction: float  # share of total requests in the period
+
+
+class AdminAnalyticsResponse(BaseModel):
+    """Response for GET /admin/analytics."""
+
+    period: str = Field(..., pattern="^(hour|day|week|month)$")
+    active_users: int
+    sparkline: list[SparklineBucket]
+    top_users: list[AnalyticsUserEntry]
+    by_model: list[AnalyticsBreakdownEntry]
+    by_provider: list[AnalyticsBreakdownEntry]
+    generated_at: datetime
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
     "APIKeyDetailUsage",
     "APIKeyListItem",
+    "AdminAnalyticsResponse",
     "AdminRecentRequestItem",
     "AdminRecentRequestsResponse",
     "AdminRequestMetricsBucket",
     "AdminRequestMetricsResponse",
     "AdminRequestMetricsWindow",
+    "AnalyticsBreakdownEntry",
+    "AnalyticsUserEntry",
     "ApproveUserRequest",
     "ApproveUserResponse",
     "AuditLogEntry",
@@ -432,6 +473,7 @@ __all__ = [
     "RejectUserRequest",
     "RejectUserResponse",
     "RevokeAPIKeyResponse",
+    "SparklineBucket",
     "StatusCounts",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
