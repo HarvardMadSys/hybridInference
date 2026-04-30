@@ -20,12 +20,20 @@ from serving.schemas_admin import (
     ApproveUserRequest,
     ApproveUserResponse,
     AuditLogEntry,
+    BroadcastDetailResponse,
+    BroadcastListItem,
+    BroadcastPreviewRequest,
+    BroadcastPreviewResponse,
+    BroadcastRecipientItem,
     CreateAPIKeyRequest,
     CreateAPIKeyResponse,
+    CreateBroadcastRequest,
+    CreateBroadcastResponse,
     DeleteUserRequest,
     DeleteUserResponse,
     ListAPIKeysResponse,
     ListAuditLogResponse,
+    ListBroadcastsResponse,
     ListUsersResponse,
     RegenerateAPIKeyResponse,
     RejectUserRequest,
@@ -39,6 +47,8 @@ from serving.schemas_admin import (
     UserDetailResponse,
     UserListItem,
 )
+from serving.utils.email import render_broadcast_template
+from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 from serving.servers.auth import (
     generate_api_key,
     hash_api_key,
@@ -1719,3 +1729,294 @@ async def admin_list_recent_requests(
     ]
 
     return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+
+
+# ── Broadcast Email Endpoints ──────────────────────────────────────────────
+
+
+@router.post("/admin/broadcast-email/preview", response_model=BroadcastPreviewResponse)
+async def preview_broadcast(
+    req: BroadcastPreviewRequest,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Return recipient count and rendered email preview without sending."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    rendered = render_broadcast_template(
+        req.template_key,
+        req.template_vars,
+        custom_subject=req.subject,
+        custom_body_html=req.body_html,
+        custom_body_text=req.body_text,
+    )
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) as cnt FROM users
+            WHERE role = ANY($1::text[])
+              AND status = ANY($2::text[])
+            """,
+            req.target_roles or [],
+            req.target_statuses or [],
+        )
+    count = row["cnt"] if row else 0
+
+    return BroadcastPreviewResponse(
+        recipient_count=count,
+        rendered_subject=rendered["subject"],
+        rendered_body_html=rendered["body_html"],
+        rendered_body_text=rendered["body_text"],
+    )
+
+
+@router.post("/admin/broadcast-email/test")
+async def test_broadcast_email(
+    req: BroadcastPreviewRequest,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Send a test email to the requesting admin's address only."""
+    from serving.utils.email import send_email
+
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT email FROM users WHERE email = $1", admin
+        )
+    admin_email = row["email"] if row else admin
+
+    if not admin_email or "@" not in admin_email:
+        raise HTTPException(status_code=400, detail="Cannot determine admin email address")
+
+    rendered = render_broadcast_template(
+        req.template_key,
+        req.template_vars,
+        custom_subject=req.subject,
+        custom_body_html=req.body_html,
+        custom_body_text=req.body_text,
+    )
+
+    ok = send_email(
+        admin_email,
+        f"[TEST] {rendered['subject']}",
+        rendered["body_html"],
+        rendered["body_text"],
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail="Failed to send test email (SMTP error)")
+    return {"message": f"Test email sent to {admin_email}"}
+
+
+@router.post("/admin/broadcast-email", response_model=CreateBroadcastResponse)
+async def create_broadcast(
+    req: CreateBroadcastRequest,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Create and schedule (or immediately send) a broadcast email."""
+    import uuid as _uuid
+
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    rendered = render_broadcast_template(
+        req.template_key,
+        req.template_vars,
+        custom_subject=req.subject,
+        custom_body_html=req.body_html,
+        custom_body_text=req.body_text,
+    )
+
+    if not rendered["subject"] or not rendered["body_html"]:
+        raise HTTPException(status_code=422, detail="subject and body_html are required")
+
+    broadcast_id = str(_uuid.uuid4())
+
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO email_broadcasts
+                (id, subject, body_html, body_text, template_key, template_vars,
+                 target_roles, target_statuses, status, scheduled_at, created_by)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            """,
+            broadcast_id,
+            rendered["subject"],
+            rendered["body_html"],
+            rendered["body_text"],
+            req.template_key,
+            req.template_vars,
+            req.target_roles or [],
+            req.target_statuses or [],
+            "scheduled",
+            req.scheduled_at,
+            admin,
+        )
+
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) as cnt FROM users
+            WHERE role = ANY($1::text[])
+              AND status = ANY($2::text[])
+            """,
+            req.target_roles or [],
+            req.target_statuses or [],
+        )
+    recipient_count = row["cnt"] if row else 0
+
+    schedule_broadcast(broadcast_id, req.scheduled_at)
+    await log_admin_action(db, admin, "broadcast_email_create", None, {"broadcast_id": broadcast_id, "subject": rendered["subject"]})
+
+    return CreateBroadcastResponse(
+        id=broadcast_id,
+        status="scheduled",
+        recipient_count=recipient_count,
+        scheduled_at=req.scheduled_at,
+    )
+
+
+@router.get("/admin/broadcast-email", response_model=ListBroadcastsResponse)
+async def list_broadcasts(
+    limit: int = 50,
+    offset: int = 0,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """List all broadcast campaigns, newest first."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db.pool.acquire() as conn:
+        total_row = await conn.fetchrow("SELECT COUNT(*) as cnt FROM email_broadcasts")
+        total = total_row["cnt"] if total_row else 0
+        rows = await conn.fetch(
+            """
+            SELECT id, subject, status, recipient_count, scheduled_at, sent_at,
+                   created_by, created_at
+            FROM email_broadcasts
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            """,
+            limit,
+            offset,
+        )
+
+    broadcasts = [
+        BroadcastListItem(
+            id=r["id"],
+            subject=r["subject"],
+            status=r["status"],
+            recipient_count=r["recipient_count"],
+            scheduled_at=r["scheduled_at"],
+            sent_at=r["sent_at"],
+            created_by=r["created_by"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+    return ListBroadcastsResponse(total=total, broadcasts=broadcasts)
+
+
+@router.get("/admin/broadcast-email/{broadcast_id}", response_model=BroadcastDetailResponse)
+async def get_broadcast_detail(
+    broadcast_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Get broadcast details with per-recipient status (paginated)."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, subject, status, recipient_count, scheduled_at, sent_at,
+                   created_by, created_at
+            FROM email_broadcasts WHERE id = $1
+            """,
+            broadcast_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Broadcast not found")
+
+        total_row = await conn.fetchrow(
+            "SELECT COUNT(*) as cnt FROM email_broadcast_recipients WHERE broadcast_id = $1",
+            broadcast_id,
+        )
+        total_recipients = total_row["cnt"] if total_row else 0
+
+        recipient_rows = await conn.fetch(
+            """
+            SELECT user_id, email, status, error, sent_at
+            FROM email_broadcast_recipients
+            WHERE broadcast_id = $1
+            ORDER BY id
+            LIMIT $2 OFFSET $3
+            """,
+            broadcast_id,
+            limit,
+            offset,
+        )
+
+    broadcast = BroadcastListItem(
+        id=row["id"],
+        subject=row["subject"],
+        status=row["status"],
+        recipient_count=row["recipient_count"],
+        scheduled_at=row["scheduled_at"],
+        sent_at=row["sent_at"],
+        created_by=row["created_by"],
+        created_at=row["created_at"],
+    )
+    recipients = [
+        BroadcastRecipientItem(
+            user_id=r["user_id"],
+            email=r["email"],
+            status=r["status"],
+            error=r["error"],
+            sent_at=r["sent_at"],
+        )
+        for r in recipient_rows
+    ]
+    return BroadcastDetailResponse(
+        broadcast=broadcast,
+        recipients=recipients,
+        total_recipients=total_recipients,
+    )
+
+
+@router.delete("/admin/broadcast-email/{broadcast_id}")
+async def cancel_broadcast(
+    broadcast_id: str,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Cancel a scheduled broadcast. Returns 409 if not in 'scheduled' status."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT status FROM email_broadcasts WHERE id = $1", broadcast_id
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Broadcast not found")
+        if row["status"] != "scheduled":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot cancel broadcast with status '{row['status']}'",
+            )
+        await conn.execute(
+            "UPDATE email_broadcasts SET status = 'cancelled' WHERE id = $1", broadcast_id
+        )
+
+    cancel_broadcast_job(broadcast_id)
+    await log_admin_action(db, admin, "broadcast_email_cancel", None, {"broadcast_id": broadcast_id})
+    return {"message": "Broadcast cancelled"}
