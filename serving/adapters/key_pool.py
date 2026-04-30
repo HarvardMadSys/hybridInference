@@ -59,3 +59,61 @@ class KeyPool:
 
     def affinity_count(self) -> int:
         return len(self._affinity)
+
+    def acquire(self, affinity_key: str) -> tuple[str, _Lease]:
+        """Return (api_key, lease) for the caller, creating affinity as needed.
+
+        Raises:
+            KeyPoolExhausted: if every key is currently in cooldown.
+        """
+        now = time.monotonic()
+        with self._lock:
+            self._maybe_sweep_locked(now)
+
+            existing = self._affinity.get(affinity_key)
+            if existing is not None:
+                # Affinity is honored only when it is still valid AND the
+                # bound key is not cooled down.
+                if (
+                    now < existing.expires_at
+                    and self._keys[existing.key_index].cooldown_until <= now
+                ):
+                    idx = existing.key_index
+                    self._keys[idx].request_count += 1
+                    return self._keys[idx].key, _Lease(idx, affinity_key)
+                # Drop stale or unusable affinity; we'll re-pick below.
+                del self._affinity[affinity_key]
+
+            idx = self._pick_least_loaded_locked(now)
+            if idx is None:
+                raise KeyPoolExhausted(
+                    f"All {len(self._keys)} keys for provider "
+                    f"{self._provider_label!r} are in cooldown"
+                )
+
+            self._affinity[affinity_key] = _Affinity(
+                key_index=idx,
+                expires_at=now + self.AFFINITY_TTL_SECONDS,
+            )
+            self._keys[idx].request_count += 1
+            return self._keys[idx].key, _Lease(idx, affinity_key)
+
+    def _pick_least_loaded_locked(self, now: float) -> int | None:
+        """Return the index of the lowest-request_count non-cooled key, or None."""
+        best_idx: int | None = None
+        best_count: int | None = None
+        for i, state in enumerate(self._keys):
+            if state.cooldown_until > now:
+                continue
+            if best_count is None or state.request_count < best_count:
+                best_idx = i
+                best_count = state.request_count
+        return best_idx
+
+    def _maybe_sweep_locked(self, now: float) -> None:
+        """Drop expired affinity entries when the dict grows past threshold."""
+        if len(self._affinity) <= self.SWEEP_THRESHOLD:
+            return
+        expired = [k for k, a in self._affinity.items() if a.expires_at < now]
+        for k in expired:
+            del self._affinity[k]
