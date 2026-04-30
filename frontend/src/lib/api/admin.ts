@@ -357,3 +357,45 @@ export async function listRecentRequests(
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
+
+// ========================================
+// Request Export
+// ========================================
+
+export interface ExportRequestsParams {
+  startTime: string;
+  endTime: string;
+  userId?: string;
+  modelId?: string;
+  errorsOnly?: boolean;
+  includeContent?: boolean;
+}
+
+export async function exportRequests(params: ExportRequestsParams): Promise<void> {
+  const qs = new URLSearchParams({
+    start_time: params.startTime,
+    end_time: params.endTime,
+  });
+  if (params.userId) qs.set('user_id', params.userId);
+  if (params.modelId) qs.set('model_id', params.modelId);
+  if (params.errorsOnly) qs.set('errors_only', 'true');
+  if (params.includeContent) qs.set('include_content', 'true');
+
+  const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? 'Export failed');
+  }
+
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const startDate = params.startTime.slice(0, 10);
+  const endDate = params.endTime.slice(0, 10);
+  a.href = url;
+  a.download = `requests-${startDate}-${endDate}.jsonl`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
