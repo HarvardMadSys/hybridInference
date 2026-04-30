@@ -217,9 +217,7 @@ export default function AdminPage() {
   const REQ_PAGE_SIZE = 50;
   const [showExportPanel, setShowExportPanel] = useState(false);
   const [exportStartDate, setExportStartDate] = useState('');
-  const [exportEndDate, setExportEndDate] = useState(
-    () => new Date().toISOString().slice(0, 10),
-  );
+  const [exportEndDate, setExportEndDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [exportIncludeContent, setExportIncludeContent] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
 
