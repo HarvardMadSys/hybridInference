@@ -42,6 +42,7 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         )
 
     async def dispatch(self, request: Request, call_next: Callable):  # type: ignore[override]
+        """Run ``call_next`` under an asyncio timeout; return 504 on expiry."""
         try:
             response: Response = await asyncio.wait_for(call_next(request), timeout=self._timeout_s)
         except asyncio.TimeoutError:
