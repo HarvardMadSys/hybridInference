@@ -1802,7 +1802,12 @@ async def test_broadcast_email(
         )
     admin_email = row["email"]
 
-    ok = send_email(
+    # smtplib is sync; offload to a thread so we don't block the event loop
+    # while waiting on the SMTP server.
+    import asyncio as _asyncio
+
+    ok = await _asyncio.to_thread(
+        send_email,
         admin_email,
         f"[TEST] {rendered['subject']}",
         rendered["body_html"],
@@ -1878,7 +1883,21 @@ async def create_broadcast(
             broadcast_id,
         )
 
-    schedule_broadcast(broadcast_id, req.scheduled_at)
+    # If APScheduler can't accept the job we don't want a row that says
+    # "scheduled" forever — mark it failed and surface a 503.
+    try:
+        schedule_broadcast(broadcast_id, req.scheduled_at)
+    except Exception as exc:
+        async with db.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE email_broadcasts SET status = 'failed' WHERE id = $1",
+                broadcast_id,
+            )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to register broadcast with scheduler: {exc}",
+        ) from exc
+
     await log_admin_action(
         db,
         admin,
@@ -1905,6 +1924,9 @@ async def list_broadcasts(
     """List all broadcast campaigns, newest first."""
     if not db or not db.pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
 
     async with db.pool.acquire() as conn:
         total_row = await conn.fetchrow("SELECT COUNT(*) as cnt FROM email_broadcasts")
@@ -1948,6 +1970,9 @@ async def get_broadcast_detail(
     """Get broadcast details with per-recipient status (paginated)."""
     if not db or not db.pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
+
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
 
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(

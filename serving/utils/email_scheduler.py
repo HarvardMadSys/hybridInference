@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
@@ -37,7 +37,10 @@ def start_scheduler(db_pool: asyncpg.Pool) -> None:
     """Start APScheduler and store the DB pool for use by scheduled jobs."""
     global _scheduler, _db_pool
     _db_pool = db_pool
-    _scheduler = AsyncIOScheduler()
+    # All scheduled_at timestamps are stored as TIMESTAMPTZ and rehydrated
+    # with tz=UTC; pin the scheduler to UTC so DateTrigger interprets them
+    # consistently regardless of the host's local timezone.
+    _scheduler = AsyncIOScheduler(timezone=timezone.utc)
     _scheduler.start()
     logger.info("Broadcast email scheduler started")
 
@@ -80,10 +83,15 @@ def schedule_broadcast(broadcast_id: str, run_at: datetime | None) -> None:
 
 
 def cancel_broadcast_job(broadcast_id: str) -> None:
-    """Remove a scheduled APScheduler job. No-op if not found."""
-    if _scheduler:
-        with contextlib.suppress(Exception):
-            _scheduler.remove_job(broadcast_id)
+    """Remove a scheduled APScheduler job. No-op if the job was never registered
+    on this replica (a different replica may own the job, or it may have already
+    fired)."""
+    if not _scheduler:
+        return
+    try:
+        _scheduler.remove_job(broadcast_id)
+    except JobLookupError:
+        logger.debug(f"cancel_broadcast_job: no APScheduler job for {broadcast_id}")
 
 
 def _add_scheduler_job(broadcast_id: str, run_at: datetime) -> None:
@@ -155,16 +163,24 @@ async def execute_broadcast(broadcast_id: str) -> None:
 
         # SMTP is sync; offload to a thread so it doesn't block the event loop.
         sent_user_ids: list[str] = []
-        failed_user_ids: list[str] = []
+        # (user_id, error_message) pairs so we can persist real diagnostics.
+        failed_results: list[tuple[str, str]] = []
         for recipient in batch:
             user_id = recipient["user_id"]
             email = recipient["email"]
+            error_msg: str | None = None
             try:
                 ok = await asyncio.to_thread(send_email, email, subject, body_html, body_text)
+                if not ok:
+                    error_msg = "send_email returned False (SMTP send unsuccessful)"
             except Exception as exc:
                 ok = False
+                error_msg = f"{type(exc).__name__}: {exc}"[:500]
                 logger.warning(f"send_email raised for {email}: {exc}")
-            (sent_user_ids if ok else failed_user_ids).append(user_id)
+            if ok:
+                sent_user_ids.append(user_id)
+            else:
+                failed_results.append((user_id, error_msg or "unknown error"))
 
         # One connection acquisition per batch, not per recipient.
         async with _db_pool.acquire() as conn:
@@ -179,17 +195,21 @@ async def execute_broadcast(broadcast_id: str) -> None:
                     sent_user_ids,
                 )
                 sent_count += len(sent_user_ids)
-            if failed_user_ids:
+            if failed_results:
+                # Single-statement bulk update with per-user error messages, joined
+                # via UNNEST so we don't N round-trip the DB per failed recipient.
                 await conn.execute(
                     """
-                    UPDATE email_broadcast_recipients
-                    SET status = 'failed', error = 'send_email returned False'
-                    WHERE broadcast_id = $1 AND user_id = ANY($2::text[])
+                    UPDATE email_broadcast_recipients AS r
+                    SET status = 'failed', error = u.err
+                    FROM UNNEST($2::text[], $3::text[]) AS u(uid, err)
+                    WHERE r.broadcast_id = $1 AND r.user_id = u.uid
                     """,
                     broadcast_id,
-                    failed_user_ids,
+                    [uid for uid, _ in failed_results],
+                    [err for _, err in failed_results],
                 )
-                failed_count += len(failed_user_ids)
+                failed_count += len(failed_results)
 
         if i + BATCH_SIZE < len(recipients):
             await asyncio.sleep(BATCH_DELAY_SECONDS)

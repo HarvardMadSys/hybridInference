@@ -758,8 +758,24 @@ class DatabaseLogger:
                     status TEXT NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending','sent','failed')),
                     error TEXT,
-                    sent_at TIMESTAMPTZ
+                    sent_at TIMESTAMPTZ,
+                    UNIQUE (broadcast_id, user_id)
                 )
+            """)
+            # Backfill the unique constraint on existing tables (no-op if it
+            # already exists or if duplicates would prevent it).
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    BEGIN
+                        ALTER TABLE email_broadcast_recipients
+                            ADD CONSTRAINT email_broadcast_recipients_broadcast_user_uniq
+                            UNIQUE (broadcast_id, user_id);
+                    EXCEPTION
+                        WHEN duplicate_object THEN NULL;
+                        WHEN duplicate_table THEN NULL;
+                    END;
+                END $$;
             """)
 
             await conn.execute("""

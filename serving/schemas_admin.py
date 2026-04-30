@@ -451,8 +451,11 @@ class BroadcastPreviewRequest(BaseModel):
     subject: str = Field("", description="Required when template_key is None")
     body_html: str = Field("", description="Required when template_key is None")
     body_text: str = Field("", description="Required when template_key is None")
-    target_roles: list[str] = Field(default_factory=list)
-    target_statuses: list[str] = Field(default_factory=list)
+    # Empty arrays would silently match zero users (postgres ANY('{}') is always
+    # false), which is confusing for admins. Require at least one role and one
+    # status — admin must opt in to who receives the broadcast.
+    target_roles: list[str] = Field(..., min_length=1)
+    target_statuses: list[str] = Field(..., min_length=1)
 
 
 class BroadcastPreviewResponse(BaseModel):

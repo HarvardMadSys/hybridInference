@@ -170,6 +170,46 @@ async def test_execute_broadcast_all_fail_marks_failed():
 
 
 @pytest.mark.asyncio
+async def test_execute_broadcast_persists_exception_message():
+    """When send_email raises, the exception class+message is stored in the
+    recipient row, not a generic placeholder."""
+    from serving.utils import email_scheduler
+
+    conn = AsyncMock()
+    conn.fetchrow.return_value = _broadcast_row("bc-exc")
+    conn.fetch.return_value = [{"user_id": "u1", "email": "boom@example.com"}]
+    conn.execute = AsyncMock()
+    pool = _make_pool(conn)
+    email_scheduler._db_pool = pool
+
+    def _raises(*a, **kw):
+        raise RuntimeError("smtp boom")
+
+    with patch("serving.utils.email_scheduler.send_email", side_effect=_raises):
+        await email_scheduler.execute_broadcast("bc-exc")
+
+    failed_call = next(c for c in conn.execute.call_args_list if "status = 'failed'" in str(c))
+    # Args include the per-user error list; the actual message should be in there.
+    args_str = str(failed_call)
+    assert "RuntimeError" in args_str and "smtp boom" in args_str
+
+
+def test_broadcast_preview_request_rejects_empty_filters():
+    """Empty target_roles or target_statuses must be rejected — ANY('{}') matches
+    nothing in postgres, so silently sending zero emails would be confusing."""
+    from pydantic import ValidationError
+
+    from serving.schemas_admin import BroadcastPreviewRequest
+
+    with pytest.raises(ValidationError):
+        BroadcastPreviewRequest(target_roles=[], target_statuses=["active"])
+    with pytest.raises(ValidationError):
+        BroadcastPreviewRequest(target_roles=["free"], target_statuses=[])
+    # Non-empty on both sides is accepted.
+    BroadcastPreviewRequest(target_roles=["free"], target_statuses=["active"])
+
+
+@pytest.mark.asyncio
 async def test_execute_broadcast_offloads_smtp_to_thread():
     """SMTP send_email is dispatched via asyncio.to_thread so it doesn't block the loop."""
     import asyncio
