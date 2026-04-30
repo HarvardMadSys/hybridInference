@@ -76,8 +76,14 @@ class UserConcurrencyLimiter:
             return role
         return "free"
 
-    async def try_acquire(self, user_id: str, role: str, is_admin: bool) -> bool:
-        """Non-blocking acquire. Returns True on success, False if at cap.
+    async def try_acquire(self, user_id: str, role: str, is_admin: bool) -> tuple[bool, int, str]:
+        """Non-blocking acquire.
+
+        Returns a ``(granted, capacity, role_label)`` tuple where *capacity*
+        and *role_label* reflect the slot's **sticky** values (captured at
+        creation time), not the caller's current role.  This ensures that
+        rejection responses always report the cap that is actually being
+        enforced, even if the user's role changed between requests.
 
         Lazy-creates the per-user slot on first call. Capacity is captured
         from the user's role at creation time and is sticky thereafter.
@@ -102,7 +108,7 @@ class UserConcurrencyLimiter:
         else:
             USER_CONCURRENCY_ACQUIRES_TOTAL.labels(role=label, outcome="rejected").inc()
             USER_CONCURRENCY_REJECTED_TOTAL.labels(role=label).inc()
-        return granted
+        return granted, slot.capacity, label
 
     def release(self, user_id: str) -> None:
         """Release a slot. Idempotent for unknown user_id."""
@@ -126,7 +132,7 @@ class UserConcurrencyLimiter:
 
 from typing import TYPE_CHECKING, Any
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 
 from .auth import verify_api_key
 from .deps import get_user_concurrency_limiter
@@ -136,6 +142,7 @@ if TYPE_CHECKING:
 
 
 async def enforce_user_concurrency(
+    request: Request,
     user: dict[str, Any] = Depends(verify_api_key),
     limiter: UserConcurrencyLimiter | None = Depends(get_user_concurrency_limiter),
 ) -> AsyncGenerator[None, None]:
@@ -156,13 +163,16 @@ async def enforce_user_concurrency(
     role = user.get("role", "free") or "free"
     is_admin = bool(user.get("is_admin", False))
 
-    granted = await limiter.try_acquire(user_id, role, is_admin)
+    granted, limit, role_label = await limiter.try_acquire(user_id, role, is_admin)
     if not granted:
-        limit = limiter.limit_for(role, is_admin)
-        role_label = limiter.role_label(role, is_admin)
         logger.info(
             "per-user concurrency limit hit",
-            extra={"user_id": user_id, "role": role_label, "limit": limit},
+            extra={
+                "user_id": user_id,
+                "role": role_label,
+                "limit": limit,
+                "route": request.url.path,
+            },
         )
         raise HTTPException(
             status_code=429,

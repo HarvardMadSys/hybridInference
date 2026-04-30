@@ -57,7 +57,8 @@ async def test_chat_completions_429_when_free_user_at_cap(auth_app, auth_client)
     limiter = _make_limiter()
 
     # Pre-fill the slot — limiter is at capacity before the request arrives.
-    assert await limiter.try_acquire(user["user_id"], "free", False)
+    granted, _, _ = await limiter.try_acquire(user["user_id"], "free", False)
+    assert granted
 
     auth_app.dependency_overrides[verify_api_key] = lambda: user
     auth_app.dependency_overrides[get_user_concurrency_limiter] = lambda: limiter
@@ -90,7 +91,8 @@ async def test_embeddings_429_when_free_user_at_cap(auth_app, auth_client):
     user = _stub_user("user-emb-1", "free", is_admin=False)
     limiter = _make_limiter()
 
-    assert await limiter.try_acquire(user["user_id"], "free", False)
+    granted, _, _ = await limiter.try_acquire(user["user_id"], "free", False)
+    assert granted
 
     auth_app.dependency_overrides[verify_api_key] = lambda: user
     auth_app.dependency_overrides[get_user_concurrency_limiter] = lambda: limiter
@@ -118,7 +120,8 @@ async def test_legacy_completions_429_when_free_user_at_cap(auth_app, auth_clien
     user = _stub_user("user-legacy-1", "free", is_admin=False)
     limiter = _make_limiter()
 
-    assert await limiter.try_acquire(user["user_id"], "free", False)
+    granted, _, _ = await limiter.try_acquire(user["user_id"], "free", False)
+    assert granted
 
     auth_app.dependency_overrides[verify_api_key] = lambda: user
     auth_app.dependency_overrides[get_user_concurrency_limiter] = lambda: limiter
@@ -146,7 +149,8 @@ async def test_single_completion_429_when_free_user_at_cap(auth_app, auth_client
     user = _stub_user("user-single-1", "free", is_admin=False)
     limiter = _make_limiter()
 
-    assert await limiter.try_acquire(user["user_id"], "free", False)
+    granted, _, _ = await limiter.try_acquire(user["user_id"], "free", False)
+    assert granted
 
     auth_app.dependency_overrides[verify_api_key] = lambda: user
     auth_app.dependency_overrides[get_user_concurrency_limiter] = lambda: limiter
@@ -174,7 +178,8 @@ async def test_anthropic_messages_429_when_free_user_at_cap(auth_app, auth_clien
     user = _stub_user("user-anth-1", "free", is_admin=False)
     limiter = _make_limiter()
 
-    assert await limiter.try_acquire(user["user_id"], "free", False)
+    granted, _, _ = await limiter.try_acquire(user["user_id"], "free", False)
+    assert granted
 
     auth_app.dependency_overrides[verify_api_key] = lambda: user
     auth_app.dependency_overrides[get_user_concurrency_limiter] = lambda: limiter
@@ -208,7 +213,8 @@ async def test_two_users_have_independent_budgets_on_real_route(auth_app, auth_c
     user_b = _stub_user("user-B", "free", is_admin=False)
 
     # Pre-fill user-A's slot — user-B's slot is still free.
-    assert await limiter.try_acquire(user_a["user_id"], "free", False)
+    granted, _, _ = await limiter.try_acquire(user_a["user_id"], "free", False)
+    assert granted
 
     # Override to user-B for the actual request.
     auth_app.dependency_overrides[verify_api_key] = lambda: user_b

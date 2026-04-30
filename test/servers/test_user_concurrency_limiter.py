@@ -65,8 +65,10 @@ async def test_try_acquire_grants_until_capacity_then_rejects():
     lim = UserConcurrencyLimiter(LIMITS)
     user_id = "user-1"
     # free → 1 slot
-    assert await lim.try_acquire(user_id, "free", is_admin=False) is True
-    assert await lim.try_acquire(user_id, "free", is_admin=False) is False
+    granted, _, _ = await lim.try_acquire(user_id, "free", is_admin=False)
+    assert granted is True
+    granted, _, _ = await lim.try_acquire(user_id, "free", is_admin=False)
+    assert granted is False
 
 
 @pytest.mark.asyncio
@@ -74,9 +76,11 @@ async def test_release_frees_a_slot():
     lim = UserConcurrencyLimiter(LIMITS)
     user_id = "user-1"
     await lim.try_acquire(user_id, "free", is_admin=False)
-    assert await lim.try_acquire(user_id, "free", is_admin=False) is False
+    granted, _, _ = await lim.try_acquire(user_id, "free", is_admin=False)
+    assert granted is False
     lim.release(user_id)
-    assert await lim.try_acquire(user_id, "free", is_admin=False) is True
+    granted, _, _ = await lim.try_acquire(user_id, "free", is_admin=False)
+    assert granted is True
 
 
 @pytest.mark.asyncio
@@ -89,9 +93,11 @@ async def test_release_unknown_user_is_idempotent():
 @pytest.mark.asyncio
 async def test_two_users_have_independent_budgets():
     lim = UserConcurrencyLimiter(LIMITS)
-    assert await lim.try_acquire("user-A", "free", is_admin=False) is True
+    granted_a, _, _ = await lim.try_acquire("user-A", "free", is_admin=False)
+    assert granted_a is True
     # user-A is at cap, but user-B should still succeed
-    assert await lim.try_acquire("user-B", "free", is_admin=False) is True
+    granted_b, _, _ = await lim.try_acquire("user-B", "free", is_admin=False)
+    assert granted_b is True
 
 
 @pytest.mark.asyncio
@@ -99,8 +105,10 @@ async def test_pro_user_gets_three_slots():
     lim = UserConcurrencyLimiter(LIMITS)
     user_id = "pro-1"
     for _ in range(3):
-        assert await lim.try_acquire(user_id, "pro", is_admin=False) is True
-    assert await lim.try_acquire(user_id, "pro", is_admin=False) is False
+        granted, _, _ = await lim.try_acquire(user_id, "pro", is_admin=False)
+        assert granted is True
+    granted, _, _ = await lim.try_acquire(user_id, "pro", is_admin=False)
+    assert granted is False
 
 
 @pytest.mark.asyncio
@@ -109,8 +117,10 @@ async def test_admin_user_gets_ten_slots():
     user_id = "admin-1"
     for _ in range(10):
         # role "free" but is_admin=True → admin cap
-        assert await lim.try_acquire(user_id, "free", is_admin=True) is True
-    assert await lim.try_acquire(user_id, "free", is_admin=True) is False
+        granted, _, _ = await lim.try_acquire(user_id, "free", is_admin=True)
+        assert granted is True
+    granted, _, _ = await lim.try_acquire(user_id, "free", is_admin=True)
+    assert granted is False
 
 
 @pytest.mark.asyncio
@@ -121,7 +131,39 @@ async def test_capacity_is_sticky_after_creation():
     # First acquire creates the slot at free=1
     await lim.try_acquire(user_id, "free", is_admin=False)
     # Subsequent acquires with role="pro" still see capacity=1
-    assert await lim.try_acquire(user_id, "pro", is_admin=False) is False
+    granted, _, _ = await lim.try_acquire(user_id, "pro", is_admin=False)
+    assert granted is False
+
+
+@pytest.mark.asyncio
+async def test_try_acquire_rejection_reports_sticky_cap_not_current_role():
+    """Regression: when a user's role changes between requests, the 429
+    response must report the cap that is *actually* enforced (the sticky slot
+    cap) — not the higher cap that would apply to the new role.
+
+    Sequence:
+      1. Slot created for "user-sticky" with role="free"  → capacity=1.
+      2. Slot is saturated (in_use == 1).
+      3. try_acquire called again with role="pro" (e.g., role upgraded in DB).
+      4. Should be rejected with capacity=1 (free cap), role_label="free" —
+         the slot's sticky values — not capacity=3 / role_label="pro".
+    """
+    lim = UserConcurrencyLimiter(LIMITS)
+    user_id = "user-sticky"
+
+    # Step 1 + 2: create and saturate a free slot.
+    granted, cap, label = await lim.try_acquire(user_id, "free", is_admin=False)
+    assert granted is True
+    assert cap == 1
+    assert label == "free"
+
+    # Step 3: role "upgraded" to pro — but the slot is already sticky at free=1.
+    granted, cap, label = await lim.try_acquire(user_id, "pro", is_admin=False)
+
+    # Step 4: rejection must reflect the *sticky* cap, not the new role's cap.
+    assert granted is False, "slot at capacity should be rejected"
+    assert cap == 1, f"expected sticky capacity=1 (free), got {cap}"
+    assert label == "free", f"expected sticky role_label='free', got '{label}'"
 
 
 @pytest.mark.asyncio
@@ -130,38 +172,49 @@ async def test_concurrent_acquires_respect_capacity():
     lim = UserConcurrencyLimiter(LIMITS)
     user_id = "pro-1"  # capacity 3
 
-    results = await asyncio.gather(
+    raw = await asyncio.gather(
         *[lim.try_acquire(user_id, "pro", is_admin=False) for _ in range(20)]
     )
+    # Unpack the (granted, capacity, role_label) tuples
+    granted_flags = [r[0] for r in raw]
     # Exactly 3 should win
-    assert results.count(True) == 3
-    assert results.count(False) == 17
+    assert granted_flags.count(True) == 3
+    assert granted_flags.count(False) == 17
 
 
 # ------------------------------ metrics ---------------------------------
 
 
-def _read_counter(counter, **labels) -> float:
-    """Read the float value of a Counter or Gauge with given labels."""
-    return counter.labels(**labels)._value.get()
+def _read_counter(metric_name: str, **labels) -> float:
+    """Read the float value of a metric from the project's REGISTRY.
+
+    Uses the public ``CollectorRegistry.get_sample_value`` API instead of the
+    private ``._value.get()`` attribute, which can break across
+    prometheus_client versions or when metrics are in no-op mode.
+    """
+    from serving.observability.metrics import REGISTRY
+
+    if REGISTRY is None:
+        # METRICS_ENABLED=0 — no real metrics; return 0 so delta assertions pass.
+        return 0.0
+    value = REGISTRY.get_sample_value(metric_name, labels)
+    return value if value is not None else 0.0
 
 
 @pytest.mark.asyncio
 async def test_metrics_granted_increments_acquires_and_in_flight():
-    from serving.observability.metrics import (
-        USER_CONCURRENCY_ACQUIRES_TOTAL,
-        USER_CONCURRENCY_IN_FLIGHT,
-    )
-
     lim = UserConcurrencyLimiter(LIMITS)
 
-    granted_before = _read_counter(USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="granted")
-    in_flight_before = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
+    granted_before = _read_counter(
+        "user_concurrency_acquires_total", role="free", outcome="granted"
+    )
+    in_flight_before = _read_counter("user_concurrency_in_flight", role="free")
 
-    assert await lim.try_acquire("metric-user-1", "free", is_admin=False) is True
+    granted, _, _ = await lim.try_acquire("metric-user-1", "free", is_admin=False)
+    assert granted is True
 
-    granted_after = _read_counter(USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="granted")
-    in_flight_after = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
+    granted_after = _read_counter("user_concurrency_acquires_total", role="free", outcome="granted")
+    in_flight_after = _read_counter("user_concurrency_in_flight", role="free")
 
     assert granted_after - granted_before == 1
     assert in_flight_after - in_flight_before == 1
@@ -169,25 +222,21 @@ async def test_metrics_granted_increments_acquires_and_in_flight():
 
 @pytest.mark.asyncio
 async def test_metrics_rejected_increments_rejected_and_acquires():
-    from serving.observability.metrics import (
-        USER_CONCURRENCY_ACQUIRES_TOTAL,
-        USER_CONCURRENCY_REJECTED_TOTAL,
-    )
-
     lim = UserConcurrencyLimiter(LIMITS)
     user_id = "metric-user-2"
     await lim.try_acquire(user_id, "free", is_admin=False)
 
-    rejected_before = _read_counter(USER_CONCURRENCY_REJECTED_TOTAL, role="free")
+    rejected_before = _read_counter("user_concurrency_rejected_total", role="free")
     rejected_acq_before = _read_counter(
-        USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="rejected"
+        "user_concurrency_acquires_total", role="free", outcome="rejected"
     )
 
-    assert await lim.try_acquire(user_id, "free", is_admin=False) is False
+    granted, _, _ = await lim.try_acquire(user_id, "free", is_admin=False)
+    assert granted is False
 
-    rejected_after = _read_counter(USER_CONCURRENCY_REJECTED_TOTAL, role="free")
+    rejected_after = _read_counter("user_concurrency_rejected_total", role="free")
     rejected_acq_after = _read_counter(
-        USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="rejected"
+        "user_concurrency_acquires_total", role="free", outcome="rejected"
     )
 
     assert rejected_after - rejected_before == 1
@@ -196,28 +245,24 @@ async def test_metrics_rejected_increments_rejected_and_acquires():
 
 @pytest.mark.asyncio
 async def test_metrics_release_decrements_in_flight():
-    from serving.observability.metrics import USER_CONCURRENCY_IN_FLIGHT
-
     lim = UserConcurrencyLimiter(LIMITS)
     user_id = "metric-user-3"
     await lim.try_acquire(user_id, "free", is_admin=False)
 
-    in_flight_before_release = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
+    in_flight_before_release = _read_counter("user_concurrency_in_flight", role="free")
     lim.release(user_id)
-    in_flight_after_release = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
+    in_flight_after_release = _read_counter("user_concurrency_in_flight", role="free")
 
     assert in_flight_before_release - in_flight_after_release == 1
 
 
 @pytest.mark.asyncio
 async def test_metrics_admin_label_used_when_is_admin():
-    from serving.observability.metrics import USER_CONCURRENCY_IN_FLIGHT
-
     lim = UserConcurrencyLimiter(LIMITS)
-    in_flight_before = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="admin")
+    in_flight_before = _read_counter("user_concurrency_in_flight", role="admin")
     # role="free" but is_admin=True → label should be "admin"
     await lim.try_acquire("admin-user-x", "free", is_admin=True)
-    in_flight_after = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="admin")
+    in_flight_after = _read_counter("user_concurrency_in_flight", role="admin")
     assert in_flight_after - in_flight_before == 1
 
 

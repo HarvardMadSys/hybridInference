@@ -236,7 +236,8 @@ async def test_admin_flag_yields_admin_role_in_response_body():
         assert body["detail"]["error"]["role"] == "admin"
         app.unary_event.set()  # type: ignore[attr-defined]
         for t in tasks:
-            await t
+            r = await t
+            assert r.status_code == 200
 
 
 @pytest.mark.asyncio
