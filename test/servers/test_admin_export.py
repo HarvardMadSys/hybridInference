@@ -84,8 +84,7 @@ def test_export_streams_jsonl():
     try:
         client = TestClient(app)
         resp = client.get(
-            "/admin/export/requests"
-            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
+            "/admin/export/requests?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
         )
     finally:
         app.dependency_overrides.clear()
@@ -154,8 +153,7 @@ def test_export_streams_multiple_batches():
     try:
         client = TestClient(app)
         resp = client.get(
-            "/admin/export/requests"
-            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
+            "/admin/export/requests?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
         )
     finally:
         app.dependency_overrides.clear()
@@ -192,8 +190,7 @@ def test_export_no_db_returns_500():
     try:
         client = TestClient(app)
         resp = client.get(
-            "/admin/export/requests"
-            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
+            "/admin/export/requests?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
         )
     finally:
         app.dependency_overrides.clear()

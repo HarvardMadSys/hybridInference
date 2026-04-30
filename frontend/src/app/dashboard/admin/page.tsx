@@ -1197,14 +1197,18 @@ export default function AdminPage() {
                     </button>
                     <button
                       type="button"
-                      disabled={!exportStartDate || exportLoading || (!!exportEndDate && exportEndDate < exportStartDate)}
+                      disabled={
+                        !exportStartDate ||
+                        exportLoading ||
+                        (!!exportEndDate && exportEndDate < exportStartDate)
+                      }
                       onClick={async () => {
                         if (!exportStartDate) return;
                         setExportLoading(true);
                         try {
                           await exportRequests({
-                            startTime: new Date(exportStartDate + 'T00:00:00Z').toISOString(),
-                            endTime: new Date(exportEndDate + 'T23:59:59Z').toISOString(),
+                            startTime: new Date(`${exportStartDate}T00:00:00Z`).toISOString(),
+                            endTime: new Date(`${exportEndDate}T23:59:59Z`).toISOString(),
                             userId: reqUserFilter || undefined,
                             modelId: reqModelFilter || undefined,
                             errorsOnly: reqErrorsOnly || undefined,
@@ -1213,8 +1217,7 @@ export default function AdminPage() {
                           setShowExportPanel(false);
                         } catch (err) {
                           setToast(
-                            'Export failed: ' +
-                              (err instanceof Error ? err.message : 'Unknown error'),
+                            `Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
                           );
                         } finally {
                           setExportLoading(false);
