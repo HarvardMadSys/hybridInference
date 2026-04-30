@@ -384,18 +384,22 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail ?? 'Export failed');
+    const message = (err as { detail?: string }).detail ?? `Export failed (HTTP ${resp.status})`;
+    throw new Error(message);
   }
 
   const blob = await resp.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const startDate = params.startTime.slice(0, 10);
-  const endDate = params.endTime.slice(0, 10);
+  const startDate = params.startTime.slice(0, 10).replace(/-/g, '');
+  const endDate = params.endTime.slice(0, 10).replace(/-/g, '');
   a.href = url;
   a.download = `requests-${startDate}-${endDate}.jsonl`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  try {
+    document.body.appendChild(a);
+    a.click();
+  } finally {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
 }
