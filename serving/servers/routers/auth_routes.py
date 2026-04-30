@@ -187,9 +187,7 @@ async def signup(
 
         # Send email in background so signup returns even if SMTP is slow
         base_url = get_base_url(request)
-        background_tasks.add_task(
-            send_verification_email, body.email, verification_token, base_url
-        )
+        background_tasks.add_task(send_verification_email, body.email, verification_token, base_url)
 
     # Notify admins of new registration when approval is required
     if require_approval and is_email_enabled():
