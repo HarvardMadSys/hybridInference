@@ -22,6 +22,7 @@ from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
 from serving.utils.logging import get_logger, setup_logging
+from serving.utils import email_scheduler
 
 from .deps import AppServices
 from .rate_limiter import PersistentRateLimiter, RateLimitConfig
@@ -333,6 +334,10 @@ async def initialize() -> AppServices:
                 from serving.observability.metrics import DATABASE_CONNECTED
 
                 DATABASE_CONNECTED.set(1)
+                # Start broadcast email scheduler
+                if db_logger.pool:
+                    email_scheduler.start_scheduler(db_logger.pool)
+                    await email_scheduler.rehydrate_scheduled_broadcasts()
                 break
             except Exception as exc:
                 if attempt < max_retries - 1:
@@ -440,6 +445,12 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    # Broadcast email scheduler
+    try:
+        email_scheduler.stop_scheduler()
+    except Exception as exc:
+        logger.error(f"Email scheduler shutdown failed: {exc}")
+
     # Database logger
     if services.db_logger:
         try:
