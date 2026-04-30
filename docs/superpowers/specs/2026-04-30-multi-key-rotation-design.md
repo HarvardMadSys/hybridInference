@@ -34,12 +34,19 @@ A new component `KeyPool` sits inside the adapter. Adapters that opt into multi-
 chat_completions request
   → router picks adapter (existing FixedRouter, unchanged)
   → adapter.chat_completion()
-    → key_pool.acquire(user_id)            ← NEW
-    → POST upstream with that key
-    → key_pool.release(lease, outcome)     ← NEW
-  → on KeyPoolExhausted, raise as adapter failure
+    ┌─ loop (until success, KeyPoolExhausted, or non-429 error):
+    │    key_pool.acquire(affinity_key)            ← NEW
+    │    POST upstream with that key
+    │    if 429: key_pool.release(lease, retry_after=...) ← NEW; cool down THIS key, continue loop
+    │    if 2xx: key_pool.release(lease, success);  return response
+    │    if other error: key_pool.release(lease, no_cooldown); raise
+    └─ on KeyPoolExhausted (no acquirable key): raise as adapter failure
   → existing failover hits next provider in route
 ```
+
+**Within-pool retries vs cross-provider fallback:** the adapter loops over keys in *its own* pool on 429s. Only when the pool is fully exhausted (or a non-429 hard error occurs) does the failure bubble to the router for cross-provider fallback. This is what makes multi-key meaningful — a single 429 against key1 shouldn't waste the chutes/featherless fallback budget when key2/key3 would have worked.
+
+**Bound on the loop:** at most `len(_keys)` iterations per request (each iteration either succeeds, marks the current key cooled-down, or raises). The lease from a 429'd attempt is released with cooldown info; the next iteration acquires a fresh lease for a different key. If the loop runs through every key without success, the last `acquire()` raises `KeyPoolExhausted`.
 
 `KeyPool` exposes two operations:
 
