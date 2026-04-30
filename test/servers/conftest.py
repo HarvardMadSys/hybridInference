@@ -118,6 +118,8 @@ def auth_test_env():
         "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "10.00",
         # Disabled by default for backward compatibility with existing tests
         "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
+        # Turnstile disabled by default; per-test setenv to enable verification.
+        "TURNSTILE_SECRET_KEY": "",
         # Disable SMTP in tests to avoid sending real emails
         "SMTP_HOST": "",
         "SMTP_USER": "",
@@ -146,6 +148,20 @@ def auth_test_env():
             os.environ.pop(key, None)
         else:
             os.environ[key] = original
+
+
+# ============================================================================
+# Per-test signup rate-limit reset (prevents bleed across tests since
+# ASGITransport gives every request the same default client host).
+# ============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _reset_signup_rate_limit():
+    from serving.utils.signup_rate_limit import reset_signup_rate_limit_state
+
+    reset_signup_rate_limit_state()
+    yield
 
 
 # ============================================================================
@@ -414,7 +430,7 @@ async def require_db(auth_app_db_logger):
 async def auth_client_test_user_fixture(auth_client):
     """Create a test user for auth tests."""
     user_data = {
-        "email": f"test_{os.urandom(4).hex()}@example.com",
+        "email": f"test_{os.urandom(4).hex()}@signuptest.dev",
         "password": "TestPass123!",
         "user_name": "Test User",
     }

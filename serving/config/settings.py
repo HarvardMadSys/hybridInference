@@ -49,7 +49,12 @@ class Settings(BaseSettings):
 
     # Rate limiting
     signup_rate_limit_per_hour: int = 5
+    signup_rate_limit_per_day: int = 10
     login_rate_limit_per_15min: int = 5
+
+    # Cloudflare Turnstile (signup captcha)
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = ""
 
     # Email (optional)
     smtp_host: str = "smtp.resend.com"
