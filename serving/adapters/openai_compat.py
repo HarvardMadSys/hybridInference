@@ -16,6 +16,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
+from .key_pool import KeyPool, KeyPoolExhausted
 from .processors import get_processor
 from .profiles import (
     ProviderProfile,
@@ -74,6 +75,14 @@ class OpenAICompatAdapter(BaseAdapter):
 
     def __init__(self, config):
         super().__init__(config)
+
+        # Multi-key API rotation pool (None when single api_key is configured).
+        self._key_pool: KeyPool | None = None
+        if config.api_keys:
+            self._key_pool = KeyPool(
+                keys=list(config.api_keys),
+                provider_label=config.provider,
+            )
 
         logger.info(f"[OpenAICompat] Initialized for {config.id} at {config.base_url}")
 
@@ -161,14 +170,16 @@ class OpenAICompatAdapter(BaseAdapter):
             cleaned["content"] = _normalize_text_content(cleaned["content"])
         return cleaned
 
-    def _build_headers(self) -> dict[str, str]:
-        """Build HTTP headers for request."""
+    def _build_headers(self, api_key_override: str | None = None) -> dict[str, str]:
+        """Build HTTP headers for request.
+
+        Args:
+            api_key_override: when set (multi-key flow), use this key instead
+                of ``self.config.api_key``.
+        """
         headers = {"Content-Type": "application/json"}
-        api_key = (
-            self.config.api_key.strip()
-            if isinstance(self.config.api_key, str)
-            else self.config.api_key
-        )
+        raw = api_key_override if api_key_override is not None else self.config.api_key
+        api_key = raw.strip() if isinstance(raw, str) else raw
 
         # Add standard OpenAI authentication
         if api_key and getattr(self.config, "use_bearer_auth", True):
@@ -186,6 +197,85 @@ class OpenAICompatAdapter(BaseAdapter):
             headers.update(extra_headers)
 
         return headers
+
+    async def _post_with_pool(
+        self, url: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """POST JSON with key-pool rotation on 429s.
+
+        When ``self._key_pool`` is None, falls through to the legacy single-key
+        path with retries. When set, loops over keys: a 429 on key K cools K
+        down and the loop tries the next least-loaded key. Pool exhaustion
+        raises the last 429 (or KeyPoolExhausted if none was seen yet), which
+        the caller surfaces as an upstream failure for the router fallback chain.
+        """
+        if self._key_pool is None:
+            headers = self._build_headers()
+            return await self.http.json_post_with_retry(
+                url=url, json=payload, headers=headers, timeout=120, retries=2
+            )
+
+        from serving.observability.metrics import (
+            KEY_POOL_ACTIVE_AFFINITIES,
+            KEY_POOL_COOLDOWNS,
+            KEY_POOL_EXHAUSTED,
+            KEY_POOL_REQUESTS,
+        )
+        from serving.utils import context as req_ctx
+
+        affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
+        provider = self.config.provider
+
+        # Bound the loop to pool size — defensive; acquire already filters
+        # cooled-down keys, so we shouldn't reacquire the same just-cooled one.
+        max_attempts = self._key_pool.size()
+        last_429_error: aiohttp.ClientResponseError | None = None
+
+        for _ in range(max_attempts):
+            try:
+                api_key, lease = self._key_pool.acquire(affinity_key)
+            except KeyPoolExhausted:
+                KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+                if last_429_error is not None:
+                    raise last_429_error
+                raise
+
+            KEY_POOL_REQUESTS.labels(
+                provider=provider, key_index=str(lease.key_index)
+            ).inc()
+
+            headers = self._build_headers(api_key_override=api_key)
+            try:
+                response = await self.http.json_post(
+                    url=url, json=payload, headers=headers, timeout=None
+                )
+                self._key_pool.release(lease, status_code=200, retry_after=None)
+                KEY_POOL_ACTIVE_AFFINITIES.labels(provider=provider).set(
+                    self._key_pool.affinity_count()
+                )
+                return response
+            except aiohttp.ClientResponseError as e:
+                if e.status == 429:
+                    retry_after = e.headers.get("Retry-After") if e.headers else None
+                    self._key_pool.release(
+                        lease, status_code=429, retry_after=retry_after
+                    )
+                    reason = "retry_after" if retry_after else "default_2min"
+                    KEY_POOL_COOLDOWNS.labels(
+                        provider=provider,
+                        key_index=str(lease.key_index),
+                        reason=reason,
+                    ).inc()
+                    last_429_error = e
+                    continue  # try next key
+                # Non-429 error — release without cooldown, propagate.
+                self._key_pool.release(lease, status_code=e.status, retry_after=None)
+                raise
+
+        # Loop exhausted naturally (every key returned 429 in this single call)
+        KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+        assert last_429_error is not None
+        raise last_429_error
 
     def _build_url(self) -> str:
         """Build full endpoint URL (standard OpenAI path)."""
@@ -254,19 +344,10 @@ class OpenAICompatAdapter(BaseAdapter):
 
         # Make request
         url = self._build_url()
-        headers = self._build_headers()
-
         logger.debug(f"[OpenAICompat] POST {url} model={payload.get('model', '<omitted>')}")
         logger.debug(f"[OpenAICompat] Payload: {payload}")
-        logger.debug(f"[OpenAICompat] Headers: {headers}")
 
-        response = await self.http.json_post_with_retry(
-            url=url,
-            json=payload,
-            headers=headers,
-            timeout=120,
-            retries=2,
-        )
+        response = await self._post_with_pool(url, payload)
 
         # Process output format (e.g. remove XML tags)
         processor = get_processor(self._processor_model_id, override=self._processor_override)
