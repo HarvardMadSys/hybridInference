@@ -111,9 +111,8 @@ async def signup(
     Creates a new user with email and password. Sends verification email if SMTP is configured.
     User must verify email before they can generate an API key.
 
-    Rate limits:
-    - 5 signups per hour per IP
-    - 10 signups per day per IP
+    Per-IP signup rate limits are configurable via
+    settings.signup_rate_limit_per_hour and signup_rate_limit_per_day.
     """
     # Check if signup is enabled
     if os.getenv("SIGNUP_ENABLED", "1") != "1":

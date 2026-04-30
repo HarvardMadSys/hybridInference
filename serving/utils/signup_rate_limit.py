@@ -68,10 +68,12 @@ async def check_and_record_signup(ip: str) -> tuple[bool, str | None]:
         day_count = len(bucket)
         bucket.append(now)
 
-    if hour_count >= per_hour:
-        return False, "hour"
+    # Prefer the longer window when both trip so Retry-After reflects the
+    # real wait (telling a 24h-blocked client to retry in 1h is wrong).
     if day_count >= per_day:
         return False, "day"
+    if hour_count >= per_hour:
+        return False, "hour"
     return True, None
 
 

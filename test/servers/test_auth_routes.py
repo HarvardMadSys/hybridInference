@@ -202,8 +202,9 @@ class TestSignupAbuseProtection:
     ):
         from serving.utils import signup_rate_limit
 
-        # Space attempts > 1h/per_hour apart so the hour window only ever holds
-        # one attempt at a time and the per-day limit is what eventually trips.
+        # Space attempts 1000s apart: that's > 3600s / per_hour (720s for a
+        # 5/hour budget), so each rolling hour window holds < per_hour
+        # attempts and the per-day limit is what eventually trips.
         base = signup_rate_limit._now()
         spacing = 1000
         offsets = iter([base + i * spacing for i in range(20)])
