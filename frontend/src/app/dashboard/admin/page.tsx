@@ -1155,24 +1155,24 @@ export default function AdminPage() {
             {showExportPanel && (
               <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
                 <div className="flex flex-wrap items-end gap-3">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[12px] text-gray-500">Start date</label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[12px] text-gray-500">Start date</span>
                     <input
                       type="date"
                       value={exportStartDate}
                       onChange={(e) => setExportStartDate(e.target.value)}
                       className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                     />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[12px] text-gray-500">End date</label>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[12px] text-gray-500">End date</span>
                     <input
                       type="date"
                       value={exportEndDate}
                       onChange={(e) => setExportEndDate(e.target.value)}
                       className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                     />
-                  </div>
+                  </label>
                   <label className="flex items-center gap-1.5 pb-2 text-[13px] text-gray-600 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -1197,7 +1197,7 @@ export default function AdminPage() {
                     </button>
                     <button
                       type="button"
-                      disabled={!exportStartDate || exportLoading}
+                      disabled={!exportStartDate || exportLoading || (!!exportEndDate && exportEndDate < exportStartDate)}
                       onClick={async () => {
                         if (!exportStartDate) return;
                         setExportLoading(true);
