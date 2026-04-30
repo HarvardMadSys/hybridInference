@@ -30,6 +30,7 @@ _RESERVED_TLDS: tuple[str, ...] = (".test", ".example", ".invalid", ".localhost"
 
 
 def is_email_domain_blocked(email: str) -> bool:
+    """Return True if *email* uses a disposable or RFC-2606 reserved domain."""
     if "@" not in email:
         return False
     domain = email.rsplit("@", 1)[1].strip().lower()

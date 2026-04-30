@@ -18,6 +18,13 @@ def _get_secret_key() -> str:
 
 
 async def verify_turnstile_token(token: str | None, remote_ip: str) -> bool:
+    """Verify a Cloudflare Turnstile token against the siteverify endpoint.
+
+    Returns True when no secret key is configured (verification disabled),
+    when Cloudflare confirms the token, and False on any failure. Fails
+    closed on network errors or non-200 responses so a Cloudflare outage
+    cannot accidentally allow unverified signups.
+    """
     secret_key = _get_secret_key()
     if not secret_key:
         return True

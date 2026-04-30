@@ -76,6 +76,11 @@ def _check_and_record_sync(ip: str, now: float) -> tuple[bool, str | None]:
 
 
 async def check_and_record_signup(ip: str) -> tuple[bool, str | None]:
+    """Record a signup attempt and return whether it should be allowed.
+
+    Returns (True, None) if the IP is under both the per-hour and per-day
+    limits, or (False, "hour"|"day") indicating which window tripped.
+    """
     return await asyncio.to_thread(_check_and_record_sync, ip, _now())
 
 
