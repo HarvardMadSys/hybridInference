@@ -148,6 +148,7 @@ async def signup(
 
     # Determine initial status based on approval setting
     require_approval = os.getenv("SIGNUP_REQUIRE_APPROVAL", "0") == "1"
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
     initial_status = "pending_approval" if require_approval else "active"
 
     # Create user
@@ -168,8 +169,10 @@ async def signup(
             initial_status,
         )
 
-    # Send verification email if SMTP is configured
-    if is_email_enabled():
+    # Send verification email only when verification is required and SMTP is configured.
+    # Skipping the email when SIGNUP_REQUIRE_EMAIL_VERIFICATION=false avoids burning
+    # SMTP quota on emails that the login flow does not require.
+    if require_verification and is_email_enabled():
         # Generate verification token
         verification_token = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
@@ -220,8 +223,10 @@ async def signup(
             "Account created successfully. Your registration is pending admin approval. "
             "You will receive an email once your account is approved."
         )
-    else:
+    elif require_verification:
         message = "Account created successfully. Please check your email to verify your account."
+    else:
+        message = "Account created successfully. You can now log in."
 
     return SignupResponse(
         message=message,
