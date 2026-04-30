@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from serving.schemas import EmbeddingRequest, EmbeddingResponse, ErrorResponse
 from serving.servers.auth import verify_api_key
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import get_embedding_adapters
 from serving.utils.logging import get_logger
 
@@ -29,6 +30,7 @@ async def create_embeddings(
     request: EmbeddingRequest,
     user_ctx: dict = Depends(verify_api_key),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+    _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Create embeddings for the given input text(s).
 

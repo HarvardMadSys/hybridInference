@@ -268,7 +268,11 @@ class UserDetailResponse(BaseModel):
 class UpdateUserRequest(BaseModel):
     """Request payload for updating user/key settings."""
 
-    role: str | None = Field(None, pattern="^(free|internal|admin)$")
+    role: str | None = Field(
+        None,
+        pattern="^(free|pro|internal|admin)$",
+        description="One of: free, pro, internal, admin",
+    )
     tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
@@ -374,6 +378,47 @@ class AdminRequestMetricsResponse(BaseModel):
     windows: list[AdminRequestMetricsWindow]
 
 
+class AdminHistogramBucket(BaseModel):
+    """A single histogram bucket for a metric distribution."""
+
+    lower_bound: float
+    upper_bound: float | None = None
+    count: int
+
+
+class AdminMetricDistribution(BaseModel):
+    """Distribution summary (count, percentiles, histogram) for a single metric."""
+
+    count: int
+    mean: float | None = None
+    min: float | None = None
+    max: float | None = None
+    p50: float | None = None
+    p90: float | None = None
+    p95: float | None = None
+    p99: float | None = None
+    histogram: list[AdminHistogramBucket] = Field(default_factory=list)
+
+
+class AdminPerformanceMetricsWindow(BaseModel):
+    """Performance metric distributions for a single lookback window."""
+
+    key: str
+    label: str
+    window_minutes: int
+    prompt_tokens: AdminMetricDistribution
+    completion_tokens: AdminMetricDistribution
+    ttft_ms: AdminMetricDistribution
+    tbt_ms: AdminMetricDistribution
+
+
+class AdminPerformanceMetricsResponse(BaseModel):
+    """Performance metric distributions across admin dashboard lookback windows."""
+
+    generated_at: datetime
+    windows: list[AdminPerformanceMetricsWindow]
+
+
 class AdminRecentRequestItem(BaseModel):
     """A single API request log entry (admin view, includes user identity)."""
 
@@ -453,6 +498,10 @@ __all__ = [
     "APIKeyDetailResponse",
     "APIKeyDetailUsage",
     "APIKeyListItem",
+    "AdminHistogramBucket",
+    "AdminMetricDistribution",
+    "AdminPerformanceMetricsResponse",
+    "AdminPerformanceMetricsWindow",
     "AdminProviderQuotasResponse",
     "AdminRecentRequestItem",
     "AdminRecentRequestsResponse",

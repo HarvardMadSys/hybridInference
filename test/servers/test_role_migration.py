@@ -121,6 +121,29 @@ class TestRoleMigration:
                     )
 
     @pytest.mark.asyncio
+    async def test_role_check_accepts_pro(self, auth_db_logger: DatabaseLogger) -> None:
+        """Regression for Task 8 critical: DB CHECK constraint must accept pro role."""
+        pool = auth_db_logger.pool
+        if pool is None:
+            pytest.skip("Database not available")
+
+        user_id = str(ULID())
+        async with pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO users (id, email, password_hash, user_name, role, status)
+                    VALUES ($1, $2, 'x', 'pro test', 'pro', 'active')
+                    """,
+                    user_id,
+                    f"{user_id}@test.example",
+                )
+                row = await conn.fetchrow("SELECT role FROM users WHERE id = $1", user_id)
+                assert row["role"] == "pro"
+            finally:
+                await conn.execute("DELETE FROM users WHERE id = $1", user_id)
+
+    @pytest.mark.asyncio
     async def test_migration_is_idempotent(self, migration_db: DatabaseLogger) -> None:
         """Running _create_tables() twice should not fail or corrupt data."""
         await migration_db._create_tables()
