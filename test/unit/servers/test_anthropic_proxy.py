@@ -269,7 +269,7 @@ def _mock_deps():
     """Override FastAPI dependencies for testing."""
 
     async def fake_verify_api_key():
-        return {"authenticated": True, "user_id": "test-user"}
+        return {"authenticated": True, "user_id": "test-user", "role": "free", "is_admin": False}
 
     async def fake_get_router():
         return _make_router_exec()
@@ -281,13 +281,28 @@ def _mock_deps():
         return None
 
     from serving.servers.auth import verify_api_key
-    from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
+    from serving.servers.concurrency import UserConcurrencyLimiter
+    from serving.servers.deps import (
+        get_db_logger,
+        get_rate_limiter,
+        get_router,
+        get_user_concurrency_limiter,
+    )
+
+    # Each test gets its own limiter so per-user state doesn't leak across tests.
+    test_limiter = UserConcurrencyLimiter(
+        {"free": 10, "pro": 10, "internal": 10, "admin": 10}
+    )
+
+    async def fake_get_user_concurrency_limiter():
+        return test_limiter
 
     overrides = {
         verify_api_key: fake_verify_api_key,
         get_router: fake_get_router,
         get_rate_limiter: fake_get_rate_limiter,
         get_db_logger: fake_get_db_logger,
+        get_user_concurrency_limiter: fake_get_user_concurrency_limiter,
     }
     return overrides
 
