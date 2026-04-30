@@ -268,7 +268,7 @@ class UserDetailResponse(BaseModel):
 class UpdateUserRequest(BaseModel):
     """Request payload for updating user/key settings."""
 
-    role: str | None = Field(None, pattern="^(free|internal|admin)$")
+    role: str | None = Field(None, pattern="^(free|pro|internal|admin)$")
     tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
