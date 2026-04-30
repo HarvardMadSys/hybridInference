@@ -15,8 +15,8 @@ Client ──▶ Cloudflare ──▶ Nginx (:443) ──▶ FastAPI (:8080)
 | **Nginx** | TLS termination (Let's Encrypt cert), path-based routing (`/v1/`, `/auth/`, `/user/`, `/admin/` → FastAPI; everything else → frontend), request body limits (`client_max_body_size`), WebSocket upgrade. |
 | **FastAPI** | API logic — request authentication, model routing, rate limiting, backpressure, Qdrant proxy, and observability. Listens on `127.0.0.1:8080`. |
 
-Docker Compose manages all services (backend, frontend, PostgreSQL, Prometheus,
-Alertmanager, alert-logger, Grafana) with automatic restarts via `restart: unless-stopped`.
+Docker Compose manages all services (backend, frontend, PostgreSQL, Alertmanager,
+alert-logger) with automatic restarts via `restart: unless-stopped`.
 
 ### Deployment
 

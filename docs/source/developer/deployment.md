@@ -19,8 +19,8 @@ make ps
 curl http://localhost:8080/health
 ```
 
-This starts 7 containers: backend (FastAPI), frontend (Next.js), PostgreSQL, Prometheus,
-Alertmanager, alert-logger, and Grafana. All ports bind to `127.0.0.1` only.
+This starts 5 containers: backend (FastAPI), frontend (Next.js), PostgreSQL,
+Alertmanager, and alert-logger. All ports bind to `127.0.0.1` only.
 
 ## Prerequisites
 
@@ -32,15 +32,11 @@ Alertmanager, alert-logger, and Grafana. All ports bind to `127.0.0.1` only.
 
 ```
 Client ──▶ Cloudflare (CDN + DDoS) ──▶ Nginx (:443) ──┬──▶ backend  (:8080)
-                                                        ├──▶ frontend (:3001)
-                                                        ├──▶ grafana  (:3000)
-                                                        └──▶ prometheus (:9090)
+                                                        └──▶ frontend (:3001)
 
 Docker internal network:
   backend ──▶ postgres (:5432)
-  prometheus ──▶ backend (:8080/metrics)
-  prometheus ──▶ alertmanager (:9093) ──▶ alert-logger (:5001)
-  grafana ──▶ prometheus (:9090), postgres (:5432)
+  alertmanager (:9093) ──▶ alert-logger (:5001)
   backend ──▶ host.docker.internal (GPU SSH tunnels on host)
 ```
 
@@ -72,7 +68,6 @@ the full list with comments. Key variables:
 | `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Yes | PostgreSQL credentials |
 | `JWT_SECRET_KEY` | Yes | JWT signing key (generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`) |
 | `API_KEY_SECRET` | Yes | HMAC key for API key hashing |
-| `GRAFANA_USER`, `GRAFANA_PASSWORD` | No | Grafana admin credentials (default: admin/admin) |
 
 ### Local GPU Endpoints
 
@@ -94,7 +89,7 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 This assumes:
-- Backend: `127.0.0.1:8080`, Frontend: `127.0.0.1:3001`, Grafana: `127.0.0.1:3000`
+- Backend: `127.0.0.1:8080`, Frontend: `127.0.0.1:3001`
 - HTTPS certificates from Let's Encrypt
 
 ### Cloudflare
@@ -163,35 +158,12 @@ curl http://localhost:8080/health
 # {"status":"healthy","routes_configured":17,"database_connected":true}
 ```
 
-### Prometheus Metrics
-
-Metrics at `http://localhost:9090`. Key metrics:
-- `http_requests_total` — Total HTTP requests
-- `http_request_duration_seconds` — Request latency
-- `model_requests_total` — Requests per model
-
-### Grafana Dashboards
-
-Access at `https://<your-domain>/grafana/` (default login: admin/admin).
-
-> **Security note**: The `/grafana/` path is currently public-facing behind Nginx with only
-> Grafana's built-in login. Consider adding an IP allowlist or HTTP Basic Auth in the Nginx
-> `location ^~ /grafana/` block for an extra layer of protection.
-
-Dashboards are managed via the Grafana UI. To backup/restore:
-
-```bash
-# Export current dashboards from UI to repo
-./infrastructure/grafana/export-dashboards.sh
-
-# Import repo dashboards into a fresh Grafana instance
-./infrastructure/grafana/import-dashboards.sh
-```
-
 ### Alerting
 
-Three active alert rules: `ServiceDown`, `ServiceUnreachable`, `DatabaseDisconnected`.
-Alerts route to Slack and are logged to `alert_log_data` volume.
+Alertmanager and the local alert-logger run as part of the stack. They are
+preserved for future use, but with Prometheus removed they currently receive
+no alerts. Re-enable a metrics pipeline (or wire a different alert source)
+to start populating them again.
 
 ## Database
 

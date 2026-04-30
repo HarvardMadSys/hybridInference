@@ -16,8 +16,6 @@ observability services all run under
 - Frontend: `3002`
 - Backend API: `8000`
 - PostgreSQL: `5433`
-- Prometheus: `9091`
-- Grafana: `3001`
 - pgAdmin: `5051` when the `admin` profile is enabled
 
 ## First-time server bootstrap

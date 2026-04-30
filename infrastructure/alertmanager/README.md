@@ -1,6 +1,6 @@
 # Alertmanager
 
-Alertmanager receives alerts from Prometheus and routes them to your notification channels (Slack, Email, etc.). This folder contains an example configuration you can copy and adapt.
+Alertmanager receives alerts from a metrics source (historically Prometheus) and routes them to your notification channels (Slack, Email, etc.). This project no longer ships an in-tree Prometheus, so by default Alertmanager runs without a feeding source — it is kept available for future re-introduction of a metrics pipeline. This folder contains an example configuration you can copy and adapt.
 
 ## Files
 - `alertmanager.yml.example` — Template config demonstrating common receivers and routing.
@@ -51,27 +51,15 @@ docker run --rm -p 9093:9093 \
   --config.file=/etc/alertmanager/alertmanager.yml
 ```
 
-4) Point Prometheus at Alertmanager (edit `infrastructure/prometheus/prometheus.yml` and uncomment):
-
-```yaml
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets: ["localhost:9093"]
-```
+4) Point your metrics source at Alertmanager (e.g. for Prometheus, configure
+   the `alerting.alertmanagers` block to target `localhost:9093`).
 
 ## Verify
 - Open `http://localhost:9093` for the Alertmanager UI.
 - Health endpoints: `/-/ready` and `/-/healthy`.
-- Trigger a test alert by temporarily lowering a threshold in a rule under `infrastructure/prometheus/rules/`.
 
 ## Tips
 - Grouping and routing: group by labels such as `alertname`, `env`, `service` to reduce noise.
 - Templating: use Alertmanager templates to include labels like `route`, `provider`, `model` in messages.
 - Secrets: never commit secrets; prefer env vars or mounted files for webhook URLs and SMTP credentials.
 - Reverse proxy: set `--web.external-url` (or `external_url` in config) if exposed behind a proxy.
-- Ownership: add `external_labels` in Prometheus (e.g., `env`, `instance`) to help route/assign alerts.
-
-## Related
-- Prometheus rules live in `infrastructure/prometheus/rules/`.
-- Prometheus setup and tips: `infrastructure/prometheus/README.md`.

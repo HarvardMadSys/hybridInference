@@ -14,7 +14,7 @@ hybridInference/
 │   │   └── routers/            # API routers (health, models, completions, admin)
 │   ├── adapters/               # Provider adapters (local VLLM, DeepSeek, Gemini, Test, ...)
 │   ├── storage/                # Database loggers (SQLite/PostgreSQL)
-│   ├── observability/          # Metrics export (Prometheus, traces)
+│   ├── observability/          # Structured request logging
 │   └── utils/                  # Logging, configuration helpers
 ├── routing/                    # Routing manager and execution strategies
 ├── config/
@@ -29,7 +29,7 @@ hybridInference/
 - **Bootstrap (`serving.servers.bootstrap`)**: Loads environment, registers models, applies routing weights, wires database logging, and configures rate limits.
 - **Adapters (`serving.adapters.*`)**: Translate requests to providers such as local VLLM, DeepSeek, Gemini, and Test API.
 - **Routing (`routing.*`)**: Supports fixed-ratio and future strategies for splitting traffic across adapters.
-- **Observability (`serving.observability.metrics`)**: Prometheus metrics and structured request logging.
+- **Observability (`serving.observability`)**: Structured request logging.
 
 ## Features
 
@@ -38,7 +38,7 @@ hybridInference/
 - **Resilient adapters**: Automatic retry/fallback when a provider returns errors.
 - **Usage accounting**: Prompt/completion token tracking and persisted request logs.
 - **Streaming responses**: Server-Sent Events (SSE) for incremental output.
-- **Observability hooks**: Prometheus metrics endpoint and structured request logs (SQLite/PostgreSQL).
+- **Observability hooks**: Structured request logs (SQLite/PostgreSQL).
 
 ## Development Setup
 
@@ -129,7 +129,6 @@ See [Deployment](deployment.md) for the full guide.
 | GET | `/v1/models` | Enumerate available models with OpenRouter metadata |
 | POST | `/v1/chat/completions` | OpenRouter/OpenAI-compatible chat completion |
 | GET | `/health` | Liveness and dependency checks |
-| GET | `/metrics` | Prometheus metrics (requires auth upstream) |
 | GET | `/routing` | Current routing weights (admin scope) |
 | GET | `/stats` | Aggregated usage statistics |
 
@@ -156,7 +155,7 @@ env \
 
 - **SQLite (default)**: When `USE_SQLITE_LOG=true`, logs persist to `var/db/openrouter_logs.db`. Override with `SQLITE_DB_PATH` or `OPENROUTER_SQLITE_DB`.
 - **PostgreSQL**: Set `USE_SQLITE_LOG=false` and `DATABASE_URL=<dsn>` to stream logs into PostgreSQL for analytics.
-- **Metrics**: `/metrics` exposes Prometheus counters/latencies. Enable scraping through infrastructure (e.g., Prometheus + Grafana).
+- **Metrics**: Prometheus instrumentation has been removed; structured logs in PostgreSQL/SQLite are the supported observability surface today.
 
 Inspect logs locally:
 ```bash
