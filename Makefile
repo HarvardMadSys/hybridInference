@@ -135,6 +135,7 @@ docker-volumes:  ## Create external Docker volumes required by production compos
 
 sync-subscriptions:  ## Import CLI OAuth credentials for subscription adapters
 	@mkdir -p var/data
+	@test -w var/data || { echo "$(YELLOW)var/data is not writable. Fix with: sudo chown -R $$(id -u):$$(id -g) var/data$(RESET)"; exit 1; }
 	@echo "$(YELLOW)Syncing subscription credentials...$(RESET)"
 	@if [ -f "$$HOME/.codex/auth.json" ]; then \
 		$(UV_RUN) python scripts/import_codex_auth.py \
