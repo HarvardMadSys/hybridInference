@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, AsyncGenerator, Literal
+
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from serving.schemas_admin import (
     AdminRecentRequestItem,
@@ -1719,3 +1722,117 @@ async def admin_list_recent_requests(
     ]
 
     return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+
+
+@router.get("/admin/export/requests")
+async def admin_export_requests(
+    request: Request,
+    start_time: datetime,
+    end_time: datetime | None = None,
+    user_id: str | None = None,
+    model_id: str | None = None,
+    errors_only: bool = False,
+    include_content: bool = False,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> StreamingResponse:
+    """Stream all request logs matching the given filters as JSONL.
+
+    Query Parameters:
+    - start_time: ISO8601 datetime, inclusive lower bound (required)
+    - end_time: ISO8601 datetime, inclusive upper bound (defaults to now)
+    - user_id: Filter by user ID
+    - model_id: Filter by model ID
+    - errors_only: If true, only include requests with errors
+    - include_content: If true, include prompt and response fields
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    if end_time is None:
+        end_time = datetime.now(timezone.utc)
+
+    where_clauses: list[str] = ["l.timestamp >= $1", "l.timestamp <= $2"]
+    params: list[Any] = [start_time, end_time]
+
+    if user_id:
+        where_clauses.append(f"l.user_id = ${len(params) + 1}")
+        params.append(user_id)
+
+    if model_id:
+        where_clauses.append(f"l.model_id = ${len(params) + 1}")
+        params.append(model_id)
+
+    if errors_only:
+        where_clauses.append(
+            "(l.error IS NOT NULL OR l.status_code IS NULL "
+            "OR l.status_code < 200 OR l.status_code >= 400)"
+        )
+
+    where_sql = "WHERE " + " AND ".join(where_clauses)
+    content_cols = ", l.prompt, l.response" if include_content else ""
+    batch_size = 500
+
+    async def generate() -> AsyncGenerator[str, None]:
+        offset = 0
+        while True:
+            limit_idx = len(params) + 1
+            offset_idx = len(params) + 2
+            async with db_logger.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT
+                        l.request_id, l.user_id, u.user_name, u.email AS user_email,
+                        l.model_id, l.provider, l.timestamp,
+                        l.status_code, l.latency_ms, l.ttft_ms,
+                        l.prompt_tokens, l.completion_tokens, l.total_tokens,
+                        l.cost_usd, l.error{content_cols}
+                    FROM api_logs l
+                    LEFT JOIN users u ON u.id = l.user_id
+                    {where_sql}
+                    ORDER BY l.timestamp DESC
+                    LIMIT ${limit_idx} OFFSET ${offset_idx}
+                    """,
+                    *params,
+                    batch_size,
+                    offset,
+                )
+            if not rows:
+                break
+            for row in rows:
+                record: dict[str, Any] = {
+                    "request_id": row["request_id"],
+                    "timestamp": row["timestamp"].isoformat(),
+                    "user_id": row["user_id"],
+                    "user_name": row["user_name"],
+                    "user_email": row["user_email"],
+                    "model_id": row["model_id"],
+                    "provider": row["provider"],
+                    "ttft_ms": row["ttft_ms"],
+                    "latency_ms": row["latency_ms"],
+                    "prompt_tokens": row["prompt_tokens"],
+                    "completion_tokens": row["completion_tokens"],
+                    "total_tokens": row["total_tokens"],
+                    "cost_usd": (
+                        float(row["cost_usd"]) if row["cost_usd"] is not None else None
+                    ),
+                    "status_code": row["status_code"],
+                    "error": row["error"],
+                }
+                if include_content:
+                    record["prompt"] = row["prompt"]
+                    record["response"] = row["response"]
+                yield json.dumps(record) + "\n"
+            offset += batch_size
+
+    start_str = start_time.strftime("%Y%m%d")
+    end_str = end_time.strftime("%Y%m%d")
+    filename = f"requests-{start_str}-{end_str}.jsonl"
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

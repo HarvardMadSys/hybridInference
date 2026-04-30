@@ -1,0 +1,196 @@
+"""Tests for GET /admin/export/requests streaming JSONL endpoint."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+
+def _make_mock_row(
+    *,
+    request_id: str = "req-abc",
+    user_id: str = "user-1",
+    user_name: str = "alice",
+    user_email: str = "alice@example.com",
+    model_id: str = "gpt-4o",
+    provider: str = "openai",
+    timestamp: datetime | None = None,
+    status_code: int = 200,
+    latency_ms: int = 1200,
+    ttft_ms: int = 300,
+    prompt_tokens: int = 50,
+    completion_tokens: int = 100,
+    total_tokens: int = 150,
+    cost_usd: Decimal = Decimal("0.00120000"),
+    error: str | None = None,
+    prompt: str = "Hello",
+    response: str = "World",
+) -> dict:
+    return {
+        "request_id": request_id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "user_email": user_email,
+        "model_id": model_id,
+        "provider": provider,
+        "timestamp": timestamp or datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
+        "status_code": status_code,
+        "latency_ms": latency_ms,
+        "ttft_ms": ttft_ms,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cost_usd": cost_usd,
+        "error": error,
+        "prompt": prompt,
+        "response": response,
+    }
+
+
+def _make_mock_db(rows_per_batch: list[list[dict]]):
+    """Return a mock db_logger whose pool yields rows_per_batch in successive fetches."""
+    mock_db = MagicMock()
+    mock_pool = MagicMock()
+    mock_db.pool = mock_pool
+
+    fetch_results = iter(rows_per_batch)
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(side_effect=lambda *a, **kw: next(fetch_results, []))
+
+    acquire_ctx = MagicMock()
+    acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+    acquire_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_pool.acquire = MagicMock(return_value=acquire_ctx)
+
+    return mock_db
+
+
+def test_export_streams_jsonl():
+    """Endpoint returns JSONL with one record per row, no prompt/response by default."""
+    from serving.servers.deps import get_db_logger, verify_admin_access
+    from serving.servers.app import app
+
+    row = _make_mock_row()
+    db = _make_mock_db([[row], []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert "application/x-ndjson" in resp.headers["content-type"]
+    assert "attachment" in resp.headers["content-disposition"]
+
+    lines = [l for l in resp.text.strip().split("\n") if l]
+    assert len(lines) == 1
+
+    record = json.loads(lines[0])
+    assert record["request_id"] == "req-abc"
+    assert record["model_id"] == "gpt-4o"
+    assert record["provider"] == "openai"
+    assert record["ttft_ms"] == 300
+    assert record["latency_ms"] == 1200
+    assert record["prompt_tokens"] == 50
+    assert record["completion_tokens"] == 100
+    assert record["total_tokens"] == 150
+    assert record["status_code"] == 200
+    assert record["error"] is None
+    assert "prompt" not in record
+    assert "response" not in record
+
+
+def test_export_includes_content_when_requested():
+    """With include_content=true, prompt and response appear in each record."""
+    from serving.servers.deps import get_db_logger, verify_admin_access
+    from serving.servers.app import app
+
+    row = _make_mock_row(prompt="Say hi", response="Hi there")
+    db = _make_mock_db([[row], []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z"
+            "&include_content=true",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    lines = [l for l in resp.text.strip().split("\n") if l]
+    record = json.loads(lines[0])
+    assert record["prompt"] == "Say hi"
+    assert record["response"] == "Hi there"
+
+
+def test_export_streams_multiple_batches():
+    """Generator continues fetching until an empty batch is returned."""
+    from serving.servers.deps import get_db_logger, verify_admin_access
+    from serving.servers.app import app
+
+    batch1 = [_make_mock_row(request_id=f"req-{i}") for i in range(3)]
+    batch2 = [_make_mock_row(request_id=f"req-{i}") for i in range(3, 5)]
+    db = _make_mock_db([batch1, batch2, []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    lines = [l for l in resp.text.strip().split("\n") if l]
+    assert len(lines) == 5
+
+
+def test_export_missing_start_time_returns_422():
+    """start_time is required; missing it returns HTTP 422."""
+    from serving.servers.deps import get_db_logger, verify_admin_access
+    from serving.servers.app import app
+
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: MagicMock()
+    try:
+        client = TestClient(app)
+        resp = client.get("/admin/export/requests")
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 422
+
+
+def test_export_no_db_returns_500():
+    """Returns 500 when db_logger has no pool."""
+    from serving.servers.deps import get_db_logger, verify_admin_access
+    from serving.servers.app import app
+
+    no_db = MagicMock()
+    no_db.pool = None
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: no_db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 500
