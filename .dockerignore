@@ -17,8 +17,6 @@ tests/
 docs/
 
 # Binaries on host
-prometheus
-prometheus-*.linux-amd64/
 alertmanager-*.linux-amd64/
 
 # Rollback backup (created during migration)

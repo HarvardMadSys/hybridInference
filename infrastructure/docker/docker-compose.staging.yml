@@ -87,51 +87,6 @@ services:
     networks:
       - hybridinference-staging
 
-  # ===== Observability =====
-
-  prometheus:
-    image: prom/prometheus:v3.6.0
-    container_name: hybridinference-staging-prometheus
-    restart: unless-stopped
-    extra_hosts:
-      # Allows host.docker.internal to resolve on Linux (Docker Desktop handles this automatically on Mac/Windows)
-      - "host.docker.internal:host-gateway"
-    command:
-      - "--config.file=/etc/prometheus/prometheus.staging.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=7d"
-      - "--web.enable-lifecycle"
-      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
-      - "--web.console.templates=/usr/share/prometheus/consoles"
-    ports:
-      - "127.0.0.1:${PROMETHEUS_PORT:-9091}:9090"
-    volumes:
-      - ../prometheus/prometheus.staging.yml:/etc/prometheus/prometheus.staging.yml:ro
-      - ../prometheus/rules:/etc/prometheus/rules:ro
-      - prometheus_staging_data:/prometheus
-    networks:
-      - hybridinference-staging
-
-  grafana:
-    image: grafana/grafana:12.1.1
-    container_name: hybridinference-staging-grafana
-    restart: unless-stopped
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-    ports:
-      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
-    volumes:
-      - grafana_staging_data:/var/lib/grafana
-      - ../grafana/provisioning:/etc/grafana/provisioning:ro
-    depends_on:
-      - prometheus
-    networks:
-      - hybridinference-staging
-
   # pgAdmin — optional web UI for inspecting the staging DB
   # Start with: --profile admin
   pgadmin:
@@ -158,10 +113,6 @@ services:
 
 volumes:
   postgres_staging_data:
-    driver: local
-  prometheus_staging_data:
-    driver: local
-  grafana_staging_data:
     driver: local
   pgadmin_staging_data:
     driver: local

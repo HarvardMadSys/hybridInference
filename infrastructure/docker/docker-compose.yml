@@ -12,7 +12,7 @@
 #   docker compose -f infrastructure/docker/docker-compose.yml --env-file .env --profile admin up -d
 
 # Pin the project name so volume names are deterministic regardless of CWD.
-# Volumes will always be: hybridinference_postgres_data, hybridinference_prometheus_data, etc.
+# Volumes will always be: hybridinference_postgres_data, hybridinference_alertmanager_data, etc.
 name: hybridinference
 
 services:
@@ -124,26 +124,6 @@ services:
 
   # ===== Observability =====
 
-  prometheus:
-    image: prom/prometheus:v3.6.0
-    container_name: hybridinference-prometheus
-    restart: unless-stopped
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=30d"
-      - "--web.enable-lifecycle"
-      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
-      - "--web.console.templates=/usr/share/prometheus/consoles"
-    ports:
-      - "127.0.0.1:9090:9090"
-    volumes:
-      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ../prometheus/rules:/etc/prometheus/rules:ro
-      - prometheus_data:/prometheus
-    networks:
-      - hybridinference
-
   alertmanager:
     image: prom/alertmanager:v0.31.1
     container_name: hybridinference-alertmanager
@@ -176,47 +156,18 @@ services:
     networks:
       - hybridinference
 
-  grafana:
-    image: grafana/grafana:12.1.1
-    container_name: hybridinference-grafana
-    restart: unless-stopped
-    environment:
-      GF_SERVER_ROOT_URL: "https://freeinference.org/grafana/"
-      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
-      # Only the DB credentials needed by datasource provisioning.
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-    ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ../grafana/provisioning:/etc/grafana/provisioning:ro
-    depends_on:
-      - prometheus
-    networks:
-      - hybridinference
-
 volumes:
   postgres_data:
     external: true
     name: hybridinference_postgres_data
   pgadmin_data:
     driver: local
-  prometheus_data:
-    external: true
-    name: hybridinference_prometheus_data
   alertmanager_data:
     external: true
     name: hybridinference_alertmanager_data
   alert_log_data:
     external: true
     name: hybridinference_alert_log_data
-  grafana_data:
-    external: true
-    name: hybridinference_grafana_data
 
 networks:
   hybridinference:

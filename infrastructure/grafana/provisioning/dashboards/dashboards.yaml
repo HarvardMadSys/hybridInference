@@ -1,5 +1,0 @@
-# Dashboard provisioning is intentionally left empty.
-# Dashboards are managed via Grafana UI and persisted in grafana_data volume.
-# To sync UI changes back to the repo, run: infrastructure/grafana/export-dashboards.sh
-apiVersion: 1
-providers: []
