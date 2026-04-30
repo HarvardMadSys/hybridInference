@@ -12,6 +12,7 @@ implementation; nothing else in the codebase needs to change.
 
 from __future__ import annotations
 
+import os
 import re
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -24,25 +25,36 @@ def _noop(*_args: Any, **_kwargs: Any) -> Any:  # pragma: no cover
     return None
 
 
-# Counter / histogram shim: ``X.labels(...).inc()`` / ``X.labels(...).observe(...)``.
-_LabeledNoOp = type(
-    "Noop",
-    (),
-    {"labels": lambda *_a, **_k: type("L", (), {"inc": _noop, "observe": _noop})()},
-)
+class _NoOpHandle:
+    """Singleton returned by ``.labels(...)`` — supports every op used in the codebase."""
 
-# Gauge shim with both the unlabeled (``g.set(v)`` / ``g.inc()``/``g.dec()``)
-# and labeled (``g.labels(...).set(v)``) interfaces used in the codebase.
-_LabeledGaugeNoOp = type(
-    "NoopGauge",
-    (),
-    {
-        "labels": lambda *_a, **_k: type("L", (), {"set": _noop, "inc": _noop, "dec": _noop})(),
-        "set": _noop,
-        "inc": _noop,
-        "dec": _noop,
-    },
-)
+    inc = staticmethod(_noop)
+    observe = staticmethod(_noop)
+    set = staticmethod(_noop)
+    dec = staticmethod(_noop)
+
+
+_HANDLE = _NoOpHandle()
+
+
+class _LabeledNoOp:
+    """Counter / histogram shim: ``X.labels(...).inc()`` / ``X.labels(...).observe(...)``."""
+
+    @staticmethod
+    def labels(*_a: Any, **_k: Any) -> _NoOpHandle:
+        return _HANDLE
+
+
+class _LabeledGaugeNoOp:
+    """Gauge shim supporting both labeled and unlabeled interfaces used in the codebase."""
+
+    inc = staticmethod(_noop)
+    dec = staticmethod(_noop)
+    set = staticmethod(_noop)
+
+    @staticmethod
+    def labels(*_a: Any, **_k: Any) -> _NoOpHandle:
+        return _HANDLE
 
 
 REGISTRY: Any = None
@@ -139,8 +151,6 @@ def _sanitize_label_value(value: str, max_len: int = 80) -> str:
 
 def normalize_model_label(model: str) -> str:
     """Normalize model label value (kept for use in structured logs)."""
-    import os
-
     mode = os.getenv("METRICS_MODEL_LABEL", "full")  # full|family
     m = model
     if mode == "family":
