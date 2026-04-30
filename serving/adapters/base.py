@@ -49,6 +49,10 @@ class ModelConfig:
     provider: str
     base_url: str
     api_key: str | None = None
+    # Optional list of API keys for multi-key rotation. When set, takes
+    # precedence over ``api_key`` and the adapter constructs a KeyPool.
+    # Only one of ``api_key`` / ``api_keys`` should be set per route.
+    api_keys: list[str] | None = None
     # Model type: "chat" for LLMs, "embedding" for embedding models.
     model_type: str = "chat"
     # Public aliases that should also route to this adapter configuration.
