@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from serving.observability.user_stats import UserStatsCollector
     from serving.storage.database import DatabaseLogger
 
+    from .concurrency import UserConcurrencyLimiter
     from .fairness import FairnessScheduler
     from .rate_limiter import PersistentRateLimiter
 
@@ -46,6 +47,7 @@ class AppServices:
     model_router_registry: ModelRouterRegistry | None = None
     user_stats_collector: UserStatsCollector | None = None
     fairness_scheduler: FairnessScheduler | None = None
+    user_concurrency_limiter: UserConcurrencyLimiter | None = None
 
 
 def get_services(request: Request) -> AppServices:
@@ -84,6 +86,13 @@ def get_fairness_scheduler(
 ) -> FairnessScheduler | None:
     """Dependency to obtain the fairness scheduler (if configured)."""
     return services.fairness_scheduler
+
+
+def get_user_concurrency_limiter(
+    services: AppServices = Depends(get_services),
+) -> UserConcurrencyLimiter | None:
+    """Dependency to obtain the per-user concurrency limiter."""
+    return services.user_concurrency_limiter
 
 
 def get_model_router_registry(

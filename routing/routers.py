@@ -561,7 +561,7 @@ class FixedRouter(BaseRouter):
             admin_only: If True, only admin users may access this route.
                 Deprecated: use required_role="admin" instead.
             required_role: Minimum role required to access this model
-                (free/internal/admin).
+                (free/pro/internal/admin).
         """
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:

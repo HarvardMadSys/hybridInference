@@ -333,6 +333,26 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
+    # Per-user concurrency limiter metrics (#242)
+    USER_CONCURRENCY_IN_FLIGHT = Gauge(
+        "user_concurrency_in_flight",
+        "Active concurrent inference requests, by role",
+        labelnames=("role",),
+        registry=REGISTRY,
+    )
+    USER_CONCURRENCY_ACQUIRES_TOTAL = Counter(
+        "user_concurrency_acquires_total",
+        "Total per-user concurrency slot acquire attempts",
+        labelnames=("role", "outcome"),  # outcome ∈ {"granted", "rejected"}
+        registry=REGISTRY,
+    )
+    USER_CONCURRENCY_REJECTED_TOTAL = Counter(
+        "user_concurrency_rejected_total",
+        "Requests rejected due to per-user concurrency limit",
+        labelnames=("role",),
+        registry=REGISTRY,
+    )
+
     # Register runtime collectors for process/GC/platform if available
     try:  # pragma: no cover - environment dependent
         if ProcessCollector:
@@ -494,6 +514,21 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     USERS_TOTAL = type("NoopGauge", (), {"set": _noop})()
     USERS_ACTIVE_DAILY = type("NoopGauge", (), {"set": _noop})()
     USERS_ACTIVE_MONTHLY = type("NoopGauge", (), {"set": _noop})()
+    USER_CONCURRENCY_IN_FLIGHT = type(
+        "NoopGauge",
+        (),
+        {"labels": lambda *a, **k: type("L", (), {"inc": _noop, "dec": _noop, "set": _noop})()},
+    )()
+    USER_CONCURRENCY_ACQUIRES_TOTAL = type(
+        "NoopCounter",
+        (),
+        {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()},
+    )()
+    USER_CONCURRENCY_REJECTED_TOTAL = type(
+        "NoopCounter",
+        (),
+        {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()},
+    )()
 
     def render_latest() -> bytes:  # pragma: no cover
         """Return a minimal body when metrics are disabled."""
@@ -572,6 +607,10 @@ __all__ = [
     "USERS_ACTIVE_MONTHLY",
     # User statistics metrics
     "USERS_TOTAL",
+    # Per-user concurrency metrics
+    "USER_CONCURRENCY_ACQUIRES_TOTAL",
+    "USER_CONCURRENCY_IN_FLIGHT",
+    "USER_CONCURRENCY_REJECTED_TOTAL",
     # Helper functions
     "latency_timer",
     "normalize_model_label",
