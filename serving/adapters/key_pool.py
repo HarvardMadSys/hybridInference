@@ -117,3 +117,51 @@ class KeyPool:
         expired = [k for k, a in self._affinity.items() if a.expires_at < now]
         for k in expired:
             del self._affinity[k]
+
+    def release(
+        self,
+        lease: _Lease,
+        *,
+        status_code: int,
+        retry_after: str | None,
+    ) -> None:
+        """Report the request outcome so cooldowns can be updated.
+
+        Args:
+            lease: the lease returned by ``acquire``.
+            status_code: HTTP status code (or 0 for non-HTTP failures, which
+                cause no cooldown change).
+            retry_after: raw ``Retry-After`` header value if any.
+        """
+        if status_code != 429:
+            # Only 429 triggers cooldown. 2xx, other 4xx, 5xx, and network
+            # errors do not flag the key.
+            return
+        with self._lock:
+            now = time.monotonic()
+            cooldown = self._compute_cooldown_seconds(retry_after)
+            self._keys[lease.key_index].cooldown_until = now + cooldown
+
+    def _compute_cooldown_seconds(self, retry_after: str | None) -> float:
+        """Parse Retry-After per RFC 7231; clamp to [0, MAX_COOLDOWN_SECONDS]."""
+        if retry_after is None:
+            return self.DEFAULT_COOLDOWN_SECONDS
+
+        # Try integer seconds first
+        seconds: float | None
+        try:
+            seconds = float(retry_after.strip())
+        except (TypeError, ValueError, AttributeError):
+            seconds = None
+
+        # Fall back to HTTP-date
+        if seconds is None:
+            try:
+                dt = parsedate_to_datetime(retry_after)
+                seconds = dt.timestamp() - time.time()
+            except (TypeError, ValueError, IndexError):
+                return self.DEFAULT_COOLDOWN_SECONDS
+
+        if seconds is None or seconds < 0:
+            return self.DEFAULT_COOLDOWN_SECONDS
+        return min(seconds, self.MAX_COOLDOWN_SECONDS)

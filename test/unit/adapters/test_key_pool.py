@@ -102,3 +102,87 @@ def test_different_users_can_share_or_split_keys():
     a, _ = pool.acquire("user-A")
     b, _ = pool.acquire("user-B")
     assert {a, b} == {"k0", "k1"}
+
+
+def test_release_with_retry_after_seconds_sets_cooldown(monkeypatch):
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429, retry_after="30")
+
+    # k0 should be cooled until t=1030
+    assert pool._keys[lease.key_index].cooldown_until == pytest.approx(1030.0)
+
+
+def test_release_with_429_no_retry_after_uses_default_cooldown(monkeypatch):
+    pool = KeyPool(keys=["k0"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429, retry_after=None)
+
+    assert pool._keys[0].cooldown_until == pytest.approx(1120.0)  # +120s default
+
+
+def test_release_with_2xx_does_not_set_cooldown():
+    pool = KeyPool(keys=["k0"], provider_label="test")
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=200, retry_after=None)
+    assert pool._keys[0].cooldown_until == 0.0
+
+
+def test_release_with_other_4xx_does_not_set_cooldown():
+    pool = KeyPool(keys=["k0"], provider_label="test")
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=401, retry_after=None)
+    assert pool._keys[0].cooldown_until == 0.0
+
+
+def test_retry_after_is_capped_at_one_hour(monkeypatch):
+    pool = KeyPool(keys=["k0"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429, retry_after="86400")  # 1 day
+
+    assert pool._keys[0].cooldown_until == pytest.approx(1000.0 + 3600.0)
+
+
+def test_retry_after_negative_falls_back_to_default(monkeypatch):
+    pool = KeyPool(keys=["k0"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429, retry_after="-5")
+    assert pool._keys[0].cooldown_until == pytest.approx(1120.0)
+
+
+def test_retry_after_http_date_format(monkeypatch):
+    """RFC 7231 allows HTTP-date format; we honor it."""
+    from email.utils import format_datetime
+    from datetime import datetime, timezone, timedelta
+
+    pool = KeyPool(keys=["k0"], provider_label="test")
+    base_real = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Fake time module sees t=1000.0; HTTP-date is base_real + 30s
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    # Use a known wall-clock anchor by monkeypatching _parse_retry_after's anchor.
+    # Easier: pass the date as 30s in the future relative to whatever time.time
+    # returns; we patch time.time too.
+    fake_wall = [base_real.timestamp()]
+    monkeypatch.setattr("serving.adapters.key_pool.time.time", lambda: fake_wall[0])
+
+    future_http_date = format_datetime(base_real + timedelta(seconds=30))
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429, retry_after=future_http_date)
+    # Expect cooldown ≈ now + 30s (capped before 3600)
+    assert 1020 <= pool._keys[0].cooldown_until <= 1040
