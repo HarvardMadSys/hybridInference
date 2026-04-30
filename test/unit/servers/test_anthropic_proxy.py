@@ -290,9 +290,7 @@ def _mock_deps():
     )
 
     # Each test gets its own limiter so per-user state doesn't leak across tests.
-    test_limiter = UserConcurrencyLimiter(
-        {"free": 10, "pro": 10, "internal": 10, "admin": 10}
-    )
+    test_limiter = UserConcurrencyLimiter({"free": 10, "pro": 10, "internal": 10, "admin": 10})
 
     async def fake_get_user_concurrency_limiter():
         return test_limiter

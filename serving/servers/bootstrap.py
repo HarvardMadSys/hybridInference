@@ -412,9 +412,7 @@ async def initialize() -> AppServices:
 
     # Per-user concurrency limiter (always on; in-process)
     user_concurrency_limiter = UserConcurrencyLimiter(USER_CONCURRENCY_LIMITS)
-    logger.info(
-        "User concurrency limiter initialized: %s", USER_CONCURRENCY_LIMITS
-    )
+    logger.info("User concurrency limiter initialized: %s", USER_CONCURRENCY_LIMITS)
 
     # User statistics collector (optional)
     user_stats_collector = None

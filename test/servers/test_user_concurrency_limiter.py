@@ -155,16 +155,12 @@ async def test_metrics_granted_increments_acquires_and_in_flight():
 
     lim = UserConcurrencyLimiter(LIMITS)
 
-    granted_before = _read_counter(
-        USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="granted"
-    )
+    granted_before = _read_counter(USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="granted")
     in_flight_before = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
 
     assert await lim.try_acquire("metric-user-1", "free", is_admin=False) is True
 
-    granted_after = _read_counter(
-        USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="granted"
-    )
+    granted_after = _read_counter(USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="granted")
     in_flight_after = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
 
     assert granted_after - granted_before == 1

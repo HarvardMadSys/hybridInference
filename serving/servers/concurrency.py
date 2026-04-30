@@ -124,13 +124,15 @@ class UserConcurrencyLimiter:
 # Dependency lives at the bottom of the module so it can reference the
 # limiter class and metrics defined above.
 
-from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, HTTPException
 
 from .auth import verify_api_key
 from .deps import get_user_concurrency_limiter
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 async def enforce_user_concurrency(
@@ -146,9 +148,7 @@ async def enforce_user_concurrency(
     if limiter is None:
         # If the limiter isn't configured (e.g., misconfigured deployment),
         # fail open — never block requests when the gate itself is broken.
-        logger.warning(
-            "user_concurrency: limiter is None; passing request through unguarded"
-        )
+        logger.warning("user_concurrency: limiter is None; passing request through unguarded")
         yield
         return
 

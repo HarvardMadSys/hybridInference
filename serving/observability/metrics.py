@@ -558,12 +558,12 @@ __all__ = [
     "STREAMING_INTERRUPTION",
     "USERS_ACTIVE_DAILY",
     "USERS_ACTIVE_MONTHLY",
+    # User statistics metrics
+    "USERS_TOTAL",
     # Per-user concurrency metrics
     "USER_CONCURRENCY_ACQUIRES_TOTAL",
     "USER_CONCURRENCY_IN_FLIGHT",
     "USER_CONCURRENCY_REJECTED_TOTAL",
-    # User statistics metrics
-    "USERS_TOTAL",
     # Helper functions
     "latency_timer",
     "normalize_model_label",

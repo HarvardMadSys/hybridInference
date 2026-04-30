@@ -22,7 +22,7 @@ def test_role_rank_ordering_is_strictly_ascending():
 
 
 def test_valid_roles_matches_role_rank():
-    assert VALID_ROLES == frozenset({"free", "pro", "internal", "admin"})
+    assert frozenset({"free", "pro", "internal", "admin"}) == VALID_ROLES
 
 
 def test_has_role_existing_semantics_preserved():

@@ -138,9 +138,7 @@ class TestRoleMigration:
                     user_id,
                     f"{user_id}@test.example",
                 )
-                row = await conn.fetchrow(
-                    "SELECT role FROM users WHERE id = $1", user_id
-                )
+                row = await conn.fetchrow("SELECT role FROM users WHERE id = $1", user_id)
                 assert row["role"] == "pro"
             finally:
                 await conn.execute("DELETE FROM users WHERE id = $1", user_id)
