@@ -15,6 +15,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from serving.observability.metrics import (
+    USER_CONCURRENCY_ACQUIRES_TOTAL,
+    USER_CONCURRENCY_IN_FLIGHT,
+    USER_CONCURRENCY_REJECTED_TOTAL,
+)
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -88,13 +93,27 @@ class UserConcurrencyLimiter:
                         role=self.role_label(role, is_admin),
                     )
                     self._slots[user_id] = slot
-        return slot.try_acquire()
+
+        granted = slot.try_acquire()
+        label = slot.role  # captured at slot creation
+        if granted:
+            USER_CONCURRENCY_ACQUIRES_TOTAL.labels(role=label, outcome="granted").inc()
+            USER_CONCURRENCY_IN_FLIGHT.labels(role=label).inc()
+        else:
+            USER_CONCURRENCY_ACQUIRES_TOTAL.labels(role=label, outcome="rejected").inc()
+            USER_CONCURRENCY_REJECTED_TOTAL.labels(role=label).inc()
+        return granted
 
     def release(self, user_id: str) -> None:
         """Release a slot. Idempotent for unknown user_id."""
         slot = self._slots.get(user_id)
-        if slot is not None:
-            slot.release()
+        if slot is None:
+            return
+        # Only decrement the gauge if there was actually a slot held.
+        had_one = slot.in_use > 0
+        slot.release()
+        if had_one:
+            USER_CONCURRENCY_IN_FLIGHT.labels(role=slot.role).dec()
 
     def role_for(self, user_id: str) -> str | None:
         """Return the role label captured at slot creation, or None."""

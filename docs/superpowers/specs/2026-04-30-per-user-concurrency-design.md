@@ -202,21 +202,21 @@ Validated by integration tests (case 5 in the test plan below).
 
 ## Observability
 
-Three new Prometheus metrics in `serving/servers/concurrency.py`:
+Three new Prometheus metrics defined in `serving/observability/metrics.py` (alongside all other domain metrics) and imported into `serving/servers/concurrency.py`:
 
 ```python
 user_concurrency_in_flight = Gauge(
-    "hyi_user_concurrency_in_flight",
+    "user_concurrency_in_flight",
     "Active concurrent inference requests, by role",
     labelnames=("role",),
 )
 user_concurrency_acquires_total = Counter(
-    "hyi_user_concurrency_acquires_total",
+    "user_concurrency_acquires_total",
     "Total slot acquire attempts",
     labelnames=("role", "outcome"),  # outcome ∈ {"granted", "rejected"}
 )
 user_concurrency_rejected_total = Counter(
-    "hyi_user_concurrency_rejected_total",
+    "user_concurrency_rejected_total",
     "Requests rejected due to per-user concurrency limit",
     labelnames=("role",),
 )
@@ -274,7 +274,7 @@ Cases 5, 6, 7 are the highest-value because they validate the `yield`/`finally` 
 
 - The four inference routes return 429 with the documented body when the user's cap is exceeded.
 - All test cases above pass.
-- `hyi_user_concurrency_*` metrics appear at the existing `/metrics` endpoint.
+- `user_concurrency_*` metrics appear at the existing `/metrics` endpoint.
 - `pro` is in `ROLE_RANK`; no other role/tier logic touched.
 - No Redis dependency; no DB migration.
 

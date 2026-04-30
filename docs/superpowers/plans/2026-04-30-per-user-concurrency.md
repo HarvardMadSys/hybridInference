@@ -588,23 +588,27 @@ Expected: 4 new tests fail with ImportError (`user_concurrency_*` not exported).
 
 - [ ] **Step 3: Add metrics and increment them in the limiter**
 
-Edit `serving/servers/concurrency.py`. Add at the top of the file (after the existing imports, before `_UserSlot`):
+Define the three metrics in `serving/observability/metrics.py` (alongside all other domain metrics), then import them into `serving/servers/concurrency.py`:
 
 ```python
-from prometheus_client import Counter, Gauge
+from serving.observability.metrics import (
+    USER_CONCURRENCY_ACQUIRES_TOTAL as user_concurrency_acquires_total,
+    USER_CONCURRENCY_IN_FLIGHT as user_concurrency_in_flight,
+    USER_CONCURRENCY_REJECTED_TOTAL as user_concurrency_rejected_total,
+)
 
 user_concurrency_in_flight = Gauge(
-    "hyi_user_concurrency_in_flight",
+    "user_concurrency_in_flight",
     "Active concurrent inference requests, by role",
     labelnames=("role",),
 )
 user_concurrency_acquires_total = Counter(
-    "hyi_user_concurrency_acquires_total",
+    "user_concurrency_acquires_total",
     "Total per-user concurrency slot acquire attempts",
     labelnames=("role", "outcome"),  # outcome ∈ {"granted", "rejected"}
 )
 user_concurrency_rejected_total = Counter(
-    "hyi_user_concurrency_rejected_total",
+    "user_concurrency_rejected_total",
     "Requests rejected due to per-user concurrency limit",
     labelnames=("role",),
 )
@@ -666,7 +670,7 @@ git add serving/servers/concurrency.py test/servers/test_user_concurrency_limite
 git commit -m "$(cat <<'EOF'
 feat(serving): expose per-user concurrency Prometheus metrics (#242)
 
-Adds hyi_user_concurrency_{in_flight, acquires_total, rejected_total},
+Adds user_concurrency_{in_flight, acquires_total, rejected_total},
 labeled by role (with admin precedence). Role label is captured at slot
 creation so it stays consistent across release even if the user's role
 changes.
@@ -1784,7 +1788,7 @@ gh pr create --base dev --title "feat(serving): per-user concurrency limit (#242
 - Cap simultaneous in-flight inference requests per user by role: free=1, pro=3, internal=10, admin=10.
 - New `UserConcurrencyLimiter` and `enforce_user_concurrency` FastAPI dependency.
 - Wired into `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/anthropic/v1/messages`.
-- Adds `pro` to `ROLE_RANK`. Prometheus metrics: `hyi_user_concurrency_*`.
+- Adds `pro` to `ROLE_RANK`. Prometheus metrics: `user_concurrency_*`.
 - Slot held for full streaming response duration; released on completion, exception, or client disconnect.
 
 Spec: `docs/superpowers/specs/2026-04-30-per-user-concurrency-design.md`
@@ -1796,7 +1800,7 @@ Closes #242
 - [ ] Streaming response holds the slot until drained
 - [ ] Client disconnect releases the slot
 - [ ] Two users have independent budgets
-- [ ] `hyi_user_concurrency_*` metrics visible at `/metrics`
+- [ ] `user_concurrency_*` metrics visible at `/metrics`
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF

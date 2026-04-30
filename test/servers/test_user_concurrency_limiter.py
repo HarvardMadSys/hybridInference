@@ -136,3 +136,115 @@ async def test_concurrent_acquires_respect_capacity():
     # Exactly 3 should win
     assert results.count(True) == 3
     assert results.count(False) == 17
+
+
+# ------------------------------ metrics ---------------------------------
+
+
+def _read_counter(counter, **labels) -> float:
+    """Read the float value of a Counter or Gauge with given labels."""
+    return counter.labels(**labels)._value.get()
+
+
+@pytest.mark.asyncio
+async def test_metrics_granted_increments_acquires_and_in_flight():
+    from serving.observability.metrics import (
+        USER_CONCURRENCY_ACQUIRES_TOTAL,
+        USER_CONCURRENCY_IN_FLIGHT,
+    )
+
+    lim = UserConcurrencyLimiter(LIMITS)
+
+    granted_before = _read_counter(
+        USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="granted"
+    )
+    in_flight_before = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
+
+    assert await lim.try_acquire("metric-user-1", "free", is_admin=False) is True
+
+    granted_after = _read_counter(
+        USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="granted"
+    )
+    in_flight_after = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
+
+    assert granted_after - granted_before == 1
+    assert in_flight_after - in_flight_before == 1
+
+
+@pytest.mark.asyncio
+async def test_metrics_rejected_increments_rejected_and_acquires():
+    from serving.observability.metrics import (
+        USER_CONCURRENCY_ACQUIRES_TOTAL,
+        USER_CONCURRENCY_REJECTED_TOTAL,
+    )
+
+    lim = UserConcurrencyLimiter(LIMITS)
+    user_id = "metric-user-2"
+    await lim.try_acquire(user_id, "free", is_admin=False)
+
+    rejected_before = _read_counter(USER_CONCURRENCY_REJECTED_TOTAL, role="free")
+    rejected_acq_before = _read_counter(
+        USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="rejected"
+    )
+
+    assert await lim.try_acquire(user_id, "free", is_admin=False) is False
+
+    rejected_after = _read_counter(USER_CONCURRENCY_REJECTED_TOTAL, role="free")
+    rejected_acq_after = _read_counter(
+        USER_CONCURRENCY_ACQUIRES_TOTAL, role="free", outcome="rejected"
+    )
+
+    assert rejected_after - rejected_before == 1
+    assert rejected_acq_after - rejected_acq_before == 1
+
+
+@pytest.mark.asyncio
+async def test_metrics_release_decrements_in_flight():
+    from serving.observability.metrics import USER_CONCURRENCY_IN_FLIGHT
+
+    lim = UserConcurrencyLimiter(LIMITS)
+    user_id = "metric-user-3"
+    await lim.try_acquire(user_id, "free", is_admin=False)
+
+    in_flight_before_release = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
+    lim.release(user_id)
+    in_flight_after_release = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="free")
+
+    assert in_flight_before_release - in_flight_after_release == 1
+
+
+@pytest.mark.asyncio
+async def test_metrics_admin_label_used_when_is_admin():
+    from serving.observability.metrics import USER_CONCURRENCY_IN_FLIGHT
+
+    lim = UserConcurrencyLimiter(LIMITS)
+    in_flight_before = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="admin")
+    # role="free" but is_admin=True → label should be "admin"
+    await lim.try_acquire("admin-user-x", "free", is_admin=True)
+    in_flight_after = _read_counter(USER_CONCURRENCY_IN_FLIGHT, role="admin")
+    assert in_flight_after - in_flight_before == 1
+
+
+@pytest.mark.asyncio
+async def test_metrics_appear_in_render_latest():
+    """The metrics must be registered in the project's REGISTRY so they
+    are visible in /metrics scrapes (regression for the Critical issue
+    where they were registered against the default global registry only)."""
+    import os
+
+    if os.getenv("METRICS_ENABLED", "1") != "1":
+        pytest.skip("Metrics disabled in this environment")
+
+    from serving.observability.metrics import render_latest
+
+    lim = UserConcurrencyLimiter(LIMITS)
+    user_id = "scrape-test-user"
+    # Drive at least one grant + reject + release so labels exist
+    await lim.try_acquire(user_id, "free", is_admin=False)
+    await lim.try_acquire(user_id, "free", is_admin=False)  # rejected
+    lim.release(user_id)
+
+    output = render_latest()
+    assert b"user_concurrency_in_flight" in output
+    assert b"user_concurrency_acquires_total" in output
+    assert b"user_concurrency_rejected_total" in output
