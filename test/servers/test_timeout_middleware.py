@@ -8,7 +8,11 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from serving.servers.middleware.timeout import TimeoutMiddleware
+from serving.servers.middleware.timeout import (
+    _DEFAULT_TIMEOUT_S,
+    TimeoutMiddleware,
+    _parse_timeout_env,
+)
 
 
 def _build_app(timeout_s: float) -> FastAPI:
@@ -44,3 +48,34 @@ async def test_slow_request_returns_504() -> None:
         response = await client.get("/slow")
     assert response.status_code == 504
     assert "Gateway Timeout" in response.text
+
+
+def test_parse_timeout_env_uses_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REQUEST_TIMEOUT_SECONDS", raising=False)
+    assert _parse_timeout_env() == _DEFAULT_TIMEOUT_S
+
+
+def test_parse_timeout_env_uses_default_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "  ")
+    assert _parse_timeout_env() == _DEFAULT_TIMEOUT_S
+
+
+def test_parse_timeout_env_uses_default_when_non_numeric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "not-a-number")
+    assert _parse_timeout_env() == _DEFAULT_TIMEOUT_S
+
+
+def test_parse_timeout_env_uses_default_when_non_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "0")
+    assert _parse_timeout_env() == _DEFAULT_TIMEOUT_S
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "-5")
+    assert _parse_timeout_env() == _DEFAULT_TIMEOUT_S
+
+
+def test_parse_timeout_env_parses_valid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "30.5")
+    assert _parse_timeout_env() == 30.5

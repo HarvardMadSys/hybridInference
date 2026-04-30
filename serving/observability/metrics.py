@@ -57,8 +57,6 @@ class _LabeledGaugeNoOp:
         return _HANDLE
 
 
-REGISTRY: Any = None
-
 # Core API metrics
 API_REQUESTS = _LabeledNoOp()
 API_REQUEST_LATENCY = _LabeledNoOp()

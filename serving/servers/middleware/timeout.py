@@ -30,16 +30,24 @@ if TYPE_CHECKING:
 _DEFAULT_TIMEOUT_S = 120.0
 
 
+def _parse_timeout_env() -> float:
+    """Read ``REQUEST_TIMEOUT_SECONDS``, falling back to the default on bad input."""
+    raw = os.getenv("REQUEST_TIMEOUT_SECONDS")
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_TIMEOUT_S
+    return value if value > 0 else _DEFAULT_TIMEOUT_S
+
+
 class TimeoutMiddleware(BaseHTTPMiddleware):
     """Cancel requests that exceed ``REQUEST_TIMEOUT_SECONDS`` and return 504."""
 
     def __init__(self, app: ASGIApp, timeout_s: float | None = None) -> None:
         super().__init__(app)
-        self._timeout_s = (
-            timeout_s
-            if timeout_s is not None
-            else float(os.getenv("REQUEST_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_S)))
-        )
+        self._timeout_s = timeout_s if timeout_s is not None else _parse_timeout_env()
 
     async def dispatch(self, request: Request, call_next: Callable):  # type: ignore[override]
         """Run ``call_next`` under an asyncio timeout; return 504 on expiry."""
