@@ -186,3 +186,61 @@ def test_retry_after_http_date_format(monkeypatch):
     pool.release(lease, status_code=429, retry_after=future_http_date)
     # Expect cooldown ≈ now + 30s (capped before 3600)
     assert 1020 <= pool._keys[0].cooldown_until <= 1040
+
+
+def test_cooldown_key_is_skipped_during_selection(monkeypatch):
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    # Burn k0 with a 429
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429, retry_after="30")
+
+    # New user must land on k1 since k0 is in cooldown
+    k, _ = pool.acquire("user-B")
+    assert k == "k1"
+
+
+def test_mid_affinity_user_re_picks_when_bound_key_cooled(monkeypatch):
+    """If the bound key is cooled mid-window, the user is reassigned."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    k_first, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429, retry_after="60")
+    # User-A's affinity points at k0, but k0 is cooled
+    k_second, _ = pool.acquire("user-A")
+    assert k_first == "k0"
+    assert k_second == "k1"
+
+
+def test_all_keys_exhausted_raises_keypoolexhausted(monkeypatch):
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease0 = pool.acquire("user-A")
+    pool.release(lease0, status_code=429, retry_after="30")
+    _, lease1 = pool.acquire("user-B")
+    pool.release(lease1, status_code=429, retry_after="30")
+
+    with pytest.raises(KeyPoolExhausted):
+        pool.acquire("user-C")
+
+
+def test_cooldown_recovers_after_time_passes(monkeypatch):
+    pool = KeyPool(keys=["k0"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429, retry_after="30")
+    # Still in cooldown
+    with pytest.raises(KeyPoolExhausted):
+        pool.acquire("user-B")
+
+    fake_now[0] += 31
+    k, _ = pool.acquire("user-B")
+    assert k == "k0"
