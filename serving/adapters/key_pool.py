@@ -35,6 +35,8 @@ class _Affinity:
 
 @dataclass
 class Lease:
+    """Round-trip token returned by ``KeyPool.acquire`` and consumed by ``release``."""
+
     key_index: int
     affinity_key: str
 
@@ -56,9 +58,11 @@ class KeyPool:
         self._provider_label = provider_label
 
     def size(self) -> int:
+        """Return the number of keys in the pool."""
         return len(self._keys)
 
     def affinity_count(self) -> int:
+        """Return the number of active per-user affinity entries."""
         return len(self._affinity)
 
     def acquire(self, affinity_key: str) -> tuple[str, Lease]:
