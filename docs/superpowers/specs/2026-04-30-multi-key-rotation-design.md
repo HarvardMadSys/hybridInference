@@ -26,6 +26,12 @@ Some upstream providers (Zhipu, Chutes, Featherless, etc.) enforce **per-key** r
 - Sliding-window affinity. The 5-min window is a fixed TTL from initial assignment, not reset by activity.
 - Runtime key management (admin API/UI to add/remove keys). Keys remain env-var-driven, edited in `models.yaml`.
 
+## Known Limitations
+
+- **Multi-key routes intentionally skip transient-error retries.** The single-key path uses `json_post_with_retry(retries=2)`, which retries on transient `ClientError`/`TimeoutError`. The multi-key path uses `json_post` with no retries — only HTTP 429 triggers rotation; other errors propagate immediately to the router fallback chain. This avoids burning retry attempts on the same key when other keys are available, and trades single-route resilience for cross-provider fallback (which the router already handles).
+
+- **Anonymous traffic collapses to a single affinity bucket.** When `auth_key_hash` is absent (auth disabled, internal calls, or model probes), every request uses the sentinel `"_anon"` as the affinity key, pinning all anonymous traffic to one upstream key. This is by design — the affinity contract is "per end-user API key", and traffic without an authenticated identity has no per-user dimension to spread over. Production deployments should keep auth enabled; staging/dev under load may want to disable affinity for anonymous traffic if they observe key hot-spotting.
+
 ## Architecture
 
 A new component `KeyPool` sits inside the adapter. Adapters that opt into multi-key construct a `KeyPool` from the configured key list; single-key routes are unchanged.
@@ -177,7 +183,7 @@ class ModelConfig:
 
 ## Telemetry
 
-Add the following Prometheus metrics in `serving/utils/metrics.py`:
+Add the following Prometheus metrics in `serving/observability/metrics.py`:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
@@ -219,7 +225,7 @@ Raw key strings are **never** emitted as label values. `key_index` is the index 
 | `serving/servers/registry.py` | Loader: parse `api_keys`, validate, env-expand, drop blanks |
 | `serving/utils/context.py` | Plumb `user_id` through request context |
 | `serving/servers/auth.py` | Set `user_id` on the context after key verification |
-| `serving/utils/metrics.py` | Add 4 new Prometheus metrics |
+| `serving/observability/metrics.py` | Add 4 new Prometheus metrics |
 | `tests/unit/test_key_pool.py` | NEW — unit tests above |
 | `tests/integration/test_openai_compat_adapter.py` | Extend with integration tests above |
 | `config/models.yaml` | (Documentation/example only — actual key roll-out is a separate ops task) |

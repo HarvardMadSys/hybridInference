@@ -144,3 +144,96 @@ async def test_non_429_error_does_not_cooldown():
     assert adapter._key_pool is not None
     assert adapter._key_pool._keys[0].cooldown_until == 0
     assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
+def _make_stream_gen(
+    *,
+    status: int | None = None,
+    retry_after: str | None = None,
+    chunks: tuple[str, ...] = (),
+):
+    """Return a fresh async generator that mocks ``http.stream_post``.
+
+    If ``status`` is set, the generator raises ``ClientResponseError`` on the
+    first ``__anext__`` (mirrors how ``_open_stream_with_pool`` detects opening
+    429s before any chunk has been yielded). Otherwise it yields ``chunks``.
+    """
+
+    async def gen():
+        if status is not None:
+            raise _make_response_error(status, retry_after=retry_after)
+            yield  # pragma: no cover — unreachable; makes this an async generator
+        for c in chunks:
+            yield c
+
+    return gen()
+
+
+async def test_streaming_rotates_on_429_at_open():
+    """First key 429s before yielding any chunk; helper rotates to second key."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    sse_chunks = (
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+    )
+
+    call_count = {"n": 0}
+
+    def stream_side_effect(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _make_stream_gen(status=429, retry_after="1")
+        return _make_stream_gen(chunks=sse_chunks)
+
+    with patch.object(
+        adapter.http, "stream_post", side_effect=stream_side_effect
+    ) as mock_stream:
+        collected: list[str] = []
+        async for chunk in adapter.stream_chat_completion(
+            [{"role": "user", "content": "hi"}]
+        ):
+            collected.append(chunk)
+
+    assert call_count["n"] == 2
+    # Verify the auth header rotated between the two attempts.
+    assert (
+        mock_stream.call_args_list[0].kwargs["headers"]["Authorization"]
+        == "Bearer k1"
+    )
+    assert (
+        mock_stream.call_args_list[1].kwargs["headers"]["Authorization"]
+        == "Bearer k2"
+    )
+
+    # k1 is in cooldown; k2 is clean.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+    # The consumer received non-empty content somewhere in the stream.
+    assert collected, "expected at least one streamed chunk"
+    assert any("hi" in c for c in collected)
+
+
+async def test_streaming_pool_exhausted_propagates():
+    """Every key 429s on stream open → final 429 propagates to the caller."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    def always_429(*args, **kwargs):
+        return _make_stream_gen(status=429, retry_after="1")
+
+    with patch.object(adapter.http, "stream_post", side_effect=always_429):
+        with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+            async for _ in adapter.stream_chat_completion(
+                [{"role": "user", "content": "hi"}]
+            ):
+                pass  # pragma: no cover — generator is expected to raise before yielding
+
+    assert exc_info.value.status == 429
+    # Both keys cooled down.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until > 0
