@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from serving.schemas import ChatCompletionRequest, ModelList
+from serving.schemas_admin import UpdateUserRequest
 
 
 @pytest.mark.unit
@@ -62,3 +63,21 @@ def test_model_list_schema_roundtrip():
     obj = ModelList.model_validate(data)
     assert obj.object == "list"
     assert obj.data[0].id == "m"
+
+
+@pytest.mark.unit
+def test_update_user_request_accepts_pro_role():
+    """The admin update-user schema must accept the 'pro' role added in Task 1."""
+    # Should not raise for any valid role value
+    UpdateUserRequest(role="pro")
+    UpdateUserRequest(role="free")
+    UpdateUserRequest(role="internal")
+    UpdateUserRequest(role="admin")
+    UpdateUserRequest(role=None)
+
+
+@pytest.mark.unit
+def test_update_user_request_rejects_invalid_role():
+    """UpdateUserRequest must reject unknown role strings."""
+    with pytest.raises(ValidationError):
+        UpdateUserRequest(role="superuser")

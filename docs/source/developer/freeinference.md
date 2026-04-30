@@ -5,18 +5,27 @@
 Traffic flows through three layers before reaching the application:
 
 ```
-Client ──▶ Cloudflare ──▶ Nginx (:443) ──▶ FastAPI (:8080)
+Client ──▶ Cloudflare ──▶ Nginx (:443) ──▶ FastAPI  (:8080)
+                                      ├──▶ Grafana  (:3000)   [admin-only]
+                                      ├──▶ pgAdmin  (:5050)   [admin-only]
                                       └──▶ Frontend (:3001)
 ```
 
 | Layer | Role |
 |-------|------|
 | **Cloudflare** | CDN, DDoS protection, edge SSL termination. SSL/TLS mode set to **Full (strict)** so Cloudflare verifies the origin certificate. `CF-Connecting-IP` header carries the real client IP. |
-| **Nginx** | TLS termination (Let's Encrypt cert), path-based routing (`/v1/`, `/auth/`, `/user/`, `/admin/` → FastAPI; everything else → frontend), request body limits (`client_max_body_size`), WebSocket upgrade. |
+| **Nginx** | TLS termination (Let's Encrypt cert), path-based routing (see below), per-location body size limits (`/v1/` is bumped to 50 MB for Qdrant upserts and large completions; everything else uses the Nginx 1 MB default), WebSocket upgrade. |
 | **FastAPI** | API logic — request authentication, model routing, rate limiting, backpressure, Qdrant proxy, and observability. Listens on `127.0.0.1:8080`. |
 
+Nginx path routing:
+
+- `/v1/`, `/auth/`, `/user/`, `/admin/`, `/internal/playground/` → FastAPI
+- `/grafana/` → Grafana, `/pgadmin/` → pgAdmin — both gated by `auth_request` against FastAPI's `/internal/verify-*` endpoints, so only admins reach them
+- everything else → frontend
+
 Docker Compose manages all services (backend, frontend, PostgreSQL, Prometheus,
-Alertmanager, alert-logger, Grafana) with automatic restarts via `restart: unless-stopped`.
+Alertmanager, alert-logger, Grafana, plus pgAdmin behind the `admin` profile)
+with automatic restarts via `restart: unless-stopped`.
 
 ### Deployment
 
@@ -54,7 +63,7 @@ We previously served OpenRouter-compatible traffic directly through FastAPI list
 
 ### Nginx (v2, abandoned)
 
-We briefly fronted FastAPI (running on port 8080) with vanilla Nginx that exposed `http://freeinference.org` on port 80 and terminated TLS for the public endpoint. Once Cloudflare took over edge SSL duties, the extra hop mostly added deployment and observability complexity without material benefit, so the setup was removed.
+We briefly fronted FastAPI (running on port 8080) with vanilla Nginx that listened on port 80 (redirecting to HTTPS) and terminated TLS on port 443 for `https://freeinference.org`. Once Cloudflare took over edge SSL duties, the extra hop mostly added deployment and observability complexity without material benefit, so the setup was removed.
 
 ### Nginx + Lua via OpenResty (v1, abandoned)
 
@@ -127,13 +136,9 @@ sudo systemctl enable openresty
 sudo openresty -s reload
 ```
 
+The model paths below are historical and may no longer match the registry; query `/v1/models` for the currently registered models.
+
 ```bash
-# check service status
-curl https://freeinference.org/health
-
-# list all models
-curl https://freeinference.org/v1/models | jq
-
 # Chat with Qwen3-Coder
 curl -X POST http://freeinference.org/v1/chat/completions \
   -H "Content-Type: application/json" \

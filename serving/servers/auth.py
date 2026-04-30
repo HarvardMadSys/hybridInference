@@ -256,6 +256,9 @@ async def verify_api_key(
         "authenticated": True,
         "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,
         "is_admin": user_role == "admin",
+        # key_hash identifies the specific hyi-xxx key in use (a user may
+        # have multiple). Used as the affinity key for multi-key API rotation.
+        "auth_key_hash": key_hash,
     }
 
 
@@ -330,6 +333,9 @@ async def optional_verify_api_key(
         "role": user_role,
         "authenticated": True,
         "is_admin": user_role == "admin",
+        # key_hash identifies the specific hyi-xxx key in use (a user may
+        # have multiple). Used as the affinity key for multi-key API rotation.
+        "auth_key_hash": key_hash,
     }
 
 
