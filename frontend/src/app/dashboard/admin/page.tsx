@@ -190,8 +190,7 @@ function MetricSubPanel({
       <div className="mt-2 flex h-10 items-end gap-px overflow-hidden rounded-md bg-white px-1 py-1">
         {dist.histogram.map((b, idx) => {
           const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
-          const upperLabel =
-            b.upper_bound == null ? '∞' : formatBucketEdge(b.upper_bound, kind);
+          const upperLabel = b.upper_bound == null ? '∞' : formatBucketEdge(b.upper_bound, kind);
           const lowerLabel = formatBucketEdge(b.lower_bound, kind);
           return (
             <div
@@ -217,16 +216,8 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
         <div className="text-[11px] text-gray-400">{metric.window_minutes}m window</div>
       </div>
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <MetricSubPanel
-          title="Prompt tokens"
-          dist={metric.prompt_tokens}
-          kind="tokens"
-        />
-        <MetricSubPanel
-          title="Response tokens"
-          dist={metric.completion_tokens}
-          kind="tokens"
-        />
+        <MetricSubPanel title="Prompt tokens" dist={metric.prompt_tokens} kind="tokens" />
+        <MetricSubPanel title="Response tokens" dist={metric.completion_tokens} kind="tokens" />
         <MetricSubPanel title="TTFT" dist={metric.ttft_ms} kind="ms" />
         <MetricSubPanel title="TBT" dist={metric.tbt_ms} kind="ms" />
       </div>
@@ -1244,9 +1235,7 @@ export default function AdminPage() {
                 </div>
               ) : !perfMetricsLoading ? (
                 <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
-                  <p className="text-[13px] text-gray-400">
-                    No performance metrics available.
-                  </p>
+                  <p className="text-[13px] text-gray-400">No performance metrics available.</p>
                 </div>
               ) : null}
             </div>
