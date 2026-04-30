@@ -49,7 +49,12 @@ class Settings(BaseSettings):
 
     # Rate limiting
     signup_rate_limit_per_hour: int = 5
+    signup_rate_limit_per_day: int = 10
     login_rate_limit_per_15min: int = 5
+
+    # Cloudflare Turnstile (signup captcha)
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = ""
 
     # Email (optional)
     smtp_host: str = "smtp.resend.com"
@@ -82,6 +87,12 @@ class Settings(BaseSettings):
     claude_sub_token_refresh_margin: int = 300  # 5 min (tokens last ~1 hour)
     claude_sub_account_cooldown: int = 60
     claude_sub_failure_threshold: int = 3
+
+    # Provider quota cookies (admin dashboard "Providers" tab)
+    # Pasted from browser DevTools after logging into the provider's web dashboard.
+    # Re-paste when the cookie expires.
+    minimax_session_cookie: str = ""
+    ollama_session_cookie: str = ""
 
     # CORS
     cors_allowed_origins: Annotated[list[str], NoDecode] = [

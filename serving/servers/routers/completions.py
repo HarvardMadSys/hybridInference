@@ -225,6 +225,12 @@ async def chat_completions(
     # Stable user identifier used by the fairness scheduler
     user_id: str = user_ctx.get("user_id") or "anonymous"
 
+    # Affinity key for multi-key API rotation — pinned to the specific
+    # hyi-xxx key in use (not user_id, since a user may have multiple keys).
+    from serving.utils import context as req_ctx
+
+    req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
+
     # Capacity gate: fairness scheduler (VTC) sits before the rate limiter.
     # When the fairness scheduler is active it owns ALL capacity acquisition
     # (it calls try_consume_tokens internally).  The raw rate_limiter path is
