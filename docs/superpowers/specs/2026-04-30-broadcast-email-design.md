@@ -43,7 +43,10 @@ CREATE TABLE IF NOT EXISTS email_broadcasts (
     status TEXT NOT NULL DEFAULT 'scheduled'
         CHECK (status IN ('scheduled','sending','sent','failed','cancelled')),
     scheduled_at TIMESTAMPTZ,                   -- null = send immediately on creation
-    created_by TEXT NOT NULL,                   -- admin user id
+    created_by TEXT NOT NULL,                   -- admin identifier returned by verify_admin_access:
+                                                --   - JWT auth: admin email (e.g. "alice@example.com")
+                                                --   - ADMIN_TOKEN auth: client IP (e.g. "10.0.0.1")
+                                                --   stored as-is for audit; treat as opaque label
     created_at TIMESTAMPTZ DEFAULT NOW(),
     sent_at TIMESTAMPTZ
 );
@@ -62,10 +65,14 @@ CREATE TABLE IF NOT EXISTS email_broadcast_recipients (
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending','sent','failed')),
     error TEXT,                                 -- error message on failure
-    sent_at TIMESTAMPTZ,
-    INDEX (broadcast_id),
-    INDEX (broadcast_id, status)
+    sent_at TIMESTAMPTZ
 );
+
+CREATE INDEX IF NOT EXISTS idx_email_broadcast_recipients_broadcast_id
+    ON email_broadcast_recipients (broadcast_id);
+
+CREATE INDEX IF NOT EXISTS idx_email_broadcast_recipients_broadcast_id_status
+    ON email_broadcast_recipients (broadcast_id, status);
 ```
 
 ---
@@ -94,18 +101,20 @@ Owns the APScheduler lifecycle and broadcast execution logic.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `POST` | `/admin/broadcast-email/preview` | Admin token | Return recipient count + rendered preview (no send) |
-| `POST` | `/admin/broadcast-email/test` | Admin token | Send test email to requesting admin's address |
+| `POST` | `/admin/broadcast-email/test` | Admin JWT | Send test email to requesting admin's address |
 | `POST` | `/admin/broadcast-email` | Admin token | Create & schedule (or fire immediately as a background task) a broadcast |
 | `GET` | `/admin/broadcast-email` | Admin token | List all broadcasts (paginated, newest first) |
 | `GET` | `/admin/broadcast-email/{id}` | Admin token | Detail: campaign info + per-recipient status (paginated) |
 | `DELETE` | `/admin/broadcast-email/{id}` | Admin token | Cancel a `scheduled` broadcast |
+
+**Auth note:** `POST /admin/broadcast-email/test` requires identity-bearing admin authentication (JWT) so the backend can resolve the requesting admin's email from the authenticated principal. A shared `ADMIN_TOKEN` alone has no associated email and is not sufficient for this endpoint.
 
 ### New schemas (added to `serving/schemas_admin.py`)
 
 ```python
 class BroadcastPreviewRequest(BaseModel):
     template_key: str | None = None
-    template_vars: dict = {}
+    template_vars: dict[str, Any] = Field(default_factory=dict)
     subject: str
     body_html: str
     body_text: str
