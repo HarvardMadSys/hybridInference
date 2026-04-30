@@ -9,10 +9,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
+from bs4 import BeautifulSoup
 
 from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 
@@ -70,8 +72,8 @@ async def fetch_chutes() -> ProviderQuotaResult:
 
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status in (401, 403):
+            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303, 307, 308, 401, 403):
                     return _err("chutes", "Chutes", key, "auth_failed")
                 if resp.status >= 400:
                     return _err("chutes", "Chutes", key, "unexpected")
@@ -165,8 +167,8 @@ async def fetch_zai() -> ProviderQuotaResult:
 
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status in (401, 403):
+            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303, 307, 308, 401, 403):
                     return _err("zai", "ZAI", key, "auth_failed")
                 if resp.status >= 400:
                     return _err("zai", "ZAI", key, "unexpected")
@@ -248,8 +250,8 @@ async def fetch_minimax() -> ProviderQuotaResult:
 
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status in (401, 403):
+            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303, 307, 308, 401, 403):
                     return _err("minimax", "MiniMax", cookie, "auth_failed")
                 if resp.status >= 400:
                     return _err("minimax", "MiniMax", cookie, "unexpected")
@@ -316,11 +318,6 @@ async def fetch_minimax() -> ProviderQuotaResult:
         error=None,
         usages=usages,
     )
-
-
-import re
-
-from bs4 import BeautifulSoup
 
 
 _USAGE_PATTERN = re.compile(
@@ -446,7 +443,7 @@ async def gather_all() -> list[ProviderQuotaResult]:
         if isinstance(result, ProviderQuotaResult):
             out.append(result)
         else:
-            logger.exception(
+            logger.error(
                 "gather_all: %s fetcher raised", name, exc_info=result
             )
             out.append(

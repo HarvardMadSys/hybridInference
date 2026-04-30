@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
-import os
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 
-from serving.admin.provider_quotas import _mask_key, fetch_chutes
+from serving.admin.provider_quotas import (
+    _mask_key,
+    fetch_chutes,
+    fetch_minimax,
+    fetch_ollama,
+    fetch_zai,
+    gather_all,
+)
+from serving.servers.deps import AppServices, verify_admin_access
+from serving.servers.routers import admin as admin_router
 
 
 class TestMaskKey:
@@ -91,15 +102,11 @@ class TestFetchChutes:
 
     @pytest.mark.asyncio
     async def test_timeout_returns_timeout_error(self, monkeypatch):
-        import asyncio
         monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
         with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError())):
             result = await fetch_chutes()
         assert result.ok is False
         assert result.error == "timeout"
-
-
-from serving.admin.provider_quotas import fetch_zai
 
 
 class TestFetchZai:
@@ -146,9 +153,6 @@ class TestFetchZai:
         assert result.error == "parse_error"
 
 
-from serving.admin.provider_quotas import fetch_minimax
-
-
 class TestFetchMinimax:
     @pytest.mark.asyncio
     async def test_not_configured_when_cookie_missing(self, monkeypatch):
@@ -193,9 +197,6 @@ class TestFetchMinimax:
         # used = total - remain
         assert u.used == 280.0
         assert u.limit == 1000.0
-
-
-from serving.admin.provider_quotas import fetch_ollama
 
 
 class TestFetchOllama:
@@ -265,9 +266,6 @@ class TestFetchOllama:
         assert session_use.limit == 100.0
 
 
-from serving.admin.provider_quotas import gather_all
-
-
 class TestGatherAll:
     @pytest.mark.asyncio
     async def test_gather_all_returns_four_results_even_if_one_raises(self, monkeypatch):
@@ -304,12 +302,6 @@ class TestProviderQuotasRoute:
     @pytest.fixture
     def admin_app(self):
         """Build a minimal FastAPI app with the admin router mounted."""
-        from fastapi import FastAPI
-        from unittest.mock import MagicMock
-
-        from serving.servers.deps import AppServices
-        from serving.servers.routers import admin as admin_router
-
         app = FastAPI(title="Admin Provider Quotas Test")
         services = AppServices(
             router=MagicMock(),
@@ -323,8 +315,6 @@ class TestProviderQuotasRoute:
 
     @pytest.mark.asyncio
     async def test_route_requires_admin_auth(self, admin_app):
-        from httpx import ASGITransport, AsyncClient
-
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/admin/provider-quotas")
@@ -332,10 +322,6 @@ class TestProviderQuotasRoute:
 
     @pytest.mark.asyncio
     async def test_route_returns_aggregated_response(self, admin_app, monkeypatch):
-        from httpx import ASGITransport, AsyncClient
-
-        from serving.servers.deps import verify_admin_access
-
         async def _fake_admin() -> str:
             return "admin@test"
 
