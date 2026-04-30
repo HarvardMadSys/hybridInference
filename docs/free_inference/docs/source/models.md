@@ -9,21 +9,11 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 | `glm-5.1` | GLM-5.1 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-5` | GLM-5 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-4.7` | GLM-4.7 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
-| `glm-4.7-flash` | GLM-4.7-Flash | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
+| `glm-5-turbo` | GLM-5 Turbo | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
+| `qwen3.6-27b` | Qwen3.6 27B | 65K tokens | 8K tokens | Function calling, Structured output |
+| `qwen3.6-35b` | Qwen3.6 35B | 65K tokens | 8K tokens | Function calling, Structured output |
+| `minimax-m2.7` | MiniMax M2.7 | 196K tokens | 8K tokens | Function calling, Structured output |
 | `minimax-m2.5` | MiniMax M2.5 | 1M tokens | 128K tokens | Function calling, Structured output, Thinking mode, Multimodal (text+image) |
-| `minimax-m2` | MiniMax M2 | 196K tokens | 8K tokens | Function calling, Structured output |
-| `qwen3-coder-30b` | Qwen3 Coder 30B | 32K tokens | 8K tokens | Function calling, Structured output |
-| `llama-3.3-70b-instruct` | Llama 3.3 70B Instruct | 131K tokens | 8K tokens | Function calling, Structured output |
-| `llama-4-scout` | Llama 4 Scout | 128K tokens | 16K tokens | Function calling, Structured output |
-| `llama-4-maverick` | Llama 4 Maverick | 128K tokens | 16K tokens | Function calling, Structured output, Multimodal (text+image) |
-
-> **Note:** Llama models are available with limited capacity. Availability may vary during peak usage.
-
-### Embedding Models
-
-| Model ID | Name | Dimensions | Context Length | Use Case |
-|----------|------|------------|----------------|----------|
-| `bge-m3` | BGE-M3 | 1024 | 8K tokens | Codebase indexing, semantic search |
 
 ---
 
@@ -32,6 +22,8 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 ### GLM-5.1
 
 **Model ID:** `glm-5.1`
+
+**Aliases:** `freeinference-glm-5.1`
 
 - Context length: 200,000 tokens
 - Max output: 128,000 tokens
@@ -49,6 +41,8 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 ### GLM-5
 
 **Model ID:** `glm-5`
+
+**Aliases:** `freeinference-glm-5`
 
 - Context length: 200,000 tokens
 - Max output: 128,000 tokens
@@ -68,6 +62,8 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 **Model ID:** `glm-4.7`
 
+**Aliases:** `freeinference-glm-4.7`
+
 - Context length: 200,000 tokens
 - Max output: 128,000 tokens
 - Quantization: fp8
@@ -81,9 +77,11 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 ---
 
-### GLM-4.7-Flash
+### GLM-5 Turbo
 
-**Model ID:** `glm-4.7-flash`
+**Model ID:** `glm-5-turbo`
+
+**Aliases:** `freeinference-glm-5-turbo`
 
 - Context length: 200,000 tokens
 - Max output: 128,000 tokens
@@ -95,6 +93,48 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 - Structured output: Yes
 - Thinking mode: Yes
 - Tool streaming: Yes
+
+---
+
+### Qwen3.6 27B
+
+**Model ID:** `qwen3.6-27b`
+
+- Context length: 65,536 tokens
+- Max output: 8,192 tokens
+- Hosting: Self-hosted (free)
+- Input modalities: text
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
+
+---
+
+### Qwen3.6 35B
+
+**Model ID:** `qwen3.6-35b`
+
+- Context length: 65,536 tokens
+- Max output: 8,192 tokens
+- Hosting: Self-hosted (free)
+- Input modalities: text
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
+
+---
+
+### MiniMax M2.7
+
+**Model ID:** `minimax-m2.7`
+
+- Context length: 196,608 tokens
+- Max output: 8,192 tokens
+- Quantization: bf16
+- Input modalities: text
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
 
 ---
 
@@ -114,69 +154,16 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 ---
 
-### MiniMax M2
+## Internal Models
 
-**Model ID:** `minimax-m2`
+> **Note:** The following models require internal role access and are not available to general users.
 
-- Context length: 196,608 tokens
-- Max output: 8,192 tokens
-- Quantization: bf16
-- Input modalities: text
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
+### GPT-5.4
 
----
+**Model ID:** `gpt-5.4`
 
-### Qwen3 Coder 30B
-
-**Model ID:** `qwen3-coder-30b`
-
-- Context length: 32,768 tokens
-- Max output: 8,192 tokens
-- Quantization: bf16
-- Input modalities: text
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-
----
-
-### Llama 3.3 70B Instruct (Limited Capacity)
-
-**Model ID:** `llama-3.3-70b-instruct`
-
-- Context length: 131,072 tokens
-- Max output: 8,192 tokens
-- Quantization: bf16
-- Input modalities: text
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-
----
-
-### Llama 4 Scout (Limited Capacity)
-
-**Model ID:** `llama-4-scout`
-
-- Context length: 128,000 tokens
-- Max output: 16,384 tokens
-- Quantization: fp8
-- Input modalities: text
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-
----
-
-### Llama 4 Maverick (Limited Capacity)
-
-**Model ID:** `llama-4-maverick`
-
-- Context length: 128,000 tokens
-- Max output: 16,384 tokens
-- Quantization: fp8
+- Context length: 1,050,000 tokens
+- Max output: 128,000 tokens
 - Input modalities: text, image
 - Output modalities: text
 - Function calling: Yes
@@ -184,19 +171,27 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 ---
 
-### BGE-M3 (Embedding)
+### Claude Sonnet 4.6
 
-**Model ID:** `bge-m3`
+**Model ID:** `claude-sonnet-4.6`
 
-- Type: Embedding
-- Dimensions: 1024
-- Context length: 8,192 tokens
-- Quantization: fp16
-- Input modalities: text
-- Output modalities: embedding
-- Multilingual: Yes (100+ languages)
+- Context length: 200,000 tokens
+- Max output: 64,000 tokens
+- Input modalities: text, image
+- Output modalities: text
+- Function calling: Yes
 
-Use this model for codebase indexing in Roo Code, Kilo Code, and other tools that support semantic code search. See the [integration guide](integrations.md) for setup instructions.
+---
+
+### Claude Opus 4.6
+
+**Model ID:** `claude-opus-4.6`
+
+- Context length: 200,000 tokens
+- Max output: 128,000 tokens
+- Input modalities: text, image
+- Output modalities: text
+- Function calling: Yes
 
 ---
 
