@@ -245,8 +245,8 @@ async def fetch_zai() -> ProviderQuotaResult:
 async def fetch_minimax() -> ProviderQuotaResult:
     """Fetch coding-plan quota from MiniMax via cookie-authed endpoint.
 
-    The endpoint requires browser session cookies; API key auth returns
-    `{"base_resp": {"status_code": 1004, "status_msg": "cookie missing"}}`.
+    The endpoint requires browser session cookies from minimax.io; API key
+    auth returns status_code 1004, and no active coding plan returns 2062.
     """
     cookie = os.getenv("MINIMAX_SESSION_COOKIE", "")
     if not cookie:
@@ -261,7 +261,7 @@ async def fetch_minimax() -> ProviderQuotaResult:
             usages=[],
         )
 
-    url = "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
+    url = "https://api.minimax.io/v1/api/openplatform/coding_plan/remains"
     headers = {"Cookie": cookie}
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
@@ -289,6 +289,8 @@ async def fetch_minimax() -> ProviderQuotaResult:
     base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else None
     if base_resp and base_resp.get("status_code") == 1004:
         return _err("minimax", "MiniMax", cookie, "auth_failed")
+    if base_resp and base_resp.get("status_code") == 2062:
+        return _err("minimax", "MiniMax", cookie, "not_configured")
     if base_resp and base_resp.get("status_code") not in (None, 0):
         return _err("minimax", "MiniMax", cookie, "unexpected")
 

@@ -226,6 +226,21 @@ class TestFetchMinimax:
         assert result.error == "auth_failed"
 
     @pytest.mark.asyncio
+    async def test_not_configured_on_no_subscription(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        payload = {
+            "model_remains": None,
+            "base_resp": {"status_code": 2062, "status_msg": "no active token plan subscription"},
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = await fetch_minimax()
+        assert result.ok is False
+        assert result.error == "not_configured"
+
+    @pytest.mark.asyncio
     async def test_success_parses_remains(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
         payload = {
