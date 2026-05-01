@@ -17,11 +17,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dotenv import load_dotenv
 import asyncpg
+from dotenv import load_dotenv
 
-from serving.utils.password import hash_password
 from serving.utils.jwt import generate_ulid
+from serving.utils.password import hash_password
 
 
 async def _run(email: str, username: str, password: str, db_config: dict) -> None:
