@@ -37,7 +37,9 @@ async def _run(email: str, username: str, password: str, db_config: dict) -> Non
             if existing:
                 user_id = existing["id"]
                 if existing["role"] == "admin":
-                    print(f"User already exists with admin role: {existing['email']} (id={user_id})")
+                    print(
+                        f"User already exists with admin role: {existing['email']} (id={user_id})"
+                    )
                     return
                 await conn.execute(
                     "UPDATE users SET role = 'admin', status = 'active', email_verified = TRUE WHERE id = $1",
@@ -65,8 +67,12 @@ async def _run(email: str, username: str, password: str, db_config: dict) -> Non
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create or promote a user to admin tier")
-    parser.add_argument("--email", default="admin@admin.com", help="Email address (default: admin@admin.com)")
-    parser.add_argument("--username", default="admin@admin.com", help="Username (default: admin@admin.com)")
+    parser.add_argument(
+        "--email", default="admin@admin.com", help="Email address (default: admin@admin.com)"
+    )
+    parser.add_argument(
+        "--username", default="admin@admin.com", help="Username (default: admin@admin.com)"
+    )
     parser.add_argument("--password", default="admin", help="Password (default: admin)")
     args = parser.parse_args()
 
