@@ -83,8 +83,18 @@ class TestFetchChutes:
     async def test_success_returns_usages(self, monkeypatch):
         monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
         payload = {
-            "four_hour": {"usage": 0.0, "cap": 8.333, "remaining": 8.333, "reset_at": "2026-05-02T00:00:00+00:00"},
-            "monthly": {"usage": 13.204, "cap": 100.0, "remaining": 86.796, "reset_at": "2026-05-11T17:07:09+00:00"},
+            "four_hour": {
+                "usage": 0.0,
+                "cap": 8.333,
+                "remaining": 8.333,
+                "reset_at": "2026-05-02T00:00:00+00:00",
+            },
+            "monthly": {
+                "usage": 13.204,
+                "cap": 100.0,
+                "remaining": 86.796,
+                "reset_at": "2026-05-11T17:07:09+00:00",
+            },
         }
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
