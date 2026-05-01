@@ -66,6 +66,7 @@ async def _run(email: str, username: str, password: str, db_config: dict) -> Non
 
 
 def main() -> None:
+    """Parse CLI arguments and create or promote a user to admin."""
     parser = argparse.ArgumentParser(description="Create or promote a user to admin tier")
     parser.add_argument(
         "--email", default="admin@admin.com", help="Email address (default: admin@admin.com)"
