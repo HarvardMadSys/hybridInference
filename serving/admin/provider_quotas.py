@@ -111,15 +111,12 @@ def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
     common keys and degrade gracefully if missing.
     """
     usages: list[ProviderQuotaUsage] = []
-    for key, label_default in (("monthly", "Monthly"), ("rolling", "Rolling window")):
+    for key, label in (("four_hour", "4-hour window"), ("monthly", "Monthly")):
         block = data.get(key)
         if not isinstance(block, dict):
             continue
-        used = block.get("used")
-        limit = block.get("limit")
-        unit = block.get("unit", "USD")
-        window = block.get("window")
-        label = f"{label_default} ({window})" if window else label_default
+        used = block.get("usage")
+        limit = block.get("cap")
         reset = block.get("reset_at")
         reset_dt = None
         if isinstance(reset, str):
@@ -132,7 +129,7 @@ def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
                 label=label,
                 used=float(used) if isinstance(used, (int, float)) else None,
                 limit=float(limit) if isinstance(limit, (int, float)) else None,
-                unit=str(unit),
+                unit="USD",
                 reset_at=reset_dt,
             )
         )
@@ -199,19 +196,35 @@ async def fetch_zai() -> ProviderQuotaResult:
         if not isinstance(entry, dict):
             continue
         kind = str(entry.get("type", "")).upper()
-        used = entry.get("currentValue") if "currentValue" in entry else entry.get("used")
-        limit = entry.get("limit") if "limit" in entry else None
         if kind == "TOKENS_LIMIT":
             label, unit = "Tokens", "tokens"
         elif kind == "TIME_LIMIT":
             label, unit = "Time", "minutes"
         else:
             label, unit = kind.replace("_", " ").title() or "Quota", ""
+
+        used_raw = entry.get("currentValue") if "currentValue" in entry else entry.get("used")
+        limit_raw = entry.get("usage")  # "usage" is the total cap in the ZAI API
+
+        # For entries with no absolute values, fall back to percentage
+        if used_raw is None and limit_raw is None and "percentage" in entry:
+            pct = entry.get("percentage")
+            usages.append(
+                ProviderQuotaUsage(
+                    label=label,
+                    used=float(pct) if isinstance(pct, (int, float)) else None,
+                    limit=100.0,
+                    unit="%",
+                    reset_at=None,
+                )
+            )
+            continue
+
         usages.append(
             ProviderQuotaUsage(
                 label=label,
-                used=float(used) if isinstance(used, (int, float)) else None,
-                limit=float(limit) if isinstance(limit, (int, float)) else None,
+                used=float(used_raw) if isinstance(used_raw, (int, float)) else None,
+                limit=float(limit_raw) if isinstance(limit_raw, (int, float)) else None,
                 unit=unit,
                 reset_at=None,
             )
@@ -232,8 +245,8 @@ async def fetch_zai() -> ProviderQuotaResult:
 async def fetch_minimax() -> ProviderQuotaResult:
     """Fetch coding-plan quota from MiniMax via cookie-authed endpoint.
 
-    The endpoint requires browser session cookies; API key auth returns
-    `{"base_resp": {"status_code": 1004, "status_msg": "cookie missing"}}`.
+    The endpoint requires browser session cookies from minimax.io; API key
+    auth returns status_code 1004, and no active coding plan returns 2062.
     """
     cookie = os.getenv("MINIMAX_SESSION_COOKIE", "")
     if not cookie:
@@ -248,7 +261,7 @@ async def fetch_minimax() -> ProviderQuotaResult:
             usages=[],
         )
 
-    url = "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
+    url = "https://api.minimax.io/v1/api/openplatform/coding_plan/remains"
     headers = {"Cookie": cookie}
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
@@ -276,6 +289,8 @@ async def fetch_minimax() -> ProviderQuotaResult:
     base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else None
     if base_resp and base_resp.get("status_code") == 1004:
         return _err("minimax", "MiniMax", cookie, "auth_failed")
+    if base_resp and base_resp.get("status_code") == 2062:
+        return _err("minimax", "MiniMax", cookie, "not_configured")
     if base_resp and base_resp.get("status_code") not in (None, 0):
         return _err("minimax", "MiniMax", cookie, "unexpected")
 
@@ -327,7 +342,7 @@ async def fetch_minimax() -> ProviderQuotaResult:
 
 
 _USAGE_PATTERN = re.compile(
-    r"(?P<label>session|weekly|monthly|daily)\s+usage[:\s]+(?P<used>[\d,]+)\s+of\s+(?P<limit>[\d,]+)\s+(?P<unit>requests?|tokens?|messages?)",
+    r"(?P<label>session|weekly|monthly|daily)\s+usage\s+(?P<pct>[\d.]+)%\s+used",
     re.IGNORECASE,
 )
 
@@ -402,7 +417,7 @@ async def fetch_ollama() -> ProviderQuotaResult:
 def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
     """Best-effort extraction of usage figures from the Ollama settings page.
 
-    Looks for text matches like 'Session usage: 42 of 100 requests'. Returns
+    Looks for text matches like 'Session usage 0% used'. Returns
     empty list if no recognizable usage rows found.
     """
     soup = BeautifulSoup(html, "html.parser")
@@ -410,18 +425,16 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
     usages: list[ProviderQuotaUsage] = []
     for match in _USAGE_PATTERN.finditer(text):
         try:
-            used = float(match.group("used").replace(",", ""))
-            limit = float(match.group("limit").replace(",", ""))
+            pct = float(match.group("pct"))
         except ValueError:
             continue
-        unit = match.group("unit").lower().rstrip("s") + "s"  # normalize plural
         label = f"{match.group('label').capitalize()} usage"
         usages.append(
             ProviderQuotaUsage(
                 label=label,
-                used=used,
-                limit=limit,
-                unit=unit,
+                used=pct,
+                limit=100.0,
+                unit="%",
                 reset_at=None,
             )
         )
