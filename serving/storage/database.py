@@ -747,6 +747,77 @@ class DatabaseLogger:
                 ON users(last_login_at DESC NULLS LAST)
             """)
 
+            # Broadcast email tables
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS email_broadcasts (
+                    id TEXT PRIMARY KEY,
+                    subject TEXT NOT NULL,
+                    body_html TEXT NOT NULL,
+                    body_text TEXT NOT NULL,
+                    template_key TEXT,
+                    template_vars JSONB NOT NULL DEFAULT '{}',
+                    target_roles TEXT[] NOT NULL DEFAULT '{}',
+                    target_statuses TEXT[] NOT NULL DEFAULT '{}',
+                    recipient_count INT NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'scheduled'
+                        CHECK (status IN ('scheduled','sending','sent','failed','cancelled')),
+                    scheduled_at TIMESTAMPTZ,
+                    created_by TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    sent_at TIMESTAMPTZ
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_email_broadcasts_status_scheduled
+                ON email_broadcasts(status, scheduled_at)
+                WHERE status = 'scheduled'
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_email_broadcasts_created_at
+                ON email_broadcasts(created_at DESC)
+            """)
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS email_broadcast_recipients (
+                    id BIGSERIAL PRIMARY KEY,
+                    broadcast_id TEXT NOT NULL REFERENCES email_broadcasts(id),
+                    user_id TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','sent','failed')),
+                    error TEXT,
+                    sent_at TIMESTAMPTZ,
+                    UNIQUE (broadcast_id, user_id)
+                )
+            """)
+            # Backfill the unique constraint on existing tables (no-op if it
+            # already exists or if duplicates would prevent it).
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    BEGIN
+                        ALTER TABLE email_broadcast_recipients
+                            ADD CONSTRAINT email_broadcast_recipients_broadcast_user_uniq
+                            UNIQUE (broadcast_id, user_id);
+                    EXCEPTION
+                        WHEN duplicate_object THEN NULL;
+                        WHEN duplicate_table THEN NULL;
+                    END;
+                END $$;
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast
+                ON email_broadcast_recipients(broadcast_id)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_status
+                ON email_broadcast_recipients(broadcast_id, status)
+            """)
+
     async def log_request(
         self,
         request_id: str,

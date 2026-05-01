@@ -21,6 +21,7 @@ from serving.adapters import ClaudeSubscriptionAdapter, CodexSubscriptionAdapter
 from serving.config.settings import USER_CONCURRENCY_LIMITS, get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.database import DatabaseLogger
+from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
 
 from .concurrency import UserConcurrencyLimiter
@@ -334,6 +335,23 @@ async def initialize() -> AppServices:
                 from serving.observability.metrics import DATABASE_CONNECTED
 
                 DATABASE_CONNECTED.set(1)
+                # Start broadcast email scheduler. If rehydration fails after
+                # the scheduler has started, tear it back down so we don't end
+                # up with a half-initialized scheduler running in the
+                # background.
+                if db_logger.pool:
+                    try:
+                        email_scheduler.start_scheduler(db_logger.pool)
+                        await email_scheduler.rehydrate_scheduled_broadcasts()
+                    except Exception as sched_exc:
+                        logger.error(f"Email scheduler startup failed: {sched_exc}")
+                        try:
+                            email_scheduler.stop_scheduler()
+                        except Exception as stop_exc:
+                            logger.error(
+                                f"Email scheduler teardown after startup failure also failed: "
+                                f"{stop_exc}"
+                            )
                 break
             except Exception as exc:
                 if attempt < max_retries - 1:
@@ -446,6 +464,12 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    # Broadcast email scheduler
+    try:
+        email_scheduler.stop_scheduler()
+    except Exception as exc:
+        logger.error(f"Email scheduler shutdown failed: {exc}")
+
     # Database logger
     if services.db_logger:
         try:

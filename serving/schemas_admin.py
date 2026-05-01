@@ -532,3 +532,67 @@ __all__ = [
     "UserDetailResponse",
     "UserListItem",
 ]
+
+
+# ── Broadcast Email Schemas ────────────────────────────────────────────────
+
+
+class BroadcastPreviewRequest(BaseModel):
+    template_key: str | None = None
+    template_vars: dict = Field(default_factory=dict)
+    subject: str = Field("", description="Required when template_key is None")
+    body_html: str = Field("", description="Required when template_key is None")
+    body_text: str = Field("", description="Required when template_key is None")
+    # Empty arrays would silently match zero users (postgres ANY('{}') is always
+    # false), which is confusing for admins. Require at least one role and one
+    # status — admin must opt in to who receives the broadcast.
+    target_roles: list[str] = Field(..., min_length=1)
+    target_statuses: list[str] = Field(..., min_length=1)
+
+
+class BroadcastPreviewResponse(BaseModel):
+    recipient_count: int
+    rendered_subject: str
+    rendered_body_html: str
+    rendered_body_text: str
+
+
+class CreateBroadcastRequest(BroadcastPreviewRequest):
+    scheduled_at: datetime | None = None
+
+
+class CreateBroadcastResponse(BaseModel):
+    id: str
+    status: str
+    recipient_count: int
+    scheduled_at: datetime | None
+
+
+class BroadcastListItem(BaseModel):
+    id: str
+    subject: str
+    status: str
+    recipient_count: int
+    scheduled_at: datetime | None
+    sent_at: datetime | None
+    created_by: str
+    created_at: datetime
+
+
+class ListBroadcastsResponse(BaseModel):
+    total: int
+    broadcasts: list[BroadcastListItem]
+
+
+class BroadcastRecipientItem(BaseModel):
+    user_id: str
+    email: str
+    status: str
+    error: str | None
+    sent_at: datetime | None
+
+
+class BroadcastDetailResponse(BaseModel):
+    broadcast: BroadcastListItem
+    recipients: list[BroadcastRecipientItem]
+    total_recipients: int
