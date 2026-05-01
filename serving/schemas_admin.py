@@ -453,7 +453,6 @@ class AdminRecentRequestsResponse(BaseModel):
     offset: int
 
 
-
 # ── Analytics Dashboard ──────────────────────────────────────────────────────
 
 
@@ -470,7 +469,7 @@ class AnalyticsUserEntry(BaseModel):
     email: str
     user_id: str
     requests: int
-    fraction: float  # share of ALL requests in the period (0.0-1.0)
+    fraction: float  # share of user-attributed requests in the period (0.0-1.0)
 
 
 class AnalyticsBreakdownEntry(BaseModel):

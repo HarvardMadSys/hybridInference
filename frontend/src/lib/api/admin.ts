@@ -415,7 +415,7 @@ export interface AnalyticsUserEntry {
   email: string;
   user_id: string;
   requests: number;
-  fraction: number; // 0.0–1.0 share of all requests in period
+  fraction: number; // 0.0–1.0 share of user-attributed requests in period
 }
 
 export interface AnalyticsBreakdownEntry {

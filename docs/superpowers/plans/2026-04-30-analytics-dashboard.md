@@ -6,7 +6,7 @@
 
 **Architecture:** A new `AnalyticsTab.tsx` component handles all analytics UI and owns its own state and data fetching (matching the existing `useState`/`useCallback`/`useEffect` pattern in the admin page). A single `GET /admin/analytics?period=hour|day|week|month` endpoint runs 5 queries in parallel via `asyncio.gather` and returns all chart data in one response. The admin page gains a 4th tab that mounts `AnalyticsTab`.
 
-**Tech Stack:** FastAPI + asyncpg (backend), Next.js 15 + TypeScript + Tailwind (frontend), Recharts 2.x (charts)
+**Tech Stack:** FastAPI + asyncpg (backend), Next.js 15 + TypeScript + Tailwind (frontend), Recharts 3.x (charts)
 
 ---
 

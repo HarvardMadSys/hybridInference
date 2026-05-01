@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -2084,191 +2083,184 @@ _ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
 
 @router.get("/admin/analytics", response_model=AdminAnalyticsResponse)
 async def admin_get_analytics(
-    period: str = "day",
+    period: Literal["hour", "day", "week", "month"] = "day",
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminAnalyticsResponse:
     """Return analytics summary for the admin analytics tab."""
-    if period not in _ANALYTICS_PERIODS:
-        raise HTTPException(400, f"period must be one of: {', '.join(_ANALYTICS_PERIODS)}")
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
 
     lookback_minutes, bucket_minutes = _ANALYTICS_PERIODS[period]
-    pool = db_logger.pool
 
-    async def q_active_users() -> int:
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT COUNT(DISTINCT user_id) AS cnt
+    # Acquire ONE connection and run all queries sequentially. Acquiring 5
+    # connections via asyncio.gather can starve the pool when two admin
+    # analytics requests arrive concurrently (pool max_size is small).
+    async with db_logger.pool.acquire() as conn:
+        active_users_row = await conn.fetchrow(
+            """
+            SELECT COUNT(DISTINCT user_id) AS cnt
+            FROM api_logs
+            WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+              AND user_id IS NOT NULL
+            """,
+            lookback_minutes,
+        )
+        active_users = int(active_users_row["cnt"] or 0)
+
+        top_users_rows = await conn.fetch(
+            """
+            WITH totals AS (
+                SELECT COUNT(*) AS grand_total
                 FROM api_logs
                 WHERE timestamp >= NOW() - ($1 * interval '1 minute')
                   AND user_id IS NOT NULL
-                """,
-                lookback_minutes,
-            )
-            return int(row["cnt"] or 0)
-
-    async def q_top_users() -> list[dict]:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                WITH totals AS (
-                    SELECT COUNT(*) AS grand_total
-                    FROM api_logs
-                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
-                      AND user_id IS NOT NULL
-                ),
-                ranked AS (
-                    SELECT
-                        l.user_id,
-                        COALESCE(u.email, l.user_id) AS email,
-                        COUNT(*) AS req_count
-                    FROM api_logs l
-                    LEFT JOIN users u ON u.id = l.user_id
-                    WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
-                      AND l.user_id IS NOT NULL
-                    GROUP BY l.user_id, u.email
-                    ORDER BY req_count DESC
-                    LIMIT 10
-                )
+            ),
+            ranked AS (
                 SELECT
-                    r.user_id,
-                    r.email,
-                    r.req_count,
-                    CASE WHEN t.grand_total > 0
-                         THEN r.req_count::float / t.grand_total
-                         ELSE 0 END AS fraction
-                FROM ranked r, totals t
-                """,
-                lookback_minutes,
-            )
-            return [dict(r) for r in rows]
-
-    async def q_by_model() -> list[dict]:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                WITH totals AS (
-                    SELECT COUNT(*) AS grand_total
-                    FROM api_logs
-                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
-                ),
-                ranked AS (
-                    SELECT model_id AS name, COUNT(*) AS req_count
-                    FROM api_logs
-                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
-                    GROUP BY model_id
-                    ORDER BY req_count DESC
-                    LIMIT 5
-                ),
-                top_total AS (
-                    SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
-                )
-                SELECT r.name, r.req_count,
-                    CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
-                FROM ranked r, totals t
-                UNION ALL
-                SELECT 'others',
-                    GREATEST(t.grand_total - tt.top_req_count, 0),
-                    CASE WHEN t.grand_total > 0
-                         THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
-                         ELSE 0 END
-                FROM totals t, top_total tt
-                WHERE t.grand_total > tt.top_req_count
+                    l.user_id,
+                    COALESCE(u.email, l.user_id) AS email,
+                    COUNT(*) AS req_count
+                FROM api_logs l
+                LEFT JOIN users u ON u.id = l.user_id
+                WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
+                  AND l.user_id IS NOT NULL
+                GROUP BY l.user_id, u.email
                 ORDER BY req_count DESC
-                """,
-                lookback_minutes,
+                LIMIT 10
             )
-            return [dict(r) for r in rows]
+            SELECT
+                r.user_id,
+                r.email,
+                r.req_count,
+                CASE WHEN t.grand_total > 0
+                     THEN r.req_count::float / t.grand_total
+                     ELSE 0 END AS fraction
+            FROM ranked r, totals t
+            """,
+            lookback_minutes,
+        )
 
-    async def q_by_provider() -> list[dict]:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                WITH totals AS (
-                    SELECT COUNT(*) AS grand_total
-                    FROM api_logs
-                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
-                ),
-                ranked AS (
-                    SELECT provider AS name, COUNT(*) AS req_count
-                    FROM api_logs
-                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
-                    GROUP BY provider
-                    ORDER BY req_count DESC
-                    LIMIT 4
-                ),
-                top_total AS (
-                    SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
-                )
-                SELECT r.name, r.req_count,
-                    CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
-                FROM ranked r, totals t
-                UNION ALL
-                SELECT 'others',
-                    GREATEST(t.grand_total - tt.top_req_count, 0),
-                    CASE WHEN t.grand_total > 0
-                         THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
-                         ELSE 0 END
-                FROM totals t, top_total tt
-                WHERE t.grand_total > tt.top_req_count
+        by_model_rows = await conn.fetch(
+            """
+            WITH totals AS (
+                SELECT COUNT(*) AS grand_total
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+            ),
+            ranked AS (
+                SELECT model_id AS name, COUNT(*) AS req_count
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                GROUP BY model_id
                 ORDER BY req_count DESC
-                """,
-                lookback_minutes,
+                LIMIT 5
+            ),
+            top_total AS (
+                SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
             )
-            return [dict(r) for r in rows]
+            SELECT r.name, r.req_count,
+                CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
+            FROM ranked r, totals t
+            UNION ALL
+            SELECT 'others',
+                GREATEST(t.grand_total - tt.top_req_count, 0),
+                CASE WHEN t.grand_total > 0
+                     THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
+                     ELSE 0 END
+            FROM totals t, top_total tt
+            WHERE t.grand_total > tt.top_req_count
+            ORDER BY req_count DESC
+            """,
+            lookback_minutes,
+        )
 
-    async def q_sparkline() -> list[dict]:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                WITH series AS (
-                    SELECT to_timestamp(
-                        gs * ($2 * 60)
-                    ) AS bucket_start
-                    FROM generate_series(
-                        (floor(extract(epoch FROM NOW() - ($1 * interval '1 minute')) / ($2 * 60)))::bigint,
-                        (floor(extract(epoch FROM NOW()) / ($2 * 60)))::bigint,
-                        1
-                    ) AS gs
-                ),
-                bucketed AS (
-                    SELECT
-                        to_timestamp(
-                            floor(extract(epoch FROM timestamp) / ($2 * 60)) * ($2 * 60)
-                        ) AS bucket_start,
-                        COUNT(*) AS request_count
-                    FROM api_logs
-                    WHERE timestamp >= NOW() - ($1 * interval '1 minute')
-                    GROUP BY 1
-                )
+        by_provider_rows = await conn.fetch(
+            """
+            WITH totals AS (
+                SELECT COUNT(*) AS grand_total
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+            ),
+            ranked AS (
+                SELECT provider AS name, COUNT(*) AS req_count
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                GROUP BY provider
+                ORDER BY req_count DESC
+                LIMIT 4
+            ),
+            top_total AS (
+                SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
+            )
+            SELECT r.name, r.req_count,
+                CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
+            FROM ranked r, totals t
+            UNION ALL
+            SELECT 'others',
+                GREATEST(t.grand_total - tt.top_req_count, 0),
+                CASE WHEN t.grand_total > 0
+                     THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
+                     ELSE 0 END
+            FROM totals t, top_total tt
+            WHERE t.grand_total > tt.top_req_count
+            ORDER BY req_count DESC
+            """,
+            lookback_minutes,
+        )
+
+        # Sparkline: align with the date_trunc + generate_series pattern used by
+        # /admin/request-metrics so admin chart bucket boundaries are consistent.
+        sparkline_rows = await conn.fetch(
+            """
+            WITH config AS (
+                SELECT ($2::int * 60) AS bucket_seconds
+            ),
+            bounds AS (
                 SELECT
-                    series.bucket_start,
-                    COALESCE(bucketed.request_count, 0) AS request_count
-                FROM series
-                LEFT JOIN bucketed ON bucketed.bucket_start = series.bucket_start
-                ORDER BY series.bucket_start ASC
-                """,
-                lookback_minutes,
-                bucket_minutes,
+                    date_trunc('minute', NOW()) AS end_time,
+                    date_trunc('minute', NOW())
+                        - ($1::int * interval '1 minute') AS start_time,
+                    to_timestamp(
+                        floor(
+                            extract(
+                                epoch FROM date_trunc('minute', NOW())
+                                    - ($1::int * interval '1 minute')
+                            ) / config.bucket_seconds
+                        ) * config.bucket_seconds
+                    ) AS aligned_start
+                FROM config
+            ),
+            series AS (
+                SELECT generate_series(
+                    (SELECT aligned_start FROM bounds),
+                    (SELECT end_time FROM bounds),
+                    $2::int * interval '1 minute'
+                ) AS bucket_start
+            ),
+            bucketed_logs AS (
+                SELECT
+                    to_timestamp(
+                        floor(extract(epoch from timestamp) / ($2::int * 60))
+                        * ($2::int * 60)
+                    ) AS bucket_start,
+                    COUNT(*) AS request_count
+                FROM api_logs, bounds
+                WHERE timestamp >= bounds.start_time
+                  AND timestamp <= bounds.end_time
+                GROUP BY 1
             )
-            return [dict(r) for r in rows]
-
-    (
-        active_users,
-        top_users_rows,
-        by_model_rows,
-        by_provider_rows,
-        sparkline_rows,
-    ) = await asyncio.gather(
-        q_active_users(),
-        q_top_users(),
-        q_by_model(),
-        q_by_provider(),
-        q_sparkline(),
-    )
+            SELECT
+                series.bucket_start,
+                COALESCE(bucketed_logs.request_count, 0) AS request_count
+            FROM series
+            LEFT JOIN bucketed_logs
+              ON bucketed_logs.bucket_start = series.bucket_start
+            ORDER BY series.bucket_start ASC
+            """,
+            lookback_minutes,
+            bucket_minutes,
+        )
 
     return AdminAnalyticsResponse(
         period=period,

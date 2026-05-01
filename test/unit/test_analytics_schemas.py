@@ -22,7 +22,7 @@ def test_sparkline_bucket_valid():
     assert b.request_count == 42
 
 
-def test_analytics_user_entry_fraction_range():
+def test_analytics_user_entry_preserves_fraction():
     e = AnalyticsUserEntry(
         email="alice@example.com",
         user_id="u1",

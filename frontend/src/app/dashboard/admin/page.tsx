@@ -343,9 +343,7 @@ export default function AdminPage() {
       tab === 'providers' ||
       tab === 'analytics'
     ) {
-      setActiveTab(
-        tab as 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics',
-      );
+      setActiveTab(tab as 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics');
     }
   }, []);
 
