@@ -136,6 +136,15 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
       // Try to extract more specific error from detail message
       if (errorMessage.includes('already registered')) {
         errorCode = 'USER_ALREADY_EXISTS';
+      } else if (
+        errorMessage.includes('reset link has already been used') ||
+        (errorMessage.includes('reset token') && errorMessage.includes('used'))
+      ) {
+        errorCode = 'RESET_TOKEN_USED';
+      } else if (errorMessage.includes('Reset link has expired')) {
+        errorCode = 'RESET_TOKEN_EXPIRED';
+      } else if (errorMessage.includes('Invalid or expired reset token')) {
+        errorCode = 'RESET_TOKEN_INVALID';
       } else if (errorMessage.includes('already been used')) {
         errorCode = 'TOKEN_ALREADY_USED';
       } else if (errorMessage.includes('expired')) {
