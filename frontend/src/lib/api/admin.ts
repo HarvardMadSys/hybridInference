@@ -401,6 +401,45 @@ export async function listRecentRequests(
 }
 
 // ========================================
+// Analytics
+// ========================================
+
+export type AnalyticsPeriod = 'hour' | 'day' | 'week' | 'month';
+
+export interface SparklineBucket {
+  start_time: string;
+  request_count: number;
+}
+
+export interface AnalyticsUserEntry {
+  email: string;
+  user_id: string;
+  requests: number;
+  fraction: number; // 0.0–1.0 share of user-attributed requests in period
+}
+
+export interface AnalyticsBreakdownEntry {
+  name: string; // model_id, provider, or "others"
+  requests: number;
+  fraction: number;
+}
+
+export interface AdminAnalyticsResponse {
+  period: AnalyticsPeriod;
+  active_users: number;
+  sparkline: SparklineBucket[];
+  top_users: AnalyticsUserEntry[];
+  by_model: AnalyticsBreakdownEntry[];
+  by_provider: AnalyticsBreakdownEntry[];
+  generated_at: string;
+}
+
+export async function getAnalytics(period: AnalyticsPeriod): Promise<AdminAnalyticsResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/analytics?period=${period}`);
+  return jsonOrThrow<AdminAnalyticsResponse>(resp);
+}
+
+// ========================================
 // Broadcast Email
 // ========================================
 

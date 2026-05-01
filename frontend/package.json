@@ -22,6 +22,7 @@
     "react-dom": "^18.2.0",
     "react-hook-form": "^7.49.2",
     "react-hot-toast": "^2.6.0",
+    "recharts": "^3.8.1",
     "zod": "^3.22.4"
   },
   "devDependencies": {

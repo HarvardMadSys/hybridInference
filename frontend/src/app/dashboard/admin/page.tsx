@@ -37,6 +37,7 @@ import {
   getProviderQuotas,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { AnalyticsTab } from './AnalyticsTab';
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -328,7 +329,7 @@ export default function AdminPage() {
 
   // Top-level tab
   const [activeTab, setActiveTab] = useState<
-    'users' | 'audit' | 'requests' | 'broadcast' | 'providers'
+    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics'
   >('users');
 
   useEffect(() => {
@@ -339,9 +340,10 @@ export default function AdminPage() {
       tab === 'audit' ||
       tab === 'requests' ||
       tab === 'broadcast' ||
-      tab === 'providers'
+      tab === 'providers' ||
+      tab === 'analytics'
     ) {
-      setActiveTab(tab as 'users' | 'audit' | 'requests' | 'broadcast' | 'providers');
+      setActiveTab(tab as 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics');
     }
   }, []);
 
@@ -709,7 +711,9 @@ export default function AdminPage() {
     { key: 'deleted', label: 'Deleted', count: counts.deleted },
   ];
 
-  const onTabChange = (tab: 'users' | 'audit' | 'requests' | 'broadcast' | 'providers') => {
+  const onTabChange = (
+    tab: 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics',
+  ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
     params.set('tab', tab);
@@ -794,27 +798,31 @@ export default function AdminPage() {
 
         {/* Top-level tab toggle */}
         <div className="mt-6 flex items-center gap-1">
-          {(['users', 'requests', 'providers', 'audit', 'broadcast'] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => onTabChange(tab)}
-              className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
-                activeTab === tab
-                  ? 'bg-gray-900 text-white'
-                  : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
-              }`}
-            >
-              {tab === 'users'
-                ? 'Users'
-                : tab === 'requests'
-                  ? 'Recent Requests'
-                  : tab === 'providers'
-                    ? 'Providers'
-                    : tab === 'audit'
-                      ? 'Audit Log'
-                      : 'Broadcast Email'}
-            </button>
-          ))}
+          {(['users', 'requests', 'providers', 'audit', 'broadcast', 'analytics'] as const).map(
+            (tab) => (
+              <button
+                key={tab}
+                onClick={() => onTabChange(tab)}
+                className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
+                  activeTab === tab
+                    ? 'bg-gray-900 text-white'
+                    : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+                }`}
+              >
+                {tab === 'users'
+                  ? 'Users'
+                  : tab === 'requests'
+                    ? 'Recent Requests'
+                    : tab === 'providers'
+                      ? 'Providers'
+                      : tab === 'audit'
+                        ? 'Audit Log'
+                        : tab === 'broadcast'
+                          ? 'Broadcast Email'
+                          : 'Analytics'}
+              </button>
+            ),
+          )}
         </div>
 
         {/* Alerts */}
@@ -1851,6 +1859,7 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+        {activeTab === 'analytics' && <AnalyticsTab />}
 
         {/* ========== Broadcast Email Tab ========== */}
         {activeTab === 'broadcast' && (
