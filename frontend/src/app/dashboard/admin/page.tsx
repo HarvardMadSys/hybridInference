@@ -4,10 +4,14 @@ import { Fragment, useCallback, useEffect, useId, useState } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import {
+  AdminMetricDistribution,
+  AdminPerformanceMetricsWindow,
   AdminUser,
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
   AuditLogEntry,
+  BroadcastDetailResponse,
+  BroadcastListItem,
   ProviderQuotaResult,
   StatusCounts,
   UserDetail,
@@ -22,6 +26,14 @@ import {
   listAuditLog,
   listRecentRequests,
   getRequestMetrics,
+  previewBroadcast,
+  sendTestBroadcastEmail,
+  createBroadcast,
+  listBroadcasts,
+  getBroadcastDetail,
+  cancelBroadcast,
+  exportRequests,
+  getPerformanceMetrics,
   getProviderQuotas,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -136,6 +148,94 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
   );
 }
 
+function formatTokens(n: number): string {
+  return Math.round(n).toLocaleString();
+}
+
+function formatBucketEdge(value: number, kind: 'tokens' | 'ms'): string {
+  if (kind === 'tokens') {
+    if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`;
+    return value.toLocaleString();
+  }
+  if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}s`;
+  return `${value}ms`;
+}
+
+function MetricSubPanel({
+  title,
+  dist,
+  kind,
+}: {
+  title: string;
+  dist: AdminMetricDistribution;
+  kind: 'tokens' | 'ms';
+}) {
+  const formatValue = (v: number | null | undefined): string => {
+    if (v == null) return '—';
+    return kind === 'ms' ? formatLatency(v) : formatTokens(v);
+  };
+  const maxBucket = Math.max(...dist.histogram.map((b) => b.count), 1);
+
+  return (
+    <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="text-[12px] font-medium text-gray-700">{title}</div>
+        <div className="text-[11px] tabular-nums text-gray-400">
+          n={dist.count.toLocaleString()}
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] tabular-nums text-gray-600">
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-400">p50</div>
+          <div className="font-medium text-gray-900">{formatValue(dist.p50)}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-400">p95</div>
+          <div className="font-medium text-gray-900">{formatValue(dist.p95)}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-400">p99</div>
+          <div className="font-medium text-gray-900">{formatValue(dist.p99)}</div>
+        </div>
+      </div>
+      <div className="mt-2 flex h-10 items-end gap-px overflow-hidden rounded-md bg-white px-1 py-1">
+        {dist.histogram.map((b, idx) => {
+          const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
+          const upperLabel = b.upper_bound == null ? '∞' : formatBucketEdge(b.upper_bound, kind);
+          const lowerLabel = formatBucketEdge(b.lower_bound, kind);
+          return (
+            <div
+              key={`${idx}-${b.lower_bound}`}
+              className={`min-w-0 flex-1 rounded-t-sm ${
+                b.count === 0 ? 'bg-gray-200' : 'bg-gray-700'
+              }`}
+              style={{ height: `${height}%` }}
+              title={`[${lowerLabel}, ${upperLabel}): ${b.count.toLocaleString()}`}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div className="text-[13px] font-semibold text-gray-900">{metric.label}</div>
+        <div className="text-[11px] text-gray-400">{metric.window_minutes}m window</div>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <MetricSubPanel title="Prompt tokens" dist={metric.prompt_tokens} kind="tokens" />
+        <MetricSubPanel title="Response tokens" dist={metric.completion_tokens} kind="tokens" />
+        <MetricSubPanel title="TTFT" dist={metric.ttft_ms} kind="ms" />
+        <MetricSubPanel title="TBT" dist={metric.tbt_ms} kind="ms" />
+      </div>
+    </div>
+  );
+}
+
 function pct(used: number | null, limit: number | null): number | null {
   if (used == null || limit == null || limit <= 0) return null;
   return Math.min(100, (used / limit) * 100);
@@ -228,13 +328,24 @@ export default function AdminPage() {
   const { state } = useAuth();
 
   // Top-level tab
-  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests' | 'providers' | 'analytics'>('users');
+  const [activeTab, setActiveTab] = useState<
+    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics'
+  >('users');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
-    if (tab === 'users' || tab === 'audit' || tab === 'requests' || tab === 'providers' || tab === 'analytics') {
-      setActiveTab(tab);
+    if (
+      tab === 'users' ||
+      tab === 'audit' ||
+      tab === 'requests' ||
+      tab === 'broadcast' ||
+      tab === 'providers' ||
+      tab === 'analytics'
+    ) {
+      setActiveTab(
+        tab as 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics',
+      );
     }
   }, []);
 
@@ -269,6 +380,29 @@ export default function AdminPage() {
   const [editQuota, setEditQuota] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // Broadcast email state
+  const [broadcasts, setBroadcasts] = useState<BroadcastListItem[]>([]);
+  const [broadcastLoading, setBroadcastLoading] = useState(false);
+  const [broadcastDetail, setBroadcastDetail] = useState<BroadcastDetailResponse | null>(null);
+  const [broadcastDetailLoading, setBroadcastDetailLoading] = useState(false);
+  const [bcTemplateKey, setBcTemplateKey] = useState<string>('custom');
+  const [bcTemplateVars, setBcTemplateVars] = useState<Record<string, string>>({});
+  const [bcSubject, setBcSubject] = useState('');
+  const [bcBodyHtml, setBcBodyHtml] = useState('');
+  const [bcScheduleMode, setBcScheduleMode] = useState<'now' | 'later'>('now');
+  const [bcScheduledAt, setBcScheduledAt] = useState('');
+  const [bcPreview, setBcPreview] = useState<{
+    recipient_count: number;
+    rendered_subject: string;
+    rendered_body_html: string;
+  } | null>(null);
+  const [bcPreviewLoading, setBcPreviewLoading] = useState(false);
+  const [bcSending, setBcSending] = useState(false);
+  const [bcConfirm, setBcConfirm] = useState(false);
+  const [bcTestLoading, setBcTestLoading] = useState(false);
+  const [bcTargetRoles, setBcTargetRoles] = useState<string[]>(['free', 'internal', 'admin']);
+  const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
+
   // Audit log state
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
   const [auditTotal, setAuditTotal] = useState(0);
@@ -289,8 +423,15 @@ export default function AdminPage() {
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
+  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
+  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
   const reqJumpInputId = useId();
   const REQ_PAGE_SIZE = 50;
+  const [showExportPanel, setShowExportPanel] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [exportIncludeContent, setExportIncludeContent] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
 
   // Providers state
   const [providerQuotas, setProviderQuotas] = useState<ProviderQuotaResult[]>([]);
@@ -368,6 +509,19 @@ export default function AdminPage() {
     }
   }, []);
 
+  const loadPerformanceMetrics = useCallback(async () => {
+    setPerfMetricsLoading(true);
+    setError(null);
+    try {
+      const d = await getPerformanceMetrics();
+      setPerfMetrics(d.windows);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setPerfMetricsLoading(false);
+    }
+  }, []);
+
   const loadProviderQuotas = useCallback(async () => {
     setProviderQuotasLoading(true);
     setError(null);
@@ -393,8 +547,9 @@ export default function AdminPage() {
     if (activeTab === 'requests') {
       loadRequests();
       loadRequestMetrics();
+      loadPerformanceMetrics();
     }
-  }, [loadRequests, loadRequestMetrics, activeTab]);
+  }, [loadRequests, loadRequestMetrics, loadPerformanceMetrics, activeTab]);
 
   useEffect(() => {
     if (activeTab === 'providers') loadProviderQuotas();
@@ -405,6 +560,22 @@ export default function AdminPage() {
     const t = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(t);
   }, [toast]);
+
+  const loadBroadcasts = useCallback(async () => {
+    setBroadcastLoading(true);
+    try {
+      const res = await listBroadcasts(50, 0);
+      setBroadcasts(res.broadcasts);
+    } catch {
+      // non-fatal
+    } finally {
+      setBroadcastLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'broadcast') loadBroadcasts();
+  }, [loadBroadcasts, activeTab]);
 
   const toggleDetail = async (uid: string) => {
     if (expandedId === uid) {
@@ -542,7 +713,9 @@ export default function AdminPage() {
     { key: 'deleted', label: 'Deleted', count: counts.deleted },
   ];
 
-  const onTabChange = (tab: 'users' | 'audit' | 'requests' | 'providers' | 'analytics') => {
+  const onTabChange = (
+    tab: 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics',
+  ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
     params.set('tab', tab);
@@ -559,12 +732,17 @@ export default function AdminPage() {
       loadAudit();
       return;
     }
+    if (activeTab === 'broadcast') {
+      loadBroadcasts();
+      return;
+    }
     if (activeTab === 'providers') {
       loadProviderQuotas();
       return;
     }
     loadRequests();
     loadRequestMetrics();
+    loadPerformanceMetrics();
   };
 
   return (
@@ -594,11 +772,21 @@ export default function AdminPage() {
           <button
             onClick={refreshActiveTab}
             disabled={
-              loading || auditLoading || reqLoading || reqMetricsLoading || providerQuotasLoading
+              loading ||
+              auditLoading ||
+              reqLoading ||
+              reqMetricsLoading ||
+              perfMetricsLoading ||
+              providerQuotasLoading
             }
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
           >
-            {loading || auditLoading || reqLoading || reqMetricsLoading || providerQuotasLoading
+            {loading ||
+            auditLoading ||
+            reqLoading ||
+            reqMetricsLoading ||
+            perfMetricsLoading ||
+            providerQuotasLoading
               ? 'Loading...'
               : 'Refresh'}
           </button>
@@ -612,27 +800,31 @@ export default function AdminPage() {
 
         {/* Top-level tab toggle */}
         <div className="mt-6 flex items-center gap-1">
-          {(['users', 'requests', 'providers', 'audit', 'analytics'] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => onTabChange(tab)}
-              className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
-                activeTab === tab
-                  ? 'bg-gray-900 text-white'
-                  : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
-              }`}
-            >
-              {tab === 'users'
-                ? 'Users'
-                : tab === 'requests'
-                  ? 'Recent Requests'
-                  : tab === 'providers'
-                    ? 'Providers'
-                    : tab === 'audit'
-                      ? 'Audit Log'
-                      : 'Analytics'}
-            </button>
-          ))}
+          {(['users', 'requests', 'providers', 'audit', 'broadcast', 'analytics'] as const).map(
+            (tab) => (
+              <button
+                key={tab}
+                onClick={() => onTabChange(tab)}
+                className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
+                  activeTab === tab
+                    ? 'bg-gray-900 text-white'
+                    : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+                }`}
+              >
+                {tab === 'users'
+                  ? 'Users'
+                  : tab === 'requests'
+                    ? 'Recent Requests'
+                    : tab === 'providers'
+                      ? 'Providers'
+                      : tab === 'audit'
+                        ? 'Audit Log'
+                        : tab === 'broadcast'
+                          ? 'Broadcast Email'
+                          : 'Analytics'}
+              </button>
+            ),
+          )}
         </div>
 
         {/* Alerts */}
@@ -1235,6 +1427,33 @@ export default function AdminPage() {
               ) : null}
             </div>
 
+            {/* Performance metrics */}
+            <div className="mb-6">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-[15px] font-semibold text-gray-900">Performance metrics</h2>
+                  <p className="text-[12px] text-gray-400">
+                    Prompt/response length, time-to-first-token, and inter-token latency
+                    distributions.
+                  </p>
+                </div>
+                {perfMetricsLoading && (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+                )}
+              </div>
+              {perfMetrics.length > 0 ? (
+                <div className="grid gap-3">
+                  {perfMetrics.map((metric) => (
+                    <PerformanceMetricsCard key={metric.key} metric={metric} />
+                  ))}
+                </div>
+              ) : !perfMetricsLoading ? (
+                <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+                  <p className="text-[13px] text-gray-400">No performance metrics available.</p>
+                </div>
+              ) : null}
+            </div>
+
             {/* Filters */}
             <div className="flex flex-wrap items-center gap-3">
               <input
@@ -1270,7 +1489,96 @@ export default function AdminPage() {
                 Errors only
               </label>
               <span className="text-[12px] text-gray-400 tabular-nums">{reqTotal} entries</span>
+              <button
+                type="button"
+                onClick={() => setShowExportPanel((v) => !v)}
+                className="ml-auto rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50"
+              >
+                Export JSONL
+              </button>
             </div>
+
+            {showExportPanel && (
+              <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[12px] text-gray-500">Start date</span>
+                    <input
+                      type="date"
+                      value={exportStartDate}
+                      onChange={(e) => setExportStartDate(e.target.value)}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[12px] text-gray-500">End date</span>
+                    <input
+                      type="date"
+                      value={exportEndDate}
+                      onChange={(e) => setExportEndDate(e.target.value)}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1.5 pb-2 text-[13px] text-gray-600 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={exportIncludeContent}
+                      onChange={(e) => setExportIncludeContent(e.target.checked)}
+                      className="rounded border-gray-300"
+                    />
+                    Include prompt &amp; response
+                  </label>
+                  <div className="ml-auto flex items-center gap-2 pb-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowExportPanel(false);
+                        setExportStartDate('');
+                        setExportEndDate(new Date().toISOString().slice(0, 10));
+                        setExportIncludeContent(false);
+                      }}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        !exportStartDate ||
+                        exportLoading ||
+                        (!!exportEndDate && exportEndDate < exportStartDate)
+                      }
+                      onClick={async () => {
+                        if (!exportStartDate) return;
+                        setExportLoading(true);
+                        try {
+                          await exportRequests({
+                            startTime: new Date(`${exportStartDate}T00:00:00Z`).toISOString(),
+                            endTime: exportEndDate
+                              ? new Date(`${exportEndDate}T23:59:59Z`).toISOString()
+                              : undefined,
+                            userId: reqUserFilter || undefined,
+                            modelId: reqModelFilter || undefined,
+                            errorsOnly: reqErrorsOnly || undefined,
+                            includeContent: exportIncludeContent || undefined,
+                          });
+                          setShowExportPanel(false);
+                        } catch (err) {
+                          setToast(
+                            `Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+                          );
+                        } finally {
+                          setExportLoading(false);
+                        }
+                      }}
+                      className="rounded-lg bg-gray-900 px-3 py-2 text-[13px] text-white hover:bg-gray-700 disabled:opacity-50"
+                    >
+                      {exportLoading ? 'Exporting…' : 'Export'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Table */}
             <div className="mt-4">
@@ -1554,6 +1862,521 @@ export default function AdminPage() {
           </div>
         )}
         {activeTab === 'analytics' && <AnalyticsTab />}
+
+        {/* ========== Broadcast Email Tab ========== */}
+        {activeTab === 'broadcast' && (
+          <>
+            <div className="mt-8 space-y-6">
+              {/* Composer */}
+              <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                <h2 className="text-[15px] font-semibold text-gray-900 mb-4">Compose Broadcast</h2>
+
+                {/* Template selector */}
+                <div className="mb-4">
+                  <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                    Template
+                  </label>
+                  <select
+                    value={bcTemplateKey}
+                    onChange={(e) => {
+                      setBcTemplateKey(e.target.value);
+                      setBcTemplateVars({});
+                      setBcSubject('');
+                      setBcBodyHtml('');
+                      setBcPreview(null);
+                    }}
+                    className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                  >
+                    <option value="custom">Custom</option>
+                    <option value="maintenance">Maintenance Notice</option>
+                    <option value="announcement">Announcement</option>
+                    <option value="quota_change">Quota Change</option>
+                  </select>
+                </div>
+
+                {/* Template variable fields */}
+                {bcTemplateKey === 'maintenance' && (
+                  <div className="mb-4 grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Date
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="e.g. May 1, 2026"
+                        value={bcTemplateVars['date'] ?? ''}
+                        onChange={(e) => setBcTemplateVars((v) => ({ ...v, date: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Duration
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="e.g. 2 hours"
+                        value={bcTemplateVars['duration'] ?? ''}
+                        onChange={(e) =>
+                          setBcTemplateVars((v) => ({ ...v, duration: e.target.value }))
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+                {bcTemplateKey === 'announcement' && (
+                  <div className="mb-4 space-y-3">
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Feature Name
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="e.g. GPT-5 Support"
+                        value={bcTemplateVars['feature_name'] ?? ''}
+                        onChange={(e) =>
+                          setBcTemplateVars((v) => ({ ...v, feature_name: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Description
+                      </label>
+                      <textarea
+                        rows={3}
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="Describe the new feature..."
+                        value={bcTemplateVars['description'] ?? ''}
+                        onChange={(e) =>
+                          setBcTemplateVars((v) => ({ ...v, description: e.target.value }))
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+                {bcTemplateKey === 'quota_change' && (
+                  <div className="mb-4">
+                    <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                      New Quota
+                    </label>
+                    <input
+                      className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                      placeholder="e.g. $50/day"
+                      value={bcTemplateVars['new_quota'] ?? ''}
+                      onChange={(e) =>
+                        setBcTemplateVars((v) => ({ ...v, new_quota: e.target.value }))
+                      }
+                    />
+                  </div>
+                )}
+                {bcTemplateKey === 'custom' && (
+                  <div className="mb-4 space-y-3">
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Subject
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="Email subject"
+                        value={bcSubject}
+                        onChange={(e) => setBcSubject(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Body (HTML)
+                      </label>
+                      <textarea
+                        rows={6}
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-mono focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="<p>Your message here...</p>"
+                        value={bcBodyHtml}
+                        onChange={(e) => setBcBodyHtml(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Recipient filters */}
+                <div className="mb-4 grid grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-[12px] font-medium text-gray-600 mb-2">
+                      Roles
+                    </label>
+                    {['free', 'internal', 'admin'].map((role) => (
+                      <label
+                        key={role}
+                        className="flex items-center gap-2 text-[13px] text-gray-700 mb-1"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={bcTargetRoles.includes(role)}
+                          onChange={(e) =>
+                            setBcTargetRoles((prev) =>
+                              e.target.checked ? [...prev, role] : prev.filter((r) => r !== role),
+                            )
+                          }
+                        />
+                        {role}
+                      </label>
+                    ))}
+                  </div>
+                  <div>
+                    <label className="block text-[12px] font-medium text-gray-600 mb-2">
+                      Statuses
+                    </label>
+                    {['active', 'suspended', 'pending_approval', 'rejected'].map((status) => (
+                      <label
+                        key={status}
+                        className="flex items-center gap-2 text-[13px] text-gray-700 mb-1"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={bcTargetStatuses.includes(status)}
+                          onChange={(e) =>
+                            setBcTargetStatuses((prev) =>
+                              e.target.checked
+                                ? [...prev, status]
+                                : prev.filter((s) => s !== status),
+                            )
+                          }
+                        />
+                        {status.replace('_', ' ')}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Schedule toggle */}
+                <div className="mb-4">
+                  <label className="block text-[12px] font-medium text-gray-600 mb-2">
+                    Send Timing
+                  </label>
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-[13px] text-gray-700">
+                      <input
+                        type="radio"
+                        checked={bcScheduleMode === 'now'}
+                        onChange={() => setBcScheduleMode('now')}
+                      />
+                      Send now
+                    </label>
+                    <label className="flex items-center gap-2 text-[13px] text-gray-700">
+                      <input
+                        type="radio"
+                        checked={bcScheduleMode === 'later'}
+                        onChange={() => setBcScheduleMode('later')}
+                      />
+                      Schedule for later
+                    </label>
+                  </div>
+                  {bcScheduleMode === 'later' && (
+                    <input
+                      type="datetime-local"
+                      className="mt-2 rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                      value={bcScheduledAt}
+                      onChange={(e) => setBcScheduledAt(e.target.value)}
+                    />
+                  )}
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    disabled={bcPreviewLoading}
+                    onClick={async () => {
+                      setBcPreviewLoading(true);
+                      try {
+                        const res = await previewBroadcast({
+                          template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+                          template_vars: bcTemplateVars,
+                          subject: bcSubject,
+                          body_html: bcBodyHtml,
+                          body_text: '',
+                          target_roles: bcTargetRoles,
+                          target_statuses: bcTargetStatuses,
+                        });
+                        setBcPreview(res);
+                      } catch (err) {
+                        setToast(getErrorMessage(err));
+                      } finally {
+                        setBcPreviewLoading(false);
+                      }
+                    }}
+                    className="rounded-md border border-gray-300 px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    {bcPreviewLoading ? 'Loading…' : 'Preview & Count'}
+                  </button>
+
+                  <button
+                    disabled={bcTestLoading}
+                    onClick={async () => {
+                      setBcTestLoading(true);
+                      try {
+                        await sendTestBroadcastEmail({
+                          template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+                          template_vars: bcTemplateVars,
+                          subject: bcSubject,
+                          body_html: bcBodyHtml,
+                          body_text: '',
+                          target_roles: bcTargetRoles,
+                          target_statuses: bcTargetStatuses,
+                        });
+                        setToast('Test email sent to your address');
+                      } catch (err) {
+                        setToast(getErrorMessage(err));
+                      } finally {
+                        setBcTestLoading(false);
+                      }
+                    }}
+                    className="rounded-md border border-gray-300 px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    {bcTestLoading ? 'Sending…' : 'Send Test to Me'}
+                  </button>
+
+                  <button
+                    onClick={() => setBcConfirm(true)}
+                    disabled={bcSending}
+                    className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+                  >
+                    {bcScheduleMode === 'later' ? 'Schedule' : 'Send Now'}
+                  </button>
+                </div>
+
+                {/* Preview panel */}
+                {bcPreview && (
+                  <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-4">
+                    <div className="text-[13px] font-medium text-blue-800 mb-1">
+                      {bcPreview.recipient_count} recipient
+                      {bcPreview.recipient_count !== 1 ? 's' : ''} match your filters
+                    </div>
+                    <div className="text-[12px] text-blue-700">
+                      Subject: {bcPreview.rendered_subject}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Confirmation modal */}
+              {bcConfirm && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                  <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
+                    <h3 className="text-[15px] font-semibold text-gray-900 mb-2">
+                      Confirm Broadcast
+                    </h3>
+                    <p className="text-[13px] text-gray-600 mb-1">
+                      {bcPreview
+                        ? `This will send to ${bcPreview.recipient_count} recipient(s).`
+                        : 'Send broadcast email?'}
+                    </p>
+                    {bcScheduleMode === 'later' && bcScheduledAt && (
+                      <p className="text-[12px] text-gray-500 mb-4">
+                        Scheduled for: {new Date(bcScheduledAt).toLocaleString()}
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-3 mt-4">
+                      <button
+                        onClick={() => setBcConfirm(false)}
+                        className="rounded-md border border-gray-200 px-4 py-2 text-[13px] text-gray-700 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        disabled={bcSending}
+                        onClick={async () => {
+                          setBcSending(true);
+                          setBcConfirm(false);
+                          try {
+                            await createBroadcast({
+                              template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+                              template_vars: bcTemplateVars,
+                              subject: bcSubject,
+                              body_html: bcBodyHtml,
+                              body_text: '',
+                              target_roles: bcTargetRoles,
+                              target_statuses: bcTargetStatuses,
+                              scheduled_at:
+                                bcScheduleMode === 'later' && bcScheduledAt
+                                  ? new Date(bcScheduledAt).toISOString()
+                                  : null,
+                            });
+                            setToast(
+                              bcScheduleMode === 'later'
+                                ? 'Broadcast scheduled'
+                                : 'Broadcast queued',
+                            );
+                            await loadBroadcasts();
+                          } catch (err) {
+                            setToast(getErrorMessage(err));
+                          } finally {
+                            setBcSending(false);
+                          }
+                        }}
+                        className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+                      >
+                        Confirm
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* History table */}
+              <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+                <div className="px-6 py-4 border-b border-gray-100">
+                  <h2 className="text-[15px] font-semibold text-gray-900">Send History</h2>
+                </div>
+                {broadcastLoading ? (
+                  <div className="px-6 py-8 text-[13px] text-gray-400">Loading…</div>
+                ) : broadcasts.length === 0 ? (
+                  <div className="px-6 py-8 text-[13px] text-gray-400">No broadcasts yet.</div>
+                ) : (
+                  <table className="w-full text-[13px]">
+                    <thead>
+                      <tr className="border-b border-gray-100 text-left text-[11px] font-medium text-gray-500">
+                        <th className="px-6 py-3">Subject</th>
+                        <th className="px-6 py-3">Status</th>
+                        <th className="px-6 py-3">Recipients</th>
+                        <th className="px-6 py-3">Sent / Scheduled</th>
+                        <th className="px-6 py-3">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {broadcasts.map((bc) => (
+                        <Fragment key={bc.id}>
+                          <tr
+                            className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
+                            onClick={async () => {
+                              if (broadcastDetail?.broadcast.id === bc.id) {
+                                setBroadcastDetail(null);
+                                return;
+                              }
+                              setBroadcastDetailLoading(true);
+                              try {
+                                const detail = await getBroadcastDetail(bc.id);
+                                setBroadcastDetail(detail);
+                              } catch {
+                                /* ignore */
+                              } finally {
+                                setBroadcastDetailLoading(false);
+                              }
+                            }}
+                          >
+                            <td className="px-6 py-3 max-w-[200px] truncate">{bc.subject}</td>
+                            <td className="px-6 py-3">
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                  bc.status === 'sent'
+                                    ? 'bg-green-50 text-green-700'
+                                    : bc.status === 'failed'
+                                      ? 'bg-red-50 text-red-700'
+                                      : bc.status === 'sending'
+                                        ? 'bg-blue-50 text-blue-700'
+                                        : bc.status === 'cancelled'
+                                          ? 'bg-gray-100 text-gray-500'
+                                          : 'bg-yellow-50 text-yellow-700'
+                                }`}
+                              >
+                                {bc.status}
+                              </span>
+                            </td>
+                            <td className="px-6 py-3">{bc.recipient_count.toLocaleString()}</td>
+                            <td className="px-6 py-3 text-gray-500">
+                              {bc.sent_at
+                                ? relTime(bc.sent_at)
+                                : bc.scheduled_at
+                                  ? new Date(bc.scheduled_at).toLocaleString()
+                                  : '—'}
+                            </td>
+                            <td className="px-6 py-3">
+                              {bc.status === 'scheduled' && (
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (!confirm('Cancel this scheduled broadcast?')) return;
+                                    try {
+                                      await cancelBroadcast(bc.id);
+                                      setToast('Broadcast cancelled');
+                                      await loadBroadcasts();
+                                    } catch (err) {
+                                      setToast(getErrorMessage(err));
+                                    }
+                                  }}
+                                  className="text-red-500 hover:underline text-[12px]"
+                                >
+                                  Cancel
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                          {/* Detail drawer */}
+                          {broadcastDetail?.broadcast.id === bc.id && (
+                            <tr>
+                              <td colSpan={5} className="bg-gray-50 px-6 py-4">
+                                {broadcastDetailLoading ? (
+                                  <span className="text-[12px] text-gray-400">
+                                    Loading recipients…
+                                  </span>
+                                ) : (
+                                  <>
+                                    <div className="text-[12px] font-medium text-gray-600 mb-2">
+                                      Recipients ({broadcastDetail.total_recipients})
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-[12px]">
+                                        <thead>
+                                          <tr className="text-left text-[10px] font-medium text-gray-400">
+                                            <th className="pr-4 py-1">Email</th>
+                                            <th className="pr-4 py-1">Status</th>
+                                            <th className="pr-4 py-1">Error</th>
+                                            <th className="pr-4 py-1">Sent At</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {broadcastDetail.recipients.map((r) => (
+                                            <tr
+                                              key={r.user_id}
+                                              className="border-t border-gray-100"
+                                            >
+                                              <td className="pr-4 py-1 text-gray-700">{r.email}</td>
+                                              <td className="pr-4 py-1">
+                                                <span
+                                                  className={
+                                                    r.status === 'sent'
+                                                      ? 'text-green-600'
+                                                      : r.status === 'failed'
+                                                        ? 'text-red-500'
+                                                        : 'text-gray-400'
+                                                  }
+                                                >
+                                                  {r.status}
+                                                </span>
+                                              </td>
+                                              <td className="pr-4 py-1 text-red-400">
+                                                {r.error ?? '—'}
+                                              </td>
+                                              <td className="pr-4 py-1 text-gray-400">
+                                                {r.sent_at ? relTime(r.sent_at) : '—'}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Reject modal */}

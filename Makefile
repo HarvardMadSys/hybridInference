@@ -1,6 +1,5 @@
 .PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
        docker-volumes sync-subscriptions up down restart ps logs build \
-       staging-up staging-down staging-restart staging-ps staging-logs staging-build \
        stop-host-grafana
 
 # Default target
@@ -120,7 +119,6 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 
 # ─── Docker / Production ─────────────────────────────────────────────────────
 COMPOSE := docker compose -f infrastructure/docker/docker-compose.yml --env-file .env
-STAGING_COMPOSE := docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env
 DOCKER_VOLUMES := hybridinference_postgres_data hybridinference_prometheus_data \
                   hybridinference_alertmanager_data hybridinference_alert_log_data \
                   hybridinference_grafana_data
@@ -188,35 +186,3 @@ else
 	$(COMPOSE) up -d --build
 endif
 
-# ─── Docker / Staging ────────────────────────────────────────────────────────
-staging-up:  ## Start the full staging stack
-	$(STAGING_COMPOSE) pull
-	$(STAGING_COMPOSE) build backend frontend
-	$(STAGING_COMPOSE) up -d
-
-staging-down:  ## Stop the full staging stack
-	$(STAGING_COMPOSE) down
-
-staging-restart:  ## Restart staging services (or: make staging-restart s=backend)
-ifdef s
-	$(STAGING_COMPOSE) restart $(s)
-else
-	$(STAGING_COMPOSE) restart
-endif
-
-staging-ps:  ## Show running staging services
-	$(STAGING_COMPOSE) ps
-
-staging-logs:  ## Tail staging logs (or: make staging-logs s=backend)
-ifdef s
-	$(STAGING_COMPOSE) logs -f $(s)
-else
-	$(STAGING_COMPOSE) logs -f --tail=500
-endif
-
-staging-build:  ## Rebuild staging images and restart (or: make staging-build s=backend)
-ifdef s
-	$(STAGING_COMPOSE) up -d --build $(s)
-else
-	$(STAGING_COMPOSE) up -d --build
-endif

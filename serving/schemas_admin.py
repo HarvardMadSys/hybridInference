@@ -378,6 +378,47 @@ class AdminRequestMetricsResponse(BaseModel):
     windows: list[AdminRequestMetricsWindow]
 
 
+class AdminHistogramBucket(BaseModel):
+    """A single histogram bucket for a metric distribution."""
+
+    lower_bound: float
+    upper_bound: float | None = None
+    count: int
+
+
+class AdminMetricDistribution(BaseModel):
+    """Distribution summary (count, percentiles, histogram) for a single metric."""
+
+    count: int
+    mean: float | None = None
+    min: float | None = None
+    max: float | None = None
+    p50: float | None = None
+    p90: float | None = None
+    p95: float | None = None
+    p99: float | None = None
+    histogram: list[AdminHistogramBucket] = Field(default_factory=list)
+
+
+class AdminPerformanceMetricsWindow(BaseModel):
+    """Performance metric distributions for a single lookback window."""
+
+    key: str
+    label: str
+    window_minutes: int
+    prompt_tokens: AdminMetricDistribution
+    completion_tokens: AdminMetricDistribution
+    ttft_ms: AdminMetricDistribution
+    tbt_ms: AdminMetricDistribution
+
+
+class AdminPerformanceMetricsResponse(BaseModel):
+    """Performance metric distributions across admin dashboard lookback windows."""
+
+    generated_at: datetime
+    windows: list[AdminPerformanceMetricsWindow]
+
+
 class AdminRecentRequestItem(BaseModel):
     """A single API request log entry (admin view, includes user identity)."""
 
@@ -498,6 +539,10 @@ __all__ = [
     "APIKeyDetailUsage",
     "APIKeyListItem",
     "AdminAnalyticsResponse",
+    "AdminHistogramBucket",
+    "AdminMetricDistribution",
+    "AdminPerformanceMetricsResponse",
+    "AdminPerformanceMetricsWindow",
     "AdminProviderQuotasResponse",
     "AdminRecentRequestItem",
     "AdminRecentRequestsResponse",
@@ -531,3 +576,67 @@ __all__ = [
     "UserDetailResponse",
     "UserListItem",
 ]
+
+
+# ── Broadcast Email Schemas ────────────────────────────────────────────────
+
+
+class BroadcastPreviewRequest(BaseModel):
+    template_key: str | None = None
+    template_vars: dict = Field(default_factory=dict)
+    subject: str = Field("", description="Required when template_key is None")
+    body_html: str = Field("", description="Required when template_key is None")
+    body_text: str = Field("", description="Required when template_key is None")
+    # Empty arrays would silently match zero users (postgres ANY('{}') is always
+    # false), which is confusing for admins. Require at least one role and one
+    # status — admin must opt in to who receives the broadcast.
+    target_roles: list[str] = Field(..., min_length=1)
+    target_statuses: list[str] = Field(..., min_length=1)
+
+
+class BroadcastPreviewResponse(BaseModel):
+    recipient_count: int
+    rendered_subject: str
+    rendered_body_html: str
+    rendered_body_text: str
+
+
+class CreateBroadcastRequest(BroadcastPreviewRequest):
+    scheduled_at: datetime | None = None
+
+
+class CreateBroadcastResponse(BaseModel):
+    id: str
+    status: str
+    recipient_count: int
+    scheduled_at: datetime | None
+
+
+class BroadcastListItem(BaseModel):
+    id: str
+    subject: str
+    status: str
+    recipient_count: int
+    scheduled_at: datetime | None
+    sent_at: datetime | None
+    created_by: str
+    created_at: datetime
+
+
+class ListBroadcastsResponse(BaseModel):
+    total: int
+    broadcasts: list[BroadcastListItem]
+
+
+class BroadcastRecipientItem(BaseModel):
+    user_id: str
+    email: str
+    status: str
+    error: str | None
+    sent_at: datetime | None
+
+
+class BroadcastDetailResponse(BaseModel):
+    broadcast: BroadcastListItem
+    recipients: list[BroadcastRecipientItem]
+    total_recipients: int

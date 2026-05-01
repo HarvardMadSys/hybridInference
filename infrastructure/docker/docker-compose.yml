@@ -49,6 +49,8 @@ services:
       args:
         NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://freeinference.org}
         NEXT_PUBLIC_DEPLOY_TARGET: ${NEXT_PUBLIC_DEPLOY_TARGET:-production}
+        NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
+        NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
     container_name: hybridinference-frontend
     restart: unless-stopped
     environment:

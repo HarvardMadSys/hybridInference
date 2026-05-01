@@ -412,3 +412,98 @@ Review at: {admin_url}
     """
 
     return send_email(to_email, subject, html_body, text_body)
+
+
+# ── Broadcast email templates ──────────────────────────────────────────────
+
+
+class _SafeDict(dict):
+    """dict subclass that returns '{key}' for missing keys instead of raising KeyError."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
+    "maintenance": {
+        "subject": "Scheduled maintenance on {date}",
+        "body_html": """
+        <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #f59e0b;">Scheduled Maintenance</h2>
+                <p>We are planning scheduled maintenance on <strong>{date}</strong> lasting approximately <strong>{duration}</strong>.</p>
+                <p>During this time the service will be unavailable. We apologize for any inconvenience.</p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                <p style="color: #999; font-size: 12px;">You received this because you have an active FreeInference account.</p>
+            </div>
+        </body>
+        </html>
+        """,
+        "body_text": "Scheduled Maintenance\n\nWe are planning scheduled maintenance on {date} lasting approximately {duration}.\n\nDuring this time the service will be unavailable. We apologize for any inconvenience.",
+    },
+    "announcement": {
+        "subject": "Announcing {feature_name}",
+        "body_html": """
+        <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #2563eb;">New: {feature_name}</h2>
+                <p>{description}</p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                <p style="color: #999; font-size: 12px;">You received this because you have an active FreeInference account.</p>
+            </div>
+        </body>
+        </html>
+        """,
+        "body_text": "New: {feature_name}\n\n{description}",
+    },
+    "quota_change": {
+        "subject": "Your FreeInference quota has been updated",
+        "body_html": """
+        <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #10b981;">Quota Updated</h2>
+                <p>Your daily usage quota has been updated to <strong>{new_quota}</strong>.</p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                <p style="color: #999; font-size: 12px;">You received this because you have an active FreeInference account.</p>
+            </div>
+        </body>
+        </html>
+        """,
+        "body_text": "Quota Updated\n\nYour daily usage quota has been updated to {new_quota}.",
+    },
+}
+
+
+def render_broadcast_template(
+    template_key: str | None,
+    template_vars: dict,
+    *,
+    custom_subject: str = "",
+    custom_body_html: str = "",
+    custom_body_text: str = "",
+) -> dict[str, str]:
+    """Render a broadcast email from a template key or custom content.
+
+    Raises:
+        ValueError: If template_key is provided but not in EMAIL_TEMPLATES.
+    """
+    if template_key is None:
+        return {
+            "subject": custom_subject,
+            "body_html": custom_body_html,
+            "body_text": custom_body_text,
+        }
+
+    if template_key not in EMAIL_TEMPLATES:
+        raise ValueError(f"Unknown template: {template_key!r}. Available: {list(EMAIL_TEMPLATES)}")
+
+    tmpl = EMAIL_TEMPLATES[template_key]
+    safe = _SafeDict(template_vars)
+    return {
+        "subject": tmpl["subject"].format_map(safe),
+        "body_html": tmpl["body_html"].format_map(safe),
+        "body_text": tmpl["body_text"].format_map(safe),
+    }
