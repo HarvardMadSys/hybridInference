@@ -243,7 +243,8 @@ function pct(used: number | null, limit: number | null): number | null {
 
 function formatNum(v: number | null): string {
   if (v == null) return '—';
-  if (Math.abs(v) < 1 && v !== 0) return v.toFixed(4);
+  if (Math.abs(v) < 0.01 && v !== 0) return v.toFixed(4);
+  if (Math.abs(v) < 1 && v !== 0) return v.toFixed(1);
   if (Number.isInteger(v)) return v.toLocaleString();
   return v.toFixed(2);
 }

@@ -83,8 +83,8 @@ class TestFetchChutes:
     async def test_success_returns_usages(self, monkeypatch):
         monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
         payload = {
-            "monthly": {"used": 4.20, "limit": 100.0, "reset_at": "2026-05-01T00:00:00Z"},
-            "rolling": {"used": 1.10, "limit": 10.0, "window": "4h"},
+            "four_hour": {"usage": 0.0, "cap": 8.333, "remaining": 8.333, "reset_at": "2026-05-02T00:00:00+00:00"},
+            "monthly": {"usage": 13.204, "cap": 100.0, "remaining": 86.796, "reset_at": "2026-05-11T17:07:09+00:00"},
         }
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
@@ -95,7 +95,11 @@ class TestFetchChutes:
         assert result.key_configured is True
         assert result.key_masked == "cpk_abcd...3xyz" or result.key_masked.startswith("cpk_abcd")
         assert any(u.label.lower().startswith("month") for u in result.usages)
-        assert any("4" in u.label or "rolling" in u.label.lower() for u in result.usages)
+        assert any("4" in u.label or "hour" in u.label.lower() for u in result.usages)
+        monthly = next(u for u in result.usages if u.label.lower().startswith("month"))
+        assert monthly.used == 13.204
+        assert monthly.limit == 100.0
+        assert monthly.unit == "USD"
 
     @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
@@ -132,11 +136,25 @@ class TestFetchZai:
     @pytest.mark.asyncio
     async def test_success_parses_token_and_time_limits(self, monkeypatch):
         monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
+        # Real ZAI API shape: "usage" is the cap, "currentValue" is amount used,
+        # TOKENS_LIMIT may have only percentage and no absolute values.
         payload = {
-            "limits": [
-                {"type": "TOKENS_LIMIT", "percentage": 0.42, "currentValue": 4200, "limit": 10000},
-                {"type": "TIME_LIMIT", "percentage": 0.10, "currentValue": 6, "limit": 60},
-            ]
+            "code": 200,
+            "data": {
+                "limits": [
+                    {
+                        "type": "TIME_LIMIT",
+                        "usage": 4000,
+                        "currentValue": 0,
+                        "remaining": 4000,
+                        "percentage": 0,
+                    },
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "percentage": 6,
+                    },
+                ]
+            },
         }
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
@@ -148,6 +166,16 @@ class TestFetchZai:
         labels = [u.label for u in result.usages]
         assert any("Token" in label for label in labels)
         assert any("Time" in label for label in labels)
+        # TIME_LIMIT: currentValue=0, usage(cap)=4000
+        time_use = next(u for u in result.usages if "Time" in u.label)
+        assert time_use.used == 0.0
+        assert time_use.limit == 4000.0
+        assert time_use.unit == "minutes"
+        # TOKENS_LIMIT: percentage-only entry → stored as used=6, limit=100, unit="%"
+        token_use = next(u for u in result.usages if "Token" in u.label)
+        assert token_use.used == 6.0
+        assert token_use.limit == 100.0
+        assert token_use.unit == "%"
 
     @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
@@ -262,12 +290,12 @@ class TestFetchOllama:
     @pytest.mark.asyncio
     async def test_parses_session_and_weekly_usage(self, monkeypatch):
         monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
-        # Simulated HTML with the usage labels we look for.
+        # Simulated HTML matching the current Ollama settings page format.
         html = """
         <html><body>
           <h2>Usage</h2>
-          <div>Session usage: 42 of 100 requests</div>
-          <div>Weekly usage: 320 of 5000 requests</div>
+          <div>Session usage 0% used Resets in 2 hours</div>
+          <div>Weekly usage 5% used Resets in 2 days</div>
         </body></html>
         """
         response_mock = MagicMock()
@@ -290,8 +318,13 @@ class TestFetchOllama:
         assert any("session" in label for label in labels)
         assert any("week" in label for label in labels)
         session_use = next(u for u in result.usages if "session" in u.label.lower())
-        assert session_use.used == 42.0
+        assert session_use.used == 0.0
         assert session_use.limit == 100.0
+        assert session_use.unit == "%"
+        weekly_use = next(u for u in result.usages if "week" in u.label.lower())
+        assert weekly_use.used == 5.0
+        assert weekly_use.limit == 100.0
+        assert weekly_use.unit == "%"
 
 
 class TestGatherAll:
