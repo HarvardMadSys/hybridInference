@@ -186,4 +186,6 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Security audit
-        run: uvx pip-audit --progress-spinner off
+        run: |
+          uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
+          uvx pip-audit --progress-spinner off -r /tmp/audit-requirements.txt
