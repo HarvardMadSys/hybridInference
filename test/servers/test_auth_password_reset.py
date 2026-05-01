@@ -163,8 +163,8 @@ async def test_resend_verification_already_verified(test_app, test_client, mock_
         "/auth/resend-verification", json={"email": "test@example.com"}
     )
 
-    assert response.status_code == 400
-    assert "already verified" in response.json()["detail"].lower()
+    assert response.status_code == 200
+    assert "verification email has been sent" in response.json()["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -176,5 +176,5 @@ async def test_resend_verification_user_not_found(test_app, test_client, mock_op
         "/auth/resend-verification", json={"email": "nonexistent@example.com"}
     )
 
-    assert response.status_code == 404
-    assert "no account found" in response.json()["detail"].lower()
+    assert response.status_code == 200
+    assert "verification email has been sent" in response.json()["message"].lower()

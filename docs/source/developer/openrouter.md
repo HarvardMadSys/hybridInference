@@ -12,7 +12,7 @@ hybridInference/
 │   │   ├── app.py              # FastAPI entry point (exposes /v1/*)
 │   │   ├── bootstrap.py        # Service bootstrap: models, routing, DB, rate limits
 │   │   └── routers/            # API routers (health, models, completions, admin)
-│   ├── adapters/               # Provider adapters (local VLLM, DeepSeek, Gemini, Llama, ...)
+│   ├── adapters/               # Provider adapters (local VLLM, DeepSeek, Gemini, Test, ...)
 │   ├── storage/                # Database loggers (SQLite/PostgreSQL)
 │   ├── observability/          # Metrics export (Prometheus, traces)
 │   └── utils/                  # Logging, configuration helpers
@@ -27,7 +27,7 @@ hybridInference/
 ### Key Components
 - **FastAPI app (`serving.servers.app:create_app`)**: Hosts OpenRouter-compatible endpoints plus admin and metrics routes.
 - **Bootstrap (`serving.servers.bootstrap`)**: Loads environment, registers models, applies routing weights, wires database logging, and configures rate limits.
-- **Adapters (`serving.adapters.*`)**: Translate requests to providers such as local VLLM, DeepSeek, Gemini, and Llama API.
+- **Adapters (`serving.adapters.*`)**: Translate requests to providers such as local VLLM, DeepSeek, Gemini, and Test API.
 - **Routing (`routing.*`)**: Supports fixed-ratio and future strategies for splitting traffic across adapters.
 - **Observability (`serving.observability.metrics`)**: Prometheus metrics and structured request logging.
 
@@ -43,7 +43,7 @@ hybridInference/
 ## Development Setup
 
 ### Prerequisites
-- Python 3.10 or newer
+- Python 3.10-3.13 (3.12 recommended)
 - [uv](https://github.com/astral-sh/uv) (recommended) or conda
 
 ### Create Environment
@@ -51,7 +51,7 @@ hybridInference/
 # Clone and bootstrap
 git clone <repository-url>
 cd hybridInference
-uv venv -p 3.10
+uv venv -p 3.12
 source .venv/bin/activate
 uv sync
 ```
@@ -67,8 +67,6 @@ LOCAL_BASE_URL=https://freeinference.org/v1
 OFFLOAD=0
 DEEPSEEK_API_KEY=your-deepseek-api-key
 GEMINI_API_KEY=your-gemini-api-key
-LLAMA_API_KEY=your-llama-api-key
-LLAMA_BASE_URL=https://your-llama-api-base/v1
 USE_SQLITE_LOG=true
 ```
 
@@ -102,7 +100,6 @@ env \
   curl -X POST http://localhost:8080/v1/chat/completions \
     -H "Content-Type: application/json" \
     -d '{
-          "model": "llama-4-scout",
           "messages": [{"role": "user", "content": "Ping"}],
           "max_tokens": 64
         }'

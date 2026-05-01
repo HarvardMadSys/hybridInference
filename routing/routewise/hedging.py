@@ -334,11 +334,10 @@ class HedgedAdapter(BaseAdapter):
             backup_gen = self.backup.stream_chat_completion(messages, **params)
 
             winner_gen: AsyncGenerator[str, None] | None = None
-            loser_gen: AsyncGenerator[str, None] | None = None
             winner_buffer: list[str] = []
 
             # Phase 1: race for first content chunk.
-            winner_gen, loser_gen, winner_buffer = await self._race_streams(
+            winner_gen, _loser_gen, winner_buffer = await self._race_streams(
                 primary_gen,
                 backup_gen,
                 primary_provider,

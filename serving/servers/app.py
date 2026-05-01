@@ -55,7 +55,7 @@ def create_app() -> FastAPI:
     """Create and configure a FastAPI app instance with modular routers."""
     app = FastAPI(
         title="OpenRouter-Compatible API Server",
-        description="Unified API server supporting VLLM, DeepSeek, Gemini, and Llama models",
+        description="Unified API server supporting VLLM, DeepSeek, Gemini models",
         version="2.0.0",
         lifespan=lifespan,
     )

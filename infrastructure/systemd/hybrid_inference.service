@@ -4,11 +4,11 @@ Wants=network-online.target
 After=network-online.target home.mount
 
 [Service]
-User=murphy
-Group=murphy
+User=freeinference
+Group=freeinference
 Type=simple
-WorkingDirectory=/home/murphy/hybridInference
-ExecStart=/home/murphy/hybridInference/.venv/bin/uvicorn serving.servers.app:app \
+WorkingDirectory=/srv/hybridInference
+ExecStart=/srv/hybridInference/.venv/bin/uvicorn serving.servers.app:app \
   --host 127.0.0.1 \
   --port 8080 \
   --no-server-header
@@ -18,7 +18,7 @@ Restart=on-failure
 RestartSec=5s
 LimitNOFILE=65536
 
-Environment=PYTHONPATH=/home/murphy/hybridInference
+Environment=PYTHONPATH=/srv/hybridInference
 
 NoNewPrivileges=true
 ProtectSystem=full

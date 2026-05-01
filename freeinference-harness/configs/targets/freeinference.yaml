@@ -6,44 +6,6 @@ defaults:
 
 targets:
   # Public chat models
-  - name: llama-3.3-70b-instruct-public
-    model: llama-3.3-70b-instruct
-    suite_type: gateway-public
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-      structured_output: true
-      embeddings: false
-      anthropic_messages: false
-      admin_required: false
-    tags: [llama, public]
-
-  - name: llama-4-scout-public
-    model: llama-4-scout
-    suite_type: gateway-public
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-      structured_output: true
-      embeddings: false
-      anthropic_messages: false
-      admin_required: false
-    tags: [llama, public]
-
-  - name: llama-4-maverick-public
-    model: llama-4-maverick
-    suite_type: gateway-public
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-      structured_output: true
-      embeddings: false
-      anthropic_messages: false
-      admin_required: false
-    tags: [llama, public]
 
   - name: glm-4.7-public
     model: glm-4.7

@@ -7,10 +7,8 @@ format. Names are chosen to grow into a fuller framework later.
 from __future__ import annotations
 
 import json
-import os
 from enum import Enum
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -24,7 +22,6 @@ class ProviderProfile(str, Enum):
     AZURE_OPENAI = "azure_openai"
     DEFAULT = "default"
     DEEPSEEK = "deepseek"
-    LLAMA = "llama"
     ZHIPU = "zhipu"
 
 
@@ -94,7 +91,6 @@ def default_chat_path(profile: ProviderProfile) -> str | None:
     if profile in (
         ProviderProfile.AZURE_OPENAI,
         ProviderProfile.ZHIPU,
-        ProviderProfile.LLAMA,
     ):
         return "/chat/completions"
     return None
@@ -106,8 +102,6 @@ def normalize_messages_for_profile(
     """Return provider-specific normalized messages, or None for default behavior."""
     if profile == ProviderProfile.AZURE_OPENAI:
         return _normalize_azure_openai_messages(messages)
-    if profile == ProviderProfile.LLAMA:
-        return _normalize_llama_messages(messages)
     return None
 
 
@@ -115,8 +109,6 @@ def normalize_tools_for_profile(
     profile: ProviderProfile, tools: list[dict[str, Any]] | None
 ) -> list[dict[str, Any]] | None:
     """Return provider-specific normalized tool definitions."""
-    if profile == ProviderProfile.LLAMA:
-        return _normalize_llama_tools(tools)
     return tools
 
 
@@ -124,21 +116,12 @@ def resolve_tool_choice_for_profile(profile: ProviderProfile, tool_choice: Any) 
     """Resolve provider-specific tool choice defaults."""
     if tool_choice is not None:
         return tool_choice
-    if profile == ProviderProfile.LLAMA:
-        return os.getenv("LLAMA_TOOL_CHOICE_DEFAULT")
     return None
 
 
 def get_stream_idle_timeout_seconds(profile: ProviderProfile) -> float | None:
     """Return a provider-specific stream idle timeout in seconds, if any."""
-    if profile != ProviderProfile.LLAMA:
-        return None
-    raw_value = os.getenv("LLAMA_STREAM_IDLE_TIMEOUT_SECS", "15")
-    try:
-        timeout = float(raw_value)
-    except (TypeError, ValueError):
-        return 15.0
-    return timeout if timeout > 0 else None
+    return None
 
 
 def extract_tool_calls_for_profile(
@@ -148,41 +131,13 @@ def extract_tool_calls_for_profile(
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list) and tool_calls:
         return tool_calls
-    if profile == ProviderProfile.LLAMA:
-        return _function_call_to_tool_calls(message.get("function_call"))
     return None
 
 
 def function_call_delta_to_tool_calls(
     profile: ProviderProfile, function_call: dict[str, Any] | None
 ) -> list[dict[str, Any]] | None:
-    """Convert a streaming function_call delta to tool_calls when needed.
-
-    Unlike the non-streaming path, streaming deltas may carry *only*
-    ``arguments`` (no ``name``) after the initial chunk.  We must emit
-    argument-only deltas so the client can reassemble the full call.
-    """
-    if profile != ProviderProfile.LLAMA:
-        return None
-    if not isinstance(function_call, dict):
-        return None
-
-    name = function_call.get("name") or ""
-    arguments = function_call.get("arguments")
-
-    if name:
-        # First delta — full tool_call entry with id
-        return [
-            {
-                "index": 0,
-                "id": f"call_{uuid4().hex[:24]}",
-                "type": "function",
-                "function": {"name": name, "arguments": arguments or ""},
-            }
-        ]
-    if arguments:
-        # Continuation delta — argument fragment only
-        return [{"index": 0, "function": {"arguments": arguments}}]
+    """Convert a streaming function_call delta to tool_calls when needed."""
     return None
 
 
@@ -252,161 +207,6 @@ def normalize_usage_deepseek(usage_data: dict[str, Any]) -> UsageInfo:
         cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0)
         or usage_data.get("cache_write_tokens", 0),
     )
-
-
-def _extract_llama_text(content: Any) -> str:
-    """Extract plain text from rich OpenAI-style message content."""
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                if item:
-                    parts.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text:
-                    parts.append(text)
-        return "\n".join(parts)
-    if isinstance(content, dict):
-        text = content.get("text")
-        if isinstance(text, str):
-            return text
-        return str(content)
-    return str(content)
-
-
-def _normalize_llama_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Flatten rich content and preserve tool context for stricter Llama endpoints."""
-    out: list[dict[str, Any]] = []
-    for message in messages:
-        role = message.get("role")
-        text = _extract_llama_text(message.get("content"))
-
-        if role == "assistant" and not text and message.get("tool_calls") is not None:
-            normalized: dict[str, Any] = {"role": role, "content": None}
-        else:
-            normalized = {"role": role, "content": text}
-
-        if message.get("tool_calls") is not None:
-            normalized["tool_calls"] = message["tool_calls"]
-        if message.get("tool_call_id") is not None:
-            normalized["tool_call_id"] = message["tool_call_id"]
-        if message.get("name") is not None:
-            normalized["name"] = message["name"]
-
-        if role in ("user", "assistant", "system", "developer", "tool"):
-            if (
-                text
-                or role in ("system", "developer", "tool")
-                or message.get("tool_calls") is not None
-            ):
-                out.append(normalized)
-            continue
-
-        if text:
-            out.append(normalized)
-    return out
-
-
-def _normalize_llama_tools(
-    tools: list[dict[str, Any]] | None,
-) -> list[dict[str, Any]] | None:
-    """Normalize tool schemas for strict Llama-compatible OpenAI endpoints."""
-    if not tools:
-        return tools
-
-    normalized: list[dict[str, Any]] = []
-    for tool in tools:
-        if tool.get("type") != "function":
-            normalized.append(tool)
-            continue
-
-        fn = dict(tool.get("function", {}))
-        if not fn.get("name"):
-            normalized.append(tool)
-            continue
-
-        params = fn.get("parameters")
-        if isinstance(params, dict):
-            fn["parameters"] = _normalize_llama_json_schema(params)
-        normalized.append({"type": "function", "function": fn})
-    return normalized
-
-
-def _normalize_llama_json_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
-    """Normalize JSON schema to reduce validation failures on strict providers."""
-    if not isinstance(schema, dict):
-        return {"type": "object", "properties": {}}
-
-    def _norm(node: dict[str, Any]) -> dict[str, Any]:
-        normalized: dict[str, Any] = {}
-        node_type = node.get("type")
-        if isinstance(node_type, list):
-            node_type = next((item for item in node_type if item != "null"), node_type[0])
-        if not isinstance(node_type, str):
-            node_type = "string"
-        normalized["type"] = node_type
-
-        for key in (
-            "description",
-            "default",
-            "pattern",
-            "minimum",
-            "maximum",
-            "minLength",
-            "maxLength",
-        ):
-            if key in node:
-                normalized[key] = node[key]
-        if "enum" in node and isinstance(node["enum"], list) and node["enum"]:
-            normalized["enum"] = node["enum"]
-
-        if node_type == "object":
-            props = node.get("properties") or {}
-            normalized_props: dict[str, Any] = {}
-            for name, subnode in props.items():
-                normalized_props[name] = (
-                    _norm(subnode) if isinstance(subnode, dict) else {"type": "string"}
-                )
-            normalized["properties"] = normalized_props
-            required = node.get("required") or []
-            if required:
-                normalized["required"] = required
-        elif node_type == "array":
-            items = node.get("items")
-            normalized["items"] = _norm(items) if isinstance(items, dict) else {"type": "string"}
-            for key in ("minItems", "maxItems", "uniqueItems"):
-                if key in node:
-                    normalized[key] = node[key]
-        return normalized
-
-    return _norm(schema)
-
-
-def _function_call_to_tool_calls(
-    function_call: dict[str, Any] | None,
-) -> list[dict[str, Any]] | None:
-    """Normalize a legacy OpenAI function_call object into tool_calls."""
-    if not isinstance(function_call, dict):
-        return None
-
-    name = function_call.get("name") or ""
-    if not name:
-        return None
-
-    arguments = function_call.get("arguments") or "{}"
-    return [
-        {
-            "index": 0,
-            "id": f"call_{uuid4().hex[:24]}",
-            "type": "function",
-            "function": {"name": name, "arguments": arguments},
-        }
-    ]
 
 
 def _normalize_azure_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

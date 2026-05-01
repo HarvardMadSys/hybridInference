@@ -32,8 +32,8 @@ def get_access_token_expire_minutes() -> int:
 
 
 def get_refresh_token_expire_days() -> int:
-    """Get refresh token expiration time in days (default: 30)."""
-    return int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+    """Get refresh token expiration time in days (default: 365)."""
+    return int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "365"))
 
 
 def generate_ulid() -> str:
@@ -69,7 +69,7 @@ def create_access_token(
         session_id: Session ID for token rotation (optional).
         expires_delta: Custom expiration time (default: from env).
         is_admin: Whether user has admin privileges.
-        role: User permission role (free/internal/admin).
+        role: User permission role (free/pro/internal/admin).
 
     Returns:
         Tuple of (token_string, jti).

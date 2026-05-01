@@ -278,3 +278,361 @@ export async function listAuditLog(
   const resp = await fetchWithAuth(API_BASE, `/admin/audit-log?${params.toString()}`);
   return jsonOrThrow<ListAuditLogResponse>(resp);
 }
+
+// ========================================
+// Recent Requests (Admin View)
+// ========================================
+
+export interface AdminRequestMetricsBucket {
+  start_time: string;
+  request_count: number;
+  success_count: number;
+  error_count: number;
+  avg_latency_ms?: number | null;
+}
+
+export interface AdminRequestMetricsWindow {
+  key: string;
+  label: string;
+  window_minutes: number;
+  bucket_minutes: number;
+  total_requests: number;
+  success_requests: number;
+  error_requests: number;
+  avg_latency_ms?: number | null;
+  buckets: AdminRequestMetricsBucket[];
+}
+
+export interface AdminRequestMetricsResponse {
+  generated_at: string;
+  windows: AdminRequestMetricsWindow[];
+}
+
+export async function getRequestMetrics(): Promise<AdminRequestMetricsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/request-metrics');
+  return jsonOrThrow<AdminRequestMetricsResponse>(resp);
+}
+
+// ----------------------------------------------------------------------------
+// Performance metrics — prompt/response length, TTFT, TBT distributions
+// ----------------------------------------------------------------------------
+
+export interface AdminHistogramBucket {
+  lower_bound: number;
+  upper_bound: number | null;
+  count: number;
+}
+
+export interface AdminMetricDistribution {
+  count: number;
+  mean: number | null;
+  min: number | null;
+  max: number | null;
+  p50: number | null;
+  p90: number | null;
+  p95: number | null;
+  p99: number | null;
+  histogram: AdminHistogramBucket[];
+}
+
+export interface AdminPerformanceMetricsWindow {
+  key: string;
+  label: string;
+  window_minutes: number;
+  prompt_tokens: AdminMetricDistribution;
+  completion_tokens: AdminMetricDistribution;
+  ttft_ms: AdminMetricDistribution;
+  tbt_ms: AdminMetricDistribution;
+}
+
+export interface AdminPerformanceMetricsResponse {
+  generated_at: string;
+  windows: AdminPerformanceMetricsWindow[];
+}
+
+export async function getPerformanceMetrics(): Promise<AdminPerformanceMetricsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/performance-metrics');
+  return jsonOrThrow<AdminPerformanceMetricsResponse>(resp);
+}
+
+export interface AdminRecentRequestItem {
+  request_id: string;
+  user_id: string | null;
+  user_name?: string | null;
+  user_email?: string | null;
+  user_ip?: string | null;
+  model_id: string;
+  provider: string;
+  timestamp: string;
+  status_code?: number | null;
+  latency_ms?: number | null;
+  ttft_ms?: number | null;
+  stream?: boolean | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  total_tokens?: number | null;
+  cost_usd?: number | null;
+  prompt?: string | null;
+  response?: string | null;
+  error?: string | null;
+}
+
+export interface AdminRecentRequestsResponse {
+  requests: AdminRecentRequestItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function listRecentRequests(
+  limit = 50,
+  offset = 0,
+  userId?: string,
+  modelId?: string,
+  errorsOnly = false,
+): Promise<AdminRecentRequestsResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (userId) params.set('user_id', userId);
+  if (modelId) params.set('model_id', modelId);
+  if (errorsOnly) params.set('errors_only', 'true');
+  const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
+  return jsonOrThrow<AdminRecentRequestsResponse>(resp);
+}
+
+// ========================================
+// Analytics
+// ========================================
+
+export type AnalyticsPeriod = 'hour' | 'day' | 'week' | 'month';
+
+export interface SparklineBucket {
+  start_time: string;
+  request_count: number;
+}
+
+export interface AnalyticsUserEntry {
+  email: string;
+  user_id: string;
+  requests: number;
+  fraction: number; // 0.0–1.0 share of user-attributed requests in period
+}
+
+export interface AnalyticsBreakdownEntry {
+  name: string; // model_id, provider, or "others"
+  requests: number;
+  fraction: number;
+}
+
+export interface AdminAnalyticsResponse {
+  period: AnalyticsPeriod;
+  active_users: number;
+  sparkline: SparklineBucket[];
+  top_users: AnalyticsUserEntry[];
+  by_model: AnalyticsBreakdownEntry[];
+  by_provider: AnalyticsBreakdownEntry[];
+  generated_at: string;
+}
+
+export async function getAnalytics(period: AnalyticsPeriod): Promise<AdminAnalyticsResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/analytics?period=${period}`);
+  return jsonOrThrow<AdminAnalyticsResponse>(resp);
+}
+
+// ========================================
+// Broadcast Email
+// ========================================
+
+export interface BroadcastPreviewRequest {
+  template_key?: string | null;
+  template_vars?: Record<string, string>;
+  subject?: string;
+  body_html?: string;
+  body_text?: string;
+  target_roles: string[];
+  target_statuses: string[];
+}
+
+export interface BroadcastPreviewResponse {
+  recipient_count: number;
+  rendered_subject: string;
+  rendered_body_html: string;
+  rendered_body_text: string;
+}
+
+export interface CreateBroadcastRequest extends BroadcastPreviewRequest {
+  scheduled_at?: string | null;
+}
+
+export interface CreateBroadcastResponse {
+  id: string;
+  status: string;
+  recipient_count: number;
+  scheduled_at: string | null;
+}
+
+export interface BroadcastListItem {
+  id: string;
+  subject: string;
+  status: string;
+  recipient_count: number;
+  scheduled_at: string | null;
+  sent_at: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface ListBroadcastsResponse {
+  total: number;
+  broadcasts: BroadcastListItem[];
+}
+
+export interface BroadcastRecipientItem {
+  user_id: string;
+  email: string;
+  status: string;
+  error: string | null;
+  sent_at: string | null;
+}
+
+export interface BroadcastDetailResponse {
+  broadcast: BroadcastListItem;
+  recipients: BroadcastRecipientItem[];
+  total_recipients: number;
+}
+
+export async function previewBroadcast(
+  req: BroadcastPreviewRequest,
+): Promise<BroadcastPreviewResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/broadcast-email/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  return jsonOrThrow<BroadcastPreviewResponse>(resp);
+}
+
+export async function sendTestBroadcastEmail(req: BroadcastPreviewRequest): Promise<void> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/broadcast-email/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  await jsonOrThrow<{ message: string }>(resp);
+}
+
+export async function createBroadcast(
+  req: CreateBroadcastRequest,
+): Promise<CreateBroadcastResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/broadcast-email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  return jsonOrThrow<CreateBroadcastResponse>(resp);
+}
+
+export async function listBroadcasts(limit = 50, offset = 0): Promise<ListBroadcastsResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const resp = await fetchWithAuth(API_BASE, `/admin/broadcast-email?${params}`);
+  return jsonOrThrow<ListBroadcastsResponse>(resp);
+}
+
+export async function getBroadcastDetail(
+  id: string,
+  limit = 100,
+  offset = 0,
+): Promise<BroadcastDetailResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/broadcast-email/${encodeURIComponent(id)}?${params}`,
+  );
+  return jsonOrThrow<BroadcastDetailResponse>(resp);
+}
+
+export async function cancelBroadcast(id: string): Promise<void> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/broadcast-email/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  await jsonOrThrow<{ message: string }>(resp);
+}
+
+// ========================================
+// Request Export
+// ========================================
+
+export interface ExportRequestsParams {
+  startTime: string;
+  endTime?: string;
+  userId?: string;
+  modelId?: string;
+  errorsOnly?: boolean;
+  includeContent?: boolean;
+}
+
+export async function exportRequests(params: ExportRequestsParams): Promise<void> {
+  const qs = new URLSearchParams({
+    start_time: params.startTime,
+  });
+  if (params.endTime) qs.set('end_time', params.endTime);
+  if (params.userId) qs.set('user_id', params.userId);
+  if (params.modelId) qs.set('model_id', params.modelId);
+  if (params.errorsOnly) qs.set('errors_only', 'true');
+  if (params.includeContent) qs.set('include_content', 'true');
+
+  const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    const message = (err as { detail?: string }).detail ?? `Export failed (HTTP ${resp.status})`;
+    throw new Error(message);
+  }
+
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const startDate = params.startTime.slice(0, 10).replace(/-/g, '');
+  const endDate = (params.endTime ?? new Date().toISOString()).slice(0, 10).replace(/-/g, '');
+  a.href = url;
+  a.download = `requests-${startDate}-${endDate}.jsonl`;
+  try {
+    document.body.appendChild(a);
+    a.click();
+  } finally {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+}
+
+// ========================================
+// Provider Quotas
+// ========================================
+
+export interface ProviderQuotaUsage {
+  label: string;
+  used: number | null;
+  limit: number | null;
+  unit: string;
+  reset_at: string | null;
+}
+
+export interface ProviderQuotaResult {
+  name: string;
+  display_name: string;
+  key_configured: boolean;
+  key_masked: string | null;
+  fetched_at: string | null;
+  ok: boolean;
+  error: string | null;
+  usages: ProviderQuotaUsage[];
+}
+
+export interface AdminProviderQuotasResponse {
+  generated_at: string;
+  providers: ProviderQuotaResult[];
+}
+
+export async function getProviderQuotas(): Promise<AdminProviderQuotasResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-quotas');
+  return jsonOrThrow<AdminProviderQuotasResponse>(resp);
+}

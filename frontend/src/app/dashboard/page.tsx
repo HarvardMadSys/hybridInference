@@ -2,21 +2,24 @@
 
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
+import { ModelsSection } from '@/components/features/dashboard/ModelsSection';
+import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
 import { UsageStats } from '@/components/features/dashboard/UsageStats';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
 
 export default function DashboardPage() {
   const { state } = useAuth();
+  const displayName = state.user?.user_name || state.user?.email;
 
   return (
     <ProtectedRoute>
-      <div className="mx-auto w-full max-w-3xl space-y-8">
+      <div className="mx-auto w-full max-w-6xl space-y-8">
         <div className="mb-8">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-              <p className="mt-1 text-sm text-gray-600">Welcome back, {state.user?.email}</p>
+              <p className="mt-1 text-sm text-gray-600">Welcome back, {displayName}</p>
             </div>
             <div className="flex items-center gap-2">
               <a
@@ -71,6 +74,10 @@ export default function DashboardPage() {
           </h2>
           <div className="space-y-3 text-sm">
             <div className="flex justify-between">
+              <span className="text-gray-600">Username:</span>
+              <span className="font-medium">{state.user?.user_name || 'Not set'}</span>
+            </div>
+            <div className="flex justify-between">
               <span className="text-gray-600">Email:</span>
               <span className="font-medium">{state.user?.email}</span>
             </div>
@@ -87,7 +94,11 @@ export default function DashboardPage() {
 
         <ApiKeyManager />
 
+        <ModelsSection />
+
         <UsageStats />
+
+        <RecentRequests />
 
         {hasRole(state.user?.role, 'internal') && (
           <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
@@ -110,22 +121,6 @@ export default function DashboardPage() {
                   />
                 </svg>
                 Grafana Dashboard
-              </a>
-              <a
-                href="/llm-prober/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-              >
-                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M3 3v18h18M7 15l3-3 3 2 4-6"
-                  />
-                </svg>
-                Probe Dashboard
               </a>
               <a
                 href="/dashboard/playground"
@@ -164,6 +159,20 @@ export default function DashboardPage() {
                   />
                 </svg>
                 Manage Users
+              </a>
+              <a
+                href="/dashboard/admin?tab=requests"
+                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
+              >
+                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12h6m-6 4h6M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z"
+                  />
+                </svg>
+                Recent Requests
               </a>
               <a
                 href="/pgadmin/"

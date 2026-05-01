@@ -164,7 +164,7 @@ async def test_sliding_window_refill():
     assert ok
     await asyncio.sleep(1.1)
     # Trigger refill by doing a small acquire
-    ok2, meta2 = await limiter.acquire_tokens("m", messages=[], max_tokens=1, timeout=0.1)
+    ok2, _meta2 = await limiter.acquire_tokens("m", messages=[], max_tokens=1, timeout=0.1)
     assert ok2 is True
     # After consuming 1 token post-refill, available should be close to capacity - 1
     status = limiter.get_status("m")

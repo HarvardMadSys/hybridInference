@@ -1,0 +1,83 @@
+name: Deploy Staging
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [dev]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Docker Compose stack
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 30
+
+    steps:
+      - name: Configure SSH
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_HOST_KEY: ${{ secrets.STAGING_HOST_KEY }}
+          STAGING_PORT: ${{ secrets.STAGING_PORT || '22' }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${HOME}/.ssh"
+          chmod 700 "${HOME}/.ssh"
+
+          printf '%s\n' "${STAGING_SSH_KEY}" > "${HOME}/.ssh/staging_deploy_key"
+          chmod 600 "${HOME}/.ssh/staging_deploy_key"
+
+          printf '%s\n' "${STAGING_HOST_KEY}" > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+          for var in STAGING_HOST STAGING_HOST_KEY STAGING_USER STAGING_SSH_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error title=Missing secret::${var} is not configured for the 'staging' environment"
+              exit 1
+            fi
+          done
+
+          echo "known_hosts entries (host_token algorithm):"
+          awk 'NF>=3 && $1 !~ /^#/ {printf "  %s %s\n", $1, $2}' "${HOME}/.ssh/known_hosts"
+
+          LOOKUP_KEY="${STAGING_HOST}"
+          if [ "${STAGING_PORT}" != "22" ]; then
+            LOOKUP_KEY="[${STAGING_HOST}]:${STAGING_PORT}"
+          fi
+
+          if ! ssh-keygen -F "${LOOKUP_KEY}" -f "${HOME}/.ssh/known_hosts" >/dev/null; then
+            echo "::error title=Invalid STAGING_HOST_KEY::known_hosts has no entry for ${LOOKUP_KEY}"
+            echo "Re-generate the secret with: ssh-keyscan -p ${STAGING_PORT} -t ed25519,rsa,ecdsa ${STAGING_HOST}"
+            exit 1
+          fi
+
+      - name: Deploy on staging host
+        env:
+          # workflow_run deploys the CI-validated commit; manual dispatch uses
+          # the workflow file revision selected in the GitHub UI.
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_PORT: ${{ secrets.STAGING_PORT || '22' }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -i "${HOME}/.ssh/staging_deploy_key" \
+            -p "${STAGING_PORT}" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "${STAGING_USER}@${STAGING_HOST}" \
+            "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && git fetch origin dev && git reset --hard ${DEPLOY_SHA} && DEPLOY_SHA=${DEPLOY_SHA} bash scripts/deploy_staging.sh"

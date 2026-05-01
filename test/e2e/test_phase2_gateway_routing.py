@@ -2,7 +2,7 @@
 """Phase 2: Gateway routing tests for ALL local models.
 
 This module extends test_local_gateway.py to test EACH local model individually,
-ensuring both Llama 3.2 3B (port 8001) and Qwen3 Coder 30B (port 8003) are
+ensuring both Test Model (port 8001) and Qwen3 Coder 30B (port 8003) are
 properly routed through the gateway.
 
 Test Coverage:
@@ -43,7 +43,7 @@ GATEWAY_TIMEOUT = int(os.getenv("GATEWAY_TIMEOUT", "60"))
 
 # Local model IDs to test (from test/fixtures/test_models.yaml)
 LOCAL_MODEL_IDS = [
-    "llama-3.2-3b-local-test",
+    "qwen-2.5-3b-local-test",
     "qwen3-coder-30b",
 ]
 
@@ -95,7 +95,7 @@ def available_models(gateway_url, gateway_timeout):
 def test_local_model_non_streaming(gateway_url, gateway_timeout, available_models, model_id):
     """Test non-streaming completion for each local model.
 
-    This ensures both Llama (8001) and Qwen3 (8003) are properly routed.
+    This ensures both Test Model (8001) and Qwen3 (8003) are properly routed.
     """
     if model_id not in available_models:
         pytest.skip(f"Model {model_id} not available in gateway")
@@ -147,7 +147,7 @@ def test_local_model_non_streaming(gateway_url, gateway_timeout, available_model
 def test_local_model_streaming(gateway_url, gateway_timeout, available_models, model_id):
     """Test streaming completion for each local model.
 
-    This ensures both Llama (8001) and Qwen3 (8003) support streaming.
+    This ensures both Test Model (8001) and Qwen3 (8003) support streaming.
     """
     if model_id not in available_models:
         pytest.skip(f"Model {model_id} not available in gateway")

@@ -7,7 +7,7 @@ users and allows admin users through at the HTTP level.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI, status

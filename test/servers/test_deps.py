@@ -15,8 +15,8 @@ from fastapi.testclient import TestClient
 from routing.executor import RouteExecutor
 from serving.servers.deps import (
     AppServices,
-    get_db_logger,
     get_current_user,
+    get_db_logger,
     get_rate_limiter,
     get_router,
     get_services,

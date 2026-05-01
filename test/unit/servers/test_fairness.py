@@ -79,7 +79,7 @@ class TestCounterLiftIdleSystem:
     @pytest.mark.asyncio
     async def test_new_user_starts_at_zero_when_system_idle(self):
         s = _make_scheduler(_make_unlimited_rate_limiter())
-        success, meta = await s.acquire("model-a", "alice", 100)
+        success, _meta = await s.acquire("model-a", "alice", 100)
         assert success
         state = s._get_state("model-a")
         # Counter starts at 0, on_request_finish not yet called

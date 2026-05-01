@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from serving.config.settings import has_role
 from serving.observability.metrics import DATABASE_CONNECTED
-from serving.servers.auth import optional_verify_api_key
+from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import get_log_store, get_operational_store, get_router, get_services
 
 router = APIRouter()
@@ -217,7 +216,7 @@ async def model_activity(
     Requires USER_AUTH_ENABLED=1 — always returns 403 in auth-disabled
     deployments to prevent unintentional exposure of traffic stats.
     """
-    if os.getenv("USER_AUTH_ENABLED", "0") != "1":
+    if not is_user_auth_enabled():
         raise HTTPException(status_code=403, detail="Requires USER_AUTH_ENABLED=1")
 
     user_role = (user_ctx or {}).get("role", "free")

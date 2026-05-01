@@ -4,12 +4,12 @@ Wants=network-online.target
 After=network-online.target home.mount
 
 [Service]
-User=murphy
-Group=murphy
+User=freeinference
+Group=freeinference
 Type=simple
-ExecStart=/home/murphy/hybridInference/alertmanager-0.28.1.linux-amd64/alertmanager \
-  --config.file=/home/murphy/hybridInference/infrastructure/alertmanager/alertmanager.yml \
-  --storage.path=/home/murphy/hybridInference/var/alertmanager \
+ExecStart=/srv/hybridInference/alertmanager-0.28.1.linux-amd64/alertmanager \
+  --config.file=/srv/hybridInference/infrastructure/alertmanager/alertmanager.yml \
+  --storage.path=/srv/hybridInference/var/alertmanager \
   --web.listen-address=0.0.0.0:9093 \
   --cluster.listen-address=""
 ExecReload=/bin/kill -HUP $MAINPID

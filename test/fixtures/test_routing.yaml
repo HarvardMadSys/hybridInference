@@ -9,7 +9,7 @@ local_deployment:
   - endpoint: ${LOCAL_BASE_URL:-http://localhost:8001}
     models:
       - test-model-1
-      - llama-3.2-3b-local-test  # Real local model for e2e tests
+      - qwen-2.5-3b-local-test  # Real local model for e2e tests
 remote_deployment:
   - endpoint: http://remote.test
     models:

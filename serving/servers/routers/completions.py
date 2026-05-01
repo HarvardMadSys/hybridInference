@@ -27,6 +27,7 @@ from serving.schemas import (
     ErrorResponse,
 )
 from serving.servers.auth import verify_api_key
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
     get_fairness_scheduler,
     get_log_store,
@@ -37,6 +38,7 @@ from serving.servers.deps import (
 )
 from serving.servers.rate_limiter import TokenCounter
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
@@ -152,6 +154,7 @@ async def chat_completions(
     op_store=Depends(get_operational_store),
     fairness_scheduler=Depends(get_fairness_scheduler),
     model_router_registry=Depends(get_model_router_registry),
+    _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
 
@@ -252,6 +255,12 @@ async def chat_completions(
     # Stable user identifier used by the fairness scheduler
     user_id: str = user_ctx.get("user_id") or "anonymous"
 
+    # Affinity key for multi-key API rotation — pinned to the specific
+    # hyi-xxx key in use (not user_id, since a user may have multiple keys).
+    from serving.utils import context as req_ctx
+
+    req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
+
     # Capacity gate: fairness scheduler (VTC) sits before the rate limiter.
     # When the fairness scheduler is active it owns ALL capacity acquisition
     # (it calls try_consume_tokens internally).  The raw rate_limiter path is
@@ -334,7 +343,7 @@ async def chat_completions(
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
-        "ip": request.client.host if request.client else None,
+        "ip": get_client_ip(request),
         # Preserve legacy field but treat either auth header as authenticated
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,

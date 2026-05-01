@@ -53,7 +53,7 @@ test-phase1:
 	@echo "========================================="
 	@echo "Phase 1: Direct Local Model Testing"
 	@echo "========================================="
-	@echo "Testing Llama 3.2 3B (port 8001) and Qwen3 Coder 30B (port 8003)"
+	@echo "Testing Model (port 8001) and Qwen3 Coder 30B (port 8003)"
 	@echo ""
 	E2E_CONFIG=$(E2E_CONFIG) \
 	$(PYTEST) test_phase1_direct_local.py -v -s

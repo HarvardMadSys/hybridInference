@@ -7,6 +7,7 @@ test and avoids hidden global state.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,7 @@ import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
 
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
     from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
 
+    from .concurrency import UserConcurrencyLimiter
     from .fairness import FairnessScheduler
     from .rate_limiter import PersistentRateLimiter
 
@@ -47,6 +50,7 @@ class AppServices:
     model_router_registry: ModelRouterRegistry | None = None
     user_stats_collector: UserStatsCollector | None = None
     fairness_scheduler: FairnessScheduler | None = None
+    user_concurrency_limiter: UserConcurrencyLimiter | None = None
 
 
 def get_services(request: Request) -> AppServices:
@@ -99,6 +103,13 @@ def get_fairness_scheduler(
 ) -> FairnessScheduler | None:
     """Dependency to obtain the fairness scheduler (if configured)."""
     return services.fairness_scheduler
+
+
+def get_user_concurrency_limiter(
+    services: AppServices = Depends(get_services),
+) -> UserConcurrencyLimiter | None:
+    """Dependency to obtain the per-user concurrency limiter."""
+    return services.user_concurrency_limiter
 
 
 def get_model_router_registry(
@@ -193,6 +204,13 @@ async def get_current_user(
             detail=f"Account is {user_row['status']}. Please contact support.",
         )
 
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    if require_verification and not user_row["email_verified"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Please check your email for the verification link.",
+        )
+
     # Return user context — use DB email and role (authoritative) instead of JWT claims.
     user_role = user_row["role"] or "free"
     return {
@@ -272,6 +290,12 @@ async def verify_admin_access(
             user_row = await op_store.get_user_by_id(user_id)
             if not user_row or user_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="Admin account is no longer active.")
+            require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+            if require_verification and not user_row["email_verified"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Email not verified. Please verify your email to continue.",
+                )
             email = user_row["email"]
             if (user_row["role"] or "free") != "admin":
                 raise HTTPException(status_code=403, detail="Admin access required.")
@@ -306,4 +330,5 @@ async def verify_admin_access(
             detail="Invalid authentication token.",
         )
 
-    return request.client.host if request.client else "admin-token"
+    client_ip = get_client_ip(request)
+    return client_ip if client_ip != "unknown" else "admin-token"

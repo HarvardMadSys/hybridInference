@@ -23,10 +23,6 @@ def get_config() -> dict[str, dict[str, str | None]]:
             "api_key": os.getenv("OPENAI_API_KEY"),
             "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         },
-        "llama": {
-            "api_key": os.getenv("LLAMA_API_KEY"),
-            "base_url": os.getenv("LLAMA_BASE_URL", "https://api.llama.com/compat/v1/"),
-        },
         "openrouter": {
             "base_url": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
             "api_key": os.getenv("OPENROUTER_API_KEY"),

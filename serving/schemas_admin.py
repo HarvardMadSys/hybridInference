@@ -268,7 +268,11 @@ class UserDetailResponse(BaseModel):
 class UpdateUserRequest(BaseModel):
     """Request payload for updating user/key settings."""
 
-    role: str | None = Field(None, pattern="^(free|internal|admin)$")
+    role: str | None = Field(
+        None,
+        pattern="^(free|pro|internal|admin)$",
+        description="One of: free, pro, internal, admin",
+    )
     tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
@@ -338,11 +342,214 @@ class DeleteUserResponse(BaseModel):
     message: str
 
 
+# ========================================
+# Admin Recent Requests Schemas
+# ========================================
+
+
+class AdminRequestMetricsBucket(BaseModel):
+    """A single request-count bucket for admin traffic charts."""
+
+    start_time: datetime
+    request_count: int
+    success_count: int
+    error_count: int
+    avg_latency_ms: float | None = None
+
+
+class AdminRequestMetricsWindow(BaseModel):
+    """Request metrics for a fixed lookback window."""
+
+    key: str
+    label: str
+    window_minutes: int
+    bucket_minutes: int
+    total_requests: int
+    success_requests: int
+    error_requests: int
+    avg_latency_ms: float | None = None
+    buckets: list[AdminRequestMetricsBucket]
+
+
+class AdminRequestMetricsResponse(BaseModel):
+    """Request metrics for multiple admin dashboard lookback windows."""
+
+    generated_at: datetime
+    windows: list[AdminRequestMetricsWindow]
+
+
+class AdminHistogramBucket(BaseModel):
+    """A single histogram bucket for a metric distribution."""
+
+    lower_bound: float
+    upper_bound: float | None = None
+    count: int
+
+
+class AdminMetricDistribution(BaseModel):
+    """Distribution summary (count, percentiles, histogram) for a single metric."""
+
+    count: int
+    mean: float | None = None
+    min: float | None = None
+    max: float | None = None
+    p50: float | None = None
+    p90: float | None = None
+    p95: float | None = None
+    p99: float | None = None
+    histogram: list[AdminHistogramBucket] = Field(default_factory=list)
+
+
+class AdminPerformanceMetricsWindow(BaseModel):
+    """Performance metric distributions for a single lookback window."""
+
+    key: str
+    label: str
+    window_minutes: int
+    prompt_tokens: AdminMetricDistribution
+    completion_tokens: AdminMetricDistribution
+    ttft_ms: AdminMetricDistribution
+    tbt_ms: AdminMetricDistribution
+
+
+class AdminPerformanceMetricsResponse(BaseModel):
+    """Performance metric distributions across admin dashboard lookback windows."""
+
+    generated_at: datetime
+    windows: list[AdminPerformanceMetricsWindow]
+
+
+class AdminRecentRequestItem(BaseModel):
+    """A single API request log entry (admin view, includes user identity)."""
+
+    request_id: str
+    user_id: str | None = None
+    user_name: str | None = None
+    user_email: str | None = None
+    user_ip: str | None = None
+    model_id: str
+    provider: str
+    timestamp: datetime
+    status_code: int | None = None
+    latency_ms: int | None = None
+    ttft_ms: int | None = None
+    stream: bool | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    prompt: str | None = None
+    response: str | None = None
+    error: str | None = None
+
+
+class AdminRecentRequestsResponse(BaseModel):
+    """Paginated list of recent requests across all users (admin view)."""
+
+    requests: list[AdminRecentRequestItem]
+    total: int
+    limit: int
+    offset: int
+
+
+# ── Analytics Dashboard ──────────────────────────────────────────────────────
+
+
+class SparklineBucket(BaseModel):
+    """One time bucket for the active-users sparkline."""
+
+    start_time: datetime
+    request_count: int
+
+
+class AnalyticsUserEntry(BaseModel):
+    """One row in the top-users horizontal bar chart."""
+
+    email: str
+    user_id: str
+    requests: int
+    fraction: float  # share of user-attributed requests in the period (0.0-1.0)
+
+
+class AnalyticsBreakdownEntry(BaseModel):
+    """One slice in a model or provider donut chart."""
+
+    name: str  # model_id / provider name; "others" for the collapsed remainder
+    requests: int
+    fraction: float  # share of total requests in the period
+
+
+class AdminAnalyticsResponse(BaseModel):
+    """Response for GET /admin/analytics."""
+
+    period: str = Field(..., pattern="^(hour|day|week|month)$")
+    active_users: int
+    sparkline: list[SparklineBucket]
+    top_users: list[AnalyticsUserEntry]
+    by_model: list[AnalyticsBreakdownEntry]
+    by_provider: list[AnalyticsBreakdownEntry]
+    generated_at: datetime
+
+
+# ========================================
+# Provider Quotas (Admin Dashboard)
+# ========================================
+
+
+class ProviderQuotaUsage(BaseModel):
+    """A single usage measurement for a provider (e.g. monthly cost, request count)."""
+
+    label: str = Field(..., description="Human-readable label, e.g. 'Monthly', '4-hour window'")
+    used: float | None = Field(None, description="Amount consumed (None if unknown)")
+    limit: float | None = Field(
+        None, description="Total quota limit (None if unlimited or unknown)"
+    )
+    unit: str = Field(..., description="Unit string, e.g. 'USD', 'tokens', 'requests'")
+    reset_at: datetime | None = Field(None, description="When this usage window resets (UTC)")
+
+
+class ProviderQuotaResult(BaseModel):
+    """Result of querying a single upstream provider's quota."""
+
+    name: str = Field(..., description="Lowercase identifier: chutes | zai | minimax | ollama")
+    display_name: str = Field(..., description="Human-readable name")
+    key_configured: bool = Field(..., description="True if credentials are present in env")
+    key_masked: str | None = Field(None, description="Masked key/cookie (None if not configured)")
+    fetched_at: datetime | None = Field(None, description="When the quota was fetched (UTC)")
+    ok: bool = Field(..., description="True if quota fetch succeeded")
+    error: str | None = Field(
+        None,
+        description="Short reason code if !ok: 'auth_failed' | 'timeout' | 'not_configured' | 'parse_error' | 'unexpected'",
+    )
+    usages: list[ProviderQuotaUsage] = Field(default_factory=list)
+
+
+class AdminProviderQuotasResponse(BaseModel):
+    """Aggregated response for the admin provider-quotas endpoint."""
+
+    generated_at: datetime
+    providers: list[ProviderQuotaResult]
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
     "APIKeyDetailUsage",
     "APIKeyListItem",
+    "AdminAnalyticsResponse",
+    "AdminHistogramBucket",
+    "AdminMetricDistribution",
+    "AdminPerformanceMetricsResponse",
+    "AdminPerformanceMetricsWindow",
+    "AdminProviderQuotasResponse",
+    "AdminRecentRequestItem",
+    "AdminRecentRequestsResponse",
+    "AdminRequestMetricsBucket",
+    "AdminRequestMetricsResponse",
+    "AdminRequestMetricsWindow",
+    "AnalyticsBreakdownEntry",
+    "AnalyticsUserEntry",
     "ApproveUserRequest",
     "ApproveUserResponse",
     "AuditLogEntry",
@@ -353,10 +560,13 @@ __all__ = [
     "ListAPIKeysResponse",
     "ListAuditLogResponse",
     "ListUsersResponse",
+    "ProviderQuotaResult",
+    "ProviderQuotaUsage",
     "RegenerateAPIKeyResponse",
     "RejectUserRequest",
     "RejectUserResponse",
     "RevokeAPIKeyResponse",
+    "SparklineBucket",
     "StatusCounts",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
@@ -365,3 +575,67 @@ __all__ = [
     "UserDetailResponse",
     "UserListItem",
 ]
+
+
+# ── Broadcast Email Schemas ────────────────────────────────────────────────
+
+
+class BroadcastPreviewRequest(BaseModel):
+    template_key: str | None = None
+    template_vars: dict = Field(default_factory=dict)
+    subject: str = Field("", description="Required when template_key is None")
+    body_html: str = Field("", description="Required when template_key is None")
+    body_text: str = Field("", description="Required when template_key is None")
+    # Empty arrays would silently match zero users (postgres ANY('{}') is always
+    # false), which is confusing for admins. Require at least one role and one
+    # status — admin must opt in to who receives the broadcast.
+    target_roles: list[str] = Field(..., min_length=1)
+    target_statuses: list[str] = Field(..., min_length=1)
+
+
+class BroadcastPreviewResponse(BaseModel):
+    recipient_count: int
+    rendered_subject: str
+    rendered_body_html: str
+    rendered_body_text: str
+
+
+class CreateBroadcastRequest(BroadcastPreviewRequest):
+    scheduled_at: datetime | None = None
+
+
+class CreateBroadcastResponse(BaseModel):
+    id: str
+    status: str
+    recipient_count: int
+    scheduled_at: datetime | None
+
+
+class BroadcastListItem(BaseModel):
+    id: str
+    subject: str
+    status: str
+    recipient_count: int
+    scheduled_at: datetime | None
+    sent_at: datetime | None
+    created_by: str
+    created_at: datetime
+
+
+class ListBroadcastsResponse(BaseModel):
+    total: int
+    broadcasts: list[BroadcastListItem]
+
+
+class BroadcastRecipientItem(BaseModel):
+    user_id: str
+    email: str
+    status: str
+    error: str | None
+    sent_at: datetime | None
+
+
+class BroadcastDetailResponse(BaseModel):
+    broadcast: BroadcastListItem
+    recipients: list[BroadcastRecipientItem]
+    total_recipients: int

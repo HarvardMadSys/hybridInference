@@ -5,14 +5,19 @@ import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from serving.exceptions import (
     UserNotFoundError,
 )
+from serving.schemas import ModelList
 from serving.schemas_auth import (
+    APIKeyDeleteResponse,
     APIKeyInfo,
+    APIKeyListItem,
+    APIKeyListResponse,
     APIKeyRegenerateResponse,
     APIKeyResponse,
     ChangeEmailRequest,
@@ -22,20 +27,65 @@ from serving.schemas_auth import (
     LLMProberLayoutResponse,
     LLMProberLayoutState,
     QuotaInfo,
+    RecentRequestItem,
+    RecentRequestsResponse,
     UsageResponse,
     UsageStats,
     UserInfo,
     UserProfileUpdate,
 )
-from serving.servers.auth import generate_api_key, hash_api_key
-from serving.servers.deps import get_current_user, get_log_store, get_operational_store
+from serving.servers.auth import (
+    generate_api_key,
+    hash_api_key,
+    log_admin_action,
+)
+from serving.servers.deps import (
+    get_current_user,
+    get_db_logger,
+    get_embedding_adapters,
+    get_log_store,
+    get_operational_store,
+    get_router,
+)
+from serving.servers.routers.models import build_model_list
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
+QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
+
+
+def _get_daily_quota_reset_at() -> datetime:
+    """Return the next daily quota reset timestamp."""
+    now = datetime.now(timezone.utc)
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _get_usage_period_start(period: str, user_timezone: str) -> datetime | None:
+    """Return the UTC start timestamp for a user-visible usage period."""
+    if period == "all":
+        return None
+    if period == "week":
+        return datetime.now(timezone.utc) - timedelta(days=7)
+
+    try:
+        tz = ZoneInfo(user_timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(status_code=400, detail="Invalid timezone") from exc
+
+    now = datetime.now(tz)
+    if period == "today":
+        local_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "month":
+        local_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        return None
+
+    return local_start.astimezone(timezone.utc)
 
 
 def _coerce_preferences(value: Any) -> dict[str, Any]:
@@ -71,6 +121,11 @@ def get_default_daily_quota() -> Decimal:
     return Decimal(quota_str)
 
 
+def mask_key_prefix(key_prefix: str) -> str:
+    """Mask an API key using the stored prefix."""
+    return f"{key_prefix}{'*' * 20}"
+
+
 @router.get("/me", response_model=UserInfo)
 async def get_current_user_info(
     current_user=Depends(get_current_user),
@@ -99,6 +154,20 @@ async def get_current_user_info(
         is_admin=current_user.get("is_admin", False),
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
+    )
+
+
+@router.get("/models", response_model=ModelList)
+async def get_user_models(
+    current_user=Depends(get_current_user),
+    router_exec=Depends(get_router),
+    embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+) -> ModelList:
+    """List models available to the current dashboard user."""
+    return build_model_list(
+        router_exec=router_exec,
+        embedding_adapters=embedding_adapters,
+        user_role=current_user.get("role", "free"),
     )
 
 
@@ -161,8 +230,10 @@ async def reset_llm_prober_layout(
 
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=201)
 async def create_api_key(
+    request: Request,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
 ) -> APIKeyResponse:
     """Generate a new API key for the current user.
 
@@ -186,7 +257,6 @@ async def create_api_key(
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
     key_prefix = api_key[:12]
-
     default_quota = get_default_daily_quota()
 
     await op_store.create_key(
@@ -199,11 +269,22 @@ async def create_api_key(
     )
 
     logger.info(f"API key created for user: {current_user['user_id']}")
+    await log_admin_action(
+        db_logger,
+        get_client_ip(request),
+        "create_key",
+        current_user["user_id"],
+        {
+            "actor": "user",
+            "key_prefix": key_prefix,
+            "tier": current_user.get("tier", "free"),
+        },
+    )
 
     return APIKeyResponse(
         api_key=api_key,
         key_prefix=key_prefix,
-        warning="Save this key now. It cannot be retrieved later.",
+        warning="Save this API key now. It will not be shown again.",
         created_at=datetime.now(timezone.utc),
     )
 
@@ -213,9 +294,9 @@ async def get_api_key_info(
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> APIKeyInfo:
-    """Get current user's API key information (masked).
+    """Get current user's active API key information.
 
-    Never returns the full API key after creation.
+    Full keys are only returned at creation/regeneration time.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -225,22 +306,148 @@ async def get_api_key_info(
     if not key_row:
         raise HTTPException(status_code=404, detail="No active API key found")
 
-    key_masked = f"{key_row['key_prefix']}{'*' * 20}"
-
     return APIKeyInfo(
         has_key=True,
+        api_key=None,
         key_prefix=key_row["key_prefix"],
-        key_masked=key_masked,
+        key_masked=mask_key_prefix(key_row["key_prefix"]),
         created_at=key_row["created_at"],
         last_used_at=key_row["last_used_at"],
         status=key_row["status"],
     )
 
 
+@router.get("/api-keys/all", response_model=APIKeyListResponse)
+async def list_api_keys(
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyListResponse:
+    """List all API keys owned by the current user.
+
+    Only masked identifiers are returned after creation/regeneration.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT key_prefix, created_at, last_used_at, status
+            FROM api_keys
+            WHERE account_id = $1
+            ORDER BY (status = 'active') DESC, created_at DESC
+            """,
+            current_user["user_id"],
+        )
+
+    keys = [
+        APIKeyListItem(
+            api_key=None,
+            key_prefix=row["key_prefix"],
+            key_masked=mask_key_prefix(row["key_prefix"]),
+            created_at=row["created_at"],
+            last_used_at=row["last_used_at"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
+    return APIKeyListResponse(keys=keys)
+
+
+@router.delete("/api-keys/{key_prefix}", response_model=APIKeyDeleteResponse)
+async def delete_api_key(
+    request: Request,
+    key_prefix: str,
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyDeleteResponse:
+    """Revoke an active key or remove a revoked key owned by the current user."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    existing = None
+    response: APIKeyDeleteResponse | None = None
+    audit_action: str | None = None
+    audit_details: dict[str, Any] | None = None
+
+    async with db_logger.pool.acquire() as conn:
+        revoked = await conn.fetchrow(
+            """
+            UPDATE api_keys
+            SET status = 'revoked'
+            WHERE account_id = $1 AND key_prefix = $2 AND status = 'active'
+            RETURNING key_prefix, status
+            """,
+            current_user["user_id"],
+            key_prefix,
+        )
+        if revoked:
+            logger.info(
+                "API key revoked for user: %s key_prefix=%s",
+                current_user["user_id"],
+                key_prefix,
+            )
+            response = APIKeyDeleteResponse(
+                key_prefix=revoked["key_prefix"],
+                status=revoked["status"],
+                message="API key revoked.",
+            )
+            audit_action = "revoke_key"
+            audit_details = {"actor": "user", "key_prefix": revoked["key_prefix"]}
+        else:
+            existing = await conn.fetchrow(
+                """
+                SELECT status
+                FROM api_keys
+                WHERE account_id = $1 AND key_prefix = $2
+                """,
+                current_user["user_id"],
+                key_prefix,
+            )
+            if existing and existing["status"] == "revoked":
+                deleted = await conn.fetchrow(
+                    """
+                    DELETE FROM api_keys
+                    WHERE account_id = $1 AND key_prefix = $2 AND status = 'revoked'
+                    RETURNING key_prefix
+                    """,
+                    current_user["user_id"],
+                    key_prefix,
+                )
+                logger.info(
+                    "Revoked API key removed for user: %s key_prefix=%s",
+                    current_user["user_id"],
+                    key_prefix,
+                )
+                response = APIKeyDeleteResponse(
+                    key_prefix=deleted["key_prefix"],
+                    status="deleted",
+                    message="Revoked API key removed.",
+                )
+                audit_action = "delete_key"
+                audit_details = {"actor": "user", "key_prefix": deleted["key_prefix"]}
+
+    if response and audit_action:
+        await log_admin_action(
+            db_logger,
+            get_client_ip(request),
+            audit_action,
+            current_user["user_id"],
+            audit_details,
+        )
+        return response
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="API key not found")
+    raise HTTPException(status_code=409, detail="Only active or revoked API keys can be deleted")
+
+
 @router.post("/api-keys/regenerate", response_model=APIKeyRegenerateResponse)
 async def regenerate_api_key(
+    request: Request,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
 ) -> APIKeyRegenerateResponse:
     """Regenerate API key for current user.
 
@@ -271,11 +478,22 @@ async def regenerate_api_key(
     )
 
     logger.info(f"API key regenerated for user: {current_user['user_id']}")
+    await log_admin_action(
+        db_logger,
+        get_client_ip(request),
+        "regenerate_key",
+        current_user["user_id"],
+        {
+            "actor": "user",
+            "old_key_prefix": old_key_row["key_prefix"],
+            "new_key_prefix": key_prefix,
+        },
+    )
 
     return APIKeyRegenerateResponse(
         api_key=api_key,
         key_prefix=key_prefix,
-        warning="Save this key now. It cannot be retrieved later.",
+        warning="Save this API key now. It will not be shown again.",
         old_key_prefix=old_key_row["key_prefix"],
     )
 
@@ -283,6 +501,7 @@ async def regenerate_api_key(
 @router.get("/usage", response_model=UsageResponse)
 async def get_usage(
     period: str = "today",
+    timezone_name: str = Query("UTC", alias="timezone"),
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
@@ -307,6 +526,9 @@ async def get_usage(
                 spent_today_usd=None,
                 spent_month_usd=None,
                 remaining_today_usd=None,
+                reset_at=_get_daily_quota_reset_at(),
+                reset_timezone="UTC",
+                contact_email=QUOTA_CONTACT_EMAIL,
             ),
             usage=UsageStats(
                 requests=0,
@@ -318,13 +540,13 @@ async def get_usage(
 
     daily_limit = float(key_row.get("quota_daily_cost_usd") or 0)
     monthly_limit = None
+    quota_reset_at = _get_daily_quota_reset_at()
 
     # Fetch usage from log store
     _zero = {"cost_usd": 0.0, "requests": 0}
     try:
         if log_store:
             all_usage = await log_store.get_user_usage_detail(current_user["user_id"])
-            # Map period name to the dict returned by get_user_usage_detail
             period_key = {"today": "today", "week": "week", "month": "month"}.get(period, "alltime")
             period_data = all_usage.get(period_key, _zero)
             spent_today = all_usage.get("today", _zero).get("cost_usd", 0.0)
@@ -354,6 +576,9 @@ async def get_usage(
             spent_today_usd=spent_today,
             spent_month_usd=spent_month,
             remaining_today_usd=remaining_today,
+            reset_at=quota_reset_at,
+            reset_timezone="UTC",
+            contact_email=QUOTA_CONTACT_EMAIL,
         ),
         usage=UsageStats(
             requests=int(period_data.get("requests") or 0),
@@ -397,8 +622,10 @@ async def update_profile(
         email=user_row["email"],
         user_name=user_row["user_name"],
         tier=current_user.get("tier", "free"),
+        role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
+        is_admin=(user_row["role"] or "free") == "admin",
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
     )
@@ -499,3 +726,96 @@ async def change_email(
         message="Email changed successfully. Please verify your new email address.",
         new_email=body.new_email,
     )
+
+
+@router.get("/recent-requests", response_model=RecentRequestsResponse)
+async def get_recent_requests(
+    limit: int = 50,
+    offset: int = 0,
+    model_id: str | None = None,
+    current_user=Depends(get_current_user),
+    db_logger=Depends(get_db_logger),
+) -> RecentRequestsResponse:
+    """Get the current user's recent API requests.
+
+    Returns a paginated list of recent requests with metadata, token usage,
+    and cost information. Supports optional filtering by model_id.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    # Clamp limit to prevent excessive queries
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    async with db_logger.pool.acquire() as conn:
+        try:
+            where_clauses = ["user_id = $1"]
+            params: list[Any] = [current_user["user_id"]]
+            if model_id:
+                params.append(model_id)
+                where_clauses.append(f"model_id = ${len(params)}")
+            where_sql = " AND ".join(where_clauses)
+
+            limit_idx = len(params) + 1
+            offset_idx = len(params) + 2
+            page_params = [*params, limit, offset]
+
+            # Get total count
+            count_row = await conn.fetchrow(
+                f"""
+                SELECT COUNT(*) as total
+                FROM api_logs
+                WHERE {where_sql}
+                """,
+                *params,
+            )
+            total = int(count_row["total"] or 0) if count_row else 0
+
+            # Get paginated recent requests
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    request_id, model_id, provider, timestamp,
+                    status_code, latency_ms, ttft_ms, stream,
+                    prompt_tokens, completion_tokens, reasoning_tokens,
+                    cache_read_tokens, cache_write_tokens,
+                    total_tokens, cost_usd, error
+                FROM api_logs
+                WHERE {where_sql}
+                ORDER BY timestamp DESC
+                LIMIT ${limit_idx} OFFSET ${offset_idx}
+                """,
+                *page_params,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to query recent requests for user_id=%s: %s",
+                current_user["user_id"],
+                exc,
+            )
+            return RecentRequestsResponse(requests=[], total=0, limit=limit, offset=offset)
+
+    requests = [
+        RecentRequestItem(
+            request_id=row["request_id"],
+            model_id=row["model_id"],
+            provider=row["provider"],
+            timestamp=row["timestamp"],
+            status_code=row["status_code"],
+            latency_ms=row["latency_ms"],
+            ttft_ms=row["ttft_ms"],
+            stream=row["stream"],
+            prompt_tokens=row["prompt_tokens"],
+            completion_tokens=row["completion_tokens"],
+            reasoning_tokens=row["reasoning_tokens"],
+            cache_read_tokens=row["cache_read_tokens"],
+            cache_write_tokens=row["cache_write_tokens"],
+            total_tokens=row["total_tokens"],
+            cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
+            error=row["error"],
+        )
+        for row in rows
+    ]
+
+    return RecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)

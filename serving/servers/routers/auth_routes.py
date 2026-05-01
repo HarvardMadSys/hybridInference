@@ -5,7 +5,7 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request, Response
 
 from serving.config.settings import is_admin_email, settings
 from serving.schemas_auth import (
@@ -23,13 +23,15 @@ from serving.schemas_auth import (
     UserInfo,
     VerifyEmailResponse,
 )
-from serving.servers.deps import get_current_user, get_operational_store
+from serving.servers.auth import log_admin_action
+from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
 from serving.utils import password as password_utils
 from serving.utils.email import (
     is_email_enabled,
     send_new_registration_admin_email,
     send_verification_email,
 )
+from serving.utils.email_blocklist import is_email_domain_blocked
 from serving.utils.jwt import (
     create_access_token,
     create_refresh_token,
@@ -39,9 +41,13 @@ from serving.utils.jwt import (
     get_refresh_token_expire_days,
 )
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
+from serving.utils.signup_rate_limit import check_and_record_signup
+from serving.utils.turnstile import verify_turnstile_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = get_logger(__name__)
+REFRESH_TOKEN_COOKIE = "refresh_token"
 
 
 def get_base_url(request: Request) -> str:
@@ -58,20 +64,57 @@ def hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    """Read a boolean-like environment flag."""
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+
+
+def _refresh_cookie_options() -> dict[str, object]:
+    """Return shared options for refresh-token cookie operations."""
+    return {
+        "httponly": True,
+        "secure": _env_flag("COOKIE_SECURE"),
+        "samesite": os.getenv("COOKIE_SAMESITE", "lax"),
+        "domain": os.getenv("COOKIE_DOMAIN"),
+        "path": "/",
+    }
+
+
+def set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
+    """Set the persistent refresh-token cookie."""
+    refresh_token_max_age = get_refresh_token_expire_days() * 24 * 60 * 60
+    response.set_cookie(
+        key=REFRESH_TOKEN_COOKIE,
+        value=refresh_token,
+        max_age=refresh_token_max_age,
+        expires=datetime.now(timezone.utc) + timedelta(seconds=refresh_token_max_age),
+        **_refresh_cookie_options(),
+    )
+
+
+def delete_refresh_token_cookie(response: Response) -> None:
+    """Delete the refresh-token cookie using the same domain/path settings."""
+    response.delete_cookie(
+        key=REFRESH_TOKEN_COOKIE,
+        **_refresh_cookie_options(),
+    )
+
+
 @router.post("/signup", response_model=SignupResponse, status_code=201)
 async def signup(
     request: Request,
     body: SignupRequest,
+    background_tasks: BackgroundTasks,
     op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
 ) -> SignupResponse:
     """Register a new user account.
 
     Creates a new user with email and password. Sends verification email if SMTP is configured.
     User must verify email before they can generate an API key.
 
-    Rate limits:
-    - 5 signups per hour per IP
-    - 10 signups per day per IP
+    Per-IP signup rate limits are configurable via
+    settings.signup_rate_limit_per_hour and signup_rate_limit_per_day.
     """
     # Check if signup is enabled
     if os.getenv("SIGNUP_ENABLED", "1") != "1":
@@ -79,6 +122,23 @@ async def signup(
             status_code=403,
             detail="Public signup is currently disabled. Please contact administrator.",
         )
+
+    # Record on entry so probing with varied payloads cannot bypass the limit.
+    client_ip = get_client_ip(request)
+    allowed, reason = await check_and_record_signup(client_ip)
+    if not allowed:
+        retry_after = "3600" if reason == "hour" else "86400"
+        raise HTTPException(
+            status_code=429,
+            detail="Too many signup attempts. Please try again later.",
+            headers={"Retry-After": retry_after},
+        )
+
+    if not await verify_turnstile_token(body.turnstile_token, client_ip):
+        raise HTTPException(status_code=400, detail="Captcha verification failed")
+
+    if is_email_domain_blocked(body.email):
+        raise HTTPException(status_code=400, detail="This email domain is not allowed")
 
     # Validate password strength
     is_valid, error_msg = password_utils.validate_password_strength(body.password)
@@ -97,6 +157,7 @@ async def signup(
 
     # Determine initial status based on approval setting
     require_approval = os.getenv("SIGNUP_REQUIRE_APPROVAL", "0") == "1"
+    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
     initial_status = "pending_approval" if require_approval else "active"
 
     # Create user
@@ -112,24 +173,25 @@ async def signup(
         status=initial_status,
     )
 
-    # Send verification email if SMTP is configured
-    if is_email_enabled():
+    # Send verification email only when verification is required and SMTP is configured.
+    # Skipping when SIGNUP_REQUIRE_EMAIL_VERIFICATION=false avoids burning SMTP quota.
+    if require_verification and is_email_enabled():
         verification_token = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
         await op_store.create_verification_token(
             token=verification_token, user_id=user_id, expires_at=expires_at
         )
 
+        # Send email in background so signup returns even if SMTP is slow
         base_url = get_base_url(request)
-        email_sent = send_verification_email(body.email, verification_token, base_url)
-        if not email_sent:
-            logger.warning(f"Failed to send verification email to {body.email}")
+        background_tasks.add_task(send_verification_email, body.email, verification_token, base_url)
 
     # Notify admins of new registration when approval is required
     if require_approval and is_email_enabled():
         admin_emails = [e.strip() for e in settings.admin_emails.split(",") if e.strip()]
         for admin_email in admin_emails:
-            send_new_registration_admin_email(
+            background_tasks.add_task(
+                send_new_registration_admin_email,
                 to_email=admin_email,
                 user_email=body.email,
                 user_name=body.user_name,
@@ -137,14 +199,28 @@ async def signup(
             )
 
     logger.info(f"New user registered: {user_id} ({body.email}) [status={initial_status}]")
+    await log_admin_action(
+        db_logger,
+        client_ip,
+        "create_user",
+        user_id,
+        {
+            "email": body.email.lower(),
+            "user_name": body.user_name,
+            "status": initial_status,
+            "requires_approval": require_approval,
+        },
+    )
 
     if require_approval:
         message = (
             "Account created successfully. Your registration is pending admin approval. "
             "You will receive an email once your account is approved."
         )
-    else:
+    elif require_verification:
         message = "Account created successfully. Please check your email to verify your account."
+    else:
+        message = "Account created successfully. You can now log in."
 
     return SignupResponse(
         message=message,
@@ -162,7 +238,7 @@ async def login(
 ) -> LoginResponse:
     """Login with email and password.
 
-    Returns access token (15 min) and sets refresh token as HttpOnly cookie (30 days).
+    Returns access token (15 min) and sets refresh token as HttpOnly cookie (365 days by default).
 
     Rate limits:
     - 5 attempts per 15 minutes per email
@@ -247,21 +323,7 @@ async def login(
         expires_at=session_expires,
     )
 
-    # Set refresh token as HttpOnly cookie
-    cookie_secure = os.getenv("COOKIE_SECURE", "0") == "1"
-    cookie_domain = os.getenv("COOKIE_DOMAIN")
-    cookie_samesite = os.getenv("COOKIE_SAMESITE", "lax")
-
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        secure=cookie_secure,
-        samesite=cookie_samesite,
-        domain=cookie_domain,
-        max_age=get_refresh_token_expire_days() * 24 * 60 * 60,
-        path="/",
-    )
+    set_refresh_token_cookie(response, refresh_token)
 
     logger.info(f"User logged in: {user_row['id']} ({user_row['email']})")
 
@@ -306,8 +368,7 @@ async def logout(
         if session_row and session_row["user_id"] == current_user["user_id"]:
             await op_store.revoke_session(session_row["id"])
 
-    # Clear refresh token cookie
-    response.delete_cookie(key="refresh_token", path="/")
+    delete_refresh_token_cookie(response)
 
     logger.info(f"User logged out: {current_user['user_id']}")
 
@@ -407,21 +468,7 @@ async def refresh(
         new_jti=jti,
     )
 
-    # Set new refresh token as HttpOnly cookie
-    cookie_secure = os.getenv("COOKIE_SECURE", "0") == "1"
-    cookie_domain = os.getenv("COOKIE_DOMAIN")
-    cookie_samesite = os.getenv("COOKIE_SAMESITE", "lax")
-
-    response.set_cookie(
-        key="refresh_token",
-        value=new_refresh_token,
-        httponly=True,
-        secure=cookie_secure,
-        samesite=cookie_samesite,
-        domain=cookie_domain,
-        max_age=get_refresh_token_expire_days() * 24 * 60 * 60,
-        path="/",
-    )
+    set_refresh_token_cookie(response, new_refresh_token)
 
     logger.info(f"Token refreshed for user: {user_row['id']}")
 
@@ -474,6 +521,7 @@ async def verify_email(
 async def forgot_password(
     request: Request,
     body: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
     op_store=Depends(get_operational_store),
 ) -> PasswordResetResponse:
     """Request password reset email.
@@ -505,9 +553,9 @@ async def forgot_password(
         from serving.utils.email import send_password_reset_email
 
         base_url = get_base_url(request)
-        email_sent = send_password_reset_email(user_row["email"], reset_token, base_url)
-        if not email_sent:
-            logger.warning(f"Failed to send password reset email to {user_row['email']}")
+        background_tasks.add_task(
+            send_password_reset_email, user_row["email"], reset_token, base_url
+        )
 
     logger.info(f"Password reset requested for user: {user_row['id']}")
 
@@ -567,6 +615,7 @@ async def reset_password(
 async def resend_verification(
     request: Request,
     body: ResendVerificationRequest,
+    background_tasks: BackgroundTasks,
     op_store=Depends(get_operational_store),
 ) -> ResendVerificationResponse:
     """Resend email verification link.
@@ -576,13 +625,17 @@ async def resend_verification(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
+    generic_response = ResendVerificationResponse(
+        message="If this email requires verification, a verification email has been sent."
+    )
+
     user_row = await op_store.get_user_by_email(body.email)
 
     if not user_row:
-        raise HTTPException(status_code=404, detail="No account found with this email.")
+        return generic_response
 
     if user_row["email_verified"]:
-        raise HTTPException(status_code=400, detail="Email is already verified.")
+        return generic_response
 
     # Generate new verification token
     verification_token = secrets.token_urlsafe(32)
@@ -591,15 +644,13 @@ async def resend_verification(
         token=verification_token, user_id=user_row["id"], expires_at=expires_at
     )
 
-    # Send email
+    # Send email in background so the request returns even if SMTP is slow
     if is_email_enabled():
         base_url = get_base_url(request)
-        email_sent = send_verification_email(user_row["email"], verification_token, base_url)
-        if not email_sent:
-            logger.warning(f"Failed to resend verification email to {user_row['email']}")
+        background_tasks.add_task(
+            send_verification_email, user_row["email"], verification_token, base_url
+        )
 
     logger.info(f"Verification email resent for user: {user_row['id']}")
 
-    return ResendVerificationResponse(
-        message="Verification email has been sent. Please check your inbox."
-    )
+    return generic_response

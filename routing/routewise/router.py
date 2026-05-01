@@ -549,9 +549,11 @@ class RouteWiseRouter(BaseRouter):
         # Find backup with lowest p50.
         best_backup = min(
             backups,
-            key=lambda eid: self._latency_profiles[eid].percentile(50, current_time)
-            if eid in self._latency_profiles
-            else float("inf"),
+            key=lambda eid: (
+                self._latency_profiles[eid].percentile(50, current_time)
+                if eid in self._latency_profiles
+                else float("inf")
+            ),
         )
 
         # Check backup has sufficient samples.
@@ -640,9 +642,11 @@ class RouteWiseRouter(BaseRouter):
         # Find backup with lowest p50.
         best_backup_eid = min(
             backups,
-            key=lambda eid: self._latency_profiles[eid].percentile(50, current_time)
-            if eid in self._latency_profiles
-            else float("inf"),
+            key=lambda eid: (
+                self._latency_profiles[eid].percentile(50, current_time)
+                if eid in self._latency_profiles
+                else float("inf")
+            ),
         )
 
         primary_profile = self._latency_profiles.get(primary_eid)

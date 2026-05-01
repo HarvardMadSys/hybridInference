@@ -95,7 +95,7 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
   let errorData: unknown = null;
   try {
     errorData = await resp.json();
-  } catch (parseError) {
+  } catch {
     // JSON parsing failed, use status code
     throw new APIError('NETWORK_ERROR', `HTTP ${resp.status}: ${resp.statusText}`, resp.status);
   }

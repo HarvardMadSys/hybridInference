@@ -1,8 +1,11 @@
 """Pydantic schemas for authentication and user management."""
 
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, StringConstraints
+
+UserName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=50)]
 
 
 # Authentication request/response schemas
@@ -11,7 +14,8 @@ class SignupRequest(BaseModel):
 
     email: EmailStr
     password: str = Field(..., min_length=8)
-    user_name: str | None = None
+    user_name: UserName
+    turnstile_token: str | None = None
 
 
 class SignupResponse(BaseModel):
@@ -79,7 +83,7 @@ class UserInfo(BaseModel):
 class UserProfileUpdate(BaseModel):
     """User profile update request."""
 
-    user_name: str | None = None
+    user_name: UserName | None = None
 
 
 class LLMProberLayoutState(BaseModel):
@@ -104,11 +108,11 @@ class APIKeyCreate(BaseModel):
 
 
 class APIKeyResponse(BaseModel):
-    """API key creation response (full key shown only once)."""
+    """API key creation response."""
 
     api_key: str
     key_prefix: str
-    warning: str = "Save this key now. It cannot be retrieved later."
+    warning: str = "Save this API key now. It will not be shown again."
     created_at: datetime
 
 
@@ -116,6 +120,7 @@ class APIKeyInfo(BaseModel):
     """API key information (masked)."""
 
     has_key: bool
+    api_key: str | None = None
     key_prefix: str | None = None
     key_masked: str | None = None
     created_at: datetime | None = None
@@ -123,12 +128,37 @@ class APIKeyInfo(BaseModel):
     status: str | None = None
 
 
+class APIKeyListItem(BaseModel):
+    """Single API key record for the current user."""
+
+    api_key: str | None = None
+    key_prefix: str
+    key_masked: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+    status: str
+
+
+class APIKeyListResponse(BaseModel):
+    """All API keys owned by the current user."""
+
+    keys: list[APIKeyListItem]
+
+
+class APIKeyDeleteResponse(BaseModel):
+    """Response returned after revoking an API key."""
+
+    key_prefix: str
+    status: str
+    message: str
+
+
 class APIKeyRegenerateResponse(BaseModel):
     """API key regeneration response."""
 
     api_key: str
     key_prefix: str
-    warning: str = "Save this key now. It cannot be retrieved later."
+    warning: str = "Save this API key now. It will not be shown again."
     old_key_prefix: str
 
 
@@ -142,6 +172,12 @@ class QuotaInfo(BaseModel):
     spent_today_usd: float | None = None
     spent_month_usd: float | None = None
     remaining_today_usd: float | None = None
+    reset_at: datetime | None = None
+    reset_timezone: str = "UTC"
+    contact_email: str = "admin@freeinference.org"
+    increase_request_message: str = (
+        "Need more quota? Email admin@freeinference.org and explain your use case."
+    )
 
 
 class UsageStats(BaseModel):
@@ -218,3 +254,34 @@ class ChangeEmailResponse(BaseModel):
 
     message: str
     new_email: str
+
+
+# Recent requests schemas
+class RecentRequestItem(BaseModel):
+    """A single API request log entry (user-facing)."""
+
+    request_id: str
+    model_id: str
+    provider: str
+    timestamp: datetime
+    status_code: int | None = None
+    latency_ms: int | None = None
+    ttft_ms: int | None = None
+    stream: bool | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    error: str | None = None
+
+
+class RecentRequestsResponse(BaseModel):
+    """Paginated list of recent requests for the current user."""
+
+    requests: list[RecentRequestItem]
+    total: int
+    limit: int
+    offset: int

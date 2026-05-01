@@ -135,7 +135,7 @@ class TestGLMProcessor:
     def test_g04_tool_call_json_array_arg(self):
         """G-04: arg_value containing JSON array is parsed via json.loads."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(
+        _emitted, flushed = _feed_stream(
             proc,
             [
                 _make_stream_chunk(
@@ -152,7 +152,7 @@ class TestGLMProcessor:
     def test_g05_tool_call_json_object_arg(self):
         """G-05: arg_value containing JSON object is parsed via json.loads."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(
+        _emitted, flushed = _feed_stream(
             proc,
             [
                 _make_stream_chunk(
@@ -324,7 +324,7 @@ class TestGLMProcessor:
     def test_g17_json_loads_failure_raw_string(self):
         """G-17: json.loads failure in arg value — value kept as raw string."""
         proc = GLMProcessor()
-        emitted, flushed = _feed_stream(
+        _emitted, flushed = _feed_stream(
             proc,
             [
                 _make_stream_chunk(
@@ -446,7 +446,7 @@ class TestQwenCoderProcessor:
     def test_q06_unclosed_tool_call_fallback(self):
         """Q-06: Unclosed <tool_call> — fallback parsing via <function= match."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(
+        _emitted, flushed = _feed_stream(
             proc,
             [
                 _make_stream_chunk(
@@ -462,7 +462,7 @@ class TestQwenCoderProcessor:
     def test_q07_param_newline_stripping(self):
         """Q-07: Leading/trailing newlines stripped from parameter values."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(
+        _emitted, flushed = _feed_stream(
             proc,
             [
                 _make_stream_chunk(
@@ -480,7 +480,7 @@ class TestQwenCoderProcessor:
     def test_q08_param_json_object(self):
         """Q-08: Parameter with JSON object value parsed via json.loads."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(
+        _emitted, flushed = _feed_stream(
             proc,
             [
                 _make_stream_chunk(
@@ -497,7 +497,7 @@ class TestQwenCoderProcessor:
     def test_q09_param_json_array(self):
         """Q-09: Parameter with JSON array value parsed via json.loads."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(
+        _emitted, flushed = _feed_stream(
             proc,
             [
                 _make_stream_chunk(
@@ -514,7 +514,7 @@ class TestQwenCoderProcessor:
     def test_q10_param_json_parse_failure(self):
         """Q-10: JSON parse failure — value kept as raw string."""
         proc = QwenCoderProcessor()
-        emitted, flushed = _feed_stream(
+        _emitted, flushed = _feed_stream(
             proc,
             [
                 _make_stream_chunk(

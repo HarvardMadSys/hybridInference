@@ -2,30 +2,58 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
+from serving.admin.provider_quotas import gather_all
 from serving.schemas_admin import (
+    AdminAnalyticsResponse,
+    AdminHistogramBucket,
+    AdminMetricDistribution,
+    AdminPerformanceMetricsResponse,
+    AdminPerformanceMetricsWindow,
+    AdminProviderQuotasResponse,
+    AdminRecentRequestItem,
+    AdminRecentRequestsResponse,
+    AdminRequestMetricsBucket,
+    AdminRequestMetricsResponse,
+    AdminRequestMetricsWindow,
+    AnalyticsBreakdownEntry,
+    AnalyticsUserEntry,
     APIKeyDetailResponse,
     APIKeyDetailUsage,
     APIKeyListItem,
     ApproveUserRequest,
     ApproveUserResponse,
     AuditLogEntry,
+    BroadcastDetailResponse,
+    BroadcastListItem,
+    BroadcastPreviewRequest,
+    BroadcastPreviewResponse,
+    BroadcastRecipientItem,
     CreateAPIKeyRequest,
     CreateAPIKeyResponse,
+    CreateBroadcastRequest,
+    CreateBroadcastResponse,
     DeleteUserRequest,
     DeleteUserResponse,
     ListAPIKeysResponse,
     ListAuditLogResponse,
+    ListBroadcastsResponse,
     ListUsersResponse,
     RegenerateAPIKeyResponse,
     RejectUserRequest,
     RejectUserResponse,
     RevokeAPIKeyResponse,
+    SparklineBucket,
     StatusCounts,
     UpdateAPIKeyRequest,
     UpdateAPIKeyResponse,
@@ -40,6 +68,7 @@ from serving.servers.auth import (
     log_admin_action,
 )
 from serving.servers.deps import (
+    get_db_logger,
     get_log_store,
     get_operational_store,
     get_rate_limiter,
@@ -47,6 +76,8 @@ from serving.servers.deps import (
     get_services,
     verify_admin_access,
 )
+from serving.utils.email import render_broadcast_template, send_email
+from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 
 router = APIRouter()
 
@@ -931,4 +962,1297 @@ async def delete_user(
         email=user_row["email"],
         status="deleted",
         message=f"User {user_row['email']} has been deleted.",
+    )
+
+
+# ========================================
+# Recent Requests (Admin View)
+# ========================================
+
+
+REQUEST_METRIC_WINDOWS: tuple[tuple[str, str, int, int], ...] = (
+    ("5m", "Last 5 min", 5, 1),
+    ("1h", "Last 1 hour", 60, 5),
+    ("4h", "Last 4 hours", 240, 15),
+    ("1d", "Last 1 day", 1440, 60),
+    ("1w", "Last 1 week", 10080, 360),
+    ("1mo", "Last 1 month", 43200, 1440),
+)
+
+
+@router.get("/admin/request-metrics", response_model=AdminRequestMetricsResponse)
+async def admin_get_request_metrics(
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminRequestMetricsResponse:
+    """Return request count trends for admin dashboard lookback windows."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    windows: list[AdminRequestMetricsWindow] = []
+    async with db_logger.pool.acquire() as conn:
+        for key, label, window_minutes, bucket_minutes in REQUEST_METRIC_WINDOWS:
+            rows = await conn.fetch(
+                """
+                WITH config AS (
+                    SELECT ($2::int * 60) AS bucket_seconds
+                ),
+                bounds AS (
+                    SELECT
+                        date_trunc('minute', NOW()) AS end_time,
+                        date_trunc('minute', NOW())
+                            - ($1::int * interval '1 minute') AS start_time,
+                        to_timestamp(
+                            floor(
+                                extract(
+                                    epoch FROM date_trunc('minute', NOW())
+                                        - ($1::int * interval '1 minute')
+                                ) / config.bucket_seconds
+                            ) * config.bucket_seconds
+                        ) AS aligned_start
+                    FROM config
+                ),
+                series AS (
+                    SELECT generate_series(
+                        (SELECT aligned_start FROM bounds),
+                        (SELECT end_time FROM bounds),
+                        $2::int * interval '1 minute'
+                    ) AS bucket_start
+                ),
+                bucketed_logs AS (
+                    SELECT
+                        to_timestamp(
+                            floor(extract(epoch from timestamp) / ($2::int * 60))
+                            * ($2::int * 60)
+                        ) AS bucket_start,
+                        COUNT(*) AS request_count,
+                        COUNT(*) FILTER (
+                            WHERE status_code >= 200 AND status_code < 400
+                        ) AS success_count,
+                        COUNT(*) FILTER (
+                            WHERE error IS NOT NULL
+                               OR status_code IS NULL
+                               OR status_code < 200
+                               OR status_code >= 400
+                        ) AS error_count,
+                        COUNT(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
+                            AS latency_count,
+                        SUM(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
+                            AS latency_sum_ms,
+                        AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
+                            AS avg_latency_ms
+                    FROM api_logs, bounds
+                    WHERE timestamp >= bounds.start_time
+                      AND timestamp <= bounds.end_time
+                    GROUP BY 1
+                )
+                SELECT
+                    series.bucket_start,
+                    COALESCE(bucketed_logs.request_count, 0) AS request_count,
+                    COALESCE(bucketed_logs.success_count, 0) AS success_count,
+                    COALESCE(bucketed_logs.error_count, 0) AS error_count,
+                    COALESCE(bucketed_logs.latency_count, 0) AS latency_count,
+                    COALESCE(bucketed_logs.latency_sum_ms, 0) AS latency_sum_ms,
+                    bucketed_logs.avg_latency_ms
+                FROM series
+                LEFT JOIN bucketed_logs
+                  ON bucketed_logs.bucket_start = series.bucket_start
+                ORDER BY series.bucket_start ASC
+                """,
+                window_minutes,
+                bucket_minutes,
+            )
+
+            buckets = [
+                AdminRequestMetricsBucket(
+                    start_time=row["bucket_start"],
+                    request_count=int(row["request_count"] or 0),
+                    success_count=int(row["success_count"] or 0),
+                    error_count=int(row["error_count"] or 0),
+                    avg_latency_ms=(
+                        round(float(row["avg_latency_ms"]), 1)
+                        if row["avg_latency_ms"] is not None
+                        else None
+                    ),
+                )
+                for row in rows
+            ]
+            total_requests = sum(bucket.request_count for bucket in buckets)
+            success_requests = sum(bucket.success_count for bucket in buckets)
+            error_requests = sum(bucket.error_count for bucket in buckets)
+            latency_count = sum(int(row["latency_count"] or 0) for row in rows)
+            latency_sum_ms = sum(float(row["latency_sum_ms"] or 0) for row in rows)
+            windows.append(
+                AdminRequestMetricsWindow(
+                    key=key,
+                    label=label,
+                    window_minutes=window_minutes,
+                    bucket_minutes=bucket_minutes,
+                    total_requests=total_requests,
+                    success_requests=success_requests,
+                    error_requests=error_requests,
+                    avg_latency_ms=(
+                        round(latency_sum_ms / latency_count, 1) if latency_count else None
+                    ),
+                    buckets=buckets,
+                )
+            )
+
+    return AdminRequestMetricsResponse(
+        generated_at=datetime.now(timezone.utc),
+        windows=windows,
+    )
+
+
+# ========================================
+# Performance Metrics (Admin View)
+# ========================================
+
+
+# Inner edges for histogram buckets, passed to width_bucket(x, ARRAY[...]).
+# With N = len(edges), width_bucket returns bucket 0 for x < edges[0]
+# (underflow; ignored here because these metrics are never negative),
+# buckets 1..N-1 for bounded ranges [edges[k-1], edges[k]), and bucket N
+# for the final open-ended overflow bucket [edges[-1], +inf).
+_TOKEN_HISTOGRAM_EDGES: tuple[float, ...] = (0, 32, 128, 512, 2048, 8192, 32768, 131072)
+_LATENCY_HISTOGRAM_EDGES: tuple[float, ...] = (0, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
+
+
+def _build_histogram(
+    edges: tuple[float, ...],
+    counts_by_bucket: dict[int, int],
+) -> list[AdminHistogramBucket]:
+    """Map width_bucket() index -> AdminHistogramBucket list with edge bounds.
+
+    width_bucket(x, ARRAY[edges]) returns:
+      0  -> x < edges[0]    (underflow; ignored, metrics are non-negative)
+      k  -> edges[k-1] <= x < edges[k]   for 1 <= k <= len(edges)-1
+      N  -> x >= edges[-1]  (overflow; open-ended upper bound)
+    where N = len(edges).
+
+    We always emit one bucket per (edge[k-1], edge[k]) pair plus a final
+    open-ended bucket, even if the count is zero, so the UI can render a
+    consistent bar chart.
+    """
+    n_edges = len(edges)
+    buckets: list[AdminHistogramBucket] = []
+    # Buckets 1..N-1 are bounded.
+    for k in range(1, n_edges):
+        buckets.append(
+            AdminHistogramBucket(
+                lower_bound=float(edges[k - 1]),
+                upper_bound=float(edges[k]),
+                count=int(counts_by_bucket.get(k, 0)),
+            )
+        )
+    # Final overflow bucket (index N): [edges[-1], +inf).
+    buckets.append(
+        AdminHistogramBucket(
+            lower_bound=float(edges[-1]),
+            upper_bound=None,
+            count=int(counts_by_bucket.get(n_edges, 0)),
+        )
+    )
+    return buckets
+
+
+def _round_or_none(value: Any, digits: int = 2) -> float | None:
+    """Coerce a numeric DB value to float and round, or return None."""
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def _distribution_from_row(
+    row: Any,
+    prefix: str,
+    edges: tuple[float, ...],
+    bucket_counts: dict[int, int],
+) -> AdminMetricDistribution:
+    """Build a distribution from a stats row + histogram counts dict."""
+    return AdminMetricDistribution(
+        count=int(row[f"{prefix}_count"] or 0),
+        mean=_round_or_none(row[f"{prefix}_mean"]),
+        min=_round_or_none(row[f"{prefix}_min"]),
+        max=_round_or_none(row[f"{prefix}_max"]),
+        p50=_round_or_none(row[f"{prefix}_p50"]),
+        p90=_round_or_none(row[f"{prefix}_p90"]),
+        p95=_round_or_none(row[f"{prefix}_p95"]),
+        p99=_round_or_none(row[f"{prefix}_p99"]),
+        histogram=_build_histogram(edges, bucket_counts),
+    )
+
+
+# Shared CTE prefix used by both the stats query and the histogram query for
+# each window. Defining it once keeps the row filter / TBT derivation in sync
+# so the "histogram sums to count" invariant cannot drift.
+_PERF_METRICS_CTE = """
+WITH base AS (
+    SELECT
+        prompt_tokens,
+        completion_tokens,
+        ttft_ms,
+        latency_ms,
+        stream
+    FROM api_logs
+    WHERE timestamp >= NOW() - ($1::int * interval '1 minute')
+      AND status_code BETWEEN 200 AND 399
+),
+derived AS (
+    SELECT
+        prompt_tokens,
+        completion_tokens,
+        CASE
+            WHEN stream = TRUE AND ttft_ms IS NOT NULL
+                THEN ttft_ms::float
+        END AS ttft_ms,
+        CASE
+            WHEN stream = TRUE
+                AND ttft_ms IS NOT NULL
+                AND completion_tokens IS NOT NULL
+                AND completion_tokens > 1
+                AND latency_ms IS NOT NULL
+                AND latency_ms >= ttft_ms
+                THEN (latency_ms - ttft_ms)::float
+                     / NULLIF(completion_tokens - 1, 0)
+        END AS tbt_ms
+    FROM base
+)
+"""
+
+
+@router.get("/admin/performance-metrics", response_model=AdminPerformanceMetricsResponse)
+async def admin_get_performance_metrics(
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminPerformanceMetricsResponse:
+    """Return prompt/response length and latency distributions per lookback window.
+
+    For each window, computes percentiles (p50/p90/p95/p99), mean/min/max, count,
+    and a small histogram for:
+
+    - prompt_tokens (over rows where prompt_tokens > 0)
+    - completion_tokens (over rows where completion_tokens > 0)
+    - ttft_ms (over streaming rows with ttft_ms NOT NULL)
+    - tbt_ms (over streaming rows with completion_tokens > 1, derived from
+      (latency_ms - ttft_ms) / (completion_tokens - 1); negatives clamped to NULL)
+
+    Only successful requests (status_code 200-399) are included.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    token_edges = list(_TOKEN_HISTOGRAM_EDGES)
+    latency_edges = list(_LATENCY_HISTOGRAM_EDGES)
+
+    windows: list[AdminPerformanceMetricsWindow] = []
+    async with db_logger.pool.acquire() as conn:
+        for key, label, window_minutes, _bucket_minutes in REQUEST_METRIC_WINDOWS:
+            # Aggregate stats — one row, one query per window.
+            stats_row = await conn.fetchrow(
+                _PERF_METRICS_CTE
+                + """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_count,
+                    AVG(prompt_tokens) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_mean,
+                    MIN(prompt_tokens) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_min,
+                    MAX(prompt_tokens) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_max,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY prompt_tokens
+                    ) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_p50,
+                    percentile_cont(0.9) WITHIN GROUP (
+                        ORDER BY prompt_tokens
+                    ) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_p90,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY prompt_tokens
+                    ) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_p95,
+                    percentile_cont(0.99) WITHIN GROUP (
+                        ORDER BY prompt_tokens
+                    ) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_p99,
+
+                    COUNT(*) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_count,
+                    AVG(completion_tokens) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_mean,
+                    MIN(completion_tokens) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_min,
+                    MAX(completion_tokens) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_max,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY completion_tokens
+                    ) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_p50,
+                    percentile_cont(0.9) WITHIN GROUP (
+                        ORDER BY completion_tokens
+                    ) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_p90,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY completion_tokens
+                    ) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_p95,
+                    percentile_cont(0.99) WITHIN GROUP (
+                        ORDER BY completion_tokens
+                    ) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_p99,
+
+                    COUNT(*) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_count,
+                    AVG(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_mean,
+                    MIN(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_min,
+                    MAX(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_max,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY ttft_ms)
+                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p50,
+                    percentile_cont(0.9) WITHIN GROUP (ORDER BY ttft_ms)
+                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p90,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms)
+                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p95,
+                    percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms)
+                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p99,
+
+                    COUNT(*) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_count,
+                    AVG(tbt_ms) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_mean,
+                    MIN(tbt_ms) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_min,
+                    MAX(tbt_ms) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_max,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY tbt_ms)
+                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p50,
+                    percentile_cont(0.9) WITHIN GROUP (ORDER BY tbt_ms)
+                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p90,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY tbt_ms)
+                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p95,
+                    percentile_cont(0.99) WITHIN GROUP (ORDER BY tbt_ms)
+                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p99
+                FROM derived
+                """,
+                window_minutes,
+            )
+
+            # Histogram counts — one row per (metric, bucket).
+            hist_rows = await conn.fetch(
+                _PERF_METRICS_CTE
+                + """
+                SELECT 'prompt_tokens' AS metric,
+                       width_bucket(prompt_tokens::float, $2::float[]) AS bucket,
+                       COUNT(*) AS cnt
+                FROM derived
+                WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                GROUP BY bucket
+                UNION ALL
+                SELECT 'completion_tokens' AS metric,
+                       width_bucket(completion_tokens::float, $2::float[]) AS bucket,
+                       COUNT(*) AS cnt
+                FROM derived
+                WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                GROUP BY bucket
+                UNION ALL
+                SELECT 'ttft_ms' AS metric,
+                       width_bucket(ttft_ms, $3::float[]) AS bucket,
+                       COUNT(*) AS cnt
+                FROM derived
+                WHERE ttft_ms IS NOT NULL
+                GROUP BY bucket
+                UNION ALL
+                SELECT 'tbt_ms' AS metric,
+                       width_bucket(tbt_ms, $3::float[]) AS bucket,
+                       COUNT(*) AS cnt
+                FROM derived
+                WHERE tbt_ms IS NOT NULL
+                GROUP BY bucket
+                """,
+                window_minutes,
+                token_edges,
+                latency_edges,
+            )
+
+            histograms: dict[str, dict[int, int]] = {
+                "prompt_tokens": {},
+                "completion_tokens": {},
+                "ttft_ms": {},
+                "tbt_ms": {},
+            }
+            for row in hist_rows:
+                metric = row["metric"]
+                bucket = int(row["bucket"] or 0)
+                cnt = int(row["cnt"] or 0)
+                # width_bucket can return 0 for negative values; for token
+                # metrics this can't happen (filtered to > 0), but for tbt_ms
+                # we already clamped. Fold any underflow into bucket 1 just
+                # in case so that sum(histogram) == count holds.
+                target = bucket if bucket >= 1 else 1
+                histograms[metric][target] = histograms[metric].get(target, 0) + cnt
+
+            # `stats_row` is always non-None: an aggregate SELECT without
+            # GROUP BY returns exactly one row even when `derived` is empty.
+            window = AdminPerformanceMetricsWindow(
+                key=key,
+                label=label,
+                window_minutes=window_minutes,
+                prompt_tokens=_distribution_from_row(
+                    stats_row, "pt", _TOKEN_HISTOGRAM_EDGES, histograms["prompt_tokens"]
+                ),
+                completion_tokens=_distribution_from_row(
+                    stats_row, "ct", _TOKEN_HISTOGRAM_EDGES, histograms["completion_tokens"]
+                ),
+                ttft_ms=_distribution_from_row(
+                    stats_row, "tt", _LATENCY_HISTOGRAM_EDGES, histograms["ttft_ms"]
+                ),
+                tbt_ms=_distribution_from_row(
+                    stats_row, "tb", _LATENCY_HISTOGRAM_EDGES, histograms["tbt_ms"]
+                ),
+            )
+            windows.append(window)
+
+    return AdminPerformanceMetricsResponse(
+        generated_at=datetime.now(timezone.utc),
+        windows=windows,
+    )
+
+
+@router.get("/admin/recent-requests", response_model=AdminRecentRequestsResponse)
+async def admin_list_recent_requests(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    user_id: str | None = None,
+    model_id: str | None = None,
+    status_code: int | None = None,
+    errors_only: bool = False,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminRecentRequestsResponse:
+    """List recent API requests across all users.
+
+    Query Parameters:
+    - limit: Max results (default: 50, max: 200)
+    - offset: Pagination offset
+    - user_id: Filter by user ID
+    - model_id: Filter by model ID
+    - status_code: Filter by HTTP status code
+    - errors_only: If true, only show requests with errors
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    # Build WHERE clause
+    where_clauses: list[str] = []
+    params: list[Any] = []
+
+    if user_id:
+        where_clauses.append(f"l.user_id = ${len(params) + 1}")
+        params.append(user_id)
+
+    if model_id:
+        where_clauses.append(f"l.model_id = ${len(params) + 1}")
+        params.append(model_id)
+
+    if status_code is not None:
+        where_clauses.append(f"l.status_code = ${len(params) + 1}")
+        params.append(status_code)
+
+    if errors_only:
+        where_clauses.append(
+            "(l.error IS NOT NULL OR l.status_code IS NULL "
+            "OR l.status_code < 200 OR l.status_code >= 400)"
+        )
+
+    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    async with db_logger.pool.acquire() as conn:
+        # Get total count
+        count_row = await conn.fetchrow(
+            f"SELECT COUNT(*) as total FROM api_logs l {where_sql}",
+            *params,
+        )
+        total = int(count_row["total"] or 0) if count_row else 0
+
+        # Get paginated results
+        limit_idx = len(params) + 1
+        offset_idx = len(params) + 2
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                l.request_id, l.user_id, u.user_name, u.email AS user_email,
+                l.model_id, l.provider, l.timestamp,
+                l.status_code, l.latency_ms, l.ttft_ms, l.stream,
+                l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
+                l.total_tokens, l.cost_usd, l.prompt, l.response, l.error,
+                l.metadata->>'ip' AS user_ip
+            FROM api_logs l
+            LEFT JOIN users u ON u.id = l.user_id
+            {where_sql}
+            ORDER BY l.timestamp DESC
+            LIMIT ${limit_idx} OFFSET ${offset_idx}
+            """,
+            *params,
+            limit,
+            offset,
+        )
+
+    requests = [
+        AdminRecentRequestItem(
+            request_id=row["request_id"],
+            user_id=row["user_id"],
+            user_name=row["user_name"],
+            user_email=row["user_email"],
+            user_ip=row["user_ip"],
+            model_id=row["model_id"],
+            provider=row["provider"],
+            timestamp=row["timestamp"],
+            status_code=row["status_code"],
+            latency_ms=row["latency_ms"],
+            ttft_ms=row["ttft_ms"],
+            stream=row["stream"],
+            prompt_tokens=row["prompt_tokens"],
+            completion_tokens=row["completion_tokens"],
+            reasoning_tokens=row["reasoning_tokens"],
+            total_tokens=row["total_tokens"],
+            cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
+            prompt=row["prompt"],
+            response=row["response"],
+            error=row["error"],
+        )
+        for row in rows
+    ]
+
+    return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+
+
+# Period → (lookback_minutes, bucket_minutes)
+_ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
+    "hour": (60, 5),
+    "day": (1440, 60),
+    "week": (10080, 1440),
+    "month": (43200, 1440),
+}
+
+
+@router.get("/admin/analytics", response_model=AdminAnalyticsResponse)
+async def admin_get_analytics(
+    period: Literal["hour", "day", "week", "month"] = "day",
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminAnalyticsResponse:
+    """Return analytics summary for the admin analytics tab."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    lookback_minutes, bucket_minutes = _ANALYTICS_PERIODS[period]
+
+    # Acquire ONE connection and run all queries sequentially. Acquiring 5
+    # connections via asyncio.gather can starve the pool when two admin
+    # analytics requests arrive concurrently (pool max_size is small).
+    async with db_logger.pool.acquire() as conn:
+        active_users_row = await conn.fetchrow(
+            """
+            SELECT COUNT(DISTINCT user_id) AS cnt
+            FROM api_logs
+            WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+              AND user_id IS NOT NULL
+            """,
+            lookback_minutes,
+        )
+        active_users = int(active_users_row["cnt"] or 0)
+
+        top_users_rows = await conn.fetch(
+            """
+            WITH totals AS (
+                SELECT COUNT(*) AS grand_total
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                  AND user_id IS NOT NULL
+            ),
+            ranked AS (
+                SELECT
+                    l.user_id,
+                    COALESCE(u.email, l.user_id) AS email,
+                    COUNT(*) AS req_count
+                FROM api_logs l
+                LEFT JOIN users u ON u.id = l.user_id
+                WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
+                  AND l.user_id IS NOT NULL
+                GROUP BY l.user_id, u.email
+                ORDER BY req_count DESC
+                LIMIT 10
+            )
+            SELECT
+                r.user_id,
+                r.email,
+                r.req_count,
+                CASE WHEN t.grand_total > 0
+                     THEN r.req_count::float / t.grand_total
+                     ELSE 0 END AS fraction
+            FROM ranked r, totals t
+            """,
+            lookback_minutes,
+        )
+
+        by_model_rows = await conn.fetch(
+            """
+            WITH totals AS (
+                SELECT COUNT(*) AS grand_total
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+            ),
+            ranked AS (
+                SELECT model_id AS name, COUNT(*) AS req_count
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                GROUP BY model_id
+                ORDER BY req_count DESC
+                LIMIT 5
+            ),
+            top_total AS (
+                SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
+            )
+            SELECT r.name, r.req_count,
+                CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
+            FROM ranked r, totals t
+            UNION ALL
+            SELECT 'others',
+                GREATEST(t.grand_total - tt.top_req_count, 0),
+                CASE WHEN t.grand_total > 0
+                     THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
+                     ELSE 0 END
+            FROM totals t, top_total tt
+            WHERE t.grand_total > tt.top_req_count
+            ORDER BY req_count DESC
+            """,
+            lookback_minutes,
+        )
+
+        by_provider_rows = await conn.fetch(
+            """
+            WITH totals AS (
+                SELECT COUNT(*) AS grand_total
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+            ),
+            ranked AS (
+                SELECT provider AS name, COUNT(*) AS req_count
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                GROUP BY provider
+                ORDER BY req_count DESC
+                LIMIT 4
+            ),
+            top_total AS (
+                SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
+            )
+            SELECT r.name, r.req_count,
+                CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
+            FROM ranked r, totals t
+            UNION ALL
+            SELECT 'others',
+                GREATEST(t.grand_total - tt.top_req_count, 0),
+                CASE WHEN t.grand_total > 0
+                     THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
+                     ELSE 0 END
+            FROM totals t, top_total tt
+            WHERE t.grand_total > tt.top_req_count
+            ORDER BY req_count DESC
+            """,
+            lookback_minutes,
+        )
+
+        # Sparkline: align with the date_trunc + generate_series pattern used by
+        # /admin/request-metrics so admin chart bucket boundaries are consistent.
+        sparkline_rows = await conn.fetch(
+            """
+            WITH config AS (
+                SELECT ($2::int * 60) AS bucket_seconds
+            ),
+            bounds AS (
+                SELECT
+                    date_trunc('minute', NOW()) AS end_time,
+                    date_trunc('minute', NOW())
+                        - ($1::int * interval '1 minute') AS start_time,
+                    to_timestamp(
+                        floor(
+                            extract(
+                                epoch FROM date_trunc('minute', NOW())
+                                    - ($1::int * interval '1 minute')
+                            ) / config.bucket_seconds
+                        ) * config.bucket_seconds
+                    ) AS aligned_start
+                FROM config
+            ),
+            series AS (
+                SELECT generate_series(
+                    (SELECT aligned_start FROM bounds),
+                    (SELECT end_time FROM bounds),
+                    $2::int * interval '1 minute'
+                ) AS bucket_start
+            ),
+            bucketed_logs AS (
+                SELECT
+                    to_timestamp(
+                        floor(extract(epoch from timestamp) / ($2::int * 60))
+                        * ($2::int * 60)
+                    ) AS bucket_start,
+                    COUNT(*) AS request_count
+                FROM api_logs, bounds
+                WHERE timestamp >= bounds.start_time
+                  AND timestamp <= bounds.end_time
+                GROUP BY 1
+            )
+            SELECT
+                series.bucket_start,
+                COALESCE(bucketed_logs.request_count, 0) AS request_count
+            FROM series
+            LEFT JOIN bucketed_logs
+              ON bucketed_logs.bucket_start = series.bucket_start
+            ORDER BY series.bucket_start ASC
+            """,
+            lookback_minutes,
+            bucket_minutes,
+        )
+
+    return AdminAnalyticsResponse(
+        period=period,
+        active_users=active_users,
+        sparkline=[
+            SparklineBucket(
+                start_time=row["bucket_start"],
+                request_count=int(row["request_count"] or 0),
+            )
+            for row in sparkline_rows
+        ],
+        top_users=[
+            AnalyticsUserEntry(
+                email=str(row["email"]),
+                user_id=str(row["user_id"]),
+                requests=int(row["req_count"]),
+                fraction=float(row["fraction"]),
+            )
+            for row in top_users_rows
+        ],
+        by_model=[
+            AnalyticsBreakdownEntry(
+                name=str(row["name"]) if row["name"] else "unknown",
+                requests=int(row["req_count"]),
+                fraction=float(row["fraction"]),
+            )
+            for row in by_model_rows
+        ],
+        by_provider=[
+            AnalyticsBreakdownEntry(
+                name=str(row["name"]) if row["name"] else "unknown",
+                requests=int(row["req_count"]),
+                fraction=float(row["fraction"]),
+            )
+            for row in by_provider_rows
+        ],
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
+# ── Broadcast Email Endpoints ──────────────────────────────────────────────
+
+
+def _render_or_422(req: BroadcastPreviewRequest) -> dict[str, str]:
+    """Render template (or pass through custom content), mapping ValueError to 422."""
+    try:
+        return render_broadcast_template(
+            req.template_key,
+            req.template_vars,
+            custom_subject=req.subject,
+            custom_body_html=req.body_html,
+            custom_body_text=req.body_text,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/admin/broadcast-email/preview", response_model=BroadcastPreviewResponse)
+async def preview_broadcast(
+    req: BroadcastPreviewRequest,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Return recipient count and rendered email preview without sending."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    rendered = _render_or_422(req)
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) as cnt FROM users
+            WHERE role = ANY($1::text[])
+              AND status = ANY($2::text[])
+            """,
+            req.target_roles or [],
+            req.target_statuses or [],
+        )
+    count = row["cnt"] if row else 0
+
+    return BroadcastPreviewResponse(
+        recipient_count=count,
+        rendered_subject=rendered["subject"],
+        rendered_body_html=rendered["body_html"],
+        rendered_body_text=rendered["body_text"],
+    )
+
+
+@router.post("/admin/broadcast-email/test")
+async def test_broadcast_email(
+    req: BroadcastPreviewRequest,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Send a test email to the requesting admin's address only."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    rendered = _render_or_422(req)
+    if not rendered["subject"] or not rendered["body_html"]:
+        raise HTTPException(status_code=422, detail="subject and body_html are required")
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT email FROM users WHERE email = $1", admin)
+    if not row:
+        raise HTTPException(
+            status_code=400, detail="Admin user not found — cannot resolve email address"
+        )
+    admin_email = row["email"]
+
+    # smtplib is sync; offload to a thread so we don't block the event loop
+    # while waiting on the SMTP server.
+    import asyncio as _asyncio
+
+    ok = await _asyncio.to_thread(
+        send_email,
+        admin_email,
+        f"[TEST] {rendered['subject']}",
+        rendered["body_html"],
+        rendered["body_text"],
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail="Failed to send test email (SMTP error)")
+    return {"message": f"Test email sent to {admin_email}"}
+
+
+@router.post("/admin/broadcast-email", response_model=CreateBroadcastResponse)
+async def create_broadcast(
+    req: CreateBroadcastRequest,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Create a broadcast, snapshot its recipients, and schedule (or fire immediately)."""
+    import uuid as _uuid
+
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    rendered = _render_or_422(req)
+    if not rendered["subject"] or not rendered["body_html"]:
+        raise HTTPException(status_code=422, detail="subject and body_html are required")
+
+    broadcast_id = str(_uuid.uuid4())
+
+    async with db.pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            """
+                INSERT INTO email_broadcasts
+                    (id, subject, body_html, body_text, template_key, template_vars,
+                     target_roles, target_statuses, status, scheduled_at, created_by)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                """,
+            broadcast_id,
+            rendered["subject"],
+            rendered["body_html"],
+            rendered["body_text"],
+            req.template_key,
+            req.template_vars,
+            req.target_roles or [],
+            req.target_statuses or [],
+            "scheduled",
+            req.scheduled_at,
+            admin,
+        )
+
+        # Snapshot recipients at create time so the audience matches what the admin
+        # previewed and can't drift between scheduling and execution.
+        recipients = await conn.fetch(
+            """
+                SELECT id, email FROM users
+                WHERE role = ANY($1::text[])
+                  AND status = ANY($2::text[])
+                """,
+            req.target_roles or [],
+            req.target_statuses or [],
+        )
+        if recipients:
+            await conn.executemany(
+                """
+                    INSERT INTO email_broadcast_recipients (broadcast_id, user_id, email, status)
+                    VALUES ($1, $2, $3, 'pending')
+                    ON CONFLICT DO NOTHING
+                    """,
+                [(broadcast_id, r["id"], r["email"]) for r in recipients],
+            )
+        await conn.execute(
+            "UPDATE email_broadcasts SET recipient_count = $1 WHERE id = $2",
+            len(recipients),
+            broadcast_id,
+        )
+
+    # If APScheduler can't accept the job we don't want a row that says
+    # "scheduled" forever — mark it failed and surface a 503.
+    try:
+        schedule_broadcast(broadcast_id, req.scheduled_at)
+    except Exception as exc:
+        async with db.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE email_broadcasts SET status = 'failed' WHERE id = $1",
+                broadcast_id,
+            )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to register broadcast with scheduler: {exc}",
+        ) from exc
+
+    await log_admin_action(
+        db,
+        admin,
+        "broadcast_email_create",
+        None,
+        {"broadcast_id": broadcast_id, "subject": rendered["subject"]},
+    )
+
+    return CreateBroadcastResponse(
+        id=broadcast_id,
+        status="scheduled",
+        recipient_count=len(recipients),
+        scheduled_at=req.scheduled_at,
+    )
+
+
+@router.get("/admin/broadcast-email", response_model=ListBroadcastsResponse)
+async def list_broadcasts(
+    limit: int = 50,
+    offset: int = 0,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """List all broadcast campaigns, newest first."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    async with db.pool.acquire() as conn:
+        total_row = await conn.fetchrow("SELECT COUNT(*) as cnt FROM email_broadcasts")
+        total = total_row["cnt"] if total_row else 0
+        rows = await conn.fetch(
+            """
+            SELECT id, subject, status, recipient_count, scheduled_at, sent_at,
+                   created_by, created_at
+            FROM email_broadcasts
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            """,
+            limit,
+            offset,
+        )
+
+    broadcasts = [
+        BroadcastListItem(
+            id=r["id"],
+            subject=r["subject"],
+            status=r["status"],
+            recipient_count=r["recipient_count"],
+            scheduled_at=r["scheduled_at"],
+            sent_at=r["sent_at"],
+            created_by=r["created_by"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+    return ListBroadcastsResponse(total=total, broadcasts=broadcasts)
+
+
+@router.get("/admin/broadcast-email/{broadcast_id}", response_model=BroadcastDetailResponse)
+async def get_broadcast_detail(
+    broadcast_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Get broadcast details with per-recipient status (paginated)."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, subject, status, recipient_count, scheduled_at, sent_at,
+                   created_by, created_at
+            FROM email_broadcasts WHERE id = $1
+            """,
+            broadcast_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Broadcast not found")
+
+        total_row = await conn.fetchrow(
+            "SELECT COUNT(*) as cnt FROM email_broadcast_recipients WHERE broadcast_id = $1",
+            broadcast_id,
+        )
+        total_recipients = total_row["cnt"] if total_row else 0
+
+        recipient_rows = await conn.fetch(
+            """
+            SELECT user_id, email, status, error, sent_at
+            FROM email_broadcast_recipients
+            WHERE broadcast_id = $1
+            ORDER BY id
+            LIMIT $2 OFFSET $3
+            """,
+            broadcast_id,
+            limit,
+            offset,
+        )
+
+    broadcast = BroadcastListItem(
+        id=row["id"],
+        subject=row["subject"],
+        status=row["status"],
+        recipient_count=row["recipient_count"],
+        scheduled_at=row["scheduled_at"],
+        sent_at=row["sent_at"],
+        created_by=row["created_by"],
+        created_at=row["created_at"],
+    )
+    recipients = [
+        BroadcastRecipientItem(
+            user_id=r["user_id"],
+            email=r["email"],
+            status=r["status"],
+            error=r["error"],
+            sent_at=r["sent_at"],
+        )
+        for r in recipient_rows
+    ]
+    return BroadcastDetailResponse(
+        broadcast=broadcast,
+        recipients=recipients,
+        total_recipients=total_recipients,
+    )
+
+
+@router.delete("/admin/broadcast-email/{broadcast_id}")
+async def cancel_broadcast(
+    broadcast_id: str,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Cancel a scheduled broadcast. Returns 409 if not in 'scheduled' status."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT status FROM email_broadcasts WHERE id = $1", broadcast_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Broadcast not found")
+        if row["status"] != "scheduled":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot cancel broadcast with status '{row['status']}'",
+            )
+        await conn.execute(
+            "UPDATE email_broadcasts SET status = 'cancelled' WHERE id = $1", broadcast_id
+        )
+
+    cancel_broadcast_job(broadcast_id)
+    await log_admin_action(
+        db, admin, "broadcast_email_cancel", None, {"broadcast_id": broadcast_id}
+    )
+    return {"message": "Broadcast cancelled"}
+
+
+@router.get("/admin/export/requests")
+async def admin_export_requests(
+    start_time: datetime,
+    end_time: datetime | None = None,
+    user_id: str | None = None,
+    model_id: str | None = None,
+    errors_only: bool = False,
+    include_content: bool = False,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> StreamingResponse:
+    """Stream all request logs matching the given filters as JSONL.
+
+    Query Parameters:
+    - start_time: ISO8601 datetime, inclusive lower bound (required)
+    - end_time: ISO8601 datetime, inclusive upper bound (defaults to now)
+    - user_id: Filter by user ID
+    - model_id: Filter by model ID
+    - errors_only: If true, only include requests with errors
+    - include_content: If true, include prompt and response fields
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    if end_time is None:
+        end_time = datetime.now(timezone.utc)
+
+    where_clauses: list[str] = ["l.timestamp >= $1", "l.timestamp <= $2"]
+    params: list[Any] = [start_time, end_time]
+
+    if user_id:
+        where_clauses.append(f"l.user_id = ${len(params) + 1}")
+        params.append(user_id)
+
+    if model_id:
+        where_clauses.append(f"l.model_id = ${len(params) + 1}")
+        params.append(model_id)
+
+    if errors_only:
+        where_clauses.append(
+            "(l.error IS NOT NULL OR l.status_code IS NULL "
+            "OR l.status_code < 200 OR l.status_code >= 400)"
+        )
+
+    content_cols = ", l.prompt, l.response" if include_content else ""
+    batch_size = 500
+
+    start_str = start_time.strftime("%Y%m%d")
+    end_str = end_time.strftime("%Y%m%d")
+    filename = f"requests-{start_str}-{end_str}.jsonl"
+
+    async def generate() -> AsyncGenerator[str, None]:
+        cursor_ts: datetime | None = None
+        cursor_id: str | None = None
+        async with db_logger.pool.acquire() as conn:
+            while True:
+                local_clauses = list(where_clauses)
+                local_params = list(params)
+                if cursor_ts is not None:
+                    cursor_ts_idx = len(local_params) + 1
+                    cursor_id_idx = len(local_params) + 2
+                    local_clauses.append(
+                        f"(l.timestamp, l.request_id) < (${cursor_ts_idx}, ${cursor_id_idx})"
+                    )
+                    local_params.append(cursor_ts)
+                    local_params.append(cursor_id)
+                limit_idx = len(local_params) + 1
+                local_where = "WHERE " + " AND ".join(local_clauses)
+                rows = await conn.fetch(
+                    f"""
+                    SELECT
+                        l.request_id, l.user_id, u.user_name, u.email AS user_email,
+                        l.model_id, l.provider, l.timestamp,
+                        l.status_code, l.latency_ms, l.ttft_ms,
+                        l.prompt_tokens, l.completion_tokens, l.reasoning_tokens, l.total_tokens,
+                        l.cost_usd, l.error{content_cols}
+                    FROM api_logs l
+                    LEFT JOIN users u ON u.id = l.user_id
+                    {local_where}
+                    ORDER BY l.timestamp DESC, l.request_id DESC
+                    LIMIT ${limit_idx}
+                    """,
+                    *local_params,
+                    batch_size,
+                )
+                if not rows:
+                    break
+                for row in rows:
+                    record: dict[str, Any] = {
+                        "request_id": row["request_id"],
+                        "timestamp": row["timestamp"].isoformat(),
+                        "user_id": row["user_id"],
+                        "user_name": row["user_name"],
+                        "user_email": row["user_email"],
+                        "model_id": row["model_id"],
+                        "provider": row["provider"],
+                        "ttft_ms": row["ttft_ms"],
+                        "latency_ms": row["latency_ms"],
+                        "prompt_tokens": row["prompt_tokens"],
+                        "completion_tokens": row["completion_tokens"],
+                        "reasoning_tokens": row["reasoning_tokens"],
+                        "total_tokens": row["total_tokens"],
+                        "cost_usd": (str(row["cost_usd"]) if row["cost_usd"] is not None else None),
+                        "status_code": row["status_code"],
+                        "error": row["error"],
+                    }
+                    if include_content:
+                        record["prompt"] = row["prompt"]
+                        record["response"] = row["response"]
+                    yield json.dumps(record) + "\n"
+                if len(rows) < batch_size:
+                    break
+                cursor_ts = rows[-1]["timestamp"]
+                cursor_id = rows[-1]["request_id"]
+
+        await log_admin_action(
+            db_logger,
+            admin_id,
+            "export_requests",
+            None,
+            {
+                "range": f"{start_str}-{end_str}",
+                "include_content": include_content,
+                "user_id": user_id,
+                "model_id": model_id,
+                "errors_only": errors_only,
+            },
+        )
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+@router.get("/admin/provider-quotas", response_model=AdminProviderQuotasResponse)
+async def admin_provider_quotas(
+    _admin_id: str = Depends(verify_admin_access),
+) -> AdminProviderQuotasResponse:
+    """Return current quota status for each upstream LLM provider."""
+    providers = await gather_all()
+    return AdminProviderQuotasResponse(
+        generated_at=datetime.now(timezone.utc),
+        providers=providers,
     )

@@ -184,8 +184,10 @@ class ClaudeCredentialProvider:
                 task = loop.create_task(self._persist())
                 # Fire-and-forget: log if it fails, but don't block load
                 task.add_done_callback(
-                    lambda t: t.exception()
-                    and logger.warning(f"Migration persist failed: {t.exception()}")
+                    lambda t: (
+                        t.exception()
+                        and logger.warning(f"Migration persist failed: {t.exception()}")
+                    )
                 )
             except RuntimeError:
                 # No running loop (called from sync context) — skip

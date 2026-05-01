@@ -12,7 +12,7 @@ End-to-end testing suite for hybridInference local model deployment, covering di
 cd test/e2e
 
 # 1. Verify local models are running
-curl http://localhost:8001/v1/models  # Llama 3.2 3B
+curl http://localhost:8001/v1/models  # Test Model
 curl http://localhost:8003/v1/models  # Qwen3 Coder 30B
 
 # 2. Run all tests (fully automated)
@@ -121,7 +121,7 @@ local_servers:          # Phase 1: Direct local model configs
   qwen3_coder_30b: ...
 
 models:                 # Phase 2/3: Gateway model registry
-  - id: llama-3.2-3b-local-test
+  - id: qwen-2.5-3b-local-test
   - id: qwen3-coder-30b
   - id: qwen3-coder-30b-hybrid    # 40% local + 60% Chutes
   - id: qwen3-coder-30b-local-only
@@ -155,9 +155,9 @@ uv run pytest test_phase1_direct_local.py -v -s
 
 **Expected Output:**
 ```
-test_phase1_direct_local.py::test_models_endpoint[llama-3.2-3b-local] PASSED
+test_phase1_direct_local.py::test_models_endpoint[qwen-2.5-3b-local] PASSED
 test_phase1_direct_local.py::test_models_endpoint[qwen3-coder-30b-local] PASSED
-test_phase1_direct_local.py::test_non_streaming_completion[llama-3.2-3b-local] PASSED
+test_phase1_direct_local.py::test_non_streaming_completion[qwen-2.5-3b-local] PASSED
 test_phase1_direct_local.py::test_non_streaming_completion[qwen3-coder-30b-local] PASSED
 ...
 ```
@@ -186,9 +186,9 @@ make test-phase2
 
 **Expected Output:**
 ```
-test_phase2_gateway_routing.py::test_local_model_non_streaming[llama-3.2-3b-local-test] PASSED
+test_phase2_gateway_routing.py::test_local_model_non_streaming[qwen-2.5-3b-local-test] PASSED
 test_phase2_gateway_routing.py::test_local_model_non_streaming[qwen3-coder-30b] PASSED
-test_phase2_gateway_routing.py::test_local_model_streaming[llama-3.2-3b-local-test] PASSED
+test_phase2_gateway_routing.py::test_local_model_streaming[qwen-2.5-3b-local-test] PASSED
 test_phase2_gateway_routing.py::test_local_model_streaming[qwen3-coder-30b] PASSED
 ...
 ```
@@ -309,7 +309,7 @@ GATEWAY_PORT=10082 make start-gateway-phase2
 curl http://localhost:10081/v1/models | jq '.data[].id'
 
 # Should see (Phase 2):
-# - llama-3.2-3b-local-test
+# - qwen-2.5-3b-local-test
 # - qwen3-coder-30b
 
 # Or (Phase 3):
@@ -330,7 +330,7 @@ curl http://localhost:10081/v1/models | jq '.data[].id'
 
 ### Performance Benchmarks
 
-| Metric | Llama 3.2 3B | Qwen3 Coder 30B |
+| Metric | Test Model | Qwen3 Coder 30B |
 |--------|--------------|-----------------|
 | Latency (non-streaming) | ~1s | ~3-5s |
 | Streaming chunks | 8-70 | 100-150 |

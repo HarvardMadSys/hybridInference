@@ -4,16 +4,18 @@ After=network.target
 
 [Service]
 Type=simple
-User=murphy
-Group=murphy
-WorkingDirectory=/home/murphy/hybridInference/frontend
+User=freeinference
+Group=freeinference
+WorkingDirectory=/srv/hybridInference/frontend
 
 # Environment variables
 Environment=NODE_ENV=production
 Environment=PORT=3001
 
 # Use node directly from nvm
-ExecStart=/home/murphy/.nvm/versions/node/v22.19.0/bin/node /home/murphy/hybridInference/frontend/node_modules/.bin/next start -p 3001
+ExecStart=/home/freeinference/.nvm/versions/node/v24.15.0/bin/node \
+    /srv/hybridInference/frontend/node_modules/.bin/next \
+    start -p 3001
 
 # Restart policy
 Restart=always

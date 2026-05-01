@@ -5,30 +5,16 @@ route:
   group_interval: 5m
   repeat_interval: 4h
   routes:
-    # Allowlist: only forward these 3 actionable alerts to Slack + logger.
+    # Allowlist: only forward these actionable alerts to the local alert logger.
+    # Configure external notification receivers from alertmanager.yml.example
+    # without committing webhook URLs or SMTP credentials.
     # Everything else falls through to the blackhole default receiver.
-    - match_re:
-        alertname: "ServiceDown|ServiceUnreachable|DatabaseDisconnected"
-      receiver: slack-default
-      continue: true
     - match_re:
         alertname: "ServiceDown|ServiceUnreachable|DatabaseDisconnected"
       receiver: alert-logger
 
 receivers:
   - name: blackhole
-  - name: slack-default
-    slack_configs:
-      - send_resolved: true
-        api_url: https://hooks.slack.com/services/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
-        channel: '#free-inference-alert'
-        title: '{{ if eq .Status "resolved" }}[RESOLVED] {{ end }}[ALERT] {{ .CommonAnnotations.summary }}'
-        text: >-
-          {{ range .Alerts }}
-          {{ if eq .Status "resolved" }}:white_check_mark:{{ else }}:rotating_light:{{ end }}
-          *{{ .Labels.alertname }}* ({{ .Labels.severity }})
-            {{ .Annotations.description }}
-          {{ end }}
   - name: alert-logger
     webhook_configs:
       - url: 'http://alert-logger:5001/alerts'

@@ -62,6 +62,32 @@ async def _assert_test_db_from_pool(pool, context: str = "") -> None:
     _assert_test_db_name(db_name, context)
 
 
+async def _skip_if_test_db_unavailable(context: str = "") -> None:
+    """Skip DB-backed auth tests before full app startup starts retrying."""
+    import asyncpg
+
+    db_config = {
+        "host": os.environ.get("DB_HOST", "localhost"),
+        "port": int(os.environ.get("DB_PORT", "5432")),
+        "database": os.environ.get("DB_NAME", "freeinference_test_db"),
+        "user": os.environ.get("DB_USER", "postgres"),
+        "password": os.environ.get("DB_PASSWORD", "postgres"),
+    }
+
+    try:
+        conn = await asyncpg.connect(**db_config, timeout=1)
+    except Exception as exc:
+        pytest.skip(
+            f"PostgreSQL test database not available{f' [{context}]' if context else ''}: {exc}"
+        )
+
+    try:
+        db_name = await conn.fetchval("SELECT current_database()")
+        _assert_test_db_name(db_name, context)
+    finally:
+        await conn.close()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def auth_test_env():
     """Force-set environment variables so tests never hit production.
@@ -100,13 +126,23 @@ def auth_test_env():
         "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "10.00",
         # Disabled by default for backward compatibility with existing tests
         "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
+        # Turnstile disabled by default; per-test setenv to enable verification.
+        "TURNSTILE_SECRET_KEY": "",
         # Disable SMTP in tests to avoid sending real emails
         "SMTP_HOST": "",
         "SMTP_USER": "",
         "SMTP_PASSWORD": "",
     }
+    _SERVICE_VARS = {
+        "DB_ENABLED": "true",
+        "MODELS_CONFIG": "test/fixtures/test_models.yaml",
+        "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
+        "RATE_LIMIT_ENABLED": "0",
+        "METRICS_ENABLED": "0",
+        "OFFLOAD": "0",
+    }
 
-    all_vars = {**_TEST_DB_VARS, **_AUTH_VARS}
+    all_vars = {**_TEST_DB_VARS, **_AUTH_VARS, **_SERVICE_VARS}
     saved = {k: os.environ.get(k) for k in all_vars}
 
     for key, value in all_vars.items():
@@ -120,6 +156,20 @@ def auth_test_env():
             os.environ.pop(key, None)
         else:
             os.environ[key] = original
+
+
+# ============================================================================
+# Per-test signup rate-limit reset (prevents bleed across tests since
+# ASGITransport gives every request the same default client host).
+# ============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _reset_signup_rate_limit():
+    from serving.utils.signup_rate_limit import reset_signup_rate_limit_state
+
+    reset_signup_rate_limit_state()
+    yield
 
 
 # ============================================================================
@@ -347,6 +397,7 @@ async def auth_app(auth_test_env):
     # Layer 2a: pre-flight check BEFORE create_app() / lifespan can run
     # DB init (CREATE TABLE, ALTER, admin seed) to prevent schema side-effects.
     _assert_test_db_name(os.environ.get("DB_NAME", ""), context="auth_app pre-flight DB_NAME")
+    await _skip_if_test_db_unavailable(context="auth_app pre-flight connection")
 
     # Clear settings cache to pick up test environment variables
     from serving.config.settings import get_settings
@@ -389,8 +440,10 @@ async def auth_client(auth_app):
         yield ac
 
 
-@pytest_asyncio.fixture
-async def auth_db_logger(auth_app):
+# HTTP-style auth fixtures; use these for tests that should exercise the full
+# app lifespan and auth endpoints instead of DB-direct seeding from conftest_auth.py.
+@pytest_asyncio.fixture(name="auth_app_db_logger")
+async def auth_app_db_logger_fixture(auth_app):
     """Database logger from app state (initialized in lifespan).
 
     CRITICAL: Access via app.state.services, not Depends(get_db_logger).
@@ -400,8 +453,8 @@ async def auth_db_logger(auth_app):
     has run and app.state.services is populated.
 
     Usage:
-        async def test_example(auth_client, auth_db_logger):
-            async with auth_db_logger.pool.acquire() as conn:
+        async def test_example(auth_client, auth_app_db_logger):
+            async with auth_app_db_logger.pool.acquire() as conn:
                 result = await conn.fetchrow("SELECT 1")
     """
     # CRITICAL: Access from app.state.services, not by calling get_db_logger()
@@ -427,11 +480,11 @@ async def require_db(auth_app):
     return op_store
 
 
-@pytest_asyncio.fixture
-async def test_user(auth_client):
+@pytest_asyncio.fixture(name="auth_client_test_user")
+async def auth_client_test_user_fixture(auth_client):
     """Create a test user for auth tests."""
     user_data = {
-        "email": f"test_{os.urandom(4).hex()}@example.com",
+        "email": f"test_{os.urandom(4).hex()}@signuptest.dev",
         "password": "TestPass123!",
         "user_name": "Test User",
     }
@@ -450,16 +503,20 @@ async def test_user(auth_client):
     }
 
 
-@pytest_asyncio.fixture
-async def authenticated_user(auth_client, test_user):
+@pytest_asyncio.fixture(name="auth_client_authenticated_user")
+async def auth_client_authenticated_user_fixture(auth_client, auth_client_test_user):
     """Create and authenticate a test user."""
     login_response = await auth_client.post(
-        "/auth/login", json={"email": test_user["email"], "password": test_user["password"]}
+        "/auth/login",
+        json={
+            "email": auth_client_test_user["email"],
+            "password": auth_client_test_user["password"],
+        },
     )
 
     assert login_response.status_code == 200
 
-    return {**test_user, "access_token": login_response.json()["access_token"]}
+    return {**auth_client_test_user, "access_token": login_response.json()["access_token"]}
 
 
 # ============================================================================
@@ -487,14 +544,14 @@ models:
 
   - id: test-model-2
     name: Test Model 2
-    provider: llama
+    provider: zhipu
     base_url: http://remote.test
     api_key: test-key
     context_length: 16384
     max_output_length: 8192
     aliases: ["test-alias-2"]
     route:
-      - kind: llama
+      - kind: zhipu
         weight: 1.0
         base_url: http://remote.test
         api_key: test-key

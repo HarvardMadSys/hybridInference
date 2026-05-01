@@ -19,9 +19,9 @@ export const signupSchema = z
     confirmPassword: z.string(),
     userName: z
       .string()
+      .trim()
       .min(2, 'Username must be at least 2 characters')
-      .max(50, 'Username cannot exceed 50 characters')
-      .optional(),
+      .max(50, 'Username cannot exceed 50 characters'),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: 'Passwords do not match',
@@ -36,6 +36,7 @@ export const loginSchema = z.object({
 export const profileUpdateSchema = z.object({
   userName: z
     .string()
+    .trim()
     .min(2, 'Username must be at least 2 characters')
     .max(50, 'Username cannot exceed 50 characters')
     .optional(),

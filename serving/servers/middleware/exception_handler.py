@@ -26,6 +26,7 @@ from serving.exceptions import (
     WeakPasswordError,
 )
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
 
@@ -63,9 +64,7 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(InvalidCredentialsError)
     async def invalid_credentials_handler(request: Request, exc: InvalidCredentialsError):
-        logger.warning(
-            f"Invalid credentials attempt from {request.client.host if request.client else 'unknown'}"
-        )
+        logger.warning(f"Invalid credentials attempt from {get_client_ip(request)}")
         return JSONResponse(
             status_code=401,
             content={

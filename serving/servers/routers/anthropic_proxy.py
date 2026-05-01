@@ -34,8 +34,10 @@ from serving.observability.metrics import (
     normalize_provider_label,
 )
 from serving.servers.auth import verify_api_key
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import get_log_store, get_rate_limiter, get_router
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -311,6 +313,7 @@ async def anthropic_messages(
     router_exec=Depends(get_router),
     rate_limiter=Depends(get_rate_limiter),
     log_store=Depends(get_log_store),
+    _concurrency_slot=Depends(enforce_user_concurrency),
 ):
     """Forward an Anthropic Messages API request through subscription credentials."""
     request_id = f"aprx_{int(time.time() * 1000000)}"
@@ -381,7 +384,7 @@ async def anthropic_messages(
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
-        "ip": request.client.host if request.client else None,
+        "ip": get_client_ip(request),
         "authenticated": bool(user_ctx.get("authenticated")),
         "user_id": user_ctx.get("user_id"),
         "surface": "anthropic_proxy",

@@ -45,10 +45,10 @@ Example Usage:
 Prerequisites:
     1. Local model server running (e.g., http://localhost:8001)
     2. Gateway server running with test config (see example above)
-    3. test/fixtures/test_models.yaml contains llama-3.2-3b-local-test model
+    3. test/fixtures/test_models.yaml contains qwen-2.5-3b-local-test model
 
 Important:
-    The test uses llama-3.2-3b-local-test model which routes ONLY to local
+    The test uses qwen-2.5-3b-local-test model which routes ONLY to local
     server (no remote fallback). This validates true local routing.
 """
 

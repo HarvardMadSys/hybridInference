@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import Script from 'next/script';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { signupSchema, SignupFormData } from '@/lib/schemas/auth';
@@ -10,10 +11,20 @@ import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
 
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '';
+const TURNSTILE_CALLBACK = '__signupTurnstileCallback';
+
+declare global {
+  interface Window {
+    [TURNSTILE_CALLBACK]?: (token: string) => void;
+  }
+}
+
 export default function SignupPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signupResult, setSignupResult] = useState<SignupResponse | null>(null);
+  const turnstileTokenRef = useRef<string | null>(null);
 
   const {
     register,
@@ -23,15 +34,32 @@ export default function SignupPage() {
     resolver: zodResolver(signupSchema),
   });
 
+  useEffect(() => {
+    if (!TURNSTILE_SITE_KEY) return;
+    window[TURNSTILE_CALLBACK] = (token: string) => {
+      turnstileTokenRef.current = token;
+    };
+    return () => {
+      delete window[TURNSTILE_CALLBACK];
+    };
+  }, []);
+
   const onSubmit = async (data: SignupFormData) => {
     setIsLoading(true);
     setError(null);
+
+    if (TURNSTILE_SITE_KEY && !turnstileTokenRef.current) {
+      setError('Please complete the captcha.');
+      setIsLoading(false);
+      return;
+    }
 
     try {
       const result = await signup({
         email: data.email,
         password: data.password,
-        user_name: data.userName,
+        user_name: data.userName.trim(),
+        turnstileToken: turnstileTokenRef.current ?? undefined,
       });
       setSignupResult(result);
     } catch (err) {
@@ -129,6 +157,15 @@ export default function SignupPage() {
           />
 
           <InputField
+            label="Username"
+            type="text"
+            autoComplete="username"
+            hint="This name is shown in your account and admin review."
+            error={errors.userName?.message}
+            {...register('userName')}
+          />
+
+          <InputField
             label="Password"
             type="password"
             hint="At least 8 characters with uppercase, lowercase, and numbers."
@@ -144,6 +181,20 @@ export default function SignupPage() {
             error={errors.confirmPassword?.message}
             {...register('confirmPassword')}
           />
+
+          {TURNSTILE_SITE_KEY && (
+            <>
+              <Script
+                src="https://challenges.cloudflare.com/turnstile/v0/api.js"
+                strategy="afterInteractive"
+              />
+              <div
+                className="cf-turnstile"
+                data-sitekey={TURNSTILE_SITE_KEY}
+                data-callback={TURNSTILE_CALLBACK}
+              />
+            </>
+          )}
 
           <Button type="submit" className="w-full" isLoading={isLoading}>
             Sign Up

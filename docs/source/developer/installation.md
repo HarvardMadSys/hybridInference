@@ -24,7 +24,7 @@ See [Deployment](deployment.md) for full production setup including Nginx and mo
 
 ### System Requirements
 
-- Python 3.10 or higher
+- Python 3.10-3.13 (3.12 recommended)
 - Node.js 22+ (for frontend)
 - GPU support (recommended for local inference)
 - Linux or macOS (Windows via WSL2)
@@ -40,7 +40,7 @@ make setup-dev
 
 # Or manually:
 git submodule update --init --recursive
-uv venv -p 3.10
+uv venv -p 3.12
 source .venv/bin/activate
 uv sync
 
@@ -60,7 +60,7 @@ npm run dev
 ### Using conda
 
 ```bash
-conda create -n hybrid_inference python=3.10 -y
+conda create -n hybrid_inference python=3.12 -y
 conda activate hybrid_inference
 pip install -e .
 ```
@@ -82,7 +82,6 @@ Required for production:
 
 Optional (enable providers as needed):
 
-- **LLM APIs**: `LLAMA_API_KEY`, `ZAI_API_KEY`, `CHUTES_API_KEY`, etc.
 
 > **Note**: When running locally without Docker, the backend connects to GPU endpoints
 > via `localhost`. In Docker, these are rewritten to `host.docker.internal` in
@@ -98,21 +97,23 @@ make check         # Run all checks
 
 ## Documentation Structure
 
-This repo contains **developer documentation** only (deployment, architecture, internals).
+This repository hosts both documentation sites used by the project:
 
-**User-facing documentation** (API quickstart, models, IDE integrations) lives in the
-[free_inference](https://github.com/HarvardMadSys/free_inference) repo, included here
-as a git submodule at `docs/free_inference/`. To update user docs:
+- **Developer documentation** (deployment, architecture, internals) lives at
+  `docs/source/` and is published to <https://internaldoc.freeinference.org/>.
+- **User-facing documentation** (API quickstart, models, IDE integrations)
+  lives at `docs/free_inference/docs/source/` and is published to
+  <https://doc.freeinference.org/>.
 
-```bash
-cd docs/free_inference
-# edit docs/source/*.md
-git add . && git commit -m "docs: ..."
-git push origin main
-```
+Both sites are deployed automatically by Cloudflare Pages on push to `main`.
+To update either site, edit the relevant Markdown/reStructuredText files and
+open a pull request against this repository; no submodule sync step is
+required. Cloudflare Pages builds both sites on each push and surfaces
+Sphinx errors as failed deployments.
 
-After `git pull`, run `git submodule update` to sync the submodule (or use
-`make setup-dev` which does this automatically).
+The repository still uses `git submodule` for the `llm-prober` benchmarking
+tool. After `git pull`, run `git submodule update --init --recursive` (or
+`make setup-dev`) to keep that submodule in sync.
 
 ## Troubleshooting
 

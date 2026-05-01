@@ -249,6 +249,7 @@ class DatabaseLogger:
                 CREATE TABLE IF NOT EXISTS api_keys (
                     id BIGSERIAL PRIMARY KEY,
                     key_hash TEXT NOT NULL UNIQUE,
+                    api_key_encrypted TEXT,
                     key_prefix TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     user_name TEXT,
@@ -300,6 +301,11 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS quota_monthly_cost_usd DECIMAL(10, 4)
             """)
 
+            await conn.execute("""
+                ALTER TABLE api_keys
+                ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT
+            """)
+
             # Add account_id column to link API keys to user accounts (self-registered users only)
             await conn.execute("""
                 ALTER TABLE api_keys
@@ -327,7 +333,7 @@ class DatabaseLogger:
                     user_name TEXT,
                     preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
                     role TEXT NOT NULL DEFAULT 'free'
-                        CHECK (role IN ('free', 'internal', 'admin')),
+                        CHECK (role IN ('free', 'pro', 'internal', 'admin')),
                     email_verified BOOLEAN DEFAULT FALSE,
                     status TEXT DEFAULT 'active'
                         CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
@@ -409,7 +415,7 @@ class DatabaseLogger:
                 ON users(created_at DESC) WHERE status = 'pending_approval'
             """)
 
-            # Add role column for permission levels (free/internal/admin)
+            # Add role column for permission levels (free/pro/internal/admin)
             await conn.execute("""
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS role TEXT
@@ -466,13 +472,43 @@ class DatabaseLogger:
                 invalid_role_rows = await conn.fetch("""
                     SELECT id, email, role
                     FROM users
-                    WHERE role NOT IN ('free', 'internal', 'admin')
+                    WHERE role NOT IN ('free', 'pro', 'internal', 'admin')
                     ORDER BY created_at DESC
                     LIMIT 10
                 """)
                 logger.error(
                     "Failed to rebuild users_role_check; transaction rolled back. "
                     "Sample invalid rows=%s error=%s",
+                    [dict(row) for row in invalid_role_rows],
+                    exc,
+                )
+                raise
+
+            # Expand the role CHECK constraint to include the "pro" tier.
+            # The old constraint allowed (free, internal, admin); the new set
+            # adds "pro" so the admin API can assign that role. The constraint
+            # must be dropped first because the new value is not in the old set.
+            try:
+                async with conn.transaction():
+                    await conn.execute("""
+                        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check
+                    """)
+                    await conn.execute("""
+                        ALTER TABLE users
+                        ADD CONSTRAINT users_role_check
+                        CHECK (role IN ('free', 'pro', 'internal', 'admin'))
+                    """)
+            except asyncpg.PostgresError as exc:
+                invalid_role_rows = await conn.fetch("""
+                    SELECT id, email, role
+                    FROM users
+                    WHERE role NOT IN ('free', 'pro', 'internal', 'admin')
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                """)
+                logger.error(
+                    "Failed to expand users_role_check to include pro; "
+                    "transaction rolled back. Sample invalid rows=%s error=%s",
                     [dict(row) for row in invalid_role_rows],
                     exc,
                 )
@@ -609,6 +645,77 @@ class DatabaseLogger:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_users_last_login_at
                 ON users(last_login_at DESC NULLS LAST)
+            """)
+
+            # Broadcast email tables
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS email_broadcasts (
+                    id TEXT PRIMARY KEY,
+                    subject TEXT NOT NULL,
+                    body_html TEXT NOT NULL,
+                    body_text TEXT NOT NULL,
+                    template_key TEXT,
+                    template_vars JSONB NOT NULL DEFAULT '{}',
+                    target_roles TEXT[] NOT NULL DEFAULT '{}',
+                    target_statuses TEXT[] NOT NULL DEFAULT '{}',
+                    recipient_count INT NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'scheduled'
+                        CHECK (status IN ('scheduled','sending','sent','failed','cancelled')),
+                    scheduled_at TIMESTAMPTZ,
+                    created_by TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    sent_at TIMESTAMPTZ
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_email_broadcasts_status_scheduled
+                ON email_broadcasts(status, scheduled_at)
+                WHERE status = 'scheduled'
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_email_broadcasts_created_at
+                ON email_broadcasts(created_at DESC)
+            """)
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS email_broadcast_recipients (
+                    id BIGSERIAL PRIMARY KEY,
+                    broadcast_id TEXT NOT NULL REFERENCES email_broadcasts(id),
+                    user_id TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','sent','failed')),
+                    error TEXT,
+                    sent_at TIMESTAMPTZ,
+                    UNIQUE (broadcast_id, user_id)
+                )
+            """)
+            # Backfill the unique constraint on existing tables (no-op if it
+            # already exists or if duplicates would prevent it).
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    BEGIN
+                        ALTER TABLE email_broadcast_recipients
+                            ADD CONSTRAINT email_broadcast_recipients_broadcast_user_uniq
+                            UNIQUE (broadcast_id, user_id);
+                    EXCEPTION
+                        WHEN duplicate_object THEN NULL;
+                        WHEN duplicate_table THEN NULL;
+                    END;
+                END $$;
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast
+                ON email_broadcast_recipients(broadcast_id)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_status
+                ON email_broadcast_recipients(broadcast_id, status)
             """)
 
     async def log_request(

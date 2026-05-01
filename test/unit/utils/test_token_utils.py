@@ -1,9 +1,6 @@
 """Tests for serving.utils.token_utils — cache token extraction."""
 
-import pytest
-
 from serving.utils.token_utils import extract_cache_tokens, normalize_usage
-
 
 # ---------------------------------------------------------------------------
 # extract_cache_tokens

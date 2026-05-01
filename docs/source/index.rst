@@ -4,7 +4,7 @@ HybridInference Developer Documentation
 Internal documentation for developing and operating the HybridInference platform.
 
 For **user-facing documentation** (API usage, IDE integration, available models),
-see the `FreeInference docs <https://harvardsys.github.io/free_inference/>`_.
+see the `FreeInference docs <https://doc.freeinference.org/>`_.
 
 .. toctree::
    :maxdepth: 2
@@ -14,6 +14,7 @@ see the `FreeInference docs <https://harvardsys.github.io/free_inference/>`_.
    developer/deployment
    developer/architecture
    developer/routing
+   developer/add-local-model
    developer/adding-models
    developer/configuration
    developer/database

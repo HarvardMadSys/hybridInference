@@ -340,3 +340,5 @@ storybook-static/
 .MEMORY/
 
 llm-prober-state.json
+server.log
+.worktrees/

@@ -103,13 +103,17 @@ async def test_log_request_persists_cost_and_usage(db_logger: DatabaseLogger):
     assert db_logger.pool is not None
     async with db_logger.pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT prompt_tokens, cache_read_tokens, cost_usd FROM api_logs WHERE request_id=$1",
+            """
+            SELECT prompt_tokens, cache_read_tokens, cache_write_tokens, cost_usd
+            FROM api_logs WHERE request_id=$1
+            """,
             "req-integration-1",
         )
 
     assert row is not None
     assert row["prompt_tokens"] == 1000
     assert row["cache_read_tokens"] == 500
+    assert row["cache_write_tokens"] == 250
     assert float(row["cost_usd"]) == pytest.approx(expected_cost or 0.0)
 
 

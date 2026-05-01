@@ -43,7 +43,7 @@ def test_models_endpoint(base_url: str) -> None:
 def test_non_streaming_completion(base_url: str) -> None:
     _ensure_up(base_url)
     models_payload = requests.get(f"{base_url}/v1/models", timeout=5).json().get("data", [])
-    model_id = models_payload[0]["id"] if models_payload else "llama-4-scout"
+    model_id = models_payload[0]["id"] if models_payload else "test-model-scout"
     payload = {
         "model": model_id,
         "messages": [
@@ -63,7 +63,7 @@ def test_non_streaming_completion(base_url: str) -> None:
 def test_streaming_completion(base_url: str) -> None:
     _ensure_up(base_url)
     models_payload = requests.get(f"{base_url}/v1/models", timeout=5).json().get("data", [])
-    model_id = models_payload[0]["id"] if models_payload else "llama-4-scout"
+    model_id = models_payload[0]["id"] if models_payload else "test-model-scout"
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": "Stream a short reply."}],

@@ -1,16 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
-import { updatePassword, changeEmail } from '@/lib/api/user';
+import { updatePassword, changeEmail, updateProfile } from '@/lib/api/user';
+import { profileUpdateSchema, ProfileUpdateData } from '@/lib/schemas/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
+import { useAuth } from '@/components/providers';
 
 const changePasswordSchema = z
   .object({
@@ -37,6 +39,11 @@ type ChangePasswordFormData = z.infer<typeof changePasswordSchema>;
 type ChangeEmailFormData = z.infer<typeof changeEmailSchema>;
 
 function SettingsContent() {
+  const { state, refreshUser } = useAuth();
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
+
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
@@ -52,6 +59,34 @@ function SettingsContent() {
   const emailForm = useForm<ChangeEmailFormData>({
     resolver: zodResolver(changeEmailSchema),
   });
+
+  const profileForm = useForm<ProfileUpdateData>({
+    resolver: zodResolver(profileUpdateSchema),
+    defaultValues: { userName: state.user?.user_name || '' },
+  });
+
+  useEffect(() => {
+    profileForm.reset({ userName: state.user?.user_name || '' });
+  }, [profileForm, state.user?.user_name]);
+
+  const onProfileSubmit = async (data: ProfileUpdateData) => {
+    setProfileLoading(true);
+    setProfileError(null);
+    setProfileSuccess(null);
+
+    try {
+      await updateProfile({ user_name: data.userName?.trim() });
+      await refreshUser();
+      setProfileSuccess('Username updated successfully.');
+      toast.success('Username updated successfully!');
+    } catch (err) {
+      const errorMsg = getErrorMessage(err);
+      setProfileError(errorMsg);
+      toast.error(errorMsg);
+    } finally {
+      setProfileLoading(false);
+    }
+  };
 
   const onPasswordSubmit = async (data: ChangePasswordFormData) => {
     setPasswordLoading(true);
@@ -114,6 +149,44 @@ function SettingsContent() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+        <Card>
+          <div className="flex flex-col h-full">
+            <div className="mb-2">
+              <h2 className="text-lg font-semibold">Change Username</h2>
+              <p className="text-sm text-gray-600">
+                This name is shown on your dashboard and admin request views.
+              </p>
+            </div>
+            <form onSubmit={profileForm.handleSubmit(onProfileSubmit)} className="space-y-4 flex-1">
+              {profileError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md text-sm">
+                  {profileError}
+                </div>
+              )}
+              {profileSuccess && (
+                <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-md text-sm">
+                  {profileSuccess}
+                </div>
+              )}
+
+              <InputField
+                label="Username"
+                type="text"
+                autoComplete="username"
+                hint="Use 2-50 characters."
+                error={profileForm.formState.errors.userName?.message}
+                {...profileForm.register('userName')}
+              />
+
+              <div className="mt-auto flex justify-end">
+                <Button type="submit" isLoading={profileLoading}>
+                  Update Username
+                </Button>
+              </div>
+            </form>
+          </div>
+        </Card>
+
         <Card>
           <div className="flex flex-col h-full">
             <div className="mb-2">

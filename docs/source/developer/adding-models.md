@@ -7,14 +7,14 @@ Reference PR for provider integration example: https://github.com/HarvardSys/hyb
 ## Overview
 
 There is a single guide for both needs. Depending on your case, follow one of:
-1) Use an existing provider adapter (vLLM, DeepSeek, Gemini, Llama, Zhipu) — only YAML + env changes.
+1) Use an existing provider adapter — only YAML + env changes.
 2) Integrate a new provider — add an adapter class + small registration changes, then YAML + env.
 
 ## Quick Start
 
 ### Adding a Model with an Existing Provider
 
-If the provider is already supported (vLLM, DeepSeek, Gemini, Llama, Zhipu), you only need to add configuration.
+If the provider is already supported, you only need to add configuration.
 
 > **Subscription providers** (Claude, Codex) use OAuth account pools instead of API keys. See `developer/configuration.md`, section `Subscription Adapters (Claude / Codex)`, for setup instructions. The rest of this guide covers API-key-based providers.
 
@@ -389,6 +389,26 @@ route:
     base_url: https://api.provider.com
     api_key: ${API_KEY}
 ```
+
+### Supported Adapter Kinds
+
+The `kind` field in each route entry selects the backend adapter. All kinds marked **OpenAI-compat** share the same `OpenAICompatAdapter` implementation with provider-specific profiles applied automatically.
+
+| Kind | Category | Notes |
+|------|----------|-------|
+| `openai_compat` | OpenAI-compat | Generic OpenAI-compatible endpoint; use when no specific kind fits |
+| `vllm` | OpenAI-compat | Local vLLM inference server |
+| `sglang` | OpenAI-compat | Local SGLang inference server |
+| `ollama` | OpenAI-compat | Local or remote Ollama server |
+| `deepseek` | OpenAI-compat | DeepSeek API (applies DeepSeek usage profile) |
+| `openai` | OpenAI-compat | Azure OpenAI (applies `api-key` header auth) |
+| `zhipu` | OpenAI-compat | Zhipu / Z.AI API (uses non-`/v1` chat path) |
+| `chutes` | OpenAI-compat | Chutes.ai hosted inference |
+| `featherless` | OpenAI-compat | Featherless.ai hosted inference |
+| `gemini` | Custom | Google Gemini API (message format translation) |
+| `claude` | Custom | Anthropic Claude API (direct API key, not subscription) |
+| `claude_sub` | Subscription | Claude via OAuth account pool — see §5 of configuration.md |
+| `codex_sub` | Subscription | Codex CLI via OAuth account pool — see §5 of configuration.md |
 
 ### Hybrid Routing & OFFLOAD
 

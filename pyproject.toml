@@ -7,13 +7,15 @@ name = "hybrid-inference"
 version = "0.1.0"
 description = "Hybrid inference server, provide local deployment and offline API to openrouter"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 license = { text = "Proprietary" }
 authors = [{ name = "HarvardSys" }]
 dependencies = [
     "aiohttp>=3.8.0",
+    "APScheduler>=3.10.4",
     "boto3>=1.28.0",
     "asyncpg>=0.28.0",
+    "beautifulsoup4>=4.12.0",
     "fastapi>=0.110.0",
     "google-genai>=1.33.0",
     "openai>=1.0.0",
@@ -30,6 +32,8 @@ dependencies = [
     "tabulate>=0.9.0",
     "uvicorn[standard]>=0.27.0",
     "uvloop>=0.19.0",
+    "httpx>=0.28.1",
+    "cryptography>=47.0.0",
 ]
 
 [tool.setuptools]
@@ -71,6 +75,12 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = [
+  "llm-prober",
+  "docs/free_inference",
+  "freeinference-harness",
+  ".venv",
+]
 
 [tool.ruff.lint]
 extend-select = [
@@ -130,4 +140,5 @@ dev = [
   "sphinx>=8.1.3",
   "myst-parser>=4.0.1",
   "sphinx-rtd-theme>=3.0.2",
+  "mypy>=1.20.2",
 ]

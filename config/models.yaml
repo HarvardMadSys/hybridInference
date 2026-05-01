@@ -5,92 +5,6 @@
 # from inside Docker. For bare-metal (non-Docker) development, replace with "localhost".
 
 models:
-  - id: llama-3.3-70b-instruct
-    name: Llama 3.3 70B Instruct
-    provider: llama
-    provider_model_id: "Llama-3.3-70B-Instruct"
-    base_url: ${LLAMA_BASE_URL}
-    api_key: ${LLAMA_API_KEY}
-    quantization: "bf16"
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    context_length: 131072
-    max_output_length: 8192
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
-    aliases: ["llama-3.3-70b-instruct"]
-    pricing:
-      prompt: "0"
-      completion: "0"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0"
-      input_cache_writes: "0"
-    route:
-      # Remote Llama API endpoint
-      - kind: llama
-        weight: 1.0
-        base_url: ${LLAMA_BASE_URL}
-        api_key: ${LLAMA_API_KEY}
-
-  - id: llama-4-scout
-    name: Llama 4 Scout
-    provider: llama
-    provider_model_id: "Llama-4-Scout-17B-16E-Instruct-FP8"
-    base_url: ${LLAMA_BASE_URL}
-    api_key: ${LLAMA_API_KEY}
-    quantization: "fp8"
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    context_length: 128000
-    max_output_length: 16384
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
-    aliases: ["/models/meta-llama_Llama-4-Scout-17B-16E"]
-    pricing:
-      prompt: "0"
-      completion: "0"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0"
-      input_cache_writes: "0"
-    route:
-      # Remote Llama API endpoint
-      - kind: llama
-        weight: 1.0
-        base_url: ${LLAMA_BASE_URL}
-        api_key: ${LLAMA_API_KEY}
-
-  - id: llama-4-maverick
-    name: Llama 4 Maverick
-    provider: llama
-    provider_model_id: "Llama-4-Maverick-17B-128E-Instruct-FP8"
-    base_url: ${LLAMA_BASE_URL}
-    api_key: ${LLAMA_API_KEY}
-    quantization: "fp8"
-    input_modalities: ["text", "image"]
-    output_modalities: ["text"]
-    context_length: 128000
-    max_output_length: 16384
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
-    aliases: ["Llama-4-Maverick-17B-128E"]
-    pricing:
-      prompt: "0"
-      completion: "0"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0"
-      input_cache_writes: "0"
-    route:
-      - kind: llama
-        weight: 1.0
-        base_url: ${LLAMA_BASE_URL}
-        api_key: ${LLAMA_API_KEY}
-
   # - id: deepseek-chat
   #   name: DeepSeek Chat
   #   provider: deepseek
@@ -145,124 +59,6 @@ models:
   #       api_key: ${GEMINI_API_KEY}
   #       provider_model_id: "gemini-2.5-flash"
 
-  # - id: gemini-2.5-flash-preview-09-2025
-  #   name: Gemini 2.5 Flash Preview (Sep 2025)
-  #   provider: gemini
-  #   provider_model_id: "gemini-2.5-flash-preview-09-2025"
-  #   base_url: https://generativelanguage.googleapis.com/v1beta
-  #   api_key: ${GEMINI_API_KEY}
-  #   quantization: "bf16"
-  #   input_modalities: ["text", "image"]
-  #   output_modalities: ["text"]
-  #   context_length: 1048576
-  #   max_output_length: 65536
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, top_k, max_tokens, stop]
-  #   pricing:
-  #     prompt: "0.15"  # Input tokens per 1M tokens (same as stable)
-  #     completion: "1.25"  # Output tokens (including thinking) per 1M tokens
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0.075"  # Cache hit tokens per 1M tokens (50% discount)
-  #     input_cache_writes: "1.0"  # Cache storage per 1M tokens per hour
-  #   route:
-  #     - kind: gemini
-  #       weight: 1.0
-  #       base_url: https://generativelanguage.googleapis.com/v1beta
-  #       api_key: ${GEMINI_API_KEY}
-  #       provider_model_id: "gemini-2.5-flash-preview-09-2025"
-
-  # Zhipu AI models (OpenAI-compatible)
-  # - id: glm-4.5
-  #   name: GLM-4.5
-  #   provider: zhipu
-  #   quantization: "fp8"
-  #   context_length: 128000
-  #   max_output_length: 96000
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop, stream]
-  #   input_modalities: ["text"]
-  #   output_modalities: ["text"]
-  #   pricing:
-  #     prompt: "0.6"  # Input tokens per 1M tokens
-  #     completion: "2.2"  # Output tokens per 1M tokens
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0.11"
-  #     input_cache_writes: "0"  # Cache storage is limited time free
-  #   route:
-  #     - kind: zhipu  # Using dedicated Zhipu adapter
-  #       weight: 1.0
-  #       base_url: https://api.z.ai/api/coding/paas/v4/
-  #       api_key: ${ZAI_API_KEY}
-  #       provider_model_id: "glm-4.5"
-
-  # - id: glm-4.5-air
-  #   name: GLM-4.5-Air
-  #   provider: zhipu
-  #   quantization: "fp8"
-  #   context_length: 128000
-  #   max_output_length: 96000
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop, stream]
-  #   input_modalities: ["text"]
-  #   output_modalities: ["text"]
-  #   pricing:
-  #     prompt: "0.2"  # Input tokens per 1M tokens
-  #     completion: "1.1"  # Output tokens per 1M tokens
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0.03"
-  #     input_cache_writes: "0"  # Cache storage is limited time free
-  #   route:
-  #     - kind: zhipu  # Using dedicated Zhipu adapter
-  #       weight: 1.0
-  #       base_url: https://api.z.ai/api/coding/paas/v4/
-  #       api_key: ${ZAI_API_KEY}
-  #       provider_model_id: "glm-4.5-air"
-
-  # - id: glm-4.6
-  #   name: GLM-4.6
-  #   provider: zhipu
-  #   quantization: "fp8"
-  #   context_length: 200000
-  #   max_output_length: 128000
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
-  #   input_modalities: ["text"]
-  #   output_modalities: ["text"]
-  #   aliases: ["custom-glm-4.6", "freeinference-glm-4.6"]
-  #   pricing:
-  #     prompt: "0.6"  # Input tokens per 1M tokens
-  #     completion: "2.2"  # Output tokens per 1M tokens
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0.11"
-  #     input_cache_writes: "0"
-  #   route:
-  #     # Local sglang endpoint
-  #     # - kind: sglang
-  #     #   weight: 1.0
-  #     #   base_url: "http://localhost:12003"
-  #     #   api_key: "EMPTY"
-  #     #   provider_model_id: "/n/netscratch/juncheng_lab/yiyuliu/llm_models/GLM-4.6-FP8"
-  #     #   pricing:
-  #     #     prompt: "0"
-  #     #     completion: "0"
-  #     # Remote Zhipu API endpoint
-  #     - kind: zhipu
-  #       weight: 1.0
-  #       base_url: https://api.z.ai/api/coding/paas/v4/
-  #       api_key: ${ZAI_API_KEY}
-  #       provider_model_id: "glm-4.6"
-  #       pricing:
-  #         prompt: "0.6"
-  #         completion: "2.2"
-
   - id: glm-4.7
     name: GLM-4.7
     provider: zhipu
@@ -275,6 +71,7 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-4.7"]
+    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
       prompt: "0.6"
       completion: "2.2"
@@ -294,71 +91,62 @@ models:
         base_url: "https://ollama.com/v1"
         api_key: ${OLLAMA_API_KEY}
         provider_model_id: "glm-4.7"
-        pricing:
-          prompt: "0"
-          completion: "0"
       # Chutes fallback
       - kind: chutes
         weight: 0.01
         base_url: ${CHUTES_BASE_URL}
         api_key: ${CHUTES_API_KEY}
         provider_model_id: "zai-org/GLM-4.7-FP8"
-        pricing:
-          prompt: "0"
-          completion: "0"
       # Featherless fallback
       - kind: featherless
         weight: 0
         base_url: ${FEATHERLESS_BASE_URL}
         api_key: ${FEATHERLESS_API_KEY}
         provider_model_id: "zai-org/GLM-4.7"
-        pricing:
-          prompt: "0"
-          completion: "0"
 
-  - id: glm-4.7-flash
-    name: GLM-4.7-Flash
-    provider: zhipu
-    quantization: "q8"
-    context_length: 200000
-    max_output_length: 128000
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    aliases: ["freeinference-glm-4.7-flash"]
-    pricing:
-      prompt: "0.07"
-      completion: "0.4"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0.01"
-      input_cache_writes: "0"
-    route:
-      # Local self-hosted endpoint (AWQ 4-bit via vLLM)
-      - kind: openai_compat
-        weight: 1.0
-        base_url: "http://host.docker.internal:8004/v1"
-        provider_model_id: "glm-4.7-flash"
-        pricing:
-          prompt: "0"
-          completion: "0"
-      # Remote Zhipu API (disabled, set weight > 0 to re-enable)
-      - kind: zhipu
-        weight: 0
-        base_url: https://api.z.ai/api/coding/paas/v4/
-        api_key: ${ZAI_API_KEY}
-        provider_model_id: "glm-4.7-flash"
-      # Featherless fallback
-      - kind: featherless
-        weight: 0
-        base_url: ${FEATHERLESS_BASE_URL}
-        api_key: ${FEATHERLESS_API_KEY}
-        provider_model_id: "zai-org/GLM-4.7-Flash"
-        pricing:
-          prompt: "0"
-          completion: "0"
+  # - id: glm-4.7-flash
+  #   name: GLM-4.7-Flash
+  #   provider: zhipu
+  #   quantization: "q8"
+  #   context_length: 200000
+  #   max_output_length: 128000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+  #   input_modalities: ["text"]
+  #   output_modalities: ["text"]
+  #   aliases: ["freeinference-glm-4.7-flash"]
+  #   pricing:
+  #     prompt: "0.07"
+  #     completion: "0.4"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.01"
+  #     input_cache_writes: "0"
+  #   route:
+  #     # Local self-hosted endpoint (AWQ 4-bit via vLLM)
+  #     - kind: openai_compat
+  #       weight: 1.0
+  #       base_url: "http://host.docker.internal:8004/v1"
+  #       provider_model_id: "glm-4.7-flash"
+  #       pricing:
+  #         prompt: "0"
+  #         completion: "0"
+  #     # Remote Zhipu API (disabled, set weight > 0 to re-enable)
+  #     - kind: zhipu
+  #       weight: 0
+  #       base_url: https://api.z.ai/api/coding/paas/v4/
+  #       api_key: ${ZAI_API_KEY}
+  #       provider_model_id: "glm-4.7-flash"
+  #     # Featherless fallback
+  #     - kind: featherless
+  #       weight: 0
+  #       base_url: ${FEATHERLESS_BASE_URL}
+  #       api_key: ${FEATHERLESS_API_KEY}
+  #       provider_model_id: "zai-org/GLM-4.7-Flash"
+  #       pricing:
+  #         prompt: "0"
+  #         completion: "0"
 
   - id: glm-5
     name: GLM-5
@@ -372,6 +160,7 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5"]
+    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
       prompt: "1.0"
       completion: "3.2"
@@ -391,27 +180,18 @@ models:
         base_url: "https://ollama.com/v1"
         api_key: ${OLLAMA_API_KEY}
         provider_model_id: "glm-5"
-        pricing:
-          prompt: "0"
-          completion: "0"
       # Chutes fallback
       - kind: chutes
         weight: 0.01
         base_url: ${CHUTES_BASE_URL}
         api_key: ${CHUTES_API_KEY}
         provider_model_id: "zai-org/GLM-5-TEE"
-        pricing:
-          prompt: "0"
-          completion: "0"
       # Featherless fallback
       - kind: featherless
         weight: 0
         base_url: ${FEATHERLESS_BASE_URL}
         api_key: ${FEATHERLESS_API_KEY}
         provider_model_id: "zai-org/GLM-5"
-        pricing:
-          prompt: "0"
-          completion: "0"
 
   - id: glm-5.1
     name: GLM-5.1
@@ -425,12 +205,13 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5.1"]
+    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
-      prompt: "1.0"
-      completion: "3.2"
+      prompt: "1.4"
+      completion: "4.4"
       image: "0"
       request: "0"
-      input_cache_reads: "0.2"
+      input_cache_reads: "0.26"
       input_cache_writes: "0"
     route:
       - kind: zhipu
@@ -451,12 +232,13 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5-turbo"]
+    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
-      prompt: "0.5"
-      completion: "1.6"
+      prompt: "1.2"
+      completion: "4.0"
       image: "0"
       request: "0"
-      input_cache_reads: "0.1"
+      input_cache_reads: "0.24"
       input_cache_writes: "0"
     route:
       - kind: zhipu
@@ -465,94 +247,7 @@ models:
         api_key: ${ZAI_API_KEY}
         provider_model_id: "glm-5-turbo"
 
-  # - id: custom-claude-4.1-opus # Cursor-friendly aliases
-  #   name: Claude Opus 4.1
-  #   provider: claude
-  #   provider_model_id: "claude-opus-4.1"
-  #   base_url: ${CLAUDE_BASE_URL}
-  #   api_key: ${CLAUDE_OPUS_KEY}
-  #   quantization: "fp16"
-  #   input_modalities: ["text", "image"]
-  #   output_modalities: ["text"]
-  #   context_length: 200000
-  #   max_output_length: 32000
-  #   supports_tools: true
-  #   supports_structured_output: false
-  #   supported_params: [temperature, top_p, top_k, max_tokens, stop]
-  #   aliases: ["claude-opus-4.1"]
-  #   pricing:
-  #     # Vertex AI pricing
-  #     prompt: "15.0"              # Input tokens per 1M
-  #     completion: "75.0"          # Output tokens per 1M
-  #     request: "0"
-  #     input_cache_reads: "1.5"    # Cache hit tokens per 1M (90% discount vs $15)
-  #     input_cache_writes: "18.75" # Cache write tokens per 1M (5m TTL only on Vertex AI)
-  #   route:
-  #     - kind: claude
-  #       weight: 1.0
-  #       base_url: ${CLAUDE_BASE_URL}
-  #       api_key: ${CLAUDE_OPUS_KEY}
-  #       provider_model_id: "claude-opus-4.1"
-
-  # - id: custom-4.5-sonnet
-  #   name: Claude 4.5 Sonnet
-  #   provider: claude
-  #   provider_model_id: "claude-4.5-sonnet"
-  #   base_url: ${CLAUDE_BASE_URL}
-  #   api_key: ${CLAUDE_SONNET_KEY}
-  #   quantization: "fp16"
-  #   input_modalities: ["text", "image"]
-  #   output_modalities: ["text"]
-  #   context_length: 200000
-  #   max_output_length: 64000
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, top_k, max_tokens, stop]
-  #   aliases: ["claude-4.5-sonnet"]
-  #   pricing:
-  #     prompt: "3"
-  #     completion: "15"
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0.3"
-  #     input_cache_writes: "3.75"
-  #   route:
-  #     - kind: claude
-  #       weight: 1.0
-  #       base_url: ${CLAUDE_BASE_URL}
-  #       api_key: ${CLAUDE_SONNET_KEY}
-  #       provider_model_id: "claude-4.5-sonnet"
-
-  # - id: custom-gpt-5 # Cursor-friendly aliases
-  #   name: GPT-5
-  #   provider: openai # Azure OpenAI
-  #   provider_model_id: "gpt-5"
-  #   base_url: ${OPENAI_BASE_URL}
-  #   api_key: ${OPENAI_API_KEY}
-  #   quantization: "fp16"
-  #   input_modalities: ["text", "image"]
-  #   output_modalities: ["text"]
-  #   context_length: 400000
-  #   max_output_length: 128000
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop, frequency_penalty, presence_penalty, seed]
-  #   aliases: ["gpt-5", "gpt5", "openai/gpt-5"]
-  #   pricing:
-  #     prompt: "1.25"           # Input per 1M tokens
-  #     completion: "10"          # Output per 1M tokens
-  #     request: "0"
-  #     input_cache_reads: "0.125"  # Cached input per 1M tokens
-  #     input_cache_writes: "0"    # No explicit write cost
-  #   route:
-  #     - kind: openai
-  #       weight: 1.0
-  #       base_url: ${OPENAI_BASE_URL}114
-  #       api_key: ${OPENAI_API_KEY}
-  #       provider_model_id: "gpt-5"
-
   # ===== External Provider =====
-
   # - id: deepseek-r1
   #   name: DeepSeek R1 (via Chutes)
   #   provider: chutes
@@ -595,55 +290,18 @@ models:
   #         prompt: "0"
   #         completion: "0"
 
-  - id: qwen3.5-27b
-    name: Qwen3.5 27B
-    provider: qwen
-    quantization: "unknown"
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    context_length: 65536
-    max_output_length: 8192
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop]
-    aliases: ["Qwen3.5-27B"]
-    pricing:
-      prompt: "0"
-      completion: "0"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0"
-      input_cache_writes: "0"
-    route:
-      - kind: sglang
-        weight: 1.0
-        base_url: "http://host.docker.internal:8007"
-        provider_model_id: "Qwen3.5-27B"
-        pricing:
-          prompt: "0"
-          completion: "0"
-      # Featherless fallback
-      - kind: featherless
-        weight: 0
-        base_url: ${FEATHERLESS_BASE_URL}
-        api_key: ${FEATHERLESS_API_KEY}
-        provider_model_id: "Qwen/Qwen3.5-27B"
-        pricing:
-          prompt: "0"
-          completion: "0"
-
-  # - id: qwen3-coder-30b
-  #   name: Qwen3 Coder 30B A3B Instruct
+  # - id: qwen3.5-27b
+  #   name: Qwen3.5 27B
   #   provider: qwen
-  #   quantization: "bf16"
+  #   quantization: "unknown"
   #   input_modalities: ["text"]
   #   output_modalities: ["text"]
-  #   context_length: 32768
+  #   context_length: 65536
   #   max_output_length: 8192
   #   supports_tools: true
   #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, top_k, max_tokens, stop, frequency_penalty, presence_penalty, seed]
-  #   aliases: ["Qwen3-Coder-30B-A3B-Instruct"]
+  #   supported_params: [temperature, top_p, max_tokens, stop]
+  #   aliases: ["Qwen3.5-27B"]
   #   pricing:
   #     prompt: "0"
   #     completion: "0"
@@ -652,24 +310,74 @@ models:
   #     input_cache_reads: "0"
   #     input_cache_writes: "0"
   #   route:
-  #     # Local sglang endpoint
   #     - kind: sglang
   #       weight: 1.0
-  #       base_url: "http://host.docker.internal:8003"
-  #       api_key: "EMPTY"
-  #       provider_model_id: "Qwen3-Coder-30B-A3B-Instruct"
+  #       base_url: "http://host.docker.internal:8007"
+  #       provider_model_id: "Qwen3.5-27B"
   #       pricing:
   #         prompt: "0"
   #         completion: "0"
-  #     # Remote Chutes API endpoint
-  #     - kind: chutes
-  #       weight: 1.0
-  #       base_url: ${CHUTES_BASE_URL}
-  #       api_key: ${CHUTES_API_KEY}
-  #       provider_model_id: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+  #     # Featherless fallback
+  #     - kind: featherless
+  #       weight: 0
+  #       base_url: ${FEATHERLESS_BASE_URL}
+  #       api_key: ${FEATHERLESS_API_KEY}
+  #       provider_model_id: "Qwen/Qwen3.5-27B"
   #       pricing:
   #         prompt: "0"
   #         completion: "0"
+
+  - id: qwen3.6-27b
+    name: Qwen3.6 27B # (Ollama 8001)
+    provider: ollama
+    quantization: "unknown"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 65536
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    aliases: ["qwen3.6:27b"]
+    # Self-hosted: no third-party per-token bill (log cost as zero).
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: ollama
+        weight: 1.0
+        base_url: "http://host.docker.internal:8001/v1"
+        provider_model_id: "qwen3.6:27b"
+
+  - id: qwen3.6-35b
+    name: Qwen3.6 35B # (Ollama 8001)
+    provider: ollama
+    quantization: "unknown"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 65536
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    aliases: ["qwen3.6:35b"]
+    # Self-hosted: no third-party per-token bill (log cost as zero).
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: ollama
+        weight: 1.0
+        base_url: "http://host.docker.internal:8001/v1"
+        provider_model_id: "qwen3.6:35b"
 
   - id: minimax-m2.7
     name: MiniMax M2.7
@@ -683,13 +391,14 @@ models:
     supports_structured_output: true
     supported_params: [temperature, top_p, top_k, max_tokens, stop, seed, stream]
     aliases: ["MiniMax-M2.7"]
+    # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
     pricing:
-      prompt: "0"
-      completion: "0"
+      prompt: "0.3"
+      completion: "1.2"
       image: "0"
       request: "0"
-      input_cache_reads: "0"
-      input_cache_writes: "0"
+      input_cache_reads: "0.06"
+      input_cache_writes: "0.375"
     route:
       # Remote MiniMax API endpoint
       - kind: openai_compat
@@ -697,38 +406,32 @@ models:
         base_url: "https://api.minimax.io/v1"
         api_key: ${MINIMAX_API_KEY}
         provider_model_id: "MiniMax-M2.7"
-        pricing:
-          prompt: "0"
-          completion: "0"
       # Ollama Cloud fallback
       - kind: ollama
         weight: 1.0
         base_url: "https://ollama.com/v1"
         api_key: ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.7"
-        pricing:
-          prompt: "0"
-          completion: "0"
 
   # ===== Embedding Models =====
 
-  - id: bge-m3
-    name: BGE-M3
-    type: embedding
-    provider: sglang
-    quantization: "fp16"
-    input_modalities: ["text"]
-    output_modalities: ["embedding"]
-    context_length: 8192
-    max_output_length: 0
-    pricing:
-      prompt: "0"
-      completion: "0"
-    route:
-      - kind: sglang
-        weight: 1.0
-        base_url: "http://host.docker.internal:8005"
-        provider_model_id: "bge-m3"
+  # - id: bge-m3
+  #   name: BGE-M3
+  #   type: embedding
+  #   provider: sglang
+  #   quantization: "fp16"
+  #   input_modalities: ["text"]
+  #   output_modalities: ["embedding"]
+  #   context_length: 8192
+  #   max_output_length: 0
+  #   pricing:
+  #     prompt: "0"
+  #     completion: "0"
+  #   route:
+  #     - kind: sglang
+  #       weight: 1.0
+  #       base_url: "http://host.docker.internal:8005"
+  #       provider_model_id: "bge-m3"
 
   - id: minimax-m2.5
     name: MiniMax M2.5
@@ -742,6 +445,7 @@ models:
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
     aliases: ["MiniMax-M2.5"]
+    # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
     pricing:
       prompt: "0.3"
       completion: "1.2"
@@ -762,27 +466,18 @@ models:
         base_url: "https://ollama.com/v1"
         api_key: ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.5"
-        pricing:
-          prompt: "0"
-          completion: "0"
       # Chutes fallback
       - kind: chutes
         weight: 0.01
         base_url: ${CHUTES_BASE_URL}
         api_key: ${CHUTES_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
-        pricing:
-          prompt: "0"
-          completion: "0"
       # Featherless fallback
       - kind: featherless
         weight: 0
         base_url: ${FEATHERLESS_BASE_URL}
         api_key: ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
-        pricing:
-          prompt: "0"
-          completion: "0"
 
   # --- Codex Subscription Models (uncomment when accounts are configured) ---
   # Requires: var/data/codex_accounts.json with valid OAuth credentials.
@@ -805,147 +500,30 @@ models:
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, max_tokens, stop, tools, tool_choice, reasoning_effort]
+    # OpenAI API https://openai.com/api/pricing/ (GPT-5.4)
     pricing:
       prompt: "2.50"
       completion: "15.00"
+      image: "0"
+      request: "0"
       input_cache_reads: "0.25"
+      input_cache_writes: "0"
     route:
       - kind: codex_sub
         weight: 1.0
         base_url: https://chatgpt.com/backend-api/codex
 
-  - id: gpt-5.3-codex
-    name: GPT-5.3 Codex
-    provider: codex_sub
-    required_role: internal
-    provider_model_id: "gpt-5.3-codex"
-    base_url: https://chatgpt.com/backend-api/codex
-    quantization: "none"
-    input_modalities: ["text", "image"]
-    output_modalities: ["text"]
-    context_length: 400000
-    max_output_length: 128000
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, max_tokens, stop, tools, tool_choice, reasoning_effort]
-    pricing:
-      prompt: "1.75"
-      completion: "14.00"
-      input_cache_reads: "0.175"
-    route:
-      - kind: codex_sub
-        weight: 1.0
-        base_url: https://chatgpt.com/backend-api/codex
-
-  - id: gpt-5.2-codex
-    name: GPT-5.2 Codex
-    provider: codex_sub
-    required_role: internal
-    provider_model_id: "gpt-5.2-codex"
-    base_url: https://chatgpt.com/backend-api/codex
-    quantization: "none"
-    input_modalities: ["text", "image"]
-    output_modalities: ["text"]
-    context_length: 400000
-    max_output_length: 128000
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, max_tokens, stop, tools, tool_choice, reasoning_effort]
-    pricing:
-      prompt: "1.75"
-      completion: "14.00"
-      input_cache_reads: "0.175"
-    route:
-      - kind: codex_sub
-        weight: 1.0
-        base_url: https://chatgpt.com/backend-api/codex
-
-  - id: gpt-5.2
-    name: GPT-5.2
-    provider: codex_sub
-    required_role: internal
-    provider_model_id: "gpt-5.2"
-    base_url: https://chatgpt.com/backend-api/codex
-    quantization: "none"
-    input_modalities: ["text", "image"]
-    output_modalities: ["text"]
-    context_length: 400000
-    max_output_length: 128000
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, max_tokens, stop, tools, tool_choice, reasoning_effort]
-    pricing:
-      prompt: "1.75"
-      completion: "14.00"
-      input_cache_reads: "0.175"
-    route:
-      - kind: codex_sub
-        weight: 1.0
-        base_url: https://chatgpt.com/backend-api/codex
-
-  - id: gpt-5.1-codex
-    name: GPT-5.1 Codex
-    provider: codex_sub
-    required_role: internal
-    provider_model_id: "gpt-5.1-codex"
-    base_url: https://chatgpt.com/backend-api/codex
-    quantization: "none"
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    context_length: 192000
-    max_output_length: 16384
-    supports_tools: true
-    supported_params: [temperature, max_tokens, stop, tools, tool_choice, reasoning_effort]
-    pricing:
-      prompt: "1.25"
-      completion: "10.00"
-    route:
-      - kind: codex_sub
-        weight: 1.0
-        base_url: https://chatgpt.com/backend-api/codex
-  #
-  # - id: gpt-5-codex
-  #   name: GPT-5 Codex
-  #   provider: codex_sub
-  #   provider_model_id: "gpt-5-codex"
-  #   base_url: https://chatgpt.com/backend-api/codex
-  #   context_length: 192000
-  #   max_output_length: 16384
-  #   supports_tools: true
-  #   supported_params: [temperature, max_tokens, stop, tools, tool_choice, reasoning_effort]
-  #   pricing:
-  #     prompt: "1.25"
-  #     completion: "10.00"
-  #   route:
-  #     - kind: codex_sub
-  #       weight: 1.0
-  #       base_url: https://chatgpt.com/backend-api/codex
-  #
-  # - id: o4-mini-codex
-  #   name: o4-mini Codex
-  #   provider: codex_sub
-  #   provider_model_id: "o4-mini-codex"
-  #   base_url: https://chatgpt.com/backend-api/codex
-  #   context_length: 192000
-  #   max_output_length: 16384
-  #   supports_tools: true
-  #   supported_params: [temperature, max_tokens, stop, tools, tool_choice, reasoning_effort]
-  #   pricing:
-  #     prompt: "0.40"
-  #     completion: "1.20"
-  #   route:
-  #     - kind: codex_sub
-  #       weight: 1.0
-  #       base_url: https://chatgpt.com/backend-api/codex
-  #
-  # ── Claude Subscription ────────────────────────────────────
+  # ── Anthropic via local cli-proxy ──────────────────────────
+  # These models are upstream Anthropic Claude models served through the local
+  # cli-proxy-api (OpenAI-compatible). The route's `kind` is what registers as
+  # the provider, so the top-level `provider` is set to `openai_compat` to
+  # match — `anthropic` would be cosmetic only and disagree with /v1/models.
   #
   - id: claude-sonnet-4.6
     name: Claude Sonnet 4.6
-    provider: claude_sub
+    provider: openai_compat
     required_role: internal
     provider_model_id: "claude-sonnet-4-6"
-    base_url: https://api.anthropic.com
     context_length: 200000
     max_output_length: 64000
     supports_tools: true
@@ -953,20 +531,27 @@ models:
     input_modalities: [text, image]
     output_modalities: [text]
     quantization: "none"
+    # Anthropic API https://docs.anthropic.com/en/about-claude/pricing
     pricing:
       prompt: "3.00"
       completion: "15.00"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.30"
+      input_cache_writes: "3.75"
     route:
-      - kind: claude_sub
+      # Local cli-proxy-api (OpenAI-compatible) fronting Anthropic credentials
+      - kind: openai_compat
         weight: 1.0
-        base_url: https://api.anthropic.com
+        base_url: "http://host.docker.internal:8317/v1"
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "claude-sonnet-4-6"
   #
   - id: claude-opus-4.6
     name: Claude Opus 4.6
-    provider: claude_sub
+    provider: openai_compat
     required_role: internal
     provider_model_id: "claude-opus-4-6"
-    base_url: https://api.anthropic.com
     context_length: 200000
     max_output_length: 128000
     supports_tools: true
@@ -974,10 +559,46 @@ models:
     input_modalities: [text, image]
     output_modalities: [text]
     quantization: "none"
+    # Anthropic API https://docs.anthropic.com/en/about-claude/pricing
     pricing:
       prompt: "5.00"
       completion: "25.00"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.50"
+      input_cache_writes: "6.25"
     route:
-      - kind: claude_sub
+      # Local cli-proxy-api (OpenAI-compatible) fronting Anthropic credentials
+      - kind: openai_compat
         weight: 1.0
-        base_url: https://api.anthropic.com
+        base_url: "http://host.docker.internal:8317/v1"
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "claude-opus-4-6"
+  #
+  - id: claude-opus-4.7
+    name: Claude Opus 4.7
+    provider: openai_compat
+    required_role: internal
+    provider_model_id: "claude-opus-4-7"
+    context_length: 200000
+    max_output_length: 128000
+    supports_tools: true
+    supported_params: [temperature, max_tokens, stop, tools, tool_choice, top_p]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    quantization: "none"
+    # Pricing mirrors claude-opus-4.6 until official 4.7 numbers are published.
+    pricing:
+      prompt: "5.00"
+      completion: "25.00"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.50"
+      input_cache_writes: "6.25"
+    route:
+      # Local cli-proxy-api (OpenAI-compatible) fronting Anthropic credentials
+      - kind: openai_compat
+        weight: 1.0
+        base_url: "http://host.docker.internal:8317/v1"
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "claude-opus-4-7"

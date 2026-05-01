@@ -11,12 +11,12 @@
 # ============================================================================
 local_servers:
   llama_3_2_3b:
-    name: "llama-3.2-3b-local"
+    name: "qwen-2.5-3b-local"
     url: "http://localhost:8001"
     port: 8001
     enabled: true
     timeout: 30
-    expected_model_id: "/n/netscratch/juncheng_lab/yiyuliu/llm_models/Llama-3.2-3B-Instruct"
+    expected_model_id: "/n/netscratch/juncheng_lab/yiyuliu/llm_models/Qwen-2.5-3B-Instruct"
     test_prompts:
       simple: "Explain what is machine learning in simple terms."
       streaming: "Tell me a short story about a robot."
@@ -41,8 +41,8 @@ local_servers:
 # ============================================================================
 models:
   # Phase 2: Local-only models
-  - id: llama-3.2-3b-local-test
-    name: Llama 3.2 3B (Local E2E Test)
+  - id: qwen-2.5-3b-local-test
+    name: Test Model (Local E2E Test)
     phase: [2]
     provider: openai_compat
     quantization: "bf16"
@@ -60,7 +60,7 @@ models:
       - kind: openai_compat
         weight: 1.0
         base_url: http://localhost:8001/v1
-        provider_model_id: "/n/netscratch/juncheng_lab/yiyuliu/llm_models/Llama-3.2-3B-Instruct"
+        provider_model_id: "/n/netscratch/juncheng_lab/yiyuliu/llm_models/Qwen-2.5-3B-Instruct"
 
   - id: qwen3-coder-30b
     name: Qwen3 Coder 30B (Local E2E Test)

@@ -84,7 +84,7 @@ class TestRequestLogMiddleware:
         with caplog.at_level(logging.DEBUG, logger="serving.servers.middleware.request_log"):
             await _get(app_with_middleware, path)
 
-        records = [r for r in caplog.records if r.message == "http_request"]
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
         assert records, f"Expected an http_request log record for {path}"
         assert all(r.levelno == logging.DEBUG for r in records)
 
@@ -94,7 +94,7 @@ class TestRequestLogMiddleware:
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
             await _get(app_with_middleware, path)
 
-        records = [r for r in caplog.records if r.message == "http_request"]
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
         assert not records, f"Expected no http_request log at INFO level for {path}"
 
     @pytest.mark.asyncio
@@ -102,6 +102,6 @@ class TestRequestLogMiddleware:
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
             await _get(app_with_middleware, "/v1/chat/completions")
 
-        records = [r for r in caplog.records if r.message == "http_request"]
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
         assert records, "Expected an http_request log record for /v1/chat/completions"
         assert all(r.levelno == logging.INFO for r in records)

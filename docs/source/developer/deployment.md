@@ -72,7 +72,6 @@ the full list with comments. Key variables:
 | `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Yes | PostgreSQL credentials |
 | `JWT_SECRET_KEY` | Yes | JWT signing key (generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`) |
 | `API_KEY_SECRET` | Yes | HMAC key for API key hashing |
-| `LLAMA_API_KEY`, `ZAI_API_KEY`, etc. | No | LLM provider API keys (only needed for providers you enable) |
 | `GRAFANA_USER`, `GRAFANA_PASSWORD` | No | Grafana admin credentials (default: admin/admin) |
 
 ### Local GPU Endpoints

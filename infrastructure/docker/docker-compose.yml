@@ -28,6 +28,7 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"     # always use container-internal port; DB_PORT in .env controls host mapping only
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-1}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -48,6 +49,8 @@ services:
       args:
         NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://freeinference.org}
         NEXT_PUBLIC_DEPLOY_TARGET: ${NEXT_PUBLIC_DEPLOY_TARGET:-production}
+        NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
+        NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
     container_name: hybridinference-frontend
     restart: unless-stopped
     environment:
@@ -175,27 +178,6 @@ services:
     networks:
       - hybridinference
 
-  llm-prober:
-    build:
-      context: ../..
-      dockerfile: infrastructure/docker/Dockerfile.llm-prober
-    container_name: hybridinference-llm-prober
-    restart: unless-stopped
-    env_file: ../../.env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ../llm-prober/config.docker.yaml:/app/config.yml:ro
-      - ../../config/models.yaml:/app/models.yaml:ro
-      - ../llm-prober/state:/app/state
-    ports:
-      - "127.0.0.1:9101:9101"
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks:
-      - hybridinference
-
   grafana:
     image: grafana/grafana:12.1.1
     container_name: hybridinference-grafana
@@ -221,17 +203,22 @@ services:
 
 volumes:
   postgres_data:
-    driver: local
+    external: true
+    name: hybridinference_postgres_data
   pgadmin_data:
     driver: local
   prometheus_data:
-    driver: local
+    external: true
+    name: hybridinference_prometheus_data
   alertmanager_data:
-    driver: local
+    external: true
+    name: hybridinference_alertmanager_data
   alert_log_data:
-    driver: local
+    external: true
+    name: hybridinference_alert_log_data
   grafana_data:
-    driver: local
+    external: true
+    name: hybridinference_grafana_data
 
 networks:
   hybridinference:

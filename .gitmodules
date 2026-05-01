@@ -1,6 +1,3 @@
-[submodule "docs/free_inference"]
-	path = docs/free_inference
-	url = https://github.com/HarvardMadSys/free_inference.git
 [submodule "llm-prober"]
 	path = llm-prober
-	url = ../freeinference-prober.git
+	url = git@github.com:HarvardMadSys/freeinference-prober.git

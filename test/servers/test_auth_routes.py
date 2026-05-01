@@ -4,6 +4,7 @@ Supports both PostgreSQL and Cloudflare D1 backends.
 Run with: make test-db
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -71,7 +72,9 @@ class TestSignup:
     """Test user signup endpoint."""
 
     @pytest.mark.asyncio
-    async def test_signup_success(self, auth_app_client: AsyncClient, mock_email_service):
+    async def test_signup_success(
+        self, auth_app_client: AsyncClient, mock_email_service, auth_db_logger
+    ):
         """Test successful user signup."""
         signup_data = create_signup_request()
 
@@ -81,6 +84,25 @@ class TestSignup:
         data = response.json()
         assert data["email"] == signup_data["email"].lower()
         assert "password" not in data
+
+        async with auth_db_logger.pool.acquire() as conn:
+            audit_row = await conn.fetchrow(
+                """
+                SELECT action, target_user_id, details, success
+                FROM admin_audit_log
+                WHERE target_user_id = $1 AND action = 'create_user'
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                data["user_id"],
+            )
+        assert audit_row is not None
+        assert audit_row["success"] is True
+        details = audit_row["details"]
+        if isinstance(details, str):
+            details = json.loads(details)
+        assert details["email"] == signup_data["email"].lower()
+        assert "password" not in details
 
     @pytest.mark.asyncio
     async def test_signup_duplicate_email(
@@ -127,6 +149,25 @@ class TestSignup:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
+    async def test_signup_missing_username(self, auth_app_client: AsyncClient):
+        """Test signup without username fails."""
+        signup_data = create_signup_request()
+        signup_data.pop("user_name")
+
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_signup_blank_username(self, auth_app_client: AsyncClient):
+        """Test signup with blank username fails."""
+        signup_data = create_signup_request(user_name="  ")
+
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
     async def test_signup_missing_fields(self, auth_app_client: AsyncClient):
         """Test signup with missing fields fails."""
         response = await auth_app_client.post(
@@ -135,6 +176,100 @@ class TestSignup:
         )
 
         assert response.status_code == 422
+
+
+class TestSignupAbuseProtection:
+    """Rate limit, captcha, and email-domain blocklist on /auth/signup."""
+
+    @pytest.mark.asyncio
+    async def test_signup_rate_limited_per_hour(
+        self, auth_app_client: AsyncClient, mock_email_service
+    ):
+        for _ in range(5):
+            response = await auth_app_client.post("/auth/signup", json=create_signup_request())
+            assert response.status_code in (201, 409)
+
+        response = await auth_app_client.post("/auth/signup", json=create_signup_request())
+        assert response.status_code == 429
+        assert "Retry-After" in response.headers
+
+    @pytest.mark.asyncio
+    async def test_signup_rate_limited_per_day(
+        self, auth_app_client: AsyncClient, mock_email_service, monkeypatch
+    ):
+        from serving.utils import signup_rate_limit
+
+        # Space attempts 1000s apart: that's > 3600s / per_hour (720s for a
+        # 5/hour budget), so each rolling hour window holds < per_hour
+        # attempts and the per-day limit is what eventually trips.
+        base = signup_rate_limit._now()
+        spacing = 1000
+        offsets = iter([base + i * spacing for i in range(20)])
+        monkeypatch.setattr(signup_rate_limit, "_now", lambda: next(offsets))
+
+        for _ in range(10):
+            response = await auth_app_client.post("/auth/signup", json=create_signup_request())
+            assert response.status_code in (201, 409)
+
+        response = await auth_app_client.post("/auth/signup", json=create_signup_request())
+        assert response.status_code == 429
+        assert response.headers.get("Retry-After") == "86400"
+
+    @pytest.mark.asyncio
+    async def test_signup_blocked_domain_example_com(self, auth_app_client: AsyncClient):
+        signup_data = create_signup_request(email="someone@example.com")
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+        assert response.status_code == 400
+        detail = response.json()["detail"].lower()
+        assert "domain" in detail
+        assert "example.com" not in detail
+
+    @pytest.mark.asyncio
+    async def test_signup_blocked_reserved_tld_test(self, auth_app_client: AsyncClient):
+        # Pydantic's EmailStr already rejects RFC-2606 reserved TLDs at the
+        # validation layer (HTTP 422). The blocklist is defense-in-depth: even
+        # if Pydantic relaxes, the helper must reject these directly.
+        from serving.utils.email_blocklist import is_email_domain_blocked
+
+        assert is_email_domain_blocked("foo@bar.test")
+        assert is_email_domain_blocked("foo@bar.example")
+        assert is_email_domain_blocked("foo@bar.invalid")
+        assert is_email_domain_blocked("foo@bar.localhost")
+
+        signup_data = create_signup_request(email="foo@bar.test")
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+        assert response.status_code in (400, 422)
+
+    @pytest.mark.asyncio
+    async def test_signup_turnstile_missing_when_required(
+        self, auth_app_client: AsyncClient, monkeypatch
+    ):
+        monkeypatch.setenv("TURNSTILE_SECRET_KEY", "test-secret")
+        signup_data = create_signup_request()
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+        assert response.status_code == 400
+        assert "captcha" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_signup_turnstile_valid(
+        self,
+        auth_app_client: AsyncClient,
+        mock_email_service,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("TURNSTILE_SECRET_KEY", "test-secret")
+
+        async def fake_verify(token, remote_ip):
+            return token == "valid-token"
+
+        monkeypatch.setattr(
+            "serving.servers.routers.auth_routes.verify_turnstile_token", fake_verify
+        )
+
+        signup_data = create_signup_request()
+        signup_data["turnstile_token"] = "valid-token"
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+        assert response.status_code == 201
 
 
 class TestLogin:

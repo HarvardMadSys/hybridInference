@@ -3,7 +3,6 @@
 Different models handle reasoning/thinking tokens differently:
 - OpenAI o1: reasoning_tokens in completion_tokens_details
 - Gemini 2.5: thoughts_token_count in usage_metadata
-- Llama 4: reasoning tokens controlled via reasoning_effort parameter
 - Qwen3 Coder: non-thinking mode (no explicit reasoning tokens)
 """
 
