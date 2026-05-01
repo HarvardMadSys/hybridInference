@@ -57,7 +57,7 @@ services:
       NODE_ENV: production
       PORT: "3001"
     ports:
-      - "0.0.0.0:3001:3001"
+      - "${FRONTEND_HOST:-0.0.0.0}:${FRONTEND_PORT:-3001}:3001"
     depends_on:
       backend:
         condition: service_healthy
