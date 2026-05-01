@@ -2,8 +2,8 @@
 """Create or promote a user to admin tier in the hybridInference database.
 
 Usage:
-    python scripts/create_admin.py
-    python scripts/create_admin.py --email admin@localhost --username admin --password test
+    python scripts/create_admin.py --email admin@example.com
+    python scripts/create_admin.py --email admin@example.com --username admin
 
 Run from the project root so that the serving package is importable.
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import os
 import sys
 
@@ -24,14 +25,13 @@ from serving.utils.jwt import generate_ulid
 from serving.utils.password import hash_password
 
 
-async def _run(email: str, username: str, password: str, db_config: dict) -> None:
+async def _run(email: str, username: str, password: str | None, db_config: dict) -> None:
     pool = await asyncpg.create_pool(**db_config, min_size=1, max_size=2, command_timeout=30)
     try:
         async with pool.acquire() as conn:
             existing = await conn.fetchrow(
-                "SELECT id, email, role FROM users WHERE email = $1 OR user_name = $2",
+                "SELECT id, email, role FROM users WHERE email = $1",
                 email,
-                username,
             )
 
             if existing:
@@ -47,6 +47,15 @@ async def _run(email: str, username: str, password: str, db_config: dict) -> Non
                 )
                 print(f"Promoted existing user to admin: {existing['email']} (id={user_id})")
                 return
+
+            if not password:
+                password = getpass.getpass(f"Password for new admin <{email}>: ")
+                if not password:
+                    print("Error: password cannot be empty", file=sys.stderr)
+                    sys.exit(1)
+                if getpass.getpass("Confirm password: ") != password:
+                    print("Error: passwords do not match", file=sys.stderr)
+                    sys.exit(1)
 
             user_id = generate_ulid()
             password_hash = hash_password(password)
@@ -68,14 +77,19 @@ async def _run(email: str, username: str, password: str, db_config: dict) -> Non
 def main() -> None:
     """Parse CLI arguments and create or promote a user to admin."""
     parser = argparse.ArgumentParser(description="Create or promote a user to admin tier")
+    parser.add_argument("--email", required=True, help="Email address (used as unique lookup key)")
     parser.add_argument(
-        "--email", default="admin@admin.com", help="Email address (default: admin@admin.com)"
+        "--username",
+        default=None,
+        help="Username for new accounts (defaults to --email; ignored when promoting)",
     )
     parser.add_argument(
-        "--username", default="admin@admin.com", help="Username (default: admin@admin.com)"
+        "--password",
+        default=None,
+        help="Password for new accounts (prompted securely if omitted; ignored when promoting)",
     )
-    parser.add_argument("--password", default="admin", help="Password (default: admin)")
     args = parser.parse_args()
+    username = args.username or args.email
 
     load_dotenv()
 
@@ -95,7 +109,7 @@ def main() -> None:
         "password": db_password_env,
     }
 
-    asyncio.run(_run(args.email, args.username, args.password, db_config))
+    asyncio.run(_run(args.email, username, args.password, db_config))
 
 
 if __name__ == "__main__":
