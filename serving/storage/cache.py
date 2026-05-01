@@ -136,6 +136,11 @@ class CachedOperationalStore(OperationalStore):
     def _health_key() -> str:
         return "health"
 
+    @property
+    def pool(self) -> Any:
+        """Expose underlying store's connection pool, if available (PostgreSQL only)."""
+        return getattr(self._store, "_pool", None)
+
     # -- lifecycle (delegated, not cached) -----------------------------------
 
     async def initialize(self) -> None:
@@ -193,9 +198,12 @@ class CachedOperationalStore(OperationalStore):
     # -- user writes (invalidate user cache) ---------------------------------
 
     async def update_user_fields(self, user_id: str, **fields: Any) -> None:
-        """Delegate then invalidate user cache."""
+        """Delegate then invalidate user cache (and auth caches if role/status changed)."""
         await self._store.update_user_fields(user_id, **fields)
         await self._cache.delete(self._user_key(user_id))
+        if fields.keys() & {"role", "status"}:
+            await self._cache.delete_pattern("auth:*")
+            await self._cache.delete_pattern("auth_light:*")
 
     async def update_user_last_login(self, user_id: str) -> None:
         """Delegate then invalidate user cache."""

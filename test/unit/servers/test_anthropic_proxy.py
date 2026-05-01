@@ -282,7 +282,12 @@ def _mock_deps():
 
     from serving.servers.auth import verify_api_key
     from serving.servers.concurrency import UserConcurrencyLimiter
-    from serving.servers.deps import get_log_store, get_rate_limiter, get_router, get_user_concurrency_limiter
+    from serving.servers.deps import (
+        get_log_store,
+        get_rate_limiter,
+        get_router,
+        get_user_concurrency_limiter,
+    )
 
     # Each test gets its own limiter so per-user state doesn't leak across tests.
     test_limiter = UserConcurrencyLimiter({"free": 10, "pro": 10, "internal": 10, "admin": 10})

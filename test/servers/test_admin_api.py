@@ -114,7 +114,7 @@ async def test_create_api_key_requires_token(admin_client):
 
 @pytest.mark.asyncio
 async def test_list_api_keys_batches_usage(admin_client):
-    client, op_store, log_store, _log_action = admin_client
+    client, op_store, _log_store, _log_action = admin_client
     created_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
     op_store.list_keys.return_value = (

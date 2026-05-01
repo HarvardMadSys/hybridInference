@@ -194,7 +194,7 @@ async def _test_store(r: _Results) -> dict[str, str]:
         r.check("get_active_user_counts", "total" in active and "dau" in active and "mau" in active)
 
         # List users
-        total, rows, status_counts = await store.list_users(search=_PREFIX, limit=10)
+        total, rows, _status_counts = await store.list_users(search=_PREFIX, limit=10)
         r.check("list_users", total >= 1 and len(rows) >= 1)
 
         # User preferences
@@ -261,7 +261,7 @@ async def _test_store(r: _Results) -> dict[str, str]:
             r.ok("update_key_last_used")
 
         # List keys
-        total_k, key_rows = await store.list_keys(status="active", limit=10)
+        total_k, _key_rows = await store.list_keys(status="active", limit=10)
         r.check("list_keys", total_k >= 1)
 
         # Get key detail

@@ -47,8 +47,8 @@ class TestTransformValue:
     def test_timestamp_datetime_to_iso(self, col):
         dt = datetime(2026, 3, 15, 10, 30, 0, tzinfo=timezone.utc)
         result = _transform_value(col, dt)
-        assert "2026-03-15" in result
         assert isinstance(result, str)
+        assert "2026-03-15" in result
 
     @pytest.mark.parametrize("col", list(_TIMESTAMP_COLUMNS))
     def test_timestamp_string_passthrough(self, col):
@@ -140,7 +140,7 @@ class TestBuildInsertSQL:
 class TestTableDefs:
     """Verify table definitions are complete and correct."""
 
-    def test_all_six_tables_defined(self):
+    def test_all_tables_defined(self):
         names = [t["name"] for t in _TABLES]
         assert "users" in names
         assert "api_keys" in names
@@ -148,6 +148,7 @@ class TestTableDefs:
         assert "email_verification_tokens" in names
         assert "password_reset_tokens" in names
         assert "admin_audit_log" in names
+        assert "user_daily_cost" in names
 
     def test_each_table_has_pk(self):
         for t in _TABLES:

@@ -360,7 +360,7 @@ class TestDualWriteReadIsolation:
     @pytest.mark.asyncio
     async def test_read_comes_from_primary_only(self, stores):
         """Write directly to shadow only; verify dual-write reads don't see it."""
-        dual, primary, shadow = stores
+        dual, _primary, shadow = stores
 
         # Write directly to shadow (bypassing dual-write)
         await shadow.create_user(

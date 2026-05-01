@@ -4,6 +4,8 @@ Supports both PostgreSQL and Cloudflare D1 backends.
 Run with: make test-db
 """
 
+import json
+
 import pytest
 from httpx import AsyncClient
 

@@ -70,6 +70,7 @@ markers = [
   "perf: performance regression tests",
   "external: tests that hit external/local servers",
   "dbtest: tests that require a running PostgreSQL test database",
+  "d1: tests that require live Cloudflare D1 credentials (D1_ACCOUNT_ID, D1_DATABASE_ID, D1_API_TOKEN)",
 ]
 
 [tool.ruff]

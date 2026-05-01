@@ -251,7 +251,7 @@ async def auth_backend(auth_env):
 @pytest_asyncio.fixture
 async def clean_auth_tables(auth_backend):
     """Clean auth-related tables before and after each test."""
-    operational_store, log_store, db_logger, backend = auth_backend
+    operational_store, _log_store, db_logger, backend = auth_backend
 
     if backend == "d1":
         d1_client = operational_store._store._d1  # CachedStore -> D1Store -> client
@@ -297,13 +297,12 @@ async def test_user_with_key(auth_backend, test_user):
     Returns:
         dict with user data and api_key_data
     """
-    from serving.servers.auth import encrypt_api_key, generate_api_key, hash_api_key
+    from serving.servers.auth import generate_api_key, hash_api_key
 
     operational_store, _, _, _ = auth_backend
 
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
-    api_key_encrypted = encrypt_api_key(api_key)
     key_prefix = api_key[:12]
 
     await operational_store.create_key(

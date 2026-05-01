@@ -130,34 +130,22 @@ async def _upload_to_r2(
     logger.info("Uploaded %s to R2 bucket %s (%d bytes)", key, bucket, len(data))
 
 
-async def _delete_day_logs(d1: D1Client, day: str) -> int:
-    """Delete all api_logs rows for a given day from D1.
+async def _delete_archived_rows(d1: D1Client, request_ids: list[str]) -> int:
+    """Delete the specific rows that were already archived to R2.
+
+    Deletes only by the request_id set captured before upload, avoiding a race
+    window where rows arriving between fetch and a day-window delete would be
+    removed from D1 without being included in the archive.
 
     Returns:
         Number of rows deleted.
     """
-    day_start = f"{day}T00:00:00.000000Z"
-    day_end = f"{day}T23:59:59.999999Z"
-
     total_deleted = 0
-
-    while True:
-        # Fetch a batch of request_ids to delete
-        result = await d1.query(
-            "SELECT request_id FROM api_logs WHERE timestamp >= ? AND timestamp <= ? LIMIT ?",
-            [day_start, day_end, DELETE_BATCH_SIZE],
-        )
-        if not result.rows:
-            break
-
-        # Batch delete
-        stmts = [
-            ("DELETE FROM api_logs WHERE request_id = ?", [row["request_id"]])
-            for row in result.rows
-        ]
+    for i in range(0, len(request_ids), DELETE_BATCH_SIZE):
+        chunk = request_ids[i : i + DELETE_BATCH_SIZE]
+        stmts = [("DELETE FROM api_logs WHERE request_id = ?", [rid]) for rid in chunk]
         await d1.batch(stmts)
-        total_deleted += len(result.rows)
-
+        total_deleted += len(chunk)
     return total_deleted
 
 
@@ -242,8 +230,9 @@ async def archive_day(
         secret_access_key=secret_access_key,
     )
 
-    # Delete from D1 after successful upload
-    deleted = await _delete_day_logs(d1, day)
+    # Delete only the rows we archived (avoids racing with new writes)
+    archived_ids = [row["request_id"] for row in rows]
+    deleted = await _delete_archived_rows(d1, archived_ids)
     summary["deleted"] = deleted
     logger.info(
         "Archived %s: %d rows, %d bytes compressed, %d deleted from D1",

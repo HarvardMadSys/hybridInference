@@ -139,6 +139,12 @@ _TABLES: list[dict[str, Any]] = [
             "success",
         ],
     },
+    {
+        "name": "user_daily_cost",
+        "pk": "user_id",
+        "order_by": "day, user_id",
+        "columns": ["user_id", "day", "cost_usd", "requests", "last_request_at"],
+    },
 ]
 
 # Columns that need type transformation from Postgres → D1

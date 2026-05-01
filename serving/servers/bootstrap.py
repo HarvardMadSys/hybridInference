@@ -503,6 +503,7 @@ async def initialize() -> AppServices:
     elif db_logger and db_logger.pool:
         # Default: both stores backed by Postgres
         pg_operational = PostgresOperationalStore(db_logger.pool)
+        await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
         log_store = PostgresLogStore(
             db_logger.pool,
@@ -556,6 +557,13 @@ async def shutdown(services: AppServices) -> None:
     except Exception as exc:
         logger.error(f"Email scheduler shutdown failed: {exc}")
 
+    # User stats collector must stop before stores are torn down
+    if services.user_stats_collector:
+        try:
+            await services.user_stats_collector.shutdown()
+        except Exception as exc:
+            logger.error(f"User stats collector shutdown failed: {exc}")
+
     # Log store (flushes D1 buffer on shutdown)
     if services.log_store:
         try:
@@ -590,13 +598,6 @@ async def shutdown(services: AppServices) -> None:
             await services.routing_manager.shutdown()
         except Exception as exc:
             logger.error(f"Routing manager shutdown failed: {exc}")
-
-    # User stats collector
-    if services.user_stats_collector:
-        try:
-            await services.user_stats_collector.shutdown()
-        except Exception as exc:
-            logger.error(f"User stats collector shutdown failed: {exc}")
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):

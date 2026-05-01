@@ -364,11 +364,11 @@ class D1OperationalStore(OperationalStore):
         )
         dau_r = await self._d1.query(
             "SELECT COUNT(DISTINCT id) as count FROM users "
-            "WHERE status = 'active' AND last_login_at >= datetime('now', '-24 hours')"
+            "WHERE status = 'active' AND last_login_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-24 hours')"
         )
         mau_r = await self._d1.query(
             "SELECT COUNT(DISTINCT id) as count FROM users "
-            "WHERE status = 'active' AND last_login_at >= datetime('now', '-30 days')"
+            "WHERE status = 'active' AND last_login_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days')"
         )
         return {
             "total": total_r.rows[0]["count"] if total_r.rows else 0,
@@ -390,8 +390,8 @@ class D1OperationalStore(OperationalStore):
             "LEFT JOIN users u ON u.id = k.user_id "
             "WHERE k.key_hash = ? "
             "  AND k.status = 'active' "
-            "  AND (k.expires_at IS NULL OR k.expires_at > datetime('now')) "
-            "  AND (u.id IS NULL OR u.status = 'active')",
+            "  AND (k.expires_at IS NULL OR k.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) "
+            "  AND u.id IS NOT NULL AND u.status = 'active'",
             [key_hash],
         )
         return _parse_row_timestamps(result.rows[0]) if result.rows else None
@@ -404,8 +404,8 @@ class D1OperationalStore(OperationalStore):
             "LEFT JOIN users u ON u.id = k.user_id "
             "WHERE k.key_hash = ? "
             "  AND k.status = 'active' "
-            "  AND (k.expires_at IS NULL OR k.expires_at > datetime('now')) "
-            "  AND (u.id IS NULL OR u.status = 'active')",
+            "  AND (k.expires_at IS NULL OR k.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) "
+            "  AND u.id IS NOT NULL AND u.status = 'active'",
             [key_hash],
         )
         return _parse_row_timestamps(result.rows[0]) if result.rows else None
@@ -815,7 +815,7 @@ class D1OperationalStore(OperationalStore):
                 if isinstance(parsed, dict):
                     return parsed
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Malformed preferences payload for user %s", user_id)
         return {}
 
     async def update_user_preferences(
@@ -891,18 +891,25 @@ class D1OperationalStore(OperationalStore):
         if period == "today":
             day_filter = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             where = "day = ?"
-            params: list[Any] = [day_filter]
+            day_param: Any = day_filter
         else:
             month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
             where = "day LIKE ?"
-            params = [f"{month_prefix}%"]
+            day_param = f"{month_prefix}%"
 
-        placeholders = ",".join(["?"] * len(user_ids))
-        params.extend(user_ids)
-        result = await self._d1.query(
-            f"SELECT user_id, COALESCE(SUM(cost_usd), 0) as cost "
-            f"FROM user_daily_cost WHERE {where} AND user_id IN ({placeholders}) "
-            f"GROUP BY user_id",
-            params,
-        )
-        return {r["user_id"]: float(r["cost"]) for r in result.rows}
+        # D1 limits to 100 bound parameters; 1 slot is used by the day/month filter.
+        _CHUNK = 99
+        result_map: dict[str, float] = {}
+        for i in range(0, len(user_ids), _CHUNK):
+            chunk = user_ids[i : i + _CHUNK]
+            placeholders = ",".join(["?"] * len(chunk))
+            params: list[Any] = [day_param, *chunk]
+            result = await self._d1.query(
+                f"SELECT user_id, COALESCE(SUM(cost_usd), 0) as cost "
+                f"FROM user_daily_cost WHERE {where} AND user_id IN ({placeholders}) "
+                f"GROUP BY user_id",
+                params,
+            )
+            for r in result.rows:
+                result_map[r["user_id"]] = float(r["cost"])
+        return result_map

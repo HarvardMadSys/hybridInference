@@ -716,7 +716,7 @@ class PostgresOperationalStore(OperationalStore):
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
-                "  AND (u.id IS NULL OR u.status = 'active')",
+                "  AND u.id IS NOT NULL AND u.status = 'active'",
                 key_hash,
             )
         return dict(row) if row else None
@@ -731,7 +731,7 @@ class PostgresOperationalStore(OperationalStore):
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
-                "  AND (u.id IS NULL OR u.status = 'active')",
+                "  AND u.id IS NOT NULL AND u.status = 'active'",
                 key_hash,
             )
         return dict(row) if row else None
@@ -1153,7 +1153,7 @@ class PostgresOperationalStore(OperationalStore):
                 if isinstance(parsed, dict):
                     return parsed
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Malformed preferences payload for user %s", user_id)
         return {}
 
     async def update_user_preferences(

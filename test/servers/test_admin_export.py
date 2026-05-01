@@ -68,6 +68,7 @@ def _make_mock_db(rows_per_batch: list[list[dict]]):
     acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
     acquire_ctx.__aexit__ = AsyncMock(return_value=None)
     mock_pool.acquire = MagicMock(return_value=acquire_ctx)
+    mock_db.log_admin_action = AsyncMock()
 
     return mock_db
 

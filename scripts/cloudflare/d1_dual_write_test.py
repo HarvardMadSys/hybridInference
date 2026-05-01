@@ -308,8 +308,8 @@ async def _run(args: argparse.Namespace) -> int:
             details={"reason": "dual-write integration test"},
         )
 
-        d1_count, d1_rows = await d1_store.list_audit_log(action=f"{_PREFIX}_test_action")
-        pg_count, pg_rows = await pg_store.list_audit_log(action=f"{_PREFIX}_test_action")
+        d1_count, _d1_rows = await d1_store.list_audit_log(action=f"{_PREFIX}_test_action")
+        pg_count, _pg_rows = await pg_store.list_audit_log(action=f"{_PREFIX}_test_action")
 
         r.check("audit_d1", d1_count >= 1, f"Got {d1_count} rows")
         r.check("audit_pg", pg_count >= 1, f"Got {pg_count} rows")

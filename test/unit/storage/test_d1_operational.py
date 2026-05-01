@@ -96,9 +96,9 @@ class TestUserReads:
         result = await store.get_active_user_counts()
         assert result == {"total": 100, "dau": 20, "mau": 50}
 
-        # Verify SQLite date functions used instead of Postgres INTERVAL
+        # Verify ISO-format strftime used so comparisons work with stored timestamps
         dau_sql = d1_client.query.call_args_list[1][0][0]
-        assert "datetime('now', '-24 hours')" in dau_sql
+        assert "strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-24 hours')" in dau_sql
 
 
 # ------------------------------------------------------------------
@@ -225,9 +225,10 @@ class TestAPIKeys:
         assert result["user_id"] == "u1"
 
         sql = d1_client.query.call_args[0][0]
-        # Should use SQLite datetime instead of Postgres NOW()
-        assert "datetime('now')" in sql
+        # Should use ISO-format strftime and require a joined user row
+        assert "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')" in sql
         assert "JOIN users" in sql
+        assert "u.id IS NOT NULL" in sql
 
     async def test_check_active_key_exists_true(self, store, d1_client):
         d1_client.query.return_value = D1Result(rows=[{"id": 1}])
@@ -356,7 +357,7 @@ class TestAuditLog:
             D1Result(rows=[{"total": 1}]),
             D1Result(rows=[{"id": 1, "action": "delete_user"}]),
         ]
-        total, rows = await store.list_audit_log(action="delete_user", limit=10)
+        total, _rows = await store.list_audit_log(action="delete_user", limit=10)
         assert total == 1
 
         # Verify WHERE clause uses ?
@@ -413,6 +414,58 @@ class TestColumnAllowlist:
     async def test_update_key_accepts_valid_column(self, store, d1_client):
         await store.update_key("user-1", status="active")
         d1_client.execute.assert_called_once()
+
+
+class TestBatchUsage:
+    """Tests for get_batch_usage, including D1 100-param chunking."""
+
+    async def test_get_batch_usage_single_chunk(self, store, d1_client):
+        """Fewer than 100 user IDs fit in one query."""
+        d1_client.query.return_value = D1Result(
+            rows=[{"user_id": "u1", "cost": 1.5}, {"user_id": "u2", "cost": 0.5}]
+        )
+        result = await store.get_batch_usage(["u1", "u2"], "today")
+        assert result == {"u1": 1.5, "u2": 0.5}
+        d1_client.query.assert_awaited_once()
+
+    async def test_get_batch_usage_empty_returns_empty(self, store, d1_client):
+        result = await store.get_batch_usage([], "today")
+        assert result == {}
+        d1_client.query.assert_not_awaited()
+
+    async def test_get_batch_usage_chunked_across_two_queries(self, store, d1_client):
+        """100 user IDs must be split into two queries (99 + 1) to stay within D1's param limit."""
+        user_ids = [f"u{i}" for i in range(100)]
+
+        first_chunk_rows = [{"user_id": f"u{i}", "cost": float(i)} for i in range(99)]
+        last_chunk_rows = [{"user_id": "u99", "cost": 99.0}]
+        d1_client.query.side_effect = [
+            D1Result(rows=first_chunk_rows),
+            D1Result(rows=last_chunk_rows),
+        ]
+
+        result = await store.get_batch_usage(user_ids, "today")
+
+        assert d1_client.query.await_count == 2, "100 IDs must produce exactly 2 queries"
+
+        first_call_params = d1_client.query.call_args_list[0][0][1]
+        second_call_params = d1_client.query.call_args_list[1][0][1]
+        # First query: 1 day filter + 99 user IDs = 100 params
+        assert len(first_call_params) == 100
+        # Second query: 1 day filter + 1 user ID = 2 params
+        assert len(second_call_params) == 2
+
+        assert len(result) == 100
+        assert result["u0"] == 0.0
+        assert result["u99"] == 99.0
+
+    async def test_get_batch_usage_month_period(self, store, d1_client):
+        """month period sends LIKE filter instead of exact day."""
+        d1_client.query.return_value = D1Result(rows=[{"user_id": "u1", "cost": 10.0}])
+        await store.get_batch_usage(["u1"], "month")
+        sql, params = d1_client.query.call_args[0]
+        assert "LIKE" in sql
+        assert params[0].endswith("%")
 
 
 class TestProtocol:

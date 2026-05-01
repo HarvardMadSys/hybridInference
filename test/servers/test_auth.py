@@ -88,7 +88,6 @@ async def test_auth_missing_headers_returns_401(monkeypatch, mock_request, mock_
     assert "Missing API key" in str(exc.value.detail)
 
 
-
 def test_api_key_encryption_round_trip(monkeypatch):
     monkeypatch.setenv("API_KEY_SECRET", "test-secret")
     plaintext_key = "hyi-valid-key"
@@ -97,7 +96,6 @@ def test_api_key_encryption_round_trip(monkeypatch):
 
     assert encrypted_key != plaintext_key
     assert decrypt_api_key(encrypted_key) == plaintext_key
-
 
 
 @pytest.mark.asyncio
@@ -163,7 +161,9 @@ async def test_auth_x_api_key_header_valid(monkeypatch, mock_request, mock_op_st
 
 
 @pytest.mark.asyncio
-async def test_auth_unverified_user_key_returns_403(monkeypatch, mock_request, mock_op_store, mock_ls):
+async def test_auth_unverified_user_key_returns_403(
+    monkeypatch, mock_request, mock_op_store, mock_ls
+):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1")
     plaintext_key = "hyi-unverified"

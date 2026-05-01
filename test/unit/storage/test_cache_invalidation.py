@@ -176,3 +176,67 @@ class TestUserStatusChangeInvalidation:
         inner.get_user_by_id.return_value = {"id": "u1", "status": "suspended"}
         result = await cached.get_user_by_id("u1")
         assert result["status"] == "suspended"
+
+    async def test_status_change_also_clears_auth_cache(self, cached, inner):
+        """Changing status must bust the auth cache, not just the user cache.
+
+        A key cached before the status change would otherwise continue to
+        authenticate the suspended user until the TTL expires.
+        """
+        key_hash = "key-for-suspended-user"
+        inner.get_auth_context_by_key_hash.return_value = {
+            "user_id": "u1",
+            "tier": "free",
+            "status": "active",
+        }
+        # Warm the auth cache
+        await cached.get_auth_context_by_key_hash(key_hash)
+        assert inner.get_auth_context_by_key_hash.await_count == 1
+
+        # Suspend the user — must purge the auth cache
+        inner.get_auth_context_by_key_hash.return_value = None
+        await cached.update_user_fields("u1", status="suspended")
+
+        # Next auth lookup must hit the inner store, not the now-stale cache
+        await cached.get_auth_context_by_key_hash(key_hash)
+        assert inner.get_auth_context_by_key_hash.await_count == 2, (
+            "auth cache was not invalidated after status change"
+        )
+
+    async def test_role_change_also_clears_auth_cache(self, cached, inner):
+        """Promoting a user to admin must bust the auth cache immediately."""
+        key_hash = "key-for-promoted-user"
+        inner.get_auth_context_by_key_hash.return_value = {
+            "user_id": "u2",
+            "tier": "free",
+            "role": "user",
+        }
+        await cached.get_auth_context_by_key_hash(key_hash)
+        assert inner.get_auth_context_by_key_hash.await_count == 1
+
+        inner.get_auth_context_by_key_hash.return_value = {
+            "user_id": "u2",
+            "tier": "free",
+            "role": "admin",
+        }
+        await cached.update_user_fields("u2", role="admin")
+
+        await cached.get_auth_context_by_key_hash(key_hash)
+        assert inner.get_auth_context_by_key_hash.await_count == 2, (
+            "auth cache was not invalidated after role change"
+        )
+
+    async def test_non_auth_field_change_does_not_clear_auth_cache(self, cached, inner):
+        """Updating a field like preferences must NOT flush the auth cache."""
+        key_hash = "key-for-pref-update"
+        inner.get_auth_context_by_key_hash.return_value = {"user_id": "u3", "tier": "free"}
+        await cached.get_auth_context_by_key_hash(key_hash)
+        assert inner.get_auth_context_by_key_hash.await_count == 1
+
+        await cached.update_user_fields("u3", preferences={"theme": "dark"})
+
+        # Auth cache should still be warm — no extra inner call
+        await cached.get_auth_context_by_key_hash(key_hash)
+        assert inner.get_auth_context_by_key_hash.await_count == 1, (
+            "auth cache was unexpectedly flushed for a non-auth field update"
+        )

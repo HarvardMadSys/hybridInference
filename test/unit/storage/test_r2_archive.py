@@ -224,16 +224,16 @@ class TestCompressRows:
 
 
 class TestDeleteDayLogs:
-    """Test _delete_day_logs."""
+    """Test _delete_archived_rows."""
 
     async def test_delete_removes_only_target_day(self, d1):
-        from scripts.cloudflare.r2_archive_logs import _delete_day_logs
+        from scripts.cloudflare.r2_archive_logs import _delete_archived_rows
 
         _insert_log(d1, "r1", "2026-04-01T10:00:00.000000Z")
         _insert_log(d1, "r2", "2026-04-01T20:00:00.000000Z")
         _insert_log(d1, "r3", "2026-04-02T05:00:00.000000Z")
 
-        deleted = await _delete_day_logs(d1, "2026-04-01")
+        deleted = await _delete_archived_rows(d1, ["r1", "r2"])
         assert deleted == 2
 
         # r3 should remain
@@ -241,9 +241,9 @@ class TestDeleteDayLogs:
         assert result[0] == 1
 
     async def test_delete_no_rows(self, d1):
-        from scripts.cloudflare.r2_archive_logs import _delete_day_logs
+        from scripts.cloudflare.r2_archive_logs import _delete_archived_rows
 
-        deleted = await _delete_day_logs(d1, "2026-04-01")
+        deleted = await _delete_archived_rows(d1, [])
         assert deleted == 0
 
 

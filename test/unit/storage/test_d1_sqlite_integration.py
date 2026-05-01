@@ -250,7 +250,7 @@ class TestUsersCRUD:
             user_id="u2", email="bob@test.com", password_hash="h", user_name="Bob Jones"
         )
 
-        total, rows, counts = await store.list_users(search="alice")
+        total, rows, _counts = await store.list_users(search="alice")
         assert total == 1
         assert rows[0]["id"] == "u1"
 
@@ -259,7 +259,7 @@ class TestUsersCRUD:
         await store.create_user(user_id="u1", email="a@b.com", password_hash="h")
         # This should not raise even with a very long search
         long_search = "a" * 100
-        total, rows, counts = await store.list_users(search=long_search)
+        _total, _rows, _counts = await store.list_users(search=long_search)
         # Should execute without error; result doesn't matter
 
     async def test_user_preferences_roundtrip(self, store):
@@ -336,6 +336,26 @@ class TestAPIKeysCRUD:
         ctx = await store.get_auth_context_by_key_hash("hash_u1")
         assert ctx is None
 
+    async def test_auth_context_rejects_orphan_key(self, store, sqlite_client):
+        """A key whose user row does not exist in users must not authenticate.
+
+        With the old LEFT JOIN condition `u.id IS NULL OR u.status = 'active'`
+        the NULL branch allowed orphan keys through.  The fix requires
+        `u.id IS NOT NULL AND u.status = 'active'`.
+        """
+        # Insert a key directly — no matching user row
+        sqlite_client._conn.execute(
+            "INSERT INTO api_keys "
+            "(key_hash, key_prefix, user_id, user_name, status, tier, "
+            " quota_daily_cost_usd, created_at) "
+            "VALUES (?, ?, ?, ?, 'active', 'free', 10.0, '2026-01-01T00:00:00Z')",
+            ["orphan-hash", "orp_", "nonexistent-user", "Ghost"],
+        )
+        sqlite_client._conn.commit()
+
+        ctx = await store.get_auth_context_by_key_hash("orphan-hash")
+        assert ctx is None, "orphan key (no matching user row) must not authenticate"
+
     async def test_regenerate_key_atomic(self, store):
         await self._create_user_and_key(store)
         old_pfx = await store.regenerate_key(
@@ -358,7 +378,7 @@ class TestAPIKeysCRUD:
     async def test_list_keys(self, store):
         await self._create_user_and_key(store, "u1")
         await self._create_user_and_key(store, "u2")
-        total, rows = await store.list_keys(status="active")
+        total, _rows = await store.list_keys(status="active")
         assert total == 2
 
     async def test_check_active_key_exists(self, store):
@@ -525,7 +545,7 @@ class TestDeleteUserAtomic:
         assert await store.get_reset_token("rt1") is None
 
         # Audit log entry created
-        total, rows = await store.list_audit_log(action="delete_user")
+        total, _rows = await store.list_audit_log(action="delete_user")
         assert total >= 1
 
 
@@ -652,6 +672,36 @@ class TestCostCounters:
     async def test_get_batch_usage_empty(self, store):
         result = await store.get_batch_usage([], period="today")
         assert result == {}
+
+    async def test_get_batch_usage_returns_correct_costs(self, store):
+        """get_batch_usage executes valid SQL and returns merged costs."""
+        from datetime import datetime, timezone
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        await store.increment_user_cost("u1", 3.00, day=today)
+        await store.increment_user_cost("u1", 2.00, day=today)
+        await store.increment_user_cost("u2", 7.50, day=today)
+        # u3 has no rows — should be absent from result, not KeyError
+        result = await store.get_batch_usage(["u1", "u2", "u3"], period="today")
+
+        assert result["u1"] == pytest.approx(5.00)
+        assert result["u2"] == pytest.approx(7.50)
+        assert "u3" not in result
+
+    async def test_get_batch_usage_over_99_ids_merges_all_chunks(self, store):
+        """100 user IDs are chunked into two queries; all results merge correctly."""
+        from datetime import datetime, timezone
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        user_ids = [f"chunk-u{i}" for i in range(100)]
+        for uid in user_ids:
+            await store.increment_user_cost(uid, 1.0, day=today)
+
+        result = await store.get_batch_usage(user_ids, period="today")
+
+        assert len(result) == 100
+        for uid in user_ids:
+            assert result[uid] == pytest.approx(1.0), f"missing or wrong cost for {uid}"
 
     async def test_user_daily_cost_table_exists(self, sqlite_client):
         """Verify the table was created by schema DDL."""

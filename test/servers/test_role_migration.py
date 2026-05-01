@@ -9,7 +9,6 @@ Requires a running PostgreSQL test database (see TEST_DB_* env vars).
 Run with: make test-db
 """
 
-
 import pytest
 import pytest_asyncio
 from ulid import ULID
