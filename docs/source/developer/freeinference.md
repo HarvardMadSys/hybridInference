@@ -15,7 +15,7 @@ Client ──▶ Cloudflare ──▶ Nginx (:443) ──▶ FastAPI  (:8080)
 |-------|------|
 | **Cloudflare** | CDN, DDoS protection, edge SSL termination. SSL/TLS mode set to **Full (strict)** so Cloudflare verifies the origin certificate. `CF-Connecting-IP` header carries the real client IP. |
 | **Nginx** | TLS termination (Let's Encrypt cert), path-based routing (see below), per-location body size limits (`/v1/` is bumped to 50 MB for Qdrant upserts and large completions; everything else uses the Nginx 1 MB default), WebSocket upgrade. |
-| **FastAPI** | API logic — request authentication, model routing, rate limiting, backpressure, Qdrant proxy, and observability. Listens on `127.0.0.1:8080`. |
+| **FastAPI** | API logic — request authentication, model routing, backpressure, Qdrant proxy, and observability. Listens on `127.0.0.1:8080`. |
 
 Nginx path routing:
 

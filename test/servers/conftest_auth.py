@@ -3,7 +3,7 @@
 import os
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 # Add project root to Python path
 project_root = Path(__file__).resolve().parents[2]
@@ -62,7 +62,6 @@ def auth_env(monkeypatch):
         # Base URL
         "BASE_URL": "http://localhost:8000",
         # Disable other features
-        "RATE_LIMIT_ENABLED": "0",
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
     }
@@ -252,16 +251,12 @@ async def auth_headers(test_user, auth_app_client):
 @pytest_asyncio.fixture
 async def auth_app_services(auth_db_logger):
     """Create AppServices for auth testing."""
-    # Mock router and rate limiter (not needed for auth tests)
+    # Mock router (not needed for auth tests)
     mock_router = MagicMock()
-    mock_rate_limiter = MagicMock()
-    mock_rate_limiter.initialize = AsyncMock()
-    mock_rate_limiter._persist_state = AsyncMock()
 
     services = AppServices(
         router=mock_router,
         db_logger=auth_db_logger,
-        rate_limiter=mock_rate_limiter,
         routing_manager=None,
     )
 

@@ -6,11 +6,10 @@ See docs/anthropic-proxy-design.md for full design rationale.
 
 Responsibilities:
 1. Client auth via ``verify_api_key`` dependency
-2. Rate limiting via ``PersistentRateLimiter``
-3. Model resolution (public ID → provider_model_id) with provider eligibility
-4. Credential injection from shared ``AccountPool``
-5. Raw byte forwarding (streaming) or JSON forwarding (non-streaming)
-6. Best-effort usage extraction for DB cost logging
+2. Model resolution (public ID → provider_model_id) with provider eligibility
+3. Credential injection from shared ``AccountPool``
+4. Raw byte forwarding (streaming) or JSON forwarding (non-streaming)
+5. Best-effort usage extraction for DB cost logging
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ from serving.observability.metrics import (
 )
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
-from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
+from serving.servers.deps import get_db_logger, get_router
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
@@ -312,7 +311,6 @@ async def anthropic_messages(
     request: Request,
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
-    rate_limiter=Depends(get_rate_limiter),
     db_logger=Depends(get_db_logger),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ):
@@ -342,28 +340,6 @@ async def anthropic_messages(
             status_code=str(exc.status_code),
         ).inc()
         return _anthropic_error(exc.status_code, exc.detail)
-
-    # --- Rate limiting ----------------------------------------------
-    if rate_limiter:
-        messages = body.get("messages", [])
-        priority = 1 if user_ctx.get("authenticated") else 0
-        success, meta = await rate_limiter.acquire_tokens(
-            model_id=model_id,
-            messages=messages,
-            max_tokens=body.get("max_tokens"),
-            priority=priority,
-            timeout=30.0,
-        )
-        if not success:
-            API_MODEL_REQUESTS.labels(
-                model=normalize_model_label(model_id),
-                provider=normalize_provider_label(_PROVIDER_NAME),
-                status_code="429",
-            ).inc()
-            return _anthropic_error(
-                429,
-                meta.get("error", "Rate limit exceeded. Please retry later."),
-            )
 
     # --- Acquire account + token ------------------------------------
     try:

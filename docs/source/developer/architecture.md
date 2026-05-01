@@ -50,7 +50,7 @@ Client ──▶ Cloudflare (CDN + DDoS) ──▶ Nginx (:443) ──▶ FastAP
 
 - **Cloudflare**: Edge CDN, DDoS protection, SSL termination (Full strict mode).
 - **Nginx**: Origin TLS, path-based routing, body size limits, WebSocket upgrade.
-- **FastAPI**: API authentication, model routing, rate limiting, observability.
+- **FastAPI**: API authentication, model routing, observability.
 
 The network layer handles external connectivity and request delivery. The sections below describe the internal inference pipeline that runs inside FastAPI.
 
@@ -138,7 +138,7 @@ The gateway currently exposes more than one client-facing protocol surface:
 | OpenAI-compatible Chat Completions | `POST /v1/chat/completions` | SDKs, OpenAI-compatible tools | Primary public surface |
 | Anthropic-compatible Messages | `POST /anthropic/v1/messages` | Claude Code CLI | Only models routed through `provider: claude_sub` are eligible |
 
-The Anthropic surface is an **identity surface translator**: the client-facing and upstream protocols are both Anthropic Messages API, so the route mainly performs auth, rate limiting, model resolution, credential injection, and usage logging.
+The Anthropic surface is an **identity surface translator**: the client-facing and upstream protocols are both Anthropic Messages API, so the route mainly performs auth, model resolution, credential injection, and usage logging.
 
 For account lifecycle and credential management details, see [Configuration Guide](configuration.md) §5.
 

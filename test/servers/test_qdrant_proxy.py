@@ -108,14 +108,13 @@ def mock_upstream(monkeypatch) -> _MockQdrantUpstream:
 
 
 @pytest.fixture
-def qdrant_app(mock_db_logger, mock_rate_limiter, mock_upstream) -> FastAPI:
+def qdrant_app(mock_db_logger, mock_upstream) -> FastAPI:
     """Create a FastAPI app with the qdrant_proxy router and fake auth."""
 
     app = FastAPI(title="Test Qdrant Proxy")
     app.state.services = AppServices(
         router=AsyncMock(),  # not used by qdrant proxy
         db_logger=mock_db_logger,
-        rate_limiter=mock_rate_limiter,
     )
 
     # Override auth dependency to return a fake authenticated user

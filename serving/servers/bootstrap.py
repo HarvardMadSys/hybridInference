@@ -1,9 +1,9 @@
 """Application bootstrap utilities.
 
 This module centralizes initialization and shutdown of core services such as
-the routing executor, model registry, database logger, and rate limiter. It is
-intentionally free of HTTP concerns so it can be imported from multiple entry
-points (e.g., CLI tools, tests, or the FastAPI app factory).
+the routing executor, model registry, and database logger. It is intentionally
+free of HTTP concerns so it can be imported from multiple entry points
+(e.g., CLI tools, tests, or the FastAPI app factory).
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from serving.utils.logging import get_logger, setup_logging
 
 from .concurrency import UserConcurrencyLimiter
 from .deps import AppServices
-from .rate_limiter import PersistentRateLimiter, RateLimitConfig
 from .registry import ModelRegistrationInfo, register_from_models_yaml
 
 logger = get_logger(__name__)
@@ -241,75 +240,12 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
     return None
 
 
-def _configure_rate_limiter(limiter: PersistentRateLimiter) -> None:
-    """Configure model-specific rate limits from environment variables."""
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if gemini_key:
-        gemini_tpm = int(os.getenv("GEMINI_TPM_LIMIT", "1000000"))
-        if gemini_tpm > 0:
-            # Configure rate limit for both Gemini models with same policy
-            for model_id in ["gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025"]:
-                cfg = RateLimitConfig(
-                    model_id=model_id,
-                    window_seconds=60,
-                    capacity_tokens=gemini_tpm,
-                    burst_multiplier=1.0,
-                    queue_size=100,
-                    enable_persistence=True,
-                )
-                limiter.configure(cfg)
-            logger.info(f"Configured Gemini limit: {gemini_tpm:,}/min (both models)")
-
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-    if deepseek_key:
-        deepseek_tpd = int(os.getenv("DEEPSEEK_TPD_LIMIT", "1000000"))
-        if deepseek_tpd > 0:
-            cfg = RateLimitConfig(
-                model_id="deepseek-chat",
-                window_seconds=86400,
-                capacity_tokens=deepseek_tpd,
-                burst_multiplier=1.0,
-                queue_size=50,
-                enable_persistence=True,
-            )
-            limiter.configure(cfg)
-            logger.info(f"Configured DeepSeek limit: {deepseek_tpd:,}/day")
-
-    # GLM models: default 1M tokens per hour
-    glm_key = os.getenv("ZAI_API_KEY")
-    if glm_key:
-        glm_tph = int(os.getenv("GLM_TPH_LIMIT", "1000000"))  # 1M tokens per hour
-        if glm_tph > 0:
-            for model_id in (
-                "glm-4.5",
-                "glm-4.6",
-                "glm-4.7",
-                "glm-4.7-flash",
-                "glm-5",
-                "glm-5-turbo",
-                "glm-5.1",
-            ):
-                cfg = RateLimitConfig(
-                    model_id=model_id,
-                    window_seconds=3600,  # 1 hour
-                    capacity_tokens=glm_tph,
-                    burst_multiplier=1.0,
-                    queue_size=50,
-                    enable_persistence=True,
-                )
-                limiter.configure(cfg)
-            logger.info(
-                f"Configured GLM limits: {glm_tph:,}/hour "
-                "(glm-4.5, glm-4.6, glm-4.7, glm-4.7-flash, glm-5, glm-5-turbo, glm-5.1)"
-            )
-
-
 async def initialize() -> AppServices:
     """Initialize application services.
 
     Loads environment variables, sets up logging, constructs the router,
-    registers models, optionally applies routing weights, initializes database
-    logging, and configures the persistent rate limiter.
+    registers models, optionally applies routing weights, and initializes
+    database logging.
 
     Returns:
         AppServices: A typed container with initialized services.
@@ -409,25 +345,6 @@ async def initialize() -> AppServices:
             logger.warning(f"RouteWise initialization failed: {exc}. Using fixed routing.")
             model_router_registry = None
 
-    # Rate limiter (optional)
-    rate_limiter: PersistentRateLimiter | None = None
-    if os.getenv("RATE_LIMIT_ENABLED", "1") == "1":
-        rate_limiter = PersistentRateLimiter()
-        _configure_rate_limiter(rate_limiter)
-        await rate_limiter.initialize()
-        logger.info("Rate limiter initialized with persistence")
-
-    # Fairness scheduler (optional; requires rate_limiter for capacity checks)
-    fairness_scheduler = None
-    if os.getenv("FAIRNESS_ENABLED", "0") == "1":
-        from .fairness import VTCFairnessScheduler
-
-        fairness_scheduler = VTCFairnessScheduler(rate_limiter)
-        logger.info(
-            "VTC fairness scheduler initialised (rate_limiter=%s)",
-            "attached" if rate_limiter is not None else "none",
-        )
-
     # Per-user concurrency limiter (always on; in-process)
     user_concurrency_limiter = UserConcurrencyLimiter(USER_CONCURRENCY_LIMITS)
     logger.info("User concurrency limiter initialized: %s", USER_CONCURRENCY_LIMITS)
@@ -448,12 +365,10 @@ async def initialize() -> AppServices:
     return AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
-        rate_limiter=rate_limiter,
         db_logger=db_logger,
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
         user_stats_collector=user_stats_collector,
-        fairness_scheduler=fairness_scheduler,
         user_concurrency_limiter=user_concurrency_limiter,
     )
 
@@ -476,13 +391,6 @@ async def shutdown(services: AppServices) -> None:
             await services.db_logger.cleanup()
         except Exception as exc:
             logger.error(f"DB cleanup failed: {exc}")
-
-    # Persist limiter state
-    if services.rate_limiter:
-        try:
-            await services.rate_limiter._persist_state()
-        except Exception as exc:
-            logger.error(f"Persist rate limiter failed: {exc}")
 
     # Routing manager health monitor
     if services.routing_manager:

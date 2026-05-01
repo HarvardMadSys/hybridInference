@@ -164,7 +164,6 @@ def auth_env(monkeypatch):
         "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "100.00",
         "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
         "BASE_URL": "http://localhost:8000",
-        "RATE_LIMIT_ENABLED": "0",
     }
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
@@ -220,14 +219,9 @@ async def admin_mode_app(auth_db_logger):
     router = RouteExecutor()
     router.register_route("playground-model", [(_PlaygroundAdapter(_cfg("playground-model")), 1.0)])
 
-    rate_limiter = MagicMock()
-    rate_limiter.initialize = AsyncMock()
-    rate_limiter._persist_state = AsyncMock()
-
     services = AppServices(
         router=router,
         db_logger=auth_db_logger,
-        rate_limiter=rate_limiter,
         routing_manager=None,
     )
 

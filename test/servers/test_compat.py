@@ -47,7 +47,7 @@ async def compat_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
 
     app = FastAPI()
     install_error_handlers(app)
-    app.state.services = AppServices(router=router, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
     app.include_router(compat.router)
     app.include_router(completions.router)
 

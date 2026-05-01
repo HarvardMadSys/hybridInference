@@ -30,12 +30,9 @@ from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
     get_db_logger,
-    get_fairness_scheduler,
     get_model_router_registry,
-    get_rate_limiter,
     get_router,
 )
-from serving.servers.rate_limiter import TokenCounter
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
@@ -112,7 +109,6 @@ def _record_routing_observation(
     responses={
         400: {"model": ErrorResponse, "description": "Bad Request"},
         404: {"model": ErrorResponse, "description": "Model Not Found"},
-        429: {"model": ErrorResponse, "description": "Rate Limit Exceeded"},
         500: {"model": ErrorResponse, "description": "Server Error"},
     },
 )
@@ -122,9 +118,7 @@ async def chat_completions(
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
-    rate_limiter=Depends(get_rate_limiter),
     db_logger=Depends(get_db_logger),
-    fairness_scheduler=Depends(get_fairness_scheduler),
     model_router_registry=Depends(get_model_router_registry),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
@@ -224,79 +218,11 @@ async def chat_completions(
     # Always record whether this request is streaming for DB analytics
     params["stream"] = bool(payload.stream)
 
-    # Stable user identifier used by the fairness scheduler
-    user_id: str = user_ctx.get("user_id") or "anonymous"
-
     # Affinity key for multi-key API rotation — pinned to the specific
     # hyi-xxx key in use (not user_id, since a user may have multiple keys).
     from serving.utils import context as req_ctx
 
     req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
-
-    # Capacity gate: fairness scheduler (VTC) sits before the rate limiter.
-    # When the fairness scheduler is active it owns ALL capacity acquisition
-    # (it calls try_consume_tokens internally).  The raw rate_limiter path is
-    # kept as a fallback for when fairness is disabled via FAIRNESS_ENABLED=0.
-    if not is_synthetic_probe:
-        if fairness_scheduler:
-            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-            logger.debug(
-                "Fairness acquire: model=%s user=%s tokens=%d",
-                model,
-                user_id,
-                estimated_tokens,
-            )
-            success, meta = await fairness_scheduler.acquire(
-                model_id=model,
-                user_id=user_id,
-                estimated_tokens=estimated_tokens,
-                timeout=30.0,
-            )
-        elif rate_limiter:
-            # Fallback: raw rate-limiter when fairness scheduler is not configured
-            priority = 1 if user_ctx.get("authenticated") else 0
-            success, meta = await rate_limiter.acquire_tokens(
-                model_id=model,
-                messages=messages,
-                max_tokens=params.get("max_tokens"),
-                priority=priority,
-                timeout=30.0,
-            )
-        else:
-            success, meta = True, {}
-
-        if not success:
-            error_detail: dict[str, Any] = {
-                "error": {
-                    "type": "rate_limit_exceeded",
-                    "message": meta.get("error", "Rate limit exceeded"),
-                    "model": model,
-                    "retry_after": meta.get("retry_after", 60),
-                }
-            }
-            if "tokens_requested" in meta:
-                error_detail["error"]["tokens_requested"] = meta["tokens_requested"]
-            if "queue_size" in meta:
-                error_detail["error"]["queue_size"] = meta["queue_size"]
-
-            headers: dict[str, str] = {
-                "X-RateLimit-RetryAfter": str(meta.get("retry_after", 60)),
-                "X-RateLimit-Model": model,
-            }
-            if rate_limiter:
-                status = rate_limiter.get_status(model)
-                if status.get("configured"):
-                    headers.update(
-                        {
-                            "X-RateLimit-Limit": str(status.get("capacity")),
-                            "X-RateLimit-Remaining": str(int(status.get("tokens_available", 0))),
-                            "X-RateLimit-Window": str(int(status.get("window_seconds", 0))),
-                        }
-                    )
-
-            # Record 429 rate limit error
-            record_model_request("429", "router")
-            raise HTTPException(status_code=429, detail=error_detail, headers=headers)
 
     # Generate request ID and metadata
     request_id = f"req_{int(time.time() * 1000000)}"
@@ -391,9 +317,6 @@ async def chat_completions(
             and weight > 0
             for adapter, weight in route.adapters
         ):
-            if rate_limiter and not is_synthetic_probe:
-                estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-                await rate_limiter.release_tokens(model, estimated_tokens)
             record_model_request("400", "router")
             raise HTTPException(
                 status_code=400,
@@ -723,16 +646,6 @@ async def chat_completions(
                         },
                     )
 
-                # Notify fairness scheduler of actual token cost (streaming success)
-                if fairness_scheduler and not is_synthetic_probe:
-                    _actual_usage = (normalize_usage(usage_data) if usage_data else {}) or {}
-                    await fairness_scheduler.on_request_finish(
-                        model_id=model,
-                        user_id=user_id,
-                        actual_input_tokens=int(_actual_usage.get("prompt_tokens") or 0),
-                        actual_output_tokens=int(_actual_usage.get("completion_tokens") or 0),
-                    )
-
                 # Record routing observation for online learning (RouteWise)
                 if not is_synthetic_probe:
                     stream_usage = normalize_usage(usage_data) if usage_data else {}
@@ -788,21 +701,6 @@ async def chat_completions(
                             "ttft_ms": ttft_ms,
                             "pricing": None,  # Error case - no pricing available
                         },
-                    )
-
-                if rate_limiter and not is_synthetic_probe:
-                    estimated_tokens = TokenCounter.estimate_tokens(
-                        messages, params.get("max_tokens")
-                    )
-                    await rate_limiter.release_tokens(model, estimated_tokens)
-
-                # Notify fairness scheduler even on error so counters stay consistent
-                if fairness_scheduler and not is_synthetic_probe:
-                    await fairness_scheduler.on_request_finish(
-                        model_id=model,
-                        user_id=user_id,
-                        actual_input_tokens=0,
-                        actual_output_tokens=0,
                     )
 
                 error_chunk = {"error": {"message": str(exc), "type": "server_error", "code": 500}}
@@ -968,27 +866,6 @@ async def chat_completions(
                         direction="reasoning",
                     ).inc(reasoning_tokens)
 
-        if rate_limiter and not is_synthetic_probe:
-            actual_tokens = response.get("usage", {}).get("total_tokens")
-            if actual_tokens:
-                estimated = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-                if abs(actual_tokens - estimated) > estimated * 0.2:
-                    logger.warning(
-                        f"Token estimation variance for {model}: estimated {estimated}, actual {actual_tokens}"
-                    )
-
-        # Notify fairness scheduler of actual token cost (non-streaming success)
-        if fairness_scheduler and not is_synthetic_probe:
-            _usage = (
-                normalize_usage(response.get("usage", {})) if isinstance(response, dict) else {}
-            ) or {}
-            await fairness_scheduler.on_request_finish(
-                model_id=model,
-                user_id=user_id,
-                actual_input_tokens=int(_usage.get("prompt_tokens") or 0),
-                actual_output_tokens=int(_usage.get("completion_tokens") or 0),
-            )
-
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
             ns_usage = normalize_usage(raw_usage) or {}
@@ -1010,16 +887,6 @@ async def chat_completions(
         return response
 
     except ProviderPinError as exc:
-        if rate_limiter and not is_synthetic_probe:
-            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-            await rate_limiter.release_tokens(model, estimated_tokens)
-        if fairness_scheduler and not is_synthetic_probe:
-            await fairness_scheduler.on_request_finish(
-                model_id=model,
-                user_id=user_id,
-                actual_input_tokens=0,
-                actual_output_tokens=0,
-            )
         record_model_request("400", "router")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1093,18 +960,6 @@ async def chat_completions(
                     "pricing": None,  # Error case - no pricing available
                 },
             )
-        if rate_limiter and not is_synthetic_probe:
-            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-            await rate_limiter.release_tokens(model, estimated_tokens)
-
-        if fairness_scheduler and not is_synthetic_probe:
-            await fairness_scheduler.on_request_finish(
-                model_id=model,
-                user_id=user_id,
-                actual_input_tokens=0,
-                actual_output_tokens=0,
-            )
-
         # Record error status code
         record_model_request(str(exc_status_code), provider_for_error)
 

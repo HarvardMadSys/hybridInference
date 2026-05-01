@@ -1,4 +1,4 @@
-"""Integration tests for cost logging and rate limiter priority."""
+"""Integration tests for cost logging."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
-from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import completions
@@ -65,7 +64,7 @@ class TrackingAdapter(BaseAdapter):
 
 
 @pytest.fixture
-async def tracking_app(monkeypatch, mock_db_logger, mock_rate_limiter) -> FastAPI:
+async def tracking_app(monkeypatch, mock_db_logger) -> FastAPI:
     # Disable auth for cost tracking tests; auth has independent coverage.
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
@@ -91,7 +90,6 @@ async def tracking_app(monkeypatch, mock_db_logger, mock_rate_limiter) -> FastAP
     app.state.services = AppServices(  # type: ignore[attr-defined]
         router=router,
         db_logger=mock_db_logger,
-        rate_limiter=mock_rate_limiter,
     )
 
     install_error_handlers(app)
@@ -151,54 +149,3 @@ async def test_streaming_logs_usage(tracking_client, mock_db_logger):
     kwargs = mock_db_logger.log_request.await_args.kwargs
     assert kwargs["usage"]["completion_tokens"] == 30
     assert kwargs["usage"]["prompt_tokens"] == 120
-
-
-@pytest.mark.asyncio
-async def test_authenticated_user_priority(tracking_client, mock_rate_limiter):
-    client, app = tracking_client
-    mock_rate_limiter.acquire_tokens.reset_mock()
-
-    async def override_verify_api_key():
-        return {"user_id": "user-a", "authenticated": True, "tier": "pro"}
-
-    app.dependency_overrides[verify_api_key] = override_verify_api_key
-    try:
-        await client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "tracked-model",
-                "messages": [{"role": "user", "content": "Hi"}],
-            },
-            headers={"Authorization": "Bearer hyi-test"},
-        )
-    finally:
-        app.dependency_overrides.pop(verify_api_key, None)
-
-    mock_rate_limiter.acquire_tokens.assert_awaited()
-    call = mock_rate_limiter.acquire_tokens.await_args
-    assert call.kwargs["priority"] == 1
-
-
-@pytest.mark.asyncio
-async def test_anonymous_user_priority_zero(tracking_client, mock_rate_limiter):
-    client, app = tracking_client
-    mock_rate_limiter.acquire_tokens.reset_mock()
-
-    async def override_verify_api_key():
-        return {"user_id": "anon", "authenticated": False, "tier": "free"}
-
-    app.dependency_overrides[verify_api_key] = override_verify_api_key
-    try:
-        await client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "tracked-model",
-                "messages": [{"role": "user", "content": "Hi"}],
-            },
-        )
-    finally:
-        app.dependency_overrides.pop(verify_api_key, None)
-
-    mock_rate_limiter.acquire_tokens.assert_awaited()
-    call = mock_rate_limiter.acquire_tokens.await_args
-    assert call.kwargs["priority"] == 0

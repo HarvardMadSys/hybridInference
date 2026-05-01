@@ -10,7 +10,7 @@ hybridInference/
 ├── serving/
 │   ├── servers/
 │   │   ├── app.py              # FastAPI entry point (exposes /v1/*)
-│   │   ├── bootstrap.py        # Service bootstrap: models, routing, DB, rate limits
+│   │   ├── bootstrap.py        # Service bootstrap: models, routing, DB
 │   │   └── routers/            # API routers (health, models, completions, admin)
 │   ├── adapters/               # Provider adapters (local VLLM, DeepSeek, Gemini, Test, ...)
 │   ├── storage/                # Database loggers (SQLite/PostgreSQL)
@@ -26,7 +26,7 @@ hybridInference/
 
 ### Key Components
 - **FastAPI app (`serving.servers.app:create_app`)**: Hosts OpenRouter-compatible endpoints plus admin and metrics routes.
-- **Bootstrap (`serving.servers.bootstrap`)**: Loads environment, registers models, applies routing weights, wires database logging, and configures rate limits.
+- **Bootstrap (`serving.servers.bootstrap`)**: Loads environment, registers models, applies routing weights, and wires database logging.
 - **Adapters (`serving.adapters.*`)**: Translate requests to providers such as local VLLM, DeepSeek, Gemini, and Test API.
 - **Routing (`routing.*`)**: Supports fixed-ratio and future strategies for splitting traffic across adapters.
 - **Observability (`serving.observability.metrics`)**: Prometheus metrics and structured request logging.
@@ -84,7 +84,6 @@ When the app starts it will:
 2. Register models from `config/models.yaml`.
 3. Apply routing overrides from `config/routing.yaml` if present.
 4. Initialize the database logger (SQLite under `var/db` by default).
-5. Configure per-provider rate limits when API keys are supplied.
 
 ### Quick Checks
 ```bash
@@ -179,7 +178,6 @@ pytest test/servers/test_bootstrap.py -q
 - **Port already in use**: `sudo lsof -ti :80 | xargs sudo kill -9`
 - **Missing models**: Verify `config/models.yaml` contains the expected entries and that `LOCAL_BASE_URL` is reachable.
 - **No logs written**: Confirm `USE_SQLITE_LOG` and filesystem permissions for `var/db/`.
-- **Provider rate limiting**: Adjust `GEMINI_TPM_LIMIT`, `DEEPSEEK_TPM_LIMIT`, or equivalent environment variables as needed.
 
 ## Related Docs
 

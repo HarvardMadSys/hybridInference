@@ -14,7 +14,6 @@ from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
-from serving.servers.rate_limiter import PersistentRateLimiter
 
 
 class TestBootstrapInitialization:
@@ -30,14 +29,12 @@ class TestBootstrapInitialization:
                 new=AsyncMock(return_value=({}, [])),
             ),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
-            patch("serving.servers.bootstrap._configure_rate_limiter"),
         ):
             services = await bootstrap.initialize()
 
             assert isinstance(services, AppServices)
             assert isinstance(services.router, RouteExecutor)
             assert services.db_logger is None  # Disabled in mock_env
-            assert services.rate_limiter is None  # Disabled in mock_env
             assert services.routing_manager is None
 
     @pytest.mark.asyncio
@@ -55,7 +52,6 @@ class TestBootstrapInitialization:
                 new=AsyncMock(return_value=({}, [])),
             ),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
-            patch("serving.servers.bootstrap._configure_rate_limiter"),
             patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger,
         ):
             mock_logger = AsyncMock()
@@ -67,29 +63,6 @@ class TestBootstrapInitialization:
             mock_logger.initialize.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_initialize_with_rate_limiter(self, mock_env, monkeypatch, tmp_path):
-        """Test initialization with rate limiter enabled."""
-        monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
-        limiter_db = tmp_path / "rate_limits.db"
-
-        with (
-            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
-            patch(
-                "serving.servers.bootstrap._init_router_and_models",
-                new=AsyncMock(return_value=({}, [])),
-            ),
-            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
-            patch(
-                "serving.servers.bootstrap.PersistentRateLimiter",
-                return_value=PersistentRateLimiter(str(limiter_db)),
-            ),
-        ):
-            services = await bootstrap.initialize()
-
-            assert services.rate_limiter is not None
-            await services.rate_limiter._persist_state()
-
-    @pytest.mark.asyncio
     async def test_initialize_loads_models_yaml(self, mock_env, temp_models_yaml, monkeypatch):
         """Test that models.yaml is loaded and registered."""
         monkeypatch.setenv("MODELS_CONFIG", temp_models_yaml)
@@ -98,7 +71,6 @@ class TestBootstrapInitialization:
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
-            patch("serving.servers.bootstrap._configure_rate_limiter"),
         ):
             services = await bootstrap.initialize()
 
@@ -120,7 +92,6 @@ class TestBootstrapInitialization:
                 new=AsyncMock(return_value=({}, [])),
             ),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
-            patch("serving.servers.bootstrap._configure_rate_limiter"),
         ):
             services = await bootstrap.initialize()
 
@@ -142,7 +113,6 @@ class TestBootstrapInitialization:
                 "serving.servers.bootstrap._init_router_and_models",
                 new=AsyncMock(return_value=({}, [])),
             ),
-            patch("serving.servers.bootstrap._configure_rate_limiter"),
         ):
             services = await bootstrap.initialize()
 
@@ -158,7 +128,6 @@ class TestBootstrapShutdown:
         """Test that shutdown properly cleans up all resources."""
         # Mock cleanup methods
         app_services.db_logger.cleanup = AsyncMock()
-        app_services.rate_limiter._persist_state = AsyncMock()
 
         # Add routing manager with health monitor
         routing_manager = MagicMock()
@@ -169,15 +138,12 @@ class TestBootstrapShutdown:
 
         # Verify cleanup was called
         app_services.db_logger.cleanup.assert_called_once()
-        app_services.rate_limiter._persist_state.assert_called_once()
         routing_manager.shutdown.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_handles_none_services(self):
         """Test that shutdown handles None values gracefully."""
-        services = AppServices(
-            router=RouteExecutor(), db_logger=None, rate_limiter=None, routing_manager=None
-        )
+        services = AppServices(router=RouteExecutor(), db_logger=None, routing_manager=None)
 
         # Should not raise any errors
         await bootstrap.shutdown(services)
@@ -187,7 +153,6 @@ class TestBootstrapShutdown:
         """Test that shutdown continues even if cleanup fails."""
         # Make cleanup raise an exception
         app_services.db_logger.cleanup = AsyncMock(side_effect=Exception("DB cleanup failed"))
-        app_services.rate_limiter._persist_state = AsyncMock()
 
         # Should not raise, but should log the error
         with patch("serving.servers.bootstrap.logger") as mock_logger:
@@ -195,8 +160,6 @@ class TestBootstrapShutdown:
 
             # Check that error was logged
             mock_logger.error.assert_called()
-            # But other cleanup still happened
-            app_services.rate_limiter._persist_state.assert_called_once()
 
 
 class TestBootstrapHelpers:
@@ -357,72 +320,6 @@ models:
         await bootstrap._init_router_and_models(router)
         assert "gemini-2.5-flash" in router.routes
 
-    def test_configure_rate_limiter_deepseek(self, monkeypatch, mock_rate_limiter):
-        """Test rate limiter configuration for DeepSeek."""
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        monkeypatch.delenv("GLM_TPH_LIMIT", raising=False)
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-        monkeypatch.setenv("DEEPSEEK_TPD_LIMIT", "500000")
-
-        bootstrap._configure_rate_limiter(mock_rate_limiter)
-
-        mock_rate_limiter.configure.assert_called()
-        configs = [call.args[0] for call in mock_rate_limiter.configure.call_args_list]
-        deepseek_cfg = next((cfg for cfg in configs if cfg.model_id == "deepseek-chat"), None)
-        assert deepseek_cfg is not None
-        assert deepseek_cfg.capacity_tokens == 500000
-        assert deepseek_cfg.window_seconds == 86400
-
-    def test_configure_rate_limiter_gemini(self, monkeypatch, mock_rate_limiter):
-        """Test rate limiter configuration for Gemini (both models)."""
-        # Clear any existing keys first
-        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        monkeypatch.delenv("GLM_TPH_LIMIT", raising=False)
-        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-        monkeypatch.setenv("GEMINI_TPM_LIMIT", "2000000")
-
-        bootstrap._configure_rate_limiter(mock_rate_limiter)
-
-        # Check that configure was called for both Gemini models
-        mock_rate_limiter.configure.assert_called()
-        calls = mock_rate_limiter.configure.call_args_list
-
-        # Find both Gemini model configs
-        gemini_flash_config = None
-        gemini_preview_config = None
-        for call in calls:
-            config = call.args[0]
-            if config.model_id == "gemini-2.5-flash":
-                gemini_flash_config = config
-            elif config.model_id == "gemini-2.5-flash-preview-09-2025":
-                gemini_preview_config = config
-
-        # Verify both models are configured with same policy
-        assert gemini_flash_config is not None, "Gemini flash config not found"
-        assert gemini_flash_config.capacity_tokens == 2000000
-        assert gemini_flash_config.window_seconds == 60
-
-        assert gemini_preview_config is not None, "Gemini preview config not found"
-        assert gemini_preview_config.capacity_tokens == 2000000
-        assert gemini_preview_config.window_seconds == 60
-
-    def test_configure_rate_limiter_glm(self, monkeypatch, mock_rate_limiter):
-        """Test rate limiter configuration for GLM."""
-        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        monkeypatch.setenv("ZAI_API_KEY", "glm-test-key")
-        monkeypatch.setenv("GLM_TPH_LIMIT", "750000")
-
-        bootstrap._configure_rate_limiter(mock_rate_limiter)
-
-        mock_rate_limiter.configure.assert_called()
-        configs = [call.args[0] for call in mock_rate_limiter.configure.call_args_list]
-        glm_config = next((cfg for cfg in configs if cfg.model_id == "glm-4.5"), None)
-        assert glm_config is not None
-        assert glm_config.capacity_tokens == 750000
-        assert glm_config.window_seconds == 3600
-
 
 class TestBootstrapErrorHandling:
     """Test error handling in bootstrap."""
@@ -435,7 +332,6 @@ class TestBootstrapErrorHandling:
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
-            patch("serving.servers.bootstrap._configure_rate_limiter"),
             patch("serving.servers.bootstrap.logger") as mock_logger,
         ):
             services = await bootstrap.initialize()
@@ -456,7 +352,6 @@ class TestBootstrapErrorHandling:
                 "serving.servers.bootstrap._init_router_and_models",
                 new=AsyncMock(return_value=({}, [])),
             ),
-            patch("serving.servers.bootstrap._configure_rate_limiter"),
             patch("serving.servers.bootstrap.logger") as mock_logger,
         ):
             services = await bootstrap.initialize()

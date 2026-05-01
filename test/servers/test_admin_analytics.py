@@ -31,7 +31,6 @@ class TestAdminAnalyticsRoute:
         services = AppServices(
             router=MagicMock(),
             db_logger=mock_db_logger,
-            rate_limiter=None,
             routing_manager=None,
         )
         app.state.services = services  # type: ignore[attr-defined]

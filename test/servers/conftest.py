@@ -19,7 +19,6 @@ from httpx import AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices
-from serving.servers.rate_limiter import PersistentRateLimiter
 from serving.storage.database import DatabaseLogger
 
 # ============================================================================
@@ -129,7 +128,6 @@ def auth_test_env():
         "DB_ENABLED": "true",
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
-        "RATE_LIMIT_ENABLED": "0",
         "METRICS_ENABLED": "0",
         "OFFLOAD": "0",
     }
@@ -174,7 +172,6 @@ def mock_env(monkeypatch):
     """Mock environment variables for testing."""
     test_env = {
         "DB_ENABLED": "false",  # Disable DB in tests by default
-        "RATE_LIMIT_ENABLED": "0",  # Disable rate limiting in tests
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
         "LOCAL_BASE_URL": "http://localhost:8001",
@@ -237,34 +234,12 @@ def mock_db_logger():
     return logger
 
 
-@pytest.fixture
-def mock_rate_limiter():
-    """Create a mock rate limiter."""
-    limiter = MagicMock(spec=PersistentRateLimiter)
-    limiter.initialize = AsyncMock()
-    limiter._persist_state = AsyncMock()
-    limiter.acquire_tokens = AsyncMock(return_value=(True, {}))
-    limiter.release_tokens = AsyncMock()
-    limiter.get_status = MagicMock(
-        return_value={
-            "configured": True,
-            "capacity": 1000000,
-            "tokens_available": 1000000,
-            "window_seconds": 60,
-        }
-    )
-    limiter.get_metrics = MagicMock(return_value={})
-    limiter.reset_circuit_breaker = MagicMock()
-    return limiter
-
-
 @pytest_asyncio.fixture
-async def app_services(mock_router, mock_db_logger, mock_rate_limiter):
+async def app_services(mock_router, mock_db_logger):
     """Create AppServices instance for testing."""
     services = AppServices(
         router=mock_router,
         db_logger=mock_db_logger,
-        rate_limiter=mock_rate_limiter,
         routing_manager=None,
     )
     yield services
@@ -274,10 +249,6 @@ async def app_services(mock_router, mock_db_logger, mock_rate_limiter):
         with contextlib.suppress(Exception):
             # Suppress teardown errors to avoid masking test results
             await services.db_logger.cleanup()
-    if services.rate_limiter:
-        with contextlib.suppress(Exception):
-            # Suppress teardown errors to avoid masking test results
-            await services.rate_limiter._persist_state()
 
 
 @pytest_asyncio.fixture

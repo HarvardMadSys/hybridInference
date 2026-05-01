@@ -63,7 +63,6 @@ async def root() -> dict[str, Any]:
             "Load balancing",
             "Automatic fallback",
             "Database logging",
-            "Advanced rate limiting",
         ],
         "endpoints": {
             "/v1/chat/completions": "Chat completions endpoint",
@@ -74,9 +73,6 @@ async def root() -> dict[str, Any]:
             "/routing": "Show routing configuration",
             "/stats": "API usage statistics",
             "/health": "Health check",
-            "/rate-limits": "Rate limit metrics for all models",
-            "/rate-limits/{model_id}": "Rate limit status for specific model",
-            "/rate-limits/{model_id}/reset": "Reset circuit breaker (POST)",
         },
     }
 
@@ -120,7 +116,7 @@ async def deep_health(
     services=Depends(get_services),
     db_logger=Depends(get_db_logger),
 ) -> dict[str, Any]:
-    """Deep health check with provider/circuit and rate limiter info.
+    """Deep health check with provider/circuit info.
 
     Performs active database connection test and returns detailed system status.
     """
@@ -132,14 +128,6 @@ async def deep_health(
     provider_status = (
         router_exec.get_provider_status() if hasattr(router_exec, "get_provider_status") else {}
     )
-    rl = services.rate_limiter
-    rl_status: dict[str, Any] | None = None
-    if rl is not None:
-        try:
-            # When model_id omitted, returns per-model dict
-            rl_status = rl.get_metrics(None)
-        except Exception:
-            rl_status = None
 
     overall = "healthy"
     if not db_connected:
@@ -160,7 +148,6 @@ async def deep_health(
         "routes_configured": routes_count,
         "database_connected": db_connected,
         "providers": provider_status,
-        "rate_limiter": rl_status,
     }
 
 
