@@ -24,7 +24,7 @@ Nginx path routing:
 - everything else → frontend
 
 Docker Compose manages all services (backend, frontend, PostgreSQL, Prometheus,
-Alertmanager, alert-logger, Grafana, plus pgAdmin behind the `admin` profile)
+Alertmanager, Grafana, plus pgAdmin behind the `admin` profile)
 with automatic restarts via `restart: unless-stopped`.
 
 ### Deployment
