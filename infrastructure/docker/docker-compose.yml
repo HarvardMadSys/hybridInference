@@ -162,23 +162,6 @@ services:
     networks:
       - hybridinference
 
-  alert-logger:
-    build:
-      context: ../..
-      dockerfile: infrastructure/docker/Dockerfile.alert-logger
-    container_name: hybridinference-alert-logger
-    restart: unless-stopped
-    volumes:
-      - alert_log_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1',5001),2); s.close()\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-    networks:
-      - hybridinference
-
   grafana:
     image: grafana/grafana:12.1.1
     container_name: hybridinference-grafana
@@ -214,9 +197,6 @@ volumes:
   alertmanager_data:
     external: true
     name: hybridinference_alertmanager_data
-  alert_log_data:
-    external: true
-    name: hybridinference_alert_log_data
   grafana_data:
     external: true
     name: hybridinference_grafana_data
