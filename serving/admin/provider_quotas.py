@@ -423,12 +423,9 @@ async def fetch_minimax() -> ProviderQuotaResult:
                 reset_dt = datetime.fromtimestamp(end / 1000, tz=timezone.utc)
             except (OSError, OverflowError, ValueError):
                 reset_dt = None
+        used_val = None
         if isinstance(total, (int, float)) and isinstance(remains, (int, float)):
-            used_val = float(total) - float(remains)
-        elif isinstance(remains, (int, float)):
-            used_val = float(remains)
-        else:
-            used_val = None
+            used_val = max(0.0, float(total) - float(remains))
         usages.append(
             ProviderQuotaUsage(
                 label=f"{model_name} (interval)",
@@ -448,12 +445,9 @@ async def fetch_minimax() -> ProviderQuotaResult:
                     weekly_reset_dt = datetime.fromtimestamp(weekly_end / 1000, tz=timezone.utc)
                 except (OSError, OverflowError, ValueError):
                     weekly_reset_dt = None
-            if isinstance(weekly_total, (int, float)) and isinstance(weekly_remains, (int, float)):
-                weekly_used_val = float(weekly_total) - float(weekly_remains)
-            elif isinstance(weekly_remains, (int, float)):
-                weekly_used_val = float(weekly_remains)
-            else:
-                weekly_used_val = None
+            weekly_used_val = None
+            if isinstance(weekly_remains, (int, float)):
+                weekly_used_val = max(0.0, float(weekly_total) - float(weekly_remains))
             usages.append(
                 ProviderQuotaUsage(
                     label=f"{model_name} (weekly)",
