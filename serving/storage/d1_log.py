@@ -172,8 +172,18 @@ class D1LogStore(LogStore):
         response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
+        upstream_cost_usd: float | None = None,
     ) -> None:
-        """Buffer a slim log row for later flush to D1."""
+        """Buffer a slim log row for later flush to D1.
+
+        The D1 buffered writer accepts ``upstream_cost_usd`` for API
+        compatibility but does NOT persist it. The D1 schema is intentionally
+        slim — internal cost tracking lives on the postgres side.
+        """
+        # upstream_cost_usd is intentionally not persisted to D1: the slim buffered
+        # schema only carries user-facing fields. Internal cost reconciliation lives
+        # on postgres (api_logs.upstream_cost_usd).
+        _ = upstream_cost_usd  # accepted for API compatibility, ignored
         cost_usd = calculate_cost(usage, pricing)
         user_id = (metadata or {}).get("user_id")
         outcome = _derive_outcome(status_code, error)

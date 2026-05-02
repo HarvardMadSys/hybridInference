@@ -725,6 +725,7 @@ class DualWriteLogStore(LogStore):
         response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
+        upstream_cost_usd: float | None = None,
     ) -> None:
         """Write to primary, then shadow."""
         kwargs: dict[str, Any] = {
@@ -744,6 +745,7 @@ class DualWriteLogStore(LogStore):
             "response_hash": response_hash,
             "store_full_content": store_full_content,
             "pricing": pricing,
+            "upstream_cost_usd": upstream_cost_usd,
         }
         await self._primary.log_request(**kwargs)
         await self._do_shadow(
