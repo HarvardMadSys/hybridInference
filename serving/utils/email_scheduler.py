@@ -54,6 +54,15 @@ def stop_scheduler() -> None:
     _scheduler = None
 
 
+def get_scheduler() -> AsyncIOScheduler | None:
+    """Return the live AsyncIOScheduler, or None if not started.
+
+    Allows other modules (e.g., provider-stats rollup) to register additional
+    jobs on the same scheduler.
+    """
+    return _scheduler
+
+
 async def rehydrate_scheduled_broadcasts() -> None:
     """Re-register scheduled broadcasts into APScheduler on startup (restart recovery)."""
     if not _db_pool:
