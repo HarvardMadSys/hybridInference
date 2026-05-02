@@ -259,3 +259,93 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
 async def test_admin_performance_metrics_requires_auth(auth_client):
     resp = await auth_client.get("/admin/performance-metrics")
     assert resp.status_code == 401
+
+
+class TestDecodeThroughputHelper:
+    """Unit tests for `_decode_throughput_tps` used by /admin/recent-requests."""
+
+    @staticmethod
+    def _call(**kwargs):
+        from serving.servers.routers.admin import _decode_throughput_tps
+
+        return _decode_throughput_tps(**kwargs)
+
+    def test_streaming_happy_path(self):
+        # 100 completion tokens, ttft=200ms, latency=1200ms -> decode 1000ms
+        # throughput = (100 - 1) / 1.0 = 99.0
+        result = self._call(
+            stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=100
+        )
+        assert result == pytest.approx(99.0)
+
+    def test_non_streaming_returns_none(self):
+        assert (
+            self._call(
+                stream=False, latency_ms=1200, ttft_ms=200, completion_tokens=100
+            )
+            is None
+        )
+
+    def test_stream_none_returns_none(self):
+        assert (
+            self._call(
+                stream=None, latency_ms=1200, ttft_ms=200, completion_tokens=100
+            )
+            is None
+        )
+
+    def test_missing_ttft_returns_none(self):
+        assert (
+            self._call(
+                stream=True, latency_ms=1200, ttft_ms=None, completion_tokens=100
+            )
+            is None
+        )
+
+    def test_zero_ttft_returns_none(self):
+        assert (
+            self._call(
+                stream=True, latency_ms=1200, ttft_ms=0, completion_tokens=100
+            )
+            is None
+        )
+
+    def test_latency_le_ttft_returns_none(self):
+        assert (
+            self._call(
+                stream=True, latency_ms=200, ttft_ms=200, completion_tokens=100
+            )
+            is None
+        )
+
+    def test_missing_latency_returns_none(self):
+        assert (
+            self._call(
+                stream=True, latency_ms=None, ttft_ms=200, completion_tokens=100
+            )
+            is None
+        )
+
+    def test_single_token_returns_none(self):
+        assert (
+            self._call(
+                stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=1
+            )
+            is None
+        )
+
+    def test_zero_tokens_returns_none(self):
+        assert (
+            self._call(
+                stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=0
+            )
+            is None
+        )
+
+    def test_missing_tokens_returns_none(self):
+        assert (
+            self._call(
+                stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=None
+            )
+            is None
+        )

@@ -1535,18 +1535,26 @@ async def admin_get_performance_metrics(
 
 
 def _decode_throughput_tps(
+    stream: bool | None,
     latency_ms: int | None,
     ttft_ms: int | None,
     completion_tokens: int | None,
 ) -> float | None:
-    """Output-token throughput (tok/s) over the decode phase, or None if undefined."""
+    """Output-token throughput (tok/s) over the decode phase, or None if undefined.
+
+    Matches the convention used by /admin/performance-metrics: first token is
+    delivered at ttft_ms, so the decode phase produces (completion_tokens - 1)
+    tokens during (latency_ms - ttft_ms). Streaming-only; needs >1 output token.
+    """
+    if stream is not True:
+        return None
     if ttft_ms is None or ttft_ms <= 0:
         return None
     if latency_ms is None or latency_ms <= ttft_ms:
         return None
-    if completion_tokens is None or completion_tokens <= 0:
+    if completion_tokens is None or completion_tokens <= 1:
         return None
-    return completion_tokens / ((latency_ms - ttft_ms) / 1000.0)
+    return (completion_tokens - 1) / ((latency_ms - ttft_ms) / 1000.0)
 
 
 @router.get("/admin/recent-requests", response_model=AdminRecentRequestsResponse)
@@ -1649,7 +1657,10 @@ async def admin_list_recent_requests(
             latency_ms=row["latency_ms"],
             ttft_ms=row["ttft_ms"],
             decode_throughput_tps=_decode_throughput_tps(
-                row["latency_ms"], row["ttft_ms"], row["completion_tokens"]
+                row["stream"],
+                row["latency_ms"],
+                row["ttft_ms"],
+                row["completion_tokens"],
             ),
             stream=row["stream"],
             prompt_tokens=row["prompt_tokens"],
