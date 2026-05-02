@@ -602,3 +602,41 @@ models:
         base_url: "http://host.docker.internal:8317/v1"
         api_key: ${CLI_PROXY_API_KEY}
         provider_model_id: "claude-opus-4-7"
+  # ── OpenRouter examples ────────────────────────────────────
+  # Bare `kind: openrouter` lets OpenRouter pick the upstream provider
+  # freely; `kind: openrouter[<provider_slug>]` pins to one OpenRouter
+  # upstream via provider.order=[<slug>], allow_fallbacks=false. See
+  # docs/openrouter.md for the full list of supported provider slugs.
+  #
+  # - id: llama-3.3-70b
+  #   name: Llama 3.3 70B (via OpenRouter)
+  #   provider: openrouter
+  #   provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #   context_length: 131072
+  #   max_output_length: 8192
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream]
+  #   input_modalities: ["text"]
+  #   output_modalities: ["text"]
+  #   pricing:
+  #     prompt: "0.13"
+  #     completion: "0.39"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0"
+  #     input_cache_writes: "0"
+  #   route:
+  #     # Pinned to DeepInfra: deterministic upstream, distinct endpoint_id.
+  #     - kind: openrouter[deepinfra]
+  #       weight: 1.0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_key: ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #     # Bare openrouter — let OpenRouter pick. Different endpoint_id
+  #     # from the pinned leg so circuit-breaker stats stay separate.
+  #     - kind: openrouter
+  #       weight: 0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_key: ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
