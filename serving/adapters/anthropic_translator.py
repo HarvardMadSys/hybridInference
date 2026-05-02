@@ -427,8 +427,13 @@ class OpenAIToAnthropicStreamTranslator:
 
     def _emit_text(self, text: str) -> Iterator[bytes]:
         if self._current_text_index is None:
-            # Close any open tool blocks first? No - text and tool deltas can interleave;
-            # OpenAI rarely interleaves them in practice. Open new text block.
+            # Close any open tool blocks first (Anthropic SSE requires one block at a time).
+            for tb in list(self._tool_blocks.values()):
+                yield self._sse(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": tb["anthropic_index"]},
+                )
+            self._tool_blocks.clear()
             self._current_text_index = self._next_index
             self._next_index += 1
             yield self._sse(

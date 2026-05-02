@@ -259,6 +259,66 @@ async def test_stream_messages_identity_passthrough_records_usage(monkeypatch):
     assert captured["json"]["stream"] is True
 
 
+@pytest.mark.asyncio
+async def test_stream_chat_completion_emits_done_on_truncated_upstream(monkeypatch):
+    """Truncated upstream (no message_stop) must still emit final usage chunk and [DONE].
+
+    Simulates an upstream that closes the connection mid-stream without ever
+    sending a message_stop event.
+    """
+    # Upstream sends message_start + one text delta, then closes without message_stop.
+    truncated_sse = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_t","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}\n\n'
+        b"event: content_block_start\n"
+        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+        b"event: content_block_delta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n'
+        # No content_block_stop, no message_delta, no message_stop.
+    )
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield truncated_sse
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    adapter = AnthropicAdapter(_cfg())
+    chunks = []
+    async for c in adapter.stream_chat_completion(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=64,
+        stream=True,
+    ):
+        chunks.append(c if isinstance(c, str) else c.decode("utf-8"))
+    joined = "".join(chunks)
+
+    # Must include [DONE] even though upstream never sent message_stop.
+    assert "[DONE]" in joined
+    # Text delta must have been forwarded.
+    assert '"Hello"' in joined
+
+
 def test_registry_returns_anthropic_adapter_for_kind_anthropic():
     """Smoke test: kind: anthropic dispatches to AnthropicAdapter."""
     from serving.servers.registry import _make_adapter

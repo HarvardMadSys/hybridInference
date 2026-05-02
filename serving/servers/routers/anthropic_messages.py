@@ -143,11 +143,35 @@ def _resolve(model_id: str, router_exec, user_ctx: dict | None):
     return canonical, route, adapter
 
 
+# --- Inbound header forwarding to upstream ---------------------------------
+
+_FORWARDED_HEADERS = ("anthropic-beta",)
+
+
+def _extract_forwarded_headers(request: Request) -> dict[str, str]:
+    """Extract allowlisted Anthropic headers from the inbound request to forward upstream.
+
+    Only headers in ``_FORWARDED_HEADERS`` are forwarded; auth-related headers
+    (``x-api-key``, ``authorization``) are never forwarded because the adapter
+    injects its own upstream credentials.
+    """
+    out: dict[str, str] = {}
+    for k in _FORWARDED_HEADERS:
+        v = request.headers.get(k)
+        if v:
+            out[k] = v
+    return out
+
+
 # --- Field sanitization for OpenAI backends --------------------------------
 
 
 def _sanitize_for_openai_backend(body: dict[str, Any]) -> list[str]:
-    """Strip Anthropic-only block fields the OpenAI translator can't represent.
+    """Strip Anthropic-only fields the OpenAI translator can't represent.
+
+    Removes ``cache_control`` from content blocks and pops top-level fields
+    (``thinking``, ``top_k``, ``container``) that have no OpenAI equivalent.
+    Also detects unsupported ``metadata`` keys beyond ``user_id``.
 
     Returns sorted list of dropped-field names for warning logging.
     """
@@ -159,9 +183,14 @@ def _sanitize_for_openai_backend(body: dict[str, Any]) -> list[str]:
                 if isinstance(block, dict) and "cache_control" in block:
                     block.pop("cache_control")
                     dropped.add("cache_control")
-    if "thinking" in body:
-        body.pop("thinking")
-        dropped.add("thinking")
+    for k in ("thinking", "top_k", "container"):
+        if k in body:
+            body.pop(k)
+            dropped.add(k)
+    metadata = body.get("metadata") or {}
+    extra_meta = set(metadata.keys()) - {"user_id"}
+    if extra_meta:
+        dropped.add(f"metadata.{','.join(sorted(extra_meta))}")
     return sorted(dropped)
 
 
@@ -246,6 +275,8 @@ async def anthropic_messages(
 
     body["model"] = canonical
 
+    forwarded_headers = _extract_forwarded_headers(request)
+
     if adapter.native_format == "openai":
         dropped = _sanitize_for_openai_backend(body)
         if dropped:
@@ -289,7 +320,10 @@ async def anthropic_messages(
             stream_failed = False
             try:
                 async for chunk in adapter.stream_messages(
-                    body, request_id=request_id, usage_sink=request_usage
+                    body,
+                    request_id=request_id,
+                    usage_sink=request_usage,
+                    extra_headers=forwarded_headers,
                 ):
                     if isinstance(chunk, str):
                         chunk = chunk.encode("utf-8")
@@ -334,7 +368,7 @@ async def anthropic_messages(
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
 
     try:
-        resp = await adapter.messages(body, request_id=request_id)
+        resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
     except HTTPException as exc:
         return _anthropic_error(exc.status_code, str(exc.detail))
     except Exception as exc:

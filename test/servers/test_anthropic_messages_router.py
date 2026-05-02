@@ -380,3 +380,81 @@ async def test_cache_control_preserved_for_native_backend(anthropic_test_client,
     assert r.status_code == 200
     # cache_control must reach upstream verbatim on the native path.
     assert captured["json"]["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_beta_header_forwarded_on_native_passthrough(
+    anthropic_test_client, monkeypatch
+):
+    """anthropic-beta header from inbound request must be forwarded to upstream on native path."""
+    upstream_resp = {
+        "id": "msg_beta",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    captured: dict = {}
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        captured["headers"] = headers
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    req_headers = {**_auth(), "anthropic-beta": "prompt-caching-2024-07-31"}
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=req_headers)
+    assert r.status_code == 200
+    # anthropic-beta must reach the upstream Anthropic API.
+    assert captured["headers"].get("anthropic-beta") == "prompt-caching-2024-07-31"
+    # Auth headers must be our controlled values, not forwarded from client.
+    assert captured["headers"].get("x-api-key") == "sk-ant-test"
+
+
+@pytest.mark.asyncio
+async def test_sanitize_openai_backend_drops_top_k_container_extra_metadata(
+    anthropic_test_client, monkeypatch, caplog
+):
+    """top_k, container, and extra metadata keys are dropped and warned for OpenAI backends."""
+    openai_resp = {
+        "id": "x",
+        "object": "chat.completion",
+        "model": OPENAI_MODEL,
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        return openai_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+        "top_k": 40,
+        "container": "my-container",
+        "metadata": {"user_id": "u1", "session_id": "s99"},
+    }
+    caplog.set_level("WARNING", logger="serving.servers.routers.anthropic_messages")
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 200
+    # Warning must mention the dropped fields.
+    warning_text = " ".join(rec.getMessage() for rec in caplog.records)
+    assert "top_k" in warning_text
+    assert "container" in warning_text
+    assert "metadata" in warning_text

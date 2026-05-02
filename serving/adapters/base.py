@@ -160,11 +160,13 @@ class BaseAdapter(ABC):
         body: dict[str, Any],
         *,
         request_id: str,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Anthropic Messages API non-streaming. Returns Anthropic-format dict.
 
         Default impl translates Anthropic -> OpenAI, calls self.chat_completion,
-        translates OpenAI -> Anthropic.
+        translates OpenAI -> Anthropic. ``extra_headers`` is accepted for interface
+        compatibility but ignored by OpenAI-backed adapters.
         """
         from serving.adapters.anthropic_translator import (
             anthropic_request_to_openai,
@@ -181,6 +183,7 @@ class BaseAdapter(ABC):
         *,
         request_id: str,
         usage_sink: dict[str, int] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Anthropic Messages API streaming. Yields raw Anthropic SSE bytes."""
         from serving.adapters.anthropic_translator import (

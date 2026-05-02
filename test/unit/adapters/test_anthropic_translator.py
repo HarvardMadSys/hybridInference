@@ -616,6 +616,85 @@ def test_stream_done_sentinel_ignored():
 # ---------------------------------------------------------------------------
 
 
+def test_stream_text_then_tool_then_text_emits_correct_block_ordering():
+    """Text -> tool -> text interleaving must close tool block before opening second text block.
+
+    Anthropic SSE requires exactly one content block open at a time and
+    content_block_stop events emitted in the order blocks were opened.
+    """
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    parts = [
+        _openai_chunk({"role": "assistant"}),
+        # First text segment.
+        _openai_chunk({"content": "Let me check."}),
+        # Tool call opens — text block must be closed first.
+        _openai_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city":"SF"}'},
+                    }
+                ]
+            }
+        ),
+        # Second text segment after tool — tool block must be closed first.
+        _openai_chunk({"content": "Done!"}),
+        _openai_chunk({}, finish_reason="stop"),
+    ]
+    out = b""
+    for c in parts:
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+
+    names = [e[0] for e in events]
+    # Must start with message_start.
+    assert names[0] == "message_start"
+    # Must end with message_stop.
+    assert names[-1] == "message_stop"
+
+    # Extract indices for starts to verify ordering.
+    starts = [
+        (e[1]["index"], e[1]["content_block"]["type"])
+        for e in events
+        if e[0] == "content_block_start"
+    ]
+
+    # Expect: text(0), tool(1), text(2) — three distinct blocks.
+    assert len(starts) == 3
+    assert starts[0] == (0, "text")
+    assert starts[1] == (1, "tool_use")
+    assert starts[2] == (2, "text")
+
+    # Each block must have a matching stop, and stops precede the next start.
+    # Block 0 (text) stopped before block 1 (tool) opened.
+    start_event_positions = {
+        e_data["index"]: i
+        for i, (e_name, e_data) in enumerate(events)
+        if e_name == "content_block_start"
+    }
+    stop_event_positions: dict[int, int] = {}
+    for i, (e_name, e_data) in enumerate(events):
+        if e_name == "content_block_stop":
+            stop_event_positions[e_data["index"]] = i
+
+    # stop(0) < start(1) < stop(1) < start(2)
+    assert stop_event_positions[0] < start_event_positions[1]
+    assert stop_event_positions[1] < start_event_positions[2]
+
+    # Both text segments present.
+    text_deltas = [
+        e[1]["delta"]["text"]
+        for e in events
+        if e[0] == "content_block_delta" and e[1]["delta"]["type"] == "text_delta"
+    ]
+    assert "Let me check." in text_deltas
+    assert "Done!" in text_deltas
+
+
 def test_extract_usage_from_anthropic_sse():
     chunk = (
         b"event: message_start\n"

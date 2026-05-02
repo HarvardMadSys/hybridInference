@@ -83,13 +83,23 @@ class AnthropicAdapter(BaseAdapter):
         """Return the upstream model identifier."""
         return self.config.provider_model_id or self.config.id
 
-    def _upstream_headers(self, *, streaming: bool) -> dict[str, str]:
-        """Build request headers for upstream Anthropic API calls."""
-        headers = {
-            "x-api-key": self.config.api_key or "",
-            "anthropic-version": self.ANTHROPIC_VERSION,
-            "content-type": "application/json",
-        }
+    def _upstream_headers(
+        self, *, streaming: bool, extra_headers: dict[str, str] | None = None
+    ) -> dict[str, str]:
+        """Build request headers for upstream Anthropic API calls.
+
+        ``extra_headers`` (e.g. forwarded ``anthropic-beta`` from the inbound
+        request) are merged in first; our controlled headers (auth, content-type)
+        always win on collision.
+        """
+        headers: dict[str, str] = dict(extra_headers) if extra_headers else {}
+        headers.update(
+            {
+                "x-api-key": self.config.api_key or "",
+                "anthropic-version": self.ANTHROPIC_VERSION,
+                "content-type": "application/json",
+            }
+        )
         if streaming:
             headers["accept"] = "text/event-stream"
             headers["accept-encoding"] = "identity"
@@ -265,39 +275,41 @@ class AnthropicAdapter(BaseAdapter):
                         if result.finish_reason:
                             finish_reason = result.finish_reason
 
-                        if result.is_done:
-                            # Emit collected tool calls (if any) at message_stop.
-                            completed_tools = accum.get_completed()
-                            if completed_tools:
-                                yield self.format_tool_chunk(completed_tools, self.config.id)
-                                finish_reason = "tool_calls"
+        # Always emit final usage chunk and [DONE] after upstream closes,
+        # even if message_stop was never received (truncated upstream).
+        completed_tools = accum.get_completed()
+        if completed_tools:
+            yield self.format_tool_chunk(completed_tools, self.config.id)
+            finish_reason = "tool_calls"
 
-                            # Build and emit final usage chunk.
-                            usage_obj = build_final_usage(
-                                input_tokens=input_tokens,
-                                output_tokens=output_tokens,
-                                cache_read_input_tokens=cache_read_input_tokens,
-                                cache_creation_input_tokens=cache_creation_input_tokens,
-                            )
-                            final_chunk: dict[str, Any] = {
-                                "id": f"chatcmpl-{int(time.time() * 1000)}",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": self.config.id,
-                                "choices": [
-                                    {"index": 0, "delta": {}, "finish_reason": finish_reason}
-                                ],
-                                "usage": usage_obj,
-                            }
-                            yield f"data: {json.dumps(final_chunk)}\n\n"
-                            yield done_sentinel()
-                            return
+        usage_obj = build_final_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+        )
+        final_chunk: dict[str, Any] = {
+            "id": f"chatcmpl-{int(time.time() * 1000)}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.config.id,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+            "usage": usage_obj,
+        }
+        yield f"data: {json.dumps(final_chunk)}\n\n"
+        yield done_sentinel()
 
     # ------------------------------------------------------------------
     # Anthropic-format northbound -> identity passthrough
     # ------------------------------------------------------------------
 
-    async def messages(self, body: dict[str, Any], *, request_id: str) -> dict[str, Any]:
+    async def messages(
+        self,
+        body: dict[str, Any],
+        *,
+        request_id: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         """Anthropic-format identity passthrough -> api.anthropic.com/v1/messages."""
         forward = dict(body)
         forward["model"] = self._upstream_model()
@@ -306,13 +318,18 @@ class AnthropicAdapter(BaseAdapter):
         return await http.json_post_with_retry(
             self._upstream_url(),
             json=forward,
-            headers=self._upstream_headers(streaming=False),
+            headers=self._upstream_headers(streaming=False, extra_headers=extra_headers),
             timeout=None,
             retries=2,
         )
 
     async def stream_messages(
-        self, body: dict[str, Any], *, request_id: str, usage_sink: dict[str, int] | None = None
+        self,
+        body: dict[str, Any],
+        *,
+        request_id: str,
+        usage_sink: dict[str, int] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Anthropic-format streaming identity passthrough.
 
@@ -340,7 +357,7 @@ class AnthropicAdapter(BaseAdapter):
         async with session.post(
             self._upstream_url(),
             json=forward,
-            headers=self._upstream_headers(streaming=True),
+            headers=self._upstream_headers(streaming=True, extra_headers=extra_headers),
             timeout=timeout,
         ) as resp:
             if resp.status >= 400:
