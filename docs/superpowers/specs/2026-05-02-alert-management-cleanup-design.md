@@ -93,28 +93,40 @@ to git history for the removed rules.
 - `infrastructure/alertmanager/alertmanager.yml.example` — drop the email
   receiver block; keep Slack-only as the canonical template.
 - `infrastructure/alertmanager/README.md` — update to single-receiver
-  Slack pattern; drop alert-logger mentions; remove email snippet.
-- `infrastructure/systemd/alertmanager.service` — no change. (Originally
-  considered `EnvironmentFile=`, but Alertmanager does not expand
-  `${VAR}` in YAML; injection happens at deploy time via `envsubst`.
-  See "Webhook URL injection" below.)
+  Slack pattern; drop alert-logger mentions; remove email snippet;
+  document the `api_url_file` mount.
+- `infrastructure/systemd/alertmanager.service` — no change.
+  Alertmanager reads the Slack URL from a file at runtime
+  (`api_url_file`), so no env-var substitution or rendered-config split
+  is needed regardless of how AM is launched.
+- `infrastructure/docker/docker-compose.yml` — also delete the
+  `alert-logger` service block + `alert_log_data` volume, and add a
+  read-only mount of the host-side webhook URL file into the
+  alertmanager container at the path referenced by `api_url_file`.
 - `infrastructure/prometheus/prometheus.yml` — remove the now-deleted
   `rule_files` entries (`slo_burn_rate.yml`, `pipeline_health.yml`); add a
   top-level `global.external_labels: { source: internal }` so Slack
   messages can disambiguate origin if both stacks ever post the same
   alertname.
+- `Makefile` — drop `hybridinference_alert_log_data` from
+  `DOCKER_VOLUMES`.
 - `docs/source/developer/deployment.md` — update flow diagram
   (`prometheus → alertmanager → Slack`); remove alert-logger node.
+- `docs/source/developer/architecture.md` — drop "alert logger" from
+  the infrastructure component list.
 - `docs/source/developer/freeinference.md` — drop alert-logger from infra
   list.
+- `infrastructure/prometheus/README.md` — drop `Email` from the
+  alertmanager.yml.example description.
 
 **Add:**
 
 - `infrastructure/prometheus/rules/README.md` — short note recording that
   SLO and pipeline-health rules were removed 2026-05-02 due to
   bot/scanner-driven noise and broken metrics; link to git history.
-- `/etc/freeinference/alertmanager.env` (deploy-side, not committed) —
-  contains `SLACK_WEBHOOK_URL=...`. Document in deployment.md.
+- `/etc/freeinference/slack-webhook-url` (deploy-side, not committed) —
+  a single-line file containing only the Slack webhook URL.
+  `chmod 600`. Bind-mounted read-only into the alertmanager container.
 
 ## Configuration
 
@@ -140,7 +152,7 @@ receivers:
   - name: slack-default
     slack_configs:
       - send_resolved: true
-        api_url: ${SLACK_WEBHOOK_URL}
+        api_url_file: /etc/alertmanager/secrets/slack-webhook-url
         channel: '#free-inference-alert'
         title: '{{ if eq .Status "resolved" }}[RESOLVED] {{ end }}[INT-ALERT] {{ .CommonAnnotations.summary }}'
         text: >-
@@ -166,50 +178,61 @@ rule_files:
 
 ### Webhook URL injection
 
-Alertmanager does NOT expand `${VAR}` syntax in its YAML at runtime. The
-existing external monitor handles this with deploy-time substitution; the
-internal stack must do the same. Two viable options:
+Alertmanager does NOT expand `${VAR}` syntax in its YAML at runtime,
+which makes any "render the config with envsubst before AM reads it"
+approach fragile (operators forget; compose mounts the source file
+unchanged). Instead, use Alertmanager's native `api_url_file:` — AM
+reads the URL from a file at runtime.
 
-1. **`envsubst` at deploy time (recommended).** Keep `alertmanager.yml`
-   in git with `${SLACK_WEBHOOK_URL}` literal. Add a deploy step:
-   ```
-   envsubst < infrastructure/alertmanager/alertmanager.yml \
-     > /etc/alertmanager/alertmanager.yml
-   ```
-   pointing AM's `--config.file` at the rendered output. Document in
-   the README.
-2. **`sed` replacement.** Same idea, less elegant. Acceptable fallback
-   if `envsubst` (gettext-base) is not installed on the host.
+The committed `alertmanager.yml` references the in-container path:
 
-### `/etc/freeinference/alertmanager.env` (deploy-side, not in git)
-
-```
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+```yaml
+slack_configs:
+  - api_url_file: /etc/alertmanager/secrets/slack-webhook-url
 ```
 
-`chmod 600`, owned by `freeinference:freeinference`. Sourced by the
-deploy script that runs `envsubst`. (Not loaded by Alertmanager
-directly — AM has no env-var support in YAML.)
+Compose mounts the host-side file read-only at that path. Mount source
+is overridable via the `ALERTMANAGER_SLACK_WEBHOOK_FILE` env var
+(defaults to `/etc/freeinference/slack-webhook-url`).
+
+### `/etc/freeinference/slack-webhook-url` (deploy-side, not in git)
+
+A single-line file containing only the Slack webhook URL (no trailing
+newline). `chmod 600`. Provisioned with:
+
+```bash
+sudo install -d -m 700 /etc/freeinference
+sudo install -m 600 /dev/null /etc/freeinference/slack-webhook-url
+echo -n 'https://hooks.slack.com/services/...' \
+  | sudo tee /etc/freeinference/slack-webhook-url > /dev/null
+```
+
+After updating the file, reload Alertmanager so it re-reads it
+(`curl -X POST http://127.0.0.1:9093/-/reload`).
 
 ## Deployment + rollout
 
-1. Create `/etc/freeinference/alertmanager.env` on main host with the same
-   webhook URL the external monitor uses (or a new one — same channel
-   either way). `chmod 600`.
-2. Render the live config:
-   `set -a && source /etc/freeinference/alertmanager.env && set +a && envsubst < /srv/hybridInference/infrastructure/alertmanager/alertmanager.yml > /etc/alertmanager/alertmanager.yml`.
-   (Bake into the existing deploy script so future config edits redo
-   this automatically.)
+1. On the main host, provision `/etc/freeinference/slack-webhook-url`
+   with the Slack webhook URL (`chmod 600`, single line, no trailing
+   newline). See the "Webhook URL injection" section above for the
+   exact commands.
+2. Pull the branch on the host. The new compose mount is added by the
+   updated `docker-compose.yml`; `make up` (or `docker compose up -d
+   alertmanager`) will pick up both the new `alertmanager.yml` and the
+   webhook URL mount.
 3. Reload Alertmanager:
    `curl -X POST http://127.0.0.1:9093/-/reload`.
-4. Apply `prometheus.yml` change (removed rule files + external_labels);
-   reload: `curl -X POST http://127.0.0.1:9090/-/reload`.
+4. Reload Prometheus to pick up the removed `rule_files` entries and
+   the new `external_labels`:
+   `curl -X POST http://127.0.0.1:9090/-/reload`.
 5. Verify with synthetic alert (see Testing below).
-6. Stop and disable `alert-logger`:
-   `sudo systemctl disable --now alert-logger && sudo rm /etc/systemd/system/alert-logger.service && sudo systemctl daemon-reload`.
-7. `git rm` the deleted files; commit; PR.
-8. Optional: archive existing `var/log/alert_history.jsonl` if any
+6. Stop and disable `alert-logger` (legacy systemd unit, if it was
+   ever installed on this host):
+   `sudo systemctl disable --now alert-logger && sudo rm -f /etc/systemd/system/alert-logger.service && sudo systemctl daemon-reload`.
+7. Optional: archive existing `var/log/alert_history.jsonl` if any
    forensic value, then delete.
+8. Optional: `docker volume rm hybridinference_alert_log_data` once
+   the legacy container is gone.
 
 ## Testing
 
@@ -217,8 +240,9 @@ Pre-merge:
 
 - `promtool check config infrastructure/prometheus/prometheus.yml`
 - `amtool check-config infrastructure/alertmanager/alertmanager.yml`
-  (note: `${SLACK_WEBHOOK_URL}` may need a placeholder value during the
-  check; document the trick in the README)
+  (the `api_url_file` reference does NOT have to exist for amtool to
+  validate the config — it is only opened by Alertmanager itself at
+  send time)
 - `uv run ruff format --check .` (project requirement)
 
 Post-deploy:

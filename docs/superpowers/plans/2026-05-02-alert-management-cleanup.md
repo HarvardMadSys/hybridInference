@@ -10,6 +10,42 @@
 
 **Spec:** `docs/superpowers/specs/2026-05-02-alert-management-cleanup-design.md`
 
+## Post-implementation deviations from this plan
+
+The plan was written assuming a deploy-time `envsubst` would render the
+Slack webhook URL into `alertmanager.yml`. Code review surfaced that the
+Docker compose deploy path mounts `alertmanager.yml` from the source
+tree unmodified, so the `${SLACK_WEBHOOK_URL}` literal would never be
+expanded — `make up` would fail. The implementation pivoted to
+Alertmanager's native `api_url_file:` directive, which avoids the
+rendered-vs-source split entirely. Concretely:
+
+- `alertmanager.yml` and `alertmanager.yml.example` use
+  `api_url_file: /etc/alertmanager/secrets/slack-webhook-url` instead of
+  `api_url: ${SLACK_WEBHOOK_URL}`.
+- The compose `alertmanager` service mounts a host-side webhook URL file
+  (default `/etc/freeinference/slack-webhook-url`, override via
+  `ALERTMANAGER_SLACK_WEBHOOK_FILE`) read-only into the container.
+- `infrastructure/alertmanager/README.md` documents the file
+  provisioning + reload flow (no `envsubst`).
+- The plan's Task 5 was expanded to also delete the
+  `Dockerfile.alert-logger` and the `alert-logger` service block +
+  `alert_log_data` volume in `docker-compose.yml`.
+- `Makefile`'s `DOCKER_VOLUMES` list dropped
+  `hybridinference_alert_log_data` (originally missed by the plan's
+  grep audit, which only swept `docs/` and `infrastructure/`).
+- `docs/source/developer/architecture.md` had a spaced "alert logger"
+  mention (also originally missed by the plan's hyphen-only grep) which
+  was cleaned up.
+- `infrastructure/prometheus/README.md` dropped the "Slack/Email"
+  description for `alertmanager.yml.example` to match the trimmed
+  template.
+
+The spec was updated to match this final design; the per-task
+breakdown below reflects the pre-pivot envsubst plan and is preserved
+for traceability. See the spec's "Webhook URL injection" section for
+the as-built mechanism.
+
 ---
 
 ## File Structure

@@ -1,6 +1,7 @@
 # Template for infrastructure/alertmanager/alertmanager.yml.
-# Copy to alertmanager.yml and replace ${SLACK_WEBHOOK_URL} at deploy
-# time (envsubst recommended; see infrastructure/alertmanager/README.md).
+# The Slack webhook URL is read from the file referenced by `api_url_file`
+# at runtime (mounted into the container or provisioned on the host).
+# See infrastructure/alertmanager/README.md for setup.
 
 route:
   receiver: blackhole
@@ -19,7 +20,7 @@ receivers:
   - name: slack-default
     slack_configs:
       - send_resolved: true
-        api_url: ${SLACK_WEBHOOK_URL}
+        api_url_file: /etc/alertmanager/secrets/slack-webhook-url
         channel: '#free-inference-alert'
         title: '{{ if eq .Status "resolved" }}[RESOLVED] {{ end }}[INT-ALERT] {{ .CommonAnnotations.summary }}'
         text: >-

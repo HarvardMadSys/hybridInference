@@ -11,7 +11,7 @@ Layout
   - `dashboards/`             Importable Grafana dashboard JSON files.
   - `README.md`               Import instructions.
 - `../alertmanager/`
-  - `alertmanager.yml.example` Example Alertmanager routing (Slack/Email).
+  - `alertmanager.yml.example` Example Alertmanager routing (Slack).
 
 Quick Start (local)
 1) Run Prometheus:

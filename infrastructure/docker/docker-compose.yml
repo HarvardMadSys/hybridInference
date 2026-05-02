@@ -158,6 +158,7 @@ services:
       - "127.0.0.1:9093:9093"
     volumes:
       - ../alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ${ALERTMANAGER_SLACK_WEBHOOK_FILE:-/etc/freeinference/slack-webhook-url}:/etc/alertmanager/secrets/slack-webhook-url:ro
       - alertmanager_data:/alertmanager
     networks:
       - hybridinference
