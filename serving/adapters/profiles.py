@@ -10,6 +10,8 @@ import json
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from serving.utils.token_utils import extract_cache_tokens, extract_reasoning_tokens
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -142,18 +144,25 @@ def function_call_delta_to_tool_calls(
 
 
 def normalize_usage_default(usage_data: dict[str, Any]) -> UsageInfo:
-    """Standard OpenAI-compatible usage extraction."""
+    """Standard OpenAI-compatible usage extraction.
+
+    Uses extract_reasoning_tokens and extract_cache_tokens to handle nested
+    provider-specific formats such as:
+    - completion_tokens_details.reasoning_tokens (ZAI/Zhipu, MiniMax, OpenAI o1)
+    - prompt_tokens_details.cached_tokens (ZAI/Zhipu, MiniMax, Chutes, OpenAI)
+    in addition to top-level fields.
+    """
     from .base import UsageInfo
+
+    cache_read, cache_write = extract_cache_tokens(usage_data)
 
     return UsageInfo(
         prompt_tokens=usage_data.get("prompt_tokens", 0),
         completion_tokens=usage_data.get("completion_tokens", 0),
         total_tokens=usage_data.get("total_tokens", 0),
-        reasoning_tokens=usage_data.get("reasoning_tokens", 0),
-        cache_read_tokens=usage_data.get("cache_read_input_tokens", 0)
-        or usage_data.get("cache_read_tokens", 0),
-        cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0)
-        or usage_data.get("cache_write_tokens", 0),
+        reasoning_tokens=extract_reasoning_tokens(usage_data) or 0,
+        cache_read_tokens=cache_read or 0,
+        cache_write_tokens=cache_write or 0,
     )
 
 
