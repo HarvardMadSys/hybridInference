@@ -284,14 +284,12 @@ async def login(
             detail=f"Account is {user_row['status']}. Please contact support.",
         )
 
-    # Update last login timestamp and fetch API key tier
+    # Update last login timestamp
     await op_store.update_user_last_login(user_row["id"])
-    key_row = await op_store.get_key_by_account_or_user(user_row["id"])
 
     # Create session and tokens
     session_id = generate_session_id()
     user_role = user_row["role"] or "free"
-    user_tier = (key_row["tier"] if key_row else None) or "free"
 
     # Bootstrap seed: promote ADMIN_EMAILS users to admin when their role is
     # still at the default 'free'.
@@ -304,7 +302,6 @@ async def login(
     access_token, jti = create_access_token(
         user_id=user_row["id"],
         email=user_row["email"],
-        tier=user_tier,
         session_id=session_id,
         is_admin=is_admin,
         role=user_role,
@@ -335,7 +332,6 @@ async def login(
             id=user_row["id"],
             email=user_row["email"],
             user_name=user_row["user_name"],
-            tier=user_tier,
             role=user_role,
             status=user_row["status"],
             email_verified=user_row["email_verified"],
@@ -417,7 +413,6 @@ async def refresh(
             detail="Refresh token has expired. Please login again.",
         )
 
-    # Get user info and API key tier
     user_row = await op_store.get_user_by_id(session_row["user_id"])
 
     if not user_row or user_row["status"] != "active":
@@ -434,10 +429,6 @@ async def refresh(
             detail="Email not verified. Please verify your email to continue.",
         )
 
-    # Fetch API key tier
-    key_row = await op_store.get_key_by_account_or_user(user_row["id"])
-    user_tier = (key_row["tier"] if key_row else None) or "free"
-
     # Create new access token
     user_role = user_row["role"] or "free"
 
@@ -451,7 +442,6 @@ async def refresh(
     access_token, jti = create_access_token(
         user_id=user_row["id"],
         email=user_row["email"],
-        tier=user_tier,
         session_id=session_row["sid"],
         is_admin=is_admin,
         role=user_role,

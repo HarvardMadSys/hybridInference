@@ -49,7 +49,6 @@ async def test_verify_api_key_returns_auth_key_hash_matching_input(
         "user_id": "user-affinity",
         "user_name": "Affinity Tester",
         "quota_daily_cost_usd": 1000.0,
-        "tier": "free",
         "role": "free",
         "email": "affinity@example.com",
         "email_verified": True,

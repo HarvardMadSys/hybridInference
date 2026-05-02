@@ -22,7 +22,6 @@ export interface AdminUser {
   has_key: boolean;
   key_prefix: string | null;
   key_status: string | null;
-  key_tier: string | null;
   usage_today_usd: number;
   usage_month_usd: number;
   usage_alltime_usd: number;
@@ -95,7 +94,6 @@ export interface AdminApiKey {
   user_id: string;
   user_name: string | null;
   key_prefix: string;
-  tier: string;
   status: string;
   quota_daily_cost_usd: number;
   quota_monthly_cost_usd: number | null;
@@ -115,7 +113,6 @@ export interface ListApiKeysResponse {
 export interface CreateApiKeyRequest {
   user_id: string;
   user_name?: string;
-  tier?: string;
   quota_daily_cost_usd?: number;
   quota_monthly_cost_usd?: number | null;
   expires_at?: string | null;
@@ -126,7 +123,6 @@ export interface CreateApiKeyResponse {
   api_key: string;
   user_id: string;
   key_prefix: string;
-  tier: string;
   quota_daily_cost_usd: number;
   quota_monthly_cost_usd: number | null;
   expires_at: string | null;
@@ -136,13 +132,11 @@ export interface CreateApiKeyResponse {
 
 export async function listApiKeys(
   status?: string,
-  tier?: string,
   limit = 100,
   offset = 0,
 ): Promise<ListApiKeysResponse> {
   const params = new URLSearchParams();
   if (status) params.set('status', status);
-  if (tier) params.set('tier', tier);
   params.set('limit', String(limit));
   params.set('offset', String(offset));
   const resp = await fetchWithAuth(API_BASE, `/admin/api-keys?${params.toString()}`);
@@ -156,7 +150,6 @@ export async function createApiKeyAdmin(data: CreateApiKeyRequest): Promise<Crea
     body: JSON.stringify({
       user_id: data.user_id,
       user_name: data.user_name || null,
-      tier: data.tier || 'free',
       quota_daily_cost_usd: data.quota_daily_cost_usd ?? 1000,
       quota_monthly_cost_usd: data.quota_monthly_cost_usd ?? null,
       expires_at: data.expires_at || null,
@@ -200,7 +193,6 @@ export interface UserDetail {
   last_login_at: string | null;
   has_key: boolean;
   key_prefix: string | null;
-  key_tier: string | null;
   quota_daily_usd: number | null;
   quota_monthly_usd: number | null;
   usage_today_usd: number;
@@ -218,7 +210,6 @@ export async function getUserDetail(userId: string): Promise<UserDetail> {
 
 export interface UpdateUserData {
   role?: string;
-  tier?: string;
   status?: string;
   quota_daily_cost_usd?: number;
   quota_monthly_cost_usd?: number;

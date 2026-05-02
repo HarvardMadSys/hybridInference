@@ -45,7 +45,6 @@ async def test_auth_disabled_returns_anonymous(monkeypatch, mock_request):
     result = await verify_api_key(request=mock_request)
     assert result == {
         "user_id": "anonymous",
-        "tier": "free",
         "role": "admin",
         "authenticated": False,
         "is_admin": True,
@@ -109,7 +108,6 @@ async def test_auth_authorization_bearer_valid(monkeypatch, mock_request, mock_o
         "user_id": "user123",
         "user_name": "Test User",
         "quota_daily_cost_usd": 1000.0,
-        "tier": "free",
         "role": "free",
         "email": "test@example.com",
     }
@@ -141,7 +139,6 @@ async def test_auth_x_api_key_header_valid(monkeypatch, mock_request, mock_op_st
         "user_id": "user456",
         "user_name": "X Header",
         "quota_daily_cost_usd": 500.0,
-        "tier": "pro",
         "role": "free",
         "email": "x@example.com",
     }
@@ -174,7 +171,6 @@ async def test_auth_unverified_user_key_returns_403(
         "user_id": "unverified-user",
         "user_name": "Unverified",
         "quota_daily_cost_usd": 1000.0,
-        "tier": "free",
         "email": "unverified@test.example.com",
         "email_verified": False,
     }
@@ -221,7 +217,6 @@ async def test_auth_quota_exceeded_returns_429(monkeypatch, mock_request, mock_o
         "user_id": "heavy-user",
         "user_name": "Over Quota",
         "quota_daily_cost_usd": 1000.0,
-        "tier": "free",
         "role": "free",
         "email": "heavy@example.com",
     }
@@ -255,7 +250,6 @@ async def test_auth_quota_null_uses_default_1000(monkeypatch, mock_request, mock
         "user_id": "user-null-quota",
         "user_name": "Null Quota",
         "quota_daily_cost_usd": None,
-        "tier": "free",
         "role": "free",
         "email": "null@example.com",
     }
@@ -298,7 +292,6 @@ async def test_auth_updates_last_used_at(monkeypatch, mock_request, mock_op_stor
         "user_id": "user-updated",
         "user_name": "Updated",
         "quota_daily_cost_usd": 200.0,
-        "tier": "free",
         "role": "free",
         "email": "updated@example.com",
     }

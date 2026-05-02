@@ -262,7 +262,6 @@ class DatabaseLogger:
                     expires_at TIMESTAMPTZ,
                     last_used_at TIMESTAMPTZ,
 
-                    tier TEXT DEFAULT 'free',
                     notes TEXT,
                     metadata JSONB
                 )
@@ -322,6 +321,10 @@ class DatabaseLogger:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique
                 ON api_keys(account_id)
                 WHERE status = 'active' AND account_id IS NOT NULL
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_keys DROP COLUMN IF EXISTS tier
             """)
 
             # Users table for self-service registration

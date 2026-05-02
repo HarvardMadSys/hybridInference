@@ -35,7 +35,6 @@ def _stub_user(user_id: str, role: str, is_admin: bool = False) -> dict:
     return {
         "user_id": user_id,
         "user_name": f"name-{user_id}",
-        "tier": "free",
         "role": role,
         "authenticated": True,
         "quota_remaining_cost_usd": 100.0,

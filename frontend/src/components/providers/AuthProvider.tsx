@@ -8,7 +8,6 @@ interface User {
   id: string;
   email: string;
   user_name?: string | null;
-  tier: string;
   role: string;
   is_admin: boolean;
 }
@@ -28,8 +27,9 @@ interface AuthContextValue {
 
 const ROLE_RANK: Record<string, number> = {
   free: 0,
-  internal: 1,
-  admin: 2,
+  pro: 1,
+  internal: 2,
+  admin: 3,
 };
 
 export function hasRole(userRole: string | undefined, required: string): boolean {
@@ -56,7 +56,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           id: me.id,
           email: me.email,
           user_name: me.user_name,
-          tier: me.tier,
           role: me.role || 'free',
           is_admin: me.is_admin,
         },

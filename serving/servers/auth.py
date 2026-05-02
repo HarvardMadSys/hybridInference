@@ -84,7 +84,7 @@ async def verify_api_key(
 ) -> dict[str, Any]:
     """Verify API key and enforce quotas.
 
-    Returns user context dict with user_id, tier, etc.
+    Returns user context dict with user_id, role, etc.
     Raises HTTPException(401/429) on auth/quota failures.
     """
     # Check if auth is enabled
@@ -92,7 +92,6 @@ async def verify_api_key(
         # Auth disabled - allow all, mark as anonymous
         return {
             "user_id": "anonymous",
-            "tier": "free",
             "role": "admin",
             "authenticated": False,
             "is_admin": True,
@@ -214,7 +213,6 @@ async def verify_api_key(
     return {
         "user_id": user["user_id"],
         "user_name": user["user_name"],
-        "tier": user["tier"],
         "role": user_role,
         "authenticated": True,
         "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,

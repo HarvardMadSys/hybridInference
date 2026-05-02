@@ -60,7 +60,6 @@ class Settings(BaseSettings):
 
     # Signup
     signup_enabled: bool = True
-    signup_default_tier: str = "free"
     signup_default_daily_quota_usd: float = 100.00
     signup_require_email_verification: bool = True
 

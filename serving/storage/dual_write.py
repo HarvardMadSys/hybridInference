@@ -267,12 +267,11 @@ class DualWriteOperationalStore(OperationalStore):
         self,
         *,
         status: str | None = None,
-        tier: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[int, list[Row]]:
         """Delegate to primary."""
-        return await self._primary.list_keys(status=status, tier=tier, limit=limit, offset=offset)
+        return await self._primary.list_keys(status=status, limit=limit, offset=offset)
 
     async def get_key_detail(self, user_id: str) -> Row | None:
         """Delegate to primary."""
@@ -295,7 +294,6 @@ class DualWriteOperationalStore(OperationalStore):
         key_prefix: str,
         user_id: str,
         user_name: str | None = None,
-        tier: str = "free",
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
@@ -309,7 +307,6 @@ class DualWriteOperationalStore(OperationalStore):
             key_prefix=key_prefix,
             user_id=user_id,
             user_name=user_name,
-            tier=tier,
             quota_daily_cost_usd=quota_daily_cost_usd,
             quota_monthly_cost_usd=quota_monthly_cost_usd,
             expires_at=expires_at,
@@ -324,7 +321,6 @@ class DualWriteOperationalStore(OperationalStore):
                 key_prefix=key_prefix,
                 user_id=user_id,
                 user_name=user_name,
-                tier=tier,
                 quota_daily_cost_usd=quota_daily_cost_usd,
                 quota_monthly_cost_usd=quota_monthly_cost_usd,
                 expires_at=expires_at,

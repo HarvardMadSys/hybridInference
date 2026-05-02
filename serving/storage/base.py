@@ -54,7 +54,6 @@ API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
     "quota_monthly_cost_usd": "quota_monthly_cost_usd",
     "expires_at": "expires_at",
     "last_used_at": "last_used_at",
-    "tier": "tier",
     "notes": "notes",
     "metadata": "metadata",
     "account_id": "account_id",
@@ -211,7 +210,7 @@ class OperationalStore(ABC):
         """Materialized auth lookup for ``verify_api_key``.
 
         Returns the full projection needed in a **single** call:
-        ``id, user_id, user_name, quota_daily_cost_usd, tier, email, role``.
+        ``id, user_id, user_name, quota_daily_cost_usd, email, role``.
 
         The query joins ``api_keys`` with ``users`` and filters on
         ``status='active'``, unexpired key, and active user.
@@ -239,7 +238,6 @@ class OperationalStore(ABC):
         key_prefix: str,
         user_id: str,
         user_name: str | None = None,
-        tier: str = "free",
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
@@ -258,7 +256,6 @@ class OperationalStore(ABC):
         self,
         *,
         status: str | None = None,
-        tier: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[int, list[Row]]:
@@ -288,7 +285,7 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def get_key_by_account_or_user(self, account_id: str) -> Row | None:
-        """Fetch key row by account_id or user_id (for login tier lookup)."""
+        """Fetch key row by account_id or user_id (for login lookup)."""
 
     @abstractmethod
     async def get_active_key_by_account(self, account_id: str) -> Row | None:
