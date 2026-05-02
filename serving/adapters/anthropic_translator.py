@@ -208,3 +208,67 @@ def _translate_tool(tool: dict[str, Any]) -> dict[str, Any]:
             "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Response translation: OpenAI -> Anthropic
+# ---------------------------------------------------------------------------
+
+_FINISH_REASON_MAP = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+    "content_filter": "refusal",
+}
+
+
+def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[str, Any]:
+    """Translate an OpenAI ChatCompletion response to Anthropic Messages format."""
+    choice = (resp.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content_blocks: list[dict[str, Any]] = []
+
+    text = message.get("content")
+    if text:
+        content_blocks.append({"type": "text", "text": text})
+
+    for tc in message.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        try:
+            tool_input = json.loads(fn.get("arguments") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            tool_input = {}
+        content_blocks.append(
+            {
+                "type": "tool_use",
+                "id": tc.get("id", ""),
+                "name": fn.get("name", ""),
+                "input": tool_input,
+            }
+        )
+
+    finish = choice.get("finish_reason") or "stop"
+    stop_reason = _FINISH_REASON_MAP.get(finish, "end_turn")
+
+    raw_id = resp.get("id") or ""
+    msg_id = raw_id if raw_id.startswith("msg_") else f"msg_{raw_id}" if raw_id else "msg_"
+
+    usage_in = resp.get("usage") or {}
+    anthropic_usage: dict[str, int] = {
+        "input_tokens": int(usage_in.get("prompt_tokens", 0)),
+        "output_tokens": int(usage_in.get("completion_tokens", 0)),
+    }
+    cached = (usage_in.get("prompt_tokens_details") or {}).get("cached_tokens")
+    if cached:
+        anthropic_usage["cache_read_input_tokens"] = int(cached)
+
+    return {
+        "id": msg_id,
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": content_blocks,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": anthropic_usage,
+    }

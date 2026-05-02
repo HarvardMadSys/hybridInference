@@ -137,12 +137,14 @@ def test_request_cache_control_blocks_dropped(caplog):
     body = {
         "model": "glm-4.7",
         "max_tokens": 100,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Hi", "cache_control": {"type": "ephemeral"}},
-            ],
-        }],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Hi", "cache_control": {"type": "ephemeral"}},
+                ],
+            }
+        ],
     }
     with caplog.at_level(logging.WARNING, logger="serving.adapters.anthropic_translator"):
         messages, _ = anthropic_request_to_openai(body)
@@ -177,7 +179,8 @@ def test_request_system_array_concatenated():
 
 def test_request_tool_choice_auto():
     body = {
-        "model": "glm-4.7", "max_tokens": 100,
+        "model": "glm-4.7",
+        "max_tokens": 100,
         "messages": [{"role": "user", "content": "x"}],
         "tools": [{"name": "f", "description": "", "input_schema": {}}],
         "tool_choice": {"type": "auto"},
@@ -188,7 +191,8 @@ def test_request_tool_choice_auto():
 
 def test_request_tool_choice_any_becomes_required():
     body = {
-        "model": "glm-4.7", "max_tokens": 100,
+        "model": "glm-4.7",
+        "max_tokens": 100,
         "messages": [{"role": "user", "content": "x"}],
         "tools": [{"name": "f", "description": "", "input_schema": {}}],
         "tool_choice": {"type": "any"},
@@ -199,7 +203,8 @@ def test_request_tool_choice_any_becomes_required():
 
 def test_request_tool_choice_named_tool():
     body = {
-        "model": "glm-4.7", "max_tokens": 100,
+        "model": "glm-4.7",
+        "max_tokens": 100,
         "messages": [{"role": "user", "content": "x"}],
         "tools": [{"name": "get_weather", "description": "", "input_schema": {}}],
         "tool_choice": {"type": "tool", "name": "get_weather"},
@@ -213,7 +218,8 @@ def test_request_tool_choice_named_tool():
 
 def test_request_metadata_user_id_to_user_field():
     body = {
-        "model": "glm-4.7", "max_tokens": 100,
+        "model": "glm-4.7",
+        "max_tokens": 100,
         "metadata": {"user_id": "u-abc"},
         "messages": [{"role": "user", "content": "Hi"}],
     }
@@ -223,7 +229,8 @@ def test_request_metadata_user_id_to_user_field():
 
 def test_request_stop_sequences_renamed():
     body = {
-        "model": "glm-4.7", "max_tokens": 100,
+        "model": "glm-4.7",
+        "max_tokens": 100,
         "stop_sequences": ["END", "STOP"],
         "messages": [{"role": "user", "content": "Hi"}],
     }
@@ -276,3 +283,148 @@ def test_request_tool_use_and_tool_result_round_trip():
     assert tool_msg["role"] == "tool"
     assert tool_msg["tool_call_id"] == "toolu_01"
     assert tool_msg["content"] == "72F sunny"
+
+
+# ---------------------------------------------------------------------------
+# Response translation: OpenAI -> Anthropic
+# ---------------------------------------------------------------------------
+
+from serving.adapters.anthropic_translator import openai_response_to_anthropic
+
+
+def test_response_text_only():
+    resp = {
+        "id": "chatcmpl-1",
+        "model": "glm-4.7",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hello there"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+    out = openai_response_to_anthropic(resp, model="glm-4.7")
+    assert out["type"] == "message"
+    assert out["role"] == "assistant"
+    assert out["model"] == "glm-4.7"
+    assert out["id"].startswith("msg_")
+    assert out["content"] == [{"type": "text", "text": "Hello there"}]
+    assert out["stop_reason"] == "end_turn"
+    assert out["stop_sequence"] is None
+    assert out["usage"] == {"input_tokens": 10, "output_tokens": 5}
+
+
+def test_response_tool_calls_only():
+    resp = {
+        "id": "chatcmpl-2",
+        "model": "glm-4.7",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": '{"city":"SF"}'},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+    }
+    out = openai_response_to_anthropic(resp, model="glm-4.7")
+    assert out["content"] == [
+        {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "get_weather",
+            "input": {"city": "SF"},
+        }
+    ]
+    assert out["stop_reason"] == "tool_use"
+
+
+def test_response_mixed_text_and_tool_calls():
+    resp = {
+        "id": "chatcmpl-3",
+        "model": "glm-4.7",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Let me check.",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+    }
+    out = openai_response_to_anthropic(resp, model="glm-4.7")
+    types = [b["type"] for b in out["content"]]
+    assert types == ["text", "tool_use"]
+
+
+def test_response_finish_reason_map():
+    cases = {
+        "stop": "end_turn",
+        "length": "max_tokens",
+        "tool_calls": "tool_use",
+        "content_filter": "refusal",
+        "function_call": "end_turn",  # legacy fallback
+    }
+    for fr, expected in cases.items():
+        resp = {
+            "id": "x",
+            "model": "m",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "y"}, "finish_reason": fr}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        assert openai_response_to_anthropic(resp, model="m")["stop_reason"] == expected
+
+
+def test_response_cached_tokens_mapped():
+    resp = {
+        "id": "x",
+        "model": "m",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "y"}, "finish_reason": "stop"}
+        ],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "prompt_tokens_details": {"cached_tokens": 80},
+        },
+    }
+    out = openai_response_to_anthropic(resp, model="m")
+    assert out["usage"]["cache_read_input_tokens"] == 80
+
+
+def test_response_id_preserves_msg_prefix_if_present():
+    resp = {
+        "id": "msg_already",
+        "model": "m",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "y"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    out = openai_response_to_anthropic(resp, model="m")
+    assert out["id"] == "msg_already"
