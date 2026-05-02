@@ -624,7 +624,12 @@ async def chat_completions(
                     pricing = routing_info.get("pricing") or get_pricing_for_provider(
                         provider, base_url
                     )
-                    metadata.update(routing_info)
+                    # Strip upstream_cost_usd from metadata JSONB; the dedicated column
+                    # api_logs.upstream_cost_usd is the canonical store. Avoids leaking the
+                    # internal cost into any future admin route that returns raw metadata.
+                    metadata.update(
+                        {k: v for k, v in routing_info.items() if k != "upstream_cost_usd"}
+                    )
                 elif provider_from_ctx:
                     # Fallback: use provider extracted from request context during streaming
                     provider = provider_from_ctx
@@ -789,7 +794,8 @@ async def chat_completions(
                 provider = routing_info.get("provider", "router")
                 base_url = routing_info.get("base_url")
                 routing_pricing = routing_info.get("pricing")
-                metadata.update(routing_info)  # type: ignore[arg-type]
+                # See comment above: strip upstream_cost_usd before merging into metadata JSONB.
+                metadata.update({k: v for k, v in routing_info.items() if k != "upstream_cost_usd"})  # type: ignore[arg-type]
         else:
             # Fallback: get provider from request context when response is not a dict
             from serving.utils import context as req_ctx

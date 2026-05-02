@@ -380,6 +380,47 @@ async def test_non_or_adapter_response_has_no_routing_block() -> None:
     assert "_routing" not in result
 
 
+@pytest.mark.asyncio
+async def test_openrouter_adapter_stream_threads_upstream_cost() -> None:
+    """End-to-end mocked stream: final _routing chunk carries upstream_cost_usd."""
+    import json as _json
+
+    adapter = OpenRouterAdapter(_make_or_cfg(pinned="deepinfra"))
+
+    async def fake_stream():
+        # Content delta
+        yield 'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
+        # Final chunk with usage including OpenRouter cost
+        yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7,"cost":0.000123}}\n\n'
+        yield "data: [DONE]\n\n"
+
+    async def fake_open_stream(url, payload, timeout=None):
+        # Drive the parent's _open_stream_with_pool contract:
+        # yields exactly one (stream_iter, lease, first_chunk).
+        gen = fake_stream()
+        first = await gen.__anext__()
+        yield gen, None, first
+
+    with patch.object(adapter, "_open_stream_with_pool", fake_open_stream):
+        chunks: list[str] = []
+        async for chunk in adapter.stream_chat_completion(
+            [{"role": "user", "content": "hi"}],
+            max_tokens=8,
+        ):
+            chunks.append(chunk)
+
+    # Locate the final SSE chunk that carries _routing
+    routing_chunks = [c for c in chunks if '"_routing"' in c]
+    assert routing_chunks, f"No chunk with _routing found in: {chunks}"
+    final = routing_chunks[-1]
+    # SSE format: "data: {...}\n\n"
+    assert final.startswith("data: ")
+    payload = _json.loads(final[len("data: ") :].strip())
+    assert payload["_routing"]["upstream_cost_usd"] == 0.000123
+    assert payload["_routing"]["provider"] == "openrouter"
+    assert payload["_routing"]["base_url"] == "https://openrouter.ai/api/v1"
+
+
 def test_normalize_usage_openrouter_emits_one_warning_per_bad_cost(caplog) -> None:
     """OpenRouter adapter should call the normalizer exactly once per response,
     so a malformed cost only logs one warning, not two."""
