@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -94,6 +95,34 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
     except Exception:
         # Fallback if URL parsing fails
         return f"{model_id}:{kind}"
+
+
+_OPENROUTER_KIND_RE = re.compile(r"^openrouter\[([A-Za-z0-9_.\-]+)\]$")
+
+
+def parse_openrouter_kind(kind: str) -> tuple[str, str | None]:
+    """Parse an adapter kind string, recognizing the OpenRouter bracket form.
+
+    Returns a (base_kind, pinned_provider) tuple:
+    - "openrouter"               -> ("openrouter", None)
+    - "openrouter[deepinfra]"    -> ("openrouter", "deepinfra")
+    - any other kind             -> (kind, None) (no parsing)
+
+    Raises ValueError for malformed bracket forms (empty pin, whitespace,
+    nested brackets, unmatched brackets).
+    """
+    if kind == "openrouter":
+        return ("openrouter", None)
+    if kind.startswith("openrouter"):
+        match = _OPENROUTER_KIND_RE.match(kind)
+        if match is None:
+            raise ValueError(
+                f"Invalid OpenRouter kind {kind!r}: expected "
+                "'openrouter' or 'openrouter[<slug>]' with slug "
+                "matching [A-Za-z0-9_.-]+"
+            )
+        return ("openrouter", match.group(1))
+    return (kind, None)
 
 
 def _make_adapter(kind: str, cfg: dict[str, Any]):
