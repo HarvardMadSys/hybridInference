@@ -267,3 +267,85 @@ async def test_v1_messages_translated_streaming(anthropic_test_client, monkeypat
     assert b"event: message_stop" in collected
     # The translator emits text deltas; assert text "Hi" appears.
     assert b'"Hi"' in collected
+
+
+@pytest.mark.asyncio
+async def test_cache_control_dropped_for_openai_backend(anthropic_test_client, monkeypatch, caplog):
+    openai_resp = {
+        "id": "x",
+        "object": "chat.completion",
+        "model": OPENAI_MODEL,
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        return openai_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}],
+            }
+        ],
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+    }
+    with caplog.at_level("WARNING", logger="serving.servers.routers.anthropic_messages"):
+        r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 200
+    # Warning logged for both dropped fields.
+    matches = [
+        rec
+        for rec in caplog.records
+        if "cache_control" in rec.message and "thinking" in rec.message
+    ]
+    assert matches, (
+        f"Expected warning mentioning cache_control + thinking; got: {[r.message for r in caplog.records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_control_preserved_for_native_backend(anthropic_test_client, monkeypatch):
+    """Native (kind: anthropic) backend gets cache_control passed through unchanged."""
+    upstream_resp = {
+        "id": "msg_z",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    captured: dict = {}
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        captured["json"] = json
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}],
+            }
+        ],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 200
+    # cache_control must reach upstream verbatim on the native path.
+    assert captured["json"]["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
