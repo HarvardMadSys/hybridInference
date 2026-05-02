@@ -330,17 +330,13 @@ class TestFetchZai:
         assert time_use.limit == 4000.0
         assert time_use.unit == "minutes"
         # Per-entry reset_at parsed from nextResetTime (epoch ms) -> UTC datetime.
-        assert time_use.reset_at == datetime.fromtimestamp(
-            time_reset_ms / 1000, tz=timezone.utc
-        )
+        assert time_use.reset_at == datetime.fromtimestamp(time_reset_ms / 1000, tz=timezone.utc)
         # TOKENS_LIMIT: percentage-only entry → stored as used=6, limit=100, unit="%"
         token_use = next(u for u in result.usages if "Token" in u.label)
         assert token_use.used == 6.0
         assert token_use.limit == 100.0
         assert token_use.unit == "%"
-        assert token_use.reset_at == datetime.fromtimestamp(
-            tokens_reset_ms / 1000, tz=timezone.utc
-        )
+        assert token_use.reset_at == datetime.fromtimestamp(tokens_reset_ms / 1000, tz=timezone.utc)
         # Per-entry — not a single shared monthly value.
         assert time_use.reset_at != token_use.reset_at
 
@@ -376,9 +372,7 @@ class TestFetchZai:
         assert result.ok is True
         time_use = next(u for u in result.usages if "Time" in u.label)
         token_use = next(u for u in result.usages if "Token" in u.label)
-        assert time_use.reset_at == datetime.fromtimestamp(
-            time_reset_ms / 1000, tz=timezone.utc
-        )
+        assert time_use.reset_at == datetime.fromtimestamp(time_reset_ms / 1000, tz=timezone.utc)
         assert token_use.reset_at is None
 
     @pytest.mark.asyncio
