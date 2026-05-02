@@ -110,12 +110,12 @@ async def run_rollup(
     start: datetime,
     end: datetime,
 ) -> int:
-    """Aggregate api_logs in the half-open interval [start, end) into
-    provider_hourly_stats. Returns number of rows affected (inserted+updated).
+    """Aggregate api_logs into provider_hourly_stats over [start, end).
 
-    Idempotent: re-running with the same window updates existing rows.
-    Caller is responsible for taking the advisory lock when concurrent
-    runs are possible.
+    Returns the number of rows affected (inserted+updated). Idempotent:
+    re-running with the same window updates existing rows. Caller is
+    responsible for taking the advisory lock when concurrent runs are
+    possible.
     """
     if start.tzinfo is None or end.tzinfo is None:
         raise ValueError("start and end must be tz-aware")
@@ -175,7 +175,10 @@ async def hourly_job(
     *,
     retention_days: int = 30,
 ) -> None:
-    """APScheduler entrypoint. Roll up the previous full hour, then purge."""
+    """Roll up the previous completed hour, then purge old rows.
+
+    Used as the APScheduler entrypoint registered by ``register_rollup_job``.
+    """
     started_at = time.monotonic()
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     start, end = now - timedelta(hours=1), now
@@ -216,13 +219,13 @@ async def backfill_if_empty(
     *,
     days: int = 30,
 ) -> int:
-    """If provider_hourly_stats has no rows, aggregate the last `days` of
-    api_logs in a single pass. Idempotent: no-op when rows exist.
-    Returns the number of rows written (0 when skipped).
+    """Seed provider_hourly_stats with the last ``days`` days of api_logs.
 
-    Multi-replica safe: takes the same advisory lock used by hourly_job,
-    then re-checks emptiness inside the lock so only one replica performs
-    the (potentially expensive) 30-day aggregation on first deploy.
+    No-op when rows already exist. Returns the number of rows written
+    (0 when skipped). Multi-replica safe: takes the same advisory lock
+    used by ``hourly_job`` and re-checks emptiness inside the lock so
+    only one replica performs the (potentially expensive) 30-day
+    aggregation on first deploy.
     """
     async with pool.acquire() as conn:
         any_row = await conn.fetchval("SELECT 1 FROM provider_hourly_stats LIMIT 1")
