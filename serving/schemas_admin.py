@@ -633,3 +633,40 @@ class BroadcastDetailResponse(BaseModel):
     broadcast: BroadcastListItem
     recipients: list[BroadcastRecipientItem]
     total_recipients: int
+
+
+# ============================================================
+# Provider Performance (admin /admin/api/provider-stats)
+# ============================================================
+
+
+class ProviderStatsRow(BaseModel):
+    hour_bucket: datetime
+    provider: str
+    model_id: str
+
+    request_count: int
+    error_count: int
+    stream_count: int
+
+    ttft_p50_ms: int | None = None
+    ttft_p95_ms: int | None = None
+    ttft_p99_ms: int | None = None
+
+    latency_p50_ms: int | None = None
+    latency_p95_ms: int | None = None
+    latency_p99_ms: int | None = None
+
+    throughput_avg_tps: float | None = None
+    throughput_p50_tps: float | None = None
+    throughput_p95_tps: float | None = None
+
+    prompt_tokens_avg: float | None = None
+    completion_tokens_avg: float | None = None
+    total_completion_tokens: int
+
+
+class ProviderStatsResponse(BaseModel):
+    rows: list[ProviderStatsRow]
+    providers: list[str]
+    models: list[str]
