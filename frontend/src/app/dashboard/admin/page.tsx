@@ -325,6 +325,68 @@ const AUDIT_ACTIONS = [
   'update_key',
 ];
 
+function actionLabel(action: string): string {
+  if (!action) return action;
+  const s = action.replace(/_/g, ' ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+type AuditCategory = 'create' | 'approve' | 'reject' | 'update' | 'delete' | 'other';
+
+function actionCategory(action: string): AuditCategory {
+  if (action === 'create_user' || action === 'create_key' || action === 'regenerate_key')
+    return 'create';
+  if (action === 'approve_user') return 'approve';
+  if (action === 'reject_user') return 'reject';
+  if (action === 'update_user' || action === 'update_key') return 'update';
+  if (
+    action === 'delete_user' ||
+    action === 'delete_key' ||
+    action === 'hard_delete_key' ||
+    action === 'revoke_key'
+  )
+    return 'delete';
+  return 'other';
+}
+
+const AUDIT_CATEGORY_CLASS: Record<AuditCategory, string> = {
+  create: 'bg-emerald-50 text-emerald-700',
+  approve: 'bg-violet-50 text-violet-700',
+  reject: 'bg-amber-50 text-amber-700',
+  update: 'bg-sky-50 text-sky-700',
+  delete: 'bg-rose-50 text-rose-700',
+  other: 'bg-gray-100 text-gray-700',
+};
+
+function formatRelative(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${Math.max(s, 0)}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatAuditDetailValue(v: unknown): { display: string; full: string } {
+  if (v === null || v === undefined) return { display: '—', full: '—' };
+  if (typeof v === 'string') {
+    const full = v;
+    const display = v.length > 80 ? `${v.slice(0, 80)}…` : v;
+    return { display, full };
+  }
+  if (typeof v === 'number' || typeof v === 'boolean') {
+    const s = String(v);
+    return { display: s, full: s };
+  }
+  const full = JSON.stringify(v);
+  const display = full.length > 80 ? `${full.slice(0, 80)}…` : full;
+  return { display, full };
+}
+
 export default function AdminPage() {
   const { state } = useAuth();
 
@@ -417,6 +479,7 @@ export default function AdminPage() {
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditFilter, setAuditFilter] = useState('');
+  const [auditUserFilter, setAuditUserFilter] = useState('');
   const [auditOffset, setAuditOffset] = useState(0);
   const AUDIT_PAGE_SIZE = 50;
 
@@ -472,7 +535,7 @@ export default function AdminPage() {
     try {
       const d = await listAuditLog(
         auditFilter || undefined,
-        undefined,
+        auditUserFilter || undefined,
         AUDIT_PAGE_SIZE,
         auditOffset,
       );
@@ -483,7 +546,7 @@ export default function AdminPage() {
     } finally {
       setAuditLoading(false);
     }
-  }, [auditFilter, auditOffset]);
+  }, [auditFilter, auditUserFilter, auditOffset]);
 
   const loadRequests = useCallback(async () => {
     setReqLoading(true);
@@ -1311,7 +1374,7 @@ export default function AdminPage() {
         {activeTab === 'audit' && (
           <div className="mt-6">
             {/* Action filter */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <select
                 value={auditFilter}
                 onChange={(e) => {
@@ -1323,10 +1386,20 @@ export default function AdminPage() {
                 <option value="">All actions</option>
                 {AUDIT_ACTIONS.map((a) => (
                   <option key={a} value={a}>
-                    {a}
+                    {actionLabel(a)}
                   </option>
                 ))}
               </select>
+              <input
+                type="text"
+                value={auditUserFilter}
+                onChange={(e) => {
+                  setAuditUserFilter(e.target.value);
+                  setAuditOffset(0);
+                }}
+                placeholder="Filter by user ID…"
+                className="min-w-[180px] rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+              />
               <span className="text-[12px] text-gray-400 tabular-nums">{auditTotal} entries</span>
             </div>
 
@@ -1342,37 +1415,91 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div>
-                  {auditEntries.map((entry, i) => (
-                    <div
-                      key={entry.id}
-                      className={`py-3 ${i > 0 ? 'border-t border-gray-100' : ''}`}
-                      style={{ paddingLeft: 4, paddingRight: 4 }}
-                    >
-                      <div className="flex items-center gap-3">
-                        <span
-                          className={`inline-block rounded px-2 py-0.5 text-[11px] font-bold ${
-                            entry.success ? 'bg-gray-100 text-gray-700' : 'bg-red-50 text-red-600'
-                          }`}
-                        >
-                          {entry.action}
-                        </span>
-                        {entry.target_user_id && (
-                          <span className="font-mono text-[12px] text-gray-400">
-                            {entry.target_user_id}
+                  {auditEntries.map((entry, i) => {
+                    const cat = actionCategory(entry.action);
+                    const badgeClass = entry.success
+                      ? AUDIT_CATEGORY_CLASS[cat]
+                      : 'bg-red-50 text-red-700';
+                    const rowClass = [
+                      'py-3',
+                      i > 0 ? 'border-t border-gray-100' : '',
+                      !entry.success ? 'border-l-2 border-rose-300 pl-3' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
+                    const absoluteTs = new Date(entry.timestamp).toLocaleString();
+                    const tid = entry.target_user_id;
+                    const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
+                    const detailEntries =
+                      entry.details && typeof entry.details === 'object'
+                        ? Object.entries(entry.details)
+                        : [];
+                    return (
+                      <div
+                        key={entry.id}
+                        className={rowClass}
+                        style={
+                          entry.success ? { paddingLeft: 4, paddingRight: 4 } : { paddingRight: 4 }
+                        }
+                      >
+                        <div className="flex items-center gap-3">
+                          {!entry.success && (
+                            <span className="inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">
+                              FAILED
+                            </span>
+                          )}
+                          <span
+                            className={`inline-block rounded px-2 py-0.5 text-[11px] font-bold ${badgeClass}`}
+                          >
+                            {actionLabel(entry.action)}
                           </span>
+                          {tid && (
+                            <button
+                              onClick={() => {
+                                setAuditUserFilter(tid);
+                                setAuditOffset(0);
+                              }}
+                              title={tid}
+                              className="font-mono text-[12px] text-gray-500 hover:text-gray-900 hover:underline"
+                            >
+                              {tidDisplay}
+                            </button>
+                          )}
+                          <span title={absoluteTs} className="ml-auto text-[12px] text-gray-400">
+                            {formatRelative(entry.timestamp)}
+                          </span>
+                        </div>
+                        {detailEntries.length > 0 && (
+                          <>
+                            <div className="flex flex-wrap gap-1.5 mt-1.5">
+                              {detailEntries.map(([k, v]) => {
+                                const { display, full } = formatAuditDetailValue(v);
+                                return (
+                                  <span
+                                    key={k}
+                                    title={full}
+                                    className="inline-flex items-center gap-1 rounded bg-gray-50 border border-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700"
+                                  >
+                                    <span className="text-gray-400">{k}:</span>
+                                    <span>{display}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                            <details>
+                              <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 mt-1">
+                                Raw JSON
+                              </summary>
+                              <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
+                                {JSON.stringify(entry.details, null, 2)}
+                              </pre>
+                            </details>
+                          </>
                         )}
-                        <span className="ml-auto text-[12px] text-gray-400">
-                          {new Date(entry.timestamp).toLocaleString()}
-                        </span>
+                        <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
                       </div>
-                      {entry.details && Object.keys(entry.details).length > 0 && (
-                        <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
-                          {JSON.stringify(entry.details, null, 2)}
-                        </pre>
-                      )}
-                      <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
