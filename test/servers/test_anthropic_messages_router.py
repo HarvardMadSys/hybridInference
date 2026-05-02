@@ -314,6 +314,37 @@ async def test_cache_control_dropped_for_openai_backend(anthropic_test_client, m
 
 
 @pytest.mark.asyncio
+async def test_missing_auth_returns_anthropic_format(anthropic_test_client):
+    r = await anthropic_test_client.post(
+        "/v1/messages",
+        json={
+            "model": NATIVE_MODEL,
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 401
+    err = r.json()
+    assert err["type"] == "error"
+    assert err["error"]["type"] == "authentication_error"
+
+
+@pytest.mark.asyncio
+async def test_invalid_auth_returns_anthropic_format(anthropic_test_client):
+    r = await anthropic_test_client.post(
+        "/v1/messages",
+        headers={"x-api-key": "hyi-not-a-real-key"},
+        json={
+            "model": NATIVE_MODEL,
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 401
+    assert r.json()["error"]["type"] == "authentication_error"
+
+
+@pytest.mark.asyncio
 async def test_cache_control_preserved_for_native_backend(anthropic_test_client, monkeypatch):
     """Native (kind: anthropic) backend gets cache_control passed through unchanged."""
     upstream_resp = {

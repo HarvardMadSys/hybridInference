@@ -95,6 +95,15 @@ def create_app() -> FastAPI:
     app.include_router(internal.router)
     app.include_router(playground.router)
 
+    # Override HTTPException handler to emit Anthropic-format errors on
+    # /v1/messages and /anthropic/... paths (must register after install_error_handlers).
+    from fastapi import HTTPException as _HTTPException
+
+    app.add_exception_handler(
+        _HTTPException,
+        anthropic_messages.anthropic_aware_http_exception_handler,
+    )
+
     return app
 
 

@@ -66,6 +66,40 @@ def _anthropic_error(status: int, message: str) -> JSONResponse:
     )
 
 
+_ANTHROPIC_PATHS = ("/v1/messages", "/anthropic/")
+
+
+async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPException):
+    """Path-aware HTTP exception handler.
+
+    Emits Anthropic-format errors for requests against the Anthropic surfaces,
+    and the default OpenRouter JSON shape for everything else.
+    """
+    path = request.url.path
+    if any(path.startswith(p) for p in _ANTHROPIC_PATHS):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "type": "error",
+                "error": {
+                    "type": _ERROR_TYPE_BY_STATUS.get(exc.status_code, "api_error"),
+                    "message": str(exc.detail),
+                },
+            },
+            headers=dict(exc.headers or {}),
+        )
+    # Non-Anthropic paths: produce the same OpenRouter shape as install_error_handlers.
+    from serving.servers.middleware.error import _build_error_response
+    from serving.utils.errors import categorize_exception
+
+    content = _build_error_response(
+        str(exc.detail), code=exc.status_code, typ=categorize_exception(exc)
+    )
+    return JSONResponse(
+        status_code=exc.status_code, content=content, headers=dict(exc.headers or {})
+    )
+
+
 # --- Model resolution ------------------------------------------------------
 
 
