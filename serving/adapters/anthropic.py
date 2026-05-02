@@ -52,6 +52,18 @@ class AnthropicAdapter(BaseAdapter):
 
     native_format = "anthropic"
 
+    def __init__(self, config):
+        """Initialize the adapter and set up per-stream usage tracking."""
+        super().__init__(config)
+        # Populated after stream_messages() finishes; consumed by the router for
+        # DB logging.
+        self.last_stream_usage: dict[str, int] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+
     ANTHROPIC_VERSION = "2023-06-01"
     DEFAULT_BASE = "https://api.anthropic.com"
 
@@ -273,16 +285,57 @@ class AnthropicAdapter(BaseAdapter):
                             return
 
     # ------------------------------------------------------------------
-    # Anthropic-format northbound (Task 8 implements; placeholders here)
+    # Anthropic-format northbound -> identity passthrough
     # ------------------------------------------------------------------
 
     async def messages(self, body: dict[str, Any], *, request_id: str) -> dict[str, Any]:
-        """Anthropic-format identity passthrough. Task 8 fills this in."""
-        raise NotImplementedError("Anthropic-format passthrough lands in Task 8")
+        """Anthropic-format identity passthrough -> api.anthropic.com/v1/messages."""
+        forward = dict(body)
+        forward["model"] = self._upstream_model()
+
+        http = AsyncHTTPClient.shared()
+        return await http.json_post_with_retry(
+            self._upstream_url(),
+            json=forward,
+            headers=self._upstream_headers(streaming=False),
+            timeout=None,
+            retries=2,
+        )
 
     async def stream_messages(
         self, body: dict[str, Any], *, request_id: str
     ) -> AsyncIterator[bytes]:
-        """Anthropic-format streaming identity passthrough. Task 8 fills this in."""
-        raise NotImplementedError("Anthropic-format passthrough lands in Task 8")
-        yield b""  # pragma: no cover - keeps async-generator type
+        """Anthropic-format streaming identity passthrough.
+
+        Forwards raw upstream SSE bytes to the caller and accumulates the
+        per-event usage counts into self.last_stream_usage so the router can
+        record them in DB logging once the stream completes.
+        """
+        from serving.adapters.anthropic_translator import extract_anthropic_usage_from_sse
+
+        forward = dict(body)
+        forward["model"] = self._upstream_model()
+        forward["stream"] = True
+
+        http = AsyncHTTPClient.shared()
+        session = await http._ensure_session()
+        timeout = aiohttp.ClientTimeout(total=None)
+
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+
+        async with session.post(
+            self._upstream_url(),
+            json=forward,
+            headers=self._upstream_headers(streaming=True),
+            timeout=timeout,
+        ) as resp:
+            async for chunk in resp.content.iter_any():
+                extract_anthropic_usage_from_sse(chunk, usage)
+                yield chunk
+
+        self.last_stream_usage = usage

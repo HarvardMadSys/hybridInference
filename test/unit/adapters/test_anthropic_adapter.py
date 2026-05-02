@@ -144,3 +144,118 @@ async def test_stream_chat_completion_translates_anthropic_sse_to_openai_chunks(
     # OpenAI-format stream output: at least one delta containing "Hi", plus [DONE].
     assert '"content"' in joined and '"Hi"' in joined
     assert "[DONE]" in joined
+
+
+@pytest.mark.asyncio
+async def test_messages_identity_passthrough(monkeypatch):
+    body_in = {
+        "model": "claude-opus-4.7",
+        "max_tokens": 200,
+        "messages": [{"role": "user", "content": "Hi"}],
+        "system": "Be helpful.",
+    }
+    upstream_resp = {
+        "id": "msg_passthrough",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "Hello"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 8, "output_tokens": 2},
+    }
+    captured: dict[str, Any] = {}
+
+    async def fake_json_post_with_retry(
+        self, url, json=None, headers=None, timeout=None, retries=2
+    ):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_json_post_with_retry)
+
+    adapter = AnthropicAdapter(_cfg())
+    out = await adapter.messages(body_in, request_id="req_pass")
+
+    # Identity: upstream response returned verbatim.
+    assert out == upstream_resp
+
+    # Body forwarded verbatim except model rewritten to provider_model_id.
+    assert captured["json"]["model"] == "claude-opus-4-7"
+    assert captured["json"]["messages"] == [{"role": "user", "content": "Hi"}]
+    assert captured["json"]["system"] == "Be helpful."
+    assert captured["json"]["max_tokens"] == 200
+    assert captured["headers"]["x-api-key"] == "sk-ant-test"
+    assert captured["headers"]["anthropic-version"]
+
+
+@pytest.mark.asyncio
+async def test_stream_messages_identity_passthrough_records_usage(monkeypatch):
+    upstream_sse = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_y","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":7,"output_tokens":0}}}\n\n'
+        b"event: content_block_delta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n'
+        b"event: message_delta\n"
+        b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n'
+        b"event: message_stop\n"
+        b'data: {"type":"message_stop"}\n\n'
+    )
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield upstream_sse
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    captured: dict[str, Any] = {}
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    body = {
+        "model": "claude-opus-4.7",
+        "max_tokens": 100,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    adapter = AnthropicAdapter(_cfg())
+    out = b""
+    async for c in adapter.stream_messages(body, request_id="req_s"):
+        out += c
+
+    # Bytes streamed verbatim from upstream.
+    assert out == upstream_sse
+    # Adapter captures usage post-stream for DB logging.
+    assert adapter.last_stream_usage == {
+        "input_tokens": 7,
+        "output_tokens": 4,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    # Forwarded body: model rewritten + stream=True.
+    assert captured["json"]["model"] == "claude-opus-4-7"
+    assert captured["json"]["stream"] is True
