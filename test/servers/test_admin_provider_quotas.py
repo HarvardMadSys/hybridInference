@@ -414,17 +414,27 @@ class TestFetchMinimax:
                 }
             ],
         }
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=payload),
-        ) as mock_session_cls:
+        with (
+            patch(
+                "serving.admin.provider_quotas.settings",
+                minimax_group_id="test-group-42",
+            ),
+            patch(
+                "serving.admin.provider_quotas.aiohttp.ClientSession",
+                return_value=_mock_aiohttp_get(status=200, json_data=payload),
+            ) as mock_session_cls,
+        ):
             result = await fetch_minimax()
         assert result.ok is True
         assert len(result.usages) == 2
         session_cm = mock_session_cls.return_value
         session = session_cm.__aenter__.return_value
-        sent_headers = session.get.call_args.kwargs["headers"]
-        assert sent_headers.get("x-group-id") == "test-group-42"
+        call_args = session.get.call_args
+        assert (
+            call_args.args[0]
+            == "https://platform.minimax.io/v1/api/openplatform/coding_plan/remains"
+        )
+        assert call_args.kwargs["headers"].get("x-group-id") == "test-group-42"
 
         u_interval = result.usages[0]
         assert u_interval.label == "MiniMax-M2.7 (interval)"

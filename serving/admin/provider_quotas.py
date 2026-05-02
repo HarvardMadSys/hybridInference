@@ -16,6 +16,7 @@ from typing import Any
 import aiohttp
 from bs4 import BeautifulSoup
 
+from serving.config.settings import settings
 from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 
 logger = logging.getLogger(__name__)
@@ -370,7 +371,7 @@ async def fetch_minimax() -> ProviderQuotaResult:
 
     url = "https://platform.minimax.io/v1/api/openplatform/coding_plan/remains"
     headers = {"Cookie": cookie}
-    group_id = os.getenv("MINIMAX_GROUP_ID", "")
+    group_id = settings.minimax_group_id
     if group_id:
         headers["x-group-id"] = group_id
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
