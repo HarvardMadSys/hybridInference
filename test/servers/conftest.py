@@ -87,6 +87,65 @@ async def _skip_if_test_db_unavailable(context: str = "") -> None:
         await conn.close()
 
 
+def _xdist_worker_id() -> str:
+    """Return the current xdist worker id, or 'master' when running serially.
+
+    Read from the env var (set by xdist before any fixture runs) rather than
+    the `worker_id` fixture so this can be called from session-scoped autouse
+    fixtures without scope/ordering issues.
+    """
+    return os.environ.get("PYTEST_XDIST_WORKER", "master")
+
+
+def _worker_db_name(base: str, worker_id: str) -> str:
+    """Suffix the base test DB name with the xdist worker id.
+
+    When running serially (worker_id == 'master') the base name is returned
+    unchanged so existing setups keep working.
+    """
+    if worker_id == "master":
+        return base
+    return f"{base}_{worker_id}"
+
+
+def _ensure_worker_database(db_name: str) -> None:
+    """Create the worker-specific PostgreSQL database if it doesn't exist.
+
+    Connects to the `postgres` maintenance DB to issue CREATE DATABASE.
+    Idempotent: checks pg_database first, since CREATE DATABASE has no
+    `IF NOT EXISTS` clause.
+    """
+    import asyncpg
+
+    host = os.environ.get("TEST_DB_HOST", "localhost")
+    port = int(os.environ.get("TEST_DB_PORT", "5432"))
+    user = os.environ.get("TEST_DB_USER", "postgres")
+    password = os.environ.get("TEST_DB_PASSWORD", "postgres")
+
+    async def _create() -> None:
+        conn = await asyncpg.connect(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database="postgres",
+            timeout=5,
+        )
+        try:
+            exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name)
+            if not exists:
+                # Database identifier cannot be parameterized; safe because
+                # db_name is derived from controlled env vars + xdist worker id.
+                await conn.execute(f'CREATE DATABASE "{db_name}"')
+        finally:
+            await conn.close()
+
+    # If postgres isn't reachable here, the existing skip logic in
+    # _skip_if_test_db_unavailable will handle it on a per-test basis.
+    with contextlib.suppress(Exception):
+        asyncio.run(_create())
+
+
 @pytest.fixture(scope="session", autouse=True)
 def auth_test_env():
     """Force-set environment variables so tests never hit production.
@@ -99,7 +158,14 @@ def auth_test_env():
     # falling back to Docker-friendly defaults.
     _db_host = os.environ.get("TEST_DB_HOST", "localhost")
     _db_port = os.environ.get("TEST_DB_PORT", "5432")
-    _db_name = os.environ.get("TEST_DB_NAME", "freeinference_test_db")
+    _base_db_name = os.environ.get("TEST_DB_NAME", "freeinference_test_db")
+    _worker_id = _xdist_worker_id()
+    _db_name = _worker_db_name(_base_db_name, _worker_id)
+    if _worker_id != "master":
+        # Only need to provision a per-worker DB under xdist. The base DB
+        # is provisioned by the postgres service container in CI / by the
+        # developer locally.
+        _ensure_worker_database(_db_name)
     _db_user = os.environ.get("TEST_DB_USER", "postgres")
     _db_pass = os.environ.get("TEST_DB_PASSWORD", "postgres")
     _TEST_DB_VARS = {
