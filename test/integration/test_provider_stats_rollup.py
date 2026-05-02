@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -101,3 +102,121 @@ async def test_provider_hourly_stats_primary_key(db_logger: DatabaseLogger):
         )
         names = [r["column_name"] for r in pk_cols]
     assert names == ["provider", "model_id", "hour_bucket"]
+
+
+async def _insert_api_log(
+    pool,
+    *,
+    request_id: str,
+    provider: str,
+    model_id: str,
+    timestamp: datetime,
+    stream: bool,
+    ttft_ms: int | None,
+    latency_ms: int,
+    completion_tokens: int | None,
+    prompt_tokens: int | None = 100,
+    status_code: int = 200,
+    error: str | None = None,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO api_logs (
+                request_id, model_id, provider, timestamp,
+                stream, ttft_ms, latency_ms,
+                prompt_tokens, completion_tokens,
+                status_code, error
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            """,
+            request_id,
+            model_id,
+            provider,
+            timestamp,
+            stream,
+            ttft_ms,
+            latency_ms,
+            prompt_tokens,
+            completion_tokens,
+            status_code,
+            error,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_rollup_aggregates_one_hour(db_logger: DatabaseLogger):
+    from serving.admin.provider_stats_rollup import run_rollup
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    hour = datetime(2026, 5, 2, 13, 0, tzinfo=timezone.utc)
+    # 3 successful streaming requests on (openrouter, qwen)
+    for i, (ttft, latency, ctok) in enumerate(
+        [(400, 5400, 200), (800, 9800, 400), (1200, 12200, 220)]
+    ):
+        await _insert_api_log(
+            pool,
+            request_id=f"r-stream-{i}",
+            provider="openrouter",
+            model_id="qwen/qwen3-coder",
+            timestamp=hour + timedelta(minutes=10 + i),
+            stream=True,
+            ttft_ms=ttft,
+            latency_ms=latency,
+            completion_tokens=ctok,
+        )
+    # 1 error
+    await _insert_api_log(
+        pool,
+        request_id="r-err",
+        provider="openrouter",
+        model_id="qwen/qwen3-coder",
+        timestamp=hour + timedelta(minutes=20),
+        stream=True,
+        ttft_ms=None,
+        latency_ms=2000,
+        completion_tokens=None,
+        status_code=500,
+        error="upstream_timeout",
+    )
+    # 1 non-stream success
+    await _insert_api_log(
+        pool,
+        request_id="r-nostream",
+        provider="openrouter",
+        model_id="qwen/qwen3-coder",
+        timestamp=hour + timedelta(minutes=30),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=4000,
+        completion_tokens=160,
+    )
+
+    written = await run_rollup(pool, start=hour, end=hour + timedelta(hours=1))
+    assert written == 1
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT * FROM provider_hourly_stats
+            WHERE provider='openrouter' AND model_id='qwen/qwen3-coder'
+            """
+        )
+    assert row is not None
+    assert row["request_count"] == 5
+    assert row["error_count"] == 1
+    assert row["stream_count"] == 3  # 3 successful streaming with ttft
+    # TTFT p50 of [400, 800, 1200] = 800
+    assert row["ttft_p50_ms"] == 800
+    # All non-error latencies: [5400, 9800, 12200, 4000] -> p50 ~ 7600
+    assert 7000 <= row["latency_p50_ms"] <= 8200
+    # Throughput per stream row: ctok / ((latency-ttft)/1000)
+    #   r-stream-0: 200 / 5.0 = 40.0
+    #   r-stream-1: 400 / 9.0 ≈ 44.44
+    #   r-stream-2: 220 / 11.0 = 20.0
+    #   r-nostream: 160 / 4.0 = 40.0
+    # avg ≈ 36.11
+    assert 33.0 <= row["throughput_avg_tps"] <= 40.0
+    assert row["total_completion_tokens"] == 200 + 400 + 220 + 160
