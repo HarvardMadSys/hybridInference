@@ -94,6 +94,11 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
+      - name: npm audit (high/critical)
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: false
+
       - name: Run ESLint
         run: npm run lint
 
