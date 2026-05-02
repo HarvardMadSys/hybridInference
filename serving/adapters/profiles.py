@@ -7,6 +7,7 @@ format. Names are chosen to grow into a fuller framework later.
 from __future__ import annotations
 
 import json
+import math
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -238,16 +239,19 @@ def normalize_usage_openrouter(usage_data: dict[str, Any]) -> UsageInfo:
     if cost is not None:
         try:
             parsed_cost = float(cost)
-            if parsed_cost >= 0:
-                base.upstream_cost_usd = parsed_cost
-            else:
-                logger.warning("OpenRouter returned negative cost %r; ignoring", cost)
         except (TypeError, ValueError):
             logger.warning(
                 "OpenRouter returned non-numeric cost %r (type=%s); upstream_cost_usd left null",
                 cost,
                 type(cost).__name__,
             )
+        else:
+            if not math.isfinite(parsed_cost):
+                logger.warning("OpenRouter returned non-finite cost %r; ignoring", cost)
+            elif parsed_cost < 0:
+                logger.warning("OpenRouter returned negative cost %r; ignoring", cost)
+            else:
+                base.upstream_cost_usd = parsed_cost
     return base
 
 

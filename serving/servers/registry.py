@@ -114,7 +114,7 @@ def parse_openrouter_kind(kind: str) -> tuple[str, str | None]:
     """
     if kind == "openrouter":
         return ("openrouter", None)
-    if kind.startswith("openrouter"):
+    if kind.startswith("openrouter["):
         match = _OPENROUTER_KIND_RE.match(kind)
         if match is None:
             raise ValueError(

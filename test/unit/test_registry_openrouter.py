@@ -31,12 +31,29 @@ def test_parse_valid(kind: str, expected: tuple[str, str | None]) -> None:
         "openrouter[deep infra]",
         "openrouter[deep[infra]]",
         "openrouter[deepinfra",
-        "openrouter]deepinfra[",
     ],
 )
 def test_parse_rejects_invalid(kind: str) -> None:
     with pytest.raises(ValueError):
         parse_openrouter_kind(kind)
+
+
+def test_make_adapter_rejects_pseudo_openrouter_kind() -> None:
+    """`openrouter]deepinfra[` doesn't match the bracket form, so the parser
+    returns it unchanged. _make_adapter then rejects it as unknown."""
+    base_kind, pinned = parse_openrouter_kind("openrouter]deepinfra[")
+    assert base_kind == "openrouter]deepinfra["
+    assert pinned is None
+    with pytest.raises(ValueError, match="Unknown adapter kind"):
+        _make_adapter("openrouter]deepinfra[", _cfg())
+
+
+def test_parse_unrelated_openrouter_prefix_passes_through() -> None:
+    """Future kinds with `openrouter` as a name prefix (not bracket form)
+    pass through unchanged — they get whatever dispatch the registry has,
+    or raise 'Unknown adapter kind'."""
+    assert parse_openrouter_kind("openrouter_v2") == ("openrouter_v2", None)
+    assert parse_openrouter_kind("openrouterprovider") == ("openrouterprovider", None)
 
 
 def _cfg(**overrides):

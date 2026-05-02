@@ -146,6 +146,38 @@ def test_normalize_usage_openrouter_negative_cost_is_dropped(caplog) -> None:
     assert any("negative cost" in rec.message for rec in caplog.records)
 
 
+def test_normalize_usage_openrouter_rejects_nan_cost(caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        info = normalize_usage_openrouter(
+            {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "cost": float("nan"),
+            }
+        )
+    assert info.upstream_cost_usd is None
+    assert any("non-finite cost" in rec.message for rec in caplog.records)
+
+
+def test_normalize_usage_openrouter_rejects_inf_cost(caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        info = normalize_usage_openrouter(
+            {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "cost": float("inf"),
+            }
+        )
+    assert info.upstream_cost_usd is None
+    assert any("non-finite cost" in rec.message for rec in caplog.records)
+
+
 def _make_compat_cfg(**overrides: Any) -> ModelConfig:
     base: dict[str, Any] = {
         "id": "dummy-model",
