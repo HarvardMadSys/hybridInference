@@ -756,6 +756,7 @@ class FixedRouter(BaseRouter):
                     f"Pinned provider '{pin_provider}' not found for model {model_id}"
                 )
             raise ValueError(f"No route configured for model {model_id}")
+        chunks_yielded = False
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
                 first = True
@@ -773,6 +774,7 @@ class FixedRouter(BaseRouter):
                         # Consider first non-empty token as a success signal for availability.
                         self._on_success(primary_endpoint_id)
                     yield chunk
+                    chunks_yielded = True
             return
         except Exception as primary_error:
             # record streaming interruption for primary provider
@@ -784,6 +786,14 @@ class FixedRouter(BaseRouter):
             self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
+                raise primary_error
+            # Once any chunk has been yielded to the client the SSE stream
+            # has committed to a single provider. Falling back here would
+            # produce a corrupt response: duplicate role/system events from
+            # the second provider, mid-message provider switch, and
+            # mismatched token-usage totals. Re-raise instead so the caller
+            # closes the stream — the partial response is the lesser harm.
+            if chunks_yielded:
                 raise primary_error
             route = self.routes[model_id]
             for adapter, weight in route.adapters:
