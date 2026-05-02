@@ -330,7 +330,7 @@ export default function AdminPage() {
 
   // Top-level tab
   const [activeTab, setActiveTab] = useState<
-    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics'
+    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'performance'
   >('users');
 
   useEffect(() => {
@@ -342,9 +342,19 @@ export default function AdminPage() {
       tab === 'requests' ||
       tab === 'broadcast' ||
       tab === 'providers' ||
-      tab === 'analytics'
+      tab === 'analytics' ||
+      tab === 'performance'
     ) {
-      setActiveTab(tab as 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics');
+      setActiveTab(
+        tab as
+          | 'users'
+          | 'audit'
+          | 'requests'
+          | 'broadcast'
+          | 'providers'
+          | 'analytics'
+          | 'performance',
+      );
     }
   }, []);
 
@@ -550,7 +560,7 @@ export default function AdminPage() {
   }, [loadRequests, loadRequestMetrics, activeTab]);
 
   useEffect(() => {
-    if (activeTab === 'analytics') loadPerformanceMetrics();
+    if (activeTab === 'performance') loadPerformanceMetrics();
   }, [loadPerformanceMetrics, activeTab]);
 
   useEffect(() => {
@@ -716,7 +726,14 @@ export default function AdminPage() {
   ];
 
   const onTabChange = (
-    tab: 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics',
+    tab:
+      | 'users'
+      | 'audit'
+      | 'requests'
+      | 'broadcast'
+      | 'providers'
+      | 'analytics'
+      | 'performance',
   ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
@@ -742,7 +759,7 @@ export default function AdminPage() {
       loadProviderQuotas();
       return;
     }
-    if (activeTab === 'analytics') {
+    if (activeTab === 'performance') {
       loadPerformanceMetrics();
       return;
     }
@@ -805,31 +822,41 @@ export default function AdminPage() {
 
         {/* Top-level tab toggle */}
         <div className="mt-6 flex items-center gap-1">
-          {(['users', 'requests', 'providers', 'audit', 'broadcast', 'analytics'] as const).map(
-            (tab) => (
-              <button
-                key={tab}
-                onClick={() => onTabChange(tab)}
-                className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
-                  activeTab === tab
-                    ? 'bg-gray-900 text-white'
-                    : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
-                }`}
-              >
-                {tab === 'users'
-                  ? 'Users'
-                  : tab === 'requests'
-                    ? 'Recent Requests'
-                    : tab === 'providers'
-                      ? 'Providers'
-                      : tab === 'audit'
-                        ? 'Audit Log'
-                        : tab === 'broadcast'
-                          ? 'Broadcast Email'
-                          : 'Analytics'}
-              </button>
-            ),
-          )}
+          {(
+            [
+              'users',
+              'requests',
+              'providers',
+              'audit',
+              'broadcast',
+              'analytics',
+              'performance',
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => onTabChange(tab)}
+              className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
+                activeTab === tab
+                  ? 'bg-gray-900 text-white'
+                  : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+              }`}
+            >
+              {tab === 'users'
+                ? 'Users'
+                : tab === 'requests'
+                  ? 'Recent Requests'
+                  : tab === 'providers'
+                    ? 'Providers'
+                    : tab === 'audit'
+                      ? 'Audit Log'
+                      : tab === 'broadcast'
+                        ? 'Broadcast Email'
+                        : tab === 'analytics'
+                          ? 'Analytics'
+                          : 'Performance'}
+            </button>
+          ))}
         </div>
 
         {/* Alerts */}
@@ -1839,36 +1866,34 @@ export default function AdminPage() {
             </div>
           </div>
         )}
-        {activeTab === 'analytics' && (
-          <>
-            <AnalyticsTab />
-            {/* Performance metrics */}
-            <div className="mt-6 mb-6">
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <h2 className="text-[15px] font-semibold text-gray-900">Performance metrics</h2>
-                  <p className="text-[12px] text-gray-400">
-                    Prompt/response length, time-to-first-token, and inter-token latency
-                    distributions.
-                  </p>
-                </div>
-                {perfMetricsLoading && (
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-                )}
+        {activeTab === 'analytics' && <AnalyticsTab />}
+
+        {activeTab === 'performance' && (
+          <div className="mt-8">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h2 className="text-[15px] font-semibold text-gray-900">Performance metrics</h2>
+                <p className="text-[12px] text-gray-400">
+                  Prompt/response length, time-to-first-token, and inter-token latency
+                  distributions.
+                </p>
               </div>
-              {perfMetrics.length > 0 ? (
-                <div className="grid gap-3">
-                  {perfMetrics.map((metric) => (
-                    <PerformanceMetricsCard key={metric.key} metric={metric} />
-                  ))}
-                </div>
-              ) : !perfMetricsLoading ? (
-                <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
-                  <p className="text-[13px] text-gray-400">No performance metrics available.</p>
-                </div>
-              ) : null}
+              {perfMetricsLoading && (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+              )}
             </div>
-          </>
+            {perfMetrics.length > 0 ? (
+              <div className="grid gap-3">
+                {perfMetrics.map((metric) => (
+                  <PerformanceMetricsCard key={metric.key} metric={metric} />
+                ))}
+              </div>
+            ) : !perfMetricsLoading ? (
+              <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+                <p className="text-[13px] text-gray-400">No performance metrics available.</p>
+              </div>
+            ) : null}
+          </div>
         )}
 
         {/* ========== Broadcast Email Tab ========== */}
