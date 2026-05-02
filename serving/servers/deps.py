@@ -144,7 +144,7 @@ async def get_current_user(
         op_store: Operational store instance.
 
     Returns:
-        User context dictionary with user_id, email, tier, etc.
+        User context dictionary with user_id, email, role, etc.
 
     Raises:
         HTTPException: 401 if token is missing, invalid, or expired.
@@ -175,7 +175,6 @@ async def get_current_user(
     # Extract user info from token
     user_id = payload.get("sub")
     email = payload.get("email")
-    tier = payload.get("tier", "free")
 
     if not user_id or not email:
         raise HTTPException(
@@ -216,7 +215,6 @@ async def get_current_user(
     return {
         "user_id": user_id,
         "email": user_row["email"],
-        "tier": tier,
         "role": user_role,
         "is_admin": user_role == "admin",
         "email_verified": user_row["email_verified"],
