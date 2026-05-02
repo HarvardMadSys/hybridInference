@@ -10,6 +10,7 @@ Pure functions plus one stateful streaming translator. No I/O, no logging.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -300,6 +301,7 @@ class OpenAIToAnthropicStreamTranslator:
 
     def __init__(self, *, model: str) -> None:
         self.model = model
+        self._message_id = f"msg_{uuid.uuid4().hex[:24]}"
         self._started = False
         self._closed = False
         self._current_text_index: int | None = None
@@ -406,7 +408,7 @@ class OpenAIToAnthropicStreamTranslator:
             {
                 "type": "message_start",
                 "message": {
-                    "id": "msg_stream",
+                    "id": self._message_id,
                     "type": "message",
                     "role": "assistant",
                     "model": self.model,
@@ -533,4 +535,6 @@ def extract_anthropic_usage_from_sse(raw: bytes, usage: dict[str, int]) -> None:
                 if "output_tokens" in delta_usage:
                     usage["output_tokens"] = int(delta_usage["output_tokens"])
     except Exception:
+        # Best-effort: never disturb the streaming pass-through. Failures
+        # here only affect DB-logged usage counts.
         pass

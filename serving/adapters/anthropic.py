@@ -222,6 +222,15 @@ class AnthropicAdapter(BaseAdapter):
             headers=self._upstream_headers(streaming=True),
             timeout=timeout,
         ) as resp:
+            if resp.status >= 400:
+                error_body = await resp.text()
+                raise aiohttp.ClientResponseError(
+                    request_info=resp.request_info,
+                    history=resp.history,
+                    status=resp.status,
+                    message=error_body[:500],
+                    headers=resp.headers,
+                )
             buf = b""
             async for raw in resp.content.iter_any():
                 buf += raw
@@ -303,7 +312,7 @@ class AnthropicAdapter(BaseAdapter):
         )
 
     async def stream_messages(
-        self, body: dict[str, Any], *, request_id: str
+        self, body: dict[str, Any], *, request_id: str, usage_sink: dict[str, int] | None = None
     ) -> AsyncGenerator[bytes, None]:
         """Anthropic-format streaming identity passthrough.
 
@@ -334,8 +343,23 @@ class AnthropicAdapter(BaseAdapter):
             headers=self._upstream_headers(streaming=True),
             timeout=timeout,
         ) as resp:
+            if resp.status >= 400:
+                error_body = await resp.text()
+                raise aiohttp.ClientResponseError(
+                    request_info=resp.request_info,
+                    history=resp.history,
+                    status=resp.status,
+                    message=error_body[:500],
+                    headers=resp.headers,
+                )
+            buf = b""
             async for chunk in resp.content.iter_any():
-                extract_anthropic_usage_from_sse(chunk, usage)
                 yield chunk
+                buf += chunk
+                while b"\n\n" in buf:
+                    frame, buf = buf.split(b"\n\n", 1)
+                    extract_anthropic_usage_from_sse(frame + b"\n\n", usage)
 
-        self.last_stream_usage = usage
+        self.last_stream_usage = usage  # keep for backward-compat with tests
+        if usage_sink is not None:
+            usage_sink.update(usage)
