@@ -133,7 +133,7 @@ async def get_current_user_info(
 ) -> UserInfo:
     """Get current user information.
 
-    Returns user profile including email, tier, role, status, and account creation date.
+    Returns user profile including email, role, status, and account creation date.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -147,7 +147,6 @@ async def get_current_user_info(
         id=user_row["id"],
         email=user_row["email"],
         user_name=user_row["user_name"],
-        tier=current_user.get("tier", "free"),
         role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
@@ -264,7 +263,6 @@ async def create_api_key(
         key_prefix=key_prefix,
         user_id=current_user["user_id"],
         account_id=current_user["user_id"],
-        tier=current_user.get("tier", "free"),
         quota_daily_cost_usd=default_quota,
     )
 
@@ -277,7 +275,6 @@ async def create_api_key(
         {
             "actor": "user",
             "key_prefix": key_prefix,
-            "tier": current_user.get("tier", "free"),
         },
     )
 
@@ -473,7 +470,6 @@ async def regenerate_api_key(
         key_prefix=key_prefix,
         user_id=current_user["user_id"],
         account_id=current_user["user_id"],
-        tier=current_user.get("tier", "free"),
         quota_daily_cost_usd=default_quota,
     )
 
@@ -621,7 +617,6 @@ async def update_profile(
         id=user_row["id"],
         email=user_row["email"],
         user_name=user_row["user_name"],
-        tier=current_user.get("tier", "free"),
         role=user_row["role"] or "free",
         status=user_row["status"],
         email_verified=user_row["email_verified"],
