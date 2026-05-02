@@ -460,6 +460,7 @@ class AdminRecentRequestItem(BaseModel):
     status_code: int | None = None
     latency_ms: int | None = None
     ttft_ms: int | None = None
+    decode_throughput_tps: float | None = None
     stream: bool | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None

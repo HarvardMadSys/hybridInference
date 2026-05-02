@@ -2233,6 +2233,9 @@ export default function AdminPage() {
                           Latency
                         </th>
                         <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Decode
+                        </th>
+                        <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                           Tokens
                         </th>
                         <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
@@ -2321,6 +2324,11 @@ export default function AdminPage() {
                                   : '—'}
                               </td>
                               <td className="whitespace-nowrap px-3 py-2.5 text-[12px] tabular-nums text-gray-600">
+                                {req.decode_throughput_tps != null
+                                  ? `${req.decode_throughput_tps.toFixed(1)} tok/s`
+                                  : '—'}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px] tabular-nums text-gray-600">
                                 {req.prompt_tokens != null || req.completion_tokens != null ? (
                                   <>
                                     <span className="text-gray-400">↑</span>
@@ -2348,7 +2356,7 @@ export default function AdminPage() {
                             </tr>
                             {isExpanded && (
                               <tr className="border-b border-gray-100 bg-gray-50/40">
-                                <td colSpan={8} className="px-4 py-3">
+                                <td colSpan={9} className="px-4 py-3">
                                   <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[11px] sm:grid-cols-4">
                                     <div>
                                       <span className="text-gray-500">Request ID:</span>{' '}
