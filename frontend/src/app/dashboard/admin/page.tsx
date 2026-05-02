@@ -1776,6 +1776,11 @@ export default function AdminPage() {
                           req.status_code >= 200 &&
                           req.status_code < 400;
                         const isExpanded = reqExpandedId === req.request_id;
+                        const hasCacheTokens =
+                          req.cache_read_tokens != null || req.cache_write_tokens != null;
+                        const cachedTokens = hasCacheTokens
+                          ? (req.cache_read_tokens ?? 0) + (req.cache_write_tokens ?? 0)
+                          : null;
                         return (
                           <Fragment key={req.request_id}>
                             <tr
@@ -1907,6 +1912,12 @@ export default function AdminPage() {
                                         {req.reasoning_tokens != null
                                           ? req.reasoning_tokens.toLocaleString()
                                           : '—'}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">Cached:</span>{' '}
+                                      <span className="text-gray-700">
+                                        {cachedTokens != null ? cachedTokens.toLocaleString() : '—'}
                                       </span>
                                     </div>
                                     <div>
