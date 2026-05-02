@@ -148,7 +148,6 @@ function formatScalar(v: unknown): string {
   if (v == null) return String(v);
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  if (Array.isArray(v) || isRecord(v)) return JSON.stringify(v);
   return JSON.stringify(v);
 }
 
@@ -194,7 +193,7 @@ function JsonChatView({ data }: { data: unknown }) {
         <MetaList data={data} skip={['messages']} />
         <div className="space-y-1.5">
           {data.messages.map((m, i) => (
-            <MessageBlock key={i} message={m} />
+            <MessageBlock key={`${i}-${m.role}`} message={m} />
           ))}
         </div>
       </div>
@@ -206,7 +205,7 @@ function JsonChatView({ data }: { data: unknown }) {
         <MetaList data={data} skip={['choices']} />
         <div className="space-y-1.5">
           {data.choices.map((c, i) => (
-            <MessageBlock key={i} message={c.message} />
+            <MessageBlock key={typeof c.index === 'number' ? c.index : i} message={c.message} />
           ))}
         </div>
       </div>
