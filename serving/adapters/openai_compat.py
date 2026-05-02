@@ -26,11 +26,9 @@ from .profiles import (
     function_call_delta_to_tool_calls,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
-    normalize_messages_for_profile,
     normalize_tools_for_profile,
     resolve_tool_choice_for_profile,
     supports_guided_json,
-    transform_payload_for_profile,
 )
 
 if TYPE_CHECKING:
@@ -122,9 +120,6 @@ class OpenAICompatAdapter(BaseAdapter):
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Normalize request messages for the active provider profile."""
-        profile_messages = normalize_messages_for_profile(self._usage_profile, messages)
-        if profile_messages is not None:
-            return profile_messages
         return [self._clean_message(msg) for msg in messages]
 
     def _normalize_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
@@ -424,9 +419,7 @@ class OpenAICompatAdapter(BaseAdapter):
         cleaned_messages = self._prepare_messages(messages)
 
         # Build request payload
-        payload = {"messages": cleaned_messages, **validated}
-        if self._usage_profile != ProviderProfile.AZURE_OPENAI:
-            payload["model"] = self._get_model_identifier()
+        payload = {"messages": cleaned_messages, "model": self._get_model_identifier(), **validated}
         self._apply_supported_passthrough_params(payload, params)
 
         # Add optional features
@@ -439,7 +432,6 @@ class OpenAICompatAdapter(BaseAdapter):
         filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
         if filtered_rf and self.config.supports_structured_output:
             payload["response_format"] = filtered_rf
-        payload = transform_payload_for_profile(self._usage_profile, payload, stream=False)
         payload = self._augment_payload(payload, stream=False)
 
         # Make request
@@ -475,11 +467,10 @@ class OpenAICompatAdapter(BaseAdapter):
 
         payload = {
             "messages": cleaned_messages,
+            "model": self._get_model_identifier(),
             "stream": True,
             **validated,
         }
-        if self._usage_profile != ProviderProfile.AZURE_OPENAI:
-            payload["model"] = self._get_model_identifier()
         self._apply_supported_passthrough_params(payload, params)
 
         # Add optional features
@@ -496,7 +487,6 @@ class OpenAICompatAdapter(BaseAdapter):
                 schema := params.get("response_format", {}).get("schema")
             ):
                 payload["guided_json"] = schema
-        payload = transform_payload_for_profile(self._usage_profile, payload, stream=True)
         if getattr(self.config, "include_usage_in_stream", False):
             existing_options = payload.get("stream_options") or {}
             payload["stream_options"] = {**existing_options, "include_usage": True}
@@ -672,9 +662,7 @@ class OpenAICompatAdapter(BaseAdapter):
         else:
             usage_info = None
             final_usage = self._build_fallback_usage(
-                messages=cleaned_messages
-                if self._usage_profile == ProviderProfile.AZURE_OPENAI
-                else messages,
+                messages=messages,
                 total_content=total_content,
                 prompt_tokens_override=prompt_tokens_override,
             )

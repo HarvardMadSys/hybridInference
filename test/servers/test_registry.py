@@ -136,30 +136,6 @@ def test_make_adapter_minimax_uses_openai_compat_with_profile():
 
 
 @pytest.mark.unit
-def test_make_adapter_openai_uses_openai_compat_with_azure_profile():
-    """kind: openai routes through OpenAICompatAdapter with Azure-specific config."""
-    adapter = registry._make_adapter(
-        "openai",
-        {
-            "id": "gpt-5-test",
-            "name": "Azure OpenAI Test",
-            "provider": "openai",
-            "base_url": "https://example.openai.azure.com/openai/deployments/gpt-5-test",
-            "api_key": "test-key",
-        },
-    )
-    from serving.adapters.openai_compat import OpenAICompatAdapter
-
-    assert isinstance(adapter, OpenAICompatAdapter)
-    assert adapter.config.provider_profile == "azure_openai"
-    assert adapter.config.chat_path == "/chat/completions"
-    assert adapter.config.use_bearer_auth is False
-    assert adapter.config.auth_header_name == "api-key"
-    assert adapter.config.auth_format == "{api_key}"
-    assert adapter.config.extra_query == {"api-version": "2024-12-01-preview"}
-
-
-@pytest.mark.unit
 def test_register_from_models_yaml_invalid_processor_override_raises(tmp_path):
     yaml_text = (
         "models:\n"
