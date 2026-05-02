@@ -721,6 +721,51 @@ class DatabaseLogger:
                 ON email_broadcast_recipients(broadcast_id, status)
             """)
 
+            # ====================================================
+            # provider_hourly_stats — hourly rollup of api_logs by
+            # (provider, model_id). Populated by the
+            # rollup_provider_stats APScheduler job.
+            # ====================================================
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS provider_hourly_stats (
+                    hour_bucket             TIMESTAMPTZ NOT NULL,
+                    provider                TEXT        NOT NULL,
+                    model_id                TEXT        NOT NULL,
+
+                    request_count           INTEGER     NOT NULL,
+                    error_count             INTEGER     NOT NULL,
+                    stream_count            INTEGER     NOT NULL,
+
+                    ttft_p50_ms             INTEGER,
+                    ttft_p95_ms             INTEGER,
+                    ttft_p99_ms             INTEGER,
+
+                    latency_p50_ms          INTEGER,
+                    latency_p95_ms          INTEGER,
+                    latency_p99_ms          INTEGER,
+
+                    throughput_avg_tps      FLOAT,
+                    throughput_p50_tps      FLOAT,
+                    throughput_p95_tps      FLOAT,
+
+                    prompt_tokens_avg       FLOAT,
+                    completion_tokens_avg   FLOAT,
+                    total_completion_tokens BIGINT      NOT NULL,
+
+                    PRIMARY KEY (provider, model_id, hour_bucket)
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_phs_hour
+                ON provider_hourly_stats(hour_bucket DESC)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_phs_provider_hour
+                ON provider_hourly_stats(provider, hour_bucket DESC)
+            """)
+
     async def log_request(
         self,
         request_id: str,
