@@ -657,3 +657,60 @@ async def test_streaming_ttft_ms_handles_split_event_name(anthropic_test_client,
             pass
 
     assert isinstance(captured.get("ttft_ms"), int)
+
+
+# --- _upstream_status_from_exc unit tests ----------------------------------
+
+
+class TestUpstreamStatusFromExc:
+    @staticmethod
+    def _fn():
+        from serving.servers.routers.anthropic_messages import _upstream_status_from_exc
+
+        return _upstream_status_from_exc
+
+    def test_aiohttp_client_response_error_401(self):
+        import aiohttp
+
+        exc = aiohttp.ClientResponseError(
+            request_info=None, history=None, status=401, message="auth error"
+        )
+        assert self._fn()(exc) == 401
+
+    def test_aiohttp_client_response_error_429(self):
+        import aiohttp
+
+        exc = aiohttp.ClientResponseError(
+            request_info=None, history=None, status=429, message="rate limited"
+        )
+        assert self._fn()(exc) == 429
+
+    def test_aiohttp_client_response_error_500(self):
+        import aiohttp
+
+        exc = aiohttp.ClientResponseError(
+            request_info=None, history=None, status=500, message="server error"
+        )
+        assert self._fn()(exc) == 500
+
+    def test_status_code_attribute(self):
+        class CustomExc(Exception):
+            status_code = 403
+
+        assert self._fn()(CustomExc("forbidden")) == 403
+
+    def test_status_preferred_over_status_code(self):
+        class DualAttrExc(Exception):
+            status = 401
+            status_code = 403
+
+        assert self._fn()(DualAttrExc("both")) == 401
+
+    def test_generic_exception_falls_back_to_502(self):
+        assert self._fn()(RuntimeError("connection lost")) == 502
+
+    def test_non_int_status_falls_back_to_502(self):
+        class BadExc(Exception):
+            status = "bad"
+
+        assert self._fn()(BadExc("oops")) == 502

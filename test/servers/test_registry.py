@@ -180,3 +180,75 @@ def test_register_from_models_yaml_invalid_processor_override_raises(tmp_path):
     exe = RouteExecutor()
     with pytest.raises(ValueError, match="Unknown processor override 'not_a_processor'"):
         registry.register_from_models_yaml(exe, Path(p))
+
+
+@pytest.mark.unit
+def test_register_skips_route_with_unset_env_api_key(tmp_path, monkeypatch):
+    yaml_text = (
+        "models:\n"
+        "  - id: skip-model\n"
+        "    name: Skip Model\n"
+        "    provider: anthropic\n"
+        "    base_url: https://api.anthropic.com\n"
+        "    route:\n"
+        "      - kind: anthropic\n"
+        "        weight: 1.0\n"
+        "        api_key: ${UNSET_ANTHROPIC_API_KEY}\n"
+        "        base_url: https://api.anthropic.com\n"
+    )
+    p = tmp_path / "unset_key.yaml"
+    p.write_text(yaml_text)
+
+    monkeypatch.delenv("UNSET_ANTHROPIC_API_KEY", raising=False)
+
+    exe = RouteExecutor()
+    count, infos = registry.register_from_models_yaml(exe, Path(p))
+    assert count == 0
+    assert len(infos) == 0
+    assert "skip-model" not in exe.routes
+
+
+@pytest.mark.unit
+def test_register_skips_model_with_unset_top_level_api_key(tmp_path, monkeypatch):
+    yaml_text = (
+        "models:\n"
+        "  - id: top-level-skip\n"
+        "    name: Top Level Skip\n"
+        "    provider: anthropic\n"
+        "    base_url: https://api.anthropic.com\n"
+        "    api_key: ${MISSING_TOP_KEY}\n"
+    )
+    p = tmp_path / "missing_top_key.yaml"
+    p.write_text(yaml_text)
+
+    monkeypatch.delenv("MISSING_TOP_KEY", raising=False)
+
+    exe = RouteExecutor()
+    count, _infos = registry.register_from_models_yaml(exe, Path(p))
+    assert count == 0
+    assert "top-level-skip" not in exe.routes
+
+
+@pytest.mark.unit
+def test_register_skips_route_with_whitespace_only_api_key(tmp_path, monkeypatch):
+    yaml_text = (
+        "models:\n"
+        "  - id: ws-model\n"
+        "    name: Whitespace Model\n"
+        "    provider: anthropic\n"
+        "    base_url: https://api.anthropic.com\n"
+        "    route:\n"
+        "      - kind: anthropic\n"
+        "        weight: 1.0\n"
+        "        api_key: ${WS_API_KEY}\n"
+        "        base_url: https://api.anthropic.com\n"
+    )
+    p = tmp_path / "ws_key.yaml"
+    p.write_text(yaml_text)
+
+    monkeypatch.setenv("WS_API_KEY", "   ")
+
+    exe = RouteExecutor()
+    count, _infos = registry.register_from_models_yaml(exe, Path(p))
+    assert count == 0
+    assert "ws-model" not in exe.routes
