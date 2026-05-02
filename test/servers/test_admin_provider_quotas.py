@@ -291,6 +291,9 @@ class TestFetchZai:
         monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
         # Real ZAI API shape: "usage" is the cap, "currentValue" is amount used,
         # TOKENS_LIMIT may have only percentage and no absolute values.
+        # Each entry carries its own `nextResetTime` (epoch ms).
+        time_reset_ms = 1779844254994  # 2026-05-23 08:30:54.994 UTC
+        tokens_reset_ms = 1777754666484  # 2026-04-29 03:24:26.484 UTC
         payload = {
             "code": 200,
             "data": {
@@ -301,10 +304,12 @@ class TestFetchZai:
                         "currentValue": 0,
                         "remaining": 4000,
                         "percentage": 0,
+                        "nextResetTime": time_reset_ms,
                     },
                     {
                         "type": "TOKENS_LIMIT",
                         "percentage": 6,
+                        "nextResetTime": tokens_reset_ms,
                     },
                 ]
             },
@@ -324,11 +329,90 @@ class TestFetchZai:
         assert time_use.used == 0.0
         assert time_use.limit == 4000.0
         assert time_use.unit == "minutes"
+        # Per-entry reset_at parsed from nextResetTime (epoch ms) -> UTC datetime.
+        assert time_use.reset_at == datetime.fromtimestamp(
+            time_reset_ms / 1000, tz=timezone.utc
+        )
         # TOKENS_LIMIT: percentage-only entry → stored as used=6, limit=100, unit="%"
         token_use = next(u for u in result.usages if "Token" in u.label)
         assert token_use.used == 6.0
         assert token_use.limit == 100.0
         assert token_use.unit == "%"
+        assert token_use.reset_at == datetime.fromtimestamp(
+            tokens_reset_ms / 1000, tz=timezone.utc
+        )
+        # Per-entry — not a single shared monthly value.
+        assert time_use.reset_at != token_use.reset_at
+
+    @pytest.mark.asyncio
+    async def test_missing_next_reset_time_yields_none(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
+        time_reset_ms = 1779844254994
+        payload = {
+            "code": 200,
+            "data": {
+                "limits": [
+                    {
+                        "type": "TIME_LIMIT",
+                        "usage": 4000,
+                        "currentValue": 0,
+                        "remaining": 4000,
+                        "percentage": 0,
+                        "nextResetTime": time_reset_ms,
+                    },
+                    {
+                        # TOKENS_LIMIT entry missing nextResetTime
+                        "type": "TOKENS_LIMIT",
+                        "percentage": 8,
+                    },
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = await fetch_zai()
+        assert result.ok is True
+        time_use = next(u for u in result.usages if "Time" in u.label)
+        token_use = next(u for u in result.usages if "Token" in u.label)
+        assert time_use.reset_at == datetime.fromtimestamp(
+            time_reset_ms / 1000, tz=timezone.utc
+        )
+        assert token_use.reset_at is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_next_reset_time_yields_none(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
+        payload = {
+            "code": 200,
+            "data": {
+                "limits": [
+                    {
+                        "type": "TIME_LIMIT",
+                        "usage": 4000,
+                        "currentValue": 0,
+                        "remaining": 4000,
+                        "percentage": 0,
+                        "nextResetTime": "not-a-number",
+                    },
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "percentage": 8,
+                        # bool is a subclass of int but must be rejected.
+                        "nextResetTime": True,
+                    },
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = await fetch_zai()
+        assert result.ok is True
+        for u in result.usages:
+            assert u.reset_at is None
 
     @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
