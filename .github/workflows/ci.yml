@@ -3,8 +3,18 @@ name: CI
 on:
   push:
     branches: [main, dev, "murphy/dev/*"]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -32,6 +42,14 @@ jobs:
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Cache .venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-
 
       - name: Install dependencies
         run: |
@@ -119,12 +137,21 @@ jobs:
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
 
+      - name: Cache .venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-
+
       - name: Install dependencies
         run: |
           uv venv
           uv sync --group dev
 
-      - name: Run tests with coverage
+      - name: Run tests (PR, no coverage)
+        if: github.event_name == 'pull_request'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -148,9 +175,37 @@ jobs:
           COOKIE_SAMESITE: lax
           BASE_URL: http://localhost:8000
         run: |
-          uv run pytest --cov=. --cov-report=term-missing --cov-report=xml -v -m "not external"
+          uv run pytest -n auto --dist=loadfile -v -m "not external"
+
+      - name: Run tests (push, with coverage)
+        if: github.event_name == 'push'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          # Database configuration for auth tests
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: freeinference_test_db
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          # Auth system configuration
+          JWT_SECRET_KEY: test-secret-key-for-ci-only-do-not-use-in-production
+          JWT_ALGORITHM: HS256
+          JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 15
+          JWT_REFRESH_TOKEN_EXPIRE_DAYS: 30
+          SIGNUP_ENABLED: "1"
+          SIGNUP_DEFAULT_TIER: free
+          SIGNUP_DEFAULT_DAILY_QUOTA_USD: "100.00"
+          SIGNUP_REQUIRE_EMAIL_VERIFICATION: "0"
+          COOKIE_SECURE: "0"
+          COOKIE_SAMESITE: lax
+          BASE_URL: http://localhost:8000
+        run: |
+          uv run pytest -n auto --dist=loadfile --cov=. --cov-report=term-missing --cov-report=xml -v -m "not external"
 
       - name: Upload coverage to Codecov
+        if: github.event_name == 'push'
         uses: codecov/codecov-action@v6
         with:
           file: ./coverage.xml
