@@ -89,7 +89,7 @@ Deployment and observability:
 - Docker Compose service definitions and Dockerfiles
 - Prometheus metrics collection
 - Grafana dashboards and provisioning
-- Alertmanager rules and alert logger
+- Alertmanager rules and Slack notification routing
 
 ### Subscription Adapters
 

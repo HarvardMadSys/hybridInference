@@ -19,8 +19,8 @@ make ps
 curl http://localhost:8080/health
 ```
 
-This starts 7 containers: backend (FastAPI), frontend (Next.js), PostgreSQL, Prometheus,
-Alertmanager, alert-logger, and Grafana. All ports bind to `127.0.0.1` only.
+This starts 6 containers: backend (FastAPI), frontend (Next.js), PostgreSQL, Prometheus,
+Alertmanager and Grafana. All ports bind to `127.0.0.1` only.
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ Client ──▶ Cloudflare (CDN + DDoS) ──▶ Nginx (:443) ──┬──�
 Docker internal network:
   backend ──▶ postgres (:5432)
   prometheus ──▶ backend (:8080/metrics)
-  prometheus ──▶ alertmanager (:9093) ──▶ alert-logger (:5001)
+  prometheus ──▶ alertmanager (:9093) ──▶ Slack <slack-channel>
   grafana ──▶ prometheus (:9090), postgres (:5432)
   backend ──▶ host.docker.internal (GPU SSH tunnels on host)
 ```
@@ -191,7 +191,10 @@ Dashboards are managed via the Grafana UI. To backup/restore:
 ### Alerting
 
 Three active alert rules: `ServiceDown`, `ServiceUnreachable`, `DatabaseDisconnected`.
-Alerts route to Slack and are logged to `alert_log_data` volume.
+Alerts route to Slack `<slack-channel>` via the allowlist in
+`infrastructure/alertmanager/alertmanager.yml`. The Slack webhook URL is
+read at runtime from `/etc/freeinference/slack-webhook-url`; see
+`infrastructure/alertmanager/README.md` for setup.
 
 ## Database
 
