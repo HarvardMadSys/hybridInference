@@ -1,18 +1,26 @@
 import '../styles/globals.css';
 import Script from 'next/script';
+import { Crimson_Text } from 'next/font/google';
 import { config } from '@/config/env';
 import { Providers } from '@/components/providers';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { BuildInfo } from '@/components/ui/BuildInfo';
 
+const crimsonText = Crimson_Text({
+  subsets: ['latin'],
+  weight: ['400', '600', '700'],
+  variable: '--font-serif',
+  display: 'swap',
+});
+
 export const metadata = {
   title: config.appName,
-  description: 'Free inference service platform',
+  description: 'Free LLM inference for research, built at Harvard SEAS.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="h-full">
+    <html lang="en" className={`h-full ${crimsonText.variable}`}>
       <head>
         <Script id="statcounter-config" strategy="afterInteractive">
           {"var sc_project=13224568; var sc_invisible=1; var sc_security='2d8ab84a';"}
@@ -30,13 +38,40 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ErrorBoundary>
           <Providers>
             <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-6">
-              <div className="text-xl font-bold tracking-tight">{config.appName}</div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-xl font-bold tracking-tight">{config.appName}</span>
+                <span className="font-serif text-sm text-gray-500">Harvard SEAS</span>
+              </div>
             </header>
-            <main className="mx-auto flex w-full max-w-5xl flex-1 items-center px-6 py-12">
+            <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-6 py-12">
               {children}
             </main>
             <footer className="mx-auto w-full max-w-5xl px-6 py-6 text-center text-sm text-gray-400">
-              © {config.appName} · <BuildInfo />
+              <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+                <span>© {config.appName}</span>
+                <span aria-hidden="true">·</span>
+                <span>Harvard SEAS</span>
+                <span aria-hidden="true">·</span>
+                <a
+                  href="https://doc.freeinference.org"
+                  className="hover:text-crimson"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Docs
+                </a>
+                <span aria-hidden="true">·</span>
+                <a
+                  href="https://github.com/HarvardSys/hybridInference"
+                  className="hover:text-crimson"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  GitHub
+                </a>
+                <span aria-hidden="true">·</span>
+                <BuildInfo />
+              </div>
             </footer>
             <noscript>
               <div className="statcounter">
