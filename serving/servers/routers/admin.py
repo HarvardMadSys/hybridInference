@@ -114,15 +114,19 @@ def _serialize_for_audit(data: dict[str, Any]) -> dict[str, Any]:
     return {key: _to_json_safe(value) for key, value in data.items()}
 
 
-@router.get("/stats")
 @router.get("/admin/stats")
 async def get_stats(
     model: str | None = None,
     provider: str | None = None,
     hours: int = 24,
     log_store=Depends(get_log_store),
+    _admin_id: str = Depends(verify_admin_access),
 ) -> dict[str, Any]:
-    """Return usage statistics from the log store."""
+    """Return usage statistics from the log store.
+
+    Note: a bare `/stats` alias previously existed without admin auth; it has
+    been removed. Use `/admin/stats` (admin-authenticated) instead.
+    """
     if not log_store:
         return {"error": "Database logging not configured"}
 
