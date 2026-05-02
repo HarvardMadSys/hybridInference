@@ -173,7 +173,30 @@ def _translate_params(body: dict[str, Any]) -> dict[str, Any]:
         params["stream"] = True
     if body.get("tools"):
         params["tools"] = [_translate_tool(t) for t in body["tools"]]
+    if "tool_choice" in body:
+        tc = _translate_tool_choice(body["tool_choice"])
+        if tc is not None:
+            params["tool_choice"] = tc
+    metadata = body.get("metadata") or {}
+    user_id = metadata.get("user_id")
+    if user_id:
+        params["user"] = user_id
+    # thinking and other Anthropic-only top-level fields are silently dropped.
     return params
+
+
+def _translate_tool_choice(tc: Any) -> Any:
+    """Translate Anthropic tool_choice to OpenAI tool_choice format."""
+    if not isinstance(tc, dict):
+        return None
+    t = tc.get("type")
+    if t == "auto":
+        return "auto"
+    if t == "any":
+        return "required"
+    if t == "tool" and tc.get("name"):
+        return {"type": "function", "function": {"name": tc["name"]}}
+    return None
 
 
 def _translate_tool(tool: dict[str, Any]) -> dict[str, Any]:

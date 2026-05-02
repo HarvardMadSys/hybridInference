@@ -131,6 +131,107 @@ def test_request_tools_translated():
     ]
 
 
+import logging
+
+
+def test_request_cache_control_blocks_dropped(caplog):
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Hi", "cache_control": {"type": "ephemeral"}},
+            ],
+        }],
+    }
+    with caplog.at_level(logging.WARNING, logger="serving.adapters.anthropic_translator"):
+        messages, _ = anthropic_request_to_openai(body)
+    # cache_control silently stripped from the text block.
+    assert messages[0]["content"] == "Hi"
+
+
+def test_request_thinking_field_dropped():
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "thinking": {"type": "enabled", "budget_tokens": 5000},
+        "messages": [{"role": "user", "content": "Hi"}],
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert "thinking" not in params
+
+
+def test_request_system_array_concatenated():
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "system": [
+            {"type": "text", "text": "You are helpful."},
+            {"type": "text", "text": "Be concise."},
+        ],
+        "messages": [{"role": "user", "content": "Hi"}],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    assert messages[0] == {"role": "system", "content": "You are helpful.\n\nBe concise."}
+
+
+def test_request_tool_choice_auto():
+    body = {
+        "model": "glm-4.7", "max_tokens": 100,
+        "messages": [{"role": "user", "content": "x"}],
+        "tools": [{"name": "f", "description": "", "input_schema": {}}],
+        "tool_choice": {"type": "auto"},
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert params["tool_choice"] == "auto"
+
+
+def test_request_tool_choice_any_becomes_required():
+    body = {
+        "model": "glm-4.7", "max_tokens": 100,
+        "messages": [{"role": "user", "content": "x"}],
+        "tools": [{"name": "f", "description": "", "input_schema": {}}],
+        "tool_choice": {"type": "any"},
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert params["tool_choice"] == "required"
+
+
+def test_request_tool_choice_named_tool():
+    body = {
+        "model": "glm-4.7", "max_tokens": 100,
+        "messages": [{"role": "user", "content": "x"}],
+        "tools": [{"name": "get_weather", "description": "", "input_schema": {}}],
+        "tool_choice": {"type": "tool", "name": "get_weather"},
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert params["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "get_weather"},
+    }
+
+
+def test_request_metadata_user_id_to_user_field():
+    body = {
+        "model": "glm-4.7", "max_tokens": 100,
+        "metadata": {"user_id": "u-abc"},
+        "messages": [{"role": "user", "content": "Hi"}],
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert params["user"] == "u-abc"
+
+
+def test_request_stop_sequences_renamed():
+    body = {
+        "model": "glm-4.7", "max_tokens": 100,
+        "stop_sequences": ["END", "STOP"],
+        "messages": [{"role": "user", "content": "Hi"}],
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert params["stop"] == ["END", "STOP"]
+
+
 def test_request_tool_use_and_tool_result_round_trip():
     body = {
         "model": "glm-4.7",
