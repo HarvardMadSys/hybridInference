@@ -7,7 +7,6 @@ export interface User {
   id: string;
   email: string;
   user_name?: string;
-  tier: string;
   role: string;
   status: string;
   email_verified: boolean;
