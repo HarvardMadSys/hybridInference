@@ -56,7 +56,6 @@ async def compat_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         return {
             "user_id": "anonymous",
             "user_name": None,
-            "tier": "free",
             "authenticated": False,
             "quota_remaining_cost_usd": float("inf"),
         }

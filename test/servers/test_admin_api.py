@@ -77,7 +77,7 @@ async def test_create_api_key_success(admin_client, monkeypatch):
     response = await client.post(
         "/admin/api-keys",
         headers={"Authorization": "Bearer test-admin"},
-        json={"user_id": "alice", "tier": "pro", "quota_daily_cost_usd": 500},
+        json={"user_id": "alice", "quota_daily_cost_usd": 500},
     )
 
     assert response.status_code == 201
@@ -124,7 +124,6 @@ async def test_list_api_keys_batches_usage(admin_client):
                 "user_id": "alice",
                 "user_name": "Alice",
                 "key_prefix": "hyi-alice",
-                "tier": "pro",
                 "status": "active",
                 "quota_daily_cost_usd": Decimal("500"),
                 "quota_monthly_cost_usd": Decimal("10000"),
@@ -162,7 +161,6 @@ async def test_get_api_key_detail_success(admin_client):
         "user_id": "alice",
         "user_name": "Alice",
         "key_prefix": "hyi-alice",
-        "tier": "pro",
         "status": "active",
         "quota_daily_cost_usd": Decimal("100"),
         "quota_monthly_cost_usd": Decimal("500"),
@@ -199,12 +197,12 @@ async def test_update_api_key_success(admin_client):
     response = await client.patch(
         "/admin/api-keys/alice",
         headers={"Authorization": "Bearer test-admin"},
-        json={"tier": "enterprise", "quota_daily_cost_usd": 200},
+        json={"quota_daily_cost_usd": 200},
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["updated_fields"] == ["tier", "quota_daily_cost_usd"]
+    assert body["updated_fields"] == ["quota_daily_cost_usd"]
     log_action.assert_awaited()
 
 
@@ -227,7 +225,7 @@ async def test_update_api_key_not_found(admin_client):
     response = await client.patch(
         "/admin/api-keys/missing",
         headers={"Authorization": "Bearer test-admin"},
-        json={"tier": "pro"},
+        json={"quota_daily_cost_usd": 100},
     )
     assert response.status_code == 404
 

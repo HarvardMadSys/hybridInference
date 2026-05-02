@@ -24,7 +24,6 @@ class TestJWTCreation:
         token, jti = create_access_token(
             user_id="user_123",
             email="test@example.com",
-            tier="free",
         )
 
         assert isinstance(token, str)
@@ -36,7 +35,6 @@ class TestJWTCreation:
         token, jti = create_access_token(
             user_id="user_123",
             email="test@example.com",
-            tier="premium",
         )
 
         # Decode without verification to check structure
@@ -44,7 +42,6 @@ class TestJWTCreation:
 
         assert payload["sub"] == "user_123"
         assert payload["email"] == "test@example.com"
-        assert payload["tier"] == "premium"
         assert payload["jti"] == jti
         assert "sid" in payload  # session id
         assert "exp" in payload

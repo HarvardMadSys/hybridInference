@@ -124,7 +124,6 @@ def qdrant_app(mock_db_logger, mock_rate_limiter, mock_upstream) -> FastAPI:
     app.dependency_overrides[_verify_qdrant_user] = lambda: {
         "user_id": TEST_USER_ID,
         "authenticated": True,
-        "tier": "free",
     }
 
     app.include_router(router)
@@ -286,7 +285,6 @@ class TestAuth:
         qdrant_app.dependency_overrides[_verify_qdrant_user] = lambda: {
             "user_id": "anonymous",
             "authenticated": False,
-            "tier": "free",
         }
         transport = ASGITransport(app=qdrant_app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

@@ -132,15 +132,14 @@ async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger, m
         await conn.execute(
             """
             INSERT INTO api_keys (
-                key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd, tier
-            ) VALUES ($1, $2, $3, $4, $5, $6)
+                key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd
+            ) VALUES ($1, $2, $3, $4, $5)
             """,
             key_hash,
             key_prefix,
             user_id,
             "Integration User",
             Decimal("1000.00"),
-            "enterprise",
         )
 
     pricing = {"prompt": "0.15", "completion": "1.25"}

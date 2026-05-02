@@ -45,7 +45,7 @@ class TestRevokeKeyInvalidation:
 
     async def test_revoke_clears_auth_cache(self, cached, inner):
         # Cache a valid auth context
-        inner.get_auth_context_by_key_hash.return_value = {"id": 1, "user_id": "u1", "tier": "free"}
+        inner.get_auth_context_by_key_hash.return_value = {"id": 1, "user_id": "u1"}
         result = await cached.get_auth_context_by_key_hash("active-key-hash")
         assert result is not None
 
@@ -79,7 +79,7 @@ class TestRegenerateKeyInvalidation:
 
     async def test_regenerate_clears_old_key_cache(self, cached, inner):
         # Cache auth context for the old key
-        inner.get_auth_context_by_key_hash.return_value = {"id": 1, "user_id": "u1", "tier": "free"}
+        inner.get_auth_context_by_key_hash.return_value = {"id": 1, "user_id": "u1"}
         await cached.get_auth_context_by_key_hash("old-key-hash")
 
         # Regenerate (replace old key with new)
@@ -186,7 +186,6 @@ class TestUserStatusChangeInvalidation:
         key_hash = "key-for-suspended-user"
         inner.get_auth_context_by_key_hash.return_value = {
             "user_id": "u1",
-            "tier": "free",
             "status": "active",
         }
         # Warm the auth cache
@@ -208,7 +207,6 @@ class TestUserStatusChangeInvalidation:
         key_hash = "key-for-promoted-user"
         inner.get_auth_context_by_key_hash.return_value = {
             "user_id": "u2",
-            "tier": "free",
             "role": "user",
         }
         await cached.get_auth_context_by_key_hash(key_hash)
@@ -216,7 +214,6 @@ class TestUserStatusChangeInvalidation:
 
         inner.get_auth_context_by_key_hash.return_value = {
             "user_id": "u2",
-            "tier": "free",
             "role": "admin",
         }
         await cached.update_user_fields("u2", role="admin")
@@ -229,7 +226,7 @@ class TestUserStatusChangeInvalidation:
     async def test_non_auth_field_change_does_not_clear_auth_cache(self, cached, inner):
         """Updating a field like preferences must NOT flush the auth cache."""
         key_hash = "key-for-pref-update"
-        inner.get_auth_context_by_key_hash.return_value = {"user_id": "u3", "tier": "free"}
+        inner.get_auth_context_by_key_hash.return_value = {"user_id": "u3"}
         await cached.get_auth_context_by_key_hash(key_hash)
         assert inner.get_auth_context_by_key_hash.await_count == 1
 

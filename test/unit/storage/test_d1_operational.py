@@ -219,7 +219,7 @@ class TestAPIKeys:
 
     async def test_get_auth_context_by_key_hash(self, store, d1_client):
         d1_client.query.return_value = D1Result(
-            rows=[{"id": 1, "user_id": "u1", "tier": "free", "email": "a@b.com", "role": "admin"}]
+            rows=[{"id": 1, "user_id": "u1", "email": "a@b.com", "role": "admin"}]
         )
         result = await store.get_auth_context_by_key_hash("hash123")
         assert result["user_id"] == "u1"

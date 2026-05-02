@@ -167,7 +167,7 @@ async def test_authenticated_user_priority(tracking_client, mock_rate_limiter):
     mock_rate_limiter.acquire_tokens.reset_mock()
 
     async def override_verify_api_key():
-        return {"user_id": "user-a", "authenticated": True, "tier": "pro"}
+        return {"user_id": "user-a", "authenticated": True}
 
     app.dependency_overrides[verify_api_key] = override_verify_api_key
     try:
@@ -193,7 +193,7 @@ async def test_anonymous_user_priority_zero(tracking_client, mock_rate_limiter):
     mock_rate_limiter.acquire_tokens.reset_mock()
 
     async def override_verify_api_key():
-        return {"user_id": "anon", "authenticated": False, "tier": "free"}
+        return {"user_id": "anon", "authenticated": False}
 
     app.dependency_overrides[verify_api_key] = override_verify_api_key
     try:

@@ -147,7 +147,6 @@ class TestAuthContext:
             key_prefix=f"{run_id[:14]}{suffix}",
             user_id=uid,
             user_name="Auth Test",
-            tier="free",
             quota_daily_cost_usd=Decimal("100.00"),
             account_id=uid,
         )
@@ -159,7 +158,6 @@ class TestAuthContext:
             ctx = await store.get_auth_context_by_key_hash(f"{run_id}kh_u1")
             assert ctx is not None
             assert ctx["user_id"] == uid
-            assert ctx["tier"] == "free"
         finally:
             await _cleanup_users(store, uid)
 
@@ -183,9 +181,9 @@ class TestAuthContext:
         try:
             await d1_client.execute(
                 "INSERT INTO api_keys "
-                "(key_hash, key_prefix, user_id, user_name, status, tier, "
+                "(key_hash, key_prefix, user_id, user_name, status, "
                 " quota_daily_cost_usd, created_at) "
-                "VALUES (?, ?, ?, ?, 'active', 'free', 10.0, ?)",
+                "VALUES (?, ?, ?, ?, 'active', 10.0, ?)",
                 [
                     orphan_hash,
                     f"{run_id[:8]}orp",

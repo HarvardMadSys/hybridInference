@@ -303,7 +303,6 @@ class TestAPIKeysCRUD:
             key_prefix=f"pfx_{uid}",
             user_id=uid,
             user_name="Test",
-            tier="free",
             quota_daily_cost_usd=Decimal("100.50"),
             account_id=uid,
         )
@@ -346,9 +345,9 @@ class TestAPIKeysCRUD:
         # Insert a key directly — no matching user row
         sqlite_client._conn.execute(
             "INSERT INTO api_keys "
-            "(key_hash, key_prefix, user_id, user_name, status, tier, "
+            "(key_hash, key_prefix, user_id, user_name, status, "
             " quota_daily_cost_usd, created_at) "
-            "VALUES (?, ?, ?, ?, 'active', 'free', 10.0, '2026-01-01T00:00:00Z')",
+            "VALUES (?, ?, ?, ?, 'active', 10.0, '2026-01-01T00:00:00Z')",
             ["orphan-hash", "orp_", "nonexistent-user", "Ghost"],
         )
         sqlite_client._conn.commit()

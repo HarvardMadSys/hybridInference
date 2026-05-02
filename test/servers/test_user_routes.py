@@ -540,7 +540,6 @@ class TestAuthenticationEdgeCases:
         expired_token, _ = create_access_token(
             user_id=test_user["id"],
             email=test_user["email"],
-            tier="free",
             expires_delta=timedelta(seconds=-1),  # Already expired
         )
 
