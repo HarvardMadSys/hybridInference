@@ -11,6 +11,11 @@ The router aggregates multiple backend adapters per logical model and reports
 conservative capabilities (e.g., minimum context length, intersection of
 sampling parameters). The response is deterministic across concurrent requests;
 for example, the `created` field is frozen at import time.
+
+Anthropic-family clients that send an ``anthropic-version`` header (or a
+``User-Agent`` starting with ``anthropic-`` / ``claude-cli`` / ``claude-sdk``)
+receive the Anthropic list-models response shape from ``/v1/models``.
+The dedicated ``/anthropic/v1/models`` route always returns that shape.
 """
 
 from __future__ import annotations
@@ -18,7 +23,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 
 from serving.config.settings import has_role
 from serving.schemas import ModelItem, ModelList
@@ -31,23 +37,96 @@ router = APIRouter()
 # deterministic responses across concurrent requests.
 CREATED_TS = int(time.time())
 
+# ISO-8601 timestamp used for the Anthropic ``created_at`` field.
+_CREATED_AT_ISO = "1970-01-01T00:00:00Z"
+
+
+def _is_anthropic_client(request: Request) -> bool:
+    """Return True when the request looks like it comes from an Anthropic-family client.
+
+    Detection rules (checked in order):
+    - ``anthropic-version`` header is present, or
+    - ``User-Agent`` starts with ``anthropic-``, ``claude-cli``, or ``claude-sdk``.
+    """
+    if request.headers.get("anthropic-version"):
+        return True
+    ua = (request.headers.get("user-agent") or "").lower()
+    return ua.startswith(("anthropic-", "claude-cli", "claude-sdk"))
+
+
+def _format_anthropic_model_list(router_exec: Any, user_role: str) -> dict:
+    """Build the Anthropic GET /v1/models response shape from the model registry.
+
+    Returns a dict with ``data``, ``has_more``, ``first_id``, and ``last_id``
+    keys matching the Anthropic list-models API response.
+    """
+    data: list[dict] = []
+    emitted: set[str] = set()
+    for _model_id, route in router_exec.routes.items():
+        required = route.required_role or ("admin" if route.admin_only else "free")
+        if not has_role(user_role, required):
+            continue
+        configs = [adapter.config for adapter, _ in route.adapters]
+        if not configs:
+            continue
+        primary = configs[0]
+        canonical_id = primary.id
+        if canonical_id in emitted:
+            continue
+        emitted.add(canonical_id)
+        data.append(
+            {
+                "type": "model",
+                "id": canonical_id,
+                "display_name": primary.name or canonical_id,
+                "created_at": _CREATED_AT_ISO,
+            }
+        )
+    return {
+        "data": data,
+        "has_more": False,
+        "first_id": data[0]["id"] if data else None,
+        "last_id": data[-1]["id"] if data else None,
+    }
+
 
 @router.get("/models")
 @router.get("/openrouter/models")
-@router.get("/v1/models", response_model=ModelList)
+@router.get("/v1/models")
 async def list_models(
+    request: Request,
     router_exec=Depends(get_router),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
     user_ctx: dict | None = Depends(optional_verify_api_key),
-) -> ModelList:
+):
     """List available models with metadata similar to OpenRouter schema.
 
     When multiple adapters are registered for a model, the server advertises
     conservative limits (minimum across adapters) to ensure compatibility
     regardless of the routed backend.
+
+    Anthropic-family clients calling ``/v1/models`` receive the Anthropic list
+    response shape instead.  The ``/models`` and ``/openrouter/models`` paths
+    always return the OpenAI/OpenRouter shape.
     """
     user_role = (user_ctx or {}).get("role", "free")
+    if request.url.path == "/v1/models" and _is_anthropic_client(request):
+        return JSONResponse(_format_anthropic_model_list(router_exec, user_role))
     return build_model_list(router_exec, embedding_adapters, user_role)
+
+
+@router.get("/anthropic/v1/models")
+async def list_models_anthropic(
+    router_exec=Depends(get_router),
+    user_ctx: dict | None = Depends(optional_verify_api_key),
+):
+    """Return the Anthropic-format model list (always).
+
+    Mirrors the Anthropic GET /v1/models response shape unconditionally,
+    regardless of request headers or User-Agent.
+    """
+    user_role = (user_ctx or {}).get("role", "free")
+    return JSONResponse(_format_anthropic_model_list(router_exec, user_role))
 
 
 def build_model_list(

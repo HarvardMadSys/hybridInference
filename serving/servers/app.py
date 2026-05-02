@@ -18,7 +18,7 @@ from .middleware.request_log import RequestLogMiddleware
 from .middleware.timeout import TimeoutMiddleware
 from .routers import (
     admin,
-    anthropic_proxy,
+    anthropic_messages,
     auth_routes,
     compat,
     completions,
@@ -84,7 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(completions.router)
     app.include_router(embeddings.router)
-    app.include_router(anthropic_proxy.router)
+    app.include_router(anthropic_messages.router)
     app.include_router(qdrant_proxy.router)
     app.include_router(compat.router)
     app.include_router(admin.router)
@@ -92,6 +92,15 @@ def create_app() -> FastAPI:
     app.include_router(user_routes.router)
     app.include_router(internal.router)
     app.include_router(playground.router)
+
+    # Override HTTPException handler to emit Anthropic-format errors on
+    # /v1/messages and /anthropic/... paths (must register after install_error_handlers).
+    from fastapi import HTTPException as _HTTPException
+
+    app.add_exception_handler(
+        _HTTPException,
+        anthropic_messages.anthropic_aware_http_exception_handler,
+    )
 
     return app
 

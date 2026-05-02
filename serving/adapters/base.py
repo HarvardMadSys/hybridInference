@@ -122,12 +122,26 @@ class ModelConfig:
 class BaseAdapter(ABC):
     """Abstract base class for LLM provider adapters."""
 
+    # Format the adapter speaks natively. Anthropic-native adapters override
+    # messages()/stream_messages() to identity-passthrough; OpenAI-native ones
+    # rely on the default impls below which translate Anthropic <-> OpenAI.
+    native_format: str = "openai"
+
     def __init__(self, config: ModelConfig):
         self.config = config
         # Legacy: some adapters still use self.session; keep for compatibility.
         self.session = None
         # Shared HTTP client for new/updated adapters.
         self.http = AsyncHTTPClient.shared()
+        # Populated after stream_messages() completes; consumed by the router
+        # for DB logging. Concrete subclasses with their own stream_messages()
+        # (e.g. AnthropicAdapter) overwrite this themselves.
+        self.last_stream_usage: dict[str, int] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
 
     @abstractmethod
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
@@ -140,6 +154,62 @@ class BaseAdapter(ABC):
     ) -> AsyncGenerator[str, None]:
         """Execute streaming chat completion request."""
         pass
+
+    async def messages(
+        self,
+        body: dict[str, Any],
+        *,
+        request_id: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Anthropic Messages API non-streaming. Returns Anthropic-format dict.
+
+        Default impl translates Anthropic -> OpenAI, calls self.chat_completion,
+        translates OpenAI -> Anthropic. ``extra_headers`` is accepted for interface
+        compatibility but ignored by OpenAI-backed adapters.
+        """
+        from serving.adapters.anthropic_translator import (
+            anthropic_request_to_openai,
+            openai_response_to_anthropic,
+        )
+
+        oai_messages, oai_params = anthropic_request_to_openai(body)
+        oai_resp = await self.chat_completion(oai_messages, **oai_params)
+        return openai_response_to_anthropic(oai_resp, model=body.get("model", ""))
+
+    async def stream_messages(
+        self,
+        body: dict[str, Any],
+        *,
+        request_id: str,
+        usage_sink: dict[str, int] | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Anthropic Messages API streaming. Yields raw Anthropic SSE bytes."""
+        from serving.adapters.anthropic_translator import (
+            OpenAIToAnthropicStreamTranslator,
+            anthropic_request_to_openai,
+        )
+
+        oai_messages, oai_params = anthropic_request_to_openai(body)
+        oai_params["stream"] = True
+        translator = OpenAIToAnthropicStreamTranslator(model=body.get("model", ""))
+        async for openai_chunk in self.stream_chat_completion(oai_messages, **oai_params):
+            data = openai_chunk.encode("utf-8") if isinstance(openai_chunk, str) else openai_chunk
+            for ant in translator.feed(data):
+                yield ant
+        for ant in translator.finalize():
+            yield ant
+        # Expose accumulated usage for the router's DB-logging step.
+        final_usage = {
+            "input_tokens": translator.usage.get("input_tokens", 0),
+            "output_tokens": translator.usage.get("output_tokens", 0),
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+        self.last_stream_usage = final_usage  # keep for backward-compat with tests
+        if usage_sink is not None:
+            usage_sink.update(final_usage)
 
     def validate_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Validate and clamp request parameters to provider limits."""
