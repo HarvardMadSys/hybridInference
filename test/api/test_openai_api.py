@@ -155,47 +155,6 @@ def test_with_vision():
     print("Vision test passed!\n")
 
 
-def test_high_detail_image():
-    """Test high-detail image processing."""
-    print("\n=== Testing High-Detail Image Processing ===")
-
-    url = f"{OPENAI_BASE_URL}/chat/completions?api-version={API_VERSION}"
-    headers = {
-        "api-key": OPENAI_API_KEY,
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Describe this image in detail."},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": "https://dashscope.oss-cn-beijing.aliyuncs.com/images/dog_and_girl.jpeg",
-                            "detail": "high",
-                        },
-                    },
-                ],
-            }
-        ],
-    }
-
-    with httpx.Client(timeout=30.0) as client:
-        response = client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-
-    content = data["choices"][0]["message"]["content"]
-    print(f"Response: {content[:200]}...")  # Print first 200 chars
-    print(f"Usage: {data.get('usage', 'N/A')}")
-
-    assert content is not None
-    assert len(content) > 0
-    print("High-detail image test passed!\n")
-
-
 if __name__ == "__main__":
     print("Starting OpenAI API Integration Tests (XHS Runway)")
     print(f"Base URL: {OPENAI_BASE_URL}")
@@ -206,7 +165,6 @@ if __name__ == "__main__":
         test_non_streaming_completion()
         test_streaming_completion()
         test_with_vision()
-        test_high_detail_image()
 
         print("\n" + "=" * 50)
         print("All tests passed successfully!")

@@ -1,6 +1,8 @@
-"""Regression tests for serving.adapters.profiles — function_call handling."""
+"""Regression tests for serving.adapters.profiles."""
 
 from __future__ import annotations
+
+import pytest
 
 from serving.adapters.profiles import (
     ProviderProfile,
@@ -13,36 +15,18 @@ from serving.adapters.profiles import (
 # ---------------------------------------------------------------------------
 
 
-def test_delta_returns_none_for_default_profile() -> None:
-    """After Llama removal, function_call_delta_to_tool_calls returns None for all profiles."""
-    result = function_call_delta_to_tool_calls(
-        ProviderProfile.DEFAULT,
-        {"name": "get_weather", "arguments": ""},
-    )
-    assert result is None
-
-
-def test_delta_returns_none_for_zhipu_profile() -> None:
-    """Zhipu profile does not convert function_call deltas."""
-    result = function_call_delta_to_tool_calls(
-        ProviderProfile.ZHIPU,
-        {"arguments": '{"cit'},
-    )
-    assert result is None
-
-
-def test_delta_deepseek_profile_returns_none() -> None:
-    """DeepSeek profile does not convert function_call deltas."""
-    result = function_call_delta_to_tool_calls(
-        ProviderProfile.DEEPSEEK,
-        {"name": "fn", "arguments": "{}"},
-    )
-    assert result is None
-
-
-def test_delta_empty_dict_returns_none() -> None:
-    result = function_call_delta_to_tool_calls(ProviderProfile.DEFAULT, {})
-    assert result is None
+@pytest.mark.parametrize(
+    ("profile", "delta"),
+    [
+        (ProviderProfile.DEFAULT, {"name": "get_weather", "arguments": ""}),
+        (ProviderProfile.ZHIPU, {"arguments": '{"cit'}),
+        (ProviderProfile.DEEPSEEK, {"name": "fn", "arguments": "{}"}),
+        (ProviderProfile.DEFAULT, {}),
+    ],
+)
+def test_function_call_delta_returns_none(profile, delta) -> None:
+    """Stub returns None for all profiles after Llama removal; guards regression."""
+    assert function_call_delta_to_tool_calls(profile, delta) is None
 
 
 # ---------------------------------------------------------------------------
