@@ -42,6 +42,7 @@ def _make_adapter(
     provider_profile: str | None = None,
     chat_path: str | None = None,
     supported_params: list[str] | None = None,
+    include_usage_in_stream: bool = False,
 ) -> OpenAICompatAdapter:
     config = ModelConfig(
         id="glm-4.7-flash",
@@ -53,6 +54,7 @@ def _make_adapter(
         provider_profile=provider_profile,
         chat_path=chat_path,
         supported_params=supported_params or ["temperature", "top_p", "max_tokens"],
+        include_usage_in_stream=include_usage_in_stream,
     )
     adapter = OpenAICompatAdapter(config)
     adapter.http = MagicMock()
@@ -94,6 +96,49 @@ async def test_streaming_default_processor_preserves_content_after_reasoning_onl
     )
     assert payloads[-1]["choices"][0]["finish_reason"] == "stop"
     assert payloads[-1]["usage"]["completion_tokens"] > 0
+
+
+# --- include_usage_in_stream capability gate tests ---
+
+
+@pytest.mark.asyncio
+async def test_default_profile_streaming_omits_stream_options_by_default():
+    """Regression: DEFAULT profile must NOT inject stream_options unless route opts in.
+
+    Some upstreams (Ollama, Chutes, Featherless, openai_compat) strictly validate
+    the request body and reject unknown fields. The capability is opt-in per route.
+    """
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(delta={"content": "hi"})
+        yield _make_chunk(delta={}, finish_reason="stop")
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(processor=None, provider_profile=None)
+    adapter.http.stream_post = MagicMock(side_effect=fake_stream_post)
+
+    _ = [c async for c in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])]
+
+    stream_payload = adapter.http.stream_post.call_args.kwargs["json"]
+    assert "stream_options" not in stream_payload
+
+
+@pytest.mark.asyncio
+async def test_default_profile_streaming_includes_stream_options_when_opted_in():
+    """When include_usage_in_stream=True, DEFAULT profile sends stream_options."""
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(delta={"content": "hi"})
+        yield _make_chunk(delta={}, finish_reason="stop")
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(processor=None, provider_profile=None, include_usage_in_stream=True)
+    adapter.http.stream_post = MagicMock(side_effect=fake_stream_post)
+
+    _ = [c async for c in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])]
+
+    stream_payload = adapter.http.stream_post.call_args.kwargs["json"]
+    assert stream_payload["stream_options"] == {"include_usage": True}
 
 
 # --- DeepSeek profile usage normalization tests ---
