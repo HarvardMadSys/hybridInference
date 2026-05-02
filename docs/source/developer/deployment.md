@@ -19,7 +19,7 @@ make ps
 curl http://localhost:8080/health
 ```
 
-This starts 7 containers: backend (FastAPI), frontend (Next.js), PostgreSQL, Prometheus,
+This starts 6 containers: backend (FastAPI), frontend (Next.js), PostgreSQL, Prometheus,
 Alertmanager and Grafana. All ports bind to `127.0.0.1` only.
 
 ## Prerequisites

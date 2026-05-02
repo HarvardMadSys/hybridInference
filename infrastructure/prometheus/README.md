@@ -26,9 +26,13 @@ Quick Start (local)
 
 3) Alerts and notifications (optional, recommended):
    - Alertmanager setup: see `../alertmanager/README.md`.
-   - Rules under `prometheus/rules/` are enabled by default:
-     - `slo_burn_rate.yml`: error rate and P95 latency alerts.
-     - `pipeline_health.yml`: provider availability and cost rate.
+   - Rules under `prometheus/rules/` enabled by default:
+     - `service_availability.yml`: `ServiceDown`, `ServiceUnreachable`,
+       `DatabaseDisconnected`. Routed to Slack via the allowlist in
+       `../alertmanager/alertmanager.yml`.
+   - Previously-shipped `slo_burn_rate.yml` and `pipeline_health.yml`
+     rules were removed on 2026-05-02. See `prometheus/rules/README.md`
+     for context and how to re-enable.
 
 Remote service (free inference server)
 - Add your remote `/metrics` target into `scrape_configs`:
