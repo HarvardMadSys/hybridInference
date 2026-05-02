@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CartesianGrid,
   Line,
@@ -37,69 +37,101 @@ function fmtHour(iso: string): string {
 
 export function ProviderPerformanceTab() {
   const [data, setData] = useState<ProviderStatsResponse | null>(null);
-  const [providers, setProviders] = useState<string[]>([]);
-  const [models, setModels] = useState<string[]>([]);
+  const [allProviders, setAllProviders] = useState<string[]>([]);
+  const [allPairs, setAllPairs] = useState<{ provider: string; model_id: string }[]>([]);
   const [provider, setProvider] = useState<string>('');
   const [model, setModel] = useState<string>('');
   const [range, setRange] = useState<RangeKey>('7d');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [initializing, setInitializing] = useState(true);
 
-  // Bootstrap dropdowns by issuing a request with placeholder filters and
-  // reading the providers/models lists out of the response.
-  const loadFilters = useCallback(async () => {
-    try {
-      const window_ = rangeWindow(range);
+  const modelsForProvider = useMemo(
+    () =>
+      allPairs
+        .filter((p) => p.provider === provider)
+        .map((p) => p.model_id)
+        .filter((v, i, a) => a.indexOf(v) === i),
+    [allPairs, provider],
+  );
+
+  const fetchFilters = useCallback(
+    async (rangeKey: RangeKey) => {
+      const window_ = rangeWindow(rangeKey);
       const resp = await getProviderStats({
-        provider: provider || '__none__',
-        model_id: model || '__none__',
+        provider: '__none__',
+        model_id: '__none__',
         from: window_.from,
         to: window_.to,
       });
-      setProviders(resp.providers);
-      setModels(resp.models);
-      // Default to a (provider, model) pair that actually has data —
-      // the providers/models lists alone may pair to an empty slice.
-      if ((!provider || !model) && resp.pairs.length > 0) {
-        const pair = resp.pairs[0];
-        if (!provider) setProvider(pair.provider);
-        if (!model) setModel(pair.model_id);
+      setAllProviders(resp.providers);
+      setAllPairs(resp.pairs);
+      return resp.pairs;
+    },
+    [],
+  );
+
+  const loadData = useCallback(
+    async (prov: string, mod: string, rangeKey: RangeKey) => {
+      if (!prov || !mod) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const window_ = rangeWindow(rangeKey);
+        const resp = await getProviderStats({
+          provider: prov,
+          model_id: mod,
+          from: window_.from,
+          to: window_.to,
+        });
+        setData(resp);
+        setAllProviders(resp.providers);
+        setAllPairs(resp.pairs);
+      } catch (exc) {
+        setError(getErrorMessage(exc));
+      } finally {
+        setLoading(false);
       }
-    } catch (exc) {
-      setError(getErrorMessage(exc));
-    }
-  }, [provider, model, range]);
+    },
+    [],
+  );
 
-  const loadData = useCallback(async () => {
+  const initializedRef = useRef(false);
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const pairs = await fetchFilters(range);
+        if (cancelled) return;
+        if (pairs.length > 0) {
+          setProvider(pairs[0].provider);
+          setModel(pairs[0].model_id);
+          await loadData(pairs[0].provider, pairs[0].model_id, range);
+        }
+      } catch (exc) {
+        if (!cancelled) setError(getErrorMessage(exc));
+      } finally {
+        if (!cancelled) setInitializing(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [range, fetchFilters, loadData]);
+
+  const prevRangeRef = useRef(range);
+  useEffect(() => {
+    if (prevRangeRef.current === range) return;
+    prevRangeRef.current = range;
     if (!provider || !model) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const window_ = rangeWindow(range);
-      const resp = await getProviderStats({
-        provider,
-        model_id: model,
-        from: window_.from,
-        to: window_.to,
-      });
-      setData(resp);
-      setProviders(resp.providers);
-      setModels(resp.models);
-    } catch (exc) {
-      setError(getErrorMessage(exc));
-    } finally {
-      setLoading(false);
-    }
-  }, [provider, model, range]);
+    void loadData(provider, model, range);
+  }, [range, provider, model, loadData]);
 
   useEffect(() => {
-    void loadFilters();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    if (initializing) return;
+    if (!provider || !model) return;
+    void loadData(provider, model, range);
+  }, [provider, model, range, loadData, initializing]);
 
   const chartData = useMemo(
     () =>
@@ -124,6 +156,20 @@ export function ProviderPerformanceTab() {
     return { requests, errors, errorRate, tokens };
   }, [data]);
 
+  const handleProviderChange = useCallback(
+    (newProvider: string) => {
+      setProvider(newProvider);
+      const matching = allPairs
+        .filter((p) => p.provider === newProvider)
+        .map((p) => p.model_id);
+      const unique = matching.filter((v, i, a) => a.indexOf(v) === i);
+      if (unique.length > 0 && !unique.includes(model)) {
+        setModel(unique[0]);
+      }
+    },
+    [allPairs, model],
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-3 items-end">
@@ -132,9 +178,9 @@ export function ProviderPerformanceTab() {
           <select
             className="border rounded px-2 py-1"
             value={provider}
-            onChange={(e) => setProvider(e.target.value)}
+            onChange={(e) => handleProviderChange(e.target.value)}
           >
-            {providers.map((p) => (
+            {allProviders.map((p) => (
               <option key={p} value={p}>
                 {p}
               </option>
@@ -148,7 +194,7 @@ export function ProviderPerformanceTab() {
             value={model}
             onChange={(e) => setModel(e.target.value)}
           >
-            {models.map((m) => (
+            {modelsForProvider.map((m) => (
               <option key={m} value={m}>
                 {m}
               </option>
@@ -172,7 +218,7 @@ export function ProviderPerformanceTab() {
       </div>
 
       {error ? <div className="text-red-600 text-sm">{error}</div> : null}
-      {loading ? <div className="text-gray-500 text-sm">Loading…</div> : null}
+      {(loading || initializing) ? <div className="text-gray-500 text-sm">Loading…</div> : null}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Kpi label="Requests" value={totals.requests.toLocaleString()} />
