@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from serving.admin.provider_quotas import (
     _mask_key,
+    _parse_iso,
     fetch_chutes,
     fetch_minimax,
     fetch_ollama,
@@ -68,6 +70,82 @@ def _mock_aiohttp_get(
     return session_cm
 
 
+def _mock_aiohttp_multi_get(responses: list[tuple[int, dict | None]]):
+    """Build a session mock whose `get` returns each response context manager in order.
+
+    Each entry is `(status, json_data)`. A fresh response context manager is
+    created per entry so multiple sequential `session.get(...)` calls each
+    produce their own response.
+    """
+    cms = []
+    for status, json_data in responses:
+        response = MagicMock()
+        response.status = status
+        response.json = AsyncMock(return_value=json_data or {})
+        response.text = AsyncMock(return_value="")
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=response)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        cms.append(cm)
+
+    session = MagicMock()
+    session.get = MagicMock(side_effect=cms)
+
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=session)
+    session_cm.__aexit__ = AsyncMock(return_value=None)
+    return session_cm
+
+
+class TestParseIso:
+    def test_z_suffix_parsed_as_utc(self):
+        result = _parse_iso("2026-05-02T04:00:00Z")
+        assert result is not None
+        assert result.tzinfo is not None
+        assert result.utcoffset().total_seconds() == 0
+        assert result.year == 2026
+        assert result.month == 5
+        assert result.day == 2
+        assert result.hour == 4
+
+    def test_explicit_utc_offset_preserved(self):
+        result = _parse_iso("2026-05-02T04:00:00+00:00")
+        assert result is not None
+        assert result.tzinfo is not None
+        assert result.utcoffset().total_seconds() == 0
+
+    def test_naive_string_assumed_utc(self):
+        result = _parse_iso("2026-04-11T17:07:09")
+        assert result is not None
+        assert result.tzinfo is not None
+        assert result.utcoffset().total_seconds() == 0
+        assert result.hour == 17
+
+    def test_non_string_returns_none(self):
+        assert _parse_iso(None) is None
+        assert _parse_iso(123) is None
+        assert _parse_iso(["2026-05-02"]) is None
+
+    def test_malformed_string_returns_none(self):
+        assert _parse_iso("not a date") is None
+        assert _parse_iso("") is None
+        assert _parse_iso("2026-13-99T99:99:99") is None
+
+    def test_non_utc_offset_normalized_to_utc(self):
+        # 09:00+05:00 == 04:00 UTC
+        result = _parse_iso("2026-05-02T09:00:00+05:00")
+        assert result is not None
+        assert result.utcoffset().total_seconds() == 0
+        assert result.hour == 4
+
+    def test_only_trailing_z_replaced(self):
+        # An embedded 'Z' (e.g., timezone-name part) should not be substituted.
+        # Plain trailing 'Z' still parses.
+        assert _parse_iso("2026-05-02T04:00:00Z") is not None
+        # Embedded Z that is not a TZ marker -> ValueError -> None
+        assert _parse_iso("2026Z05-02T04:00:00") is None
+
+
 class TestFetchChutes:
     @pytest.mark.asyncio
     async def test_not_configured_when_key_missing(self, monkeypatch):
@@ -82,12 +160,13 @@ class TestFetchChutes:
     @pytest.mark.asyncio
     async def test_success_returns_usages(self, monkeypatch):
         monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
-        payload = {
+        sub_payload = {
+            "anchor_date": "2026-04-11T17:07:09",
             "four_hour": {
                 "usage": 0.0,
                 "cap": 8.333,
                 "remaining": 8.333,
-                "reset_at": "2026-05-02T00:00:00+00:00",
+                "reset_at": "2026-05-02T04:00:00+00:00",
             },
             "monthly": {
                 "usage": 13.204,
@@ -96,20 +175,83 @@ class TestFetchChutes:
                 "reset_at": "2026-05-11T17:07:09+00:00",
             },
         }
+        quotas_payload = [
+            {"chute_id": "*", "is_default": True, "quota": 5000},
+        ]
+        # Today's UTC midnight is the daily-window start. Pick buckets relative
+        # to "now" so the test is stable regardless of date.
+        now = datetime.now(timezone.utc)
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        in_window_bucket = (today_midnight + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        out_window_bucket = (today_midnight - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+        future_bucket = (today_midnight + timedelta(days=1, hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        usage_payload = {
+            "total": 5,
+            "page": 0,
+            "limit": 2000,
+            "items": [
+                {"bucket": in_window_bucket, "amount": 0.0, "count": 7},
+                {"bucket": out_window_bucket, "amount": 0.0, "count": 99},
+                # Beyond next reset boundary -> excluded by upper bound
+                {"bucket": future_bucket, "amount": 0.0, "count": 1000},
+                # Non-integer float -> excluded
+                {"bucket": in_window_bucket, "amount": 0.0, "count": 1.5},
+                # bool is a subclass of int but should be rejected
+                {"bucket": in_window_bucket, "amount": 0.0, "count": True},
+            ],
+        }
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+            return_value=_mock_aiohttp_multi_get(
+                [(200, sub_payload), (200, quotas_payload), (200, usage_payload)],
+            ),
         ):
             result = await fetch_chutes()
         assert result.ok is True
         assert result.key_configured is True
         assert result.key_masked == "cpk_abcd...3xyz" or result.key_masked.startswith("cpk_abcd")
-        assert any(u.label.lower().startswith("month") for u in result.usages)
-        assert any("4" in u.label or "hour" in u.label.lower() for u in result.usages)
-        monthly = next(u for u in result.usages if u.label.lower().startswith("month"))
+        monthly = next(
+            u for u in result.usages if u.label.lower().startswith("month") and u.unit == "USD"
+        )
         assert monthly.used == 13.204
         assert monthly.limit == 100.0
-        assert monthly.unit == "USD"
+        daily_req = next(
+            u for u in result.usages if u.label == "Daily requests" and u.unit == "requests"
+        )
+        assert daily_req.used == 7.0
+        assert daily_req.limit == 5000.0
+
+    @pytest.mark.asyncio
+    async def test_request_counts_failure_does_not_break_usd_usages(self, monkeypatch):
+        monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
+        sub_payload = {
+            "anchor_date": "2026-04-11T17:07:09",
+            "four_hour": {
+                "usage": 0.0,
+                "cap": 8.333,
+                "remaining": 8.333,
+                "reset_at": "2026-05-02T04:00:00+00:00",
+            },
+            "monthly": {
+                "usage": 13.204,
+                "cap": 100.0,
+                "remaining": 86.796,
+                "reset_at": "2026-05-11T17:07:09+00:00",
+            },
+        }
+        # quotas endpoint 500 -> daily cap unknown -> request-count row dropped
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_multi_get(
+                [(200, sub_payload), (500, None)],
+            ),
+        ):
+            result = await fetch_chutes()
+        assert result.ok is True
+        usd_usages = [u for u in result.usages if u.unit == "USD"]
+        assert len(usd_usages) == 2
+        request_usages = [u for u in result.usages if u.unit == "requests"]
+        assert request_usages == []
 
     @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
