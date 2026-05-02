@@ -15,7 +15,6 @@ export function useCreateApiKey() {
   return useMutation({
     mutationFn: createApiKey,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['apiKey'] });
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });
     },
@@ -28,7 +27,6 @@ export function useDeleteApiKey() {
   return useMutation({
     mutationFn: deleteApiKey,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['apiKey'] });
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });
     },
@@ -41,7 +39,6 @@ export function useRegenerateApiKey() {
   return useMutation({
     mutationFn: regenerateApiKey,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['apiKey'] });
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });
     },
