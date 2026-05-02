@@ -557,3 +557,106 @@ skip_if_not_perf = pytest.mark.skipif(
     os.getenv("RUN_PERF") != "1",
     reason="Performance tests are disabled by default (set RUN_PERF=1 to enable)",
 )
+
+
+# ============================================================================
+# Anthropic compat router fixtures
+# ============================================================================
+
+ANTHROPIC_TEST_API_KEY = "hyi-anthropic-compat-test"
+
+
+@pytest_asyncio.fixture
+async def anthropic_compat_router():
+    """RouteExecutor with one anthropic-kind and one zhipu-kind real adapter."""
+    from routing.executor import RouteExecutor
+    from serving.adapters import AnthropicAdapter, OpenAICompatAdapter
+    from serving.adapters.base import ModelConfig
+
+    re = RouteExecutor()
+
+    anthropic_cfg = ModelConfig(
+        id="claude-opus-4.7", name="Claude Opus 4.7",
+        provider="anthropic",
+        base_url="https://api.anthropic.com",
+        api_key="sk-ant-test",
+        provider_model_id="claude-opus-4-7",
+        max_output_length=1024, supports_tools=True,
+        supported_params=["temperature", "max_tokens", "top_p", "stream", "tools", "tool_choice"],
+        pricing={"prompt": "5.0", "completion": "25.0", "image": "0", "request": "0",
+                 "input_cache_reads": "0.5", "input_cache_writes": "6.25"},
+    )
+    zhipu_cfg = ModelConfig(
+        id="glm-4.7", name="GLM-4.7",
+        provider="zhipu",
+        base_url="https://example-zhipu.test",
+        api_key="zhipu-test",
+        chat_path="/chat/completions",
+        max_output_length=1024, supports_tools=True,
+        supported_params=["temperature", "max_tokens", "stop", "stream", "tools", "tool_choice"],
+        pricing={"prompt": "0.6", "completion": "2.2", "image": "0", "request": "0",
+                 "input_cache_reads": "0.11", "input_cache_writes": "0"},
+    )
+    re.register_route("claude-opus-4.7", [(AnthropicAdapter(anthropic_cfg), 1.0)])
+    re.register_route("glm-4.7", [(OpenAICompatAdapter(zhipu_cfg), 1.0)])
+    return re
+
+
+@pytest_asyncio.fixture
+async def anthropic_app_services(anthropic_compat_router, mock_db_logger, mock_rate_limiter):
+    """AppServices instance for anthropic compat router tests."""
+    from serving.servers.deps import AppServices
+    return AppServices(
+        router=anthropic_compat_router,
+        db_logger=mock_db_logger,
+        rate_limiter=mock_rate_limiter,
+        routing_manager=None,
+    )
+
+
+@pytest_asyncio.fixture
+async def anthropic_test_app(anthropic_app_services):
+    """Test FastAPI app with the anthropic_messages router mounted and stubbed
+    auth that accepts ANTHROPIC_TEST_API_KEY.
+    """
+    from contextlib import asynccontextmanager
+    from fastapi import FastAPI, Header, HTTPException
+
+    @asynccontextmanager
+    async def lifespan(app):
+        app.state.services = anthropic_app_services
+        yield
+
+    app = FastAPI(title="Anthropic Compat Test App", lifespan=lifespan)
+    app.state.services = anthropic_app_services
+
+    from serving.servers.auth import verify_api_key
+
+    async def fake_verify(authorization: str | None = Header(None),
+                          x_api_key: str | None = Header(None, alias="X-API-Key")):
+        token = None
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization[len("Bearer "):]
+        elif x_api_key:
+            token = x_api_key
+        if token != ANTHROPIC_TEST_API_KEY:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return {"authenticated": True, "user_id": "test-user", "role": "internal"}
+
+    app.dependency_overrides[verify_api_key] = fake_verify
+
+    from serving.servers.concurrency import enforce_user_concurrency
+    app.dependency_overrides[enforce_user_concurrency] = lambda: None
+
+    from serving.servers.routers import anthropic_messages
+    app.include_router(anthropic_messages.router)
+    return app
+
+
+@pytest_asyncio.fixture
+async def anthropic_test_client(anthropic_test_app):
+    """Async HTTP client for the anthropic compat test app."""
+    from httpx import ASGITransport, AsyncClient
+    transport = ASGITransport(app=anthropic_test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
