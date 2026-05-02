@@ -52,6 +52,10 @@ from serving.schemas_admin import (
     ProviderModelPair,
     ProviderStatsResponse,
     ProviderStatsRow,
+    ProviderTokenUsageResponse,
+    ProviderTokenUsageRow,
+    ProviderTokenUsageTotals,
+    ProviderTokenUsageWindow,
     RegenerateAPIKeyResponse,
     RejectUserRequest,
     RejectUserResponse,
@@ -2344,4 +2348,88 @@ async def admin_provider_stats(
         providers=[r["provider"] for r in providers],
         models=[r["model_id"] for r in models],
         pairs=[ProviderModelPair(provider=r["provider"], model_id=r["model_id"]) for r in pairs],
+    )
+
+
+# ============================================================
+# Token Usage tab — per (provider, model_id) totals over a fixed-window
+# selector (1h | 24h | 7d | 30d). Reads pre-aggregated rows from
+# provider_hourly_stats; no scan of api_logs.
+# ============================================================
+
+_TOKEN_USAGE_RANGES: dict[str, timedelta] = {
+    "1h": timedelta(hours=1),
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+}
+
+
+@router.get("/admin/api/provider-token-usage", response_model=ProviderTokenUsageResponse)
+async def admin_provider_token_usage(
+    request: Request,
+    range: Literal["1h", "24h", "7d", "30d"] = "24h",
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> ProviderTokenUsageResponse:
+    """Per-(provider, model_id) token totals + cost over a fixed window.
+
+    Query parameters:
+        range: one of "1h", "24h", "7d", "30d". Defaults to "24h".
+
+    The window is hour-truncated; `from = floor(now, hour) - <range>`,
+    `to = floor(now, hour)`. Rows are sorted by total token sum
+    (input + output + cached + reasoning) descending. Totals are
+    summed in Python from the same rows to avoid a second DB hit.
+    """
+    del request
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=503, detail="database unavailable")
+
+    delta = _TOKEN_USAGE_RANGES[range]
+    end = _truncate_hour(datetime.now(timezone.utc))
+    start = end - delta
+
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                provider,
+                model_id,
+                COALESCE(SUM(total_prompt_tokens), 0)::BIGINT      AS input_tokens,
+                COALESCE(SUM(total_completion_tokens), 0)::BIGINT  AS output_tokens,
+                COALESCE(SUM(total_cache_read_tokens), 0)::BIGINT  AS cached_tokens,
+                COALESCE(SUM(total_reasoning_tokens), 0)::BIGINT   AS reasoning_tokens,
+                COALESCE(SUM(total_cost_usd), 0)::FLOAT            AS cost_usd,
+                COALESCE(SUM(request_count), 0)::BIGINT            AS request_count
+            FROM provider_hourly_stats
+            WHERE hour_bucket >= $1 AND hour_bucket < $2
+            GROUP BY provider, model_id
+            ORDER BY (
+                  COALESCE(SUM(total_prompt_tokens), 0)
+                + COALESCE(SUM(total_completion_tokens), 0)
+                + COALESCE(SUM(total_cache_read_tokens), 0)
+                + COALESCE(SUM(total_reasoning_tokens), 0)
+            ) DESC
+            """,
+            start,
+            end,
+        )
+
+    out_rows = [ProviderTokenUsageRow(**dict(r)) for r in rows]
+    totals = ProviderTokenUsageTotals(
+        input_tokens=sum(r.input_tokens for r in out_rows),
+        output_tokens=sum(r.output_tokens for r in out_rows),
+        cached_tokens=sum(r.cached_tokens for r in out_rows),
+        reasoning_tokens=sum(r.reasoning_tokens for r in out_rows),
+        cost_usd=sum(r.cost_usd for r in out_rows),
+        request_count=sum(r.request_count for r in out_rows),
+    )
+
+    return ProviderTokenUsageResponse(
+        range=range,
+        window=ProviderTokenUsageWindow.model_validate({"from": start, "to": end}),
+        refreshed_at=end,
+        rows=out_rows,
+        totals=totals,
     )
