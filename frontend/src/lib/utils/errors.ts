@@ -34,7 +34,7 @@ export const ERROR_MESSAGES: Record<string, string> = {
 
 export function getErrorMessage(error: unknown): string {
   if (error instanceof APIError) {
-    if (error.code && ERROR_MESSAGES[error.code]) {
+    if (error.code && error.code !== 'UNKNOWN_ERROR' && ERROR_MESSAGES[error.code]) {
       return ERROR_MESSAGES[error.code];
     }
     return error.message || ERROR_MESSAGES.UNKNOWN_ERROR;
@@ -42,7 +42,11 @@ export function getErrorMessage(error: unknown): string {
 
   if (error instanceof Error) {
     const errorWithCode = error as Error & { code?: string };
-    if (errorWithCode.code && ERROR_MESSAGES[errorWithCode.code]) {
+    if (
+      errorWithCode.code &&
+      errorWithCode.code !== 'UNKNOWN_ERROR' &&
+      ERROR_MESSAGES[errorWithCode.code]
+    ) {
       return ERROR_MESSAGES[errorWithCode.code];
     }
     return error.message || ERROR_MESSAGES.UNKNOWN_ERROR;

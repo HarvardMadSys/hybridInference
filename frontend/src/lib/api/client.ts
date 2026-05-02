@@ -103,7 +103,7 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
   // Handle backend error format: { error: { type: "...", message: "...", code: 500 } }
   // or { detail: "..." } (FastAPI validation errors)
   let errorCode = 'UNKNOWN_ERROR';
-  let errorMessage = 'An unknown error occurred';
+  let errorMessage = '';
 
   if (errorData && typeof errorData === 'object') {
     const data = errorData as Record<string, unknown>;

@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -36,6 +36,24 @@ def _mask_key(key: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    """Parse an ISO-8601 string into a UTC-aware datetime; None on failure.
+
+    Naive inputs are assumed UTC. Offset-aware inputs are converted to UTC so
+    callers always see a single canonical timezone.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
@@ -71,18 +89,18 @@ async def fetch_chutes() -> ProviderQuotaResult:
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
     try:
-        async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
-            session.get(url, headers=headers, allow_redirects=False) as resp,
-        ):
-            if resp.status in (301, 302, 303, 307, 308, 401, 403):
-                return _err("chutes", "Chutes", key, "auth_failed")
-            if resp.status >= 400:
-                return _err("chutes", "Chutes", key, "unexpected")
-            try:
-                data: dict[str, Any] = await resp.json()
-            except Exception:
-                return _err("chutes", "Chutes", key, "parse_error")
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                    return _err("chutes", "Chutes", key, "auth_failed")
+                if resp.status >= 400:
+                    return _err("chutes", "Chutes", key, "unexpected")
+                try:
+                    data: dict[str, Any] = await resp.json()
+                except Exception:
+                    return _err("chutes", "Chutes", key, "parse_error")
+            usages = _parse_chutes_usage(data)
+            usages.extend(await _fetch_chutes_request_counts(session, headers))
     except asyncio.TimeoutError:
         return _err("chutes", "Chutes", key, "timeout")
     except aiohttp.ClientError:
@@ -91,7 +109,6 @@ async def fetch_chutes() -> ProviderQuotaResult:
         logger.exception("fetch_chutes: unexpected error")
         return _err("chutes", "Chutes", key, "unexpected")
 
-    usages = _parse_chutes_usage(data)
     return ProviderQuotaResult(
         name="chutes",
         display_name="Chutes",
@@ -102,6 +119,102 @@ async def fetch_chutes() -> ProviderQuotaResult:
         error=None,
         usages=usages,
     )
+
+
+async def _fetch_chutes_request_counts(
+    session: aiohttp.ClientSession,
+    headers: dict[str, str],
+) -> list[ProviderQuotaUsage]:
+    """Fetch the daily request quota and today's request count.
+
+    Chutes enforces a per-day request cap (default 5000) exposed via
+    /users/me/quotas; today's usage is the sum of `count` from
+    /users/me/usage hourly buckets since 00:00 UTC. Returns an empty list
+    on any HTTP/parse failure so the parent fetcher can still surface the
+    USD usages.
+    """
+    try:
+        daily_cap = await _fetch_chutes_daily_cap(session, headers)
+        if daily_cap is None:
+            return []
+
+        now = _now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_reset = day_start + timedelta(days=1)
+
+        url = "https://api.chutes.ai/users/me/usage?limit=2000"
+        async with session.get(url, headers=headers, allow_redirects=False) as resp:
+            if resp.status >= 400:
+                return []
+            try:
+                payload: dict[str, Any] = await resp.json()
+            except Exception:
+                return []
+
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return []
+
+        daily_count = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            bucket_dt = _parse_iso(item.get("bucket"))
+            if bucket_dt is None:
+                continue
+            count_raw = item.get("count")
+            if isinstance(count_raw, bool) or not isinstance(count_raw, (int, float)):
+                continue
+            if not float(count_raw).is_integer():
+                continue
+            if day_start <= bucket_dt < day_reset:
+                daily_count += int(count_raw)
+
+        return [
+            ProviderQuotaUsage(
+                label="Daily requests",
+                used=float(daily_count),
+                limit=float(daily_cap),
+                unit="requests",
+                reset_at=day_reset,
+            ),
+        ]
+    except Exception:
+        logger.exception("_fetch_chutes_request_counts: unexpected error")
+        return []
+
+
+async def _fetch_chutes_daily_cap(
+    session: aiohttp.ClientSession,
+    headers: dict[str, str],
+) -> int | None:
+    """Return the default daily request cap from /users/me/quotas, or None on failure.
+
+    The endpoint returns a list of per-chute quotas; we take the entry
+    with `chute_id == "*"` (or `is_default == True`) as the global cap.
+    """
+    url = "https://api.chutes.ai/users/me/quotas"
+    try:
+        async with session.get(url, headers=headers, allow_redirects=False) as resp:
+            if resp.status >= 400:
+                return None
+            try:
+                payload = await resp.json()
+            except Exception:
+                return None
+    except (asyncio.TimeoutError, aiohttp.ClientError):
+        return None
+
+    if not isinstance(payload, list):
+        return None
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("chute_id") == "*" or entry.get("is_default") is True:
+            quota = entry.get("quota")
+            if isinstance(quota, (int, float)):
+                return int(quota)
+    return None
 
 
 def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
@@ -117,13 +230,7 @@ def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
             continue
         used = block.get("usage")
         limit = block.get("cap")
-        reset = block.get("reset_at")
-        reset_dt = None
-        if isinstance(reset, str):
-            try:
-                reset_dt = datetime.fromisoformat(reset.replace("Z", "+00:00"))
-            except ValueError:
-                reset_dt = None
+        reset_dt = _parse_iso(block.get("reset_at"))
         usages.append(
             ProviderQuotaUsage(
                 label=label,
