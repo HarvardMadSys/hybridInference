@@ -2174,7 +2174,8 @@ async def admin_export_requests(
                         l.request_id, l.user_id, u.user_name, u.email AS user_email,
                         l.model_id, l.provider, l.timestamp,
                         l.status_code, l.latency_ms, l.ttft_ms,
-                        l.prompt_tokens, l.completion_tokens, l.reasoning_tokens, l.total_tokens,
+                        l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
+                        l.cache_read_tokens, l.cache_write_tokens, l.total_tokens,
                         l.cost_usd, l.error{content_cols}
                     FROM api_logs l
                     LEFT JOIN users u ON u.id = l.user_id
@@ -2201,6 +2202,8 @@ async def admin_export_requests(
                         "prompt_tokens": row["prompt_tokens"],
                         "completion_tokens": row["completion_tokens"],
                         "reasoning_tokens": row["reasoning_tokens"],
+                        "cache_read_tokens": row["cache_read_tokens"],
+                        "cache_write_tokens": row["cache_write_tokens"],
                         "total_tokens": row["total_tokens"],
                         "cost_usd": (str(row["cost_usd"]) if row["cost_usd"] is not None else None),
                         "status_code": row["status_code"],
