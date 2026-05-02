@@ -108,7 +108,15 @@ type ChatMessage = {
 };
 
 function isChatMessage(v: unknown): v is ChatMessage {
-  return isRecord(v) && typeof v.role === 'string' && ('content' in v || 'tool_calls' in v);
+  return (
+    isRecord(v) &&
+    typeof v.role === 'string' &&
+    ('content' in v ||
+      'tool_calls' in v ||
+      'refusal' in v ||
+      'reasoning' in v ||
+      'reasoning_content' in v)
+  );
 }
 
 function isToolCall(v: unknown): v is ToolCall {
@@ -211,13 +219,8 @@ function MetaList({ data, skip }: { data: Record<string, unknown>; skip: Readonl
 
 function MessageBlock({ message }: { message: ChatMessage }) {
   const text = flattenContent(message.content);
-  const reasoning =
-    typeof message.reasoning_content === 'string'
-      ? message.reasoning_content
-      : typeof message.reasoning === 'string'
-        ? message.reasoning
-        : '';
-  const refusal = typeof message.refusal === 'string' ? message.refusal : '';
+  const reasoning = messageReasoning(message);
+  const refusal = messageRefusal(message);
   const toolCalls = getToolCalls(message);
   const toolCallId = typeof message.tool_call_id === 'string' ? message.tool_call_id : '';
   const toolName = typeof message.name === 'string' ? message.name : '';
@@ -347,7 +350,17 @@ function toolCallsPreview(message: ChatMessage): string {
   const calls = getToolCalls(message);
   if (calls.length === 0) return '';
   const names = calls.map(toolCallName).filter((n) => n.length > 0);
-  return `[tool_calls: ${names.join(', ')}]`;
+  return names.length > 0 ? `[tool_calls: ${names.join(', ')}]` : '[tool_calls]';
+}
+
+function messageRefusal(m: ChatMessage): string {
+  return typeof m.refusal === 'string' ? m.refusal : '';
+}
+
+function messageReasoning(m: ChatMessage): string {
+  if (typeof m.reasoning_content === 'string') return m.reasoning_content;
+  if (typeof m.reasoning === 'string') return m.reasoning;
+  return '';
 }
 
 function computePreview(parsed: unknown, fallback: string): string {
@@ -366,6 +379,10 @@ function computePreview(parsed: unknown, fallback: string): string {
         if (text) return previewText(text);
         const tc = toolCallsPreview(m);
         if (tc) return previewText(tc);
+        const refusal = messageRefusal(m);
+        if (refusal) return previewText(`[refusal] ${refusal}`);
+        const reasoning = messageReasoning(m);
+        if (reasoning) return previewText(`[reasoning] ${reasoning}`);
         break;
       }
     }
@@ -375,14 +392,23 @@ function computePreview(parsed: unknown, fallback: string): string {
       if (text) return previewText(text);
       const tc = toolCallsPreview(last);
       if (tc) return previewText(tc);
+      const refusal = messageRefusal(last);
+      if (refusal) return previewText(`[refusal] ${refusal}`);
+      const reasoning = messageReasoning(last);
+      if (reasoning) return previewText(`[reasoning] ${reasoning}`);
     }
   }
   if (hasChoices(parsed)) {
     const first = parsed.choices[0];
-    const text = flattenContent(first.message.content);
+    const m = first.message;
+    const text = flattenContent(m.content);
     if (text) return previewText(text);
-    const tc = toolCallsPreview(first.message);
+    const tc = toolCallsPreview(m);
     if (tc) return previewText(tc);
+    const refusal = messageRefusal(m);
+    if (refusal) return previewText(`[refusal] ${refusal}`);
+    const reasoning = messageReasoning(m);
+    if (reasoning) return previewText(`[reasoning] ${reasoning}`);
   }
   return previewText(fallback);
 }
