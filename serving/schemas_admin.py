@@ -334,6 +334,41 @@ class DeleteUserResponse(BaseModel):
     message: str
 
 
+class ResumeUserRequest(BaseModel):
+    """Request payload for resuming a soft-deleted user."""
+
+    reason: str | None = Field(None, max_length=500, description="Optional reason (audit trail)")
+
+
+class ResumeUserResponse(BaseModel):
+    """Response payload for successful user resume."""
+
+    user_id: str
+    email: str
+    status: str
+    message: str
+
+
+class HardDeleteUserRequest(BaseModel):
+    """Request payload for permanently deleting a user.
+
+    Requires explicit ``confirm=True``.  Defense-in-depth — the API still
+    rejects requests where the value is missing or false even though the
+    UI always sends ``true``.
+    """
+
+    confirm: bool = Field(..., description="Must be true to proceed")
+    reason: str | None = Field(None, max_length=500, description="Optional reason (audit trail)")
+
+
+class HardDeleteUserResponse(BaseModel):
+    """Response payload for successful permanent deletion."""
+
+    user_id: str
+    email: str
+    message: str
+
+
 # ========================================
 # Admin Recent Requests Schemas
 # ========================================
@@ -551,6 +586,8 @@ __all__ = [
     "CreateAPIKeyResponse",
     "DeleteUserRequest",
     "DeleteUserResponse",
+    "HardDeleteUserRequest",
+    "HardDeleteUserResponse",
     "ListAPIKeysResponse",
     "ListAuditLogResponse",
     "ListUsersResponse",
@@ -559,6 +596,8 @@ __all__ = [
     "RegenerateAPIKeyResponse",
     "RejectUserRequest",
     "RejectUserResponse",
+    "ResumeUserRequest",
+    "ResumeUserResponse",
     "RevokeAPIKeyResponse",
     "SparklineBucket",
     "StatusCounts",

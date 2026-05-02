@@ -236,6 +236,40 @@ export async function deleteUser(userId: string, reason: string): Promise<Approv
   return jsonOrThrow<ApproveRejectResponse>(resp);
 }
 
+export async function resumeUser(
+  userId: string,
+  reason?: string,
+): Promise<ApproveRejectResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: reason ?? null }),
+  });
+  return jsonOrThrow<ApproveRejectResponse>(resp);
+}
+
+export interface HardDeleteUserResponse {
+  user_id: string;
+  email: string;
+  message: string;
+}
+
+export async function hardDeleteUser(
+  userId: string,
+  reason?: string,
+): Promise<HardDeleteUserResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/hard-delete`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true, reason: reason ?? null }),
+    },
+  );
+  return jsonOrThrow<HardDeleteUserResponse>(resp);
+}
+
 // ========================================
 // Audit Log
 // ========================================

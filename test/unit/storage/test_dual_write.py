@@ -41,6 +41,8 @@ _OP_WRITES = {
     "update_user_fields",
     "update_user_last_login",
     "delete_user",
+    "resume_user",
+    "hard_delete_user",
     "approve_user",
     "reject_user",
     "create_key",

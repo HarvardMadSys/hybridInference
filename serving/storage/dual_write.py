@@ -231,6 +231,49 @@ class DualWriteOperationalStore(OperationalStore):
             user_id=user_id,
         )
 
+    async def resume_user(
+        self,
+        user_id: str,
+        *,
+        admin_ip: str,
+        admin_id: str,
+        reason: str | None = None,
+        email: str | None = None,
+    ) -> None:
+        """Write to primary, then shadow."""
+        await self._primary.resume_user(
+            user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
+        )
+        await self._do_shadow(
+            "resume_user",
+            self._shadow.resume_user(
+                user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
+            ),
+            user_id=user_id,
+        )
+
+    async def hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        admin_ip: str,
+        admin_id: str,
+        reason: str | None = None,
+        email: str | None = None,
+    ) -> dict[str, int]:
+        """Write to primary, then shadow.  Returns primary's row counts."""
+        counts = await self._primary.hard_delete_user(
+            user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
+        )
+        await self._do_shadow(
+            "hard_delete_user",
+            self._shadow.hard_delete_user(
+                user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
+            ),
+            user_id=user_id,
+        )
+        return counts
+
     async def approve_user(self, user_id: str, *, admin_id: str, note: str | None = None) -> None:
         """Write to primary, then shadow."""
         await self._primary.approve_user(user_id, admin_id=admin_id, note=note)

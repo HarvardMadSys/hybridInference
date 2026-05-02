@@ -22,6 +22,8 @@ import {
   approveUser,
   rejectUser,
   deleteUser,
+  resumeUser,
+  hardDeleteUser,
   regenerateApiKeyAdmin,
   listAuditLog,
   listRecentRequests,
@@ -347,6 +349,8 @@ const AUDIT_ACTIONS = [
   'reject_user',
   'update_user',
   'delete_user',
+  'resume_user',
+  'hard_delete_user',
   'create_key',
   'revoke_key',
   'delete_key',
@@ -481,6 +485,9 @@ export default function AdminPage() {
   const [rejectReason, setRejectReason] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
   const [deleteReason, setDeleteReason] = useState('');
+  const [hardDeleteTarget, setHardDeleteTarget] = useState<AdminUser | null>(null);
+  const [hardDeleteReason, setHardDeleteReason] = useState('');
+  const [hardDeleteEmailConfirm, setHardDeleteEmailConfirm] = useState('');
   const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -751,6 +758,32 @@ export default function AdminPage() {
       setToast(`Deleted ${deleteTarget.email}`);
       setDeleteTarget(null);
       setDeleteReason('');
+      setExpandedId(null);
+      setDetail(null);
+      await load();
+    }).finally(() => setBusy(null));
+  };
+  const doResume = (u: AdminUser) => {
+    setBusy(u.id);
+    act(async () => {
+      await resumeUser(u.id);
+      setToast(`Resumed ${u.email}`);
+      setExpandedId(null);
+      setDetail(null);
+      await load();
+    }).finally(() => setBusy(null));
+  };
+  const doHardDelete = () => {
+    if (!hardDeleteTarget) return;
+    if (hardDeleteEmailConfirm !== hardDeleteTarget.email) return;
+    setBusy(hardDeleteTarget.id);
+    const email = hardDeleteTarget.email;
+    act(async () => {
+      await hardDeleteUser(hardDeleteTarget.id, hardDeleteReason.trim() || undefined);
+      setToast(`Permanently deleted ${email}`);
+      setHardDeleteTarget(null);
+      setHardDeleteReason('');
+      setHardDeleteEmailConfirm('');
       setExpandedId(null);
       setDetail(null);
       await load();
@@ -1388,10 +1421,29 @@ export default function AdminPage() {
 
                                 {/* Deleted users */}
                                 {u.status === 'deleted' && (
-                                  <div className="border-t border-gray-200 pt-4">
+                                  <div className="flex items-center justify-between border-t border-gray-200 pt-4">
                                     <span className="text-[13px] text-gray-400">
                                       This user has been deleted.
                                     </span>
+                                    <div className="flex items-center gap-3">
+                                      <button
+                                        onClick={() => {
+                                          setHardDeleteTarget(u);
+                                          setHardDeleteReason('');
+                                          setHardDeleteEmailConfirm('');
+                                        }}
+                                        className="text-[12px] text-red-500 hover:text-red-700 transition"
+                                      >
+                                        Permanently Delete
+                                      </button>
+                                      <button
+                                        onClick={() => doResume(u)}
+                                        disabled={busy === u.id}
+                                        className="rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-gray-800 transition disabled:opacity-50"
+                                      >
+                                        Resume
+                                      </button>
+                                    </div>
                                   </div>
                                 )}
                               </div>
@@ -2672,6 +2724,72 @@ export default function AdminPage() {
                 className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-red-700 transition disabled:opacity-50"
               >
                 {busy === deleteTarget.id ? '...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hard-delete (permanent) modal */}
+      {hardDeleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/30 backdrop-blur-[2px]"
+            onClick={() => {
+              setHardDeleteTarget(null);
+              setHardDeleteReason('');
+              setHardDeleteEmailConfirm('');
+            }}
+          />
+          <div className="relative mx-4 w-full max-w-md rounded-xl border border-red-200 bg-white p-5 shadow-2xl">
+            <h3 className="text-[15px] font-semibold text-red-700">
+              Permanently delete {hardDeleteTarget.email}
+            </h3>
+            <p className="mt-2 text-[12px] text-gray-600">
+              This will <span className="font-semibold text-red-700">permanently wipe</span> the
+              user row, all API keys, all api_logs, and prior audit-log entries for this user.
+              This action <span className="font-semibold">cannot be undone</span>.
+            </p>
+            <p className="mt-3 text-[12px] text-gray-500">
+              Type the user&apos;s email address (
+              <span className="font-mono text-gray-700">{hardDeleteTarget.email}</span>) to
+              confirm:
+            </p>
+            <input
+              type="text"
+              className="mt-2 w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-mono placeholder:text-gray-300 focus:border-red-400 focus:outline-none"
+              placeholder="email@example.com"
+              value={hardDeleteEmailConfirm}
+              onChange={(e) => setHardDeleteEmailConfirm(e.target.value)}
+              autoFocus
+            />
+            <textarea
+              className="mt-3 w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] placeholder:text-gray-300 focus:border-gray-400 focus:outline-none"
+              rows={2}
+              placeholder="Reason (optional, audit trail)..."
+              value={hardDeleteReason}
+              onChange={(e) => setHardDeleteReason(e.target.value)}
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setHardDeleteTarget(null);
+                  setHardDeleteReason('');
+                  setHardDeleteEmailConfirm('');
+                }}
+                className="rounded-md px-3 py-1.5 text-[13px] text-gray-500 hover:text-gray-900 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={doHardDelete}
+                disabled={
+                  hardDeleteEmailConfirm !== hardDeleteTarget.email ||
+                  busy === hardDeleteTarget.id
+                }
+                className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-red-700 transition disabled:opacity-50"
+              >
+                {busy === hardDeleteTarget.id ? '...' : 'Permanently Delete'}
               </button>
             </div>
           </div>

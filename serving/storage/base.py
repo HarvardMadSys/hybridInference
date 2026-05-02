@@ -149,6 +149,54 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def resume_user(
+        self,
+        user_id: str,
+        *,
+        admin_ip: str,
+        admin_id: str,
+        reason: str | None = None,
+        email: str | None = None,
+    ) -> None:
+        """Resume a soft-deleted user: set status='active' and audit.
+
+        API keys remain ``revoked`` — the user must re-create one through
+        the normal flow.  All mutations and the audit-log insert are atomic.
+        """
+
+    @abstractmethod
+    async def hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        admin_ip: str,
+        admin_id: str,
+        reason: str | None = None,
+        email: str | None = None,
+    ) -> dict[str, int]:
+        """Permanently delete a user row and all operationally-linked rows.
+
+        Wipes (in one transaction):
+
+        - ``api_keys`` (by ``account_id`` or ``user_id``)
+        - ``auth_sessions``
+        - ``email_verification_tokens``
+        - ``password_reset_tokens``
+        - ``email_broadcast_recipients``
+        - ``admin_audit_log`` rows referencing this user (compliance loss
+          accepted at the caller level)
+        - ``users`` row itself
+        - Inserts a NEW ``admin_audit_log`` row for the hard-delete itself.
+
+        ``api_logs`` lives in the LogStore, not this contract — the caller
+        must purge it separately.
+
+        Returns a ``{table_name: row_count}`` mapping for inclusion in the
+        audit details.  Implementations that cannot determine row counts may
+        return ``{}``.
+        """
+
+    @abstractmethod
     async def list_users(
         self,
         *,
