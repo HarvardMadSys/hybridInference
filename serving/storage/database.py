@@ -221,6 +221,11 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)
             """)
 
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS upstream_cost_usd DECIMAL(12, 8)
+            """)
+
             # Aggregated stats table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS api_stats_hourly (
@@ -739,6 +744,7 @@ class DatabaseLogger:
         response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
+        upstream_cost_usd: float | None = None,
     ) -> None:
         """Insert a single request log row.
 
@@ -760,6 +766,9 @@ class DatabaseLogger:
             store_full_content: Override instance default for storing full prompt/response.
                 If None, uses self.store_full_prompts. Set False for privacy mode (hash only).
             pricing: Model pricing config for cost calculation (per 1M tokens).
+            upstream_cost_usd: OpenRouter-reported per-request upstream cost (USD).
+                Internal accounting only — orthogonal to user-billed `cost_usd`.
+                None for non-OpenRouter routes.
         """
         if not self.pool:
             raise RuntimeError("DatabaseLogger not initialized")
@@ -819,7 +828,7 @@ class DatabaseLogger:
                     cache_read_tokens, cache_write_tokens, cost_usd,
                     prompt, response, prompt_hash, response_hash,
                     status_code, error, user_id, session_id, metadata,
-                    tools
+                    tools, upstream_cost_usd
                 )
                 VALUES (
                     $1, $2, $3,
@@ -829,7 +838,7 @@ class DatabaseLogger:
                     $15, $16, $17,
                     $18, $19, $20, $21,
                     $22, $23, $24, $25, $26::jsonb,
-                    $27::jsonb
+                    $27::jsonb, $28
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -866,6 +875,7 @@ class DatabaseLogger:
                 (metadata or {}).get("session_id"),
                 json.dumps(metadata) if metadata else None,
                 json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
+                upstream_cost_usd,
             )
 
     async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
