@@ -1,6 +1,5 @@
 .PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
-       docker-volumes sync-subscriptions up down restart ps logs build \
-       stop-host-grafana
+       docker-volumes sync-subscriptions up down restart ps logs build
 
 # Default target
 .DEFAULT_GOAL := help
@@ -134,8 +133,8 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 
 # ─── Docker / Production ─────────────────────────────────────────────────────
 COMPOSE := docker compose -f infrastructure/docker/docker-compose.yml --env-file .env
-DOCKER_VOLUMES := hybridinference_postgres_data hybridinference_prometheus_data \
-                  hybridinference_alertmanager_data hybridinference_grafana_data
+DOCKER_VOLUMES := hybridinference_postgres_data \
+                  hybridinference_alertmanager_data hybridinference_alert_log_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose
 	@for volume in $(DOCKER_VOLUMES); do \
@@ -187,13 +186,7 @@ else
 	$(COMPOSE) logs -f --tail=500
 endif
 
-stop-host-grafana:  ## Stop host grafana-server if active (frees port 3000)
-	@if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet grafana-server; then \
-		echo "$(YELLOW)Stopping host grafana-server to free port 3000...$(RESET)"; \
-		systemctl stop grafana-server; \
-	fi
-
-build: stop-host-grafana docker-volumes  ## Rebuild images and restart (or: make build s=backend)
+build: docker-volumes  ## Rebuild images and restart (or: make build s=backend)
 ifdef s
 	$(COMPOSE) up -d --build $(s)
 else

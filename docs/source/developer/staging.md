@@ -18,8 +18,6 @@ These are the ports exposed by the production compose file:
 - Backend API: `8080` (bound to `127.0.0.1`)
 - Frontend: `3001` (bound to `0.0.0.0`)
 - PostgreSQL: `${DB_PORT:-5432}` (bound to `127.0.0.1`)
-- Prometheus: `9090` (bound to `127.0.0.1`)
-- Grafana: `3000` (bound to `127.0.0.1`)
 - pgAdmin: `5050` when the `admin` profile is enabled (bound to `127.0.0.1`)
 
 ## First-time server bootstrap
@@ -69,7 +67,6 @@ make build
 
 This command:
 
-- stops any host grafana-server that would conflict on port 3000
 - ensures Docker volumes exist
 - builds the current backend and frontend from the worktree
 - starts the full stack with Docker Compose

@@ -237,7 +237,6 @@ AGENTS.md
 data/*
 
 alertmanager-0.28.1.linux-amd64/
-/prometheus
 
 # ============================================
 # Node.js / Frontend (Next.js) specific

@@ -1,4 +1,4 @@
-"""Tests for RouteWise Prometheus metric emission."""
+"""Tests for RouteWise metric emission (currently no-op shims)."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ def _make_obs(**overrides: Any) -> RoutingObservation:
 
 @pytest.mark.unit
 class TestRouteWiseMetrics:
-    """Verify Prometheus metric emission via _emit_metrics."""
+    """Verify metric emission via _emit_metrics (no-op shims today)."""
 
     def test_tier_decision_counter_incremented(self):
         router = _build_router()

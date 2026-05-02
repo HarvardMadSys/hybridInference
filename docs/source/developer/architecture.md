@@ -87,9 +87,7 @@ Centralized configuration management:
 Deployment and observability:
 
 - Docker Compose service definitions and Dockerfiles
-- Prometheus metrics collection
-- Grafana dashboards and provisioning
-- Alertmanager rules and Slack notification routing
+- Alertmanager and alert logger
 
 ### Subscription Adapters
 
@@ -158,5 +156,4 @@ For account lifecycle and credential management details, see [Configuration Guid
 4. Adapter translates request to provider-specific format
 5. Provider processes inference
 6. Response is logged to PostgreSQL
-7. Metrics are exported to Prometheus
-8. Response is returned to client
+7. Response is returned to client

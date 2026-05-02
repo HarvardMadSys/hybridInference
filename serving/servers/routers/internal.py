@@ -7,7 +7,6 @@ from typing import Any
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 
-from serving.config.settings import has_role
 from serving.servers.deps import get_operational_store
 from serving.servers.routers.auth_routes import hash_refresh_token
 
@@ -43,24 +42,6 @@ async def _validate_session(refresh_token: str | None, op_store: Any) -> dict[st
         raise HTTPException(status_code=401, detail="User not found.")
 
     return user_row
-
-
-@router.get("/verify-grafana")
-async def verify_grafana(
-    refresh_token: str | None = Cookie(None),
-    op_store=Depends(get_operational_store),
-) -> Response:
-    """Verify that the caller has internal+ role via their refresh_token cookie.
-
-    Used by Nginx ``auth_request`` to gate access to Grafana, LLM Prober, etc.
-    Returns 200 for internal/admin, 401/403 otherwise.
-    """
-    user = await _validate_session(refresh_token, op_store)
-
-    if not has_role(user["role"] or "free", "internal"):
-        raise HTTPException(status_code=403, detail="Internal access required.")
-
-    return Response(status_code=200)
 
 
 @router.get("/verify-admin")

@@ -434,16 +434,6 @@ async def initialize() -> AppServices:
     user_concurrency_limiter = UserConcurrencyLimiter(USER_CONCURRENCY_LIMITS)
     logger.info("User concurrency limiter initialized: %s", USER_CONCURRENCY_LIMITS)
 
-    # User statistics collector (optional)
-    user_stats_collector = None
-    if os.getenv("METRICS_ENABLED", "1") == "1" and operational_store:
-        from serving.observability.user_stats import UserStatsCollector
-
-        interval = int(os.getenv("USER_STATS_INTERVAL_SECONDS", "60"))
-        user_stats_collector = UserStatsCollector(operational_store, interval_seconds=interval)
-        user_stats_collector.start()
-        logger.info(f"User stats collector started (interval: {interval}s)")
-
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
 
@@ -455,7 +445,6 @@ async def initialize() -> AppServices:
         log_store=log_store,
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
-        user_stats_collector=user_stats_collector,
         user_concurrency_limiter=user_concurrency_limiter,
     )
 
@@ -471,13 +460,6 @@ async def shutdown(services: AppServices) -> None:
         email_scheduler.stop_scheduler()
     except Exception as exc:
         logger.error(f"Email scheduler shutdown failed: {exc}")
-
-    # User stats collector must stop before stores are torn down
-    if services.user_stats_collector:
-        try:
-            await services.user_stats_collector.shutdown()
-        except Exception as exc:
-            logger.error(f"User stats collector shutdown failed: {exc}")
 
     # Log store (flushes D1 buffer on shutdown)
     if services.log_store:

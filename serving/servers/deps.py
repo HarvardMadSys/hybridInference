@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
-    from serving.observability.user_stats import UserStatsCollector
     from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
 
@@ -45,7 +44,6 @@ class AppServices:
     log_store: LogStore | None = None
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
-    user_stats_collector: UserStatsCollector | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
 
 

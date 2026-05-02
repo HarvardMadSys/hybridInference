@@ -1,4 +1,4 @@
-"""Tests for admin-only Grafana gating and playground endpoints."""
+"""Tests for admin-only auth verification and playground endpoints."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -170,25 +169,6 @@ class TestAdminModeUnit:
 
         assert exc.value.status_code == 403
 
-    @pytest.mark.asyncio
-    async def test_verify_grafana_rejects_revoked_session(self, monkeypatch):
-        monkeypatch.setattr(settings_module.settings, "admin_emails", "admin@example.com")
-        mock_op_store = MagicMock()
-        mock_op_store.get_session_by_token_hash = AsyncMock(
-            return_value={
-                "user_id": "u1",
-                "expires_at": "9999-01-01T00:00:00+00:00",
-                "revoked": True,
-                "id": "session-1",
-                "sid": "s1",
-            }
-        )
-
-        with pytest.raises(HTTPException) as exc:
-            await internal.verify_grafana(refresh_token="token", op_store=mock_op_store)
-
-        assert exc.value.status_code == 401
-
     def test_sanitize_chunk_strips_routing_metadata(self):
         chunk = (
             'data: {"id":"chunk-1","object":"chat.completion.chunk","created":123,'
@@ -201,56 +181,6 @@ class TestAdminModeUnit:
         assert "_routing" not in sanitized
         parsed = json.loads(sanitized[6:])
         assert parsed["choices"][0]["delta"]["content"] == "hello"
-
-
-@pytest.mark.dbtest
-class TestGrafanaVerification:
-    """Tests for the internal Grafana auth endpoint."""
-
-    @pytest.mark.asyncio
-    async def test_verify_grafana_returns_401_without_cookie(self, admin_mode_client: AsyncClient):
-        response = await admin_mode_client.get("/internal/verify-grafana")
-        assert response.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_verify_grafana_returns_403_for_non_admin(
-        self,
-        admin_mode_client: AsyncClient,
-        auth_backend,
-        monkeypatch,
-        clean_auth_tables,
-    ):
-        operational_store, _, _, _ = auth_backend
-        monkeypatch.setattr(settings_module.settings, "admin_emails", "")
-        user = await _insert_user(operational_store)
-        _, refresh_token = await _login(admin_mode_client, user["email"], user["password"])
-
-        response = await admin_mode_client.get(
-            "/internal/verify-grafana",
-            cookies={"refresh_token": refresh_token},
-        )
-
-        assert response.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_verify_grafana_returns_200_for_admin(
-        self,
-        admin_mode_client: AsyncClient,
-        auth_backend,
-        monkeypatch,
-        clean_auth_tables,
-    ):
-        operational_store, _, _, _ = auth_backend
-        user = await _insert_user(operational_store)
-        monkeypatch.setattr(settings_module.settings, "admin_emails", user["email"].lower())
-        _, refresh_token = await _login(admin_mode_client, user["email"], user["password"])
-
-        response = await admin_mode_client.get(
-            "/internal/verify-grafana",
-            cookies={"refresh_token": refresh_token},
-        )
-
-        assert response.status_code == 200
 
 
 @pytest.mark.dbtest

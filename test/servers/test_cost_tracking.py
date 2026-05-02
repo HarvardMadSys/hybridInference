@@ -158,52 +158,7 @@ async def test_streaming_logs_usage(tracking_client):
     assert kwargs["usage"]["completion_tokens"] == 30
     assert kwargs["usage"]["prompt_tokens"] == 120
 
-@pytest.mark.asyncio
-async def test_authenticated_user_priority(tracking_client, mock_rate_limiter):
-    client, app = tracking_client
-    mock_rate_limiter.acquire_tokens.reset_mock()
 
-    async def override_verify_api_key():
-        return {"user_id": "user-a", "authenticated": True}
-
-    app.dependency_overrides[verify_api_key] = override_verify_api_key
-    try:
-        await client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "tracked-model",
-                "messages": [{"role": "user", "content": "Hi"}],
-            },
-            headers={"Authorization": "Bearer hyi-test"},
-        )
-    finally:
-        app.dependency_overrides.pop(verify_api_key, None)
-
-    mock_rate_limiter.acquire_tokens.assert_awaited()
-    call = mock_rate_limiter.acquire_tokens.await_args
-    assert call.kwargs["priority"] == 1
-
-
-@pytest.mark.asyncio
-async def test_anonymous_user_priority_zero(tracking_client, mock_rate_limiter):
-    client, app = tracking_client
-    mock_rate_limiter.acquire_tokens.reset_mock()
-
-    async def override_verify_api_key():
-        return {"user_id": "anon", "authenticated": False}
-
-    app.dependency_overrides[verify_api_key] = override_verify_api_key
-    try:
-        await client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "tracked-model",
-                "messages": [{"role": "user", "content": "Hi"}],
-            },
-        )
-    finally:
-        app.dependency_overrides.pop(verify_api_key, None)
-
-    mock_rate_limiter.acquire_tokens.assert_awaited()
-    call = mock_rate_limiter.acquire_tokens.await_args
-    assert call.kwargs["priority"] == 0
+# Rate-limiter priority tests removed: the rate-limiter subsystem was
+# deleted on dev (commit 1f5ca54). The mock_rate_limiter fixture and the
+# acquire_tokens(priority=...) call no longer exist.
