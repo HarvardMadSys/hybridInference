@@ -113,35 +113,6 @@ class AsyncHTTPClient:
 
             return cast("dict[str, Any]", await resp.json())
 
-    async def json_get_with_retry(
-        self,
-        url: str,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout: aiohttp.ClientTimeout | None = None,
-        retries: int = 3,
-        backoff_base: float = 0.5,
-        backoff_factor: float = 2.0,
-    ) -> dict[str, Any]:
-        """GET JSON with simple exponential backoff retries."""
-        last_err: BaseException | None = None
-        for attempt in range(retries):
-            try:
-                return await self.json_get(url, headers=headers, timeout=timeout)
-            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                last_err = err
-                if attempt == retries - 1:
-                    raise
-                delay = backoff_base * (backoff_factor**attempt)
-                # metrics: retry with context provider label if available
-                ctx = req_ctx.get()
-                API_RETRIES.labels(
-                    provider=str(ctx.get("provider", "unknown")), reason=err.__class__.__name__
-                ).inc()
-                await asyncio.sleep(delay)
-        assert last_err is not None
-        raise last_err
-
     async def stream_post(
         self,
         url: str,

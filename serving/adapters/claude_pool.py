@@ -66,11 +66,3 @@ def get_shared_pool() -> tuple[ClaudeCredentialProvider, AccountPool]:
         logger.info(f"[claude_pool] Shared pool initialised with {len(accounts)} accounts")
 
         return _provider, _pool
-
-
-def _reset_for_testing() -> None:
-    """Reset the singleton — only for unit tests."""
-    global _provider, _pool
-    with _lock:
-        _provider = None
-        _pool = None

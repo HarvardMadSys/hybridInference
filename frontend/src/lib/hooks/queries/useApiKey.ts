@@ -1,19 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  createApiKey,
-  deleteApiKey,
-  getApiKey,
-  listApiKeys,
-  regenerateApiKey,
-} from '@/lib/api/user';
-
-export function useApiKey() {
-  return useQuery({
-    queryKey: ['apiKey'],
-    queryFn: getApiKey,
-    staleTime: 10 * 60 * 1000, // 10 minutes
-  });
-}
+import { createApiKey, deleteApiKey, listApiKeys, regenerateApiKey } from '@/lib/api/user';
 
 export function useApiKeys() {
   return useQuery({

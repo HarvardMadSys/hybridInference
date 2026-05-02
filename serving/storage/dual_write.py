@@ -58,14 +58,6 @@ class DualWriteOperationalStore(OperationalStore):
 
     # -- shadow helper -------------------------------------------------------
 
-    async def _shadow_write(self, method: str, /, **ctx_ids: Any) -> None:
-        """Internal marker — actual shadow calls are inlined per-method.
-
-        This docstring exists only to document the pattern; each write
-        method contains its own try/except so the shadow call can receive
-        the exact same arguments without re-packing.
-        """
-
     async def _do_shadow(self, method_name: str, coro, /, **ctx_ids: Any) -> None:
         """Await *coro* (a shadow method call).  On failure, log and swallow."""
         try:
