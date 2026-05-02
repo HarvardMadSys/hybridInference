@@ -254,9 +254,7 @@ async def test_post_returns_409_on_asyncpg_unique_violation(admin_client):
     import asyncpg
 
     client, op_store, _log, _audit = admin_client
-    op_store.add_signup_allowed_domain.side_effect = asyncpg.UniqueViolationError(
-        "any message"
-    )
+    op_store.add_signup_allowed_domain.side_effect = asyncpg.UniqueViolationError("any message")
     response = await client.post(
         "/admin/signup-domains",
         headers=AUTH,
