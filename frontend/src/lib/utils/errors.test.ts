@@ -19,9 +19,7 @@ describe('getErrorMessage', () => {
 
   it('returns the backend detail when APIError code is the default UNKNOWN_ERROR sentinel', () => {
     expect(
-      getErrorMessage(
-        new APIError('UNKNOWN_ERROR', 'subject and body_html are required', 422),
-      ),
+      getErrorMessage(new APIError('UNKNOWN_ERROR', 'subject and body_html are required', 422)),
     ).toBe('subject and body_html are required');
   });
 
