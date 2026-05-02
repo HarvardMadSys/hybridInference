@@ -35,7 +35,7 @@ from serving.observability.metrics import (
 )
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
-from serving.servers.deps import get_db_logger, get_router
+from serving.servers.deps import get_log_store, get_router
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
@@ -168,8 +168,8 @@ def _sanitize_for_openai_backend(body: dict[str, Any]) -> list[str]:
 # --- DB logging (fire-and-forget) ------------------------------------------
 
 
-def _schedule_db_log(
-    db_logger,
+def _schedule_log_store_task(
+    log_store,
     *,
     request_id: str,
     model_id: str,
@@ -179,12 +179,13 @@ def _schedule_db_log(
     status_code: int,
     pricing: dict[str, str],
     metadata: dict[str, Any],
+    params: dict[str, Any],
 ) -> None:
-    """Schedule a background DB log task (fire-and-forget)."""
+    """Schedule a background log store task (fire-and-forget)."""
 
     async def _log() -> None:
         try:
-            await db_logger.log_request(
+            await log_store.log_request(
                 request_id=request_id,
                 model_id=model_id,
                 provider=provider,
@@ -194,15 +195,17 @@ def _schedule_db_log(
                     "prompt_tokens": usage.get("input_tokens", 0),
                     "completion_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                    "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
+                    "cache_write_tokens": usage.get("cache_creation_input_tokens", 0),
                 },
                 latency_ms=latency_ms,
                 status_code=status_code,
-                params={"surface": "anthropic_messages"},
+                params=params,
                 metadata=metadata,
                 pricing=pricing,
             )
         except Exception:
-            logger.debug(f"Background DB log failed for {request_id}", exc_info=True)
+            logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
 
     asyncio.create_task(_log())  # noqa: RUF006
 
@@ -216,7 +219,7 @@ async def anthropic_messages(
     request: Request,
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
-    db_logger=Depends(get_db_logger),
+    log_store=Depends(get_log_store),
     _conc=Depends(enforce_user_concurrency),
 ):
     """Handle Anthropic Messages API requests (non-streaming)."""
@@ -258,6 +261,13 @@ async def anthropic_messages(
         "surface": "anthropic_messages",
         "alias_input": model_id if model_id != canonical else None,
     }
+
+    params_for_log: dict[str, Any] = {"surface": "anthropic_messages"}
+    for k in ("temperature", "top_p", "max_tokens", "stop_sequences", "stream"):
+        if k in body:
+            params_for_log[k] = body[k]
+    if body.get("tools"):
+        params_for_log["tool_count"] = len(body["tools"])
 
     is_streaming = bool(body.get("stream"))
     if is_streaming:
@@ -305,9 +315,9 @@ async def anthropic_messages(
                     provider=normalize_provider_label(adapter.config.provider),
                     status_code=str(status_code),
                 ).inc()
-                if db_logger:
-                    _schedule_db_log(
-                        db_logger,
+                if log_store:
+                    _schedule_log_store_task(
+                        log_store,
                         request_id=request_id,
                         model_id=canonical,
                         provider=adapter.config.provider,
@@ -318,6 +328,7 @@ async def anthropic_messages(
                         if hasattr(adapter.config, "pricing")
                         else {},
                         metadata=metadata,
+                        params=params_for_log,
                     )
 
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
@@ -334,6 +345,8 @@ async def anthropic_messages(
     usage_for_log = {
         "input_tokens": int(usage.get("input_tokens", 0)),
         "output_tokens": int(usage.get("output_tokens", 0)),
+        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens", 0)),
+        "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens", 0)),
     }
     latency_ms = int((time.time() - start) * 1000)
     provider = adapter.config.provider
@@ -342,9 +355,9 @@ async def anthropic_messages(
         provider=normalize_provider_label(provider),
         status_code="200",
     ).inc()
-    if db_logger:
-        _schedule_db_log(
-            db_logger,
+    if log_store:
+        _schedule_log_store_task(
+            log_store,
             request_id=request_id,
             model_id=canonical,
             provider=provider,
@@ -353,5 +366,6 @@ async def anthropic_messages(
             status_code=200,
             pricing=adapter.config.pricing,
             metadata=metadata,
+            params=params_for_log,
         )
     return JSONResponse(content=resp)

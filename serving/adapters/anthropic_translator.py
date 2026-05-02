@@ -255,7 +255,12 @@ def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[st
     stop_reason = _FINISH_REASON_MAP.get(finish, "end_turn")
 
     raw_id = resp.get("id") or ""
-    msg_id = raw_id if raw_id.startswith("msg_") else f"msg_{raw_id}" if raw_id else "msg_"
+    if raw_id.startswith("msg_"):
+        msg_id = raw_id
+    elif raw_id:
+        msg_id = f"msg_{raw_id}"
+    else:
+        msg_id = f"msg_{uuid.uuid4().hex[:24]}"
 
     usage_in = resp.get("usage") or {}
     anthropic_usage: dict[str, int] = {
