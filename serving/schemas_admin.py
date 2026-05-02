@@ -446,6 +446,33 @@ class AdminPerformanceMetricsResponse(BaseModel):
     windows: list[AdminPerformanceMetricsWindow]
 
 
+class AdminTtftScatterPoint(BaseModel):
+    """Single point on the TTFT-vs-input-length scatter plot."""
+
+    prompt_tokens: int
+    ttft_ms: int
+    cache_hit: bool
+    timestamp: datetime
+
+
+class AdminTtftScatterModel(BaseModel):
+    """Scatter points for one (model_id, provider) pair.
+
+    Models with fallbacks are routed across multiple upstream providers,
+    each with its own TTFT profile, so we keep them as separate series.
+    """
+
+    model_id: str
+    provider: str
+    points: list[AdminTtftScatterPoint]
+
+
+class AdminTtftScatterResponse(BaseModel):
+    """TTFT vs input length scatter data, grouped by (model_id, provider)."""
+
+    models: list[AdminTtftScatterModel]
+
+
 class AdminRecentRequestItem(BaseModel):
     """A single API request log entry (admin view, includes user identity)."""
 
@@ -578,6 +605,9 @@ __all__ = [
     "AdminRequestMetricsBucket",
     "AdminRequestMetricsResponse",
     "AdminRequestMetricsWindow",
+    "AdminTtftScatterModel",
+    "AdminTtftScatterPoint",
+    "AdminTtftScatterResponse",
     "AnalyticsBreakdownEntry",
     "AnalyticsUserEntry",
     "ApproveUserRequest",
