@@ -226,7 +226,7 @@ def normalize_usage_deepseek(usage_data: dict[str, Any]) -> UsageInfo:
 
 
 def normalize_usage_openrouter(usage_data: dict[str, Any]) -> UsageInfo:
-    """OpenRouter usage extraction: standard tokens + optional cost.
+    """Extract usage info from an OpenRouter response (tokens + optional cost).
 
     OpenRouter reports `cost` (USD, per-request) when the request body sets
     `usage: {include: true}`. Cache and reasoning tokens (flat or nested under
