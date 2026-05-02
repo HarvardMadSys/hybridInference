@@ -237,7 +237,6 @@ class TestDualWriteKeySync:
             key_hash="keyhash1",
             key_prefix="sk-test",
             user_id="ku1",
-            tier="pro",
             quota_daily_cost_usd=500.0,
             notes="test key",
         )
@@ -247,8 +246,8 @@ class TestDualWriteKeySync:
 
         assert p_key is not None, "Key missing from primary"
         assert s_key is not None, "Key missing from shadow"
-        assert p_key["tier"] == "pro"
-        assert s_key["tier"] == "pro"
+        assert p_key["notes"] == "test key"
+        assert s_key["notes"] == "test key"
 
     @pytest.mark.asyncio
     async def test_revoke_key_in_both(self, stores):

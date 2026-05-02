@@ -12,7 +12,6 @@ class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
 
     user_id: str = Field(..., min_length=1, max_length=255, description="Unique user identifier")
     user_name: str | None = Field(None, max_length=255, description="Display name for the user")
-    tier: str = Field("free", pattern="^(free|pro|enterprise)$", description="User tier")
     quota_daily_cost_usd: Decimal = Field(
         Decimal("1000.00"),
         ge=0,
@@ -45,7 +44,6 @@ class CreateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     api_key: str = Field(..., description="Plaintext API key (shown only once)")
     user_id: str
     key_prefix: str = Field(..., description="First 12 characters for identification")
-    tier: str
     quota_daily_cost_usd: Decimal
     quota_monthly_cost_usd: Decimal | None
     expires_at: datetime | None
@@ -62,7 +60,6 @@ class APIKeyListItem(BaseModel):  # type: ignore[no-any-unimported]
     user_id: str
     user_name: str | None
     key_prefix: str
-    tier: str
     status: str
     quota_daily_cost_usd: Decimal
     quota_monthly_cost_usd: Decimal | None
@@ -102,7 +99,6 @@ class APIKeyDetailResponse(BaseModel):  # type: ignore[no-any-unimported]
     user_id: str
     user_name: str | None
     key_prefix: str
-    tier: str
     status: str
     quota_daily_cost_usd: Decimal
     quota_monthly_cost_usd: Decimal | None
@@ -118,7 +114,6 @@ class UpdateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     """Request payload for updating an API key."""
 
     user_name: str | None = Field(None, max_length=255)
-    tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
     status: str | None = Field(None, pattern="^(active|suspended|revoked)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
     quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)
@@ -182,7 +177,6 @@ class UserListItem(BaseModel):
     has_key: bool = False
     key_prefix: str | None = None
     key_status: str | None = None
-    key_tier: str | None = None
     usage_today_usd: Decimal = Field(default=Decimal("0"))
     usage_month_usd: Decimal = Field(default=Decimal("0"))
     usage_alltime_usd: Decimal = Field(default=Decimal("0"))
@@ -253,7 +247,6 @@ class UserDetailResponse(BaseModel):
     # Key info
     has_key: bool = False
     key_prefix: str | None = None
-    key_tier: str | None = None
     quota_daily_usd: float | None = None
     quota_monthly_usd: float | None = None
     # Usage
@@ -273,7 +266,6 @@ class UpdateUserRequest(BaseModel):
         pattern="^(free|pro|internal|admin)$",
         description="One of: free, pro, internal, admin",
     )
-    tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
     quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)

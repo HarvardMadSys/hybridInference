@@ -55,7 +55,6 @@ def auth_env(monkeypatch):
         "COOKIE_SAMESITE": "lax",
         # Signup
         "SIGNUP_ENABLED": "1",
-        "SIGNUP_DEFAULT_TIER": "free",
         "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "100.00",
         "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
         # Email (disabled in tests)
@@ -309,7 +308,6 @@ async def test_user_with_key(auth_backend, test_user):
         key_prefix=key_prefix,
         user_id=test_user["id"],
         account_id=test_user["id"],
-        tier="free",
         quota_daily_cost_usd=Decimal("100.00"),
     )
 

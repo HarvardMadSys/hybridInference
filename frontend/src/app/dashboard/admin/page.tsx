@@ -477,7 +477,6 @@ export default function AdminPage() {
   const [detail, setDetail] = useState<UserDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editRole, setEditRole] = useState('');
-  const [editTier, setEditTier] = useState('');
   const [editQuota, setEditQuota] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -699,7 +698,6 @@ export default function AdminPage() {
       const d = await getUserDetail(uid);
       setDetail(d);
       setEditRole(d.role || 'free');
-      setEditTier(d.key_tier || 'free');
       setEditQuota(d.quota_daily_usd?.toString() || '100');
     } catch (e) {
       setError(getErrorMessage(e));
@@ -782,7 +780,6 @@ export default function AdminPage() {
     act(async () => {
       const u: Record<string, unknown> = {};
       if (editRole !== (detail.role || 'free')) u.role = editRole;
-      if (editTier !== (detail.key_tier || 'free')) u.tier = editTier;
       if (editQuota !== (detail.quota_daily_usd?.toString() || '100'))
         u.quota_daily_cost_usd = Number(editQuota);
       if (!Object.keys(u).length) return;
@@ -1122,11 +1119,6 @@ export default function AdminPage() {
                               {u.has_key && (
                                 <span className="font-mono text-gray-400">{u.key_prefix}</span>
                               )}
-                              {u.has_key && u.key_tier && u.key_tier !== 'free' && (
-                                <span className="font-semibold uppercase text-[10px] text-blue-600">
-                                  {u.key_tier}
-                                </span>
-                              )}
                               {(() => {
                                 const isCostSort =
                                   sortBy === 'cost_today' ||
@@ -1298,26 +1290,13 @@ export default function AdminPage() {
                                         className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
                                       >
                                         <option value="free">free</option>
+                                        <option value="pro">pro</option>
                                         <option value="internal">internal</option>
                                         <option value="admin">admin</option>
                                       </select>
                                     </div>
                                     {detail.has_key && (
                                       <>
-                                        <div>
-                                          <div className="text-[11px] font-medium text-gray-500 mb-1">
-                                            Tier
-                                          </div>
-                                          <select
-                                            value={editTier}
-                                            onChange={(e) => setEditTier(e.target.value)}
-                                            className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
-                                          >
-                                            <option value="free">free</option>
-                                            <option value="pro">pro</option>
-                                            <option value="enterprise">enterprise</option>
-                                          </select>
-                                        </div>
                                         <div>
                                           <div className="text-[11px] font-medium text-gray-500 mb-1">
                                             Daily quota

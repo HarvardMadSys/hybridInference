@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     user_name         TEXT,
     preferences       TEXT NOT NULL DEFAULT '{}',
     role              TEXT NOT NULL DEFAULT 'free'
-                      CHECK (role IN ('free', 'internal', 'admin')),
+                      CHECK (role IN ('free', 'pro', 'internal', 'admin')),
     email_verified    INTEGER DEFAULT 0,
     status            TEXT DEFAULT 'active'
                       CHECK (status IN ('active', 'suspended', 'deleted',
@@ -51,7 +51,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at               TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     expires_at               TEXT,
     last_used_at             TEXT,
-    tier                     TEXT DEFAULT 'free',
     notes                    TEXT,
     metadata                 TEXT,
     account_id               TEXT

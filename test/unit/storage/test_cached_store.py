@@ -26,9 +26,7 @@ def inner_store() -> MagicMock:
     store = MagicMock()
     store.health_check = AsyncMock(return_value=True)
     store.get_user_by_id = AsyncMock(return_value={"id": "u1", "email": "a@b.com"})
-    store.get_auth_context_by_key_hash = AsyncMock(
-        return_value={"id": 1, "user_id": "u1", "tier": "free"}
-    )
+    store.get_auth_context_by_key_hash = AsyncMock(return_value={"id": 1, "user_id": "u1"})
     store.get_auth_context_lightweight = AsyncMock(
         return_value={"user_id": "u1", "email": "a@b.com", "role": "admin"}
     )
@@ -200,7 +198,7 @@ class TestWriteInvalidation:
 
     async def test_update_key_invalidates_auth(self, cached, inner_store):
         await cached.get_auth_context_by_key_hash("h1")
-        await cached.update_key("u1", tier="premium")
+        await cached.update_key("u1", quota_daily_cost_usd=200.0)
         await cached.get_auth_context_by_key_hash("h1")
         assert inner_store.get_auth_context_by_key_hash.await_count == 2
 

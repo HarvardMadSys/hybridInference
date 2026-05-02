@@ -102,7 +102,6 @@ def create_api_key_data(user_id: str, **overrides: Any) -> dict[str, Any]:
         "account_id": user_id,
         "status": "active",
         "quota_daily_cost_usd": 100.00,
-        "tier": "free",
         "created_at": datetime.now(timezone.utc),
         "last_used_at": None,
     }

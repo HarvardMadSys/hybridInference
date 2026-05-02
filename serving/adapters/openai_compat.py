@@ -487,6 +487,9 @@ class OpenAICompatAdapter(BaseAdapter):
             ):
                 payload["guided_json"] = schema
         payload = transform_payload_for_profile(self._usage_profile, payload, stream=True)
+        if getattr(self.config, "include_usage_in_stream", False):
+            existing_options = payload.get("stream_options") or {}
+            payload["stream_options"] = {**existing_options, "include_usage": True}
 
         url = self._build_url()
         # NOTE: headers are built per-attempt inside _open_stream_with_pool
@@ -528,10 +531,14 @@ class OpenAICompatAdapter(BaseAdapter):
             if fr:
                 finish_reason = fr
 
-            # Handle content
+            # Accumulate visible content and reasoning independently for the fallback
             content = delta.get("content")
             if isinstance(content, str) and content:
                 total_content += content
+
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if isinstance(reasoning, str) and reasoning:
+                total_content += reasoning
 
             legacy_tool_calls = function_call_delta_to_tool_calls(
                 self._usage_profile, delta.get("function_call")

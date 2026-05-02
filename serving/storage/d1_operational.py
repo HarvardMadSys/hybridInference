@@ -129,6 +129,106 @@ class D1OperationalStore(OperationalStore):
             await self._d1.execute(stmt)
         logger.info("D1 schema initialized (%d statements)", len(statements))
 
+        # --- Idempotent migrations (mirror postgres_operational.initialize) ---
+        await self._migrate_users_role_check()
+        await self._migrate_drop_api_keys_tier()
+
+    async def _migrate_users_role_check(self) -> None:
+        """Rebuild users table when CHECK constraint is missing the 'pro' role.
+
+        SQLite cannot ALTER a CHECK constraint, so we rebuild the table when
+        the existing DDL doesn't contain the new role. Idempotent: re-running
+        on a migrated DB is a no-op since the rebuilt CHECK already lists 'pro'.
+        D1 batches aren't atomic across DDL/DML, so statements run individually
+        and any failure surfaces naturally; rerun on next boot will retry since
+        the substring check still fails.
+        """
+        result = await self._d1.query(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+        )
+        if not result.rows:
+            return  # users table not present (e.g. fresh boot before schema load)
+        users_sql = result.rows[0].get("sql") or ""
+        # Match the exact quoted role literal from the new CHECK constraint to
+        # avoid false-positives on any other token containing 'pro'.
+        if "'pro'" in users_sql:
+            return  # already migrated
+
+        # Migrate legacy roles before copy (mirror postgres lines 142-144).
+        await self._d1.execute(
+            "UPDATE users SET role = 'internal' WHERE role IN ('internal_group', 'developer')"
+        )
+
+        # Build the new table with the same schema as d1_schema.sql.
+        await self._d1.execute(
+            "CREATE TABLE users_new ("
+            "    id                TEXT PRIMARY KEY,"
+            "    email             TEXT NOT NULL UNIQUE,"
+            "    password_hash     TEXT NOT NULL,"
+            "    user_name         TEXT,"
+            "    preferences       TEXT NOT NULL DEFAULT '{}',"
+            "    role              TEXT NOT NULL DEFAULT 'free'"
+            "                      CHECK (role IN ('free', 'pro', 'internal', 'admin')),"
+            "    email_verified    INTEGER DEFAULT 0,"
+            "    status            TEXT DEFAULT 'active'"
+            "                      CHECK (status IN ('active', 'suspended', 'deleted',"
+            "                                        'pending_approval', 'rejected')),"
+            "    approval_note     TEXT,"
+            "    reviewed_at       TEXT,"
+            "    reviewed_by       TEXT,"
+            "    created_at        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+            "    last_login_at     TEXT"
+            ")"
+        )
+
+        # Copy with explicit columns (avoid silent breakage if column order drifts).
+        await self._d1.execute(
+            "INSERT INTO users_new ("
+            "id, email, password_hash, user_name, preferences, role, email_verified, "
+            "status, approval_note, reviewed_at, reviewed_by, created_at, last_login_at"
+            ") SELECT "
+            "id, email, password_hash, user_name, preferences, role, email_verified, "
+            "status, approval_note, reviewed_at, reviewed_by, created_at, last_login_at "
+            "FROM users"
+        )
+
+        # Count migrated rows for logging.
+        count_result = await self._d1.query("SELECT COUNT(*) AS n FROM users_new")
+        migrated = count_result.rows[0]["n"] if count_result.rows else 0
+
+        await self._d1.execute("DROP TABLE users")
+        await self._d1.execute("ALTER TABLE users_new RENAME TO users")
+
+        # Recreate indexes (DROP TABLE removes them with the old table).
+        await self._d1.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        await self._d1.execute("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)")
+        await self._d1.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC)"
+        )
+        await self._d1.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_pending_approval "
+            "ON users(created_at DESC) WHERE status = 'pending_approval'"
+        )
+        await self._d1.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_last_login_at ON users(last_login_at DESC)"
+        )
+
+        logger.info("Migrated D1 users table to add 'pro' role (%d rows)", migrated)
+
+    async def _migrate_drop_api_keys_tier(self) -> None:
+        """Drop the legacy ``api_keys.tier`` column when present.
+
+        Mirrors ``ALTER TABLE api_keys DROP COLUMN IF EXISTS tier`` from
+        postgres. SQLite 3.35+ supports ``ALTER TABLE ... DROP COLUMN`` and
+        D1 runs SQLite 3.42+. Idempotent: skipped when column is already gone.
+        """
+        result = await self._d1.query("PRAGMA table_info(api_keys)")
+        has_tier = any(r.get("name") == "tier" for r in result.rows)
+        if not has_tier:
+            return
+        await self._d1.execute("ALTER TABLE api_keys DROP COLUMN tier")
+        logger.info("Dropped legacy api_keys.tier column from D1")
+
     async def cleanup(self) -> None:
         """Close the D1 HTTP client."""
         await self._d1.close()
@@ -311,7 +411,7 @@ class D1OperationalStore(OperationalStore):
             f"SELECT u.id, u.email, u.user_name, u.role, u.status, "
             f"u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
             f"u.created_at, u.last_login_at, "
-            f"k.key_prefix, k.status AS key_status, k.tier AS key_tier "
+            f"k.key_prefix, k.status AS key_status "
             f"FROM users u "
             f"LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active' "
             f"{where_sql} "
@@ -384,8 +484,8 @@ class D1OperationalStore(OperationalStore):
         Returns full projection in a single round-trip.
         """
         result = await self._d1.query(
-            "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, k.tier, "
-            "u.email, u.role "
+            "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+            "u.email, u.role, u.email_verified "
             "FROM api_keys k "
             "LEFT JOIN users u ON u.id = k.user_id "
             "WHERE k.key_hash = ? "
@@ -399,7 +499,7 @@ class D1OperationalStore(OperationalStore):
     async def get_auth_context_lightweight(self, key_hash: str) -> Row | None:
         """Lightweight identity lookup."""
         result = await self._d1.query(
-            "SELECT k.user_id, u.email, u.role "
+            "SELECT k.user_id, u.email, u.role, u.email_verified "
             "FROM api_keys k "
             "LEFT JOIN users u ON u.id = k.user_id "
             "WHERE k.key_hash = ? "
@@ -424,7 +524,6 @@ class D1OperationalStore(OperationalStore):
         key_prefix: str,
         user_id: str,
         user_name: str | None = None,
-        tier: str = "free",
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
@@ -436,17 +535,16 @@ class D1OperationalStore(OperationalStore):
         now = _now_iso()
         result = await self._d1.query(
             "INSERT INTO api_keys "
-            "(key_hash, key_prefix, user_id, user_name, tier, "
+            "(key_hash, key_prefix, user_id, user_name, "
             "quota_daily_cost_usd, quota_monthly_cost_usd, "
             "expires_at, notes, metadata, account_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "RETURNING id, created_at",
             [
                 key_hash,
                 key_prefix,
                 user_id,
                 user_name,
-                tier,
                 float(quota_daily_cost_usd),
                 float(quota_monthly_cost_usd) if quota_monthly_cost_usd is not None else None,
                 _dt_to_iso(expires_at),
@@ -473,7 +571,6 @@ class D1OperationalStore(OperationalStore):
         self,
         *,
         status: str | None = None,
-        tier: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[int, list[Row]]:
@@ -484,9 +581,6 @@ class D1OperationalStore(OperationalStore):
         if status:
             where_clauses.append("status = ?")
             params.append(status)
-        if tier:
-            where_clauses.append("tier = ?")
-            params.append(tier)
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -498,7 +592,7 @@ class D1OperationalStore(OperationalStore):
 
         query_params = [*params, limit, offset]
         rows_result = await self._d1.query(
-            f"SELECT user_id, user_name, key_prefix, tier, status, "
+            f"SELECT user_id, user_name, key_prefix, status, "
             f"quota_daily_cost_usd, quota_monthly_cost_usd, "
             f"created_at, last_used_at, expires_at, notes "
             f"FROM api_keys {where_sql} "
@@ -512,7 +606,7 @@ class D1OperationalStore(OperationalStore):
     async def get_key_detail(self, user_id: str) -> Row | None:
         """Fetch full key row for a given user_id."""
         result = await self._d1.query(
-            "SELECT user_id, user_name, key_prefix, tier, status, "
+            "SELECT user_id, user_name, key_prefix, status, "
             "quota_daily_cost_usd, quota_monthly_cost_usd, "
             "created_at, last_used_at, expires_at, notes, metadata "
             "FROM api_keys WHERE user_id = ?",
@@ -589,7 +683,7 @@ class D1OperationalStore(OperationalStore):
     async def get_key_by_account_or_user(self, account_id: str) -> Row | None:
         """Fetch key row by account_id or user_id."""
         result = await self._d1.query(
-            "SELECT tier FROM api_keys "
+            "SELECT id FROM api_keys "
             "WHERE (account_id = ? OR user_id = ?) AND status = 'active' "
             "LIMIT 1",
             [account_id, account_id],
