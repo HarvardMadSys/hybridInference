@@ -726,14 +726,7 @@ export default function AdminPage() {
   ];
 
   const onTabChange = (
-    tab:
-      | 'users'
-      | 'audit'
-      | 'requests'
-      | 'broadcast'
-      | 'providers'
-      | 'analytics'
-      | 'performance',
+    tab: 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'performance',
   ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
