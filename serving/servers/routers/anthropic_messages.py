@@ -75,7 +75,7 @@ def _upstream_status_from_exc(exc: BaseException) -> int:
     error code instead of a blanket 502.  Genuine network / timeout errors have no
     status and fall back to 502.
     """
-    status = getattr(exc, "status", None)
+    status = getattr(exc, "status", getattr(exc, "status_code", None))
     if isinstance(status, int) and 400 <= status < 600:
         return status
     return 502
