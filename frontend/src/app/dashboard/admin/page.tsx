@@ -681,13 +681,14 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
                     {u.reset_at && (
                       <p className="mt-1 text-[11px] text-gray-400">
                         Resets at{' '}
-                        {new Intl.DateTimeFormat(undefined, {
+                        {new Date(u.reset_at).toLocaleString('en-US', {
+                          year: 'numeric',
                           month: 'short',
                           day: 'numeric',
                           hour: 'numeric',
                           minute: '2-digit',
                           timeZoneName: 'short',
-                        }).format(new Date(u.reset_at))}
+                        })}
                       </p>
                     )}
                   </div>
