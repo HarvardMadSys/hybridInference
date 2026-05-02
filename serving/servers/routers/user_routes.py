@@ -35,12 +35,18 @@ from serving.schemas_auth import (
     UserProfileUpdate,
 )
 from serving.servers.auth import (
-    encrypt_api_key,
     generate_api_key,
     hash_api_key,
     log_admin_action,
 )
-from serving.servers.deps import get_current_user, get_db_logger, get_embedding_adapters, get_router
+from serving.servers.deps import (
+    get_current_user,
+    get_db_logger,
+    get_embedding_adapters,
+    get_log_store,
+    get_operational_store,
+    get_router,
+)
 from serving.servers.routers.models import build_model_list
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled
@@ -123,24 +129,16 @@ def mask_key_prefix(key_prefix: str) -> str:
 @router.get("/me", response_model=UserInfo)
 async def get_current_user_info(
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> UserInfo:
     """Get current user information.
 
     Returns user profile including email, tier, role, status, and account creation date.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            """
-            SELECT id, email, user_name, role, status, email_verified, created_at, last_login_at
-            FROM users
-            WHERE id = $1
-            """,
-            current_user["user_id"],
-        )
+    user_row = await op_store.get_user_by_id(current_user["user_id"])
 
     if not user_row:
         raise UserNotFoundError(current_user["user_id"])
@@ -176,22 +174,16 @@ async def get_user_models(
 @router.get("/preferences/llm-prober-layout", response_model=LLMProberLayoutResponse)
 async def get_llm_prober_layout(
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> LLMProberLayoutResponse:
     """Return the current user's saved llm-prober layout."""
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT preferences FROM users WHERE id = $1",
-            current_user["user_id"],
-        )
-
-    if not user_row:
+    preferences = await op_store.get_user_preferences(current_user["user_id"])
+    if not preferences and not await op_store.get_user_by_id(current_user["user_id"]):
         raise UserNotFoundError(current_user["user_id"])
 
-    preferences = _coerce_preferences(user_row["preferences"])
     return LLMProberLayoutResponse(layout=_extract_llm_prober_layout(preferences))
 
 
@@ -199,27 +191,18 @@ async def get_llm_prober_layout(
 async def update_llm_prober_layout(
     body: LLMProberLayoutState,
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> LLMProberLayoutResponse:
     """Persist the current user's preferred llm-prober layout."""
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    async with db_logger.pool.acquire() as conn, conn.transaction():
-        user_row = await conn.fetchrow(
-            "SELECT preferences FROM users WHERE id = $1 FOR UPDATE",
-            current_user["user_id"],
-        )
-        if not user_row:
-            raise UserNotFoundError(current_user["user_id"])
+    preferences = await op_store.get_user_preferences(current_user["user_id"])
+    if not preferences and not await op_store.get_user_by_id(current_user["user_id"]):
+        raise UserNotFoundError(current_user["user_id"])
 
-        preferences = _coerce_preferences(user_row["preferences"])
-        preferences[LLM_PROBER_LAYOUT_KEY] = body.model_dump()
-        await conn.execute(
-            "UPDATE users SET preferences = $1::jsonb WHERE id = $2",
-            json.dumps(preferences),
-            current_user["user_id"],
-        )
+    preferences[LLM_PROBER_LAYOUT_KEY] = body.model_dump()
+    await op_store.update_user_preferences(current_user["user_id"], preferences)
 
     logger.info("llm_prober_layout_updated user_id=%s", current_user["user_id"])
     return LLMProberLayoutResponse(layout=body)
@@ -228,27 +211,18 @@ async def update_llm_prober_layout(
 @router.delete("/preferences/llm-prober-layout", response_model=LLMProberLayoutResponse)
 async def reset_llm_prober_layout(
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> LLMProberLayoutResponse:
     """Delete the saved llm-prober layout for the current user."""
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    async with db_logger.pool.acquire() as conn, conn.transaction():
-        user_row = await conn.fetchrow(
-            "SELECT preferences FROM users WHERE id = $1 FOR UPDATE",
-            current_user["user_id"],
-        )
-        if not user_row:
-            raise UserNotFoundError(current_user["user_id"])
+    preferences = await op_store.get_user_preferences(current_user["user_id"])
+    if not preferences and not await op_store.get_user_by_id(current_user["user_id"]):
+        raise UserNotFoundError(current_user["user_id"])
 
-        preferences = _coerce_preferences(user_row["preferences"])
-        preferences.pop(LLM_PROBER_LAYOUT_KEY, None)
-        await conn.execute(
-            "UPDATE users SET preferences = $1::jsonb WHERE id = $2",
-            json.dumps(preferences),
-            current_user["user_id"],
-        )
+    preferences.pop(LLM_PROBER_LAYOUT_KEY, None)
+    await op_store.update_user_preferences(current_user["user_id"], preferences)
 
     logger.info("llm_prober_layout_reset user_id=%s", current_user["user_id"])
     return LLMProberLayoutResponse(layout=LLMProberLayoutState())
@@ -258,6 +232,7 @@ async def reset_llm_prober_layout(
 async def create_api_key(
     request: Request,
     current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyResponse:
     """Generate a new API key for the current user.
@@ -265,57 +240,33 @@ async def create_api_key(
     Only available after email verification.
     Users can only have one active API key at a time.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Check if email is verified
     require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
     if require_verification and not current_user.get("email_verified"):
-        # In lightweight test apps without exception handlers, return standard HTTP error
         raise HTTPException(status_code=403, detail="Email is not verified.")
 
     # Check if user already has an active API key
-    async with db_logger.pool.acquire() as conn:
-        existing_key = await conn.fetchrow(
-            """
-            SELECT id FROM api_keys
-            WHERE account_id = $1 AND status = 'active'
-            """,
-            current_user["user_id"],
-        )
-
-    if existing_key:
-        # Use HTTPException for compatibility with test app
+    existing = await op_store.get_active_key_by_account(current_user["user_id"])
+    if existing:
         raise HTTPException(status_code=409, detail="You already have an active API key")
 
     # Generate new API key
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
-    api_key_encrypted = encrypt_api_key(api_key)
-    key_prefix = api_key[:12]  # hyi-xxxxxxxx
-
-    # Get default quota
+    key_prefix = api_key[:12]
     default_quota = get_default_daily_quota()
 
-    # Insert API key into database
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO api_keys (
-                key_hash, api_key_encrypted, key_prefix, user_id, account_id,
-                status, quota_daily_cost_usd, tier
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            """,
-            key_hash,
-            api_key_encrypted,
-            key_prefix,
-            current_user["user_id"],  # user_id = account_id for self-registered users
-            current_user["user_id"],  # account_id links to users table
-            "active",
-            default_quota,
-            current_user.get("tier", "free"),
-        )
+    await op_store.create_key(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        user_id=current_user["user_id"],
+        account_id=current_user["user_id"],
+        tier=current_user.get("tier", "free"),
+        quota_daily_cost_usd=default_quota,
+    )
 
     logger.info(f"API key created for user: {current_user['user_id']}")
     await log_admin_action(
@@ -341,27 +292,18 @@ async def create_api_key(
 @router.get("/api-keys", response_model=APIKeyInfo)
 async def get_api_key_info(
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> APIKeyInfo:
     """Get current user's active API key information.
 
     Full keys are only returned at creation/regeneration time.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    async with db_logger.pool.acquire() as conn:
-        key_row = await conn.fetchrow(
-            """
-            SELECT key_prefix, created_at, last_used_at, status
-            FROM api_keys
-            WHERE account_id = $1 AND status = 'active'
-            """,
-            current_user["user_id"],
-        )
+    key_row = await op_store.get_active_key_by_account(current_user["user_id"])
 
     if not key_row:
-        # For test expectations, return 404 when no active key exists
         raise HTTPException(status_code=404, detail="No active API key found")
 
     return APIKeyInfo(
@@ -504,68 +446,36 @@ async def delete_api_key(
 async def regenerate_api_key(
     request: Request,
     current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyRegenerateResponse:
     """Regenerate API key for current user.
 
     Immediately invalidates the old key and creates a new one.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    # Get old key info
-    async with db_logger.pool.acquire() as conn:
-        old_key_row = await conn.fetchrow(
-            """
-            SELECT id, key_prefix FROM api_keys
-            WHERE account_id = $1 AND status = 'active'
-            """,
-            current_user["user_id"],
-        )
-
+    old_key_row = await op_store.get_active_key_by_account(current_user["user_id"])
     if not old_key_row:
-        # Use HTTPException for compatibility with test app
         raise HTTPException(status_code=404, detail="No active API key found")
 
     # Generate new API key
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
-    api_key_encrypted = encrypt_api_key(api_key)
     key_prefix = api_key[:12]
-
-    # Get default quota
     default_quota = get_default_daily_quota()
 
-    # Revoke old key and create new one in a transaction
-    async with db_logger.pool.acquire() as conn, conn.transaction():
-        # Revoke old key
-        await conn.execute(
-            """
-                UPDATE api_keys
-                SET status = 'revoked'
-                WHERE id = $1
-                """,
-            old_key_row["id"],
-        )
-
-        # Create new key
-        await conn.execute(
-            """
-                INSERT INTO api_keys (
-                    key_hash, api_key_encrypted, key_prefix, user_id, account_id,
-                    status, quota_daily_cost_usd, tier
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-            key_hash,
-            api_key_encrypted,
-            key_prefix,
-            current_user["user_id"],
-            current_user["user_id"],
-            "active",
-            default_quota,
-            current_user.get("tier", "free"),
-        )
+    # Revoke old key via store, then create new one
+    await op_store.revoke_key(current_user["user_id"])
+    await op_store.create_key(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        user_id=current_user["user_id"],
+        account_id=current_user["user_id"],
+        tier=current_user.get("tier", "free"),
+        quota_daily_cost_usd=default_quota,
+    )
 
     logger.info(f"API key regenerated for user: {current_user['user_id']}")
     await log_admin_action(
@@ -593,28 +503,20 @@ async def get_usage(
     period: str = "today",
     timezone_name: str = Query("UTC", alias="timezone"),
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> UsageResponse:
     """Get user's usage statistics and quota information.
 
     Supports periods: today, week, month, all
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Get user's quota
-    async with db_logger.pool.acquire() as conn:
-        key_row = await conn.fetchrow(
-            """
-            SELECT quota_daily_cost_usd, tier
-            FROM api_keys
-            WHERE account_id = $1 AND status = 'active'
-            """,
-            current_user["user_id"],
-        )
+    key_row = await op_store.get_active_key_by_account(current_user["user_id"])
 
     if not key_row:
-        # User has no API key yet - return empty usage
         return UsageResponse(
             period=period,
             quota=QuotaInfo(
@@ -636,68 +538,33 @@ async def get_usage(
             ),
         )
 
-    daily_limit = float(key_row["quota_daily_cost_usd"] or 0)
-    monthly_limit = None  # TODO: Add monthly quota support
-
-    usage_start_at = _get_usage_period_start(period, timezone_name)
-    quota_start_at = _get_usage_period_start("today", "UTC")
-    month_start_at = _get_usage_period_start("month", timezone_name)
+    daily_limit = float(key_row.get("quota_daily_cost_usd") or 0)
+    monthly_limit = None
     quota_reset_at = _get_daily_quota_reset_at()
 
-    # Get usage statistics, tolerate missing logging table in minimal test DB
-    async with db_logger.pool.acquire() as conn:
-        try:
-            usage_row = await conn.fetchrow(
-                """
-                SELECT
-                    COUNT(*) as requests,
-                    COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
-                    COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-                    COALESCE(SUM(cost_usd), 0) as cost_usd
-                FROM api_logs
-                WHERE user_id = $1
-                  AND ($2::timestamptz IS NULL OR timestamp >= $2::timestamptz)
-                """,
-                current_user["user_id"],
-                usage_start_at,
-            )
+    # Fetch usage from log store
+    _zero = {"cost_usd": 0.0, "requests": 0}
+    try:
+        if log_store:
+            all_usage = await log_store.get_user_usage_detail(current_user["user_id"])
+            period_key = {"today": "today", "week": "week", "month": "month"}.get(period, "alltime")
+            period_data = all_usage.get(period_key, _zero)
+            spent_today = all_usage.get("today", _zero).get("cost_usd", 0.0)
+            spent_month = all_usage.get("month", _zero).get("cost_usd", 0.0)
+        else:
+            period_data = _zero
+            spent_today = 0.0
+            spent_month = 0.0
+    except Exception as exc:
+        logger.warning(
+            "Failed to query usage stats for user_id=%s: %s",
+            current_user["user_id"],
+            exc,
+        )
+        period_data = _zero
+        spent_today = 0.0
+        spent_month = 0.0
 
-            # Get spending in the enforced daily quota window.
-            today_row = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) as spent_today
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= $2::timestamptz
-                """,
-                current_user["user_id"],
-                quota_start_at,
-            )
-
-            # Get month's spending
-            month_row = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) as spent_month
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= $2::timestamptz
-                """,
-                current_user["user_id"],
-                month_start_at,
-            )
-        except Exception as exc:
-            # Missing api_logs table or other query issues - return zeroed stats.
-            logger.warning(
-                "Failed to query usage stats for user_id=%s: %s",
-                current_user["user_id"],
-                exc,
-            )
-            usage_row = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
-            today_row = {"spent_today": 0.0}
-            month_row = {"spent_month": 0.0}
-
-    spent_today = float(today_row["spent_today"] or 0)
-    spent_month = float(month_row["spent_month"] or 0)
     remaining_today = max(0, daily_limit - spent_today)
 
     return UsageResponse(
@@ -714,10 +581,10 @@ async def get_usage(
             contact_email=QUOTA_CONTACT_EMAIL,
         ),
         usage=UsageStats(
-            requests=int(usage_row["requests"] or 0),
-            prompt_tokens=int(usage_row["prompt_tokens"] or 0),
-            completion_tokens=int(usage_row["completion_tokens"] or 0),
-            cost_usd=float(usage_row["cost_usd"] or 0),
+            requests=int(period_data.get("requests") or 0),
+            prompt_tokens=0,  # Detail-level token breakdown requires separate query
+            completion_tokens=0,
+            cost_usd=float(period_data.get("cost_usd") or 0),
         ),
     )
 
@@ -726,39 +593,25 @@ async def get_usage(
 async def update_profile(
     body: UserProfileUpdate,
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> UserInfo:
     """Update user profile information.
 
     Currently supports updating user_name only.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    # Check if any field is provided for update
     update_data = body.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields provided for update")
 
-    # Update user profile
-    async with db_logger.pool.acquire() as conn:
-        if "user_name" in update_data:
-            await conn.execute(
-                "UPDATE users SET user_name = $1 WHERE id = $2",
-                update_data["user_name"],
-                current_user["user_id"],
-            )
-
-        # Fetch updated user info
-        user_row = await conn.fetchrow(
-            """
-            SELECT id, email, user_name, status, email_verified, role, created_at, last_login_at
-            FROM users
-            WHERE id = $1
-            """,
-            current_user["user_id"],
+    if "user_name" in update_data:
+        await op_store.update_user_fields(
+            current_user["user_id"], user_name=update_data["user_name"]
         )
 
+    user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -782,53 +635,33 @@ async def update_profile(
 async def change_password(
     body: ChangePasswordRequest,
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> ChangePasswordResponse:
     """Change password for logged-in user.
 
     Requires old password verification for security.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    # Validate new password strength
     is_valid, error_msg = password_utils.validate_password_strength(body.new_password)
     if not is_valid:
         raise HTTPException(status_code=400, detail=error_msg)
 
-    # Get current password hash
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT password_hash FROM users WHERE id = $1",
-            current_user["user_id"],
-        )
-
+    user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Verify old password
     if not password_utils.verify_password(body.old_password, user_row["password_hash"]):
-        raise HTTPException(
-            status_code=400,
-            detail="Current password is incorrect.",
-        )
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
 
-    # Check if new password is same as old
     if body.new_password == body.old_password:
         raise HTTPException(
-            status_code=400,
-            detail="New password must be different from current password.",
+            status_code=400, detail="New password must be different from current password."
         )
 
-    # Update password
     new_password_hash = password_utils.hash_password(body.new_password)
-
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET password_hash = $1 WHERE id = $2",
-            new_password_hash,
-            current_user["user_id"],
-        )
+    await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
 
     logger.info(f"Password changed for user: {current_user['user_id']}")
 
@@ -840,63 +673,35 @@ async def change_email(
     request: Request,
     body: ChangeEmailRequest,
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> ChangeEmailResponse:
     """Change email address for logged-in user.
 
     Requires password verification and sends verification email to new address.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    # Get current user info
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT email, password_hash FROM users WHERE id = $1",
-            current_user["user_id"],
-        )
-
+    user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Verify password
     if not password_utils.verify_password(body.password, user_row["password_hash"]):
-        raise HTTPException(
-            status_code=400,
-            detail="Password is incorrect.",
-        )
+        raise HTTPException(status_code=400, detail="Password is incorrect.")
 
-    # Check if new email is same as current
     if body.new_email.lower() == user_row["email"]:
         raise HTTPException(
-            status_code=400,
-            detail="New email must be different from current email.",
+            status_code=400, detail="New email must be different from current email."
         )
 
-    # Check if new email is already in use
-    async with db_logger.pool.acquire() as conn:
-        existing_user = await conn.fetchrow(
-            "SELECT id FROM users WHERE email = $1",
-            body.new_email.lower(),
-        )
-
+    existing_user = await op_store.get_user_by_email(body.new_email)
     if existing_user:
-        raise HTTPException(
-            status_code=409,
-            detail="This email is already registered.",
-        )
+        raise HTTPException(status_code=409, detail="This email is already registered.")
 
     # Update email and mark as unverified
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE users
-            SET email = $1, email_verified = FALSE
-            WHERE id = $2
-            """,
-            body.new_email.lower(),
-            current_user["user_id"],
-        )
+    await op_store.update_user_fields(
+        current_user["user_id"], email=body.new_email.lower(), email_verified=False
+    )
 
     # Send verification email to new address
     if is_email_enabled():
@@ -906,24 +711,14 @@ async def change_email(
 
         verification_token = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-
-        async with db_logger.pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO email_verification_tokens (token, user_id, expires_at)
-                VALUES ($1, $2, $3)
-                """,
-                verification_token,
-                current_user["user_id"],
-                expires_at,
-            )
+        await op_store.create_verification_token(
+            token=verification_token, user_id=current_user["user_id"], expires_at=expires_at
+        )
 
         base_url = os.getenv("BASE_URL") or f"{request.url.scheme}://{request.url.netloc}"
         email_sent = send_verification_email(body.new_email, verification_token, base_url)
-
         if not email_sent:
             logger.warning(f"Failed to send verification email to {body.new_email}")
-            # Do not fail if email fails; continue to return success
 
     logger.info(f"Email changed for user: {current_user['user_id']} to {body.new_email}")
 

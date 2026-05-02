@@ -36,16 +36,31 @@ lint:  ## Run linters (ruff, pydocstyle)
 	$(UV_RUN) pydocstyle
 	@echo "$(GREEN)OK Linting passed$(RESET)"
 
-test:  ## Run unit/integration tests (exclude external)
-	@echo "$(YELLOW)Running tests (not external)...$(RESET)"
-	$(UV_RUN) pytest -q -m "not external"
+test:  ## Run unit/integration tests (exclude external and db-dependent)
+	@echo "$(YELLOW)Running tests (not external, not dbtest)...$(RESET)"
+	$(UV_RUN) pytest -q -m "not external and not dbtest"
 	@echo "$(GREEN)OK Tests passed$(RESET)"
 
-test-verbose: ## Run tests with verbose output (exclude external)
-	$(UV_RUN) pytest -vv -m "not external"
+test-verbose: ## Run tests with verbose output (exclude external and db-dependent)
+	$(UV_RUN) pytest -vv -m "not external and not dbtest"
 
-test-cov:  ## Run tests with coverage (exclude external)
-	$(UV_RUN) pytest -m "not external" --cov=. --cov-report=term-missing --cov-report=html
+test-cov:  ## Run tests with coverage (exclude external and db-dependent)
+	$(UV_RUN) pytest -m "not external and not dbtest" --cov=. --cov-report=term-missing --cov-report=html
+
+test-db:  ## Run tests that require PostgreSQL (set TEST_DB_* env vars)
+	@echo "$(YELLOW)Running database-dependent tests...$(RESET)"
+	$(UV_RUN) pytest -vv -m "dbtest"
+	@echo "$(GREEN)OK Database tests passed$(RESET)"
+
+test-d1:  ## Run live Cloudflare D1 integration tests (requires D1_ACCOUNT_ID, D1_DATABASE_ID, D1_API_TOKEN in .env)
+	@echo "$(YELLOW)Running D1 integration tests...$(RESET)"
+	$(UV_RUN) pytest -vv -m "d1"
+	@echo "$(GREEN)OK D1 tests passed$(RESET)"
+
+test-all:  ## Run all tests except external (includes db-dependent)
+	@echo "$(YELLOW)Running all tests (not external)...$(RESET)"
+	$(UV_RUN) pytest -q -m "not external"
+	@echo "$(GREEN)OK All tests passed$(RESET)"
 
 test-e2e: ## Run external/E2E tests (may require local server)
 	$(UV_RUN) pytest -m external -vv
@@ -185,4 +200,3 @@ ifdef s
 else
 	$(COMPOSE) up -d --build
 endif
-

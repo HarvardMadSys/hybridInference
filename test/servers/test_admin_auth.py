@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,24 +13,6 @@ from serving.servers.auth import log_admin_action, verify_admin_token
 from serving.servers.routers import admin as admin_router
 
 
-class _AcquireContext:
-    """Async context manager returning the mocked connection."""
-
-    def __init__(self, connection: AsyncMock) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> AsyncMock:
-        return self._connection
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: Any,
-    ) -> None:
-        return None
-
-
 @pytest.fixture
 def mock_request() -> Request:
     request = MagicMock(spec=Request)
@@ -39,18 +20,6 @@ def mock_request() -> Request:
     client.host = "127.0.0.1"
     request.client = client
     return request  # type: ignore[return-value]
-
-
-@pytest.fixture
-def db_logger_with_pool():
-    logger = MagicMock()
-    connection = AsyncMock()
-    connection.execute = AsyncMock()
-    connection.fetchrow = AsyncMock()
-    pool = MagicMock()
-    pool.acquire.return_value = _AcquireContext(connection)
-    logger.pool = pool
-    return logger, connection
 
 
 @pytest.mark.asyncio
@@ -106,30 +75,29 @@ def test_serialize_for_audit_handles_decimal_and_datetime():
 
 
 @pytest.mark.asyncio
-async def test_log_admin_action_writes_entry(monkeypatch, db_logger_with_pool):
-    logger, connection = db_logger_with_pool
+async def test_log_admin_action_writes_entry(monkeypatch):
+    """log_admin_action delegates to store.log_admin_action when available."""
+    store = MagicMock()
+    store.log_admin_action = AsyncMock()
+
     await log_admin_action(
-        logger,
+        store,
         admin_ip="10.0.0.1",
         action="create_key",
         target_user_id="user123",
         details={"quota": 100},
     )
 
-    connection.execute.assert_awaited()
-    call = connection.execute.await_args
-    sql = call.args[0]
-    assert "INSERT INTO admin_audit_log" in sql
-    assert call.args[1] == "10.0.0.1"
-    assert call.args[2] == "create_key"
-    assert call.args[3] == "user123"
-    assert call.args[4] == '{"quota": 100}'
-    assert call.args[5] is True
+    store.log_admin_action.assert_awaited_once_with(
+        admin_ip="10.0.0.1",
+        action="create_key",
+        target_user_id="user123",
+        details={"quota": 100},
+        success=True,
+    )
 
 
 @pytest.mark.asyncio
-async def test_log_admin_action_no_pool(monkeypatch):
-    logger = MagicMock()
-    logger.pool = None
-    # Should not raise even if pool missing
-    await log_admin_action(logger, admin_ip="0.0.0.0", action="noop")
+async def test_log_admin_action_no_store(monkeypatch):
+    # Should not raise when passed None
+    await log_admin_action(None, admin_ip="0.0.0.0", action="noop")

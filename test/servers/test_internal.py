@@ -1,4 +1,8 @@
-"""Integration tests for internal auth_request endpoints."""
+"""Integration tests for internal auth_request endpoints.
+
+Supports both PostgreSQL and Cloudflare D1 backends.
+Run with: make test-db
+"""
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -15,65 +19,42 @@ from test.fixtures.auth_factories import create_test_user
 
 pytest_plugins = ["test.servers.conftest_auth"]
 
+pytestmark = pytest.mark.dbtest
 
-async def _set_user_role(auth_db_logger, user_id: str, role: str) -> None:
+
+async def _set_user_role(op_store, user_id: str, role: str) -> None:
     """Update the user's role for a test scenario."""
-    async with auth_db_logger.pool.acquire() as conn:
-        await conn.execute("UPDATE users SET role = $1 WHERE id = $2", role, user_id)
+    await op_store.update_user_fields(user_id, role=role)
 
 
-async def _create_refresh_session(auth_db_logger, user_id: str, refresh_token: str) -> None:
+async def _create_refresh_session(op_store, user_id: str, refresh_token: str) -> None:
     """Insert a valid refresh session for the given user."""
-    async with auth_db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO auth_sessions (id, user_id, refresh_token_hash, jti, sid, expires_at, revoked)
-            VALUES ($1, $2, $3, $4, $5, $6, FALSE)
-            """,
-            str(uuid4()),
-            user_id,
-            hash_refresh_token(refresh_token),
-            str(uuid4()),
-            str(uuid4()),
-            datetime.now(timezone.utc) + timedelta(days=1),
-        )
+    await op_store.create_session(
+        session_id=str(uuid4()),
+        user_id=user_id,
+        refresh_token_hash=hash_refresh_token(refresh_token),
+        jti=str(uuid4()),
+        sid=str(uuid4()),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+    )
 
 
 @pytest_asyncio.fixture
-async def auth_test_user(auth_db_logger):
+async def auth_test_user(auth_backend, clean_auth_tables):
     """Create a user backed by the auth-specific DB fixtures."""
-    if not auth_db_logger or not auth_db_logger.pool:
-        pytest.skip("PostgreSQL auth test database is not available.")
-
+    operational_store, _, _, _ = auth_backend
     user_data = create_test_user()
 
-    async with auth_db_logger.pool.acquire() as conn:
-        await conn.execute("DELETE FROM email_verification_tokens")
-        await conn.execute("DELETE FROM password_reset_tokens")
-        await conn.execute("DELETE FROM auth_sessions")
-        await conn.execute("DELETE FROM api_keys WHERE account_id IS NOT NULL")
-        await conn.execute("DELETE FROM users")
-        await conn.execute(
-            """
-            INSERT INTO users (id, email, password_hash, user_name, status, email_verified)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            user_data["id"],
-            user_data["email"].lower(),
-            user_data["password_hash"],
-            user_data["user_name"],
-            user_data["status"],
-            user_data["email_verified"],
-        )
+    await operational_store.create_user(
+        user_id=user_data["id"],
+        email=user_data["email"],
+        password_hash=user_data["password_hash"],
+        user_name=user_data["user_name"],
+        email_verified=user_data["email_verified"],
+        status=user_data["status"],
+    )
 
     yield user_data
-
-    async with auth_db_logger.pool.acquire() as conn:
-        await conn.execute("DELETE FROM email_verification_tokens")
-        await conn.execute("DELETE FROM password_reset_tokens")
-        await conn.execute("DELETE FROM auth_sessions")
-        await conn.execute("DELETE FROM api_keys WHERE account_id IS NOT NULL")
-        await conn.execute("DELETE FROM users")
 
 
 @pytest_asyncio.fixture
@@ -106,13 +87,14 @@ class TestVerifyAdmin:
     async def test_verify_admin_allows_admin_session(
         self,
         internal_client: AsyncClient,
-        auth_db_logger,
+        auth_backend,
         auth_test_user,
     ) -> None:
         """Admin sessions should pass the auth_request check."""
+        operational_store, _, _, _ = auth_backend
         refresh_token = "test-refresh-admin"
-        await _set_user_role(auth_db_logger, auth_test_user["id"], "admin")
-        await _create_refresh_session(auth_db_logger, auth_test_user["id"], refresh_token)
+        await _set_user_role(operational_store, auth_test_user["id"], "admin")
+        await _create_refresh_session(operational_store, auth_test_user["id"], refresh_token)
 
         response = await internal_client.get(
             "/internal/verify-admin",
@@ -125,13 +107,14 @@ class TestVerifyAdmin:
     async def test_verify_admin_rejects_internal_session(
         self,
         internal_client: AsyncClient,
-        auth_db_logger,
+        auth_backend,
         auth_test_user,
     ) -> None:
         """Internal sessions should not pass the admin auth_request check."""
+        operational_store, _, _, _ = auth_backend
         refresh_token = "test-refresh-internal"
-        await _set_user_role(auth_db_logger, auth_test_user["id"], "internal")
-        await _create_refresh_session(auth_db_logger, auth_test_user["id"], refresh_token)
+        await _set_user_role(operational_store, auth_test_user["id"], "internal")
+        await _create_refresh_session(operational_store, auth_test_user["id"], refresh_token)
 
         response = await internal_client.get(
             "/internal/verify-admin",
@@ -145,12 +128,9 @@ class TestVerifyAdmin:
     async def test_verify_admin_rejects_invalid_session(
         self,
         internal_client: AsyncClient,
-        auth_db_logger,
+        auth_backend,
     ) -> None:
         """Unknown refresh tokens should be rejected."""
-        if not auth_db_logger or not auth_db_logger.pool:
-            pytest.skip("PostgreSQL auth test database is not available.")
-
         response = await internal_client.get(
             "/internal/verify-admin",
             cookies={"refresh_token": "missing-session"},
