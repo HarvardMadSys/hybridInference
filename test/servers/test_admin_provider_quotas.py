@@ -292,8 +292,8 @@ class TestFetchZai:
         # Real ZAI API shape: "usage" is the cap, "currentValue" is amount used,
         # TOKENS_LIMIT may have only percentage and no absolute values.
         # Each entry carries its own `nextResetTime` (epoch ms).
-        time_reset_ms = 1779844254994  # 2026-05-23 08:30:54.994 UTC
-        tokens_reset_ms = 1777754666484  # 2026-04-29 03:24:26.484 UTC
+        time_reset_ms = 1779844254994
+        tokens_reset_ms = 1777754666484
         payload = {
             "code": 200,
             "data": {
