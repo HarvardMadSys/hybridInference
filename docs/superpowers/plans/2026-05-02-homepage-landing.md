@@ -204,7 +204,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </a>
                 <span aria-hidden="true">·</span>
                 <a
-                  href="https://github.com/HarvardSys/hybridInference"
+                  href="https://github.com/HarvardMadSys/hybridInference"
                   className="hover:text-crimson"
                   target="_blank"
                   rel="noreferrer"

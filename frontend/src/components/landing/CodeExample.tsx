@@ -41,7 +41,7 @@ export function CodeExample(): JSX.Element {
             type="button"
             onClick={handleCopy}
             className="rounded-md border border-gray-700 px-3 py-1 text-xs font-medium text-gray-300 transition-colors duration-150 hover:bg-gray-800"
-            aria-label="Copy code"
+            aria-live="polite"
           >
             {copied ? 'Copied!' : 'Copy'}
           </button>

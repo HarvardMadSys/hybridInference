@@ -119,7 +119,7 @@ In [frontend/src/app/layout.tsx](../../../frontend/src/app/layout.tsx):
 - Header: add a small SEAS subtitle next to the app name (e.g. `Harvard SEAS`, `text-sm text-gray-500 font-serif`).
 - Footer: extend the existing line to include:
   `© {appName} · Harvard SEAS · Docs · GitHub · BuildInfo`
-  Links go to `https://doc.freeinference.org` and `https://github.com/HarvardSys/hybridInference`.
+  Links go to `https://doc.freeinference.org` and `https://github.com/HarvardMadSys/hybridInference`.
 
 The `<main>` wrapper currently has `items-center` and `py-12`. The landing page wants top-aligned, full-width sections. Two options for handling this:
 
