@@ -19,6 +19,12 @@ logger = get_logger(__name__)
 # A constant 64-bit integer so all replicas serialize on the same lock.
 ADVISORY_LOCK_KEY = 0x70726F76737473  # ascii "provsts" packed
 
+# Hours per UPSERT chunk in backfill_token_columns. 6h gives ~120 chunks
+# over a 30-day window — fewer round-trips than per-hour, still bounded
+# enough that any single statement stays well under a minute on the
+# already-indexed (provider, timestamp) range scan.
+BACKFILL_CHUNK_HOURS = 6
+
 ROLLUP_SQL = """
 INSERT INTO provider_hourly_stats AS p (
     hour_bucket, provider, model_id,
@@ -26,7 +32,9 @@ INSERT INTO provider_hourly_stats AS p (
     ttft_p50_ms, ttft_p95_ms, ttft_p99_ms,
     latency_p50_ms, latency_p95_ms, latency_p99_ms,
     throughput_avg_tps, throughput_p50_tps, throughput_p95_tps,
-    prompt_tokens_avg, completion_tokens_avg, total_completion_tokens
+    prompt_tokens_avg, completion_tokens_avg, total_completion_tokens,
+    total_prompt_tokens, total_cache_read_tokens,
+    total_reasoning_tokens, total_cost_usd
 )
 SELECT
     date_trunc('hour', timestamp)                                          AS hour_bucket,
@@ -63,11 +71,17 @@ SELECT
 
     AVG(prompt_tokens)::FLOAT                                               AS prompt_tokens_avg,
     AVG(completion_tokens)::FLOAT                                           AS completion_tokens_avg,
-    COALESCE(SUM(completion_tokens), 0)::BIGINT                             AS total_completion_tokens
+    COALESCE(SUM(completion_tokens), 0)::BIGINT                             AS total_completion_tokens,
+
+    COALESCE(SUM(prompt_tokens), 0)::BIGINT                                 AS total_prompt_tokens,
+    COALESCE(SUM(cache_read_tokens), 0)::BIGINT                             AS total_cache_read_tokens,
+    COALESCE(SUM(reasoning_tokens), 0)::BIGINT                              AS total_reasoning_tokens,
+    COALESCE(SUM(cost_usd), 0)::DECIMAL(14, 8)                              AS total_cost_usd
 FROM (
     SELECT
         timestamp, provider, model_id, status_code, error,
         stream, ttft_ms, latency_ms, prompt_tokens, completion_tokens,
+        cache_read_tokens, reasoning_tokens, cost_usd,
         CASE
             WHEN status_code >= 400
                  OR error IS NOT NULL
@@ -100,7 +114,11 @@ ON CONFLICT (provider, model_id, hour_bucket) DO UPDATE SET
     throughput_p95_tps      = EXCLUDED.throughput_p95_tps,
     prompt_tokens_avg       = EXCLUDED.prompt_tokens_avg,
     completion_tokens_avg   = EXCLUDED.completion_tokens_avg,
-    total_completion_tokens = EXCLUDED.total_completion_tokens
+    total_completion_tokens = EXCLUDED.total_completion_tokens,
+    total_prompt_tokens     = EXCLUDED.total_prompt_tokens,
+    total_cache_read_tokens = EXCLUDED.total_cache_read_tokens,
+    total_reasoning_tokens  = EXCLUDED.total_reasoning_tokens,
+    total_cost_usd          = EXCLUDED.total_cost_usd
 """
 
 
@@ -261,6 +279,65 @@ async def backfill_if_empty(
     if not ran:
         logger.info("backfill_if_empty: lock held by another replica, skipping")
     return rows_written
+
+
+async def backfill_token_columns(
+    pool: asyncpg.Pool,
+    *,
+    days: int = 30,
+) -> int:
+    """Re-run the rollup hour-by-hour to fill NULL token-total columns.
+
+    Used once after the migration that adds total_prompt_tokens /
+    total_cache_read_tokens / total_reasoning_tokens / total_cost_usd
+    to provider_hourly_stats. No-op when no NULL rows are detected.
+
+    Returns the number of chunks processed (0 when skipped). Idempotent:
+    the same UPSERT runs as the hourly job, so calling repeatedly is safe.
+    """
+    async with pool.acquire() as conn:
+        any_null = await conn.fetchval(
+            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL LIMIT 1"
+        )
+    if any_null is None:
+        logger.info("backfill_token_columns: no NULL rows, skipping")
+        return 0
+
+    processed = 0
+
+    async def _do(conn) -> None:
+        nonlocal processed
+        any_null = await conn.fetchval(
+            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL LIMIT 1"
+        )
+        if any_null is None:
+            logger.info("backfill_token_columns: filled by another replica, skipping")
+            return
+
+        # Chunk the window so we issue ~120 UPSERTs over 30 days instead
+        # of 720, while still bounding each statement to a small enough
+        # window that it cannot lock the table for long.
+        end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=days)
+        chunk = timedelta(hours=BACKFILL_CHUNK_HOURS)
+        h = start
+        while h < end:
+            next_h = min(h + chunk, end)
+            await conn.execute(ROLLUP_SQL, h, next_h)
+            processed += 1
+            h = next_h
+        logger.info(
+            "backfill_token_columns: window=[%s, %s) chunks=%d chunk_hours=%d",
+            start.isoformat(),
+            end.isoformat(),
+            processed,
+            BACKFILL_CHUNK_HOURS,
+        )
+
+    ran = await _try_lock_run(pool, _do)
+    if not ran:
+        logger.info("backfill_token_columns: lock held by another replica, skipping")
+    return processed
 
 
 def register_rollup_job(scheduler, pool: asyncpg.Pool) -> None:

@@ -757,6 +757,11 @@ class DatabaseLogger:
                     completion_tokens_avg   FLOAT,
                     total_completion_tokens BIGINT      NOT NULL,
 
+                    total_prompt_tokens     BIGINT,
+                    total_cache_read_tokens BIGINT,
+                    total_reasoning_tokens  BIGINT,
+                    total_cost_usd          DECIMAL(14, 8),
+
                     PRIMARY KEY (provider, model_id, hour_bucket)
                 )
             """)
@@ -769,6 +774,28 @@ class DatabaseLogger:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_phs_provider_hour
                 ON provider_hourly_stats(provider, hour_bucket DESC)
+            """)
+
+            # Migration: token totals + cost on provider_hourly_stats.
+            # Added by per-provider Token Usage tab. Nullable so the
+            # change is metadata-only on existing tables; rows pre-dating
+            # this migration are filled by backfill_token_columns at
+            # startup and by subsequent hourly rollups.
+            await conn.execute("""
+                ALTER TABLE provider_hourly_stats
+                ADD COLUMN IF NOT EXISTS total_prompt_tokens BIGINT
+            """)
+            await conn.execute("""
+                ALTER TABLE provider_hourly_stats
+                ADD COLUMN IF NOT EXISTS total_cache_read_tokens BIGINT
+            """)
+            await conn.execute("""
+                ALTER TABLE provider_hourly_stats
+                ADD COLUMN IF NOT EXISTS total_reasoning_tokens BIGINT
+            """)
+            await conn.execute("""
+                ALTER TABLE provider_hourly_stats
+                ADD COLUMN IF NOT EXISTS total_cost_usd DECIMAL(14, 8)
             """)
 
     async def log_request(

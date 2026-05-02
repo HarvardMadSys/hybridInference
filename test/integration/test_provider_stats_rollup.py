@@ -116,6 +116,9 @@ async def _insert_api_log(
     latency_ms: int,
     completion_tokens: int | None,
     prompt_tokens: int | None = 100,
+    cache_read_tokens: int | None = None,
+    reasoning_tokens: int | None = None,
+    cost_usd: float | None = None,
     status_code: int = 200,
     error: str | None = None,
 ) -> None:
@@ -126,9 +129,10 @@ async def _insert_api_log(
                 request_id, model_id, provider, timestamp,
                 stream, ttft_ms, latency_ms,
                 prompt_tokens, completion_tokens,
+                cache_read_tokens, reasoning_tokens, cost_usd,
                 status_code, error
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             """,
             request_id,
             model_id,
@@ -139,6 +143,9 @@ async def _insert_api_log(
             latency_ms,
             prompt_tokens,
             completion_tokens,
+            cache_read_tokens,
+            reasoning_tokens,
+            cost_usd,
             status_code,
             error,
         )
@@ -383,3 +390,305 @@ async def test_backfill_if_empty_seeds_history(db_logger: DatabaseLogger):
     async with pool.acquire() as conn:
         n2 = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
     assert n2 == 3
+
+
+@pytest.mark.asyncio
+async def test_provider_hourly_stats_has_token_total_columns(db_logger: DatabaseLogger):
+    """The 4 new BIGINT/DECIMAL totals exist and are nullable."""
+    assert db_logger.pool is not None
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'provider_hourly_stats'
+              AND column_name IN (
+                  'total_prompt_tokens',
+                  'total_cache_read_tokens',
+                  'total_reasoning_tokens',
+                  'total_cost_usd'
+              )
+            """
+        )
+        by_name = {r["column_name"]: r for r in rows}
+
+    assert set(by_name) == {
+        "total_prompt_tokens",
+        "total_cache_read_tokens",
+        "total_reasoning_tokens",
+        "total_cost_usd",
+    }
+    for name in ("total_prompt_tokens", "total_cache_read_tokens", "total_reasoning_tokens"):
+        assert by_name[name]["data_type"] == "bigint", name
+        assert by_name[name]["is_nullable"] == "YES", name
+    assert by_name["total_cost_usd"]["data_type"] == "numeric"
+    assert by_name["total_cost_usd"]["is_nullable"] == "YES"
+
+
+@pytest.mark.asyncio
+async def test_run_rollup_populates_token_totals(db_logger: DatabaseLogger):
+    """Rollup sums prompt/cache_read/reasoning/cost across the hour, including errors."""
+    from serving.admin.provider_stats_rollup import run_rollup
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    hour = datetime(2026, 5, 2, 16, 0, tzinfo=timezone.utc)
+    # Two successes
+    await _insert_api_log(
+        pool,
+        request_id="tok-1",
+        provider="anthropic",
+        model_id="claude-opus-4-7",
+        timestamp=hour + timedelta(minutes=5),
+        stream=True,
+        ttft_ms=300,
+        latency_ms=2300,
+        completion_tokens=120,
+        prompt_tokens=800,
+        cache_read_tokens=500,
+        reasoning_tokens=40,
+        cost_usd=0.01230000,
+    )
+    await _insert_api_log(
+        pool,
+        request_id="tok-2",
+        provider="anthropic",
+        model_id="claude-opus-4-7",
+        timestamp=hour + timedelta(minutes=10),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=4000,
+        completion_tokens=240,
+        prompt_tokens=1200,
+        cache_read_tokens=None,  # NULL → COALESCE'd to 0
+        reasoning_tokens=60,
+        cost_usd=0.02500000,
+    )
+    # One error — still counts toward token + cost totals (we paid to send)
+    await _insert_api_log(
+        pool,
+        request_id="tok-err",
+        provider="anthropic",
+        model_id="claude-opus-4-7",
+        timestamp=hour + timedelta(minutes=15),
+        stream=True,
+        ttft_ms=None,
+        latency_ms=500,
+        completion_tokens=None,
+        prompt_tokens=300,
+        cache_read_tokens=200,
+        reasoning_tokens=None,
+        cost_usd=0.00100000,
+        status_code=500,
+        error="upstream_5xx",
+    )
+
+    written = await run_rollup(pool, start=hour, end=hour + timedelta(hours=1))
+    assert written == 1
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT total_prompt_tokens, total_cache_read_tokens,
+                   total_reasoning_tokens, total_cost_usd
+            FROM provider_hourly_stats
+            WHERE provider = 'anthropic' AND model_id = 'claude-opus-4-7'
+            """
+        )
+
+    assert row is not None
+    assert row["total_prompt_tokens"] == 800 + 1200 + 300
+    # NULL cache_read on tok-2 -> 0; tok-1 contributes 500, tok-err 200
+    assert row["total_cache_read_tokens"] == 500 + 200
+    # NULL reasoning on tok-err -> 0
+    assert row["total_reasoning_tokens"] == 40 + 60
+    # Decimal sum
+    assert float(row["total_cost_usd"]) == pytest.approx(0.0123 + 0.025 + 0.001, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_run_rollup_coalesces_all_null_columns(db_logger: DatabaseLogger):
+    """When every row has NULL for a SUM'd column, COALESCE returns 0 (not NULL)."""
+    from serving.admin.provider_stats_rollup import run_rollup
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    hour = datetime(2026, 5, 2, 17, 0, tzinfo=timezone.utc)
+    # Seed two rows for one (provider, model) group; both have NULL for
+    # cache_read_tokens, reasoning_tokens, and cost_usd. SUM over an all-NULL
+    # column returns NULL in Postgres, so the only thing that turns these
+    # into 0 in the stored row is the COALESCE wrapper in ROLLUP_SQL.
+    for i in range(2):
+        await _insert_api_log(
+            pool,
+            request_id=f"coal-{i}",
+            provider="provider-x",
+            model_id="model-y",
+            timestamp=hour + timedelta(minutes=5 + i),
+            stream=True,
+            ttft_ms=300,
+            latency_ms=2300,
+            completion_tokens=120,
+            prompt_tokens=500,
+            cache_read_tokens=None,
+            reasoning_tokens=None,
+            cost_usd=None,
+        )
+
+    written = await run_rollup(pool, start=hour, end=hour + timedelta(hours=1))
+    assert written == 1
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT total_cache_read_tokens, total_reasoning_tokens, total_cost_usd
+            FROM provider_hourly_stats
+            WHERE provider = 'provider-x' AND model_id = 'model-y'
+            """
+        )
+
+    assert row is not None
+    # Without COALESCE, these would be None.
+    assert row["total_cache_read_tokens"] == 0
+    assert row["total_reasoning_tokens"] == 0
+    assert float(row["total_cost_usd"]) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_backfill_token_columns_fills_null_rows(db_logger: DatabaseLogger):
+    """Helper detects NULL token totals and re-runs rollup hour-by-hour."""
+    from serving.admin.provider_stats_rollup import backfill_token_columns
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    h = now - timedelta(hours=2)
+
+    # Seed an api_logs row that the backfill should aggregate
+    await _insert_api_log(
+        pool,
+        request_id="bf-tok-1",
+        provider="openrouter",
+        model_id="qwen/qwen3-coder",
+        timestamp=h + timedelta(minutes=5),
+        stream=True,
+        ttft_ms=300,
+        latency_ms=3300,
+        completion_tokens=200,
+        prompt_tokens=900,
+        cache_read_tokens=400,
+        reasoning_tokens=50,
+        cost_usd=0.0150000,
+    )
+
+    # Insert a stats row with the legacy schema (NULL token totals).
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_stats (
+                hour_bucket, provider, model_id,
+                request_count, error_count, stream_count,
+                total_completion_tokens
+            ) VALUES ($1, 'openrouter', 'qwen/qwen3-coder', 1, 0, 1, 200)
+            """,
+            h,
+        )
+
+    processed = await backfill_token_columns(pool, days=1)
+    assert processed > 0
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT total_prompt_tokens, total_cache_read_tokens,
+                   total_reasoning_tokens, total_cost_usd
+            FROM provider_hourly_stats
+            WHERE hour_bucket = $1
+              AND provider = 'openrouter' AND model_id = 'qwen/qwen3-coder'
+            """,
+            h,
+        )
+    assert row is not None
+    assert row["total_prompt_tokens"] == 900
+    assert row["total_cache_read_tokens"] == 400
+    assert row["total_reasoning_tokens"] == 50
+    assert float(row["total_cost_usd"]) == pytest.approx(0.015, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_backfill_token_columns_no_op_when_already_populated(
+    db_logger: DatabaseLogger,
+):
+    """Returns 0 without iterating when no NULL rows exist."""
+    from serving.admin.provider_stats_rollup import backfill_token_columns
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_stats (
+                hour_bucket, provider, model_id,
+                request_count, error_count, stream_count,
+                total_completion_tokens, total_prompt_tokens
+            ) VALUES ($1, 'p', 'm', 1, 0, 1, 100, 100)
+            """,
+            now - timedelta(hours=1),
+        )
+
+    processed = await backfill_token_columns(pool, days=1)
+    assert processed == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_token_columns_is_idempotent(db_logger: DatabaseLogger):
+    """Running twice does not change values."""
+    from serving.admin.provider_stats_rollup import backfill_token_columns
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    h = now - timedelta(hours=2)
+
+    await _insert_api_log(
+        pool,
+        request_id="bf-idem-1",
+        provider="zai",
+        model_id="zai/glm-4.6",
+        timestamp=h + timedelta(minutes=5),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=4000,
+        completion_tokens=180,
+        prompt_tokens=700,
+        cache_read_tokens=0,
+        reasoning_tokens=0,
+        cost_usd=0.005,
+    )
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_stats (
+                hour_bucket, provider, model_id,
+                request_count, error_count, stream_count,
+                total_completion_tokens
+            ) VALUES ($1, 'zai', 'zai/glm-4.6', 1, 0, 0, 180)
+            """,
+            h,
+        )
+
+    await backfill_token_columns(pool, days=1)
+    await backfill_token_columns(pool, days=1)  # second pass is a no-op (no NULL rows)
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT total_prompt_tokens FROM provider_hourly_stats WHERE provider='zai'"
+        )
+    assert row["total_prompt_tokens"] == 700

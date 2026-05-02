@@ -291,6 +291,7 @@ async def initialize() -> AppServices:
                             # Provider-stats hourly rollup
                             from serving.admin.provider_stats_rollup import (
                                 backfill_if_empty,
+                                backfill_token_columns,
                                 register_rollup_job,
                             )
 
@@ -307,6 +308,12 @@ async def initialize() -> AppServices:
                                     except Exception as bf_exc:
                                         logger.warning(
                                             f"provider-stats backfill failed (non-fatal): {bf_exc}"
+                                        )
+                                    try:
+                                        await backfill_token_columns(pool, days=30)
+                                    except Exception as bf_exc:
+                                        logger.warning(
+                                            f"provider-stats token backfill failed (non-fatal): {bf_exc}"
                                         )
 
                                 _bf_task = asyncio.create_task(_run_backfill())

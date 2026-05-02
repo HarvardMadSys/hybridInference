@@ -41,6 +41,7 @@ import {
 import { getErrorMessage } from '@/lib/utils/errors';
 import { AnalyticsTab } from './AnalyticsTab';
 import { ProviderPerformanceTab } from './ProviderPerformanceTab';
+import { TokenUsageTab } from './TokenUsageTab';
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -631,6 +632,7 @@ export default function AdminPage() {
     | 'provider-perf'
     | 'analytics'
     | 'performance'
+    | 'token-usage'
   >('users');
 
   useEffect(() => {
@@ -644,7 +646,8 @@ export default function AdminPage() {
       tab === 'providers' ||
       tab === 'provider-perf' ||
       tab === 'analytics' ||
-      tab === 'performance'
+      tab === 'performance' ||
+      tab === 'token-usage'
     ) {
       setActiveTab(
         tab as
@@ -655,7 +658,8 @@ export default function AdminPage() {
           | 'providers'
           | 'provider-perf'
           | 'analytics'
-          | 'performance',
+          | 'performance'
+          | 'token-usage',
       );
     }
   }, []);
@@ -1067,7 +1071,8 @@ export default function AdminPage() {
       | 'providers'
       | 'provider-perf'
       | 'analytics'
-      | 'performance',
+      | 'performance'
+      | 'token-usage',
   ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
@@ -1101,6 +1106,9 @@ export default function AdminPage() {
       return;
     }
     if (activeTab === 'provider-perf') {
+      return;
+    }
+    if (activeTab === 'token-usage') {
       return;
     }
     loadRequests();
@@ -1168,6 +1176,7 @@ export default function AdminPage() {
               'requests',
               'providers',
               'provider-perf',
+              'token-usage',
               'audit',
               'broadcast',
               'analytics',
@@ -1191,13 +1200,15 @@ export default function AdminPage() {
                     ? 'Providers'
                     : tab === 'provider-perf'
                       ? 'Provider Performance'
-                      : tab === 'audit'
-                        ? 'Audit Log'
-                        : tab === 'broadcast'
-                          ? 'Broadcast Email'
-                          : tab === 'analytics'
-                            ? 'Analytics'
-                            : 'Performance'}
+                      : tab === 'token-usage'
+                        ? 'Token Usage'
+                        : tab === 'audit'
+                          ? 'Audit Log'
+                          : tab === 'broadcast'
+                            ? 'Broadcast Email'
+                            : tab === 'analytics'
+                              ? 'Analytics'
+                              : 'Performance'}
             </button>
           ))}
         </div>
@@ -2288,6 +2299,7 @@ export default function AdminPage() {
         )}
         {activeTab === 'analytics' && <AnalyticsTab />}
         {activeTab === 'provider-perf' && <ProviderPerformanceTab />}
+        {activeTab === 'token-usage' && <TokenUsageTab />}
 
         {activeTab === 'performance' && (
           <div className="mt-5">
