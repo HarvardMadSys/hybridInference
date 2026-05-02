@@ -662,7 +662,7 @@ class OpenAICompatAdapter(BaseAdapter):
         else:
             usage_info = None
             final_usage = self._build_fallback_usage(
-                messages=messages,
+                messages=cleaned_messages,
                 total_content=total_content,
                 prompt_tokens_override=prompt_tokens_override,
             )
