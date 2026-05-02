@@ -117,6 +117,25 @@ def test_make_adapter_zhipu_uses_openai_compat_with_chat_path():
 
 
 @pytest.mark.unit
+def test_make_adapter_minimax_uses_openai_compat_with_profile():
+    """kind: minimax routes through OpenAICompatAdapter with MiniMax profile."""
+    adapter = registry._make_adapter(
+        "minimax",
+        {
+            "id": "minimax-m2.7",
+            "name": "MiniMax M2.7",
+            "provider": "minimax",
+            "base_url": "https://api.minimax.io/v1",
+            "api_key": "test-key",
+        },
+    )
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    assert isinstance(adapter, OpenAICompatAdapter)
+    assert adapter.config.provider_profile == "minimax"
+
+
+@pytest.mark.unit
 def test_make_adapter_openai_uses_openai_compat_with_azure_profile():
     """kind: openai routes through OpenAICompatAdapter with Azure-specific config."""
     adapter = registry._make_adapter(

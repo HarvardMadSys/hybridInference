@@ -401,7 +401,7 @@ models:
       input_cache_writes: "0.375"
     route:
       # Remote MiniMax API endpoint
-      - kind: openai_compat
+      - kind: minimax
         weight: 1.0
         base_url: "https://api.minimax.io/v1"
         api_key: ${MINIMAX_API_KEY}
@@ -455,7 +455,7 @@ models:
       input_cache_writes: "0.375"
     route:
       # Remote MiniMax API endpoint
-      - kind: openai_compat
+      - kind: minimax
         weight: 1.0
         base_url: "https://api.minimax.io/v1"
         api_key: ${MINIMAX_API_KEY}
