@@ -84,6 +84,7 @@ from serving.servers.deps import (
 )
 from serving.utils.email import render_broadcast_template, send_email
 from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
+from serving.utils.request_ip import get_client_ip
 
 router = APIRouter()
 
@@ -967,7 +968,8 @@ async def resume_user(
 
     await op_store.resume_user(
         user_id,
-        admin_ip=admin_id,
+        admin_ip=get_client_ip(request),
+        admin_id=admin_id,
         reason=payload.reason,
         email=user_row["email"],
     )
@@ -992,25 +994,26 @@ async def hard_delete_user(
     payload: HardDeleteUserRequest,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
-    db_logger=Depends(get_db_logger),
+    log_store=Depends(get_log_store),
 ) -> HardDeleteUserResponse:
     """Permanently delete a user and all linked rows.
 
     Two-step gate: only allowed when the user is already soft-deleted
     (status='deleted').  Wipes the user row, all api_keys, sessions/tokens,
-    broadcast recipient rows, prior admin_audit_log entries, and api_logs.
-    A fresh ``hard_delete_user`` audit row is recorded.
+    user_daily_cost, prior admin_audit_log entries, and (via the LogStore)
+    api_logs and email_broadcast_recipients.  A fresh ``hard_delete_user``
+    audit row is recorded.
 
-    ``api_logs`` is purged from the LogStore in a separate cleanup step.
-    The two stores live in different pools (and may be different engines),
-    so a true single-transaction guarantee across both is not possible.
-    We purge ``api_logs`` FIRST, then run the operational-store wipe.
+    The operational store and log store live in different pools (and may be
+    different engines), so a true single-transaction guarantee across both
+    is not possible.  We purge LogStore-owned rows FIRST, then run the
+    operational-store wipe.
 
     Failure modes:
-    - api_logs DELETE fails: operational state and audit log are untouched;
+    - LogStore wipe fails: operational state and audit log are untouched;
       the user remains soft-deleted (``status='deleted'``) and the admin can
       retry the hard-delete.
-    - api_logs DELETE succeeds but op_store wipe fails: api_logs are gone but
+    - LogStore wipe succeeds but op_store wipe fails: log rows are gone but
       the user row + prior audit entries remain — the user is still
       soft-deleted, so the admin can retry hard-delete (which will re-attempt
       and succeed since the user is still in ``status='deleted'``).
@@ -1035,17 +1038,18 @@ async def hard_delete_user(
 
     email = user_row["email"]
 
-    # Purge api_logs FIRST.  Lives in the LogStore (separate pool), so this
-    # cannot share the operational-store transaction.  Doing this first means
-    # if it fails, the user row + audit are untouched and the admin can retry.
-    if db_logger and db_logger.pool:
-        async with db_logger.pool.acquire() as conn:
-            await conn.execute("DELETE FROM api_logs WHERE user_id = $1", user_id)
+    # Purge LogStore-owned rows FIRST (api_logs + email_broadcast_recipients).
+    # Lives in a separate pool, so this cannot share the operational-store
+    # transaction.  Running this first means if it fails, the user row +
+    # audit are untouched and the admin can retry.
+    if log_store is not None:
+        await log_store.hard_delete_user_data(user_id)
 
     # Wipe operational rows + write the new hard-delete audit row, atomically.
     await op_store.hard_delete_user(
         user_id,
-        admin_ip=admin_id,
+        admin_ip=get_client_ip(request),
+        admin_id=admin_id,
         reason=payload.reason,
         email=email,
     )

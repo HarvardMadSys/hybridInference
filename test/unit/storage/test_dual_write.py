@@ -68,8 +68,8 @@ _OP_WRITES = {
 
 _OP_READS = _get_abstract_methods(OperationalStore) - _OP_WRITES - _LIFECYCLE
 
-# LogStore: log_request is the only write.
-_LOG_WRITES = {"log_request"}
+# LogStore writes (mutate state).
+_LOG_WRITES = {"log_request", "hard_delete_user_data"}
 _LOG_READS = _get_abstract_methods(LogStore) - _LOG_WRITES - _LIFECYCLE
 
 

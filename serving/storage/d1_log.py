@@ -535,3 +535,22 @@ class D1LogStore(LogStore):
             params,
         )
         return [dict(r) for r in result.rows]
+
+    # -- admin: hard-delete user-owned rows ---------------------------------
+
+    async def hard_delete_user_data(self, user_id: str) -> dict[str, int]:
+        """Wipe ``api_logs`` rows for *user_id* in the D1 LogStore.
+
+        D1 batch responses do not include per-statement row counts, so this
+        implementation returns an empty dict.  ``email_broadcast_recipients``
+        is not stored in D1 (it lives only in the Postgres broadcast schema)
+        and is therefore not touched here.
+
+        Pending buffered writes are flushed first so we don't accidentally
+        leave queued rows behind that re-create the user's data after the
+        DELETE runs.
+        """
+        # Drain any buffered writes for this user before issuing the DELETE.
+        await self.flush()
+        await self._d1.execute("DELETE FROM api_logs WHERE user_id = ?", [user_id])
+        return {}

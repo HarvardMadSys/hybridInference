@@ -454,6 +454,7 @@ class PostgresOperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
+        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> None:
@@ -471,7 +472,7 @@ class PostgresOperationalStore(OperationalStore):
                 admin_ip,
                 "resume_user",
                 user_id,
-                json.dumps({"email": email, "reason": reason}),
+                json.dumps({"admin_id": admin_id, "email": email, "reason": reason}),
                 True,
             )
 
@@ -480,13 +481,16 @@ class PostgresOperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
+        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> dict[str, int]:
         """Permanently delete a user row and all operationally-linked rows.
 
-        ``api_logs`` lives in the LogStore — the caller must purge it
-        separately.  Returns ``{table_name: row_count}`` for audit details.
+        ``api_logs`` and ``email_broadcast_recipients`` live in the LogStore —
+        the caller must purge them separately via
+        ``LogStore.hard_delete_user_data``.  Returns ``{table_name: row_count}``
+        for audit details.
         """
 
         def _row_count(status: str) -> int:
@@ -510,8 +514,8 @@ class PostgresOperationalStore(OperationalStore):
             reset_status = await conn.execute(
                 "DELETE FROM password_reset_tokens WHERE user_id = $1", user_id
             )
-            recipients_status = await conn.execute(
-                "DELETE FROM email_broadcast_recipients WHERE user_id = $1", user_id
+            cost_status = await conn.execute(
+                "DELETE FROM user_daily_cost WHERE user_id = $1", user_id
             )
             audit_status = await conn.execute(
                 "DELETE FROM admin_audit_log WHERE target_user_id = $1", user_id
@@ -523,7 +527,7 @@ class PostgresOperationalStore(OperationalStore):
                 "auth_sessions": _row_count(sessions_status),
                 "email_verification_tokens": _row_count(verif_status),
                 "password_reset_tokens": _row_count(reset_status),
-                "email_broadcast_recipients": _row_count(recipients_status),
+                "user_daily_cost": _row_count(cost_status),
                 "admin_audit_log": _row_count(audit_status),
                 "users": _row_count(user_status),
             }
@@ -541,6 +545,7 @@ class PostgresOperationalStore(OperationalStore):
                 user_id,
                 json.dumps(
                     {
+                        "admin_id": admin_id,
                         "email": email,
                         "reason": reason,
                         "rows_wiped": counts,

@@ -154,6 +154,7 @@ class OperationalStore(ABC):
         user_id: str,
         *,
         admin_ip: str,
+        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> None:
@@ -169,6 +170,7 @@ class OperationalStore(ABC):
         user_id: str,
         *,
         admin_ip: str,
+        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> dict[str, int]:
@@ -180,14 +182,15 @@ class OperationalStore(ABC):
         - ``auth_sessions``
         - ``email_verification_tokens``
         - ``password_reset_tokens``
-        - ``email_broadcast_recipients``
+        - ``user_daily_cost``
         - ``admin_audit_log`` rows referencing this user (compliance loss
           accepted at the caller level)
         - ``users`` row itself
         - Inserts a NEW ``admin_audit_log`` row for the hard-delete itself.
 
-        ``api_logs`` lives in the LogStore, not this contract — the caller
-        must purge it separately.
+        ``api_logs`` and ``email_broadcast_recipients`` live in the LogStore,
+        not this contract — the caller must purge them separately via
+        ``LogStore.hard_delete_user_data``.
 
         Returns a ``{table_name: row_count}`` mapping for inclusion in the
         audit details.  Implementations that cannot determine row counts may
@@ -665,3 +668,18 @@ class LogStore(ABC):
         hours: int = 24,
     ) -> list[Row]:
         """Fetch aggregated hourly stats from api_stats_hourly."""
+
+    # -- admin: hard-delete user-owned rows ---------------------------------
+
+    @abstractmethod
+    async def hard_delete_user_data(self, user_id: str) -> dict[str, int]:
+        """Permanently delete LogStore-owned rows for a user.
+
+        Wipes ``api_logs`` and ``email_broadcast_recipients`` rows referencing
+        *user_id*.  Returns ``{table_name: row_count}`` (implementations that
+        cannot return per-statement counts may return ``{}``).
+
+        Called by the admin hard-delete endpoint AFTER the OperationalStore
+        wipe completes.  Cross-pool failure semantics are documented at the
+        endpoint.
+        """

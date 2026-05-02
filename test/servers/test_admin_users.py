@@ -38,6 +38,7 @@ def mock_stores():
 
     log_store = MagicMock()
     log_store.get_batch_usage = AsyncMock(return_value={})
+    log_store.hard_delete_user_data = AsyncMock(return_value={})
 
     return op_store, log_store
 
@@ -687,8 +688,12 @@ async def test_resume_user_success(admin_client):
     call_kwargs = op_store.resume_user.await_args.kwargs
     assert call_kwargs["email"] == "alice@example.com"
     assert call_kwargs["reason"] == "false alarm"
-    # admin_id kwarg was dropped from the storage chain
-    assert "admin_id" not in call_kwargs
+    # admin_id is the verified admin identifier (JWT email or ADMIN_TOKEN
+    # marker); admin_ip is the request's client IP, derived independently.
+    assert "admin_id" in call_kwargs
+    assert isinstance(call_kwargs["admin_id"], str)
+    assert "admin_ip" in call_kwargs
+    assert isinstance(call_kwargs["admin_ip"], str)
 
 
 @pytest.mark.asyncio
@@ -854,7 +859,7 @@ async def test_hard_delete_user_requires_auth(admin_client):
 @pytest.mark.asyncio
 async def test_hard_delete_user_wipes_data(admin_client):
     """soft-deleted user can be hard-deleted; store + log_store are both invoked."""
-    client, op_store, _log_store, _log = admin_client
+    client, op_store, log_store, _log = admin_client
     op_store.get_user_by_id.return_value = {
         "id": "u1",
         "email": "alice@example.com",
@@ -866,27 +871,18 @@ async def test_hard_delete_user_wipes_data(admin_client):
         "auth_sessions": 3,
         "email_verification_tokens": 0,
         "password_reset_tokens": 0,
-        "email_broadcast_recipients": 0,
+        "user_daily_cost": 0,
         "admin_audit_log": 5,
     }
+    log_store.hard_delete_user_data.return_value = {
+        "api_logs": 5,
+        "email_broadcast_recipients": 0,
+    }
 
-    # Mock db_logger pool so the api_logs cleanup runs.
-    pool_conn = AsyncMock()
-    pool_conn.execute = AsyncMock()
-    pool_acquire_ctx = MagicMock()
-    pool_acquire_ctx.__aenter__ = AsyncMock(return_value=pool_conn)
-    pool_acquire_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    # The fixture installs services.db_logger as a MagicMock.  Wire its
-    # .pool.acquire() to return our async context manager.
-    services = client._transport.app.state.services  # type: ignore[attr-defined]
-    services.db_logger.pool = MagicMock()
-    services.db_logger.pool.acquire = MagicMock(return_value=pool_acquire_ctx)
-
-    # Track call order: api_logs purge must come BEFORE op_store wipe so a
+    # Track call order: log_store wipe must come BEFORE op_store wipe so a
     # partial failure leaves the user resumable.
     manager = MagicMock()
-    manager.attach_mock(pool_conn.execute, "api_logs_execute")
+    manager.attach_mock(log_store.hard_delete_user_data, "log_store_hard_delete_data")
     manager.attach_mock(op_store.hard_delete_user, "op_store_hard_delete")
 
     response = await client.post(
@@ -905,19 +901,20 @@ async def test_hard_delete_user_wipes_data(admin_client):
     call_kwargs = op_store.hard_delete_user.await_args.kwargs
     assert call_kwargs["email"] == "alice@example.com"
     assert call_kwargs["reason"] == "user requested"
-    # admin_id kwarg was dropped from the storage chain
-    assert "admin_id" not in call_kwargs
+    # admin_id is the verified admin identifier (JWT email or ADMIN_TOKEN
+    # marker); admin_ip is the request's client IP, derived independently.
+    assert "admin_id" in call_kwargs
+    assert isinstance(call_kwargs["admin_id"], str)
+    assert "admin_ip" in call_kwargs
+    assert isinstance(call_kwargs["admin_ip"], str)
 
-    # api_logs purge was issued against the log-store pool
-    pool_conn.execute.assert_awaited_once()
-    sql_arg = pool_conn.execute.await_args.args[0]
-    assert "DELETE FROM api_logs" in sql_arg
-    assert pool_conn.execute.await_args.args[1] == "u1"
+    # LogStore wipe was issued with the user_id
+    log_store.hard_delete_user_data.assert_awaited_once_with("u1")
 
-    # api_logs purge must run BEFORE the op_store wipe.
+    # LogStore wipe must run BEFORE the op_store wipe.
     call_names = [c[0] for c in manager.mock_calls]
-    api_logs_idx = call_names.index("api_logs_execute")
+    log_idx = call_names.index("log_store_hard_delete_data")
     op_store_idx = call_names.index("op_store_hard_delete")
-    assert api_logs_idx < op_store_idx, (
-        f"api_logs_execute must run before op_store_hard_delete, got {call_names}"
+    assert log_idx < op_store_idx, (
+        f"log_store_hard_delete_data must run before op_store_hard_delete, got {call_names}"
     )

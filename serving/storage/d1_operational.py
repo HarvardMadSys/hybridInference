@@ -349,6 +349,7 @@ class D1OperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
+        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> None:
@@ -357,7 +358,7 @@ class D1OperationalStore(OperationalStore):
         Sets status='active' and writes the audit row.  Keys remain revoked.
         """
         now = _now_iso()
-        details = json.dumps({"email": email, "reason": reason})
+        details = json.dumps({"admin_id": admin_id, "email": email, "reason": reason})
         await self._d1.batch(
             [
                 ("UPDATE users SET status = 'active' WHERE id = ?", [user_id]),
@@ -374,6 +375,7 @@ class D1OperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
+        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> dict[str, int]:
@@ -381,12 +383,14 @@ class D1OperationalStore(OperationalStore):
 
         Executed atomically as a D1 batch.  D1 does not return per-statement
         row counts in the batch response — we return an empty dict and let
-        the audit row record only ``email`` + ``reason``.
+        the audit row record only ``admin_id``, ``email`` and ``reason``.
 
-        ``api_logs`` lives in Postgres; the caller must purge it separately.
+        ``api_logs`` lives in the configured LogStore; the caller must purge
+        it (and ``email_broadcast_recipients``, when present in that store)
+        separately via ``LogStore.hard_delete_user_data``.
         """
         now = _now_iso()
-        details = json.dumps({"email": email, "reason": reason})
+        details = json.dumps({"admin_id": admin_id, "email": email, "reason": reason})
 
         await self._d1.batch(
             [
@@ -397,7 +401,7 @@ class D1OperationalStore(OperationalStore):
                 ("DELETE FROM auth_sessions WHERE user_id = ?", [user_id]),
                 ("DELETE FROM email_verification_tokens WHERE user_id = ?", [user_id]),
                 ("DELETE FROM password_reset_tokens WHERE user_id = ?", [user_id]),
-                ("DELETE FROM email_broadcast_recipients WHERE user_id = ?", [user_id]),
+                ("DELETE FROM user_daily_cost WHERE user_id = ?", [user_id]),
                 ("DELETE FROM admin_audit_log WHERE target_user_id = ?", [user_id]),
                 ("DELETE FROM users WHERE id = ?", [user_id]),
                 (
