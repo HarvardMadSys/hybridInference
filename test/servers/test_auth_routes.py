@@ -334,6 +334,57 @@ class TestLogin:
         assert response.status_code == 403  # Forbidden for suspended account
 
 
+class TestLoginAbuseProtection:
+    """Per-email and per-IP rate limits on /auth/login."""
+
+    @pytest.mark.asyncio
+    async def test_login_rate_limited_per_email(
+        self, auth_app_client: AsyncClient, test_user
+    ):
+        """Per-email bucket trips after `login_rate_limit_per_15min` attempts.
+
+        Default is 5: after 5 wrong-password attempts within 15 minutes,
+        a 6th attempt against the same email returns 429 with Retry-After.
+        """
+        for _ in range(5):
+            response = await auth_app_client.post(
+                "/auth/login",
+                json={"email": test_user["email"], "password": "WrongPassword123!"},
+            )
+            assert response.status_code == 401
+
+        response = await auth_app_client.post(
+            "/auth/login",
+            json={"email": test_user["email"], "password": "WrongPassword123!"},
+        )
+        assert response.status_code == 429
+        assert "Retry-After" in response.headers
+
+    @pytest.mark.asyncio
+    async def test_login_rate_limited_per_ip(self, auth_app_client: AsyncClient):
+        """Per-IP bucket trips at `login_rate_limit_per_hour_per_ip`.
+
+        Vary the email each attempt so the per-email bucket cannot trip;
+        the per-IP limit (default 20) must be the gating factor.
+        """
+        for i in range(20):
+            response = await auth_app_client.post(
+                "/auth/login",
+                json={
+                    "email": f"unique-{i}@example.com",
+                    "password": "AnyPassword123!",
+                },
+            )
+            assert response.status_code in (401, 403)
+
+        response = await auth_app_client.post(
+            "/auth/login",
+            json={"email": "next@example.com", "password": "AnyPassword123!"},
+        )
+        assert response.status_code == 429
+        assert response.headers.get("Retry-After") == "3600"
+
+
 class TestLogout:
     """Test user logout endpoint."""
 

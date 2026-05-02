@@ -66,7 +66,11 @@ class Settings(BaseSettings):
     # Rate limiting
     signup_rate_limit_per_hour: int = 5
     signup_rate_limit_per_day: int = 10
+    # Per-email window (default 5 attempts / 15 min) and per-IP window
+    # (default 20 attempts / hour). The login limiter records attempts on
+    # entry so probing varied passwords cannot bypass the limit.
     login_rate_limit_per_15min: int = 5
+    login_rate_limit_per_hour_per_ip: int = 20
 
     # Cloudflare Turnstile (signup captcha)
     turnstile_site_key: str = ""
