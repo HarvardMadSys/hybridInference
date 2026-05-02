@@ -346,7 +346,14 @@ def register_from_models_yaml(
             adapter_cfg["base_url"] = base_url
             adapter_cfg["api_key"] = api_key
             adapter_cfg["api_keys"] = api_keys
-            adapter_cfg["provider"] = kind
+            # Normalize bracket-form openrouter kind to base "openrouter" for the
+            # provider field. The bracketed form survives in `endpoint_id`
+            # (via _make_provider_id called below) and `openrouter_pinned_provider`
+            # (set inside _make_adapter), so per-pin circuit-breaker isolation is
+            # preserved while analytics columns (api_logs.provider, Prometheus
+            # labels) see a single "openrouter" cohort.
+            provider_for_cfg, _ = parse_openrouter_kind(kind)
+            adapter_cfg["provider"] = provider_for_cfg
             # Generate unique endpoint_id for availability tracking and circuit breaker
             adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)
 

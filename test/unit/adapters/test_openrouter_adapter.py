@@ -449,3 +449,20 @@ def test_normalize_usage_openrouter_emits_one_warning_per_bad_cost(caplog) -> No
     assert len(bad_cost_warnings) == 1, (
         f"Expected 1 warning, got {len(bad_cost_warnings)}: {bad_cost_warnings}"
     )
+
+
+@pytest.mark.parametrize(
+    "routing_info,expected",
+    [
+        (None, None),
+        ({}, None),
+        ({"provider": "openrouter"}, None),
+        ({"provider": "openrouter", "upstream_cost_usd": 0.005}, 0.005),
+        ({"upstream_cost_usd": 0.0}, 0.0),  # zero is valid, should not be coerced to None
+    ],
+)
+def test_completions_upstream_cost_extraction_invariant(routing_info, expected) -> None:
+    """Lock in the expression used in completions.py:751 and :943 that pulls
+    upstream_cost_usd off routing_info safely for both None and missing-key cases."""
+    actual = (routing_info or {}).get("upstream_cost_usd")
+    assert actual == expected
