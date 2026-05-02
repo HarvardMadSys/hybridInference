@@ -1534,7 +1534,7 @@ async def admin_get_performance_metrics(
     )
 
 
-_DECODE_MIN_WINDOW_MS = 100
+_DECODE_MIN_WINDOW_MS = 2000
 _DECODE_MIN_TOKENS = 8
 
 
@@ -1551,8 +1551,8 @@ def _decode_throughput_tps(
     tokens during (latency_ms - ttft_ms). Streaming-only; needs >1 output token.
 
     Additionally returns None when the decode window is shorter than
-    `_DECODE_MIN_WINDOW_MS` (100 ms) or fewer than `_DECODE_MIN_TOKENS` (8)
-    completion tokens were produced. Sub-100ms decode windows and very short
+    `_DECODE_MIN_WINDOW_MS` (2000 ms) or fewer than `_DECODE_MIN_TOKENS` (8)
+    completion tokens were produced. Sub-2-second decode windows and very short
     streams produce noise-dominated throughput numbers (e.g. ~100k tok/s) when
     upstream SSE is buffered or the response collapses to ~0-1 ms of decode
     time, so we render those rows as undefined rather than displaying

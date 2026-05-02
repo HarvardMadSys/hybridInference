@@ -271,10 +271,10 @@ class TestDecodeThroughputHelper:
         return _decode_throughput_tps(**kwargs)
 
     def test_streaming_happy_path(self):
-        # 100 completion tokens, ttft=200ms, latency=1200ms -> decode 1000ms
-        # throughput = (100 - 1) / 1.0 = 99.0
-        result = self._call(stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=100)
-        assert result == pytest.approx(99.0)
+        # 100 completion tokens, ttft=200ms, latency=3200ms -> decode 3000ms
+        # throughput = (100 - 1) / 3.0 = 33.0
+        result = self._call(stream=True, latency_ms=3200, ttft_ms=200, completion_tokens=100)
+        assert result == pytest.approx(33.0)
 
     def test_non_streaming_returns_none(self):
         assert self._call(stream=False, latency_ms=1200, ttft_ms=200, completion_tokens=100) is None
@@ -304,20 +304,20 @@ class TestDecodeThroughputHelper:
         assert self._call(stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=None) is None
 
     def test_decode_window_just_below_min_returns_none(self):
-        # decode window = 1299 - 1200 = 99 ms (< 100 ms threshold)
-        assert self._call(stream=True, latency_ms=1299, ttft_ms=1200, completion_tokens=100) is None
+        # decode window = 2199 - 200 = 1999 ms (< 2000 ms threshold)
+        assert self._call(stream=True, latency_ms=2199, ttft_ms=200, completion_tokens=100) is None
 
     def test_decode_window_at_min_returns_finite(self):
-        # decode window = 1300 - 1200 = 100 ms exactly; 99 tokens / 0.1s = 990 tok/s
-        result = self._call(stream=True, latency_ms=1300, ttft_ms=1200, completion_tokens=100)
-        assert result == pytest.approx(990.0)
+        # decode window = 2200 - 200 = 2000 ms exactly; 99 tokens / 2.0s = 49.5 tok/s
+        result = self._call(stream=True, latency_ms=2200, ttft_ms=200, completion_tokens=100)
+        assert result == pytest.approx(49.5)
 
     def test_completion_tokens_just_below_min_returns_none(self):
-        # 7 completion tokens with comfortable 1000ms decode window
-        assert self._call(stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=7) is None
+        # 7 completion tokens with comfortable 3000ms decode window
+        assert self._call(stream=True, latency_ms=3200, ttft_ms=200, completion_tokens=7) is None
 
     def test_completion_tokens_at_min_returns_finite(self):
-        # 8 completion tokens with comfortable 1000ms decode window
-        # throughput = (8 - 1) / 1.0 = 7.0
-        result = self._call(stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=8)
-        assert result == pytest.approx(7.0)
+        # 8 completion tokens with comfortable 3000ms decode window
+        # throughput = (8 - 1) / 3.0 = 7/3
+        result = self._call(stream=True, latency_ms=3200, ttft_ms=200, completion_tokens=8)
+        assert result == pytest.approx(7 / 3)
