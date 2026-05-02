@@ -757,6 +757,11 @@ class DatabaseLogger:
                     completion_tokens_avg   FLOAT,
                     total_completion_tokens BIGINT      NOT NULL,
 
+                    total_prompt_tokens     BIGINT,
+                    total_cache_read_tokens BIGINT,
+                    total_reasoning_tokens  BIGINT,
+                    total_cost_usd          DECIMAL(14, 8),
+
                     PRIMARY KEY (provider, model_id, hour_bucket)
                 )
             """)

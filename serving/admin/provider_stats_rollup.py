@@ -19,6 +19,12 @@ logger = get_logger(__name__)
 # A constant 64-bit integer so all replicas serialize on the same lock.
 ADVISORY_LOCK_KEY = 0x70726F76737473  # ascii "provsts" packed
 
+# Hours per UPSERT chunk in backfill_token_columns. 6h gives ~120 chunks
+# over a 30-day window — fewer round-trips than per-hour, still bounded
+# enough that any single statement stays well under a minute on the
+# already-indexed (provider, timestamp) range scan.
+BACKFILL_CHUNK_HOURS = 6
+
 ROLLUP_SQL = """
 INSERT INTO provider_hourly_stats AS p (
     hour_bucket, provider, model_id,
@@ -286,9 +292,8 @@ async def backfill_token_columns(
     total_cache_read_tokens / total_reasoning_tokens / total_cost_usd
     to provider_hourly_stats. No-op when no NULL rows are detected.
 
-    Returns the number of hour buckets processed (0 when skipped).
-    Idempotent: the same UPSERT runs as the hourly job, so calling
-    repeatedly is safe.
+    Returns the number of chunks processed (0 when skipped). Idempotent:
+    the same UPSERT runs as the hourly job, so calling repeatedly is safe.
     """
     async with pool.acquire() as conn:
         any_null = await conn.fetchval(
@@ -309,19 +314,24 @@ async def backfill_token_columns(
             logger.info("backfill_token_columns: filled by another replica, skipping")
             return
 
+        # Chunk the window so we issue ~120 UPSERTs over 30 days instead
+        # of 720, while still bounding each statement to a small enough
+        # window that it cannot lock the table for long.
         end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         start = end - timedelta(days=days)
+        chunk = timedelta(hours=BACKFILL_CHUNK_HOURS)
         h = start
         while h < end:
-            next_h = h + timedelta(hours=1)
+            next_h = min(h + chunk, end)
             await conn.execute(ROLLUP_SQL, h, next_h)
             processed += 1
             h = next_h
         logger.info(
-            "backfill_token_columns: window=[%s, %s) hours=%d",
+            "backfill_token_columns: window=[%s, %s) chunks=%d chunk_hours=%d",
             start.isoformat(),
             end.isoformat(),
             processed,
+            BACKFILL_CHUNK_HOURS,
         )
 
     ran = await _try_lock_run(pool, _do)

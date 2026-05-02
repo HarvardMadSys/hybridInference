@@ -2364,6 +2364,11 @@ _TOKEN_USAGE_RANGES: dict[str, timedelta] = {
     "30d": timedelta(days=30),
 }
 
+# Matches the CronTrigger(minute=5) of the rollup_provider_stats job in
+# serving/admin/provider_stats_rollup.py — the most recent hour bucket
+# is not guaranteed to exist until this many minutes past the hour.
+_ROLLUP_MINUTE_OFFSET = 5
+
 
 @router.get("/admin/api/provider-token-usage", response_model=ProviderTokenUsageResponse)
 async def admin_provider_token_usage(
@@ -2387,7 +2392,14 @@ async def admin_provider_token_usage(
         raise HTTPException(status_code=503, detail="database unavailable")
 
     delta = _TOKEN_USAGE_RANGES[range]
-    end = _truncate_hour(datetime.now(timezone.utc))
+    # Rollup runs at minute :05, so during [HH:00, HH:05) the bucket for
+    # hour HH has not been written yet. Subtract one hour from `end` in
+    # that window so we don't undercount and so `refreshed_at` reflects
+    # the most recent bucket guaranteed to exist.
+    now = datetime.now(timezone.utc)
+    end = _truncate_hour(now)
+    if now.minute < _ROLLUP_MINUTE_OFFSET:
+        end = end - timedelta(hours=1)
     start = end - delta
 
     async with db_logger.pool.acquire() as conn:
@@ -2400,7 +2412,7 @@ async def admin_provider_token_usage(
                 COALESCE(SUM(total_completion_tokens), 0)::BIGINT  AS output_tokens,
                 COALESCE(SUM(total_cache_read_tokens), 0)::BIGINT  AS cached_tokens,
                 COALESCE(SUM(total_reasoning_tokens), 0)::BIGINT   AS reasoning_tokens,
-                COALESCE(SUM(total_cost_usd), 0)::FLOAT            AS cost_usd,
+                COALESCE(SUM(total_cost_usd), 0)                   AS cost_usd,
                 COALESCE(SUM(request_count), 0)::BIGINT            AS request_count
             FROM provider_hourly_stats
             WHERE hour_bucket >= $1 AND hour_bucket < $2
