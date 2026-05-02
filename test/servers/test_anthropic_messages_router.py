@@ -231,7 +231,7 @@ async def test_v1_messages_translated_streaming(anthropic_test_client, monkeypat
     class _FakeResp:
         status = 200
         content = _FakeContent()
-        headers = {"Content-Type": "text/event-stream"}
+        headers: dict = {"Content-Type": "text/event-stream"}  # noqa: RUF012
 
         async def __aenter__(self):
             return self
@@ -299,17 +299,17 @@ async def test_cache_control_dropped_for_openai_backend(anthropic_test_client, m
         ],
         "thinking": {"type": "enabled", "budget_tokens": 1024},
     }
-    with caplog.at_level("WARNING", logger="serving.servers.routers.anthropic_messages"):
-        r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    caplog.set_level("WARNING", logger="serving.servers.routers.anthropic_messages")
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
     assert r.status_code == 200
     # Warning logged for both dropped fields.
     matches = [
         rec
         for rec in caplog.records
-        if "cache_control" in rec.message and "thinking" in rec.message
+        if "cache_control" in rec.getMessage() and "thinking" in rec.getMessage()
     ]
     assert matches, (
-        f"Expected warning mentioning cache_control + thinking; got: {[r.message for r in caplog.records]}"
+        f"Expected warning mentioning cache_control + thinking; got: {[rec.getMessage() for rec in caplog.records]}"
     )
 
 

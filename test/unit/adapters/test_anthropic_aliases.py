@@ -20,7 +20,9 @@ def test_already_canonical_passes_through():
 
 def test_alias_map_has_required_entries():
     required_aliases = {
-        "claude-3-5-sonnet-latest", "claude-3-5-sonnet-20241022",
-        "claude-3-opus-latest", "claude-3-opus-20240229",
+        "claude-3-5-sonnet-latest",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-opus-latest",
+        "claude-3-opus-20240229",
     }
     assert required_aliases.issubset(ANTHROPIC_MODEL_ALIASES.keys())

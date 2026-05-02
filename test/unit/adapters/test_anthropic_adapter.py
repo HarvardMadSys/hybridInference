@@ -6,9 +6,7 @@ Anthropic-format passthrough (messages/stream_messages) lands in Task 8.
 
 from __future__ import annotations
 
-import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -17,16 +15,16 @@ from serving.adapters.base import ModelConfig
 
 
 def _cfg(**overrides) -> ModelConfig:
-    base = dict(
-        id="claude-opus-4.7",
-        name="Claude Opus 4.7",
-        provider="anthropic",
-        base_url="https://api.anthropic.com",
-        api_key="sk-ant-test",
-        provider_model_id="claude-opus-4-7",
-        max_output_length=1024,
-        supports_tools=True,
-        supported_params=[
+    base = {
+        "id": "claude-opus-4.7",
+        "name": "Claude Opus 4.7",
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_key": "sk-ant-test",
+        "provider_model_id": "claude-opus-4-7",
+        "max_output_length": 1024,
+        "supports_tools": True,
+        "supported_params": [
             "temperature",
             "max_tokens",
             "top_p",
@@ -35,7 +33,7 @@ def _cfg(**overrides) -> ModelConfig:
             "tool_choice",
             "stop",
         ],
-    )
+    }
     base.update(overrides)
     return ModelConfig(**base)
 

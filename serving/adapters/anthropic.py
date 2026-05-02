@@ -28,7 +28,7 @@ from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator
+    from collections.abc import AsyncGenerator
 
 from .base import BaseAdapter
 from .claude_format import (
@@ -304,7 +304,7 @@ class AnthropicAdapter(BaseAdapter):
 
     async def stream_messages(
         self, body: dict[str, Any], *, request_id: str
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         """Anthropic-format streaming identity passthrough.
 
         Forwards raw upstream SSE bytes to the caller and accumulates the

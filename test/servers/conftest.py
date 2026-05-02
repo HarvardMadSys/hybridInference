@@ -637,6 +637,7 @@ async def anthropic_test_app(anthropic_app_services):
     auth that accepts ANTHROPIC_TEST_API_KEY.
     """
     from contextlib import asynccontextmanager
+
     from fastapi import FastAPI, Header, HTTPException
 
     @asynccontextmanager
@@ -671,8 +672,6 @@ async def anthropic_test_app(anthropic_app_services):
     from serving.servers.routers import anthropic_messages
 
     app.include_router(anthropic_messages.router)
-
-    from fastapi import HTTPException
 
     app.add_exception_handler(
         HTTPException,
