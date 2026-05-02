@@ -73,11 +73,13 @@ function applyOffsetJump(
   clearInput();
 }
 
-function tryParseJson(value: string): unknown {
+type ParseResult = { ok: true; value: unknown } | { ok: false };
+
+function tryParseJson(value: string): ParseResult {
   try {
-    return JSON.parse(value) as unknown;
+    return { ok: true, value: JSON.parse(value) as unknown };
   } catch {
-    return null;
+    return { ok: false };
   }
 }
 
@@ -99,6 +101,7 @@ function flattenContent(content: unknown): string {
   if (Array.isArray(content)) {
     return content
       .map((part) => {
+        if (typeof part === 'string') return part;
         if (isRecord(part)) {
           if (part.type === 'text' && typeof part.text === 'string') return part.text;
           if (typeof part.type === 'string') return `[${part.type}]`;
@@ -145,21 +148,11 @@ function formatScalar(v: unknown): string {
   if (v == null) return String(v);
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  if (Array.isArray(v)) return `[${v.length} items]`;
-  if (isRecord(v)) {
-    const keys = Object.keys(v);
-    return `{${keys.length} keys}`;
-  }
+  if (Array.isArray(v) || isRecord(v)) return JSON.stringify(v);
   return JSON.stringify(v);
 }
 
-function MetaList({
-  data,
-  skip,
-}: {
-  data: Record<string, unknown>;
-  skip: ReadonlyArray<string>;
-}) {
+function MetaList({ data, skip }: { data: Record<string, unknown>; skip: ReadonlyArray<string> }) {
   const entries = Object.entries(data).filter(([k]) => !skip.includes(k));
   if (entries.length === 0) return null;
   return (
@@ -226,7 +219,7 @@ function JsonChatView({ data }: { data: unknown }) {
   );
 }
 
-function computePreview(value: string, parsed: unknown): string {
+function computePreview(parsed: unknown, fallback: string): string {
   if (hasMessages(parsed)) {
     for (let i = parsed.messages.length - 1; i >= 0; i--) {
       const m = parsed.messages[i];
@@ -246,10 +239,11 @@ function computePreview(value: string, parsed: unknown): string {
     const text = flattenContent(first.message.content);
     if (text) return previewText(text);
   }
-  return previewText(value);
+  return previewText(fallback);
 }
 
 function FoldedText({ label, value }: { label: string; value?: string | null }) {
+  const [open, setOpen] = useState(false);
   if (!value) {
     return (
       <div className="col-span-full">
@@ -259,23 +253,27 @@ function FoldedText({ label, value }: { label: string; value?: string | null }) 
   }
 
   const parsed = tryParseJson(value);
-  const preview = parsed === null ? previewText(value) : computePreview(value, parsed);
+  const preview = parsed.ok ? computePreview(parsed.value, value) : previewText(value);
 
   return (
-    <details className="col-span-full group">
+    <details
+      className="col-span-full group"
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+    >
       <summary className="cursor-pointer list-none text-gray-500 flex items-center gap-2">
         <span>{label}:</span>
         <span className="text-gray-700 whitespace-pre-wrap break-words">{preview}</span>
         <span className="text-[10px] text-gray-400 group-open:hidden">(show more)</span>
         <span className="text-[10px] text-gray-400 hidden group-open:inline">(show less)</span>
       </summary>
-      {parsed === null ? (
-        <pre className="mt-1 overflow-x-auto rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-700 whitespace-pre-wrap break-words">
-          {value}
-        </pre>
-      ) : (
-        <JsonChatView data={parsed} />
-      )}
+      {open &&
+        (parsed.ok ? (
+          <JsonChatView data={parsed.value} />
+        ) : (
+          <pre className="mt-1 overflow-x-auto rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-700 whitespace-pre-wrap break-words">
+            {value}
+          </pre>
+        ))}
     </details>
   );
 }
@@ -599,6 +597,22 @@ function formatAuditDetailValue(v: unknown): { display: string; full: string } {
   const full = JSON.stringify(v);
   const display = full.length > 80 ? `${full.slice(0, 80)}…` : full;
   return { display, full };
+}
+
+function RawJsonDetails({ data }: { data: unknown }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 mt-1">
+        Raw JSON
+      </summary>
+      {open && (
+        <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
+          {JSON.stringify(data, null, 2)}
+        </pre>
+      )}
+    </details>
+  );
 }
 
 export default function AdminPage() {
@@ -1713,14 +1727,7 @@ export default function AdminPage() {
                                 );
                               })}
                             </div>
-                            <details>
-                              <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 mt-1">
-                                Raw JSON
-                              </summary>
-                              <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
-                                {JSON.stringify(entry.details, null, 2)}
-                              </pre>
-                            </details>
+                            <RawJsonDetails data={entry.details} />
                           </>
                         )}
                         <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
