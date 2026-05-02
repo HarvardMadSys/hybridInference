@@ -344,6 +344,9 @@ class TestUsageStatistics:
         data = response.json()
         assert data["usage"]["requests"] >= 2
         assert data["usage"]["cost_usd"] > 0
+        # i=0: 100/50, i=1: 200/80 → totals 300 / 130
+        assert data["usage"]["prompt_tokens"] >= 300
+        assert data["usage"]["completion_tokens"] >= 130
 
 
 class TestRecentRequests:

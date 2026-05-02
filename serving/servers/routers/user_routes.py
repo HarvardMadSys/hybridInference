@@ -539,7 +539,7 @@ async def get_usage(
     quota_reset_at = _get_daily_quota_reset_at()
 
     # Fetch usage from log store
-    _zero = {"cost_usd": 0.0, "requests": 0}
+    _zero = {"cost_usd": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
     try:
         if log_store:
             all_usage = await log_store.get_user_usage_detail(current_user["user_id"])
@@ -578,8 +578,8 @@ async def get_usage(
         ),
         usage=UsageStats(
             requests=int(period_data.get("requests") or 0),
-            prompt_tokens=0,  # Detail-level token breakdown requires separate query
-            completion_tokens=0,
+            prompt_tokens=int(period_data.get("prompt_tokens") or 0),
+            completion_tokens=int(period_data.get("completion_tokens") or 0),
             cost_usd=float(period_data.get("cost_usd") or 0),
         ),
     )
