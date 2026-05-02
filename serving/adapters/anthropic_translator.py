@@ -10,11 +10,7 @@ Pure functions plus one stateful streaming translator. No I/O, no logging.
 from __future__ import annotations
 
 import json
-import logging
-from collections.abc import Iterator
 from typing import Any
-
-logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Request translation: Anthropic -> OpenAI
@@ -60,8 +56,11 @@ def _flatten_system(system: Any) -> str | None:
 
 
 def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Translate a single Anthropic message. May produce multiple OpenAI messages
-    (tool_result blocks become separate role:"tool" messages)."""
+    """Translate a single Anthropic message.
+
+    May produce multiple OpenAI messages (tool_result blocks become separate
+    role:"tool" messages).
+    """
     role = msg.get("role")
     content = msg.get("content")
 
@@ -144,8 +143,11 @@ def _image_block_to_url(source: dict[str, Any]) -> str | None:
 
 
 def _flatten_tool_result_content(content: Any) -> str:
-    """Anthropic tool_result content can be string or list of blocks; OpenAI tool
-    messages take a string. Concat text blocks; ignore non-text."""
+    """Flatten Anthropic tool_result content to a string.
+
+    Anthropic tool_result content can be a string or list of blocks; OpenAI tool
+    messages take a string. Concatenates text blocks and ignores non-text.
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
