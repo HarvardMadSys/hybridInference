@@ -191,7 +191,10 @@ Dashboards are managed via the Grafana UI. To backup/restore:
 ### Alerting
 
 Three active alert rules: `ServiceDown`, `ServiceUnreachable`, `DatabaseDisconnected`.
-Alerts route to Slack and are logged to `alert_log_data` volume.
+Alerts route to Slack `#free-inference-alert` via the allowlist in
+`infrastructure/alertmanager/alertmanager.yml`. See
+`infrastructure/alertmanager/README.md` for the deploy-time
+`envsubst` step that injects the Slack webhook URL.
 
 ## Database
 
