@@ -336,7 +336,7 @@ export async function getRequestMetrics(): Promise<AdminRequestMetricsResponse> 
 }
 
 // ----------------------------------------------------------------------------
-// Performance metrics — prompt/response length, TTFT, TBT distributions
+// Performance metrics — prompt/response length, TTFT, Throughput distributions
 // ----------------------------------------------------------------------------
 
 export interface AdminHistogramBucket {
@@ -364,7 +364,7 @@ export interface AdminPerformanceMetricsWindow {
   prompt_tokens: AdminMetricDistribution;
   completion_tokens: AdminMetricDistribution;
   ttft_ms: AdminMetricDistribution;
-  tbt_ms: AdminMetricDistribution;
+  throughput_tps: AdminMetricDistribution;
 }
 
 export interface AdminPerformanceMetricsResponse {

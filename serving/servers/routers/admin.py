@@ -1216,6 +1216,7 @@ async def admin_get_request_metrics(
 # for the final open-ended overflow bucket [edges[-1], +inf).
 _TOKEN_HISTOGRAM_EDGES: tuple[float, ...] = (0, 32, 128, 512, 2048, 8192, 32768, 131072)
 _LATENCY_HISTOGRAM_EDGES: tuple[float, ...] = (0, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
+_THROUGHPUT_HISTOGRAM_EDGES: tuple[float, ...] = (0, 5, 10, 25, 50, 100, 250, 500, 1000)
 
 
 def _build_histogram(
@@ -1284,7 +1285,7 @@ def _distribution_from_row(
 
 
 # Shared CTE prefix used by both the stats query and the histogram query for
-# each window. Defining it once keeps the row filter / TBT derivation in sync
+# each window. Defining it once keeps the row filter / throughput derivation in sync
 # so the "histogram sums to count" invariant cannot drift.
 _PERF_METRICS_CTE = """
 WITH base AS (
@@ -1312,10 +1313,10 @@ derived AS (
                 AND completion_tokens IS NOT NULL
                 AND completion_tokens > 1
                 AND latency_ms IS NOT NULL
-                AND latency_ms >= ttft_ms
-                THEN (latency_ms - ttft_ms)::float
-                     / NULLIF(completion_tokens - 1, 0)
-        END AS tbt_ms
+                AND latency_ms > ttft_ms
+                THEN (completion_tokens - 1)::float * 1000.0
+                     / NULLIF(latency_ms - ttft_ms, 0)
+        END AS throughput_tps
     FROM base
 )
 """
@@ -1334,8 +1335,9 @@ async def admin_get_performance_metrics(
     - prompt_tokens (over rows where prompt_tokens > 0)
     - completion_tokens (over rows where completion_tokens > 0)
     - ttft_ms (over streaming rows with ttft_ms NOT NULL)
-    - tbt_ms (over streaming rows with completion_tokens > 1, derived from
-      (latency_ms - ttft_ms) / (completion_tokens - 1); negatives clamped to NULL)
+    - throughput_tps (over streaming rows with completion_tokens > 1, derived from
+      (completion_tokens - 1) * 1000 / (latency_ms - ttft_ms); requires
+      latency_ms > ttft_ms — non-positive decode time clamped to NULL)
 
     Only successful requests (status_code 200-399) are included.
     """
@@ -1344,6 +1346,7 @@ async def admin_get_performance_metrics(
 
     token_edges = list(_TOKEN_HISTOGRAM_EDGES)
     latency_edges = list(_LATENCY_HISTOGRAM_EDGES)
+    throughput_edges = list(_THROUGHPUT_HISTOGRAM_EDGES)
 
     windows: list[AdminPerformanceMetricsWindow] = []
     async with db_logger.pool.acquire() as conn:
@@ -1432,18 +1435,18 @@ async def admin_get_performance_metrics(
                     percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms)
                         FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p99,
 
-                    COUNT(*) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_count,
-                    AVG(tbt_ms) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_mean,
-                    MIN(tbt_ms) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_min,
-                    MAX(tbt_ms) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_max,
-                    percentile_cont(0.5) WITHIN GROUP (ORDER BY tbt_ms)
-                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p50,
-                    percentile_cont(0.9) WITHIN GROUP (ORDER BY tbt_ms)
-                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p90,
-                    percentile_cont(0.95) WITHIN GROUP (ORDER BY tbt_ms)
-                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p95,
-                    percentile_cont(0.99) WITHIN GROUP (ORDER BY tbt_ms)
-                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p99
+                    COUNT(*) FILTER (WHERE throughput_tps IS NOT NULL) AS tp_count,
+                    AVG(throughput_tps) FILTER (WHERE throughput_tps IS NOT NULL) AS tp_mean,
+                    MIN(throughput_tps) FILTER (WHERE throughput_tps IS NOT NULL) AS tp_min,
+                    MAX(throughput_tps) FILTER (WHERE throughput_tps IS NOT NULL) AS tp_max,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY throughput_tps)
+                        FILTER (WHERE throughput_tps IS NOT NULL) AS tp_p50,
+                    percentile_cont(0.9) WITHIN GROUP (ORDER BY throughput_tps)
+                        FILTER (WHERE throughput_tps IS NOT NULL) AS tp_p90,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY throughput_tps)
+                        FILTER (WHERE throughput_tps IS NOT NULL) AS tp_p95,
+                    percentile_cont(0.99) WITHIN GROUP (ORDER BY throughput_tps)
+                        FILTER (WHERE throughput_tps IS NOT NULL) AS tp_p99
                 FROM derived
                 """,
                 window_minutes,
@@ -1474,30 +1477,31 @@ async def admin_get_performance_metrics(
                 WHERE ttft_ms IS NOT NULL
                 GROUP BY bucket
                 UNION ALL
-                SELECT 'tbt_ms' AS metric,
-                       width_bucket(tbt_ms, $3::float[]) AS bucket,
+                SELECT 'throughput_tps' AS metric,
+                       width_bucket(throughput_tps, $4::float[]) AS bucket,
                        COUNT(*) AS cnt
                 FROM derived
-                WHERE tbt_ms IS NOT NULL
+                WHERE throughput_tps IS NOT NULL
                 GROUP BY bucket
                 """,
                 window_minutes,
                 token_edges,
                 latency_edges,
+                throughput_edges,
             )
 
             histograms: dict[str, dict[int, int]] = {
                 "prompt_tokens": {},
                 "completion_tokens": {},
                 "ttft_ms": {},
-                "tbt_ms": {},
+                "throughput_tps": {},
             }
             for row in hist_rows:
                 metric = row["metric"]
                 bucket = int(row["bucket"] or 0)
                 cnt = int(row["cnt"] or 0)
                 # width_bucket can return 0 for negative values; for token
-                # metrics this can't happen (filtered to > 0), but for tbt_ms
+                # metrics this can't happen (filtered to > 0), but for throughput_tps
                 # we already clamped. Fold any underflow into bucket 1 just
                 # in case so that sum(histogram) == count holds.
                 target = bucket if bucket >= 1 else 1
@@ -1518,8 +1522,8 @@ async def admin_get_performance_metrics(
                 ttft_ms=_distribution_from_row(
                     stats_row, "tt", _LATENCY_HISTOGRAM_EDGES, histograms["ttft_ms"]
                 ),
-                tbt_ms=_distribution_from_row(
-                    stats_row, "tb", _LATENCY_HISTOGRAM_EDGES, histograms["tbt_ms"]
+                throughput_tps=_distribution_from_row(
+                    stats_row, "tp", _THROUGHPUT_HISTOGRAM_EDGES, histograms["throughput_tps"]
                 ),
             )
             windows.append(window)

@@ -505,29 +505,44 @@ function formatTokens(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
-function formatBucketEdge(value: number, kind: 'tokens' | 'ms'): string {
-  if (kind === 'tokens') {
-    if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`;
-    return value.toLocaleString();
+function formatThroughput(n: number): string {
+  if (n >= 1000) {
+    const k = n / 1000;
+    return `${k.toFixed(n % 1000 === 0 ? 0 : 1)}k tok/s`;
   }
-  if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}s`;
-  return `${value}ms`;
+  if (n >= 100) return `${Math.round(n)} tok/s`;
+  return `${n.toFixed(1)} tok/s`;
+}
+
+function formatBucketEdge(value: number, kind: 'tokens' | 'ms' | 'tps'): string {
+  const formatK = (v: number): string => `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k`;
+  if (kind === 'tokens') {
+    return value >= 1000 ? formatK(value) : value.toLocaleString();
+  }
+  if (kind === 'tps') {
+    return formatThroughput(value);
+  }
+  return value >= 1000 ? `${formatK(value)}s` : `${value}ms`;
 }
 
 function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
   const rows: Array<{
     title: string;
     dist: AdminMetricDistribution;
-    kind: 'tokens' | 'ms';
+    kind: 'tokens' | 'ms' | 'tps';
   }> = [
     { title: 'Prompt tokens', dist: metric.prompt_tokens, kind: 'tokens' },
     { title: 'Response tokens', dist: metric.completion_tokens, kind: 'tokens' },
     { title: 'TTFT', dist: metric.ttft_ms, kind: 'ms' },
-    { title: 'TBT', dist: metric.tbt_ms, kind: 'ms' },
+    { title: 'Throughput', dist: metric.throughput_tps, kind: 'tps' },
   ];
-  const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms'): string => {
+  const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms' | 'tps'): string => {
     if (v == null) return '—';
-    return kind === 'ms' ? formatLatency(v) : formatTokens(v);
+    return kind === 'ms'
+      ? formatLatency(v)
+      : kind === 'tps'
+        ? formatThroughput(v)
+        : formatTokens(v);
   };
   return (
     <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
