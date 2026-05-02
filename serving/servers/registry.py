@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,7 @@ from serving.adapters import (
     GeminiAdapter,
     ModelConfig,
     OpenAICompatAdapter,
+    OpenRouterAdapter,
 )
 
 if TYPE_CHECKING:
@@ -96,20 +98,62 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
         return f"{model_id}:{kind}"
 
 
+_OPENROUTER_KIND_RE = re.compile(r"^openrouter\[([A-Za-z0-9_.\-]+)\]$")
+
+
+def parse_openrouter_kind(kind: str) -> tuple[str, str | None]:
+    """Parse an adapter kind string, recognizing the OpenRouter bracket form.
+
+    Returns a (base_kind, pinned_provider) tuple:
+    - "openrouter"               -> ("openrouter", None)
+    - "openrouter[deepinfra]"    -> ("openrouter", "deepinfra")
+    - any other kind             -> (kind, None) (no parsing)
+
+    Raises ValueError for malformed bracket forms (empty pin, whitespace,
+    nested brackets, unmatched brackets).
+    """
+    if kind == "openrouter":
+        return ("openrouter", None)
+    if kind.startswith("openrouter["):
+        match = _OPENROUTER_KIND_RE.match(kind)
+        if match is None:
+            raise ValueError(
+                f"Invalid OpenRouter kind {kind!r}: expected "
+                "'openrouter' or 'openrouter[<slug>]' with slug "
+                "matching [A-Za-z0-9_.-]+"
+            )
+        return ("openrouter", match.group(1))
+    return (kind, None)
+
+
 def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"openai"``, ``"zhipu"``,
-              ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``).
+              ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``, ``"openrouter"``,
+              ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
         A concrete adapter instance.
 
     Raises:
-        ValueError: When ``kind`` is unknown.
+        ValueError: When ``kind`` is unknown or the OpenRouter bracket form
+            is malformed.
     """
+    # Resolve OpenRouter bracket syntax up front so the rest of the dispatch
+    # operates on the bare base kind. parse_openrouter_kind raises on
+    # malformed inputs (empty pin, whitespace, nested brackets).
+    base_kind, pinned_provider = parse_openrouter_kind(kind)
+    if base_kind == "openrouter":
+        cfg = {
+            **cfg,
+            "provider_profile": "openrouter",
+            "openrouter_pinned_provider": pinned_provider,
+        }
+        kind = base_kind  # subsequent dispatch checks compare against the bare kind
+
     # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
     if kind == "deepseek":
         cfg = {**cfg, "provider_profile": "deepseek"}
@@ -142,6 +186,9 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "zhipu",
     ):
         return OpenAICompatAdapter(model_cfg)
+
+    if kind == "openrouter":
+        return OpenRouterAdapter(model_cfg)
 
     if kind == "claude":
         return ClaudeAdapter(model_cfg)
@@ -299,7 +346,14 @@ def register_from_models_yaml(
             adapter_cfg["base_url"] = base_url
             adapter_cfg["api_key"] = api_key
             adapter_cfg["api_keys"] = api_keys
-            adapter_cfg["provider"] = kind
+            # Normalize bracket-form openrouter kind to base "openrouter" for the
+            # provider field. The bracketed form survives in `endpoint_id`
+            # (via _make_provider_id called below) and `openrouter_pinned_provider`
+            # (set inside _make_adapter), so per-pin circuit-breaker isolation is
+            # preserved while analytics columns (api_logs.provider, Prometheus
+            # labels) see a single "openrouter" cohort.
+            provider_for_cfg, _ = parse_openrouter_kind(kind)
+            adapter_cfg["provider"] = provider_for_cfg
             # Generate unique endpoint_id for availability tracking and circuit breaker
             adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)
 

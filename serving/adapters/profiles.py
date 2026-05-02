@@ -7,15 +7,19 @@ format. Names are chosen to grow into a fuller framework later.
 from __future__ import annotations
 
 import json
+import math
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from serving.utils.logging import get_logger
 from serving.utils.token_utils import extract_cache_tokens, extract_reasoning_tokens
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from .base import UsageInfo
+
+logger = get_logger(__name__)
 
 
 class ProviderProfile(str, Enum):
@@ -24,6 +28,7 @@ class ProviderProfile(str, Enum):
     AZURE_OPENAI = "azure_openai"
     DEFAULT = "default"
     DEEPSEEK = "deepseek"
+    OPENROUTER = "openrouter"
     ZHIPU = "zhipu"
 
 
@@ -33,6 +38,8 @@ def get_usage_normalizer(profile: ProviderProfile) -> Callable[[dict[str, Any]],
         return normalize_usage_azure_openai
     if profile == ProviderProfile.DEEPSEEK:
         return normalize_usage_deepseek
+    if profile == ProviderProfile.OPENROUTER:
+        return normalize_usage_openrouter
     return normalize_usage_default
 
 
@@ -216,6 +223,36 @@ def normalize_usage_deepseek(usage_data: dict[str, Any]) -> UsageInfo:
         cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0)
         or usage_data.get("cache_write_tokens", 0),
     )
+
+
+def normalize_usage_openrouter(usage_data: dict[str, Any]) -> UsageInfo:
+    """Extract usage info from an OpenRouter response (tokens + optional cost).
+
+    OpenRouter reports `cost` (USD, per-request) when the request body sets
+    `usage: {include: true}`. Cache and reasoning tokens (flat or nested under
+    prompt_tokens_details / completion_tokens_details) are normalized by
+    normalize_usage_default via the shared token_utils extractors.
+    """
+    base = normalize_usage_default(usage_data)
+
+    cost = usage_data.get("cost")
+    if cost is not None:
+        try:
+            parsed_cost = float(cost)
+        except (TypeError, ValueError):
+            logger.warning(
+                "OpenRouter returned non-numeric cost %r (type=%s); upstream_cost_usd left null",
+                cost,
+                type(cost).__name__,
+            )
+        else:
+            if not math.isfinite(parsed_cost):
+                logger.warning("OpenRouter returned non-finite cost %r; ignoring", cost)
+            elif parsed_cost < 0:
+                logger.warning("OpenRouter returned negative cost %r; ignoring", cost)
+            else:
+                base.upstream_cost_usd = parsed_cost
+    return base
 
 
 def _normalize_azure_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

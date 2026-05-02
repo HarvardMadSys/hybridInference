@@ -21,6 +21,10 @@ class UsageInfo:
     # Cache tokens for cost calculation
     cache_read_tokens: int = 0  # Tokens read from cache (cheaper)
     cache_write_tokens: int = 0  # Tokens written to cache (may have cost)
+    # OpenRouter-reported per-request upstream cost in USD. Internal-only:
+    # NOT serialized via to_dict() to avoid leaking to API clients. Logged
+    # to api_logs.upstream_cost_usd for ops/billing reconciliation.
+    upstream_cost_usd: float | None = None
 
     def to_dict(self) -> dict[str, int]:
         """Convert usage info to OpenAI-compatible dict format."""
@@ -108,6 +112,11 @@ class ModelConfig:
     # providers that strictly validate the request body and reject unknown fields
     # (e.g. some Ollama/Chutes/Featherless deployments).
     include_usage_in_stream: bool = False
+    # When set, OpenRouterAdapter pins requests to this OpenRouter upstream
+    # provider via `provider.order=[<slug>]` and `allow_fallbacks=false`.
+    # Set automatically by parse_openrouter_kind() when the YAML uses
+    # `kind: openrouter[<slug>]`. None for bare `kind: openrouter`.
+    openrouter_pinned_provider: str | None = None
 
 
 class BaseAdapter(ABC):

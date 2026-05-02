@@ -497,6 +497,7 @@ class TestDualWriteLogArgPassthrough:
             response_hash="rh",
             store_full_content=True,
             pricing={"model": "0.01"},
+            upstream_cost_usd=None,
         )
 
 

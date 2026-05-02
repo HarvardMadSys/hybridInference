@@ -75,7 +75,8 @@ class PostgresLogStore(LogStore):
                     tools JSONB,
                     cache_read_tokens INTEGER,
                     cache_write_tokens INTEGER,
-                    cost_usd DECIMAL(12, 8)
+                    cost_usd DECIMAL(12, 8),
+                    upstream_cost_usd DECIMAL(12, 8)
                 )
             """)
 
@@ -105,6 +106,7 @@ class PostgresLogStore(LogStore):
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS upstream_cost_usd DECIMAL(12, 8)",
             ]:
                 await conn.execute(col_ddl)
 
@@ -161,8 +163,13 @@ class PostgresLogStore(LogStore):
         response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
+        upstream_cost_usd: float | None = None,
     ) -> None:
-        """Insert a single request log row."""
+        """Insert a single request log row.
+
+        upstream_cost_usd: OpenRouter-reported per-request upstream cost (USD),
+        or None for non-OpenRouter routes.
+        """
         # Auto-compute hashes
         hash_fn = compute_prompt_hash_chunked if self.use_chunked_hash else compute_prompt_hash
         if prompt_hash is None:
@@ -204,7 +211,7 @@ class PostgresLogStore(LogStore):
                     cache_read_tokens, cache_write_tokens, cost_usd,
                     prompt, response, prompt_hash, response_hash,
                     status_code, error, user_id, session_id, metadata,
-                    tools
+                    tools, upstream_cost_usd
                 )
                 VALUES (
                     $1, $2, $3,
@@ -214,7 +221,7 @@ class PostgresLogStore(LogStore):
                     $15, $16, $17,
                     $18, $19, $20, $21,
                     $22, $23, $24, $25, $26::jsonb,
-                    $27::jsonb
+                    $27::jsonb, $28
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -245,6 +252,7 @@ class PostgresLogStore(LogStore):
                 (metadata or {}).get("session_id"),
                 json.dumps(metadata) if metadata else None,
                 json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
+                upstream_cost_usd,
             )
 
     # -- usage / cost queries ------------------------------------------------
