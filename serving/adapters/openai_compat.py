@@ -397,6 +397,15 @@ class OpenAICompatAdapter(BaseAdapter):
         """Get model ID to send to upstream API."""
         return self.config.provider_model_id or self.config.id
 
+    def _augment_payload(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:
+        """Subclass extension point for provider-specific payload mutation.
+
+        Called inside chat_completion / stream_chat_completion right before
+        the request is dispatched, after profile-level transforms have run.
+        Default implementation returns the payload unchanged.
+        """
+        return payload
+
     async def chat_completion(
         self, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
@@ -431,6 +440,7 @@ class OpenAICompatAdapter(BaseAdapter):
         if filtered_rf and self.config.supports_structured_output:
             payload["response_format"] = filtered_rf
         payload = transform_payload_for_profile(self._usage_profile, payload, stream=False)
+        payload = self._augment_payload(payload, stream=False)
 
         # Make request
         url = self._build_url()
@@ -490,6 +500,7 @@ class OpenAICompatAdapter(BaseAdapter):
         if getattr(self.config, "include_usage_in_stream", False):
             existing_options = payload.get("stream_options") or {}
             payload["stream_options"] = {**existing_options, "include_usage": True}
+        payload = self._augment_payload(payload, stream=True)
 
         url = self._build_url()
         # NOTE: headers are built per-attempt inside _open_stream_with_pool
@@ -659,6 +670,7 @@ class OpenAICompatAdapter(BaseAdapter):
             usage_info = self._usage_normalizer(upstream_usage)
             final_usage = usage_info.to_dict()
         else:
+            usage_info = None
             final_usage = self._build_fallback_usage(
                 messages=cleaned_messages
                 if self._usage_profile != ProviderProfile.DEFAULT
@@ -669,6 +681,7 @@ class OpenAICompatAdapter(BaseAdapter):
         final_chunk_str = self._build_final_chunk(
             usage=final_usage,
             finish_reason=finish_reason,
+            usage_info=usage_info,
         )
         yield final_chunk_str
         yield done_sentinel()
@@ -759,7 +772,16 @@ class OpenAICompatAdapter(BaseAdapter):
         *,
         usage: dict[str, Any],
         finish_reason: str,
+        usage_info: UsageInfo | None = None,
     ) -> str:
+        routing: dict[str, Any] = {
+            "provider": self.config.provider,
+            "base_url": self.config.base_url,
+            "endpoint_id": getattr(self.config, "endpoint_id", None) or self.config.provider,
+        }
+        if usage_info is not None and usage_info.upstream_cost_usd is not None:
+            routing["upstream_cost_usd"] = usage_info.upstream_cost_usd
+
         chunk = {
             "id": f"chatcmpl-{int(time.time() * 1000)}",
             "object": "chat.completion.chunk",
@@ -767,10 +789,6 @@ class OpenAICompatAdapter(BaseAdapter):
             "model": self.config.id,
             "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
             "usage": usage,
-            "_routing": {
-                "provider": self.config.provider,
-                "base_url": self.config.base_url,
-                "endpoint_id": getattr(self.config, "endpoint_id", None) or self.config.provider,
-            },
+            "_routing": routing,
         }
         return f"data: {json.dumps(chunk)}\n\n"

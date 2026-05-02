@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from serving.adapters.base import ModelConfig, UsageInfo
+from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.adapters.profiles import (
     ProviderProfile,
     get_usage_normalizer,
@@ -136,3 +139,27 @@ def test_normalize_usage_openrouter_negative_cost_is_dropped(caplog) -> None:
         )
     assert info.upstream_cost_usd is None
     assert any("negative cost" in rec.message for rec in caplog.records)
+
+
+def _make_compat_cfg(**overrides: Any) -> ModelConfig:
+    base: dict[str, Any] = {
+        "id": "dummy-model",
+        "name": "Dummy",
+        "provider": "openai_compat",
+        "base_url": "https://example.test/v1",
+        "api_key": "sk-test",
+        "provider_model_id": "dummy-upstream",
+        "supports_tools": False,
+        "supports_structured_output": False,
+        "supported_params": ["temperature", "top_p", "max_tokens"],
+    }
+    base.update(overrides)
+    return ModelConfig(**base)
+
+
+def test_augment_payload_default_is_noop() -> None:
+    cfg = _make_compat_cfg()
+    adapter = OpenAICompatAdapter(cfg)
+    payload = {"model": "x", "messages": []}
+    out = adapter._augment_payload(dict(payload), stream=False)
+    assert out == payload
