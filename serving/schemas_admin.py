@@ -452,19 +452,23 @@ class AdminTtftScatterPoint(BaseModel):
     prompt_tokens: int
     ttft_ms: int
     cache_hit: bool
-    provider: str
-    timestamp: str
+    timestamp: datetime
 
 
 class AdminTtftScatterModel(BaseModel):
-    """All scatter points for one model."""
+    """Scatter points for one (model_id, provider) pair.
+
+    Models with fallbacks are routed across multiple upstream providers,
+    each with its own TTFT profile, so we keep them as separate series.
+    """
 
     model_id: str
+    provider: str
     points: list[AdminTtftScatterPoint]
 
 
 class AdminTtftScatterResponse(BaseModel):
-    """TTFT vs input length scatter data, grouped by model."""
+    """TTFT vs input length scatter data, grouped by (model_id, provider)."""
 
     models: list[AdminTtftScatterModel]
 

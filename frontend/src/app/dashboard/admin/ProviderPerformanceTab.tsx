@@ -56,11 +56,12 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
   const cached = safePoints.filter((p) => p.cache_hit);
   const uncached = safePoints.filter((p) => !p.cache_hit);
+  const heading = `${model.model_id} · ${model.provider}`;
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <div className="flex items-baseline justify-between gap-3">
-        <div className="truncate text-[13px] font-semibold text-gray-900" title={model.model_id}>
-          {model.model_id}
+        <div className="truncate text-[13px] font-semibold text-gray-900" title={heading}>
+          {heading}
         </div>
         <div className="shrink-0 text-[11px] text-gray-400 tabular-nums">
           {safePoints.length.toLocaleString()} pts ({cached.length.toLocaleString()} cached,{' '}
@@ -139,14 +140,16 @@ export function ProviderPerformanceTab() {
   const [initializing, setInitializing] = useState(true);
   const [ttftScatter, setTtftScatter] = useState<AdminTtftScatterModel[]>([]);
   const [ttftScatterLoading, setTtftScatterLoading] = useState(false);
+  const [ttftScatterError, setTtftScatterError] = useState<string | null>(null);
 
   const loadTtftScatter = useCallback(async () => {
     setTtftScatterLoading(true);
+    setTtftScatterError(null);
     try {
       const resp = await getTtftScatter();
       setTtftScatter(resp.models);
     } catch (exc) {
-      setError(getErrorMessage(exc));
+      setTtftScatterError(getErrorMessage(exc));
     } finally {
       setTtftScatterLoading(false);
     }
@@ -359,10 +362,16 @@ export function ProviderPerformanceTab() {
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
           )}
         </div>
-        {ttftScatter.length > 0 ? (
+        {ttftScatterError ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+            <p className="text-[13px] text-red-700">
+              Failed to load scatter data: {ttftScatterError}
+            </p>
+          </div>
+        ) : ttftScatter.length > 0 ? (
           <div className="grid gap-3 lg:grid-cols-2">
             {ttftScatter.map((m) => (
-              <TtftScatterCard key={m.model_id} model={m} />
+              <TtftScatterCard key={`${m.model_id}::${m.provider}`} model={m} />
             ))}
           </div>
         ) : !ttftScatterLoading ? (

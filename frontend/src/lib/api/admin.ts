@@ -308,12 +308,12 @@ export interface AdminTtftScatterPoint {
   prompt_tokens: number;
   ttft_ms: number;
   cache_hit: boolean;
-  provider: string;
   timestamp: string;
 }
 
 export interface AdminTtftScatterModel {
   model_id: string;
+  provider: string;
   points: AdminTtftScatterPoint[];
 }
 

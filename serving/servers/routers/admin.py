@@ -1565,11 +1565,12 @@ async def admin_get_ttft_scatter(
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminTtftScatterResponse:
-    """Return TTFT vs input length scatter data per model.
+    """Return TTFT vs input length scatter data per (model, provider).
 
-    For each model, returns up to the last 1000 successful streaming requests
-    with a recorded TTFT and a non-empty prompt. `cache_hit` is true iff
-    `cache_read_tokens > 0`.
+    For each (model_id, provider) pair, returns up to the last 1000 successful
+    streaming requests with a recorded TTFT and a non-empty prompt. The query
+    is bounded to the last 30 days so it stays bounded as `api_logs` grows.
+    `cache_hit` is true iff `cache_read_tokens > 0`.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
@@ -1586,10 +1587,11 @@ async def admin_get_ttft_scatter(
                     cache_read_tokens,
                     timestamp,
                     ROW_NUMBER() OVER (
-                        PARTITION BY model_id ORDER BY timestamp DESC
+                        PARTITION BY model_id, provider ORDER BY timestamp DESC
                     ) AS rn
                 FROM api_logs
-                WHERE ttft_ms IS NOT NULL
+                WHERE timestamp >= NOW() - INTERVAL '30 days'
+                  AND ttft_ms IS NOT NULL
                   AND prompt_tokens IS NOT NULL
                   AND prompt_tokens > 0
                   AND status_code BETWEEN 200 AND 399
@@ -1599,26 +1601,25 @@ async def admin_get_ttft_scatter(
                    cache_read_tokens, timestamp
             FROM ranked
             WHERE rn <= 1000
-            ORDER BY model_id, timestamp DESC
+            ORDER BY model_id, provider, timestamp DESC
             """
         )
 
-    by_model: dict[str, list[AdminTtftScatterPoint]] = {}
+    by_pair: dict[tuple[str, str], list[AdminTtftScatterPoint]] = {}
     for row in rows:
-        model_id = row["model_id"]
+        key = (row["model_id"], row["provider"])
         cache_read = row["cache_read_tokens"]
         point = AdminTtftScatterPoint(
             prompt_tokens=int(row["prompt_tokens"]),
             ttft_ms=int(row["ttft_ms"]),
             cache_hit=cache_read is not None and cache_read > 0,
-            provider=row["provider"],
-            timestamp=row["timestamp"].isoformat(),
+            timestamp=row["timestamp"],
         )
-        by_model.setdefault(model_id, []).append(point)
+        by_pair.setdefault(key, []).append(point)
 
     models = [
-        AdminTtftScatterModel(model_id=model_id, points=points)
-        for model_id, points in by_model.items()
+        AdminTtftScatterModel(model_id=model_id, provider=provider, points=points)
+        for (model_id, provider), points in by_pair.items()
     ]
     models.sort(key=lambda m: len(m.points), reverse=True)
 
