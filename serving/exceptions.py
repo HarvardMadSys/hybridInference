@@ -12,8 +12,17 @@ class HybridInferenceError(Exception):
     pass
 
 
+class UserFacingError(HybridInferenceError):
+    """Marker base for exceptions whose message is safe to surface verbatim
+    to end users. Subclasses' str(exc) is passed through scrub_error_for_user
+    unchanged (with a request_id suffix appended).
+    """
+
+    pass
+
+
 # Authentication errors
-class AuthenticationError(HybridInferenceError):
+class AuthenticationError(UserFacingError):
     """Authentication related errors."""
 
     pass
@@ -54,19 +63,19 @@ class AccountSuspendedError(AuthenticationError):
 
 
 # User management errors
-class UserNotFoundError(HybridInferenceError):
+class UserNotFoundError(UserFacingError):
     """User not found."""
 
     pass
 
 
-class DuplicateAPIKeyError(HybridInferenceError):
+class DuplicateAPIKeyError(UserFacingError):
     """User already has an active API key."""
 
     pass
 
 
-class APIKeyNotFoundError(HybridInferenceError):
+class APIKeyNotFoundError(UserFacingError):
     """API key not found."""
 
     pass
@@ -105,10 +114,49 @@ class SessionRevokedError(AuthenticationError):
 
 
 # Quota errors
-class QuotaExceededError(HybridInferenceError):
+class QuotaExceededError(UserFacingError):
     """User has exceeded their quota."""
 
     def __init__(self, quota: float, spent: float):
         self.quota = quota
         self.spent = spent
         super().__init__(f"Quota exceeded: ${spent:.2f} / ${quota:.2f}")
+
+
+# ----------------------------------------------------------------------
+# User-facing error scrubbing
+# ----------------------------------------------------------------------
+
+_GENERIC_MESSAGES_BY_STATUS: dict[int, str] = {
+    400: "Invalid request",
+    401: "Authentication failed",
+    403: "Authentication failed",
+    422: "Invalid request",
+    429: "Rate limit exceeded",
+}
+
+
+def scrub_error_for_user(
+    exc: BaseException | None,
+    request_id: str | None,
+    status_code: int,
+) -> str:
+    """Return a user-safe error message containing no provider-specific info.
+
+    The original exception text is intentionally NOT echoed back unless the
+    exception is a `UserFacingError` subclass (whose message is, by author
+    contract, free of provider info). Callers are responsible for persisting
+    the full `str(exc)` to `api_logs.error` keyed by the same `request_id`.
+    """
+    if isinstance(exc, UserFacingError):
+        base = str(exc)
+    elif status_code in _GENERIC_MESSAGES_BY_STATUS:
+        base = _GENERIC_MESSAGES_BY_STATUS[status_code]
+    elif 500 <= status_code < 600:
+        base = "Upstream service error"
+    else:
+        base = "Request failed"
+
+    if request_id:
+        return f"{base} (request_id: {request_id})"
+    return base
