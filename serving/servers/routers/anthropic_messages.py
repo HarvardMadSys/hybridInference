@@ -337,10 +337,7 @@ async def anthropic_messages(
                         if nl >= 0:
                             head = ttft_buffer[: nl + 1]
                             ttft_buffer = ttft_buffer[nl + 1 :]
-                            if (
-                                b"event: content_block_start" in head
-                                or b"event: content_block_delta" in head
-                            ):
+                            if b"event: content_block_delta" in head:
                                 ttft_ms = int((time.time() - start) * 1000)
                                 ttft_buffer = b""
                         elif len(ttft_buffer) > 16384:
