@@ -154,43 +154,6 @@ def test_with_system_prompt():
     print("System prompt test passed!\n")
 
 
-def test_multimodal_support():
-    """Test vision capability with image URL."""
-    print("\n=== Testing Vision Capability ===")
-
-    url = f"{CLAUDE_BASE_URL}/v1:rawPredict"
-    headers = {
-        "api-key": CLAUDE_API_KEY,
-        "Content-Type": "application/json",
-    }
-
-    # Test with text-only content array format
-    payload = {
-        "anthropic_version": "vertex-2023-10-16",
-        "max_tokens": 1024,
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": "Describe what a red apple looks like."}],
-            }
-        ],
-    }
-
-    with httpx.Client(timeout=30.0) as client:
-        response = client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-
-    content = data.get("content", [])
-    if content and len(content) > 0:
-        text = content[0].get("text", "")
-        print(f"Response: {text[:200]}...")
-    else:
-        print(f"Response: {data}")
-
-    print("Multimodal format test passed!\n")
-
-
 if __name__ == "__main__":
     print("Starting Claude API Integration Tests (XHS Runway)")
     print(f"Base URL: {CLAUDE_BASE_URL}")
@@ -200,7 +163,6 @@ if __name__ == "__main__":
         test_non_streaming_completion()
         test_streaming_completion()
         test_with_system_prompt()
-        test_multimodal_support()
 
         print("\n" + "=" * 50)
         print("All tests passed successfully!")

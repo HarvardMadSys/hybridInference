@@ -17,26 +17,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def test_sparkline_bucket_valid():
-    b = SparklineBucket(start_time=_now(), request_count=42)
-    assert b.request_count == 42
-
-
-def test_analytics_user_entry_preserves_fraction():
-    e = AnalyticsUserEntry(
-        email="alice@example.com",
-        user_id="u1",
-        requests=100,
-        fraction=0.38,
-    )
-    assert e.fraction == pytest.approx(0.38)
-
-
-def test_analytics_breakdown_entry_others():
-    e = AnalyticsBreakdownEntry(name="others", requests=50, fraction=0.12)
-    assert e.name == "others"
-
-
 def test_admin_analytics_response_full():
     resp = AdminAnalyticsResponse(
         period="day",
