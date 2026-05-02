@@ -458,3 +458,202 @@ async def test_sanitize_openai_backend_drops_top_k_container_extra_metadata(
     assert "top_k" in warning_text
     assert "container" in warning_text
     assert "metadata" in warning_text
+
+
+@pytest.mark.asyncio
+async def test_streaming_records_ttft_ms_on_first_content_block_delta(
+    anthropic_test_client, monkeypatch
+):
+    """Streaming /v1/messages must capture ttft_ms on the first content_block_delta."""
+    upstream_sse = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_t","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":4,"output_tokens":0}}}\n\n'
+        b"event: content_block_start\n"
+        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+        b"event: content_block_delta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n'
+        b"event: message_stop\n"
+        b'data: {"type":"message_stop"}\n\n'
+    )
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield upstream_sse
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    captured: dict = {}
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(amod, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    assert "ttft_ms" in captured
+    assert isinstance(captured["ttft_ms"], int)
+    assert captured["ttft_ms"] >= 0
+    assert captured["params"].get("stream") is True
+
+
+@pytest.mark.asyncio
+async def test_streaming_ttft_ms_none_when_no_content_delta(anthropic_test_client, monkeypatch):
+    """If the stream never emits content_block_delta, ttft_ms must remain None."""
+    upstream_sse = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_n","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":4,"output_tokens":0}}}\n\n'
+        b"event: content_block_start\n"
+        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+        b"event: message_stop\n"
+        b'data: {"type":"message_stop"}\n\n'
+    )
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield upstream_sse
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    captured: dict = {}
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(amod, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    assert captured.get("ttft_ms") is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_ttft_ms_handles_split_event_name(anthropic_test_client, monkeypatch):
+    """ttft_ms detection must survive `content_block_delta` split across two raw chunks."""
+    chunk_a = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_x","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":4,"output_tokens":0}}}\n\n'
+        b"event: content_block_d"
+    )
+    chunk_b = (
+        b"elta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n'
+        b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    )
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield chunk_a
+            yield chunk_b
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    captured: dict = {}
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(amod, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    assert isinstance(captured.get("ttft_ms"), int)
