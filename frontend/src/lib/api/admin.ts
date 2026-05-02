@@ -362,6 +362,8 @@ export interface AdminRecentRequestItem {
   prompt_tokens?: number | null;
   completion_tokens?: number | null;
   reasoning_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
   total_tokens?: number | null;
   cost_usd?: number | null;
   prompt?: string | null;

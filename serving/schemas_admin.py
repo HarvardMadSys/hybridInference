@@ -429,6 +429,8 @@ class AdminRecentRequestItem(BaseModel):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     reasoning_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     total_tokens: int | None = None
     cost_usd: float | None = None
     prompt: str | None = None

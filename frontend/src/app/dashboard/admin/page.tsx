@@ -1910,6 +1910,18 @@ export default function AdminPage() {
                                       </span>
                                     </div>
                                     <div>
+                                      <span className="text-gray-500">Cached:</span>{' '}
+                                      <span className="text-gray-700">
+                                        {req.cache_read_tokens != null ||
+                                        req.cache_write_tokens != null
+                                          ? (
+                                            (req.cache_read_tokens ?? 0) +
+                                              (req.cache_write_tokens ?? 0)
+                                          ).toLocaleString()
+                                          : '—'}
+                                      </span>
+                                    </div>
+                                    <div>
                                       <span className="text-gray-500">Stream:</span>{' '}
                                       <span className="text-gray-700">
                                         {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
