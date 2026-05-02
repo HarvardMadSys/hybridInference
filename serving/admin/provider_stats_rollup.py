@@ -237,3 +237,24 @@ async def backfill_if_empty(
         rows,
     )
     return rows
+
+
+def register_rollup_job(scheduler, pool: asyncpg.Pool) -> None:
+    """Register the hourly rollup job on the existing AsyncIOScheduler.
+
+    Fires at minute 5 every hour to give the previous hour's writes
+    time to flush.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+
+    scheduler.add_job(
+        hourly_job,
+        trigger=CronTrigger(minute=5, timezone=timezone.utc),
+        args=[pool],
+        id="rollup_provider_stats",
+        replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+    logger.info("rollup_provider_stats: registered on scheduler (cron minute=5)")

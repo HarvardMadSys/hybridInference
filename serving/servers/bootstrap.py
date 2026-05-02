@@ -283,6 +283,21 @@ async def initialize() -> AppServices:
                         try:
                             email_scheduler.start_scheduler(db_logger.pool)
                             await email_scheduler.rehydrate_scheduled_broadcasts()
+                            # Provider-stats hourly rollup
+                            from serving.admin.provider_stats_rollup import (
+                                backfill_if_empty,
+                                register_rollup_job,
+                            )
+
+                            sched = email_scheduler.get_scheduler()
+                            if sched is not None:
+                                register_rollup_job(sched, db_logger.pool)
+                                try:
+                                    await backfill_if_empty(db_logger.pool, days=30)
+                                except Exception as bf_exc:
+                                    logger.warning(
+                                        f"provider-stats backfill failed (non-fatal): {bf_exc}"
+                                    )
                         except Exception as sched_exc:
                             logger.error(f"Email scheduler startup failed: {sched_exc}")
                             try:
