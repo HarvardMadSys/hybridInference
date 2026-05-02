@@ -756,6 +756,9 @@ export default function AdminPage() {
       loadPerformanceMetrics();
       return;
     }
+    if (activeTab === 'analytics') {
+      return;
+    }
     loadRequests();
     loadRequestMetrics();
   };
