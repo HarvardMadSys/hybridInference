@@ -20,3 +20,22 @@ def test_usage_info_to_dict_omits_upstream_cost() -> None:
     d = info.to_dict()
     assert "upstream_cost_usd" not in d
     assert d == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+
+
+from serving.adapters.base import ModelConfig
+
+
+def test_model_config_default_openrouter_pinned_provider_is_none() -> None:
+    cfg = ModelConfig(id="m", name="M", provider="openrouter", base_url="https://x")
+    assert cfg.openrouter_pinned_provider is None
+
+
+def test_model_config_accepts_openrouter_pinned_provider() -> None:
+    cfg = ModelConfig(
+        id="m",
+        name="M",
+        provider="openrouter",
+        base_url="https://x",
+        openrouter_pinned_provider="deepinfra",
+    )
+    assert cfg.openrouter_pinned_provider == "deepinfra"

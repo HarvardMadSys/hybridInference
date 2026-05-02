@@ -112,6 +112,11 @@ class ModelConfig:
     # providers that strictly validate the request body and reject unknown fields
     # (e.g. some Ollama/Chutes/Featherless deployments).
     include_usage_in_stream: bool = False
+    # When set, OpenRouterAdapter pins requests to this OpenRouter upstream
+    # provider via `provider.order=[<slug>]` and `allow_fallbacks=false`.
+    # Set automatically by parse_openrouter_kind() when the YAML uses
+    # `kind: openrouter[<slug>]`. None for bare `kind: openrouter`.
+    openrouter_pinned_provider: str | None = None
 
 
 class BaseAdapter(ABC):
