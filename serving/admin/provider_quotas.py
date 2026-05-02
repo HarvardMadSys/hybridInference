@@ -39,14 +39,21 @@ def _now() -> datetime:
 
 
 def _parse_iso(value: Any) -> datetime | None:
-    """Parse an ISO-8601 string into a UTC-aware datetime; None on failure."""
+    """Parse an ISO-8601 string into a UTC-aware datetime; None on failure.
+
+    Naive inputs are assumed UTC. Offset-aware inputs are converted to UTC so
+    callers always see a single canonical timezone.
+    """
     if not isinstance(value, str):
         return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(normalized)
     except ValueError:
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
@@ -156,9 +163,11 @@ async def _fetch_chutes_request_counts(
             if bucket_dt is None:
                 continue
             count_raw = item.get("count")
-            if not isinstance(count_raw, (int, float)):
+            if isinstance(count_raw, bool) or not isinstance(count_raw, (int, float)):
                 continue
-            if bucket_dt >= day_start:
+            if not float(count_raw).is_integer():
+                continue
+            if day_start <= bucket_dt < day_reset:
                 daily_count += int(count_raw)
 
         return [
@@ -221,13 +230,7 @@ def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
             continue
         used = block.get("usage")
         limit = block.get("cap")
-        reset = block.get("reset_at")
-        reset_dt = None
-        if isinstance(reset, str):
-            try:
-                reset_dt = datetime.fromisoformat(reset.replace("Z", "+00:00"))
-            except ValueError:
-                reset_dt = None
+        reset_dt = _parse_iso(block.get("reset_at"))
         usages.append(
             ProviderQuotaUsage(
                 label=label,

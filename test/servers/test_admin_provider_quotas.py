@@ -131,6 +131,20 @@ class TestParseIso:
         assert _parse_iso("") is None
         assert _parse_iso("2026-13-99T99:99:99") is None
 
+    def test_non_utc_offset_normalized_to_utc(self):
+        # 09:00+05:00 == 04:00 UTC
+        result = _parse_iso("2026-05-02T09:00:00+05:00")
+        assert result is not None
+        assert result.utcoffset().total_seconds() == 0
+        assert result.hour == 4
+
+    def test_only_trailing_z_replaced(self):
+        # An embedded 'Z' (e.g., timezone-name part) should not be substituted.
+        # Plain trailing 'Z' still parses.
+        assert _parse_iso("2026-05-02T04:00:00Z") is not None
+        # Embedded Z that is not a TZ marker -> ValueError -> None
+        assert _parse_iso("2026Z05-02T04:00:00") is None
+
 
 class TestFetchChutes:
     @pytest.mark.asyncio
@@ -170,13 +184,20 @@ class TestFetchChutes:
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         in_window_bucket = (today_midnight + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
         out_window_bucket = (today_midnight - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+        future_bucket = (today_midnight + timedelta(days=1, hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
         usage_payload = {
-            "total": 2,
+            "total": 5,
             "page": 0,
             "limit": 2000,
             "items": [
                 {"bucket": in_window_bucket, "amount": 0.0, "count": 7},
                 {"bucket": out_window_bucket, "amount": 0.0, "count": 99},
+                # Beyond next reset boundary -> excluded by upper bound
+                {"bucket": future_bucket, "amount": 0.0, "count": 1000},
+                # Non-integer float -> excluded
+                {"bucket": in_window_bucket, "amount": 0.0, "count": 1.5},
+                # bool is a subclass of int but should be rejected
+                {"bucket": in_window_bucket, "amount": 0.0, "count": True},
             ],
         }
         with patch(
