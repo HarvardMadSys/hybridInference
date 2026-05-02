@@ -116,6 +116,9 @@ async def _insert_api_log(
     latency_ms: int,
     completion_tokens: int | None,
     prompt_tokens: int | None = 100,
+    cache_read_tokens: int | None = None,
+    reasoning_tokens: int | None = None,
+    cost_usd: float | None = None,
     status_code: int = 200,
     error: str | None = None,
 ) -> None:
@@ -126,9 +129,10 @@ async def _insert_api_log(
                 request_id, model_id, provider, timestamp,
                 stream, ttft_ms, latency_ms,
                 prompt_tokens, completion_tokens,
+                cache_read_tokens, reasoning_tokens, cost_usd,
                 status_code, error
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             """,
             request_id,
             model_id,
@@ -139,6 +143,9 @@ async def _insert_api_log(
             latency_ms,
             prompt_tokens,
             completion_tokens,
+            cache_read_tokens,
+            reasoning_tokens,
+            cost_usd,
             status_code,
             error,
         )
@@ -417,3 +424,85 @@ async def test_provider_hourly_stats_has_token_total_columns(db_logger: Database
         assert by_name[name]["is_nullable"] == "YES", name
     assert by_name["total_cost_usd"]["data_type"] == "numeric"
     assert by_name["total_cost_usd"]["is_nullable"] == "YES"
+
+
+@pytest.mark.asyncio
+async def test_run_rollup_populates_token_totals(db_logger: DatabaseLogger):
+    """Rollup sums prompt/cache_read/reasoning/cost across the hour, including errors."""
+    from serving.admin.provider_stats_rollup import run_rollup
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    hour = datetime(2026, 5, 2, 16, 0, tzinfo=timezone.utc)
+    # Two successes
+    await _insert_api_log(
+        pool,
+        request_id="tok-1",
+        provider="anthropic",
+        model_id="claude-opus-4-7",
+        timestamp=hour + timedelta(minutes=5),
+        stream=True,
+        ttft_ms=300,
+        latency_ms=2300,
+        completion_tokens=120,
+        prompt_tokens=800,
+        cache_read_tokens=500,
+        reasoning_tokens=40,
+        cost_usd=0.01230000,
+    )
+    await _insert_api_log(
+        pool,
+        request_id="tok-2",
+        provider="anthropic",
+        model_id="claude-opus-4-7",
+        timestamp=hour + timedelta(minutes=10),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=4000,
+        completion_tokens=240,
+        prompt_tokens=1200,
+        cache_read_tokens=None,  # NULL → COALESCE'd to 0
+        reasoning_tokens=60,
+        cost_usd=0.02500000,
+    )
+    # One error — still counts toward token + cost totals (we paid to send)
+    await _insert_api_log(
+        pool,
+        request_id="tok-err",
+        provider="anthropic",
+        model_id="claude-opus-4-7",
+        timestamp=hour + timedelta(minutes=15),
+        stream=True,
+        ttft_ms=None,
+        latency_ms=500,
+        completion_tokens=None,
+        prompt_tokens=300,
+        cache_read_tokens=200,
+        reasoning_tokens=None,
+        cost_usd=0.00100000,
+        status_code=500,
+        error="upstream_5xx",
+    )
+
+    written = await run_rollup(pool, start=hour, end=hour + timedelta(hours=1))
+    assert written == 1
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT total_prompt_tokens, total_cache_read_tokens,
+                   total_reasoning_tokens, total_cost_usd
+            FROM provider_hourly_stats
+            WHERE provider = 'anthropic' AND model_id = 'claude-opus-4-7'
+            """
+        )
+
+    assert row is not None
+    assert row["total_prompt_tokens"] == 800 + 1200 + 300
+    # NULL cache_read on tok-2 -> 0; tok-1 contributes 500, tok-err 200
+    assert row["total_cache_read_tokens"] == 500 + 200
+    # NULL reasoning on tok-err -> 0
+    assert row["total_reasoning_tokens"] == 40 + 60
+    # Decimal sum
+    assert float(row["total_cost_usd"]) == pytest.approx(0.0123 + 0.025 + 0.001, abs=1e-9)

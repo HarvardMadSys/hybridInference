@@ -26,7 +26,9 @@ INSERT INTO provider_hourly_stats AS p (
     ttft_p50_ms, ttft_p95_ms, ttft_p99_ms,
     latency_p50_ms, latency_p95_ms, latency_p99_ms,
     throughput_avg_tps, throughput_p50_tps, throughput_p95_tps,
-    prompt_tokens_avg, completion_tokens_avg, total_completion_tokens
+    prompt_tokens_avg, completion_tokens_avg, total_completion_tokens,
+    total_prompt_tokens, total_cache_read_tokens,
+    total_reasoning_tokens, total_cost_usd
 )
 SELECT
     date_trunc('hour', timestamp)                                          AS hour_bucket,
@@ -63,11 +65,17 @@ SELECT
 
     AVG(prompt_tokens)::FLOAT                                               AS prompt_tokens_avg,
     AVG(completion_tokens)::FLOAT                                           AS completion_tokens_avg,
-    COALESCE(SUM(completion_tokens), 0)::BIGINT                             AS total_completion_tokens
+    COALESCE(SUM(completion_tokens), 0)::BIGINT                             AS total_completion_tokens,
+
+    COALESCE(SUM(prompt_tokens), 0)::BIGINT                                 AS total_prompt_tokens,
+    COALESCE(SUM(cache_read_tokens), 0)::BIGINT                             AS total_cache_read_tokens,
+    COALESCE(SUM(reasoning_tokens), 0)::BIGINT                              AS total_reasoning_tokens,
+    COALESCE(SUM(cost_usd), 0)::DECIMAL(14, 8)                              AS total_cost_usd
 FROM (
     SELECT
         timestamp, provider, model_id, status_code, error,
         stream, ttft_ms, latency_ms, prompt_tokens, completion_tokens,
+        cache_read_tokens, reasoning_tokens, cost_usd,
         CASE
             WHEN status_code >= 400
                  OR error IS NOT NULL
@@ -100,7 +108,11 @@ ON CONFLICT (provider, model_id, hour_bucket) DO UPDATE SET
     throughput_p95_tps      = EXCLUDED.throughput_p95_tps,
     prompt_tokens_avg       = EXCLUDED.prompt_tokens_avg,
     completion_tokens_avg   = EXCLUDED.completion_tokens_avg,
-    total_completion_tokens = EXCLUDED.total_completion_tokens
+    total_completion_tokens = EXCLUDED.total_completion_tokens,
+    total_prompt_tokens     = EXCLUDED.total_prompt_tokens,
+    total_cache_read_tokens = EXCLUDED.total_cache_read_tokens,
+    total_reasoning_tokens  = EXCLUDED.total_reasoning_tokens,
+    total_cost_usd          = EXCLUDED.total_cost_usd
 """
 
 
