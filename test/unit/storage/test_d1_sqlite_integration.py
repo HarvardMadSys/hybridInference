@@ -708,3 +708,154 @@ class TestCostCounters:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='user_daily_cost'"
         ).fetchall()
         assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Idempotent migrations (initialize)
+# ---------------------------------------------------------------------------
+
+
+class TestInitializeMigrations:
+    """Verify ``initialize()`` migrates legacy schemas in-place.
+
+    Each test starts with a bare SQLite connection, manually installs the
+    pre-migration schema, runs ``store.initialize()``, and asserts the new
+    state.
+    """
+
+    async def test_users_role_check_migration_adds_pro_and_renames_legacy(self):
+        """Running initialize() on an old users table rebuilds CHECK with 'pro'.
+
+        Also asserts that legacy roles ('internal_group', 'developer') get
+        normalized to 'internal' before the copy, mirroring the postgres
+        migration.
+        """
+        from serving.storage.d1_operational import D1OperationalStore
+
+        client = _SqliteD1Client()
+        # Old users schema — CHECK constraint without 'pro', includes legacy roles.
+        client._conn.executescript(
+            """
+            CREATE TABLE users (
+                id                TEXT PRIMARY KEY,
+                email             TEXT NOT NULL UNIQUE,
+                password_hash     TEXT NOT NULL,
+                user_name         TEXT,
+                preferences       TEXT NOT NULL DEFAULT '{}',
+                role              TEXT NOT NULL DEFAULT 'free'
+                                  CHECK (role IN ('free', 'internal', 'admin',
+                                                  'internal_group', 'developer')),
+                email_verified    INTEGER DEFAULT 0,
+                status            TEXT DEFAULT 'active'
+                                  CHECK (status IN ('active', 'suspended', 'deleted',
+                                                    'pending_approval', 'rejected')),
+                approval_note     TEXT,
+                reviewed_at       TEXT,
+                reviewed_by       TEXT,
+                created_at        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                last_login_at     TEXT
+            );
+            INSERT INTO users (id, email, password_hash, role)
+                VALUES ('u1', 'a@b.com', 'h', 'internal_group');
+            INSERT INTO users (id, email, password_hash, role)
+                VALUES ('u2', 'b@b.com', 'h', 'developer');
+            INSERT INTO users (id, email, password_hash, role)
+                VALUES ('u3', 'c@b.com', 'h', 'free');
+            """
+        )
+        client._conn.commit()
+
+        store = D1OperationalStore(client)
+        await store.initialize()
+
+        # The CHECK constraint must now accept 'pro'.
+        await client.execute(
+            "INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)",
+            ["u4", "pro@b.com", "h", "pro"],
+        )
+
+        # Legacy roles rewritten to 'internal'.
+        rows = (await client.query("SELECT id, role FROM users ORDER BY id")).rows
+        role_by_id = {r["id"]: r["role"] for r in rows}
+        assert role_by_id["u1"] == "internal"  # was internal_group
+        assert role_by_id["u2"] == "internal"  # was developer
+        assert role_by_id["u3"] == "free"
+        assert role_by_id["u4"] == "pro"
+
+        # Indexes recreated.
+        idx_rows = (
+            await client.query(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='users'"
+            )
+        ).rows
+        idx_names = {r["name"] for r in idx_rows}
+        assert "idx_users_email" in idx_names
+        assert "idx_users_pending_approval" in idx_names
+
+        await client.close()
+
+    async def test_users_role_check_migration_idempotent(self, sqlite_client):
+        """Running initialize() on an already-migrated DB is a no-op for the users table."""
+        from serving.storage.d1_operational import D1OperationalStore
+
+        # sqlite_client fixture already has the new schema (CHECK lists 'pro').
+        store = D1OperationalStore(sqlite_client)
+        await store.create_user(user_id="u1", email="a@b.com", password_hash="h")
+
+        # First init runs migrations — should be no-op since 'pro' is already in CHECK.
+        await store.initialize()
+        # Second init (true idempotency check).
+        await store.initialize()
+
+        # The user we created is still there.
+        user = await store.get_user_by_id("u1")
+        assert user is not None
+        assert user["email"] == "a@b.com"
+
+    async def test_drop_api_keys_tier_column_when_present(self):
+        """initialize() drops legacy api_keys.tier column when it exists."""
+        from serving.storage.d1_operational import D1OperationalStore
+
+        client = _SqliteD1Client()
+        # Old api_keys schema with a 'tier' column.
+        client._conn.executescript(
+            """
+            CREATE TABLE api_keys (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_hash                 TEXT NOT NULL UNIQUE,
+                key_prefix               TEXT NOT NULL,
+                user_id                  TEXT NOT NULL,
+                user_name                TEXT,
+                status                   TEXT NOT NULL DEFAULT 'active',
+                tier                     TEXT,
+                quota_daily_cost_usd     REAL DEFAULT 1000.00,
+                quota_monthly_cost_usd   REAL,
+                created_at               TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                expires_at               TEXT,
+                last_used_at             TEXT,
+                notes                    TEXT,
+                metadata                 TEXT,
+                account_id               TEXT
+            );
+            INSERT INTO api_keys (key_hash, key_prefix, user_id, tier)
+                VALUES ('h1', 'p1', 'u1', 'free');
+            """
+        )
+        client._conn.commit()
+
+        store = D1OperationalStore(client)
+        await store.initialize()
+
+        cols = {r["name"] for r in (await client.query("PRAGMA table_info(api_keys)")).rows}
+        assert "tier" not in cols
+        # Existing rows preserved (just without the column).
+        rows = (await client.query("SELECT key_hash, user_id FROM api_keys")).rows
+        assert len(rows) == 1
+        assert rows[0]["key_hash"] == "h1"
+
+        # Idempotent: re-running doesn't fail.
+        await store.initialize()
+        cols2 = {r["name"] for r in (await client.query("PRAGMA table_info(api_keys)")).rows}
+        assert "tier" not in cols2
+
+        await client.close()

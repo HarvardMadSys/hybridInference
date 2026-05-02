@@ -729,7 +729,7 @@ class PostgresOperationalStore(OperationalStore):
         """Lightweight identity lookup (no quota check, no last_used write)."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT k.user_id, u.email, u.role "
+                "SELECT k.user_id, u.email, u.role, u.email_verified "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "

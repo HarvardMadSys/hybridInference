@@ -230,6 +230,37 @@ class TestAPIKeys:
         assert "JOIN users" in sql
         assert "u.id IS NOT NULL" in sql
 
+    async def test_get_auth_context_by_key_hash_selects_email_verified(self, store, d1_client):
+        """Projection must include u.email_verified for SIGNUP_REQUIRE_EMAIL_VERIFICATION."""
+        d1_client.query.return_value = D1Result(
+            rows=[
+                {
+                    "id": 1,
+                    "user_id": "u1",
+                    "email": "a@b.com",
+                    "role": "free",
+                    "email_verified": 1,
+                }
+            ]
+        )
+        result = await store.get_auth_context_by_key_hash("hash123")
+        sql = d1_client.query.call_args[0][0]
+        assert "u.email_verified" in sql
+        # _parse_row_timestamps coerces SQLite int (0/1) to bool
+        assert result["email_verified"] is True
+        assert isinstance(result["email_verified"], bool)
+
+    async def test_get_auth_context_lightweight_selects_email_verified(self, store, d1_client):
+        """Lightweight projection must also include u.email_verified."""
+        d1_client.query.return_value = D1Result(
+            rows=[{"user_id": "u1", "email": "a@b.com", "role": "free", "email_verified": 0}]
+        )
+        result = await store.get_auth_context_lightweight("hash123")
+        sql = d1_client.query.call_args[0][0]
+        assert "u.email_verified" in sql
+        assert result["email_verified"] is False
+        assert isinstance(result["email_verified"], bool)
+
     async def test_check_active_key_exists_true(self, store, d1_client):
         d1_client.query.return_value = D1Result(rows=[{"id": 1}])
         assert await store.check_active_key_exists("u1") is True
