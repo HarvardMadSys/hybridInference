@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -25,7 +24,7 @@ def pg_dsn() -> str:
     return dsn
 
 
-async def _truncate(pool) -> None:
+async def _truncate(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
         for table in ("provider_hourly_stats", "api_logs"):
             exists = await conn.fetchval("SELECT to_regclass($1)", f"public.{table}")
