@@ -43,36 +43,36 @@ class TestTransformValue:
         for col in ["email", "created_at", "email_verified", "preferences"]:
             assert _transform_value(col, None) is None
 
-    @pytest.mark.parametrize("col", list(_TIMESTAMP_COLUMNS))
+    @pytest.mark.parametrize("col", sorted(_TIMESTAMP_COLUMNS))
     def test_timestamp_datetime_to_iso(self, col):
         dt = datetime(2026, 3, 15, 10, 30, 0, tzinfo=timezone.utc)
         result = _transform_value(col, dt)
         assert isinstance(result, str)
         assert "2026-03-15" in result
 
-    @pytest.mark.parametrize("col", list(_TIMESTAMP_COLUMNS))
+    @pytest.mark.parametrize("col", sorted(_TIMESTAMP_COLUMNS))
     def test_timestamp_string_passthrough(self, col):
         val = "2026-03-15T10:30:00+00:00"
         assert _transform_value(col, val) == val
 
-    @pytest.mark.parametrize("col", list(_BOOLEAN_COLUMNS))
+    @pytest.mark.parametrize("col", sorted(_BOOLEAN_COLUMNS))
     def test_boolean_to_int(self, col):
         assert _transform_value(col, True) == 1
         assert _transform_value(col, False) == 0
 
-    @pytest.mark.parametrize("col", list(_JSONB_COLUMNS))
+    @pytest.mark.parametrize("col", sorted(_JSONB_COLUMNS))
     def test_jsonb_dict_to_string(self, col):
         val = {"key": "value"}
         result = _transform_value(col, val)
         assert isinstance(result, str)
         assert json.loads(result) == val
 
-    @pytest.mark.parametrize("col", list(_JSONB_COLUMNS))
+    @pytest.mark.parametrize("col", sorted(_JSONB_COLUMNS))
     def test_jsonb_string_passthrough(self, col):
         val = '{"key": "value"}'
         assert _transform_value(col, val) == val
 
-    @pytest.mark.parametrize("col", list(_DECIMAL_COLUMNS))
+    @pytest.mark.parametrize("col", sorted(_DECIMAL_COLUMNS))
     def test_decimal_to_float(self, col):
         result = _transform_value(col, Decimal("100.5050"))
         assert isinstance(result, float)
