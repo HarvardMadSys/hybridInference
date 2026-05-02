@@ -302,3 +302,26 @@ class TestDecodeThroughputHelper:
 
     def test_missing_tokens_returns_none(self):
         assert self._call(stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=None) is None
+
+    def test_decode_window_just_below_min_returns_none(self):
+        # decode window = 1299 - 1200 = 99 ms (< 100 ms threshold)
+        assert (
+            self._call(stream=True, latency_ms=1299, ttft_ms=1200, completion_tokens=100) is None
+        )
+
+    def test_decode_window_at_min_returns_finite(self):
+        # decode window = 1300 - 1200 = 100 ms exactly; 99 tokens / 0.1s = 990 tok/s
+        result = self._call(stream=True, latency_ms=1300, ttft_ms=1200, completion_tokens=100)
+        assert result == pytest.approx(990.0)
+
+    def test_completion_tokens_just_below_min_returns_none(self):
+        # 7 completion tokens with comfortable 1000ms decode window
+        assert (
+            self._call(stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=7) is None
+        )
+
+    def test_completion_tokens_at_min_returns_finite(self):
+        # 8 completion tokens with comfortable 1000ms decode window
+        # throughput = (8 - 1) / 1.0 = 7.0
+        result = self._call(stream=True, latency_ms=1200, ttft_ms=200, completion_tokens=8)
+        assert result == pytest.approx(7.0)

@@ -1534,6 +1534,10 @@ async def admin_get_performance_metrics(
     )
 
 
+_DECODE_MIN_WINDOW_MS = 100
+_DECODE_MIN_TOKENS = 8
+
+
 def _decode_throughput_tps(
     stream: bool | None,
     latency_ms: int | None,
@@ -1545,6 +1549,14 @@ def _decode_throughput_tps(
     Matches the convention used by /admin/performance-metrics: first token is
     delivered at ttft_ms, so the decode phase produces (completion_tokens - 1)
     tokens during (latency_ms - ttft_ms). Streaming-only; needs >1 output token.
+
+    Additionally returns None when the decode window is shorter than
+    `_DECODE_MIN_WINDOW_MS` (100 ms) or fewer than `_DECODE_MIN_TOKENS` (8)
+    completion tokens were produced. Sub-100ms decode windows and very short
+    streams produce noise-dominated throughput numbers (e.g. ~100k tok/s) when
+    upstream SSE is buffered or the response collapses to ~0-1 ms of decode
+    time, so we render those rows as undefined rather than displaying
+    physically implausible values.
     """
     if stream is not True:
         return None
@@ -1553,6 +1565,10 @@ def _decode_throughput_tps(
     if latency_ms is None or latency_ms <= ttft_ms:
         return None
     if completion_tokens is None or completion_tokens <= 1:
+        return None
+    if latency_ms - ttft_ms < _DECODE_MIN_WINDOW_MS:
+        return None
+    if completion_tokens < _DECODE_MIN_TOKENS:
         return None
     return (completion_tokens - 1) / ((latency_ms - ttft_ms) / 1000.0)
 
