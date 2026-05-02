@@ -205,7 +205,7 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
         # invariants instead.
         for window in body["windows"]:
             assert {"key", "label", "window_minutes"}.issubset(window.keys())
-            for metric_key in ("prompt_tokens", "completion_tokens", "ttft_ms", "tbt_ms"):
+            for metric_key in ("prompt_tokens", "completion_tokens", "ttft_ms", "throughput_tps"):
                 assert metric_key in window, f"missing {metric_key} in {window['key']}"
                 dist = window[metric_key]
                 # Required keys present
@@ -248,8 +248,8 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
         five_min = next(w for w in body["windows"] if w["key"] == "5m")
         assert five_min["prompt_tokens"]["count"] >= 11
         assert five_min["ttft_ms"]["count"] >= 10
-        # tbt: 10 valid streaming rows; the buggy row's tbt is clamped to NULL
-        assert five_min["tbt_ms"]["count"] >= 10
+        # throughput: 10 valid streaming rows; the buggy row's throughput is clamped to NULL
+        assert five_min["throughput_tps"]["count"] >= 10
     finally:
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM api_logs WHERE model_id = $1", tag)

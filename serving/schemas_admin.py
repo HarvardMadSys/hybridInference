@@ -436,7 +436,7 @@ class AdminPerformanceMetricsWindow(BaseModel):
     prompt_tokens: AdminMetricDistribution
     completion_tokens: AdminMetricDistribution
     ttft_ms: AdminMetricDistribution
-    tbt_ms: AdminMetricDistribution
+    throughput_tps: AdminMetricDistribution
 
 
 class AdminPerformanceMetricsResponse(BaseModel):
