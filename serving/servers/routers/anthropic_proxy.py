@@ -27,6 +27,7 @@ from serving.adapters.claude_pool import get_shared_pool
 from serving.adapters.claude_sub import _ANTHROPIC_BETA, _ANTHROPIC_VERSION
 from serving.adapters.codex_token import NoHealthyAccountError
 from serving.config.settings import has_role
+from serving.exceptions import scrub_error_for_user
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     normalize_model_label,
@@ -174,12 +175,13 @@ def _schedule_db_log(
     *,
     request_id: str,
     model_id: str,
-    account_id: str,
+    account_id: str | None,
     usage: dict[str, int],
     latency_ms: int,
     status_code: int,
     pricing: dict[str, str],
     metadata: dict[str, Any],
+    error: str | None = None,
 ) -> None:
     """Schedule a background DB log task (same pattern as completions.py)."""
 
@@ -198,6 +200,7 @@ def _schedule_db_log(
                 },
                 latency_ms=latency_ms,
                 status_code=status_code,
+                error=error,
                 params={"surface": "anthropic_proxy", "account_id": account_id},
                 metadata=metadata,
                 pricing=pricing,
@@ -441,17 +444,46 @@ async def _forward_non_streaming(
                 data = await _do_request(headers)
             except aiohttp.ClientResponseError as retry_exc:
                 account_pool.report_failure(account.id, retry_exc.status)
-                return _forward_upstream_error(retry_exc, model_id)
+                return _forward_upstream_error(
+                    retry_exc,
+                    model_id,
+                    request_id=request_id,
+                    log_store=log_store,
+                    account_id=account.id,
+                    latency_ms=int((time.time() - start_time) * 1000),
+                    metadata=metadata,
+                )
         else:
             account_pool.report_failure(account.id, exc.status)
-            return _forward_upstream_error(exc, model_id)
+            return _forward_upstream_error(
+                exc,
+                model_id,
+                request_id=request_id,
+                log_store=log_store,
+                account_id=account.id,
+                latency_ms=int((time.time() - start_time) * 1000),
+                metadata=metadata,
+            )
     except (aiohttp.ClientError, TimeoutError) as exc:
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label(model_id),
             provider=normalize_provider_label(_PROVIDER_NAME),
             status_code="502",
         ).inc()
-        return _anthropic_error(502, f"Upstream connection failed: {exc}")
+        if log_store is not None:
+            _schedule_db_log(
+                log_store,
+                request_id=request_id,
+                model_id=model_id,
+                account_id=account.id,
+                usage={"input_tokens": 0, "output_tokens": 0},
+                latency_ms=int((time.time() - start_time) * 1000),
+                status_code=502,
+                pricing={},
+                metadata=metadata,
+                error=f"Upstream connection failed: {exc}",
+            )
+        return _anthropic_error(502, scrub_error_for_user(exc, request_id, 502))
 
     account_pool.report_success(account.id)
 
@@ -522,7 +554,20 @@ async def _forward_streaming(
             provider=normalize_provider_label(_PROVIDER_NAME),
             status_code="502",
         ).inc()
-        return _anthropic_error(502, f"Upstream connection failed: {exc}")
+        if log_store is not None:
+            _schedule_db_log(
+                log_store,
+                request_id=request_id,
+                model_id=model_id,
+                account_id=account.id,
+                usage={"input_tokens": 0, "output_tokens": 0},
+                latency_ms=int((time.time() - start_time) * 1000),
+                status_code=502,
+                pricing={},
+                metadata=metadata,
+                error=f"Upstream connection failed: {exc}",
+            )
+        return _anthropic_error(502, scrub_error_for_user(exc, request_id, 502))
 
     # Handle non-2xx before streaming.
     if resp.status == 401:
@@ -533,18 +578,49 @@ async def _forward_streaming(
         try:
             resp = await session.post(url, json=body, headers=headers, timeout=timeout)
         except (aiohttp.ClientError, TimeoutError) as exc:
-            return _anthropic_error(502, f"Upstream connection failed on retry: {exc}")
+            if log_store is not None:
+                _schedule_db_log(
+                    log_store,
+                    request_id=request_id,
+                    model_id=model_id,
+                    account_id=account.id,
+                    usage={"input_tokens": 0, "output_tokens": 0},
+                    latency_ms=int((time.time() - start_time) * 1000),
+                    status_code=502,
+                    pricing={},
+                    metadata=metadata,
+                    error=f"Upstream connection failed on retry: {exc}",
+                )
+            return _anthropic_error(502, scrub_error_for_user(exc, request_id, 502))
         if resp.status >= 400:
             account_pool.report_failure(account.id, resp.status)
             error_body = await resp.text()
             await resp.release()
-            return _forward_raw_error(resp.status, error_body, model_id)
+            return _forward_raw_error(
+                resp.status,
+                error_body,
+                model_id,
+                request_id=request_id,
+                log_store=log_store,
+                account_id=account.id,
+                latency_ms=int((time.time() - start_time) * 1000),
+                metadata=metadata,
+            )
 
     if resp.status >= 400:
         account_pool.report_failure(account.id, resp.status)
         error_body = await resp.text()
         await resp.release()
-        return _forward_raw_error(resp.status, error_body, model_id)
+        return _forward_raw_error(
+            resp.status,
+            error_body,
+            model_id,
+            request_id=request_id,
+            log_store=log_store,
+            account_id=account.id,
+            latency_ms=int((time.time() - start_time) * 1000),
+            metadata=metadata,
+        )
 
     # Do NOT report_success here — wait until the stream completes
     # without error, matching claude_sub.py behaviour.
@@ -616,31 +692,73 @@ async def _forward_streaming(
 # ------------------------------------------------------------------
 
 
-def _forward_upstream_error(exc: aiohttp.ClientResponseError, model_id: str) -> JSONResponse:
-    """Forward an aiohttp upstream error as an Anthropic-format response."""
+def _forward_upstream_error(
+    exc: aiohttp.ClientResponseError,
+    model_id: str,
+    *,
+    request_id: str,
+    log_store=None,
+    account_id: str | None = None,
+    latency_ms: int = 0,
+    metadata: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """Return an Anthropic-format error with provider info scrubbed.
+
+    Persists the raw upstream error body (if present) to api_logs.error so
+    operators can debug from the request_id surfaced to the user.
+    """
     API_MODEL_REQUESTS.labels(
         model=normalize_model_label(model_id),
         provider=normalize_provider_label(_PROVIDER_NAME),
         status_code=str(exc.status),
     ).inc()
-    # Try to return the upstream error body verbatim.
-    error_body = getattr(exc, "error_body", None)
-    if error_body:
-        try:
-            return JSONResponse(status_code=exc.status, content=json.loads(error_body))
-        except (json.JSONDecodeError, TypeError):
-            pass
-    return _anthropic_error(exc.status, exc.message or "Upstream error")
+    raw_error = getattr(exc, "error_body", None) or exc.message or str(exc)
+    if log_store is not None:
+        _schedule_db_log(
+            log_store,
+            request_id=request_id,
+            model_id=model_id,
+            account_id=account_id,
+            usage={"input_tokens": 0, "output_tokens": 0},
+            latency_ms=latency_ms,
+            status_code=exc.status,
+            pricing={},
+            metadata=metadata or {},
+            error=str(raw_error),
+        )
+    scrubbed = scrub_error_for_user(exc, request_id, exc.status)
+    return _anthropic_error(exc.status, scrubbed)
 
 
-def _forward_raw_error(status: int, body: str, model_id: str) -> JSONResponse:
-    """Forward a raw upstream error (from streaming pre-check)."""
+def _forward_raw_error(
+    status: int,
+    body: str,
+    model_id: str,
+    *,
+    request_id: str,
+    log_store=None,
+    account_id: str | None = None,
+    latency_ms: int = 0,
+    metadata: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """Return a scrubbed Anthropic-format error and persist raw body to DB."""
     API_MODEL_REQUESTS.labels(
         model=normalize_model_label(model_id),
         provider=normalize_provider_label(_PROVIDER_NAME),
         status_code=str(status),
     ).inc()
-    try:
-        return JSONResponse(status_code=status, content=json.loads(body))
-    except (json.JSONDecodeError, TypeError):
-        return _anthropic_error(status, body or "Upstream error")
+    if log_store is not None:
+        _schedule_db_log(
+            log_store,
+            request_id=request_id,
+            model_id=model_id,
+            account_id=account_id,
+            usage={"input_tokens": 0, "output_tokens": 0},
+            latency_ms=latency_ms,
+            status_code=status,
+            pricing={},
+            metadata=metadata or {},
+            error=body or "",
+        )
+    scrubbed = scrub_error_for_user(None, request_id, status)
+    return _anthropic_error(status, scrubbed)
