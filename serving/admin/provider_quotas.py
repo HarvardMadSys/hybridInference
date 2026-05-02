@@ -39,6 +39,35 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _next_reset(period: str, now: datetime | None = None) -> datetime:
+    """Compute the next reset datetime in UTC for a given period.
+
+    Supported periods: daily, weekly, monthly, session.
+    - daily → next midnight UTC
+    - weekly → next Monday 00:00 UTC
+    - monthly → 1st of next month 00:00 UTC
+    - session → next midnight UTC (same as daily)
+    """
+    now = now or _now()
+    period = period.lower().strip()
+    if period == "weekly":
+        days_until_monday = (7 - now.weekday()) % 7 or 7
+        return (now + timedelta(days=days_until_monday)).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+    if period == "monthly":
+        if now.month == 12:
+            return now.replace(
+                year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0
+            )
+        return now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    day_reset = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return day_reset
+
+
 def _parse_iso(value: Any) -> datetime | None:
     """Parse an ISO-8601 string into a UTC-aware datetime; None on failure.
 
@@ -300,6 +329,7 @@ async def fetch_zai() -> ProviderQuotaResult:
         return _err("zai", "ZAI", key, "parse_error")
 
     usages: list[ProviderQuotaUsage] = []
+    reset_at = _next_reset("monthly")
     for entry in limits:
         if not isinstance(entry, dict):
             continue
@@ -323,7 +353,7 @@ async def fetch_zai() -> ProviderQuotaResult:
                     used=float(pct) if isinstance(pct, (int, float)) else None,
                     limit=100.0,
                     unit="%",
-                    reset_at=None,
+                    reset_at=reset_at,
                 )
             )
             continue
@@ -334,7 +364,7 @@ async def fetch_zai() -> ProviderQuotaResult:
                 used=float(used_raw) if isinstance(used_raw, (int, float)) else None,
                 limit=float(limit_raw) if isinstance(limit_raw, (int, float)) else None,
                 unit=unit,
-                reset_at=None,
+                reset_at=reset_at,
             )
         )
 
@@ -561,13 +591,15 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
         except ValueError:
             continue
         label = f"{match.group('label').capitalize()} usage"
+        period = match.group("label").lower()
+        reset_at = _next_reset(period)
         usages.append(
             ProviderQuotaUsage(
                 label=label,
                 used=pct,
                 limit=100.0,
                 unit="%",
-                reset_at=None,
+                reset_at=reset_at,
             )
         )
     return usages
