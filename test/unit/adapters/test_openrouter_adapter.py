@@ -10,6 +10,7 @@ import pytest
 
 from serving.adapters.base import ModelConfig, UsageInfo
 from serving.adapters.openai_compat import OpenAICompatAdapter
+from serving.adapters.openrouter import OpenRouterAdapter
 from serving.adapters.profiles import (
     ProviderProfile,
     get_usage_normalizer,
@@ -240,8 +241,6 @@ def _make_or_cfg(*, pinned: str | None = None) -> ModelConfig:
 
 
 def test_openrouter_adapter_attribution_headers() -> None:
-    from serving.adapters.openrouter import OpenRouterAdapter
-
     adapter = OpenRouterAdapter(_make_or_cfg())
     headers = adapter._build_headers()
     assert headers["HTTP-Referer"] == "https://freeinference.org"
@@ -250,8 +249,6 @@ def test_openrouter_adapter_attribution_headers() -> None:
 
 
 def test_openrouter_adapter_payload_no_pin() -> None:
-    from serving.adapters.openrouter import OpenRouterAdapter
-
     adapter = OpenRouterAdapter(_make_or_cfg(pinned=None))
     payload = adapter._augment_payload(
         {"model": "x", "messages": [{"role": "user", "content": "hi"}]},
@@ -263,8 +260,6 @@ def test_openrouter_adapter_payload_no_pin() -> None:
 
 
 def test_openrouter_adapter_payload_with_pin() -> None:
-    from serving.adapters.openrouter import OpenRouterAdapter
-
     adapter = OpenRouterAdapter(_make_or_cfg(pinned="deepinfra"))
     payload = adapter._augment_payload(
         {"model": "x", "messages": []},
@@ -274,8 +269,6 @@ def test_openrouter_adapter_payload_with_pin() -> None:
 
 
 def test_openrouter_adapter_streaming_payload_includes_stream_options() -> None:
-    from serving.adapters.openrouter import OpenRouterAdapter
-
     adapter = OpenRouterAdapter(_make_or_cfg())
     payload = adapter._augment_payload(
         {"model": "x", "messages": [], "stream": True},
@@ -286,8 +279,6 @@ def test_openrouter_adapter_streaming_payload_includes_stream_options() -> None:
 
 
 def test_openrouter_adapter_does_not_overwrite_existing_stream_options() -> None:
-    from serving.adapters.openrouter import OpenRouterAdapter
-
     adapter = OpenRouterAdapter(_make_or_cfg())
     payload = adapter._augment_payload(
         {"messages": [], "stream": True, "stream_options": {"foo": "bar"}},
@@ -299,8 +290,6 @@ def test_openrouter_adapter_does_not_overwrite_existing_stream_options() -> None
 @pytest.mark.asyncio
 async def test_openrouter_adapter_chat_completion_threads_upstream_cost() -> None:
     """Non-stream response carries upstream_cost_usd in the _routing block."""
-    from serving.adapters.openrouter import OpenRouterAdapter
-
     adapter = OpenRouterAdapter(_make_or_cfg(pinned="deepinfra"))
     upstream_response = {
         "id": "x",
@@ -338,8 +327,6 @@ async def test_openrouter_adapter_chat_completion_threads_upstream_cost() -> Non
 @pytest.mark.asyncio
 async def test_openrouter_adapter_chat_completion_omits_cost_when_absent() -> None:
     """When OpenRouter doesn't return cost, _routing has no upstream_cost_usd key."""
-    from serving.adapters.openrouter import OpenRouterAdapter
-
     adapter = OpenRouterAdapter(_make_or_cfg())
     upstream_response = {
         "id": "x",
@@ -391,3 +378,33 @@ async def test_non_or_adapter_response_has_no_routing_block() -> None:
     with patch.object(adapter, "_post_with_pool", AsyncMock(return_value=upstream_response)):
         result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
     assert "_routing" not in result
+
+
+def test_normalize_usage_openrouter_emits_one_warning_per_bad_cost(caplog) -> None:
+    """OpenRouter adapter should call the normalizer exactly once per response,
+    so a malformed cost only logs one warning, not two."""
+    import logging
+
+    adapter = OpenRouterAdapter(_make_or_cfg())
+    upstream_response = {
+        "id": "x",
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+            "cost": "garbage",
+        },
+    }
+    with caplog.at_level(logging.WARNING):
+        # Use the underlying parser directly — chat_completion would call HTTP.
+        adapter._parse_completion_response(upstream_response)
+    bad_cost_warnings = [r for r in caplog.records if "non-numeric cost" in r.message]
+    assert len(bad_cost_warnings) == 1, (
+        f"Expected 1 warning, got {len(bad_cost_warnings)}: {bad_cost_warnings}"
+    )

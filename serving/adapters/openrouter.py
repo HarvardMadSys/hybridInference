@@ -53,8 +53,22 @@ class OpenRouterAdapter(OpenAICompatAdapter):
         return payload
 
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
-        formatted = super()._parse_completion_response(response)
+        from .profiles import extract_tool_calls_for_profile
+
+        choice = response["choices"][0]
+        message = choice["message"]
+        tool_calls = extract_tool_calls_for_profile(self._usage_profile, message)
         usage_info = self._parse_usage(response.get("usage", {}))
+
+        formatted = self.format_response(
+            content=message.get("content", ""),
+            model=self.config.id,
+            usage=usage_info,
+            tool_calls=tool_calls,
+            reasoning_content=message.get("reasoning_content"),
+            finish_reason=choice.get("finish_reason", "stop"),
+        )
+
         routing: dict[str, Any] = {
             "provider": self.config.provider,
             "base_url": self.config.base_url,
