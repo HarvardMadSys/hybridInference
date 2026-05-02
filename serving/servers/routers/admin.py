@@ -1565,11 +1565,10 @@ async def admin_get_ttft_scatter(
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminTtftScatterResponse:
-    """Return TTFT vs input length scatter data for the last 1000 successful
-    streaming requests of each model, with cache-hit flag per point.
+    """Return TTFT vs input length scatter data per model.
 
-    Only successful (status 200-399) streaming rows with a recorded TTFT and
-    a non-empty prompt are returned. `cache_hit` is true iff
+    For each model, returns up to the last 1000 successful streaming requests
+    with a recorded TTFT and a non-empty prompt. `cache_hit` is true iff
     `cache_read_tokens > 0`.
     """
     if not db_logger or not db_logger.pool:
