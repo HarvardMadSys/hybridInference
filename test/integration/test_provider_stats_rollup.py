@@ -251,3 +251,100 @@ async def test_run_rollup_is_idempotent(db_logger: DatabaseLogger):
         row = await conn.fetchrow("SELECT request_count FROM provider_hourly_stats LIMIT 1")
     assert n == 1
     assert row["request_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_hourly_job_rolls_up_previous_hour(db_logger: DatabaseLogger):
+    from serving.admin.provider_stats_rollup import hourly_job
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    prev = now - timedelta(hours=1)
+
+    await _insert_api_log(
+        pool,
+        request_id="hr-1",
+        provider="chutes",
+        model_id="meta/llama-3.3-70b",
+        timestamp=prev + timedelta(minutes=12),
+        stream=True,
+        ttft_ms=500,
+        latency_ms=4500,
+        completion_tokens=300,
+    )
+
+    await hourly_job(pool)
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT request_count, hour_bucket
+            FROM provider_hourly_stats
+            WHERE provider='chutes' AND model_id='meta/llama-3.3-70b'
+            """
+        )
+    assert row is not None
+    assert row["request_count"] == 1
+    # The bucket equals the previous hour (hour-truncated)
+    assert row["hour_bucket"] == prev
+
+
+@pytest.mark.asyncio
+async def test_purge_old_removes_aged_rows(db_logger: DatabaseLogger):
+    from serving.admin.provider_stats_rollup import purge_old
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    old = datetime.now(timezone.utc) - timedelta(days=45)
+    new = datetime.now(timezone.utc) - timedelta(days=2)
+
+    async with pool.acquire() as conn:
+        for ts in (old, new):
+            await conn.execute(
+                """
+                INSERT INTO provider_hourly_stats (
+                    hour_bucket, provider, model_id,
+                    request_count, error_count, stream_count,
+                    total_completion_tokens
+                ) VALUES ($1, 'p', 'm', 1, 0, 1, 100)
+                ON CONFLICT DO NOTHING
+                """,
+                ts.replace(minute=0, second=0, microsecond=0),
+            )
+
+    deleted = await purge_old(pool, retention_days=30)
+    assert deleted == 1
+
+    async with pool.acquire() as conn:
+        n = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
+    assert n == 1
+
+
+@pytest.mark.asyncio
+async def test_hourly_job_skips_when_locked(db_logger: DatabaseLogger, pg_dsn: str):
+    """A second concurrent hourly_job acquires no lock and returns no work."""
+    import asyncpg
+
+    from serving.admin.provider_stats_rollup import ADVISORY_LOCK_KEY, hourly_job
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    # Hold the advisory lock on a separate session.
+    holder = await asyncpg.connect(pg_dsn)
+    try:
+        got = await holder.fetchval("SELECT pg_try_advisory_lock($1)", ADVISORY_LOCK_KEY)
+        assert got is True
+
+        # Run hourly_job: should log "lock held, skipping" and not insert.
+        await hourly_job(pool)
+
+        async with pool.acquire() as conn:
+            n = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
+        assert n == 0
+    finally:
+        await holder.execute("SELECT pg_advisory_unlock($1)", ADVISORY_LOCK_KEY)
+        await holder.close()

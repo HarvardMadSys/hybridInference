@@ -5,14 +5,13 @@ Spec: docs/superpowers/specs/2026-05-02-per-provider-hourly-performance-design.m
 
 from __future__ import annotations
 
-import time  # noqa: F401  used in next task
+import time
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from datetime import datetime, timedelta, timezone  # noqa: F401  used in next task
-
     import asyncpg
 
 logger = get_logger(__name__)
@@ -131,3 +130,82 @@ async def run_rollup(
         return int(result.rsplit(" ", 1)[-1])
     except ValueError:
         return 0
+
+
+PURGE_SQL = """
+DELETE FROM provider_hourly_stats
+WHERE hour_bucket < NOW() - $1::interval
+"""
+
+
+async def purge_old(pool: asyncpg.Pool, *, retention_days: int = 30) -> int:
+    """Delete rows older than retention_days. Returns count deleted."""
+    async with pool.acquire() as conn:
+        result = await conn.execute(PURGE_SQL, timedelta(days=retention_days))
+    try:
+        return int(result.rsplit(" ", 1)[-1])
+    except ValueError:
+        return 0
+
+
+async def _try_lock_run(
+    pool: asyncpg.Pool,
+    coro_factory,
+) -> bool:
+    """Acquire pg_try_advisory_lock; if it succeeds, run coro_factory(conn).
+
+    Returns True if the work ran, False if the lock was already held.
+    The lock is scoped to a dedicated connection that we hold for the
+    duration of the work and release in a finally.
+    """
+    async with pool.acquire() as conn:
+        got = await conn.fetchval("SELECT pg_try_advisory_lock($1)", ADVISORY_LOCK_KEY)
+        if not got:
+            logger.info("rollup_provider_stats: lock held, skipping")
+            return False
+        try:
+            await coro_factory(conn)
+            return True
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)", ADVISORY_LOCK_KEY)
+
+
+async def hourly_job(
+    pool: asyncpg.Pool,
+    *,
+    retention_days: int = 30,
+) -> None:
+    """APScheduler entrypoint. Roll up the previous full hour, then purge."""
+    started_at = time.monotonic()
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    start, end = now - timedelta(hours=1), now
+
+    rows_written = 0
+    outcome = "error"
+
+    async def _do(conn) -> None:
+        nonlocal rows_written
+        result = await conn.execute(ROLLUP_SQL, start, end)
+        try:
+            rows_written = int(result.rsplit(" ", 1)[-1])
+        except ValueError:
+            rows_written = 0
+        await conn.execute(PURGE_SQL, timedelta(days=retention_days))
+
+    try:
+        ran = await _try_lock_run(pool, _do)
+        outcome = "ok" if ran else "locked"
+    except Exception as exc:
+        logger.exception(f"rollup_provider_stats failed: {exc}")
+        outcome = "error"
+    finally:
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        logger.info(
+            "rollup_provider_stats: window=[%s, %s) rows=%d duration_ms=%d outcome=%s",
+            start.isoformat(),
+            end.isoformat(),
+            rows_written,
+            duration_ms,
+            outcome,
+        )
+        # Metrics emission is added in Task 10.
