@@ -64,9 +64,18 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
           {heading}
         </div>
         <div className="shrink-0 text-[11px] text-gray-400 tabular-nums">
-          {safePoints.length.toLocaleString()} pts ({cached.length.toLocaleString()} cached,{' '}
-          {uncached.length.toLocaleString()} uncached)
+          {safePoints.length.toLocaleString()} pts
         </div>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-gray-600">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          Cache hit ({cached.length.toLocaleString()})
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-slate-500" />
+          No cache ({uncached.length.toLocaleString()})
+        </span>
       </div>
       <div className="mt-3 h-[260px]">
         <ResponsiveContainer width="100%" height="100%">
@@ -106,7 +115,6 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               labelFormatter={() => ''}
               wrapperStyle={{ outline: 'none' }}
             />
-            <Legend wrapperStyle={{ fontSize: 11 }} />
             <Scatter
               name="Cache hit"
               data={cached}
