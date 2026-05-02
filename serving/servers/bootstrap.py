@@ -20,7 +20,10 @@ from routing.model_router_registry import ModelRouterRegistry
 from serving.adapters import ClaudeSubscriptionAdapter, CodexSubscriptionAdapter
 from serving.config.settings import USER_CONCURRENCY_LIMITS, get_settings
 from serving.http import AsyncHTTPClient
+from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
+from serving.storage.postgres_log import PostgresLogStore
+from serving.storage.postgres_operational import PostgresOperationalStore
 from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
 
@@ -258,54 +261,56 @@ async def initialize() -> AppServices:
 
     router = RouteExecutor()
 
-    # Database logger with retry logic
-    db_logger = _init_db_logger()
-    if db_logger:
-        max_retries = 3
-        retry_delay = 2  # seconds
-        for attempt in range(max_retries):
-            try:
-                await db_logger.initialize()
-                logger.info("Database logger initialized successfully")
-                # Proactively update metric on successful initialization
-                from serving.observability.metrics import DATABASE_CONNECTED
-
-                DATABASE_CONNECTED.set(1)
-                # Start broadcast email scheduler. If rehydration fails after
-                # the scheduler has started, tear it back down so we don't end
-                # up with a half-initialized scheduler running in the
-                # background.
-                if db_logger.pool:
-                    try:
-                        email_scheduler.start_scheduler(db_logger.pool)
-                        await email_scheduler.rehydrate_scheduled_broadcasts()
-                    except Exception as sched_exc:
-                        logger.error(f"Email scheduler startup failed: {sched_exc}")
-                        try:
-                            email_scheduler.stop_scheduler()
-                        except Exception as stop_exc:
-                            logger.error(
-                                f"Email scheduler teardown after startup failure also failed: "
-                                f"{stop_exc}"
-                            )
-                break
-            except Exception as exc:
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Database initialization failed (attempt {attempt + 1}/{max_retries}): {exc}. "
-                        f"Retrying in {retry_delay}s..."
-                    )
-                    await asyncio.sleep(retry_delay)
-                else:
-                    logger.error(
-                        f"Database logger failed to initialize after {max_retries} attempts: {exc}. "
-                        "Service will start without database logging."
-                    )
-                    db_logger = None
-                    # Proactively update metric on initialization failure
+    # Database logger — only needed when DB_BACKEND is postgres (default).
+    # When DB_BACKEND=d1, all data goes to Cloudflare D1; skip Postgres entirely.
+    settings = get_settings()
+    db_logger = None
+    if settings.db_backend != "d1":
+        db_logger = _init_db_logger()
+        if db_logger:
+            max_retries = 3
+            retry_delay = 2  # seconds
+            for attempt in range(max_retries):
+                try:
+                    await db_logger.initialize()
+                    logger.info("Database logger initialized successfully")
                     from serving.observability.metrics import DATABASE_CONNECTED
 
-                    DATABASE_CONNECTED.set(0)
+                    DATABASE_CONNECTED.set(1)
+                    # Start broadcast email scheduler. Tear it down if rehydration
+                    # fails to avoid a half-initialized scheduler running in background.
+                    if db_logger.pool:
+                        try:
+                            email_scheduler.start_scheduler(db_logger.pool)
+                            await email_scheduler.rehydrate_scheduled_broadcasts()
+                        except Exception as sched_exc:
+                            logger.error(f"Email scheduler startup failed: {sched_exc}")
+                            try:
+                                email_scheduler.stop_scheduler()
+                            except Exception as stop_exc:
+                                logger.error(
+                                    f"Email scheduler teardown after startup failure also failed: "
+                                    f"{stop_exc}"
+                                )
+                    break
+                except Exception as exc:
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Database initialization failed (attempt {attempt + 1}/{max_retries}): "
+                            f"{exc}. Retrying in {retry_delay}s..."
+                        )
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        logger.error(
+                            f"Database logger failed to initialize after {max_retries} attempts: "
+                            f"{exc}. Service will start without database logging."
+                        )
+                        db_logger = None
+                        from serving.observability.metrics import DATABASE_CONNECTED
+
+                        DATABASE_CONNECTED.set(0)
+    else:
+        logger.info("DB_BACKEND=d1 — skipping PostgreSQL initialization")
 
     # Models into router
     embedding_adapters, model_infos = await _init_router_and_models(router)
@@ -345,17 +350,97 @@ async def initialize() -> AppServices:
             logger.warning(f"RouteWise initialization failed: {exc}. Using fixed routing.")
             model_router_registry = None
 
+    # Build store abstractions
+    operational_store = None
+    log_store = None
+
+    if settings.db_backend == "d1":
+        # D1 for both operational tables and logs — no Postgres needed
+        from serving.storage.d1_client import D1Client
+        from serving.storage.d1_log import D1LogStore
+        from serving.storage.d1_operational import D1OperationalStore
+
+        if not all([settings.d1_account_id, settings.d1_database_id, settings.d1_api_token]):
+            logger.error(
+                "DB_BACKEND=d1 but D1 credentials are missing. "
+                "Set D1_ACCOUNT_ID, D1_DATABASE_ID, and D1_API_TOKEN."
+            )
+        else:
+            d1_client = D1Client(
+                account_id=settings.d1_account_id,
+                database_id=settings.d1_database_id,
+                api_token=settings.d1_api_token,
+            )
+            # Raw D1 stores
+            d1_op_store = D1OperationalStore(d1_client)
+            await d1_op_store.initialize()
+
+            d1_log_store = D1LogStore(d1_client)
+            await d1_log_store.initialize()
+
+            # Dual-write: shadow-write to PostgreSQL when enabled
+            if settings.db_dual_write:
+                from serving.storage.dual_write import (
+                    DualWriteLogStore,
+                    DualWriteOperationalStore,
+                )
+
+                db_logger = _init_db_logger()
+                if db_logger:
+                    try:
+                        await db_logger.initialize()
+                        pg_op = PostgresOperationalStore(db_logger.pool)
+                        pg_log = PostgresLogStore(
+                            db_logger.pool,
+                            store_full_prompts=settings.db_store_full_content,
+                            use_chunked_hash=True,
+                        )
+                        d1_op_store = DualWriteOperationalStore(d1_op_store, pg_op)
+                        d1_log_store = DualWriteLogStore(d1_log_store, pg_log)
+                        logger.info("Dual-write enabled: D1 primary + PostgreSQL shadow")
+                    except Exception as exc:
+                        logger.warning(
+                            "DB_DUAL_WRITE=1 but PostgreSQL failed to initialize: %s "
+                            "— running D1-only without shadow",
+                            exc,
+                        )
+                        db_logger = None
+                else:
+                    logger.warning(
+                        "DB_DUAL_WRITE=1 but PostgreSQL unavailable — "
+                        "running D1-only without shadow"
+                    )
+
+            # Cache wraps the (possibly dual-write) operational store
+            operational_store = CachedOperationalStore(d1_op_store, InMemoryCache())
+            log_store = d1_log_store
+            logger.info("Operational store initialized (D1 + in-memory cache)")
+            logger.info("Log store initialized (D1 with buffered writes)")
+
+    elif db_logger and db_logger.pool:
+        # Default: both stores backed by Postgres
+        pg_operational = PostgresOperationalStore(db_logger.pool)
+        await pg_operational.initialize()
+        operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
+        log_store = PostgresLogStore(
+            db_logger.pool,
+            store_full_prompts=settings.db_store_full_content,
+            use_chunked_hash=True,
+        )
+        logger.info("Operational store initialized (Postgres + in-memory cache)")
+        logger.info("Log store initialized (Postgres)")
+
     # Per-user concurrency limiter (always on; in-process)
     user_concurrency_limiter = UserConcurrencyLimiter(USER_CONCURRENCY_LIMITS)
     logger.info("User concurrency limiter initialized: %s", USER_CONCURRENCY_LIMITS)
 
     # User statistics collector (optional)
     user_stats_collector = None
-    if os.getenv("METRICS_ENABLED", "1") == "1" and db_logger:
+    if os.getenv("METRICS_ENABLED", "1") == "1" and operational_store:
         from serving.observability.user_stats import UserStatsCollector
 
         interval = int(os.getenv("USER_STATS_INTERVAL_SECONDS", "60"))
-        user_stats_collector = UserStatsCollector(db_logger, interval_seconds=interval)
+        user_stats_collector = UserStatsCollector(operational_store, interval_seconds=interval)
         user_stats_collector.start()
         logger.info(f"User stats collector started (interval: {interval}s)")
 
@@ -366,6 +451,8 @@ async def initialize() -> AppServices:
         router=router,
         embedding_adapters=embedding_adapters or None,
         db_logger=db_logger,
+        operational_store=operational_store,
+        log_store=log_store,
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
         user_stats_collector=user_stats_collector,
@@ -385,6 +472,27 @@ async def shutdown(services: AppServices) -> None:
     except Exception as exc:
         logger.error(f"Email scheduler shutdown failed: {exc}")
 
+    # User stats collector must stop before stores are torn down
+    if services.user_stats_collector:
+        try:
+            await services.user_stats_collector.shutdown()
+        except Exception as exc:
+            logger.error(f"User stats collector shutdown failed: {exc}")
+
+    # Log store (flushes D1 buffer on shutdown)
+    if services.log_store:
+        try:
+            await services.log_store.cleanup()
+        except Exception as exc:
+            logger.error(f"Log store cleanup failed: {exc}")
+
+    # Operational store (closes D1 HTTP client when backend=d1)
+    if services.operational_store:
+        try:
+            await services.operational_store.cleanup()
+        except Exception as exc:
+            logger.error(f"Operational store cleanup failed: {exc}")
+
     # Database logger
     if services.db_logger:
         try:
@@ -398,13 +506,6 @@ async def shutdown(services: AppServices) -> None:
             await services.routing_manager.shutdown()
         except Exception as exc:
             logger.error(f"Routing manager shutdown failed: {exc}")
-
-    # User stats collector
-    if services.user_stats_collector:
-        try:
-            await services.user_stats_collector.shutdown()
-        except Exception as exc:
-            logger.error(f"User stats collector shutdown failed: {exc}")
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):

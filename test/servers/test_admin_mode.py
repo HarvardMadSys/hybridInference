@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,14 +24,14 @@ sys.path.insert(0, str(project_root))
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.config import settings as settings_module
-from serving.config.settings import get_settings
 from serving.servers import deps as deps_module
 from serving.servers.deps import AppServices
 from serving.servers.routers import auth_routes, internal, playground, user_routes
-from serving.storage.database import DatabaseLogger
 from serving.stream import done_sentinel, make_final_usage_chunk
 from serving.utils.jwt import generate_ulid
 from serving.utils.password import hash_password
+
+pytest_plugins = ["test.servers.conftest_auth"]
 
 
 class _PlaygroundAdapter(BaseAdapter):
@@ -58,19 +57,6 @@ class _PlaygroundAdapter(BaseAdapter):
             base_url="http://secret",
         )
         yield done_sentinel()
-
-
-class _AcquireContext:
-    """Async context manager for mocked database connections."""
-
-    def __init__(self, connection: AsyncMock) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> AsyncMock:
-        return self._connection
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        return None
 
 
 def _cfg(model_id: str) -> ModelConfig:
@@ -102,22 +88,17 @@ def _create_test_user(**overrides: Any) -> dict[str, Any]:
     return result
 
 
-async def _insert_user(auth_db_logger, **overrides: Any) -> dict[str, Any]:
-    """Insert a user row into the auth test database."""
+async def _insert_user(op_store, **overrides: Any) -> dict[str, Any]:
+    """Insert a user row via the operational store."""
     user = _create_test_user(**overrides)
-    async with auth_db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO users (id, email, password_hash, user_name, status, email_verified)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            user["id"],
-            user["email"].lower(),
-            user["password_hash"],
-            user["user_name"],
-            user["status"],
-            user["email_verified"],
-        )
+    await op_store.create_user(
+        user_id=user["id"],
+        email=user["email"],
+        password_hash=user["password_hash"],
+        user_name=user["user_name"],
+        email_verified=user["email_verified"],
+        status=user["status"],
+    )
     return user
 
 
@@ -131,97 +112,19 @@ async def _login(client: AsyncClient, email: str, password: str) -> tuple[str, s
     return access_token, refresh_token
 
 
-def _mock_db_logger_with_rows(*rows: Any):
-    """Create a db logger whose fetchrow returns the provided rows in order."""
-    connection = AsyncMock()
-    connection.fetchrow = AsyncMock(side_effect=list(rows))
-    pool = MagicMock()
-    pool.acquire.return_value = _AcquireContext(connection)
-    logger = MagicMock()
-    logger.pool = pool
-    return logger, connection
-
-
-@pytest.fixture
-def auth_env(monkeypatch):
-    """Set auth-related environment variables for integration tests."""
-    test_env = {
-        "DB_ENABLED": "true",
-        "DB_HOST": os.getenv("TEST_DB_HOST", "localhost"),
-        "DB_PORT": os.getenv("TEST_DB_PORT", "5432"),
-        "DB_NAME": os.getenv("TEST_DB_NAME", "freeinference_test_db"),
-        "DB_USER": os.getenv("TEST_DB_USER", "postgres"),
-        "DB_PASSWORD": os.getenv("TEST_DB_PASSWORD", "postgres"),
-        "JWT_SECRET_KEY": "test-secret-key-for-testing-only-do-not-use-in-production",
-        "JWT_ALGORITHM": "HS256",
-        "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": "15",
-        "JWT_REFRESH_TOKEN_EXPIRE_DAYS": "30",
-        "API_KEY_SECRET": "test-api-key-secret-for-testing-only",
-        "COOKIE_SECURE": "0",
-        "COOKIE_SAMESITE": "lax",
-        "SIGNUP_ENABLED": "1",
-        "SIGNUP_DEFAULT_TIER": "free",
-        "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "100.00",
-        "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
-        "BASE_URL": "http://localhost:8000",
-    }
-    for key, value in test_env.items():
-        monkeypatch.setenv(key, value)
-
-    get_settings.cache_clear()
-    return test_env
-
-
 @pytest_asyncio.fixture
-async def auth_db_logger(auth_env):
-    """Real database logger for auth/session integration tests."""
-    db_config = {
-        "host": os.getenv("TEST_DB_HOST", "localhost"),
-        "port": int(os.getenv("TEST_DB_PORT", "5432")),
-        "database": os.getenv("TEST_DB_NAME", "freeinference_test_db"),
-        "user": os.getenv("TEST_DB_USER", "postgres"),
-        "password": os.getenv("TEST_DB_PASSWORD", "postgres"),
-    }
-
-    logger = DatabaseLogger(db_config=db_config)
-    try:
-        await logger.initialize()
-    except Exception as exc:
-        pytest.skip(f"PostgreSQL not available: {exc}")
-
-    yield logger
-    await logger.cleanup()
-
-
-@pytest_asyncio.fixture
-async def clean_auth_tables(auth_db_logger):
-    """Clean auth-related tables before and after each test."""
-    async with auth_db_logger.pool.acquire() as conn:
-        await conn.execute("DELETE FROM email_verification_tokens")
-        await conn.execute("DELETE FROM password_reset_tokens")
-        await conn.execute("DELETE FROM auth_sessions")
-        await conn.execute("DELETE FROM api_keys WHERE account_id IS NOT NULL")
-        await conn.execute("DELETE FROM users")
-
-    yield
-
-    async with auth_db_logger.pool.acquire() as conn:
-        await conn.execute("DELETE FROM email_verification_tokens")
-        await conn.execute("DELETE FROM password_reset_tokens")
-        await conn.execute("DELETE FROM auth_sessions")
-        await conn.execute("DELETE FROM api_keys WHERE account_id IS NOT NULL")
-        await conn.execute("DELETE FROM users")
-
-
-@pytest_asyncio.fixture
-async def admin_mode_app(auth_db_logger):
+async def admin_mode_app(auth_backend):
     """App with auth, internal, and playground routers."""
+    operational_store, log_store, db_logger, _ = auth_backend
+
     router = RouteExecutor()
     router.register_route("playground-model", [(_PlaygroundAdapter(_cfg("playground-model")), 1.0)])
 
     services = AppServices(
         router=router,
-        db_logger=auth_db_logger,
+        db_logger=db_logger,
+        operational_store=operational_store,
+        log_store=log_store,
         routing_manager=None,
     )
 
@@ -270,12 +173,19 @@ class TestAdminModeUnit:
     @pytest.mark.asyncio
     async def test_verify_grafana_rejects_revoked_session(self, monkeypatch):
         monkeypatch.setattr(settings_module.settings, "admin_emails", "admin@example.com")
-        db_logger, _ = _mock_db_logger_with_rows(
-            {"user_id": "u1", "expires_at": "9999-01-01T00:00:00+00:00", "revoked": True}
+        mock_op_store = MagicMock()
+        mock_op_store.get_session_by_token_hash = AsyncMock(
+            return_value={
+                "user_id": "u1",
+                "expires_at": "9999-01-01T00:00:00+00:00",
+                "revoked": True,
+                "id": "session-1",
+                "sid": "s1",
+            }
         )
 
         with pytest.raises(HTTPException) as exc:
-            await internal.verify_grafana(refresh_token="token", db_logger=db_logger)
+            await internal.verify_grafana(refresh_token="token", op_store=mock_op_store)
 
         assert exc.value.status_code == 401
 
@@ -293,6 +203,7 @@ class TestAdminModeUnit:
         assert parsed["choices"][0]["delta"]["content"] == "hello"
 
 
+@pytest.mark.dbtest
 class TestGrafanaVerification:
     """Tests for the internal Grafana auth endpoint."""
 
@@ -305,12 +216,13 @@ class TestGrafanaVerification:
     async def test_verify_grafana_returns_403_for_non_admin(
         self,
         admin_mode_client: AsyncClient,
-        auth_db_logger,
+        auth_backend,
         monkeypatch,
         clean_auth_tables,
     ):
+        operational_store, _, _, _ = auth_backend
         monkeypatch.setattr(settings_module.settings, "admin_emails", "")
-        user = await _insert_user(auth_db_logger)
+        user = await _insert_user(operational_store)
         _, refresh_token = await _login(admin_mode_client, user["email"], user["password"])
 
         response = await admin_mode_client.get(
@@ -324,11 +236,12 @@ class TestGrafanaVerification:
     async def test_verify_grafana_returns_200_for_admin(
         self,
         admin_mode_client: AsyncClient,
-        auth_db_logger,
+        auth_backend,
         monkeypatch,
         clean_auth_tables,
     ):
-        user = await _insert_user(auth_db_logger)
+        operational_store, _, _, _ = auth_backend
+        user = await _insert_user(operational_store)
         monkeypatch.setattr(settings_module.settings, "admin_emails", user["email"].lower())
         _, refresh_token = await _login(admin_mode_client, user["email"], user["password"])
 
@@ -340,6 +253,7 @@ class TestGrafanaVerification:
         assert response.status_code == 200
 
 
+@pytest.mark.dbtest
 class TestPlaygroundAccess:
     """Tests for admin-only playground endpoints."""
 
@@ -347,12 +261,13 @@ class TestPlaygroundAccess:
     async def test_playground_models_returns_403_for_non_admin(
         self,
         admin_mode_client: AsyncClient,
-        auth_db_logger,
+        auth_backend,
         monkeypatch,
         clean_auth_tables,
     ):
+        operational_store, _, _, _ = auth_backend
         monkeypatch.setattr(settings_module.settings, "admin_emails", "")
-        user = await _insert_user(auth_db_logger)
+        user = await _insert_user(operational_store)
         access_token, _ = await _login(admin_mode_client, user["email"], user["password"])
 
         response = await admin_mode_client.get(
@@ -366,11 +281,12 @@ class TestPlaygroundAccess:
     async def test_playground_models_returns_model_list_for_admin(
         self,
         admin_mode_client: AsyncClient,
-        auth_db_logger,
+        auth_backend,
         monkeypatch,
         clean_auth_tables,
     ):
-        user = await _insert_user(auth_db_logger)
+        operational_store, _, _, _ = auth_backend
+        user = await _insert_user(operational_store)
         monkeypatch.setattr(settings_module.settings, "admin_emails", user["email"].lower())
         access_token, _ = await _login(admin_mode_client, user["email"], user["password"])
 
@@ -392,20 +308,17 @@ class TestPlaygroundAccess:
     async def test_playground_models_uses_db_role_for_admin_check(
         self,
         admin_mode_client: AsyncClient,
-        auth_db_logger,
+        auth_backend,
         monkeypatch,
         clean_auth_tables,
     ):
-        user = await _insert_user(auth_db_logger)
+        operational_store, _, _, _ = auth_backend
+        user = await _insert_user(operational_store)
         monkeypatch.setattr(settings_module.settings, "admin_emails", user["email"].lower())
         access_token, _ = await _login(admin_mode_client, user["email"], user["password"])
 
-        async with auth_db_logger.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET email = $1 WHERE id = $2",
-                "revoked-admin@example.com",
-                user["id"],
-            )
+        # Change email after login — JWT still has old email, but DB role check uses user_id
+        await operational_store.update_user_fields(user["id"], email="revoked-admin@example.com")
 
         response = await admin_mode_client.get(
             "/internal/playground/models",
@@ -418,11 +331,12 @@ class TestPlaygroundAccess:
     async def test_playground_chat_strips_internal_routing_metadata(
         self,
         admin_mode_client: AsyncClient,
-        auth_db_logger,
+        auth_backend,
         monkeypatch,
         clean_auth_tables,
     ):
-        user = await _insert_user(auth_db_logger)
+        operational_store, _, _, _ = auth_backend
+        user = await _insert_user(operational_store)
         monkeypatch.setattr(settings_module.settings, "admin_emails", user["email"].lower())
         access_token, _ = await _login(admin_mode_client, user["email"], user["password"])
 

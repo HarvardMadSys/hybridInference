@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useId, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import {
@@ -161,77 +161,106 @@ function formatBucketEdge(value: number, kind: 'tokens' | 'ms'): string {
   return `${value}ms`;
 }
 
-function MetricSubPanel({
-  title,
-  dist,
-  kind,
-}: {
-  title: string;
-  dist: AdminMetricDistribution;
-  kind: 'tokens' | 'ms';
-}) {
-  const formatValue = (v: number | null | undefined): string => {
+function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
+  const rows: Array<{
+    title: string;
+    dist: AdminMetricDistribution;
+    kind: 'tokens' | 'ms';
+  }> = [
+    { title: 'Prompt tokens', dist: metric.prompt_tokens, kind: 'tokens' },
+    { title: 'Response tokens', dist: metric.completion_tokens, kind: 'tokens' },
+    { title: 'TTFT', dist: metric.ttft_ms, kind: 'ms' },
+    { title: 'TBT', dist: metric.tbt_ms, kind: 'ms' },
+  ];
+  const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms'): string => {
     if (v == null) return '—';
     return kind === 'ms' ? formatLatency(v) : formatTokens(v);
   };
-  const maxBucket = Math.max(...dist.histogram.map((b) => b.count), 1);
-
   return (
-    <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <div className="text-[12px] font-medium text-gray-700">{title}</div>
-        <div className="text-[11px] tabular-nums text-gray-400">
-          n={dist.count.toLocaleString()}
-        </div>
-      </div>
-      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] tabular-nums text-gray-600">
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-gray-400">p50</div>
-          <div className="font-medium text-gray-900">{formatValue(dist.p50)}</div>
-        </div>
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-gray-400">p95</div>
-          <div className="font-medium text-gray-900">{formatValue(dist.p95)}</div>
-        </div>
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-gray-400">p99</div>
-          <div className="font-medium text-gray-900">{formatValue(dist.p99)}</div>
-        </div>
-      </div>
-      <div className="mt-2 flex h-10 items-end gap-px overflow-hidden rounded-md bg-white px-1 py-1">
-        {dist.histogram.map((b, idx) => {
-          const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
-          const upperLabel = b.upper_bound == null ? '∞' : formatBucketEdge(b.upper_bound, kind);
-          const lowerLabel = formatBucketEdge(b.lower_bound, kind);
-          return (
-            <div
-              key={`${idx}-${b.lower_bound}`}
-              className={`min-w-0 flex-1 rounded-t-sm ${
-                b.count === 0 ? 'bg-gray-200' : 'bg-gray-700'
-              }`}
-              style={{ height: `${height}%` }}
-              title={`[${lowerLabel}, ${upperLabel}): ${b.count.toLocaleString()}`}
-            />
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+    <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
       <div className="flex items-center justify-between">
-        <div className="text-[13px] font-semibold text-gray-900">{metric.label}</div>
-        <div className="text-[11px] text-gray-400">{metric.window_minutes}m window</div>
+        <div className="text-[12px] font-semibold text-gray-900">{metric.label}</div>
+        <div className="text-[10px] text-gray-400">{metric.window_minutes}m window</div>
       </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <MetricSubPanel title="Prompt tokens" dist={metric.prompt_tokens} kind="tokens" />
-        <MetricSubPanel title="Response tokens" dist={metric.completion_tokens} kind="tokens" />
-        <MetricSubPanel title="TTFT" dist={metric.ttft_ms} kind="ms" />
-        <MetricSubPanel title="TBT" dist={metric.tbt_ms} kind="ms" />
-      </div>
+      <table className="mt-2 w-full">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wider text-gray-400 font-medium">
+            <th className="py-1 text-left">Metric</th>
+            <th className="py-1 text-right">n</th>
+            <th className="py-1 text-right">p50</th>
+            <th className="py-1 text-right">p95</th>
+            <th className="py-1 text-right">p99</th>
+            <th className="py-1 text-right">Dist</th>
+          </tr>
+        </thead>
+        <tbody className="[&>tr+tr>td]:border-t [&>tr+tr>td]:border-gray-100">
+          {rows.map((row) => {
+            const maxBucket = Math.max(...row.dist.histogram.map((b) => b.count), 1);
+            return (
+              <tr key={row.title}>
+                <td className="py-1.5 text-[11px] text-gray-600">{row.title}</td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {row.dist.count.toLocaleString()}
+                </td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {formatValue(row.dist.p50, row.kind)}
+                </td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {formatValue(row.dist.p95, row.kind)}
+                </td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {formatValue(row.dist.p99, row.kind)}
+                </td>
+                <td className="py-1.5 text-right">
+                  {(() => {
+                    const peakIdx = row.dist.histogram.reduce(
+                      (best, b, i, arr) => (b.count > arr[best].count ? i : best),
+                      0,
+                    );
+                    const peak = row.dist.histogram[peakIdx];
+                    const peakLower = peak ? formatBucketEdge(peak.lower_bound, row.kind) : '';
+                    const peakUpper =
+                      peak == null
+                        ? ''
+                        : peak.upper_bound == null
+                          ? '∞'
+                          : formatBucketEdge(peak.upper_bound, row.kind);
+                    const srSummary =
+                      peak && peak.count > 0
+                        ? `Distribution peak [${peakLower}, ${peakUpper}) with ${peak.count.toLocaleString()} samples across ${row.dist.histogram.length} buckets`
+                        : 'Distribution: no samples';
+                    return (
+                      <>
+                        <span className="sr-only">{srSummary}</span>
+                        <div aria-hidden="true" className="ml-auto flex h-5 w-20 items-end gap-px">
+                          {row.dist.histogram.map((b, idx) => {
+                            const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
+                            const upperLabel =
+                              b.upper_bound == null
+                                ? '∞'
+                                : formatBucketEdge(b.upper_bound, row.kind);
+                            const lowerLabel = formatBucketEdge(b.lower_bound, row.kind);
+                            return (
+                              <div
+                                key={`${idx}-${b.lower_bound}`}
+                                className={`min-w-0 flex-1 rounded-t-[1px] ${
+                                  b.count === 0 ? 'bg-gray-200' : 'bg-gray-700'
+                                }`}
+                                style={{ height: `${height}%` }}
+                                title={`[${lowerLabel}, ${upperLabel}): ${b.count.toLocaleString()}`}
+                              />
+                            );
+                          })}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -243,7 +272,8 @@ function pct(used: number | null, limit: number | null): number | null {
 
 function formatNum(v: number | null): string {
   if (v == null) return '—';
-  if (Math.abs(v) < 1 && v !== 0) return v.toFixed(4);
+  if (Math.abs(v) < 0.01 && v !== 0) return v.toFixed(4);
+  if (Math.abs(v) < 1 && v !== 0) return v.toFixed(1);
   if (Number.isInteger(v)) return v.toLocaleString();
   return v.toFixed(2);
 }
@@ -324,12 +354,75 @@ const AUDIT_ACTIONS = [
   'update_key',
 ];
 
+function actionLabel(action: string): string {
+  if (!action) return action;
+  const s = action.replace(/_/g, ' ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+type AuditCategory = 'create' | 'approve' | 'reject' | 'update' | 'delete' | 'other';
+
+function actionCategory(action: string): AuditCategory {
+  if (action === 'regenerate_key') return 'create';
+  if (
+    action.startsWith('hard_delete') ||
+    action.startsWith('revoke_') ||
+    action.endsWith('_revoke')
+  )
+    return 'delete';
+  if (action.startsWith('approve_') || action.endsWith('_approve')) return 'approve';
+  if (action.startsWith('reject_') || action.endsWith('_reject') || action.endsWith('_cancel'))
+    return 'reject';
+  if (action.startsWith('create_') || action.endsWith('_create')) return 'create';
+  if (action.startsWith('update_') || action.endsWith('_update')) return 'update';
+  if (action.startsWith('delete_') || action.endsWith('_delete')) return 'delete';
+  return 'other';
+}
+
+const AUDIT_CATEGORY_CLASS: Record<AuditCategory, string> = {
+  create: 'bg-emerald-50 text-emerald-700',
+  approve: 'bg-violet-50 text-violet-700',
+  reject: 'bg-amber-50 text-amber-700',
+  update: 'bg-sky-50 text-sky-700',
+  delete: 'bg-rose-50 text-rose-700',
+  other: 'bg-gray-100 text-gray-700',
+};
+
+function formatRelative(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${Math.max(s, 0)}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatAuditDetailValue(v: unknown): { display: string; full: string } {
+  if (v === null || v === undefined) return { display: '—', full: '—' };
+  if (typeof v === 'string') {
+    const full = v;
+    const display = v.length > 80 ? `${v.slice(0, 80)}…` : v;
+    return { display, full };
+  }
+  if (typeof v === 'number' || typeof v === 'boolean') {
+    const s = String(v);
+    return { display: s, full: s };
+  }
+  const full = JSON.stringify(v);
+  const display = full.length > 80 ? `${full.slice(0, 80)}…` : full;
+  return { display, full };
+}
+
 export default function AdminPage() {
   const { state } = useAuth();
 
   // Top-level tab
   const [activeTab, setActiveTab] = useState<
-    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics'
+    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'performance'
   >('users');
 
   useEffect(() => {
@@ -341,9 +434,19 @@ export default function AdminPage() {
       tab === 'requests' ||
       tab === 'broadcast' ||
       tab === 'providers' ||
-      tab === 'analytics'
+      tab === 'analytics' ||
+      tab === 'performance'
     ) {
-      setActiveTab(tab as 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics');
+      setActiveTab(
+        tab as
+          | 'users'
+          | 'audit'
+          | 'requests'
+          | 'broadcast'
+          | 'providers'
+          | 'analytics'
+          | 'performance',
+      );
     }
   }, []);
 
@@ -406,7 +509,9 @@ export default function AdminPage() {
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditFilter, setAuditFilter] = useState('');
+  const [auditUserFilter, setAuditUserFilter] = useState('');
   const [auditOffset, setAuditOffset] = useState(0);
+  const auditReqIdRef = useRef(0);
   const AUDIT_PAGE_SIZE = 50;
 
   // Requests state
@@ -456,23 +561,26 @@ export default function AdminPage() {
   }, [filter, searchTerm, sortBy]);
 
   const loadAudit = useCallback(async () => {
+    const reqId = ++auditReqIdRef.current;
     setAuditLoading(true);
     setError(null);
     try {
       const d = await listAuditLog(
         auditFilter || undefined,
-        undefined,
+        auditUserFilter || undefined,
         AUDIT_PAGE_SIZE,
         auditOffset,
       );
+      if (auditReqIdRef.current !== reqId) return;
       setAuditEntries(d.entries);
       setAuditTotal(d.total);
     } catch (e) {
+      if (auditReqIdRef.current !== reqId) return;
       setError(getErrorMessage(e));
     } finally {
-      setAuditLoading(false);
+      if (auditReqIdRef.current === reqId) setAuditLoading(false);
     }
-  }, [auditFilter, auditOffset]);
+  }, [auditFilter, auditUserFilter, auditOffset]);
 
   const loadRequests = useCallback(async () => {
     setReqLoading(true);
@@ -545,9 +653,12 @@ export default function AdminPage() {
     if (activeTab === 'requests') {
       loadRequests();
       loadRequestMetrics();
-      loadPerformanceMetrics();
     }
-  }, [loadRequests, loadRequestMetrics, loadPerformanceMetrics, activeTab]);
+  }, [loadRequests, loadRequestMetrics, activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'performance') loadPerformanceMetrics();
+  }, [loadPerformanceMetrics, activeTab]);
 
   useEffect(() => {
     if (activeTab === 'providers') loadProviderQuotas();
@@ -712,7 +823,7 @@ export default function AdminPage() {
   ];
 
   const onTabChange = (
-    tab: 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics',
+    tab: 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'performance',
   ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
@@ -738,9 +849,15 @@ export default function AdminPage() {
       loadProviderQuotas();
       return;
     }
+    if (activeTab === 'performance') {
+      loadPerformanceMetrics();
+      return;
+    }
+    if (activeTab === 'analytics') {
+      return;
+    }
     loadRequests();
     loadRequestMetrics();
-    loadPerformanceMetrics();
   };
 
   return (
@@ -798,31 +915,41 @@ export default function AdminPage() {
 
         {/* Top-level tab toggle */}
         <div className="mt-6 flex items-center gap-1">
-          {(['users', 'requests', 'providers', 'audit', 'broadcast', 'analytics'] as const).map(
-            (tab) => (
-              <button
-                key={tab}
-                onClick={() => onTabChange(tab)}
-                className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
-                  activeTab === tab
-                    ? 'bg-gray-900 text-white'
-                    : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
-                }`}
-              >
-                {tab === 'users'
-                  ? 'Users'
-                  : tab === 'requests'
-                    ? 'Recent Requests'
-                    : tab === 'providers'
-                      ? 'Providers'
-                      : tab === 'audit'
-                        ? 'Audit Log'
-                        : tab === 'broadcast'
-                          ? 'Broadcast Email'
-                          : 'Analytics'}
-              </button>
-            ),
-          )}
+          {(
+            [
+              'users',
+              'requests',
+              'providers',
+              'audit',
+              'broadcast',
+              'analytics',
+              'performance',
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => onTabChange(tab)}
+              className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
+                activeTab === tab
+                  ? 'bg-gray-900 text-white'
+                  : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+              }`}
+            >
+              {tab === 'users'
+                ? 'Users'
+                : tab === 'requests'
+                  ? 'Recent Requests'
+                  : tab === 'providers'
+                    ? 'Providers'
+                    : tab === 'audit'
+                      ? 'Audit Log'
+                      : tab === 'broadcast'
+                        ? 'Broadcast Email'
+                        : tab === 'analytics'
+                          ? 'Analytics'
+                          : 'Performance'}
+            </button>
+          ))}
         </div>
 
         {/* Alerts */}
@@ -1281,7 +1408,7 @@ export default function AdminPage() {
         {activeTab === 'audit' && (
           <div className="mt-6">
             {/* Action filter */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <select
                 value={auditFilter}
                 onChange={(e) => {
@@ -1293,10 +1420,20 @@ export default function AdminPage() {
                 <option value="">All actions</option>
                 {AUDIT_ACTIONS.map((a) => (
                   <option key={a} value={a}>
-                    {a}
+                    {actionLabel(a)}
                   </option>
                 ))}
               </select>
+              <input
+                type="text"
+                value={auditUserFilter}
+                onChange={(e) => {
+                  setAuditUserFilter(e.target.value);
+                  setAuditOffset(0);
+                }}
+                placeholder="Filter by user ID…"
+                className="min-w-[180px] rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+              />
               <span className="text-[12px] text-gray-400 tabular-nums">{auditTotal} entries</span>
             </div>
 
@@ -1312,37 +1449,98 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div>
-                  {auditEntries.map((entry, i) => (
-                    <div
-                      key={entry.id}
-                      className={`py-3 ${i > 0 ? 'border-t border-gray-100' : ''}`}
-                      style={{ paddingLeft: 4, paddingRight: 4 }}
-                    >
-                      <div className="flex items-center gap-3">
-                        <span
-                          className={`inline-block rounded px-2 py-0.5 text-[11px] font-bold ${
-                            entry.success ? 'bg-gray-100 text-gray-700' : 'bg-red-50 text-red-600'
-                          }`}
-                        >
-                          {entry.action}
-                        </span>
-                        {entry.target_user_id && (
-                          <span className="font-mono text-[12px] text-gray-400">
-                            {entry.target_user_id}
+                  {auditEntries.map((entry, i) => {
+                    const cat = actionCategory(entry.action);
+                    const badgeClass = entry.success
+                      ? AUDIT_CATEGORY_CLASS[cat]
+                      : 'bg-red-50 text-red-700';
+                    const rowClass = [
+                      'py-3',
+                      i > 0 ? 'border-t border-gray-100' : '',
+                      !entry.success ? 'border-l-2 border-rose-300 pl-3' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
+                    const absoluteTs = new Date(entry.timestamp).toLocaleString();
+                    const tid = entry.target_user_id;
+                    const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
+                    const detailEntries =
+                      entry.details && typeof entry.details === 'object'
+                        ? Object.entries(entry.details)
+                        : [];
+                    return (
+                      <div
+                        key={entry.id}
+                        className={rowClass}
+                        style={
+                          entry.success ? { paddingLeft: 4, paddingRight: 4 } : { paddingRight: 4 }
+                        }
+                      >
+                        <div className="flex items-center gap-3">
+                          {!entry.success && (
+                            <span className="inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">
+                              FAILED
+                            </span>
+                          )}
+                          <span
+                            className={`inline-block rounded px-2 py-0.5 text-[11px] font-bold ${badgeClass}`}
+                          >
+                            {actionLabel(entry.action)}
                           </span>
+                          {tid && (
+                            <button
+                              onClick={() => {
+                                setAuditUserFilter(tid);
+                                setAuditOffset(0);
+                              }}
+                              title={tid}
+                              aria-label={`Filter by user ${tid}`}
+                              className="font-mono text-[12px] text-gray-500 hover:text-gray-900 hover:underline"
+                            >
+                              <span aria-hidden="true">{tidDisplay}</span>
+                              <span className="sr-only">{tid}</span>
+                            </button>
+                          )}
+                          <time
+                            dateTime={entry.timestamp}
+                            title={absoluteTs}
+                            aria-label={absoluteTs}
+                            className="ml-auto text-[12px] text-gray-400"
+                          >
+                            {formatRelative(entry.timestamp)}
+                          </time>
+                        </div>
+                        {detailEntries.length > 0 && (
+                          <>
+                            <div className="flex flex-wrap gap-1.5 mt-1.5">
+                              {detailEntries.map(([k, v]) => {
+                                const { display, full } = formatAuditDetailValue(v);
+                                return (
+                                  <span
+                                    key={k}
+                                    title={full}
+                                    className="inline-flex items-center gap-1 rounded bg-gray-50 border border-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700"
+                                  >
+                                    <span className="text-gray-400">{k}:</span>
+                                    <span>{display}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                            <details>
+                              <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 mt-1">
+                                Raw JSON
+                              </summary>
+                              <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
+                                {JSON.stringify(entry.details, null, 2)}
+                              </pre>
+                            </details>
+                          </>
                         )}
-                        <span className="ml-auto text-[12px] text-gray-400">
-                          {new Date(entry.timestamp).toLocaleString()}
-                        </span>
+                        <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
                       </div>
-                      {entry.details && Object.keys(entry.details).length > 0 && (
-                        <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
-                          {JSON.stringify(entry.details, null, 2)}
-                        </pre>
-                      )}
-                      <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -1421,33 +1619,6 @@ export default function AdminPage() {
               ) : !reqMetricsLoading ? (
                 <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
                   <p className="text-[13px] text-gray-400">No request metrics available.</p>
-                </div>
-              ) : null}
-            </div>
-
-            {/* Performance metrics */}
-            <div className="mb-6">
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <h2 className="text-[15px] font-semibold text-gray-900">Performance metrics</h2>
-                  <p className="text-[12px] text-gray-400">
-                    Prompt/response length, time-to-first-token, and inter-token latency
-                    distributions.
-                  </p>
-                </div>
-                {perfMetricsLoading && (
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-                )}
-              </div>
-              {perfMetrics.length > 0 ? (
-                <div className="grid gap-3">
-                  {perfMetrics.map((metric) => (
-                    <PerformanceMetricsCard key={metric.key} metric={metric} />
-                  ))}
-                </div>
-              ) : !perfMetricsLoading ? (
-                <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
-                  <p className="text-[13px] text-gray-400">No performance metrics available.</p>
                 </div>
               ) : null}
             </div>
@@ -1860,6 +2031,34 @@ export default function AdminPage() {
           </div>
         )}
         {activeTab === 'analytics' && <AnalyticsTab />}
+
+        {activeTab === 'performance' && (
+          <div className="mt-5">
+            <div className="mb-2 flex items-center justify-between">
+              <div>
+                <h2 className="text-[14px] font-semibold text-gray-900">Performance metrics</h2>
+                <p className="text-[11px] text-gray-400">
+                  Prompt/response length, time-to-first-token, and inter-token latency
+                  distributions.
+                </p>
+              </div>
+              {perfMetricsLoading && (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+              )}
+            </div>
+            {perfMetrics.length > 0 ? (
+              <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
+                {perfMetrics.map((metric) => (
+                  <PerformanceMetricsCard key={metric.key} metric={metric} />
+                ))}
+              </div>
+            ) : !perfMetricsLoading ? (
+              <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+                <p className="text-[13px] text-gray-400">No performance metrics available.</p>
+              </div>
+            ) : null}
+          </div>
+        )}
 
         {/* ========== Broadcast Email Tab ========== */}
         {activeTab === 'broadcast' && (

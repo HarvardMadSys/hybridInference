@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -86,10 +87,15 @@ async def tracking_app(monkeypatch, mock_db_logger) -> FastAPI:
     )
     router.register_route("tracked-model", [(adapter, 1.0)])
 
+    mock_log_store = MagicMock()
+    mock_log_store.log_request = AsyncMock()
+    mock_log_store.get_user_cost_today = AsyncMock(return_value=0.0)
+
     app = FastAPI(title="Cost Tracking App")
     app.state.services = AppServices(  # type: ignore[attr-defined]
         router=router,
         db_logger=mock_db_logger,
+        log_store=mock_log_store,
     )
 
     install_error_handlers(app)
@@ -105,9 +111,10 @@ async def tracking_client(tracking_app: FastAPI):
 
 
 @pytest.mark.asyncio
-async def test_non_streaming_logs_pricing_and_usage(tracking_client, mock_db_logger):
-    client, _app = tracking_client
-    mock_db_logger.log_request.reset_mock()
+async def test_non_streaming_logs_pricing_and_usage(tracking_client):
+    client, app = tracking_client
+    log_store = app.state.services.log_store
+    log_store.log_request.reset_mock()
 
     response = await client.post(
         "/v1/chat/completions",
@@ -118,8 +125,8 @@ async def test_non_streaming_logs_pricing_and_usage(tracking_client, mock_db_log
     )
 
     assert response.status_code == 200
-    mock_db_logger.log_request.assert_awaited_once()
-    call = mock_db_logger.log_request.await_args
+    log_store.log_request.assert_awaited_once()
+    call = log_store.log_request.await_args
     kwargs = call.kwargs
     assert kwargs["provider"] == "gemini"
     assert kwargs["pricing"]["prompt"] == "0.15"
@@ -128,9 +135,10 @@ async def test_non_streaming_logs_pricing_and_usage(tracking_client, mock_db_log
 
 
 @pytest.mark.asyncio
-async def test_streaming_logs_usage(tracking_client, mock_db_logger):
-    client, _app = tracking_client
-    mock_db_logger.log_request.reset_mock()
+async def test_streaming_logs_usage(tracking_client):
+    client, app = tracking_client
+    log_store = app.state.services.log_store
+    log_store.log_request.reset_mock()
 
     async with client.stream(
         "POST",
@@ -145,7 +153,7 @@ async def test_streaming_logs_usage(tracking_client, mock_db_logger):
         async for _line in resp.aiter_lines():
             pass
 
-    mock_db_logger.log_request.assert_awaited_once()
-    kwargs = mock_db_logger.log_request.await_args.kwargs
+    log_store.log_request.assert_awaited_once()
+    kwargs = log_store.log_request.await_args.kwargs
     assert kwargs["usage"]["completion_tokens"] == 30
     assert kwargs["usage"]["prompt_tokens"] == 120

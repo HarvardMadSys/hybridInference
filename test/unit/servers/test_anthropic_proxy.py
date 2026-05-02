@@ -274,13 +274,13 @@ def _mock_deps():
     async def fake_get_router():
         return _make_router_exec()
 
-    async def fake_get_db_logger():
+    async def fake_get_log_store():
         return None
 
     from serving.servers.auth import verify_api_key
     from serving.servers.concurrency import UserConcurrencyLimiter
     from serving.servers.deps import (
-        get_db_logger,
+        get_log_store,
         get_router,
         get_user_concurrency_limiter,
     )
@@ -294,7 +294,7 @@ def _mock_deps():
     overrides = {
         verify_api_key: fake_verify_api_key,
         get_router: fake_get_router,
-        get_db_logger: fake_get_db_logger,
+        get_log_store: fake_get_log_store,
         get_user_concurrency_limiter: fake_get_user_concurrency_limiter,
     }
     return overrides
@@ -659,17 +659,17 @@ class TestDBLogging:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from serving.servers.deps import get_db_logger
+        from serving.servers.deps import get_log_store
 
         mock_db = MagicMock()
         mock_db.log_request = AsyncMock()
 
-        async def fake_get_db_logger():
+        async def fake_get_log_store():
             return mock_db
 
         app = FastAPI()
         overrides = dict(_mock_deps)
-        overrides[get_db_logger] = fake_get_db_logger
+        overrides[get_log_store] = fake_get_log_store
         for dep, override in overrides.items():
             app.dependency_overrides[dep] = override
         app.include_router(router)

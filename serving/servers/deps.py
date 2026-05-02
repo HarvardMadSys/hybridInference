@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
     from serving.observability.user_stats import UserStatsCollector
+    from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
 
     from .concurrency import UserConcurrencyLimiter
@@ -40,6 +41,8 @@ class AppServices:
     router: RouteExecutor
     embedding_adapters: dict[str, Any] | None = None
     db_logger: DatabaseLogger | None = None
+    operational_store: OperationalStore | None = None
+    log_store: LogStore | None = None
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
     user_stats_collector: UserStatsCollector | None = None
@@ -70,6 +73,20 @@ def get_db_logger(
     return services.db_logger
 
 
+def get_operational_store(
+    services: AppServices = Depends(get_services),
+) -> OperationalStore | None:
+    """Dependency to obtain the operational store (if configured)."""
+    return services.operational_store
+
+
+def get_log_store(
+    services: AppServices = Depends(get_services),
+) -> LogStore | None:
+    """Dependency to obtain the log store (if configured)."""
+    return services.log_store
+
+
 def get_user_concurrency_limiter(
     services: AppServices = Depends(get_services),
 ) -> UserConcurrencyLimiter | None:
@@ -98,7 +115,7 @@ def is_database_connected(db_logger: DatabaseLogger | None) -> bool:
 
 async def get_current_user(
     authorization: str | None = Header(None),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> dict[str, Any]:
     """Verify JWT token and return current user context.
 
@@ -106,7 +123,7 @@ async def get_current_user(
 
     Args:
         authorization: Authorization header with Bearer token.
-        db_logger: Database logger instance.
+        op_store: Operational store instance.
 
     Returns:
         User context dictionary with user_id, email, tier, etc.
@@ -149,21 +166,13 @@ async def get_current_user(
         )
 
     # Verify user still exists and is active in database
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(
             status_code=500,
             detail="Database not available for authentication",
         )
 
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            """
-            SELECT id, email, status, email_verified, role
-            FROM users
-            WHERE id = $1
-            """,
-            user_id,
-        )
+    user_row = await op_store.get_user_by_id(user_id)
 
     if not user_row:
         raise HTTPException(
@@ -230,7 +239,7 @@ def require_role(min_role: str):
 async def verify_admin_access(
     request: Request,
     authorization: str | None = Header(None),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> str:
     """Unified admin auth: accept either JWT (admin user) or ADMIN_TOKEN.
 
@@ -259,12 +268,8 @@ async def verify_admin_access(
         email = payload.get("email", "")
 
         # Verify user still exists, is active, and has admin role in DB
-        if db_logger and db_logger.pool and user_id:
-            async with db_logger.pool.acquire() as conn:
-                user_row = await conn.fetchrow(
-                    "SELECT email, status, role, email_verified FROM users WHERE id = $1",
-                    user_id,
-                )
+        if op_store and user_id:
+            user_row = await op_store.get_user_by_id(user_id)
             if not user_row or user_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="Admin account is no longer active.")
             require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"

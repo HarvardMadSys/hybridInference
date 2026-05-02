@@ -29,8 +29,9 @@ from serving.schemas import (
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
-    get_db_logger,
+    get_log_store,
     get_model_router_registry,
+    get_operational_store,
     get_router,
 )
 from serving.utils.logging import get_logger
@@ -41,11 +42,11 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) -> None:
+def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
     """Schedule a background task to log request to database without blocking HTTP response.
 
     Args:
-        db_logger: Database logger instance
+        log_store: LogStore instance
         request_id: Request identifier for logging
         log_data: Dictionary containing all log request parameters
     """
@@ -53,7 +54,7 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
     async def log_to_db_background():
         """Background task to log request to database."""
         try:
-            await db_logger.log_request(**log_data)
+            await log_store.log_request(**log_data)
             logger.debug(f"Background DB logging completed for request {request_id}")
         except Exception as e:
             # Log error but don't fail the request - it's already sent to client
@@ -65,6 +66,32 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
     # Fire-and-forget background task for non-blocking DB logging
     # We intentionally don't store the reference as we don't need to await it
     asyncio.create_task(log_to_db_background())  # noqa: RUF006
+
+
+def _schedule_cost_increment(
+    op_store: Any,
+    user_id: str,
+    usage: dict[str, int] | None,
+    pricing: dict[str, str] | None,
+) -> None:
+    """Increment the user's daily cost counter for billed requests.
+
+    Only called for successful responses where cost > 0. Runs as a
+    fire-and-forget background task to avoid blocking the response.
+    """
+    from serving.storage.utils import calculate_cost
+
+    cost = calculate_cost(usage, pricing)
+    if not cost or cost <= 0 or not op_store:
+        return
+
+    async def _increment():
+        try:
+            await op_store.increment_user_cost(user_id, cost)
+        except Exception as exc:
+            logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
+
+    asyncio.create_task(_increment())  # noqa: RUF006
 
 
 def _record_routing_observation(
@@ -118,7 +145,8 @@ async def chat_completions(
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
-    db_logger=Depends(get_db_logger),
+    log_store=Depends(get_log_store),
+    op_store=Depends(get_operational_store),
     model_router_registry=Depends(get_model_router_registry),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
@@ -217,6 +245,9 @@ async def chat_completions(
         params["response_format"] = payload.response_format.model_dump(by_alias=True)
     # Always record whether this request is streaming for DB analytics
     params["stream"] = bool(payload.stream)
+
+    # Stable user identifier used by cost tracking
+    user_id: str = user_ctx.get("user_id") or "anonymous"
 
     # Affinity key for multi-key API rotation — pinned to the specific
     # hyi-xxx key in use (not user_id, since a user may have multiple keys).
@@ -600,9 +631,9 @@ async def chat_completions(
                     logger.debug(f"Using provider from context for DB logging: {provider}")
 
                 # Prepare data for background database logging (don't await here!)
-                if db_logger and not is_synthetic_probe:
+                if log_store and not is_synthetic_probe:
                     _schedule_db_log_task(
-                        db_logger,
+                        log_store,
                         request_id,
                         {
                             "request_id": request_id,
@@ -646,6 +677,14 @@ async def chat_completions(
                         },
                     )
 
+                # Increment daily cost counter for billed requests
+                if not is_synthetic_probe and routing_info:
+                    _usage = response_for_db.get("usage") if response_for_db else usage_data
+                    _s_pricing = routing_info.get("pricing") or get_pricing_for_provider(
+                        provider, routing_info.get("base_url")
+                    )
+                    _schedule_cost_increment(op_store, user_id, _usage, _s_pricing)
+
                 # Record routing observation for online learning (RouteWise)
                 if not is_synthetic_probe:
                     stream_usage = normalize_usage(usage_data) if usage_data else {}
@@ -682,9 +721,9 @@ async def chat_completions(
                 ctx = req_ctx.get()
                 provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-                if db_logger and not is_synthetic_probe:
+                if log_store and not is_synthetic_probe:
                     _schedule_db_log_task(
-                        db_logger,
+                        log_store,
                         request_id,
                         {
                             "request_id": request_id,
@@ -760,13 +799,13 @@ async def chat_completions(
                     f"Using provider from context for non-streaming DB logging: {provider}"
                 )
 
-        # Move db_logger.log_request() out of the stream_generator
+        # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
-        if db_logger and not is_synthetic_probe:
+        if log_store and not is_synthetic_probe:
             # Prefer embedded pricing (e.g. adapter-internal fallback)
             pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
             _schedule_db_log_task(
-                db_logger,
+                log_store,
                 request_id,
                 {
                     "request_id": request_id,
@@ -803,6 +842,14 @@ async def chat_completions(
                     "pricing": pricing,
                 },
             )
+
+        # Increment daily cost counter for billed requests (non-streaming)
+        if not is_synthetic_probe:
+            _ns_usage = (
+                normalize_usage(response.get("usage")) if isinstance(response, dict) else None
+            )
+            _ns_pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
+            _schedule_cost_increment(op_store, user_id, _ns_usage, _ns_pricing)
 
         # Emit token counters when usage is available, with anomaly checks
         # Normalize usage to extract reasoning_tokens from nested locations
@@ -933,7 +980,7 @@ async def chat_completions(
         if exc_status_code is None:
             exc_status_code = 500
 
-        # Move db_logger.log_request() out of the stream_generator
+        # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
         # Try to get actual provider from context even in error case
         from serving.utils import context as req_ctx
@@ -941,9 +988,9 @@ async def chat_completions(
         ctx = req_ctx.get()
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-        if db_logger and not is_synthetic_probe:
+        if log_store and not is_synthetic_probe:
             _schedule_db_log_task(
-                db_logger,
+                log_store,
                 request_id,
                 {
                     "request_id": request_id,

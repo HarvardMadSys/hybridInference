@@ -21,8 +21,25 @@ class Settings(BaseSettings):
     db_user: str = "postgres"
     db_password: str = ""
 
+    # Database backend: "postgres" (default) or "d1" (Cloudflare D1 for operational tables)
+    db_backend: str = "postgres"
+    # Dual-write: when DB_BACKEND=d1, also shadow-write to PostgreSQL as a warm standby
+    db_dual_write: bool = False
+
     # Database privacy settings
     db_store_full_content: bool = True
+
+    # Cloudflare D1 (used when db_backend = "d1")
+    d1_account_id: str = ""
+    d1_database_id: str = ""
+    d1_api_token: str = ""
+
+    # Cloudflare R2 (log archival — S3-compatible)
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = "hybridinference-logs"
+    r2_endpoint_url: str = ""  # e.g. https://<account_id>.r2.cloudflarestorage.com
+    r2_log_retention_days: int = 30  # keep logs in D1 for this many days
 
     # Admin
     admin_token: str = ""
@@ -108,6 +125,8 @@ class Settings(BaseSettings):
         "http://freeinference.org:3001",
         "https://freeinference.org",
         "https://freeinference.org:3001",
+        "http://staging-internal.freeinference.org",
+        "https://staging-internal.freeinference.org",
     ]
 
     # Trusted proxies (for real IP detection)

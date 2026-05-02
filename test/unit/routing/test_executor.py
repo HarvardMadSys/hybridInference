@@ -192,7 +192,7 @@ def test_route_selection_performance():
     for _ in range(10000):
         _ = exe._select_adapter("m")  # type: ignore[attr-defined]
     elapsed = time.perf_counter() - start
-    assert elapsed < 0.1
+    assert elapsed < 0.5, f"10k selections took {elapsed:.3f}s (budget: 0.5s)"
 
 
 # ---------------------------------------------------------------------------

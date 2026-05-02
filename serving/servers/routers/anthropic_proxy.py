@@ -34,7 +34,7 @@ from serving.observability.metrics import (
 )
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
-from serving.servers.deps import get_db_logger, get_router
+from serving.servers.deps import get_log_store, get_router
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
@@ -42,7 +42,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from routing.executor import RouteExecutor
-    from serving.storage.database import DatabaseLogger
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -171,7 +170,7 @@ def _extract_usage_from_sse(raw: bytes, usage: dict[str, int]) -> None:
 
 
 def _schedule_db_log(
-    db_logger: DatabaseLogger,
+    log_store,
     *,
     request_id: str,
     model_id: str,
@@ -186,7 +185,7 @@ def _schedule_db_log(
 
     async def _log() -> None:
         try:
-            await db_logger.log_request(
+            await log_store.log_request(
                 request_id=request_id,
                 model_id=model_id,
                 provider=_PROVIDER_NAME,
@@ -311,7 +310,7 @@ async def anthropic_messages(
     request: Request,
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
-    db_logger=Depends(get_db_logger),
+    log_store=Depends(get_log_store),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ):
     """Forward an Anthropic Messages API request through subscription credentials."""
@@ -381,7 +380,7 @@ async def anthropic_messages(
             start_time=start_time,
             pricing=pricing,
             metadata=metadata,
-            db_logger=db_logger,
+            log_store=log_store,
         )
     else:
         return await _forward_non_streaming(
@@ -396,7 +395,7 @@ async def anthropic_messages(
             start_time=start_time,
             pricing=pricing,
             metadata=metadata,
-            db_logger=db_logger,
+            log_store=log_store,
         )
 
 
@@ -418,7 +417,7 @@ async def _forward_non_streaming(
     start_time: float,
     pricing: dict[str, str],
     metadata: dict[str, Any],
-    db_logger,
+    log_store,
 ) -> JSONResponse:
     """Forward a non-streaming request and return the JSON response."""
     from serving.http import AsyncHTTPClient
@@ -472,9 +471,9 @@ async def _forward_non_streaming(
         status_code="200",
     ).inc()
 
-    if db_logger:
+    if log_store:
         _schedule_db_log(
-            db_logger,
+            log_store,
             request_id=request_id,
             model_id=model_id,
             account_id=account.id,
@@ -506,7 +505,7 @@ async def _forward_streaming(
     start_time: float,
     pricing: dict[str, str],
     metadata: dict[str, Any],
-    db_logger,
+    log_store,
 ) -> StreamingResponse | JSONResponse:
     """Forward a streaming request with raw byte pass-through."""
     from serving.http import AsyncHTTPClient
@@ -588,9 +587,9 @@ async def _forward_streaming(
                 provider=normalize_provider_label(_PROVIDER_NAME),
                 status_code="200" if not stream_failed else "502",
             ).inc()
-            if db_logger:
+            if log_store:
                 _schedule_db_log(
-                    db_logger,
+                    log_store,
                     request_id=request_id,
                     model_id=model_id,
                     account_id=account.id,

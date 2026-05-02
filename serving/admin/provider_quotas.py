@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -36,6 +36,24 @@ def _mask_key(key: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    """Parse an ISO-8601 string into a UTC-aware datetime; None on failure.
+
+    Naive inputs are assumed UTC. Offset-aware inputs are converted to UTC so
+    callers always see a single canonical timezone.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
@@ -71,18 +89,18 @@ async def fetch_chutes() -> ProviderQuotaResult:
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
     try:
-        async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
-            session.get(url, headers=headers, allow_redirects=False) as resp,
-        ):
-            if resp.status in (301, 302, 303, 307, 308, 401, 403):
-                return _err("chutes", "Chutes", key, "auth_failed")
-            if resp.status >= 400:
-                return _err("chutes", "Chutes", key, "unexpected")
-            try:
-                data: dict[str, Any] = await resp.json()
-            except Exception:
-                return _err("chutes", "Chutes", key, "parse_error")
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                    return _err("chutes", "Chutes", key, "auth_failed")
+                if resp.status >= 400:
+                    return _err("chutes", "Chutes", key, "unexpected")
+                try:
+                    data: dict[str, Any] = await resp.json()
+                except Exception:
+                    return _err("chutes", "Chutes", key, "parse_error")
+            usages = _parse_chutes_usage(data)
+            usages.extend(await _fetch_chutes_request_counts(session, headers))
     except asyncio.TimeoutError:
         return _err("chutes", "Chutes", key, "timeout")
     except aiohttp.ClientError:
@@ -91,7 +109,6 @@ async def fetch_chutes() -> ProviderQuotaResult:
         logger.exception("fetch_chutes: unexpected error")
         return _err("chutes", "Chutes", key, "unexpected")
 
-    usages = _parse_chutes_usage(data)
     return ProviderQuotaResult(
         name="chutes",
         display_name="Chutes",
@@ -104,6 +121,102 @@ async def fetch_chutes() -> ProviderQuotaResult:
     )
 
 
+async def _fetch_chutes_request_counts(
+    session: aiohttp.ClientSession,
+    headers: dict[str, str],
+) -> list[ProviderQuotaUsage]:
+    """Fetch the daily request quota and today's request count.
+
+    Chutes enforces a per-day request cap (default 5000) exposed via
+    /users/me/quotas; today's usage is the sum of `count` from
+    /users/me/usage hourly buckets since 00:00 UTC. Returns an empty list
+    on any HTTP/parse failure so the parent fetcher can still surface the
+    USD usages.
+    """
+    try:
+        daily_cap = await _fetch_chutes_daily_cap(session, headers)
+        if daily_cap is None:
+            return []
+
+        now = _now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_reset = day_start + timedelta(days=1)
+
+        url = "https://api.chutes.ai/users/me/usage?limit=2000"
+        async with session.get(url, headers=headers, allow_redirects=False) as resp:
+            if resp.status >= 400:
+                return []
+            try:
+                payload: dict[str, Any] = await resp.json()
+            except Exception:
+                return []
+
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return []
+
+        daily_count = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            bucket_dt = _parse_iso(item.get("bucket"))
+            if bucket_dt is None:
+                continue
+            count_raw = item.get("count")
+            if isinstance(count_raw, bool) or not isinstance(count_raw, (int, float)):
+                continue
+            if not float(count_raw).is_integer():
+                continue
+            if day_start <= bucket_dt < day_reset:
+                daily_count += int(count_raw)
+
+        return [
+            ProviderQuotaUsage(
+                label="Daily requests",
+                used=float(daily_count),
+                limit=float(daily_cap),
+                unit="requests",
+                reset_at=day_reset,
+            ),
+        ]
+    except Exception:
+        logger.exception("_fetch_chutes_request_counts: unexpected error")
+        return []
+
+
+async def _fetch_chutes_daily_cap(
+    session: aiohttp.ClientSession,
+    headers: dict[str, str],
+) -> int | None:
+    """Return the default daily request cap from /users/me/quotas, or None on failure.
+
+    The endpoint returns a list of per-chute quotas; we take the entry
+    with `chute_id == "*"` (or `is_default == True`) as the global cap.
+    """
+    url = "https://api.chutes.ai/users/me/quotas"
+    try:
+        async with session.get(url, headers=headers, allow_redirects=False) as resp:
+            if resp.status >= 400:
+                return None
+            try:
+                payload = await resp.json()
+            except Exception:
+                return None
+    except (asyncio.TimeoutError, aiohttp.ClientError):
+        return None
+
+    if not isinstance(payload, list):
+        return None
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("chute_id") == "*" or entry.get("is_default") is True:
+            quota = entry.get("quota")
+            if isinstance(quota, (int, float)):
+                return int(quota)
+    return None
+
+
 def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
     """Best-effort parse of the Chutes subscription_usage payload.
 
@@ -111,28 +224,19 @@ def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
     common keys and degrade gracefully if missing.
     """
     usages: list[ProviderQuotaUsage] = []
-    for key, label_default in (("monthly", "Monthly"), ("rolling", "Rolling window")):
+    for key, label in (("four_hour", "4-hour window"), ("monthly", "Monthly")):
         block = data.get(key)
         if not isinstance(block, dict):
             continue
-        used = block.get("used")
-        limit = block.get("limit")
-        unit = block.get("unit", "USD")
-        window = block.get("window")
-        label = f"{label_default} ({window})" if window else label_default
-        reset = block.get("reset_at")
-        reset_dt = None
-        if isinstance(reset, str):
-            try:
-                reset_dt = datetime.fromisoformat(reset.replace("Z", "+00:00"))
-            except ValueError:
-                reset_dt = None
+        used = block.get("usage")
+        limit = block.get("cap")
+        reset_dt = _parse_iso(block.get("reset_at"))
         usages.append(
             ProviderQuotaUsage(
                 label=label,
                 used=float(used) if isinstance(used, (int, float)) else None,
                 limit=float(limit) if isinstance(limit, (int, float)) else None,
-                unit=str(unit),
+                unit="USD",
                 reset_at=reset_dt,
             )
         )
@@ -199,19 +303,35 @@ async def fetch_zai() -> ProviderQuotaResult:
         if not isinstance(entry, dict):
             continue
         kind = str(entry.get("type", "")).upper()
-        used = entry.get("currentValue") if "currentValue" in entry else entry.get("used")
-        limit = entry.get("limit") if "limit" in entry else None
         if kind == "TOKENS_LIMIT":
             label, unit = "Tokens", "tokens"
         elif kind == "TIME_LIMIT":
             label, unit = "Time", "minutes"
         else:
             label, unit = kind.replace("_", " ").title() or "Quota", ""
+
+        used_raw = entry.get("currentValue") if "currentValue" in entry else entry.get("used")
+        limit_raw = entry.get("usage")  # "usage" is the total cap in the ZAI API
+
+        # For entries with no absolute values, fall back to percentage
+        if used_raw is None and limit_raw is None and "percentage" in entry:
+            pct = entry.get("percentage")
+            usages.append(
+                ProviderQuotaUsage(
+                    label=label,
+                    used=float(pct) if isinstance(pct, (int, float)) else None,
+                    limit=100.0,
+                    unit="%",
+                    reset_at=None,
+                )
+            )
+            continue
+
         usages.append(
             ProviderQuotaUsage(
                 label=label,
-                used=float(used) if isinstance(used, (int, float)) else None,
-                limit=float(limit) if isinstance(limit, (int, float)) else None,
+                used=float(used_raw) if isinstance(used_raw, (int, float)) else None,
+                limit=float(limit_raw) if isinstance(limit_raw, (int, float)) else None,
                 unit=unit,
                 reset_at=None,
             )
@@ -232,8 +352,8 @@ async def fetch_zai() -> ProviderQuotaResult:
 async def fetch_minimax() -> ProviderQuotaResult:
     """Fetch coding-plan quota from MiniMax via cookie-authed endpoint.
 
-    The endpoint requires browser session cookies; API key auth returns
-    `{"base_resp": {"status_code": 1004, "status_msg": "cookie missing"}}`.
+    The endpoint requires browser session cookies from minimax.io; API key
+    auth returns status_code 1004, and no active coding plan returns 2062.
     """
     cookie = os.getenv("MINIMAX_SESSION_COOKIE", "")
     if not cookie:
@@ -248,7 +368,7 @@ async def fetch_minimax() -> ProviderQuotaResult:
             usages=[],
         )
 
-    url = "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
+    url = "https://api.minimax.io/v1/api/openplatform/coding_plan/remains"
     headers = {"Cookie": cookie}
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
@@ -276,6 +396,8 @@ async def fetch_minimax() -> ProviderQuotaResult:
     base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else None
     if base_resp and base_resp.get("status_code") == 1004:
         return _err("minimax", "MiniMax", cookie, "auth_failed")
+    if base_resp and base_resp.get("status_code") == 2062:
+        return _err("minimax", "MiniMax", cookie, "not_configured")
     if base_resp and base_resp.get("status_code") not in (None, 0):
         return _err("minimax", "MiniMax", cookie, "unexpected")
 
@@ -327,7 +449,7 @@ async def fetch_minimax() -> ProviderQuotaResult:
 
 
 _USAGE_PATTERN = re.compile(
-    r"(?P<label>session|weekly|monthly|daily)\s+usage[:\s]+(?P<used>[\d,]+)\s+of\s+(?P<limit>[\d,]+)\s+(?P<unit>requests?|tokens?|messages?)",
+    r"(?P<label>session|weekly|monthly|daily)\s+usage\s+(?P<pct>[\d.]+)%\s+used",
     re.IGNORECASE,
 )
 
@@ -402,7 +524,7 @@ async def fetch_ollama() -> ProviderQuotaResult:
 def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
     """Best-effort extraction of usage figures from the Ollama settings page.
 
-    Looks for text matches like 'Session usage: 42 of 100 requests'. Returns
+    Looks for text matches like 'Session usage 0% used'. Returns
     empty list if no recognizable usage rows found.
     """
     soup = BeautifulSoup(html, "html.parser")
@@ -410,18 +532,16 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
     usages: list[ProviderQuotaUsage] = []
     for match in _USAGE_PATTERN.finditer(text):
         try:
-            used = float(match.group("used").replace(",", ""))
-            limit = float(match.group("limit").replace(",", ""))
+            pct = float(match.group("pct"))
         except ValueError:
             continue
-        unit = match.group("unit").lower().rstrip("s") + "s"  # normalize plural
         label = f"{match.group('label').capitalize()} usage"
         usages.append(
             ProviderQuotaUsage(
                 label=label,
-                used=used,
-                limit=limit,
-                unit=unit,
+                used=pct,
+                limit=100.0,
+                unit="%",
                 reset_at=None,
             )
         )

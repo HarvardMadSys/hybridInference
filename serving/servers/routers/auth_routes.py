@@ -24,7 +24,7 @@ from serving.schemas_auth import (
     VerifyEmailResponse,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_current_user, get_db_logger
+from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
 from serving.utils import password as password_utils
 from serving.utils.email import (
     is_email_enabled,
@@ -105,6 +105,7 @@ async def signup(
     request: Request,
     body: SignupRequest,
     background_tasks: BackgroundTasks,
+    op_store=Depends(get_operational_store),
     db_logger=Depends(get_db_logger),
 ) -> SignupResponse:
     """Register a new user account.
@@ -142,27 +143,16 @@ async def signup(
     # Validate password strength
     is_valid, error_msg = password_utils.validate_password_strength(body.password)
     if not is_valid:
-        # Return standard validation error for tests (HTTP 400)
         raise HTTPException(
             status_code=400, detail=error_msg or "Password does not meet security requirements"
         )
 
-    # Check database availability
-    if not db_logger or not db_logger.pool:
-        raise HTTPException(
-            status_code=500,
-            detail="Database not available",
-        )
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
 
     # Check if email already exists
-    async with db_logger.pool.acquire() as conn:
-        existing_user = await conn.fetchrow(
-            "SELECT id FROM users WHERE email = $1",
-            body.email.lower(),
-        )
-
+    existing_user = await op_store.get_user_by_email(body.email)
     if existing_user:
-        # Return conflict using standard HTTPException for test apps without exception handlers
         raise HTTPException(status_code=409, detail=f"Email {body.email} already registered")
 
     # Determine initial status based on approval setting
@@ -174,38 +164,23 @@ async def signup(
     user_id = generate_ulid()
     password_hash_str = password_utils.hash_password(body.password)
 
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO users (id, email, password_hash, user_name, email_verified, status)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            user_id,
-            body.email.lower(),
-            password_hash_str,
-            body.user_name,
-            False,  # Email not verified yet
-            initial_status,
-        )
+    await op_store.create_user(
+        user_id=user_id,
+        email=body.email,
+        password_hash=password_hash_str,
+        user_name=body.user_name,
+        email_verified=False,
+        status=initial_status,
+    )
 
     # Send verification email only when verification is required and SMTP is configured.
-    # Skipping the email when SIGNUP_REQUIRE_EMAIL_VERIFICATION=false avoids burning
-    # SMTP quota on emails that the login flow does not require.
+    # Skipping when SIGNUP_REQUIRE_EMAIL_VERIFICATION=false avoids burning SMTP quota.
     if require_verification and is_email_enabled():
-        # Generate verification token
         verification_token = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-
-        async with db_logger.pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO email_verification_tokens (token, user_id, expires_at)
-                VALUES ($1, $2, $3)
-                """,
-                verification_token,
-                user_id,
-                expires_at,
-            )
+        await op_store.create_verification_token(
+            token=verification_token, user_id=user_id, expires_at=expires_at
+        )
 
         # Send email in background so signup returns even if SMTP is slow
         base_url = get_base_url(request)
@@ -259,7 +234,7 @@ async def signup(
 async def login(
     response: Response,
     body: LoginRequest,
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> LoginResponse:
     """Login with email and password.
 
@@ -269,32 +244,18 @@ async def login(
     - 5 attempts per 15 minutes per email
     - 20 attempts per hour per IP
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Find user by email
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            """
-            SELECT id, email, password_hash, user_name, status, email_verified, created_at, role
-            FROM users
-            WHERE email = $1
-            """,
-            body.email.lower(),
-        )
+    user_row = await op_store.get_user_by_email(body.email)
 
     if not user_row:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email or password",
-        )
+        raise HTTPException(status_code=401, detail="Invalid email or password")
 
     # Verify password
     if not password_utils.verify_password(body.password, user_row["password_hash"]):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email or password",
-        )
+        raise HTTPException(status_code=401, detail="Invalid email or password")
 
     # Check if email verification is required and if email is verified
     require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
@@ -324,15 +285,8 @@ async def login(
         )
 
     # Update last login timestamp and fetch API key tier
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET last_login_at = NOW() WHERE id = $1",
-            user_row["id"],
-        )
-        key_row = await conn.fetchrow(
-            "SELECT tier FROM api_keys WHERE (account_id = $1 OR user_id = $1) AND status = 'active' LIMIT 1",
-            user_row["id"],
-        )
+    await op_store.update_user_last_login(user_row["id"])
+    key_row = await op_store.get_key_by_account_or_user(user_row["id"])
 
     # Create session and tokens
     session_id = generate_session_id()
@@ -340,17 +294,10 @@ async def login(
     user_tier = (key_row["tier"] if key_row else None) or "free"
 
     # Bootstrap seed: promote ADMIN_EMAILS users to admin when their role is
-    # still at the default 'free' (i.e. never explicitly assigned a higher
-    # role).  Users demoted to internal will NOT be re-promoted.  Edge case:
-    # demotion back to 'free' while email remains in ADMIN_EMAILS will
-    # trigger re-promotion — remove the email from the env to prevent this.
+    # still at the default 'free'.
     if is_admin_email(user_row["email"]) and user_role == "free":
         user_role = "admin"
-        async with db_logger.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET role = 'admin' WHERE id = $1",
-                user_row["id"],
-            )
+        await op_store.update_user_fields(user_row["id"], role="admin")
         logger.info(f"Bootstrap-seeded user {user_row['id']} to admin (ADMIN_EMAILS)")
 
     is_admin = user_role == "admin"
@@ -367,20 +314,14 @@ async def login(
 
     # Store refresh token in database
     session_expires = datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expire_days())
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO auth_sessions (id, user_id, refresh_token_hash, jti, sid, expires_at, revoked)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """,
-            generate_ulid(),
-            user_row["id"],
-            refresh_token_hash_str,
-            jti,
-            session_id,
-            session_expires,
-            False,
-        )
+    await op_store.create_session(
+        session_id=generate_ulid(),
+        user_id=user_row["id"],
+        refresh_token_hash=refresh_token_hash_str,
+        jti=jti,
+        sid=session_id,
+        expires_at=session_expires,
+    )
 
     set_refresh_token_cookie(response, refresh_token)
 
@@ -410,29 +351,22 @@ async def logout(
     response: Response,
     refresh_token: str | None = Cookie(None),
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> LogoutResponse:
     """Logout current user.
 
     Revokes the refresh token session and clears the cookie.
     Access tokens will expire naturally (15 minutes).
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Revoke refresh token session if provided
     if refresh_token:
         refresh_token_hash_str = hash_refresh_token(refresh_token)
-        async with db_logger.pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE auth_sessions
-                SET revoked = TRUE
-                WHERE refresh_token_hash = $1 AND user_id = $2
-                """,
-                refresh_token_hash_str,
-                current_user["user_id"],
-            )
+        session_row = await op_store.get_session_by_token_hash(refresh_token_hash_str)
+        if session_row and session_row["user_id"] == current_user["user_id"]:
+            await op_store.revoke_session(session_row["id"])
 
     delete_refresh_token_cookie(response)
 
@@ -445,7 +379,7 @@ async def logout(
 async def refresh(
     response: Response,
     refresh_token: str | None = Cookie(None),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> RefreshResponse:
     """Refresh access token using refresh token from cookie.
 
@@ -458,20 +392,12 @@ async def refresh(
             detail="Missing refresh token. Please login again.",
         )
 
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Verify refresh token
     refresh_token_hash_str = hash_refresh_token(refresh_token)
-    async with db_logger.pool.acquire() as conn:
-        session_row = await conn.fetchrow(
-            """
-            SELECT id, user_id, sid, expires_at, revoked
-            FROM auth_sessions
-            WHERE refresh_token_hash = $1
-            """,
-            refresh_token_hash_str,
-        )
+    session_row = await op_store.get_session_by_token_hash(refresh_token_hash_str)
 
     if not session_row:
         raise HTTPException(
@@ -492,15 +418,7 @@ async def refresh(
         )
 
     # Get user info and API key tier
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            """
-            SELECT id, email, status, email_verified, role
-            FROM users
-            WHERE id = $1
-            """,
-            session_row["user_id"],
-        )
+    user_row = await op_store.get_user_by_id(session_row["user_id"])
 
     if not user_row or user_row["status"] != "active":
         raise HTTPException(
@@ -517,11 +435,7 @@ async def refresh(
         )
 
     # Fetch API key tier
-    async with db_logger.pool.acquire() as conn:
-        key_row = await conn.fetchrow(
-            "SELECT tier FROM api_keys WHERE (account_id = $1 OR user_id = $1) AND status = 'active' LIMIT 1",
-            user_row["id"],
-        )
+    key_row = await op_store.get_key_by_account_or_user(user_row["id"])
     user_tier = (key_row["tier"] if key_row else None) or "free"
 
     # Create new access token
@@ -530,11 +444,7 @@ async def refresh(
     # Bootstrap seed on refresh (same logic as login — only when role is 'free')
     if is_admin_email(user_row["email"]) and user_role == "free":
         user_role = "admin"
-        async with db_logger.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET role = 'admin' WHERE id = $1",
-                user_row["id"],
-            )
+        await op_store.update_user_fields(user_row["id"], role="admin")
         logger.info(f"Bootstrap-seeded user {user_row['id']} to admin on refresh (ADMIN_EMAILS)")
 
     is_admin = user_role == "admin"
@@ -552,17 +462,11 @@ async def refresh(
     new_refresh_token_hash = hash_refresh_token(new_refresh_token)
 
     # Update session with new refresh token hash and jti
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE auth_sessions
-            SET last_used_at = NOW(), jti = $1, refresh_token_hash = $2
-            WHERE id = $3
-            """,
-            jti,
-            new_refresh_token_hash,
-            session_row["id"],
-        )
+    await op_store.rotate_session(
+        session_row["id"],
+        new_refresh_token_hash=new_refresh_token_hash,
+        new_jti=jti,
+    )
 
     set_refresh_token_cookie(response, new_refresh_token)
 
@@ -578,37 +482,22 @@ async def refresh(
 @router.get("/verify-email", response_model=VerifyEmailResponse)
 async def verify_email(
     token: str,
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> VerifyEmailResponse:
     """Verify user email address using token from email.
 
     Marks user's email as verified, allowing them to generate API keys.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    # Find verification token
-    async with db_logger.pool.acquire() as conn:
-        token_row = await conn.fetchrow(
-            """
-            SELECT user_id, expires_at, used_at
-            FROM email_verification_tokens
-            WHERE token = $1
-            """,
-            token,
-        )
+    token_row = await op_store.get_verification_token(token)
 
     if not token_row:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid verification token.",
-        )
+        raise HTTPException(status_code=400, detail="Invalid verification token.")
 
     if token_row["used_at"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Verification token has already been used.",
-        )
+        raise HTTPException(status_code=400, detail="Verification token has already been used.")
 
     if token_row["expires_at"] < datetime.now(timezone.utc):
         raise HTTPException(
@@ -616,26 +505,9 @@ async def verify_email(
             detail="Verification token has expired. Please request a new one.",
         )
 
-    # Mark email as verified
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE users
-            SET email_verified = TRUE
-            WHERE id = $1
-            """,
-            token_row["user_id"],
-        )
-
-        # Mark token as used
-        await conn.execute(
-            """
-            UPDATE email_verification_tokens
-            SET used_at = NOW()
-            WHERE token = $1
-            """,
-            token,
-        )
+    # Mark email as verified and token as used
+    await op_store.mark_user_email_verified(token_row["user_id"])
+    await op_store.mark_verification_used(token)
 
     logger.info(f"Email verified for user: {token_row['user_id']}")
 
@@ -650,22 +522,17 @@ async def forgot_password(
     request: Request,
     body: ForgotPasswordRequest,
     background_tasks: BackgroundTasks,
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> PasswordResetResponse:
     """Request password reset email.
 
     Sends a password reset link to the user's email if the account exists.
     Always returns success to prevent email enumeration.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    # Find user by email
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT id, email FROM users WHERE email = $1",
-            body.email.lower(),
-        )
+    user_row = await op_store.get_user_by_email(body.email)
 
     # Always return success to prevent email enumeration
     if not user_row:
@@ -676,18 +543,10 @@ async def forgot_password(
 
     # Generate reset token
     reset_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)  # 1 hour expiry
-
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO password_reset_tokens (token, user_id, expires_at)
-            VALUES ($1, $2, $3)
-            """,
-            reset_token,
-            user_row["id"],
-            expires_at,
-        )
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    await op_store.create_reset_token(
+        token=reset_token, user_id=user_row["id"], expires_at=expires_at
+    )
 
     # Send reset email if SMTP is configured
     if is_email_enabled():
@@ -708,13 +567,13 @@ async def forgot_password(
 @router.post("/reset-password", response_model=PasswordResetResponse)
 async def reset_password(
     body: ResetPasswordRequest,
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> PasswordResetResponse:
     """Reset password using token from email.
 
     Validates the reset token and updates the user's password.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Validate password strength
@@ -722,68 +581,28 @@ async def reset_password(
     if not is_valid:
         raise HTTPException(status_code=400, detail=error_msg)
 
-    # Find reset token
-    async with db_logger.pool.acquire() as conn:
-        token_row = await conn.fetchrow(
-            """
-            SELECT user_id, expires_at, used_at
-            FROM password_reset_tokens
-            WHERE token = $1
-            """,
-            body.token,
-        )
+    token_row = await op_store.get_reset_token(body.token)
 
     if not token_row:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or expired reset token.",
-        )
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
 
     if token_row["used_at"]:
-        raise HTTPException(
-            status_code=400,
-            detail="This reset link has already been used.",
-        )
+        raise HTTPException(status_code=400, detail="This reset link has already been used.")
 
     if token_row["expires_at"] < datetime.now(timezone.utc):
         raise HTTPException(
-            status_code=400,
-            detail="Reset link has expired. Please request a new one.",
+            status_code=400, detail="Reset link has expired. Please request a new one."
         )
 
     # Update password
     password_hash_str = password_utils.hash_password(body.new_password)
+    await op_store.update_user_fields(token_row["user_id"], password_hash=password_hash_str)
 
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE users
-            SET password_hash = $1
-            WHERE id = $2
-            """,
-            password_hash_str,
-            token_row["user_id"],
-        )
+    # Mark token as used
+    await op_store.mark_reset_used(body.token)
 
-        # Mark token as used
-        await conn.execute(
-            """
-            UPDATE password_reset_tokens
-            SET used_at = NOW()
-            WHERE token = $1
-            """,
-            body.token,
-        )
-
-        # Revoke all existing sessions for security
-        await conn.execute(
-            """
-            UPDATE auth_sessions
-            SET revoked = TRUE
-            WHERE user_id = $1
-            """,
-            token_row["user_id"],
-        )
+    # Revoke all existing sessions for security
+    await op_store.delete_user_sessions(token_row["user_id"])
 
     logger.info(f"Password reset completed for user: {token_row['user_id']}")
 
@@ -797,25 +616,20 @@ async def resend_verification(
     request: Request,
     body: ResendVerificationRequest,
     background_tasks: BackgroundTasks,
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> ResendVerificationResponse:
     """Resend email verification link.
 
     Sends a new verification email if the user exists and is not verified.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
     generic_response = ResendVerificationResponse(
         message="If this email requires verification, a verification email has been sent."
     )
 
-    # Find user
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT id, email, email_verified FROM users WHERE email = $1",
-            body.email.lower(),
-        )
+    user_row = await op_store.get_user_by_email(body.email)
 
     if not user_row:
         return generic_response
@@ -826,17 +640,9 @@ async def resend_verification(
     # Generate new verification token
     verification_token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO email_verification_tokens (token, user_id, expires_at)
-            VALUES ($1, $2, $3)
-            """,
-            verification_token,
-            user_row["id"],
-            expires_at,
-        )
+    await op_store.create_verification_token(
+        token=verification_token, user_id=user_row["id"], expires_at=expires_at
+    )
 
     # Send email in background so the request returns even if SMTP is slow
     if is_email_enabled():
@@ -844,7 +650,6 @@ async def resend_verification(
         background_tasks.add_task(
             send_verification_email, user_row["email"], verification_token, base_url
         )
-    # If email is not enabled, still return success to avoid leaking state
 
     logger.info(f"Verification email resent for user: {user_row['id']}")
 

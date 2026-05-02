@@ -70,7 +70,9 @@ sudo chmod 644 /etc/cron.d/freeinference-backup
 
 ## What gets backed up
 
-Currently `backup.sh` backs up the **PostgreSQL** database using `pg_dump`
+### When `DB_BACKEND=postgres` (default)
+
+`backup.sh` backs up the **PostgreSQL** database using `pg_dump`
 inside the `hybridinference-postgres` container:
 
 1. **PostgreSQL** – primary application database
@@ -82,6 +84,30 @@ inside the `hybridinference-postgres` container:
 3. **SQLite** – if you place SQLite `.db` or `.db.gz` files under
    `<backup_dir>/sqlite`, `restore.sh` can restore them to `data/db` or
    `var/db` in the project root (for example `rate_limits.db`).
+
+### When `DB_BACKEND=d1` (Cloudflare D1)
+
+PostgreSQL is **not used**. `backup.sh` will exit early with a message
+pointing to the D1/R2 scripts. Use these instead:
+
+| Data | Script | Storage |
+|------|--------|---------|
+| Operational tables (users, keys, sessions, tokens, audit) | `python scripts/cloudflare/d1_backup.py` | Local JSON export |
+| API request logs (slim rows, 30-day retention in D1) | `python scripts/cloudflare/r2_archive_logs.py` | Cloudflare R2 (gzipped JSONL) |
+
+```bash
+# Export D1 operational tables to timestamped JSON
+python scripts/cloudflare/d1_backup.py
+
+# Archive yesterday's logs to R2 and prune rows older than 30 days
+python scripts/cloudflare/r2_archive_logs.py
+
+# Dry run (no upload, no delete)
+python scripts/cloudflare/r2_archive_logs.py --dry-run
+
+# Only prune old rows without archiving
+python scripts/cloudflare/r2_archive_logs.py --prune-only
+```
 
 ## Backup location
 

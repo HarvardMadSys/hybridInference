@@ -53,14 +53,19 @@ class TestBootstrapInitialization:
             ),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger,
+            patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
         ):
             mock_logger = AsyncMock()
             MockDBLogger.return_value = mock_logger
+
+            mock_pg_op = AsyncMock()
+            MockPGOp.return_value = mock_pg_op
 
             services = await bootstrap.initialize()
 
             assert services.db_logger is not None
             mock_logger.initialize.assert_called_once()
+            mock_pg_op.initialize.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_initialize_loads_models_yaml(self, mock_env, temp_models_yaml, monkeypatch):

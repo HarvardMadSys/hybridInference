@@ -44,8 +44,13 @@ async def _verify_qdrant_user(request: Request) -> dict:
         auth = f"Bearer {q_key}"
 
     services = request.app.state.services
-    db_logger = services.db_logger
-    return await verify_api_key(request, authorization=auth, x_api_key=x_key, db_logger=db_logger)
+    return await verify_api_key(
+        request,
+        authorization=auth,
+        x_api_key=x_key,
+        op_store=services.operational_store,
+        log_store=services.log_store,
+    )
 
 
 # Allowed path patterns (regex).  Everything else returns 403.

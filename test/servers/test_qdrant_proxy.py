@@ -115,6 +115,8 @@ def qdrant_app(mock_db_logger, mock_upstream) -> FastAPI:
     app.state.services = AppServices(
         router=AsyncMock(),  # not used by qdrant proxy
         db_logger=mock_db_logger,
+        operational_store=None,
+        log_store=None,
     )
 
     # Override auth dependency to return a fake authenticated user

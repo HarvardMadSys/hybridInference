@@ -103,7 +103,7 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
   // Handle backend error format: { error: { type: "...", message: "...", code: 500 } }
   // or { detail: "..." } (FastAPI validation errors)
   let errorCode = 'UNKNOWN_ERROR';
-  let errorMessage = 'An unknown error occurred';
+  let errorMessage = '';
 
   if (errorData && typeof errorData === 'object') {
     const data = errorData as Record<string, unknown>;
@@ -112,13 +112,23 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
       // Backend error format: { error: { message: "...", type: "...", code: 400 } }
       const error = data.error as Record<string, unknown>;
       errorMessage = (error.message as string) || errorMessage;
+      const lowerMessage = errorMessage.toLowerCase();
 
       // Extract error patterns from message
-      if (errorMessage.includes('already been used')) {
+      if (
+        lowerMessage.includes('reset link has already been used') ||
+        (lowerMessage.includes('reset token') && lowerMessage.includes('used'))
+      ) {
+        errorCode = 'RESET_TOKEN_USED';
+      } else if (lowerMessage.includes('reset link has expired')) {
+        errorCode = 'RESET_TOKEN_EXPIRED';
+      } else if (lowerMessage.includes('invalid or expired reset token')) {
+        errorCode = 'RESET_TOKEN_INVALID';
+      } else if (lowerMessage.includes('already been used')) {
         errorCode = 'TOKEN_ALREADY_USED';
-      } else if (errorMessage.includes('expired')) {
+      } else if (lowerMessage.includes('expired')) {
         errorCode = 'TOKEN_EXPIRED';
-      } else if (errorMessage.includes('Invalid') && errorMessage.includes('token')) {
+      } else if (lowerMessage.includes('invalid') && lowerMessage.includes('token')) {
         errorCode = 'INVALID_TOKEN';
       } else if (error.type === 'validation_error') {
         errorCode = 'VALIDATION_ERROR';
@@ -132,19 +142,29 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
     } else if (data.detail) {
       // FastAPI validation error format: { detail: "..." }
       errorMessage = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+      const lowerMessage = errorMessage.toLowerCase();
 
       // Try to extract more specific error from detail message
-      if (errorMessage.includes('already registered')) {
+      if (lowerMessage.includes('already registered')) {
         errorCode = 'USER_ALREADY_EXISTS';
-      } else if (errorMessage.includes('already been used')) {
+      } else if (
+        lowerMessage.includes('reset link has already been used') ||
+        (lowerMessage.includes('reset token') && lowerMessage.includes('used'))
+      ) {
+        errorCode = 'RESET_TOKEN_USED';
+      } else if (lowerMessage.includes('reset link has expired')) {
+        errorCode = 'RESET_TOKEN_EXPIRED';
+      } else if (lowerMessage.includes('invalid or expired reset token')) {
+        errorCode = 'RESET_TOKEN_INVALID';
+      } else if (lowerMessage.includes('already been used')) {
         errorCode = 'TOKEN_ALREADY_USED';
-      } else if (errorMessage.includes('expired')) {
+      } else if (lowerMessage.includes('expired')) {
         errorCode = 'TOKEN_EXPIRED';
-      } else if (errorMessage.includes('Invalid') && errorMessage.includes('token')) {
+      } else if (lowerMessage.includes('invalid') && lowerMessage.includes('token')) {
         errorCode = 'INVALID_TOKEN';
-      } else if (errorMessage.includes('password') && errorMessage.includes('characters')) {
+      } else if (lowerMessage.includes('password') && lowerMessage.includes('characters')) {
         errorCode = 'WEAK_PASSWORD';
-      } else if (errorMessage.includes('Invalid email or password')) {
+      } else if (lowerMessage.includes('invalid email or password')) {
         errorCode = 'INVALID_CREDENTIALS';
       }
       // If no specific pattern matched, use the detail message directly

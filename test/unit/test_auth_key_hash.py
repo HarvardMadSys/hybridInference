@@ -15,20 +15,6 @@ import pytest
 from fastapi import Request
 
 from serving.servers.auth import hash_api_key, verify_api_key
-from serving.storage.database import DatabaseLogger
-
-
-class _AcquireContext:
-    """Async context manager yielding a predefined connection (mirrors test_auth.py)."""
-
-    def __init__(self, connection: AsyncMock) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> AsyncMock:
-        return self._connection
-
-    async def __aexit__(self, *_: Any) -> None:
-        return None
 
 
 @pytest.fixture
@@ -38,45 +24,41 @@ def mock_request() -> Request:
 
 
 @pytest.fixture
-def mock_db_with_pool() -> tuple[DatabaseLogger, AsyncMock]:
-    """DatabaseLogger mock backed by an asyncpg-style pool."""
-    db_logger = MagicMock(spec=DatabaseLogger)
-    connection = AsyncMock()
-    connection.fetchrow = AsyncMock()
-    connection.execute = AsyncMock()
-    pool = MagicMock()
-    pool.acquire.side_effect = lambda: _AcquireContext(connection)
-    db_logger.pool = pool
-    return db_logger, connection
+def mock_op_store():
+    """Mock OperationalStore for verify_api_key tests."""
+    store = MagicMock()
+    store.get_auth_context_by_key_hash = AsyncMock()
+    store.update_key_last_used = AsyncMock()
+    store.get_user_cost_today = AsyncMock(return_value=0.0)
+    return store
 
 
 @pytest.mark.asyncio
 async def test_verify_api_key_returns_auth_key_hash_matching_input(
-    monkeypatch, mock_request, mock_db_with_pool
+    monkeypatch, mock_request, mock_op_store
 ):
     """A valid key resolves to a user dict whose ``auth_key_hash`` == hash_api_key(plaintext)."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
     monkeypatch.setenv("API_KEY_SECRET", "test-secret")
 
-    db_logger, connection = mock_db_with_pool
     plaintext_key = "hyi-affinity-test"
     expected_hash = hash_api_key(plaintext_key)
 
-    connection.fetchrow.side_effect = [
-        {
-            "id": 42,
-            "user_id": "user-affinity",
-            "user_name": "Affinity Tester",
-            "quota_daily_cost_usd": 1000.0,
-            "tier": "free",
-        },
-        {"cost_spent": 0.0},
-    ]
+    mock_op_store.get_auth_context_by_key_hash.return_value = {
+        "id": 42,
+        "user_id": "user-affinity",
+        "user_name": "Affinity Tester",
+        "quota_daily_cost_usd": 1000.0,
+        "tier": "free",
+        "role": "free",
+        "email": "affinity@example.com",
+        "email_verified": True,
+    }
 
     result = await verify_api_key(
         request=mock_request,
         authorization=f"Bearer {plaintext_key}",
-        db_logger=db_logger,
+        op_store=mock_op_store,
     )
 
     assert result["authenticated"] is True
