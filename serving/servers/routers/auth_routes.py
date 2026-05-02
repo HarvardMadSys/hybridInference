@@ -65,18 +65,18 @@ def hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    """Read a boolean-like environment flag."""
-    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
-
-
 def _refresh_cookie_options() -> dict[str, object]:
-    """Return shared options for refresh-token cookie operations."""
+    """Return shared options for refresh-token cookie operations.
+
+    Reads from validated `settings` (not raw env) so tests and Pydantic
+    field defaults are the single source of truth. Defaults: secure=True,
+    samesite=lax, domain unset.
+    """
     return {
         "httponly": True,
-        "secure": _env_flag("COOKIE_SECURE"),
-        "samesite": os.getenv("COOKIE_SAMESITE", "lax"),
-        "domain": os.getenv("COOKIE_DOMAIN"),
+        "secure": settings.cookie_secure,
+        "samesite": settings.cookie_samesite,
+        "domain": settings.cookie_domain,
         "path": "/",
     }
 
