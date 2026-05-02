@@ -90,13 +90,53 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+type ToolCall = {
+  id?: unknown;
+  type?: unknown;
+  function?: { name?: unknown; arguments?: unknown };
+};
+
 type ChatMessage = {
   role: string;
   content: unknown;
+  reasoning_content?: unknown;
+  reasoning?: unknown;
+  refusal?: unknown;
+  tool_calls?: unknown;
+  tool_call_id?: unknown;
+  name?: unknown;
 };
 
 function isChatMessage(v: unknown): v is ChatMessage {
-  return isRecord(v) && typeof v.role === 'string' && 'content' in v;
+  return isRecord(v) && typeof v.role === 'string' && ('content' in v || 'tool_calls' in v);
+}
+
+function isToolCall(v: unknown): v is ToolCall {
+  return isRecord(v);
+}
+
+function getToolCalls(message: ChatMessage): ToolCall[] {
+  if (!Array.isArray(message.tool_calls)) return [];
+  return message.tool_calls.filter(isToolCall);
+}
+
+function toolCallName(tc: ToolCall): string {
+  const fn = tc.function;
+  if (isRecord(fn) && typeof fn.name === 'string') return fn.name;
+  return '';
+}
+
+function toolCallArgs(tc: ToolCall): string {
+  const fn = tc.function;
+  if (!isRecord(fn)) return '';
+  const args = fn.arguments;
+  if (typeof args === 'string') {
+    const parsed = tryParseJson(args);
+    if (parsed.ok) return JSON.stringify(parsed.value, null, 2);
+    return args;
+  }
+  if (args == null) return '';
+  return JSON.stringify(args, null, 2);
 }
 
 function flattenContent(content: unknown): string {
@@ -171,6 +211,23 @@ function MetaList({ data, skip }: { data: Record<string, unknown>; skip: Readonl
 
 function MessageBlock({ message }: { message: ChatMessage }) {
   const text = flattenContent(message.content);
+  const reasoning =
+    typeof message.reasoning_content === 'string'
+      ? message.reasoning_content
+      : typeof message.reasoning === 'string'
+        ? message.reasoning
+        : '';
+  const refusal = typeof message.refusal === 'string' ? message.refusal : '';
+  const toolCalls = getToolCalls(message);
+  const toolCallId = typeof message.tool_call_id === 'string' ? message.tool_call_id : '';
+  const toolName = typeof message.name === 'string' ? message.name : '';
+  const showToolMeta = message.role === 'tool' && (toolCallId || toolName);
+  const rendered =
+    text.length > 0 ||
+    reasoning.length > 0 ||
+    refusal.length > 0 ||
+    toolCalls.length > 0 ||
+    showToolMeta;
   return (
     <div className="rounded-md border border-gray-200 bg-white px-2 py-1.5">
       <div className="mb-1 flex items-center gap-2">
@@ -182,9 +239,74 @@ function MessageBlock({ message }: { message: ChatMessage }) {
           {message.role}
         </span>
       </div>
-      <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-gray-700">
-        {text}
-      </pre>
+      {showToolMeta && (
+        <div className="mb-1 flex flex-wrap gap-x-3 text-[10px] text-gray-500 font-mono">
+          {toolName && (
+            <span>
+              name: <span className="text-gray-700">{toolName}</span>
+            </span>
+          )}
+          {toolCallId && (
+            <span>
+              tool_call_id: <span className="text-gray-700">{toolCallId}</span>
+            </span>
+          )}
+        </div>
+      )}
+      {text.length > 0 && (
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-gray-700">
+          {text}
+        </pre>
+      )}
+      {reasoning.length > 0 && (
+        <div className="mt-1 rounded-md border border-gray-200 bg-white px-2 py-1">
+          <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500">
+            reasoning
+          </div>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] italic text-gray-500">
+            {reasoning}
+          </pre>
+        </div>
+      )}
+      {refusal.length > 0 && (
+        <div className="mt-1 rounded-md border border-red-200 bg-white px-2 py-1">
+          <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-red-600">
+            refusal
+          </div>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-red-700">
+            {refusal}
+          </pre>
+        </div>
+      )}
+      {toolCalls.length > 0 && (
+        <div className="mt-1 space-y-1">
+          {toolCalls.map((tc, i) => {
+            const name = toolCallName(tc);
+            const args = toolCallArgs(tc);
+            const id = typeof tc.id === 'string' ? tc.id : '';
+            return (
+              <div
+                key={id || `${i}-${name}`}
+                className="rounded-md border border-gray-200 bg-white px-2 py-1"
+              >
+                <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[10px]">
+                  <span className="font-medium uppercase tracking-wide text-gray-500">
+                    tool_call
+                  </span>
+                  {name && <span className="font-mono text-gray-700">{name}</span>}
+                  {id && <span className="font-mono text-gray-400">{id}</span>}
+                </div>
+                {args.length > 0 && (
+                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-gray-700">
+                    {args}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {!rendered && <div className="text-[11px] italic text-gray-400">(no content)</div>}
     </div>
   );
 }
@@ -221,6 +343,13 @@ function JsonChatView({ data }: { data: unknown }) {
   );
 }
 
+function toolCallsPreview(message: ChatMessage): string {
+  const calls = getToolCalls(message);
+  if (calls.length === 0) return '';
+  const names = calls.map(toolCallName).filter((n) => n.length > 0);
+  return `[tool_calls: ${names.join(', ')}]`;
+}
+
 function computePreview(parsed: unknown, fallback: string): string {
   if (hasMessages(parsed)) {
     for (let i = parsed.messages.length - 1; i >= 0; i--) {
@@ -230,16 +359,30 @@ function computePreview(parsed: unknown, fallback: string): string {
         if (text) return previewText(text);
       }
     }
+    for (let i = parsed.messages.length - 1; i >= 0; i--) {
+      const m = parsed.messages[i];
+      if (m.role === 'assistant') {
+        const text = flattenContent(m.content);
+        if (text) return previewText(text);
+        const tc = toolCallsPreview(m);
+        if (tc) return previewText(tc);
+        break;
+      }
+    }
     const last = parsed.messages[parsed.messages.length - 1];
     if (last) {
       const text = flattenContent(last.content);
       if (text) return previewText(text);
+      const tc = toolCallsPreview(last);
+      if (tc) return previewText(tc);
     }
   }
   if (hasChoices(parsed)) {
     const first = parsed.choices[0];
     const text = flattenContent(first.message.content);
     if (text) return previewText(text);
+    const tc = toolCallsPreview(first.message);
+    if (tc) return previewText(tc);
   }
   return previewText(fallback);
 }
