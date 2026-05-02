@@ -108,11 +108,12 @@ class TestSignupAllowlist:
         await _add_domain(op_store, "trusted-corp.io", is_wildcard=False)
         invalidate_allowlist_cache()
 
-        # Force admin notify path: configure SMTP + admin emails.
-        monkeypatch.setenv("ADMIN_EMAILS", "admin@trusted-corp.io")
-        monkeypatch.setenv("SMTP_HOST", "smtp.example.test")
-        monkeypatch.setenv("SMTP_USER", "tester")
-        monkeypatch.setenv("SMTP_PASSWORD", "secret")
+        # Force admin notify path. Pydantic settings cache env at import
+        # time, so patching env vars here has no effect; patch the
+        # resolved values at the auth_routes import sites instead.
+        from serving.servers.routers import auth_routes as auth_routes_mod
+
+        monkeypatch.setattr(auth_routes_mod.settings, "admin_emails", "admin@trusted-corp.io")
 
         sent_to: list[str] = []
 
@@ -120,10 +121,14 @@ class TestSignupAllowlist:
             sent_to.append(to_email)
             return True
 
-        # Patch the import site used by auth_routes.
-        with patch(
-            "serving.servers.routers.auth_routes.send_new_registration_admin_email",
-            side_effect=_capture,
+        # Patch the import site used by auth_routes (function reference,
+        # not the source module) and force is_email_enabled() to True.
+        with (
+            patch(
+                "serving.servers.routers.auth_routes.send_new_registration_admin_email",
+                side_effect=_capture,
+            ),
+            patch("serving.servers.routers.auth_routes.is_email_enabled", return_value=True),
         ):
             signup_data = create_signup_request(email="dan@outside-vendor.net")
             response = await auth_app_client.post("/auth/signup", json=signup_data)
