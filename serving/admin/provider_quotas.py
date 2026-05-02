@@ -39,7 +39,7 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _next_reset(period: str) -> datetime:
+def _next_reset(period: str, now: datetime | None = None) -> datetime:
     """Compute the next reset datetime in UTC for a given period.
 
     Supported periods: daily, weekly, monthly, session.
@@ -48,7 +48,7 @@ def _next_reset(period: str) -> datetime:
     - monthly → 1st of next month 00:00 UTC
     - session → next midnight UTC (same as daily)
     """
-    now = _now()
+    now = now or _now()
     period = period.lower().strip()
     if period == "weekly":
         days_until_monday = (7 - now.weekday()) % 7 or 7
@@ -329,6 +329,7 @@ async def fetch_zai() -> ProviderQuotaResult:
         return _err("zai", "ZAI", key, "parse_error")
 
     usages: list[ProviderQuotaUsage] = []
+    reset_at = _next_reset("monthly")
     for entry in limits:
         if not isinstance(entry, dict):
             continue
@@ -342,8 +343,6 @@ async def fetch_zai() -> ProviderQuotaResult:
 
         used_raw = entry.get("currentValue") if "currentValue" in entry else entry.get("used")
         limit_raw = entry.get("usage")  # "usage" is the total cap in the ZAI API
-
-        reset_at = _next_reset("monthly")
 
         # For entries with no absolute values, fall back to percentage
         if used_raw is None and limit_raw is None and "percentage" in entry:

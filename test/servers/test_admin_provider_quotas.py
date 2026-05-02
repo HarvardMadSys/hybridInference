@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from serving.admin.provider_quotas import (
     _mask_key,
+    _next_reset,
     _parse_iso,
     fetch_chutes,
     fetch_minimax,
@@ -634,3 +635,35 @@ class TestProviderQuotasRoute:
         assert "generated_at" in body
         assert len(body["providers"]) == 4
         assert {p["name"] for p in body["providers"]} == {"chutes", "zai", "minimax", "ollama"}
+
+
+class TestNextReset:
+    def test_daily_midnight(self):
+        now = datetime(2026, 5, 2, 14, 30, 0, tzinfo=timezone.utc)
+        reset = _next_reset("daily", now=now)
+        assert reset == datetime(2026, 5, 3, 0, 0, 0, tzinfo=timezone.utc)
+
+    def test_session_same_as_daily(self):
+        now = datetime(2026, 5, 2, 14, 30, 0, tzinfo=timezone.utc)
+        reset = _next_reset("session", now=now)
+        assert reset == datetime(2026, 5, 3, 0, 0, 0, tzinfo=timezone.utc)
+
+    def test_weekly_next_monday(self):
+        now = datetime(2026, 5, 6, 10, 0, 0, tzinfo=timezone.utc)  # Wednesday
+        reset = _next_reset("weekly", now=now)
+        assert reset == datetime(2026, 5, 11, 0, 0, 0, tzinfo=timezone.utc)  # next Monday
+
+    def test_weekly_on_monday_goes_next_week(self):
+        now = datetime(2026, 5, 4, 0, 0, 0, tzinfo=timezone.utc)  # Monday
+        reset = _next_reset("weekly", now=now)
+        assert reset == datetime(2026, 5, 11, 0, 0, 0, tzinfo=timezone.utc)  # next Monday
+
+    def test_monthly_first_of_next_month(self):
+        now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
+        reset = _next_reset("monthly", now=now)
+        assert reset == datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+    def test_monthly_december_wraps_year(self):
+        now = datetime(2026, 12, 31, 23, 59, 0, tzinfo=timezone.utc)
+        reset = _next_reset("monthly", now=now)
+        assert reset == datetime(2027, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
