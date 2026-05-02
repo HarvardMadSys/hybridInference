@@ -619,14 +619,17 @@ async def anthropic_compat_router():
 
 
 @pytest_asyncio.fixture
-async def anthropic_app_services(anthropic_compat_router, mock_db_logger, mock_rate_limiter):
+async def anthropic_app_services(
+    anthropic_compat_router, mock_db_logger, mock_operational_store, mock_log_store
+):
     """AppServices instance for anthropic compat router tests."""
     from serving.servers.deps import AppServices
 
     return AppServices(
         router=anthropic_compat_router,
         db_logger=mock_db_logger,
-        rate_limiter=mock_rate_limiter,
+        operational_store=mock_operational_store,
+        log_store=mock_log_store,
         routing_manager=None,
     )
 

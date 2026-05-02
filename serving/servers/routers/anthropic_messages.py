@@ -34,7 +34,7 @@ from serving.observability.metrics import (
 )
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
-from serving.servers.deps import get_db_logger, get_rate_limiter, get_router
+from serving.servers.deps import get_db_logger, get_router
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
@@ -183,40 +183,6 @@ def _schedule_db_log(
     asyncio.create_task(_log())  # noqa: RUF006
 
 
-# --- Rate-limit pre-estimate flatten ---------------------------------------
-
-
-def _flatten_anthropic_for_token_estimate(body: dict[str, Any]) -> list[dict[str, Any]]:
-    """Approximate OpenAI-shaped messages for tiktoken pre-estimation."""
-    out = []
-    sys = body.get("system")
-    if isinstance(sys, str) and sys:
-        out.append({"role": "system", "content": sys})
-    elif isinstance(sys, list):
-        out.append(
-            {
-                "role": "system",
-                "content": "\n\n".join(
-                    b.get("text", "")
-                    for b in sys
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ),
-            }
-        )
-    for msg in body.get("messages", []):
-        content = msg.get("content")
-        if isinstance(content, str):
-            out.append({"role": msg["role"], "content": content})
-        elif isinstance(content, list):
-            text = "".join(
-                b.get("text", "")
-                for b in content
-                if isinstance(b, dict) and b.get("type") == "text"
-            )
-            out.append({"role": msg["role"], "content": text})
-    return out
-
-
 # --- Route handler ---------------------------------------------------------
 
 
@@ -226,7 +192,6 @@ async def anthropic_messages(
     request: Request,
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
-    rate_limiter=Depends(get_rate_limiter),
     db_logger=Depends(get_db_logger),
     _conc=Depends(enforce_user_concurrency),
 ):
@@ -253,18 +218,6 @@ async def anthropic_messages(
         return _anthropic_error(exc.status_code, str(exc.detail))
 
     body["model"] = canonical
-
-    if rate_limiter:
-        oai_msgs = _flatten_anthropic_for_token_estimate(body)
-        ok, meta = await rate_limiter.acquire_tokens(
-            model_id=canonical,
-            messages=oai_msgs,
-            max_tokens=body.get("max_tokens"),
-            priority=1 if user_ctx.get("authenticated") else 0,
-            timeout=30.0,
-        )
-        if not ok:
-            return _anthropic_error(429, meta.get("error", "Rate limit exceeded"))
 
     if adapter.native_format == "openai":
         dropped = _sanitize_for_openai_backend(body)
