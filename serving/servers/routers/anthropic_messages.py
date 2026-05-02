@@ -209,6 +209,7 @@ def _schedule_log_store_task(
     pricing: dict[str, str],
     metadata: dict[str, Any],
     params: dict[str, Any],
+    ttft_ms: int | None = None,
 ) -> None:
     """Schedule a background log store task (fire-and-forget)."""
 
@@ -232,6 +233,7 @@ def _schedule_log_store_task(
                 params=params,
                 metadata=metadata,
                 pricing=pricing,
+                ttft_ms=ttft_ms,
             )
         except Exception:
             logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
@@ -318,6 +320,8 @@ async def anthropic_messages(
                 "cache_read_input_tokens": 0,
             }
             stream_failed = False
+            ttft_ms: int | None = None
+            ttft_buffer = b""
             try:
                 async for chunk in adapter.stream_messages(
                     body,
@@ -327,6 +331,20 @@ async def anthropic_messages(
                 ):
                     if isinstance(chunk, str):
                         chunk = chunk.encode("utf-8")
+                    if ttft_ms is None:
+                        ttft_buffer += chunk
+                        nl = ttft_buffer.rfind(b"\n")
+                        if nl >= 0:
+                            head = ttft_buffer[: nl + 1]
+                            ttft_buffer = ttft_buffer[nl + 1 :]
+                            if (
+                                b"event: content_block_start" in head
+                                or b"event: content_block_delta" in head
+                            ):
+                                ttft_ms = int((time.time() - start) * 1000)
+                                ttft_buffer = b""
+                        elif len(ttft_buffer) > 16384:
+                            ttft_buffer = b""
                     yield chunk
             except Exception as exc:
                 stream_failed = True
@@ -363,6 +381,7 @@ async def anthropic_messages(
                         else {},
                         metadata=metadata,
                         params=params_for_log,
+                        ttft_ms=ttft_ms,
                     )
 
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
