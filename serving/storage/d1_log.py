@@ -313,24 +313,48 @@ class D1LogStore(LogStore):
 
         async def _sum_period(since: str) -> dict[str, Any]:
             r = await self._d1.query(
-                "SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs "
+                "SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs, "
+                "COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, "
+                "COALESCE(SUM(completion_tokens), 0) AS completion_tokens "
                 "FROM api_logs WHERE user_id = ? AND timestamp >= ?",
                 [user_id, since],
             )
             if r.rows:
-                return {"cost_usd": float(r.rows[0]["cost"]), "requests": int(r.rows[0]["reqs"])}
-            return {"cost_usd": 0.0, "requests": 0}
+                return {
+                    "cost_usd": float(r.rows[0]["cost"]),
+                    "requests": int(r.rows[0]["reqs"]),
+                    "prompt_tokens": int(r.rows[0]["prompt_tokens"] or 0),
+                    "completion_tokens": int(r.rows[0]["completion_tokens"] or 0),
+                }
+            return {
+                "cost_usd": 0.0,
+                "requests": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+            }
 
         # all-time (no filter)
         r_all = await self._d1.query(
-            "SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs "
+            "SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs, "
+            "COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, "
+            "COALESCE(SUM(completion_tokens), 0) AS completion_tokens "
             "FROM api_logs WHERE user_id = ?",
             [user_id],
         )
         alltime = (
-            {"cost_usd": float(r_all.rows[0]["cost"]), "requests": int(r_all.rows[0]["reqs"])}
+            {
+                "cost_usd": float(r_all.rows[0]["cost"]),
+                "requests": int(r_all.rows[0]["reqs"]),
+                "prompt_tokens": int(r_all.rows[0]["prompt_tokens"] or 0),
+                "completion_tokens": int(r_all.rows[0]["completion_tokens"] or 0),
+            }
             if r_all.rows
-            else {"cost_usd": 0.0, "requests": 0}
+            else {
+                "cost_usd": 0.0,
+                "requests": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+            }
         )
 
         today, week, month = await asyncio.gather(

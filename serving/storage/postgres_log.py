@@ -295,7 +295,10 @@ class PostgresLogStore(LogStore):
         async with self.pool.acquire() as conn:
             today = await conn.fetchrow(
                 """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COUNT(*) AS reqs,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
                 FROM api_logs
                 WHERE user_id = $1
                   AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
@@ -304,7 +307,10 @@ class PostgresLogStore(LogStore):
             )
             week = await conn.fetchrow(
                 """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COUNT(*) AS reqs,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
                 FROM api_logs
                 WHERE user_id = $1
                   AND timestamp >= NOW() - INTERVAL '7 days'
@@ -313,7 +319,10 @@ class PostgresLogStore(LogStore):
             )
             month = await conn.fetchrow(
                 """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COUNT(*) AS reqs,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
                 FROM api_logs
                 WHERE user_id = $1
                   AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
@@ -322,7 +331,10 @@ class PostgresLogStore(LogStore):
             )
             alltime = await conn.fetchrow(
                 """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
+                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                       COUNT(*) AS reqs,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
                 FROM api_logs
                 WHERE user_id = $1
                 """,
@@ -331,8 +343,18 @@ class PostgresLogStore(LogStore):
 
         def _extract(row: Any) -> dict[str, Any]:
             if not row:
-                return {"cost_usd": 0.0, "requests": 0}
-            return {"cost_usd": float(row["cost"]), "requests": int(row["reqs"])}
+                return {
+                    "cost_usd": 0.0,
+                    "requests": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                }
+            return {
+                "cost_usd": float(row["cost"]),
+                "requests": int(row["reqs"]),
+                "prompt_tokens": int(row["prompt_tokens"]),
+                "completion_tokens": int(row["completion_tokens"]),
+            }
 
         return {
             "today": _extract(today),
