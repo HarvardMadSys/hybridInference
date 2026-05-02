@@ -188,6 +188,11 @@ class CredentialProvider:
             os.write(fd, data.encode())
             os.close(fd)
             os.replace(tmp_path, self._accounts_file)
+            # Restrict perms: file holds OAuth refresh tokens that grant
+            # long-lived account access. mkstemp creates 0o600 by default
+            # but os.replace preserves the destination's mode if it
+            # already existed, so we re-assert the tight perms here.
+            os.chmod(self._accounts_file, 0o600)
         except Exception:
             os.close(fd) if not os.get_inheritable(fd) else None
             if os.path.exists(tmp_path):
