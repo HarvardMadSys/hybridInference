@@ -66,7 +66,7 @@ class PostgresOperationalStore(OperationalStore):
                 user_name TEXT,
                 preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
                 role TEXT NOT NULL DEFAULT 'free'
-                    CHECK (role IN ('free', 'internal', 'admin')),
+                    CHECK (role IN ('free', 'pro', 'internal', 'admin')),
                 email_verified BOOLEAN DEFAULT FALSE,
                 status TEXT DEFAULT 'active'
                     CHECK (status IN ('active', 'suspended', 'deleted',
@@ -150,12 +150,12 @@ class PostgresOperationalStore(OperationalStore):
                     )
                 await conn.execute("""
                     ALTER TABLE users ADD CONSTRAINT users_role_check
-                    CHECK (role IN ('free', 'internal', 'admin'))
+                    CHECK (role IN ('free', 'pro', 'internal', 'admin'))
                 """)
         except _asyncpg.PostgresError as exc:
             invalid_rows = await conn.fetch(
                 "SELECT id, email, role FROM users "
-                "WHERE role NOT IN ('free','internal','admin') "
+                "WHERE role NOT IN ('free','pro','internal','admin') "
                 "ORDER BY created_at DESC LIMIT 10"
             )
             logger.error(

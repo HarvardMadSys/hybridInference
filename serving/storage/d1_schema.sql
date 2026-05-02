@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     user_name         TEXT,
     preferences       TEXT NOT NULL DEFAULT '{}',
     role              TEXT NOT NULL DEFAULT 'free'
-                      CHECK (role IN ('free', 'internal', 'admin')),
+                      CHECK (role IN ('free', 'pro', 'internal', 'admin')),
     email_verified    INTEGER DEFAULT 0,
     status            TEXT DEFAULT 'active'
                       CHECK (status IN ('active', 'suspended', 'deleted',
