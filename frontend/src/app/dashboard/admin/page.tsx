@@ -369,7 +369,11 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
   ];
   const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms' | 'tps'): string => {
     if (v == null) return '—';
-    return kind === 'ms' ? formatLatency(v) : kind === 'tps' ? formatThroughput(v) : formatTokens(v);
+    return kind === 'ms'
+      ? formatLatency(v)
+      : kind === 'tps'
+        ? formatThroughput(v)
+        : formatTokens(v);
   };
   return (
     <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
