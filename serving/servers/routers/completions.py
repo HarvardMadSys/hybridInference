@@ -675,6 +675,7 @@ async def chat_completions(
                             "metadata": metadata,
                             "ttft_ms": ttft_ms,
                             "pricing": pricing,
+                            "upstream_cost_usd": (routing_info or {}).get("upstream_cost_usd"),
                         },
                     )
 
@@ -841,6 +842,7 @@ async def chat_completions(
                     ),
                     "metadata": metadata,
                     "pricing": pricing,
+                    "upstream_cost_usd": (routing_info or {}).get("upstream_cost_usd"),
                 },
             )
 
