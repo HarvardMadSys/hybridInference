@@ -14,7 +14,7 @@ export default function DashboardPage() {
 
   return (
     <ProtectedRoute>
-      <div className="mx-auto w-full max-w-6xl space-y-8">
+      <div className="mx-auto w-full max-w-5xl space-y-8">
         <div className="mb-8">
           <div className="flex items-center justify-between">
             <div>
