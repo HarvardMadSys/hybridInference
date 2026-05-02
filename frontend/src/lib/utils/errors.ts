@@ -8,6 +8,9 @@ export const ERROR_MESSAGES: Record<string, string> = {
   TOKEN_EXPIRED: 'Session has expired. Please login again',
   INVALID_TOKEN: 'Invalid or expired token',
   TOKEN_ALREADY_USED: 'This verification link has already been used',
+  RESET_TOKEN_EXPIRED: 'This password reset link has expired. Please request a new one',
+  RESET_TOKEN_INVALID: 'This password reset link is invalid. Please request a new one',
+  RESET_TOKEN_USED: 'This password reset link has already been used. Please request a new one',
   SESSION_NOT_FOUND: 'Session not found. Please login again',
   SESSION_REVOKED: 'Session has been revoked',
 
@@ -31,7 +34,7 @@ export const ERROR_MESSAGES: Record<string, string> = {
 
 export function getErrorMessage(error: unknown): string {
   if (error instanceof APIError) {
-    if (error.code && ERROR_MESSAGES[error.code]) {
+    if (error.code && error.code !== 'UNKNOWN_ERROR' && ERROR_MESSAGES[error.code]) {
       return ERROR_MESSAGES[error.code];
     }
     return error.message || ERROR_MESSAGES.UNKNOWN_ERROR;
@@ -39,7 +42,11 @@ export function getErrorMessage(error: unknown): string {
 
   if (error instanceof Error) {
     const errorWithCode = error as Error & { code?: string };
-    if (errorWithCode.code && ERROR_MESSAGES[errorWithCode.code]) {
+    if (
+      errorWithCode.code &&
+      errorWithCode.code !== 'UNKNOWN_ERROR' &&
+      ERROR_MESSAGES[errorWithCode.code]
+    ) {
       return ERROR_MESSAGES[errorWithCode.code];
     }
     return error.message || ERROR_MESSAGES.UNKNOWN_ERROR;

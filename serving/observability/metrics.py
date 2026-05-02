@@ -67,7 +67,6 @@ API_FALLBACKS = _LabeledNoOp()
 API_TOKENS = _LabeledNoOp()
 API_TOKEN_ANOMALIES = _LabeledNoOp()
 STREAMING_INTERRUPTION = _LabeledNoOp()
-RATE_LIMIT_HITS = _LabeledNoOp()
 API_MODEL_REQUESTS = _LabeledNoOp()
 API_CONCURRENCY = _LabeledGaugeNoOp()
 
@@ -81,10 +80,6 @@ DATABASE_CONNECTED = _LabeledGaugeNoOp()
 USERS_TOTAL = _LabeledGaugeNoOp()
 USERS_ACTIVE_DAILY = _LabeledGaugeNoOp()
 USERS_ACTIVE_MONTHLY = _LabeledGaugeNoOp()
-
-# Rate limit queueing metrics
-RATE_LIMIT_QUEUE_SIZE = _LabeledGaugeNoOp()
-RATE_LIMIT_QUEUE_WAIT = _LabeledNoOp()
 
 # Circuit breaker metrics
 CIRCUIT_STATE = _LabeledGaugeNoOp()
@@ -100,6 +95,17 @@ ROUTEWISE_BACKUP_WINS = _LabeledNoOp()
 ROUTEWISE_VALUE_ESTIMATE = _LabeledNoOp()
 ROUTEWISE_LP_STATUS = _LabeledNoOp()
 ROUTEWISE_CANARY_DECISIONS = _LabeledNoOp()
+
+# Multi-key API key pool metrics
+KEY_POOL_REQUESTS = _LabeledNoOp()
+KEY_POOL_COOLDOWNS = _LabeledNoOp()
+KEY_POOL_EXHAUSTED = _LabeledNoOp()
+KEY_POOL_ACTIVE_AFFINITIES = _LabeledGaugeNoOp()
+
+# Per-user concurrency limiter metrics
+USER_CONCURRENCY_IN_FLIGHT = _LabeledGaugeNoOp()
+USER_CONCURRENCY_ACQUIRES_TOTAL = _LabeledNoOp()
+USER_CONCURRENCY_REJECTED_TOTAL = _LabeledNoOp()
 
 
 def render_latest() -> bytes:  # pragma: no cover
@@ -178,13 +184,14 @@ __all__ = [
     "CIRCUIT_STATE",
     # Database metrics
     "DATABASE_CONNECTED",
+    # Key pool metrics
+    "KEY_POOL_ACTIVE_AFFINITIES",
+    "KEY_POOL_COOLDOWNS",
+    "KEY_POOL_EXHAUSTED",
+    "KEY_POOL_REQUESTS",
     # Provider metrics
     "PROVIDER_AVAILABILITY",
     "PROVIDER_LATENCY",
-    # Rate limiting metrics
-    "RATE_LIMIT_HITS",
-    "RATE_LIMIT_QUEUE_SIZE",
-    "RATE_LIMIT_QUEUE_WAIT",
     # RouteWise metrics
     "ROUTEWISE_BACKUP_WINS",
     "ROUTEWISE_CANARY_DECISIONS",
@@ -202,6 +209,10 @@ __all__ = [
     "USERS_ACTIVE_MONTHLY",
     # User statistics metrics
     "USERS_TOTAL",
+    # Per-user concurrency metrics
+    "USER_CONCURRENCY_ACQUIRES_TOTAL",
+    "USER_CONCURRENCY_IN_FLIGHT",
+    "USER_CONCURRENCY_REJECTED_TOTAL",
     # Helper functions
     "latency_timer",
     "normalize_model_label",

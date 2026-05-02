@@ -12,7 +12,6 @@ class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
 
     user_id: str = Field(..., min_length=1, max_length=255, description="Unique user identifier")
     user_name: str | None = Field(None, max_length=255, description="Display name for the user")
-    tier: str = Field("free", pattern="^(free|pro|enterprise)$", description="User tier")
     quota_daily_cost_usd: Decimal = Field(
         Decimal("1000.00"),
         ge=0,
@@ -45,7 +44,6 @@ class CreateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     api_key: str = Field(..., description="Plaintext API key (shown only once)")
     user_id: str
     key_prefix: str = Field(..., description="First 12 characters for identification")
-    tier: str
     quota_daily_cost_usd: Decimal
     quota_monthly_cost_usd: Decimal | None
     expires_at: datetime | None
@@ -62,7 +60,6 @@ class APIKeyListItem(BaseModel):  # type: ignore[no-any-unimported]
     user_id: str
     user_name: str | None
     key_prefix: str
-    tier: str
     status: str
     quota_daily_cost_usd: Decimal
     quota_monthly_cost_usd: Decimal | None
@@ -102,7 +99,6 @@ class APIKeyDetailResponse(BaseModel):  # type: ignore[no-any-unimported]
     user_id: str
     user_name: str | None
     key_prefix: str
-    tier: str
     status: str
     quota_daily_cost_usd: Decimal
     quota_monthly_cost_usd: Decimal | None
@@ -118,7 +114,6 @@ class UpdateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     """Request payload for updating an API key."""
 
     user_name: str | None = Field(None, max_length=255)
-    tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
     status: str | None = Field(None, pattern="^(active|suspended|revoked)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
     quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)
@@ -182,7 +177,6 @@ class UserListItem(BaseModel):
     has_key: bool = False
     key_prefix: str | None = None
     key_status: str | None = None
-    key_tier: str | None = None
     usage_today_usd: Decimal = Field(default=Decimal("0"))
     usage_month_usd: Decimal = Field(default=Decimal("0"))
     usage_alltime_usd: Decimal = Field(default=Decimal("0"))
@@ -253,7 +247,6 @@ class UserDetailResponse(BaseModel):
     # Key info
     has_key: bool = False
     key_prefix: str | None = None
-    key_tier: str | None = None
     quota_daily_usd: float | None = None
     quota_monthly_usd: float | None = None
     # Usage
@@ -268,8 +261,11 @@ class UserDetailResponse(BaseModel):
 class UpdateUserRequest(BaseModel):
     """Request payload for updating user/key settings."""
 
-    role: str | None = Field(None, pattern="^(free|internal|admin)$")
-    tier: str | None = Field(None, pattern="^(free|pro|enterprise)$")
+    role: str | None = Field(
+        None,
+        pattern="^(free|pro|internal|admin)$",
+        description="One of: free, pro, internal, admin",
+    )
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
     quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)
@@ -374,6 +370,47 @@ class AdminRequestMetricsResponse(BaseModel):
     windows: list[AdminRequestMetricsWindow]
 
 
+class AdminHistogramBucket(BaseModel):
+    """A single histogram bucket for a metric distribution."""
+
+    lower_bound: float
+    upper_bound: float | None = None
+    count: int
+
+
+class AdminMetricDistribution(BaseModel):
+    """Distribution summary (count, percentiles, histogram) for a single metric."""
+
+    count: int
+    mean: float | None = None
+    min: float | None = None
+    max: float | None = None
+    p50: float | None = None
+    p90: float | None = None
+    p95: float | None = None
+    p99: float | None = None
+    histogram: list[AdminHistogramBucket] = Field(default_factory=list)
+
+
+class AdminPerformanceMetricsWindow(BaseModel):
+    """Performance metric distributions for a single lookback window."""
+
+    key: str
+    label: str
+    window_minutes: int
+    prompt_tokens: AdminMetricDistribution
+    completion_tokens: AdminMetricDistribution
+    ttft_ms: AdminMetricDistribution
+    tbt_ms: AdminMetricDistribution
+
+
+class AdminPerformanceMetricsResponse(BaseModel):
+    """Performance metric distributions across admin dashboard lookback windows."""
+
+    generated_at: datetime
+    windows: list[AdminPerformanceMetricsWindow]
+
+
 class AdminRecentRequestItem(BaseModel):
     """A single API request log entry (admin view, includes user identity)."""
 
@@ -392,6 +429,8 @@ class AdminRecentRequestItem(BaseModel):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     reasoning_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     total_tokens: int | None = None
     cost_usd: float | None = None
     prompt: str | None = None
@@ -408,16 +447,103 @@ class AdminRecentRequestsResponse(BaseModel):
     offset: int
 
 
+# ── Analytics Dashboard ──────────────────────────────────────────────────────
+
+
+class SparklineBucket(BaseModel):
+    """One time bucket for the active-users sparkline."""
+
+    start_time: datetime
+    request_count: int
+
+
+class AnalyticsUserEntry(BaseModel):
+    """One row in the top-users horizontal bar chart."""
+
+    email: str
+    user_id: str
+    requests: int
+    fraction: float  # share of user-attributed requests in the period (0.0-1.0)
+
+
+class AnalyticsBreakdownEntry(BaseModel):
+    """One slice in a model or provider donut chart."""
+
+    name: str  # model_id / provider name; "others" for the collapsed remainder
+    requests: int
+    fraction: float  # share of total requests in the period
+
+
+class AdminAnalyticsResponse(BaseModel):
+    """Response for GET /admin/analytics."""
+
+    period: str = Field(..., pattern="^(hour|day|week|month)$")
+    active_users: int
+    sparkline: list[SparklineBucket]
+    top_users: list[AnalyticsUserEntry]
+    by_model: list[AnalyticsBreakdownEntry]
+    by_provider: list[AnalyticsBreakdownEntry]
+    generated_at: datetime
+
+
+# ========================================
+# Provider Quotas (Admin Dashboard)
+# ========================================
+
+
+class ProviderQuotaUsage(BaseModel):
+    """A single usage measurement for a provider (e.g. monthly cost, request count)."""
+
+    label: str = Field(..., description="Human-readable label, e.g. 'Monthly', '4-hour window'")
+    used: float | None = Field(None, description="Amount consumed (None if unknown)")
+    limit: float | None = Field(
+        None, description="Total quota limit (None if unlimited or unknown)"
+    )
+    unit: str = Field(..., description="Unit string, e.g. 'USD', 'tokens', 'requests'")
+    reset_at: datetime | None = Field(None, description="When this usage window resets (UTC)")
+
+
+class ProviderQuotaResult(BaseModel):
+    """Result of querying a single upstream provider's quota."""
+
+    name: str = Field(..., description="Lowercase identifier: chutes | zai | minimax | ollama")
+    display_name: str = Field(..., description="Human-readable name")
+    key_configured: bool = Field(..., description="True if credentials are present in env")
+    key_masked: str | None = Field(None, description="Masked key/cookie (None if not configured)")
+    fetched_at: datetime | None = Field(None, description="When the quota was fetched (UTC)")
+    ok: bool = Field(..., description="True if quota fetch succeeded")
+    error: str | None = Field(
+        None,
+        description="Short reason code if !ok: 'auth_failed' | 'timeout' | 'not_configured' | 'parse_error' | 'unexpected'",
+    )
+    usages: list[ProviderQuotaUsage] = Field(default_factory=list)
+
+
+class AdminProviderQuotasResponse(BaseModel):
+    """Aggregated response for the admin provider-quotas endpoint."""
+
+    generated_at: datetime
+    providers: list[ProviderQuotaResult]
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
     "APIKeyDetailUsage",
     "APIKeyListItem",
+    "AdminAnalyticsResponse",
+    "AdminHistogramBucket",
+    "AdminMetricDistribution",
+    "AdminPerformanceMetricsResponse",
+    "AdminPerformanceMetricsWindow",
+    "AdminProviderQuotasResponse",
     "AdminRecentRequestItem",
     "AdminRecentRequestsResponse",
     "AdminRequestMetricsBucket",
     "AdminRequestMetricsResponse",
     "AdminRequestMetricsWindow",
+    "AnalyticsBreakdownEntry",
+    "AnalyticsUserEntry",
     "ApproveUserRequest",
     "ApproveUserResponse",
     "AuditLogEntry",
@@ -428,10 +554,13 @@ __all__ = [
     "ListAPIKeysResponse",
     "ListAuditLogResponse",
     "ListUsersResponse",
+    "ProviderQuotaResult",
+    "ProviderQuotaUsage",
     "RegenerateAPIKeyResponse",
     "RejectUserRequest",
     "RejectUserResponse",
     "RevokeAPIKeyResponse",
+    "SparklineBucket",
     "StatusCounts",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
@@ -440,3 +569,67 @@ __all__ = [
     "UserDetailResponse",
     "UserListItem",
 ]
+
+
+# ── Broadcast Email Schemas ────────────────────────────────────────────────
+
+
+class BroadcastPreviewRequest(BaseModel):
+    template_key: str | None = None
+    template_vars: dict = Field(default_factory=dict)
+    subject: str = Field("", description="Required when template_key is None")
+    body_html: str = Field("", description="Required when template_key is None")
+    body_text: str = Field("", description="Required when template_key is None")
+    # Empty arrays would silently match zero users (postgres ANY('{}') is always
+    # false), which is confusing for admins. Require at least one role and one
+    # status — admin must opt in to who receives the broadcast.
+    target_roles: list[str] = Field(..., min_length=1)
+    target_statuses: list[str] = Field(..., min_length=1)
+
+
+class BroadcastPreviewResponse(BaseModel):
+    recipient_count: int
+    rendered_subject: str
+    rendered_body_html: str
+    rendered_body_text: str
+
+
+class CreateBroadcastRequest(BroadcastPreviewRequest):
+    scheduled_at: datetime | None = None
+
+
+class CreateBroadcastResponse(BaseModel):
+    id: str
+    status: str
+    recipient_count: int
+    scheduled_at: datetime | None
+
+
+class BroadcastListItem(BaseModel):
+    id: str
+    subject: str
+    status: str
+    recipient_count: int
+    scheduled_at: datetime | None
+    sent_at: datetime | None
+    created_by: str
+    created_at: datetime
+
+
+class ListBroadcastsResponse(BaseModel):
+    total: int
+    broadcasts: list[BroadcastListItem]
+
+
+class BroadcastRecipientItem(BaseModel):
+    user_id: str
+    email: str
+    status: str
+    error: str | None
+    sent_at: datetime | None
+
+
+class BroadcastDetailResponse(BaseModel):
+    broadcast: BroadcastListItem
+    recipients: list[BroadcastRecipientItem]
+    total_recipients: int

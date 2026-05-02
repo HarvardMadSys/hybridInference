@@ -2,35 +2,58 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
+from serving.admin.provider_quotas import gather_all
 from serving.schemas_admin import (
+    AdminAnalyticsResponse,
+    AdminHistogramBucket,
+    AdminMetricDistribution,
+    AdminPerformanceMetricsResponse,
+    AdminPerformanceMetricsWindow,
+    AdminProviderQuotasResponse,
     AdminRecentRequestItem,
     AdminRecentRequestsResponse,
     AdminRequestMetricsBucket,
     AdminRequestMetricsResponse,
     AdminRequestMetricsWindow,
+    AnalyticsBreakdownEntry,
+    AnalyticsUserEntry,
     APIKeyDetailResponse,
     APIKeyDetailUsage,
     APIKeyListItem,
     ApproveUserRequest,
     ApproveUserResponse,
     AuditLogEntry,
+    BroadcastDetailResponse,
+    BroadcastListItem,
+    BroadcastPreviewRequest,
+    BroadcastPreviewResponse,
+    BroadcastRecipientItem,
     CreateAPIKeyRequest,
     CreateAPIKeyResponse,
+    CreateBroadcastRequest,
+    CreateBroadcastResponse,
     DeleteUserRequest,
     DeleteUserResponse,
     ListAPIKeysResponse,
     ListAuditLogResponse,
+    ListBroadcastsResponse,
     ListUsersResponse,
     RegenerateAPIKeyResponse,
     RejectUserRequest,
     RejectUserResponse,
     RevokeAPIKeyResponse,
+    SparklineBucket,
     StatusCounts,
     UpdateAPIKeyRequest,
     UpdateAPIKeyResponse,
@@ -46,11 +69,14 @@ from serving.servers.auth import (
 )
 from serving.servers.deps import (
     get_db_logger,
-    get_rate_limiter,
+    get_log_store,
+    get_operational_store,
     get_router,
     get_services,
     verify_admin_access,
 )
+from serving.utils.email import render_broadcast_template, send_email
+from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 
 router = APIRouter()
 
@@ -79,49 +105,18 @@ async def get_stats(
     model: str | None = None,
     provider: str | None = None,
     hours: int = 24,
-    db_logger=Depends(get_db_logger),
+    log_store=Depends(get_log_store),
 ) -> dict[str, Any]:
-    """Return usage statistics from the database logger."""
-    if not db_logger:
+    """Return usage statistics from the log store."""
+    if not log_store:
         return {"error": "Database logging not configured"}
 
-    stats = await db_logger.get_stats(model_id=model, provider=provider, hours=hours)
+    stats = await log_store.get_stats(model_id=model, provider=provider, hours=hours)
     return {
         "period_hours": hours,
         "filters": {"model": model, "provider": provider},
         "stats": stats,
     }
-
-
-@router.get("/rate-limits/{model_id}")
-@router.get("/admin/rate-limits/{model_id}")
-async def get_rate_limit_status(model_id: str, rate_limiter=Depends(get_rate_limiter)):
-    """Get rate limit status and metrics for a specific model."""
-    if not rate_limiter:
-        return {"error": "Rate limiting not configured"}
-    status = rate_limiter.get_status(model_id)
-    if not status.get("configured"):
-        raise HTTPException(404, f"No rate limit configured for model '{model_id}'")
-    return status
-
-
-@router.get("/rate-limits")
-@router.get("/admin/rate-limits")
-async def get_all_rate_limits(rate_limiter=Depends(get_rate_limiter)):
-    """Get rate limit metrics for all models."""
-    if not rate_limiter:
-        return {"error": "Rate limiting not configured"}
-    return rate_limiter.get_metrics()
-
-
-@router.post("/rate-limits/{model_id}/reset")
-@router.post("/admin/rate-limits/{model_id}/reset")
-async def reset_circuit_breaker(model_id: str, rate_limiter=Depends(get_rate_limiter)):
-    """Reset circuit breaker for a model (admin endpoint)."""
-    if not rate_limiter:
-        return {"error": "Rate limiting not configured"}
-    rate_limiter.reset_circuit_breaker(model_id)
-    return {"message": f"Circuit breaker reset for {model_id}"}
 
 
 @router.get("/admin/routing")
@@ -159,7 +154,7 @@ async def create_api_key(
     request: Request,
     payload: CreateAPIKeyRequest,
     admin_ip: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> CreateAPIKeyResponse:
     """Create a new API key for a user.
 
@@ -167,19 +162,12 @@ async def create_api_key(
 
     Requires: Authorization: Bearer {ADMIN_TOKEN}
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    # Check if user_id already has an active key
-    async with db_logger.pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            "SELECT user_id FROM api_keys WHERE user_id = $1 AND status = 'active'",
-            payload.user_id,
-        )
-
-    if existing:
+    if await op_store.check_active_key_exists(payload.user_id):
         await log_admin_action(
-            db_logger,
+            op_store,
             admin_ip,
             "create_key",
             payload.user_id,
@@ -192,43 +180,28 @@ async def create_api_key(
             "Revoke it first or use /regenerate endpoint.",
         )
 
-    # Generate new API key
     plaintext_key = generate_api_key()
     key_hash = hash_api_key(plaintext_key)
     key_prefix = plaintext_key[:12]
 
-    # Insert into database
-    async with db_logger.pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO api_keys (
-                key_hash, key_prefix, user_id, user_name, tier,
-                quota_daily_cost_usd, quota_monthly_cost_usd,
-                expires_at, notes, metadata
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-            RETURNING id, created_at
-            """,
-            key_hash,
-            key_prefix,
-            payload.user_id,
-            payload.user_name,
-            payload.tier,
-            payload.quota_daily_cost_usd,
-            payload.quota_monthly_cost_usd,
-            payload.expires_at,
-            payload.notes,
-            payload.metadata,
-        )
+    row = await op_store.create_key(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        user_id=payload.user_id,
+        user_name=payload.user_name,
+        quota_daily_cost_usd=payload.quota_daily_cost_usd,
+        quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
+        expires_at=payload.expires_at,
+        notes=payload.notes,
+        metadata=payload.metadata,
+    )
 
-    # Log admin action
     await log_admin_action(
-        db_logger,
+        op_store,
         admin_ip,
         "create_key",
         payload.user_id,
         {
-            "tier": payload.tier,
             "quota_daily_usd": float(payload.quota_daily_cost_usd),
             "key_prefix": key_prefix,
         },
@@ -238,7 +211,6 @@ async def create_api_key(
         api_key=plaintext_key,
         user_id=payload.user_id,
         key_prefix=key_prefix,
-        tier=payload.tier,
         quota_daily_cost_usd=payload.quota_daily_cost_usd,
         quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
         expires_at=payload.expires_at,
@@ -250,123 +222,56 @@ async def create_api_key(
 async def list_api_keys(
     request: Request,
     status: str | None = None,
-    tier: str | None = None,
     limit: int = 100,
     offset: int = 0,
     admin_ip: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> ListAPIKeysResponse:
     """List all API keys with optional filtering.
 
     Query Parameters:
     - status: Filter by status (active|suspended|revoked)
-    - tier: Filter by tier (free|pro|enterprise)
     - limit: Max results (default: 100)
     - offset: Pagination offset
 
     Requires: Authorization: Bearer {ADMIN_TOKEN}
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    # Build query with filters
-    where_clauses = []
-    params: list[Any] = []
+    total, rows = await op_store.list_keys(status=status, limit=limit, offset=offset)
 
-    if status:
-        where_clauses.append(f"status = ${len(params) + 1}")
-        params.append(status)
+    if not rows:
+        return ListAPIKeysResponse(total=total, keys=[])
 
-    if tier:
-        where_clauses.append(f"tier = ${len(params) + 1}")
-        params.append(tier)
+    # Batch-fetch usage from operational store counter table
+    user_ids = [row["user_id"] for row in rows]
+    usage_today_map: dict[str, Any] = {}
+    usage_month_map: dict[str, Any] = {}
+    if op_store and user_ids:
+        usage_today_map = await op_store.get_batch_usage(user_ids, period="today")
+        usage_month_map = await op_store.get_batch_usage(user_ids, period="month")
 
-    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
-
-    # Add limit and offset
-    params.append(limit)
-    params.append(offset)
-
-    async with db_logger.pool.acquire() as conn:
-        # Get total count
-        count_row = await conn.fetchrow(
-            f"SELECT COUNT(*) as total FROM api_keys {where_sql}",
-            *params[: len(params) - 2],
-        )
-        total = count_row["total"] if count_row else 0
-
-        # Get keys
-        rows = await conn.fetch(
-            f"""
-            SELECT
-                user_id, user_name, key_prefix, tier, status,
-                quota_daily_cost_usd, quota_monthly_cost_usd,
-                created_at, last_used_at, expires_at, notes
-            FROM api_keys
-            {where_sql}
-            ORDER BY created_at DESC
-            LIMIT ${len(params) - 1} OFFSET ${len(params)}
-            """,
-            *params,
-        )
-
-        if not rows:
-            return ListAPIKeysResponse(total=total, keys=[])
-
-        # Batch query: Get usage for all users in one query (avoids N+1 problem)
-        user_ids = [row["user_id"] for row in rows]
-
-        # Get today's usage for all users
-        usage_today_rows = await conn.fetch(
-            """
-            SELECT
-                user_id,
-                COALESCE(SUM(cost_usd), 0) AS cost_spent
-            FROM api_logs
-            WHERE user_id = ANY($1::text[])
-              AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
-            GROUP BY user_id
-            """,
-            user_ids,
-        )
-        usage_today_map = {row["user_id"]: row["cost_spent"] for row in usage_today_rows}
-
-        # Get this month's usage for all users
-        usage_month_rows = await conn.fetch(
-            """
-            SELECT
-                user_id,
-                COALESCE(SUM(cost_usd), 0) AS cost_spent
-            FROM api_logs
-            WHERE user_id = ANY($1::text[])
-              AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
-            GROUP BY user_id
-            """,
-            user_ids,
-        )
-        usage_month_map = {row["user_id"]: row["cost_spent"] for row in usage_month_rows}
-
-        # Build response with O(1) lookup
-        keys = []
-        for row in rows:
-            user_id = row["user_id"]
-            keys.append(
-                APIKeyListItem(
-                    user_id=user_id,
-                    user_name=row["user_name"],
-                    key_prefix=row["key_prefix"],
-                    tier=row["tier"],
-                    status=row["status"],
-                    quota_daily_cost_usd=row["quota_daily_cost_usd"],
-                    quota_monthly_cost_usd=row["quota_monthly_cost_usd"],
-                    created_at=row["created_at"],
-                    last_used_at=row["last_used_at"],
-                    expires_at=row["expires_at"],
-                    usage_today_usd=Decimal(str(usage_today_map.get(user_id, 0))),
-                    usage_month_usd=Decimal(str(usage_month_map.get(user_id, 0))),
-                    notes=row["notes"],
-                )
+    keys = []
+    for row in rows:
+        uid = row["user_id"]
+        keys.append(
+            APIKeyListItem(
+                user_id=uid,
+                user_name=row["user_name"],
+                key_prefix=row["key_prefix"],
+                status=row["status"],
+                quota_daily_cost_usd=row["quota_daily_cost_usd"],
+                quota_monthly_cost_usd=row["quota_monthly_cost_usd"],
+                created_at=row["created_at"],
+                last_used_at=row["last_used_at"],
+                expires_at=row["expires_at"],
+                usage_today_usd=Decimal(str(usage_today_map.get(uid, 0))),
+                usage_month_usd=Decimal(str(usage_month_map.get(uid, 0))),
+                notes=row["notes"],
             )
+        )
 
     return ListAPIKeysResponse(total=total, keys=keys)
 
@@ -376,106 +281,59 @@ async def get_api_key_detail(
     request: Request,
     user_id: str,
     admin_ip: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> APIKeyDetailResponse:
     """Get detailed information about a specific API key including usage analytics.
 
     Requires: Authorization: Bearer {ADMIN_TOKEN}
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    async with db_logger.pool.acquire() as conn:
-        # Get key info
-        row = await conn.fetchrow(
-            """
-            SELECT
-                user_id, user_name, key_prefix, tier, status,
-                quota_daily_cost_usd, quota_monthly_cost_usd,
-                created_at, last_used_at, expires_at, notes, metadata
-            FROM api_keys
-            WHERE user_id = $1
-            """,
-            user_id,
-        )
+    row = await op_store.get_key_detail(user_id)
+    if not row:
+        raise HTTPException(404, f"User '{user_id}' not found")
 
-        if not row:
-            raise HTTPException(404, f"User '{user_id}' not found")
+    # Fetch usage from log store
+    cost_today = 0.0
+    cost_month = 0.0
+    requests_today = 0
+    requests_month = 0
+    models_used: list[str] = []
+    last_request_at = None
 
-        # Get today's usage
-        usage_today = await conn.fetchrow(
-            """
-            SELECT
-                COALESCE(SUM(cost_usd), 0) AS cost_spent,
-                COUNT(*) AS requests
-            FROM api_logs
-            WHERE user_id = $1
-              AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
-            """,
-            user_id,
-        )
-
-        # Get this month's usage
-        usage_month = await conn.fetchrow(
-            """
-            SELECT
-                COALESCE(SUM(cost_usd), 0) AS cost_spent,
-                COUNT(*) AS requests
-            FROM api_logs
-            WHERE user_id = $1
-              AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
-            """,
-            user_id,
-        )
-
-        # Get models used
-        models_rows = await conn.fetch(
-            """
-            SELECT DISTINCT model_id
-            FROM api_logs
-            WHERE user_id = $1
-              AND timestamp >= NOW() - INTERVAL '30 days'
-            ORDER BY model_id
-            """,
-            user_id,
-        )
-
-        # Get last request timestamp
-        last_request_row = await conn.fetchrow(
-            """
-            SELECT MAX(timestamp) AS last_request_at
-            FROM api_logs
-            WHERE user_id = $1
-            """,
-            user_id,
-        )
+    if log_store:
+        key_usage = await log_store.get_key_detail_usage(user_id)
+        cost_today = key_usage.get("today", {}).get("cost_usd", 0.0)
+        cost_month = key_usage.get("this_month", {}).get("cost_usd", 0.0)
+        requests_today = key_usage.get("today", {}).get("requests", 0)
+        requests_month = key_usage.get("this_month", {}).get("requests", 0)
+        models_used = key_usage.get("models_used", [])
+        last_request_at = key_usage.get("last_request_at")
 
     quota_daily = float(row["quota_daily_cost_usd"]) if row["quota_daily_cost_usd"] else 1000.0
     quota_monthly = float(row["quota_monthly_cost_usd"]) if row["quota_monthly_cost_usd"] else None
 
-    cost_today = float(usage_today["cost_spent"]) if usage_today else 0.0
-    cost_month = float(usage_month["cost_spent"]) if usage_month else 0.0
-
     usage = APIKeyDetailUsage(
         today={
             "cost_usd": cost_today,
-            "requests": usage_today["requests"] if usage_today else 0,
+            "requests": requests_today,
             "quota_remaining_usd": max(0, quota_daily - cost_today),
         },
         this_month={
             "cost_usd": cost_month,
-            "requests": usage_month["requests"] if usage_month else 0,
+            "requests": requests_month,
             "quota_remaining_usd": (max(0, quota_monthly - cost_month) if quota_monthly else None),
         },
-        models_used=[r["model_id"] for r in models_rows],
-        last_request_at=last_request_row["last_request_at"] if last_request_row else None,
+        models_used=models_used,
+        last_request_at=last_request_at,
     )
 
     return APIKeyDetailResponse(
         user_id=row["user_id"],
         user_name=row["user_name"],
         key_prefix=row["key_prefix"],
-        tier=row["tier"],
         status=row["status"],
         quota_daily_cost_usd=row["quota_daily_cost_usd"],
         quota_monthly_cost_usd=row["quota_monthly_cost_usd"],
@@ -494,7 +352,7 @@ async def update_api_key(
     user_id: str,
     payload: UpdateAPIKeyRequest,
     admin_ip: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> UpdateAPIKeyResponse:
     """Update an existing API key's settings.
 
@@ -502,59 +360,31 @@ async def update_api_key(
 
     Requires: Authorization: Bearer {ADMIN_TOKEN}
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    # Build dynamic UPDATE query
-    updates = []
-    params: list[Any] = [user_id]
-    param_idx = 2
-    updated_fields = []
-    new_values = {}
-
     payload_dict = payload.model_dump(exclude_unset=True)
-
-    for field, value in payload_dict.items():
-        updates.append(f"{field} = ${param_idx}")
-        params.append(value)
-        param_idx += 1
-        updated_fields.append(field)
-        new_values[field] = value
-
-    if not updates:
+    if not payload_dict:
         raise HTTPException(422, "No fields to update")
 
-    update_sql = ", ".join(updates)
+    existing = await op_store.get_key_detail(user_id)
+    if not existing:
+        raise HTTPException(404, f"User '{user_id}' not found")
 
-    async with db_logger.pool.acquire() as conn:
-        # Check if user exists
-        existing = await conn.fetchrow("SELECT user_id FROM api_keys WHERE user_id = $1", user_id)
-        if not existing:
-            raise HTTPException(404, f"User '{user_id}' not found")
+    await op_store.update_key(user_id, **payload_dict)
 
-        # Update
-        await conn.execute(
-            f"""
-            UPDATE api_keys
-            SET {update_sql}
-            WHERE user_id = $1
-            """,
-            *params,
-        )
-
-    # Log admin action (serialize Decimal/datetime to JSON-safe types)
     await log_admin_action(
-        db_logger,
+        op_store,
         admin_ip,
         "update_key",
         user_id,
-        _serialize_for_audit({"updated_fields": updated_fields, "new_values": new_values}),
+        _serialize_for_audit({"updated_fields": list(payload_dict), "new_values": payload_dict}),
     )
 
     return UpdateAPIKeyResponse(
         user_id=user_id,
-        updated_fields=updated_fields,
-        new_values=new_values,
+        updated_fields=list(payload_dict),
+        new_values=payload_dict,
     )
 
 
@@ -564,57 +394,39 @@ async def revoke_api_key(
     user_id: str,
     hard_delete: bool = False,
     admin_ip: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> RevokeAPIKeyResponse:
     """Revoke or delete an API key.
 
     Query Parameters:
-    - hard_delete: If true, permanently delete from database (⚠️ irreversible)
+    - hard_delete: If true, permanently delete from database (irreversible)
                    If false (default), set status='revoked' (soft delete)
 
     Requires: Authorization: Bearer {ADMIN_TOKEN}
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    async with db_logger.pool.acquire() as conn:
-        # Check if user exists
-        existing = await conn.fetchrow("SELECT user_id FROM api_keys WHERE user_id = $1", user_id)
-        if not existing:
-            raise HTTPException(404, f"User '{user_id}' not found")
+    existing = await op_store.get_key_detail(user_id)
+    if not existing:
+        raise HTTPException(404, f"User '{user_id}' not found")
 
-        if hard_delete:
-            # Permanently delete
-            await conn.execute("DELETE FROM api_keys WHERE user_id = $1", user_id)
-            action_type = "hard_delete_key"
-            response_action = "deleted"
-            message = f"API key for user '{user_id}' has been permanently deleted."
-        else:
-            # Soft delete (set status='revoked')
-            await conn.execute(
-                "UPDATE api_keys SET status = 'revoked' WHERE user_id = $1",
-                user_id,
-            )
-            action_type = "revoke_key"
-            response_action = "revoked"
-            message = (
-                f"API key for user '{user_id}' has been revoked. User can no longer access the API."
-            )
+    await op_store.revoke_key(user_id, hard_delete=hard_delete)
 
-    # Log admin action
-    await log_admin_action(
-        db_logger,
-        admin_ip,
-        action_type,
-        user_id,
-        {"hard_delete": hard_delete},
-    )
+    if hard_delete:
+        action_type = "hard_delete_key"
+        response_action = "deleted"
+        message = f"API key for user '{user_id}' has been permanently deleted."
+    else:
+        action_type = "revoke_key"
+        response_action = "revoked"
+        message = (
+            f"API key for user '{user_id}' has been revoked. User can no longer access the API."
+        )
 
-    return RevokeAPIKeyResponse(
-        user_id=user_id,
-        action=response_action,
-        message=message,
-    )
+    await log_admin_action(op_store, admin_ip, action_type, user_id, {"hard_delete": hard_delete})
+
+    return RevokeAPIKeyResponse(user_id=user_id, action=response_action, message=message)
 
 
 @router.post("/admin/api-keys/{user_id}/regenerate", response_model=RegenerateAPIKeyResponse)
@@ -622,7 +434,7 @@ async def regenerate_api_key(
     request: Request,
     user_id: str,
     admin_ip: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> RegenerateAPIKeyResponse:
     """Regenerate API key for a user (e.g., after suspected compromise).
 
@@ -635,47 +447,26 @@ async def regenerate_api_key(
 
     Requires: Authorization: Bearer {ADMIN_TOKEN}
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    async with db_logger.pool.acquire() as conn:
-        # Check if user exists
-        old_key_row = await conn.fetchrow(
-            "SELECT key_prefix FROM api_keys WHERE user_id = $1",
-            user_id,
+    new_plaintext_key = generate_api_key()
+    new_key_hash = hash_api_key(new_plaintext_key)
+    new_key_prefix = new_plaintext_key[:12]
+
+    try:
+        old_key_prefix = await op_store.regenerate_key(
+            user_id, new_key_hash=new_key_hash, new_key_prefix=new_key_prefix
         )
-        if not old_key_row:
-            raise HTTPException(404, f"User '{user_id}' not found")
+    except ValueError:
+        raise HTTPException(404, f"User '{user_id}' not found") from None
 
-        old_key_prefix = old_key_row["key_prefix"]
-
-        # Generate new key
-        new_plaintext_key = generate_api_key()
-        new_key_hash = hash_api_key(new_plaintext_key)
-        new_key_prefix = new_plaintext_key[:12]
-
-        # Update database atomically
-        await conn.execute(
-            """
-            UPDATE api_keys
-            SET key_hash = $1, key_prefix = $2
-            WHERE user_id = $3
-            """,
-            new_key_hash,
-            new_key_prefix,
-            user_id,
-        )
-
-    # Log admin action
     await log_admin_action(
-        db_logger,
+        op_store,
         admin_ip,
         "regenerate_key",
         user_id,
-        {
-            "old_key_prefix": old_key_prefix,
-            "new_key_prefix": new_key_prefix,
-        },
+        {"old_key_prefix": old_key_prefix, "new_key_prefix": new_key_prefix},
     )
 
     return RegenerateAPIKeyResponse(
@@ -702,7 +493,7 @@ async def list_users(
     limit: int = 100,
     offset: int = 0,
     admin_id: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> ListUsersResponse:
     """List registered users with optional status filter, search, and sort.
 
@@ -715,203 +506,27 @@ async def list_users(
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    # --- Build WHERE clause (parameterized) ---
-    where_clauses: list[str] = []
-    filter_params: list[Any] = []
+    total, rows, sc = await op_store.list_users(
+        status=status, search=search, sort_by=sort_by, limit=limit, offset=offset
+    )
 
-    if status:
-        where_clauses.append(f"u.status = ${len(filter_params) + 1}")
-        filter_params.append(status)
+    status_counts = StatusCounts(
+        all=sc.get("all", 0),
+        pending_approval=sc.get("pending_approval", 0),
+        active=sc.get("active", 0),
+        suspended=sc.get("suspended", 0),
+        rejected=sc.get("rejected", 0),
+        deleted=sc.get("deleted", 0),
+    )
 
-    if search:
-        search_pattern = f"%{search}%"
-        where_clauses.append(
-            f"(u.email ILIKE ${len(filter_params) + 1} OR u.user_name ILIKE ${len(filter_params) + 1})"
-        )
-        filter_params.append(search_pattern)
+    if not rows:
+        return ListUsersResponse(total=total, users=[], status_counts=status_counts)
 
-    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
-
-    # --- Sort clause map (hardcoded SQL — no user input) ---
-    _SORT_CLAUSES = {
-        "created": "fu.created_at DESC, fu.id",
-        "cost_today": "COALESCE(ut.cost, 0) DESC, fu.created_at DESC, fu.id",
-        "cost_month": "COALESCE(um.cost, 0) DESC, fu.created_at DESC, fu.id",
-        "cost_alltime": "COALESCE(ua.cost, 0) DESC, fu.created_at DESC, fu.id",
-        "last_login": "fu.last_login_at DESC NULLS LAST, fu.created_at DESC, fu.id",
-    }
-    order_clause = _SORT_CLAUSES[sort_by]
-
-    # Determine which usage CTEs are needed for sorting
-    needs_today_cte = sort_by in ("cost_today", "cost_alltime")
-    needs_month_cte = sort_by in ("cost_month", "cost_alltime")
-    needs_alltime_cte = sort_by == "cost_alltime"
-
-    async with db_logger.pool.acquire() as conn:
-        # Total count (uses same filter)
-        count_row = await conn.fetchrow(
-            f"SELECT COUNT(*) as total FROM users u {where_sql}",
-            *filter_params,
-        )
-        total = count_row["total"] if count_row else 0
-
-        # Always fetch per-status counts (unfiltered)
-        count_rows = await conn.fetch("SELECT status, COUNT(*) as cnt FROM users GROUP BY status")
-        sc = {r["status"]: r["cnt"] for r in count_rows}
-        all_total = sum(sc.values())
-        status_counts = StatusCounts(
-            all=all_total,
-            pending_approval=sc.get("pending_approval", 0),
-            active=sc.get("active", 0),
-            suspended=sc.get("suspended", 0),
-            rejected=sc.get("rejected", 0),
-            deleted=sc.get("deleted", 0),
-        )
-
-        # --- Build the main query with conditional CTEs ---
-        # filtered_users CTE always present when sorting by cost (filter-first aggregation).
-        # For non-cost sorts, use a simple query without CTEs (zero regression).
-        needs_any_cte = needs_today_cte or needs_month_cte or needs_alltime_cte
-
-        # Param indices for LIMIT/OFFSET
-        limit_idx = len(filter_params) + 1
-        offset_idx = len(filter_params) + 2
-        query_params = [*filter_params, limit, offset]
-
-        if not needs_any_cte:
-            # Simple path: no CTEs, identical to previous behavior
-            rows = await conn.fetch(
-                f"""
-                SELECT u.id, u.email, u.user_name, u.role, u.status, u.email_verified,
-                       u.approval_note, u.reviewed_at, u.reviewed_by,
-                       u.created_at, u.last_login_at,
-                       k.key_prefix, k.status AS key_status, k.tier AS key_tier
-                FROM users u
-                LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
-                {where_sql}
-                ORDER BY {_SORT_CLAUSES[sort_by].replace("fu.", "u.")}
-                LIMIT ${limit_idx} OFFSET ${offset_idx}
-                """,
-                *query_params,
-            )
-        else:
-            # CTE path: filter-first, then aggregate only for filtered users
-            cte_parts = [
-                f"""filtered_users AS (
-                    SELECT u.id, u.email, u.user_name, u.role, u.status, u.email_verified,
-                           u.approval_note, u.reviewed_at, u.reviewed_by,
-                           u.created_at, u.last_login_at,
-                           k.key_prefix, k.status AS key_status, k.tier AS key_tier
-                    FROM users u
-                    LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
-                    {where_sql}
-                )"""
-            ]
-            join_parts: list[str] = []
-            select_extras: list[str] = []
-
-            if needs_today_cte:
-                cte_parts.append("""usage_today AS (
-                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
-                    FROM api_logs
-                    WHERE user_id IN (SELECT id FROM filtered_users)
-                      AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
-                    GROUP BY user_id
-                )""")
-                join_parts.append("LEFT JOIN usage_today ut ON ut.user_id = fu.id")
-                select_extras.append("COALESCE(ut.cost, 0) AS usage_today")
-
-            if needs_month_cte:
-                cte_parts.append("""usage_month AS (
-                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
-                    FROM api_logs
-                    WHERE user_id IN (SELECT id FROM filtered_users)
-                      AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
-                    GROUP BY user_id
-                )""")
-                join_parts.append("LEFT JOIN usage_month um ON um.user_id = fu.id")
-                select_extras.append("COALESCE(um.cost, 0) AS usage_month")
-
-            if needs_alltime_cte:
-                cte_parts.append("""usage_alltime AS (
-                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
-                    FROM api_logs
-                    WHERE user_id IN (SELECT id FROM filtered_users)
-                    GROUP BY user_id
-                )""")
-                join_parts.append("LEFT JOIN usage_alltime ua ON ua.user_id = fu.id")
-                select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
-
-            extra_cols = ", " + ", ".join(select_extras) if select_extras else ""
-            joins = "\n                ".join(join_parts)
-            ctes = ",\n".join(cte_parts)
-
-            rows = await conn.fetch(
-                f"""
-                WITH {ctes}
-                SELECT fu.*{extra_cols}
-                FROM filtered_users fu
-                {joins}
-                ORDER BY {order_clause}
-                LIMIT ${limit_idx} OFFSET ${offset_idx}
-                """,
-                *query_params,
-            )
-
-        if not rows:
-            return ListUsersResponse(total=total, users=[], status_counts=status_counts)
-
-        # --- Post-fetch: batch-query usage dimensions not already in CTEs ---
-        user_ids = [row["id"] for row in rows if row["key_prefix"]]
-
-        usage_today_map: dict[str, Decimal] = {}
-        usage_month_map: dict[str, Decimal] = {}
-
-        if user_ids and not needs_today_cte:
-            usage_today_rows = await conn.fetch(
-                """
-                SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
-                FROM api_logs
-                WHERE user_id = ANY($1::text[])
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
-                GROUP BY user_id
-                """,
-                user_ids,
-            )
-            usage_today_map = {r["user_id"]: r["cost"] for r in usage_today_rows}
-
-        if user_ids and not needs_month_cte:
-            usage_month_rows = await conn.fetch(
-                """
-                SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost
-                FROM api_logs
-                WHERE user_id = ANY($1::text[])
-                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
-                GROUP BY user_id
-                """,
-                user_ids,
-            )
-            usage_month_map = {r["user_id"]: r["cost"] for r in usage_month_rows}
-
-    # --- Assemble response ---
     users = []
     for row in rows:
-        # Usage from CTE columns (present when sort uses them) or batch maps
-        today = (
-            Decimal(str(row["usage_today"]))
-            if "usage_today" in row
-            else Decimal(str(usage_today_map.get(row["id"], 0)))
-        )
-        month = (
-            Decimal(str(row["usage_month"]))
-            if "usage_month" in row
-            else Decimal(str(usage_month_map.get(row["id"], 0)))
-        )
-        alltime = Decimal(str(row["usage_alltime"])) if "usage_alltime" in row else Decimal("0")
-
         users.append(
             UserListItem(
                 id=row["id"],
@@ -920,18 +535,17 @@ async def list_users(
                 role=row["role"] or "free",
                 status=row["status"],
                 email_verified=row["email_verified"],
-                approval_note=row["approval_note"],
-                reviewed_at=row["reviewed_at"],
-                reviewed_by=row["reviewed_by"],
+                approval_note=row.get("approval_note"),
+                reviewed_at=row.get("reviewed_at"),
+                reviewed_by=row.get("reviewed_by"),
                 created_at=row["created_at"],
-                last_login_at=row["last_login_at"],
-                has_key=row["key_prefix"] is not None,
-                key_prefix=row["key_prefix"],
-                key_status=row["key_status"],
-                key_tier=row["key_tier"],
-                usage_today_usd=today,
-                usage_month_usd=month,
-                usage_alltime_usd=alltime,
+                last_login_at=row.get("last_login_at"),
+                has_key=row.get("key_prefix") is not None,
+                key_prefix=row.get("key_prefix"),
+                key_status=row.get("key_status"),
+                usage_today_usd=Decimal(str(row.get("usage_today", 0))),
+                usage_month_usd=Decimal(str(row.get("usage_month", 0))),
+                usage_alltime_usd=Decimal(str(row.get("usage_alltime", 0))),
             )
         )
 
@@ -944,7 +558,7 @@ async def approve_user(
     user_id: str,
     payload: ApproveUserRequest | None = None,
     admin_id: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> ApproveUserResponse:
     """Approve a pending user registration.
 
@@ -952,14 +566,10 @@ async def approve_user(
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT id, email, status FROM users WHERE id = $1",
-            user_id,
-        )
+    user_row = await op_store.get_user_by_id(user_id)
 
     if not user_row:
         raise HTTPException(404, f"User '{user_id}' not found")
@@ -972,20 +582,10 @@ async def approve_user(
 
     note = payload.note if payload else None
 
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE users
-            SET status = 'active', approval_note = $1, reviewed_at = NOW(), reviewed_by = $2
-            WHERE id = $3
-            """,
-            note,
-            admin_id,
-            user_id,
-        )
+    await op_store.approve_user(user_id, admin_id=admin_id, note=note)
 
     await log_admin_action(
-        db_logger,
+        op_store,
         admin_id,
         "approve_user",
         user_id,
@@ -1011,7 +611,7 @@ async def reject_user(
     user_id: str,
     payload: RejectUserRequest,
     admin_id: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> RejectUserResponse:
     """Reject a pending user registration.
 
@@ -1020,14 +620,10 @@ async def reject_user(
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT id, email, status FROM users WHERE id = $1",
-            user_id,
-        )
+    user_row = await op_store.get_user_by_id(user_id)
 
     if not user_row:
         raise HTTPException(404, f"User '{user_id}' not found")
@@ -1038,20 +634,10 @@ async def reject_user(
             f"User is not pending approval (current status: {user_row['status']})",
         )
 
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE users
-            SET status = 'rejected', approval_note = $1, reviewed_at = NOW(), reviewed_by = $2
-            WHERE id = $3
-            """,
-            payload.reason,
-            admin_id,
-            user_id,
-        )
+    await op_store.reject_user(user_id, admin_id=admin_id, reason=payload.reason)
 
     await log_admin_action(
-        db_logger,
+        op_store,
         admin_id,
         "reject_user",
         user_id,
@@ -1075,32 +661,23 @@ async def reject_user(
 async def get_user_detail(
     user_id: str,
     admin_id: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> UserDetailResponse:
     """Get detailed user info including usage analytics.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            """
-            SELECT u.id, u.email, u.user_name, u.role, u.status, u.email_verified,
-                   u.created_at, u.last_login_at,
-                   k.key_prefix, k.tier, k.quota_daily_cost_usd, k.quota_monthly_cost_usd
-            FROM users u
-            LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
-            WHERE u.id = $1
-            """,
-            user_id,
-        )
-
+    user_row = await op_store.get_user_by_id(user_id)
     if not user_row:
         raise HTTPException(404, f"User '{user_id}' not found")
 
-    has_key = user_row["key_prefix"] is not None
+    key_row = await op_store.get_active_key_by_account(user_id)
+    has_key = key_row is not None
+
     usage_today_usd = 0.0
     usage_today_req = 0
     usage_month_usd = 0.0
@@ -1108,48 +685,14 @@ async def get_user_detail(
     models_used: list[str] = []
     last_request_at = None
 
-    if has_key:
-        async with db_logger.pool.acquire() as conn:
-            today = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
-                """,
-                user_id,
-            )
-            month = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS reqs
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
-                """,
-                user_id,
-            )
-            models_rows = await conn.fetch(
-                """
-                SELECT DISTINCT model_id FROM api_logs
-                WHERE user_id = $1 AND timestamp >= NOW() - INTERVAL '30 days'
-                ORDER BY model_id
-                """,
-                user_id,
-            )
-            last_req = await conn.fetchrow(
-                "SELECT MAX(timestamp) AS ts FROM api_logs WHERE user_id = $1",
-                user_id,
-            )
-
-        if today:
-            usage_today_usd = float(today["cost"])
-            usage_today_req = int(today["reqs"])
-        if month:
-            usage_month_usd = float(month["cost"])
-            usage_month_req = int(month["reqs"])
-        models_used = [r["model_id"] for r in models_rows]
-        if last_req and last_req["ts"]:
-            last_request_at = last_req["ts"]
+    if has_key and log_store:
+        detail = await log_store.get_user_detail_usage(user_id)
+        usage_today_usd = detail.get("usage_today_usd", 0.0)
+        usage_today_req = detail.get("usage_today_requests", 0)
+        usage_month_usd = detail.get("usage_month_usd", 0.0)
+        usage_month_req = detail.get("usage_month_requests", 0)
+        models_used = detail.get("models_used", [])
+        last_request_at = detail.get("last_request_at")
 
     return UserDetailResponse(
         id=user_row["id"],
@@ -1159,15 +702,14 @@ async def get_user_detail(
         status=user_row["status"],
         email_verified=user_row["email_verified"],
         created_at=user_row["created_at"],
-        last_login_at=user_row["last_login_at"],
+        last_login_at=user_row.get("last_login_at"),
         has_key=has_key,
-        key_prefix=user_row["key_prefix"],
-        key_tier=user_row["tier"],
-        quota_daily_usd=float(user_row["quota_daily_cost_usd"])
-        if user_row["quota_daily_cost_usd"]
+        key_prefix=key_row["key_prefix"] if key_row else None,
+        quota_daily_usd=float(key_row["quota_daily_cost_usd"])
+        if key_row and key_row.get("quota_daily_cost_usd")
         else None,
-        quota_monthly_usd=float(user_row["quota_monthly_cost_usd"])
-        if user_row["quota_monthly_cost_usd"]
+        quota_monthly_usd=float(key_row["quota_monthly_cost_usd"])
+        if key_row and key_row.get("quota_monthly_cost_usd")
         else None,
         usage_today_usd=usage_today_usd,
         usage_today_requests=usage_today_req,
@@ -1184,101 +726,79 @@ async def update_user(
     user_id: str,
     payload: UpdateUserRequest,
     admin_id: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> UpdateUserResponse:
-    """Update user account status or API key settings (tier, quota).
+    """Update user account status or API key settings (quota).
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
     payload_dict = payload.model_dump(exclude_unset=True)
     if not payload_dict:
         raise HTTPException(422, "No fields to update")
 
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT id, email, status, role FROM users WHERE id = $1", user_id
-        )
-        if not user_row:
-            raise HTTPException(404, f"User '{user_id}' not found")
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row:
+        raise HTTPException(404, f"User '{user_id}' not found")
 
-        updated: list[str] = []
-        current_status = user_row["status"]
+    updated: list[str] = []
+    current_status = user_row["status"]
 
-        # Update role (user-level field on users table)
-        if "role" in payload_dict:
-            new_role = payload_dict["role"]
-            # Guard: admin cannot demote themselves
-            if (
-                user_row["email"]
-                and user_row["email"].lower() == admin_id.lower()
-                and new_role != "admin"
-            ):
-                raise HTTPException(409, "Cannot demote your own admin role.")
-            await conn.execute(
-                "UPDATE users SET role = $1 WHERE id = $2",
-                new_role,
-                user_id,
-            )
-            updated.append("role")
+    # Update role (user-level field on users table)
+    if "role" in payload_dict:
+        new_role = payload_dict["role"]
+        # Guard: admin cannot demote themselves
+        if (
+            user_row["email"]
+            and user_row["email"].lower() == admin_id.lower()
+            and new_role != "admin"
+        ):
+            raise HTTPException(409, "Cannot demote your own admin role.")
+        await op_store.update_user_fields(user_id, role=new_role)
+        updated.append("role")
 
-        # Update user-level fields
-        if "status" in payload_dict:
-            new_status = payload_dict["status"]
+    # Update user-level fields
+    if "status" in payload_dict:
+        new_status = payload_dict["status"]
 
-            # Enforce valid transitions: only active <-> suspended.
-            # pending_approval/rejected must go through approve/reject endpoints.
-            valid_transitions = {
-                ("active", "suspended"),
-                ("suspended", "active"),
-            }
-            if (current_status, new_status) not in valid_transitions:
-                raise HTTPException(
-                    409,
-                    f"Cannot transition from '{current_status}' to '{new_status}'. "
-                    f"Use the approve/reject endpoints for pending users.",
-                )
-
-            await conn.execute(
-                "UPDATE users SET status = $1 WHERE id = $2",
-                new_status,
-                user_id,
-            )
-            updated.append("status")
-
-            # Suspend: also revoke active API key to cut API access immediately
-            if new_status == "suspended":
-                await conn.execute(
-                    "UPDATE api_keys SET status = 'revoked' WHERE account_id = $1 AND status = 'active'",
-                    user_id,
-                )
-
-        # Update key-level fields
-        key_fields = {
-            k: v
-            for k, v in payload_dict.items()
-            if k in ("tier", "quota_daily_cost_usd", "quota_monthly_cost_usd")
+        # Enforce valid transitions: only active <-> suspended.
+        # pending_approval/rejected must go through approve/reject endpoints.
+        valid_transitions = {
+            ("active", "suspended"),
+            ("suspended", "active"),
         }
-        if key_fields:
-            has_key = await conn.fetchrow(
-                "SELECT id FROM api_keys WHERE account_id = $1 AND status = 'active'",
-                user_id,
+        if (current_status, new_status) not in valid_transitions:
+            raise HTTPException(
+                409,
+                f"Cannot transition from '{current_status}' to '{new_status}'. "
+                f"Use the approve/reject endpoints for pending users.",
             )
-            if not has_key:
-                raise HTTPException(409, "User has no active API key to update")
 
-            for field, value in key_fields.items():
-                await conn.execute(
-                    f"UPDATE api_keys SET {field} = $1 WHERE account_id = $2 AND status = 'active'",
-                    value,
-                    user_id,
-                )
-                updated.append(field)
+        await op_store.update_user_fields(user_id, status=new_status)
+        updated.append("status")
+
+        # Suspend: also revoke active API key to cut API access immediately
+        if new_status == "suspended":
+            await op_store.revoke_key(user_id, hard_delete=False)
+
+    # Update key-level fields
+    key_fields = {
+        k: v
+        for k, v in payload_dict.items()
+        if k in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
+    }
+    if key_fields:
+        has_key = await op_store.get_active_key_by_account(user_id)
+        if not has_key:
+            raise HTTPException(409, "User has no active API key to update")
+
+        await op_store.update_key(user_id, **key_fields)
+        updated.extend(key_fields)
 
     await log_admin_action(
-        db_logger,
+        op_store,
         admin_id,
         "update_user",
         user_id,
@@ -1304,7 +824,7 @@ async def list_audit_log(
     limit: int = 50,
     offset: int = 0,
     admin_id: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> ListAuditLogResponse:
     """List admin audit log entries with optional filtering.
 
@@ -1316,42 +836,12 @@ async def list_audit_log(
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    where_clauses = []
-    params: list[Any] = []
-
-    if action:
-        where_clauses.append(f"action = ${len(params) + 1}")
-        params.append(action)
-
-    if target_user_id:
-        where_clauses.append(f"target_user_id = ${len(params) + 1}")
-        params.append(target_user_id)
-
-    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
-
-    params.append(limit)
-    params.append(offset)
-
-    async with db_logger.pool.acquire() as conn:
-        count_row = await conn.fetchrow(
-            f"SELECT COUNT(*) as total FROM admin_audit_log {where_sql}",
-            *params[: len(params) - 2],
-        )
-        total = count_row["total"] if count_row else 0
-
-        rows = await conn.fetch(
-            f"""
-            SELECT id, timestamp, admin_ip, action, target_user_id, details, success
-            FROM admin_audit_log
-            {where_sql}
-            ORDER BY timestamp DESC
-            LIMIT ${len(params) - 1} OFFSET ${len(params)}
-            """,
-            *params,
-        )
+    total, rows = await op_store.list_audit_log(
+        action=action, target_user_id=target_user_id, limit=limit, offset=offset
+    )
 
     import json as _json
 
@@ -1390,7 +880,7 @@ async def delete_user(
     user_id: str,
     payload: DeleteUserRequest,
     admin_id: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> DeleteUserResponse:
     """Soft-delete a user account.
 
@@ -1401,64 +891,30 @@ async def delete_user(
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    async with db_logger.pool.acquire() as conn:
-        user_row = await conn.fetchrow(
-            "SELECT id, email, status FROM users WHERE id = $1",
-            user_id,
+    user_row = await op_store.get_user_by_id(user_id)
+
+    if not user_row:
+        raise HTTPException(404, f"User '{user_id}' not found")
+
+    if user_row["status"] not in ("active", "suspended"):
+        raise HTTPException(
+            409,
+            f"Cannot delete user with status '{user_row['status']}'. "
+            "Only active or suspended users can be deleted.",
         )
 
-        if not user_row:
-            raise HTTPException(404, f"User '{user_id}' not found")
-
-        if user_row["status"] not in ("active", "suspended"):
-            raise HTTPException(
-                409,
-                f"Cannot delete user with status '{user_row['status']}'. "
-                "Only active or suspended users can be deleted.",
-            )
-
-        # All cleanup + audit in a single transaction so the audit record
-        # is guaranteed to exist if (and only if) the delete commits.
-        import json as _json
-
-        async with conn.transaction():
-            await conn.execute(
-                "UPDATE users SET status = 'deleted' WHERE id = $1",
-                user_id,
-            )
-            # Revoke all active keys — cover both account_id and legacy user_id
-            await conn.execute(
-                "UPDATE api_keys SET status = 'revoked' "
-                "WHERE (account_id = $1 OR user_id = $1) AND status = 'active'",
-                user_id,
-            )
-            await conn.execute(
-                "DELETE FROM auth_sessions WHERE user_id = $1",
-                user_id,
-            )
-            await conn.execute(
-                "DELETE FROM email_verification_tokens WHERE user_id = $1",
-                user_id,
-            )
-            await conn.execute(
-                "DELETE FROM password_reset_tokens WHERE user_id = $1",
-                user_id,
-            )
-            # Audit log inside the same transaction
-            await conn.execute(
-                """
-                INSERT INTO admin_audit_log (admin_ip, action, target_user_id, details, success)
-                VALUES ($1, $2, $3, $4::jsonb, $5)
-                """,
-                admin_id,
-                "delete_user",
-                user_id,
-                _json.dumps({"email": user_row["email"], "reason": payload.reason}),
-                True,
-            )
+    # Atomic: sets status='deleted', revokes keys, purges sessions/tokens,
+    # and inserts audit log — all in a single transaction.
+    await op_store.delete_user(
+        user_id,
+        admin_ip=admin_id,
+        admin_id=admin_id,
+        reason=payload.reason,
+        email=user_row["email"],
+    )
 
     return DeleteUserResponse(
         user_id=user_id,
@@ -1607,6 +1063,332 @@ async def admin_get_request_metrics(
     )
 
 
+# ========================================
+# Performance Metrics (Admin View)
+# ========================================
+
+
+# Inner edges for histogram buckets, passed to width_bucket(x, ARRAY[...]).
+# With N = len(edges), width_bucket returns bucket 0 for x < edges[0]
+# (underflow; ignored here because these metrics are never negative),
+# buckets 1..N-1 for bounded ranges [edges[k-1], edges[k]), and bucket N
+# for the final open-ended overflow bucket [edges[-1], +inf).
+_TOKEN_HISTOGRAM_EDGES: tuple[float, ...] = (0, 32, 128, 512, 2048, 8192, 32768, 131072)
+_LATENCY_HISTOGRAM_EDGES: tuple[float, ...] = (0, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
+
+
+def _build_histogram(
+    edges: tuple[float, ...],
+    counts_by_bucket: dict[int, int],
+) -> list[AdminHistogramBucket]:
+    """Map width_bucket() index -> AdminHistogramBucket list with edge bounds.
+
+    width_bucket(x, ARRAY[edges]) returns:
+      0  -> x < edges[0]    (underflow; ignored, metrics are non-negative)
+      k  -> edges[k-1] <= x < edges[k]   for 1 <= k <= len(edges)-1
+      N  -> x >= edges[-1]  (overflow; open-ended upper bound)
+    where N = len(edges).
+
+    We always emit one bucket per (edge[k-1], edge[k]) pair plus a final
+    open-ended bucket, even if the count is zero, so the UI can render a
+    consistent bar chart.
+    """
+    n_edges = len(edges)
+    buckets: list[AdminHistogramBucket] = []
+    # Buckets 1..N-1 are bounded.
+    for k in range(1, n_edges):
+        buckets.append(
+            AdminHistogramBucket(
+                lower_bound=float(edges[k - 1]),
+                upper_bound=float(edges[k]),
+                count=int(counts_by_bucket.get(k, 0)),
+            )
+        )
+    # Final overflow bucket (index N): [edges[-1], +inf).
+    buckets.append(
+        AdminHistogramBucket(
+            lower_bound=float(edges[-1]),
+            upper_bound=None,
+            count=int(counts_by_bucket.get(n_edges, 0)),
+        )
+    )
+    return buckets
+
+
+def _round_or_none(value: Any, digits: int = 2) -> float | None:
+    """Coerce a numeric DB value to float and round, or return None."""
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def _distribution_from_row(
+    row: Any,
+    prefix: str,
+    edges: tuple[float, ...],
+    bucket_counts: dict[int, int],
+) -> AdminMetricDistribution:
+    """Build a distribution from a stats row + histogram counts dict."""
+    return AdminMetricDistribution(
+        count=int(row[f"{prefix}_count"] or 0),
+        mean=_round_or_none(row[f"{prefix}_mean"]),
+        min=_round_or_none(row[f"{prefix}_min"]),
+        max=_round_or_none(row[f"{prefix}_max"]),
+        p50=_round_or_none(row[f"{prefix}_p50"]),
+        p90=_round_or_none(row[f"{prefix}_p90"]),
+        p95=_round_or_none(row[f"{prefix}_p95"]),
+        p99=_round_or_none(row[f"{prefix}_p99"]),
+        histogram=_build_histogram(edges, bucket_counts),
+    )
+
+
+# Shared CTE prefix used by both the stats query and the histogram query for
+# each window. Defining it once keeps the row filter / TBT derivation in sync
+# so the "histogram sums to count" invariant cannot drift.
+_PERF_METRICS_CTE = """
+WITH base AS (
+    SELECT
+        prompt_tokens,
+        completion_tokens,
+        ttft_ms,
+        latency_ms,
+        stream
+    FROM api_logs
+    WHERE timestamp >= NOW() - ($1::int * interval '1 minute')
+      AND status_code BETWEEN 200 AND 399
+),
+derived AS (
+    SELECT
+        prompt_tokens,
+        completion_tokens,
+        CASE
+            WHEN stream = TRUE AND ttft_ms IS NOT NULL
+                THEN ttft_ms::float
+        END AS ttft_ms,
+        CASE
+            WHEN stream = TRUE
+                AND ttft_ms IS NOT NULL
+                AND completion_tokens IS NOT NULL
+                AND completion_tokens > 1
+                AND latency_ms IS NOT NULL
+                AND latency_ms >= ttft_ms
+                THEN (latency_ms - ttft_ms)::float
+                     / NULLIF(completion_tokens - 1, 0)
+        END AS tbt_ms
+    FROM base
+)
+"""
+
+
+@router.get("/admin/performance-metrics", response_model=AdminPerformanceMetricsResponse)
+async def admin_get_performance_metrics(
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminPerformanceMetricsResponse:
+    """Return prompt/response length and latency distributions per lookback window.
+
+    For each window, computes percentiles (p50/p90/p95/p99), mean/min/max, count,
+    and a small histogram for:
+
+    - prompt_tokens (over rows where prompt_tokens > 0)
+    - completion_tokens (over rows where completion_tokens > 0)
+    - ttft_ms (over streaming rows with ttft_ms NOT NULL)
+    - tbt_ms (over streaming rows with completion_tokens > 1, derived from
+      (latency_ms - ttft_ms) / (completion_tokens - 1); negatives clamped to NULL)
+
+    Only successful requests (status_code 200-399) are included.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    token_edges = list(_TOKEN_HISTOGRAM_EDGES)
+    latency_edges = list(_LATENCY_HISTOGRAM_EDGES)
+
+    windows: list[AdminPerformanceMetricsWindow] = []
+    async with db_logger.pool.acquire() as conn:
+        for key, label, window_minutes, _bucket_minutes in REQUEST_METRIC_WINDOWS:
+            # Aggregate stats — one row, one query per window.
+            stats_row = await conn.fetchrow(
+                _PERF_METRICS_CTE
+                + """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_count,
+                    AVG(prompt_tokens) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_mean,
+                    MIN(prompt_tokens) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_min,
+                    MAX(prompt_tokens) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_max,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY prompt_tokens
+                    ) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_p50,
+                    percentile_cont(0.9) WITHIN GROUP (
+                        ORDER BY prompt_tokens
+                    ) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_p90,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY prompt_tokens
+                    ) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_p95,
+                    percentile_cont(0.99) WITHIN GROUP (
+                        ORDER BY prompt_tokens
+                    ) FILTER (
+                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                    ) AS pt_p99,
+
+                    COUNT(*) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_count,
+                    AVG(completion_tokens) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_mean,
+                    MIN(completion_tokens) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_min,
+                    MAX(completion_tokens) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_max,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY completion_tokens
+                    ) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_p50,
+                    percentile_cont(0.9) WITHIN GROUP (
+                        ORDER BY completion_tokens
+                    ) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_p90,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY completion_tokens
+                    ) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_p95,
+                    percentile_cont(0.99) WITHIN GROUP (
+                        ORDER BY completion_tokens
+                    ) FILTER (
+                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                    ) AS ct_p99,
+
+                    COUNT(*) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_count,
+                    AVG(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_mean,
+                    MIN(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_min,
+                    MAX(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_max,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY ttft_ms)
+                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p50,
+                    percentile_cont(0.9) WITHIN GROUP (ORDER BY ttft_ms)
+                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p90,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms)
+                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p95,
+                    percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms)
+                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p99,
+
+                    COUNT(*) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_count,
+                    AVG(tbt_ms) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_mean,
+                    MIN(tbt_ms) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_min,
+                    MAX(tbt_ms) FILTER (WHERE tbt_ms IS NOT NULL) AS tb_max,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY tbt_ms)
+                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p50,
+                    percentile_cont(0.9) WITHIN GROUP (ORDER BY tbt_ms)
+                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p90,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY tbt_ms)
+                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p95,
+                    percentile_cont(0.99) WITHIN GROUP (ORDER BY tbt_ms)
+                        FILTER (WHERE tbt_ms IS NOT NULL) AS tb_p99
+                FROM derived
+                """,
+                window_minutes,
+            )
+
+            # Histogram counts — one row per (metric, bucket).
+            hist_rows = await conn.fetch(
+                _PERF_METRICS_CTE
+                + """
+                SELECT 'prompt_tokens' AS metric,
+                       width_bucket(prompt_tokens::float, $2::float[]) AS bucket,
+                       COUNT(*) AS cnt
+                FROM derived
+                WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
+                GROUP BY bucket
+                UNION ALL
+                SELECT 'completion_tokens' AS metric,
+                       width_bucket(completion_tokens::float, $2::float[]) AS bucket,
+                       COUNT(*) AS cnt
+                FROM derived
+                WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
+                GROUP BY bucket
+                UNION ALL
+                SELECT 'ttft_ms' AS metric,
+                       width_bucket(ttft_ms, $3::float[]) AS bucket,
+                       COUNT(*) AS cnt
+                FROM derived
+                WHERE ttft_ms IS NOT NULL
+                GROUP BY bucket
+                UNION ALL
+                SELECT 'tbt_ms' AS metric,
+                       width_bucket(tbt_ms, $3::float[]) AS bucket,
+                       COUNT(*) AS cnt
+                FROM derived
+                WHERE tbt_ms IS NOT NULL
+                GROUP BY bucket
+                """,
+                window_minutes,
+                token_edges,
+                latency_edges,
+            )
+
+            histograms: dict[str, dict[int, int]] = {
+                "prompt_tokens": {},
+                "completion_tokens": {},
+                "ttft_ms": {},
+                "tbt_ms": {},
+            }
+            for row in hist_rows:
+                metric = row["metric"]
+                bucket = int(row["bucket"] or 0)
+                cnt = int(row["cnt"] or 0)
+                # width_bucket can return 0 for negative values; for token
+                # metrics this can't happen (filtered to > 0), but for tbt_ms
+                # we already clamped. Fold any underflow into bucket 1 just
+                # in case so that sum(histogram) == count holds.
+                target = bucket if bucket >= 1 else 1
+                histograms[metric][target] = histograms[metric].get(target, 0) + cnt
+
+            # `stats_row` is always non-None: an aggregate SELECT without
+            # GROUP BY returns exactly one row even when `derived` is empty.
+            window = AdminPerformanceMetricsWindow(
+                key=key,
+                label=label,
+                window_minutes=window_minutes,
+                prompt_tokens=_distribution_from_row(
+                    stats_row, "pt", _TOKEN_HISTOGRAM_EDGES, histograms["prompt_tokens"]
+                ),
+                completion_tokens=_distribution_from_row(
+                    stats_row, "ct", _TOKEN_HISTOGRAM_EDGES, histograms["completion_tokens"]
+                ),
+                ttft_ms=_distribution_from_row(
+                    stats_row, "tt", _LATENCY_HISTOGRAM_EDGES, histograms["ttft_ms"]
+                ),
+                tbt_ms=_distribution_from_row(
+                    stats_row, "tb", _LATENCY_HISTOGRAM_EDGES, histograms["tbt_ms"]
+                ),
+            )
+            windows.append(window)
+
+    return AdminPerformanceMetricsResponse(
+        generated_at=datetime.now(timezone.utc),
+        windows=windows,
+    )
+
+
 @router.get("/admin/recent-requests", response_model=AdminRecentRequestsResponse)
 async def admin_list_recent_requests(
     request: Request,
@@ -1679,6 +1461,7 @@ async def admin_list_recent_requests(
                 l.model_id, l.provider, l.timestamp,
                 l.status_code, l.latency_ms, l.ttft_ms, l.stream,
                 l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
+                l.cache_read_tokens, l.cache_write_tokens,
                 l.total_tokens, l.cost_usd, l.prompt, l.response, l.error,
                 l.metadata->>'ip' AS user_ip
             FROM api_logs l
@@ -1709,6 +1492,8 @@ async def admin_list_recent_requests(
             prompt_tokens=row["prompt_tokens"],
             completion_tokens=row["completion_tokens"],
             reasoning_tokens=row["reasoning_tokens"],
+            cache_read_tokens=row["cache_read_tokens"],
+            cache_write_tokens=row["cache_write_tokens"],
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             prompt=row["prompt"],
@@ -1719,3 +1504,720 @@ async def admin_list_recent_requests(
     ]
 
     return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+
+
+# Period → (lookback_minutes, bucket_minutes)
+_ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
+    "hour": (60, 5),
+    "day": (1440, 60),
+    "week": (10080, 1440),
+    "month": (43200, 1440),
+}
+
+
+@router.get("/admin/analytics", response_model=AdminAnalyticsResponse)
+async def admin_get_analytics(
+    period: Literal["hour", "day", "week", "month"] = "day",
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminAnalyticsResponse:
+    """Return analytics summary for the admin analytics tab."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    lookback_minutes, bucket_minutes = _ANALYTICS_PERIODS[period]
+
+    # Acquire ONE connection and run all queries sequentially. Acquiring 5
+    # connections via asyncio.gather can starve the pool when two admin
+    # analytics requests arrive concurrently (pool max_size is small).
+    async with db_logger.pool.acquire() as conn:
+        active_users_row = await conn.fetchrow(
+            """
+            SELECT COUNT(DISTINCT user_id) AS cnt
+            FROM api_logs
+            WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+              AND user_id IS NOT NULL
+            """,
+            lookback_minutes,
+        )
+        active_users = int(active_users_row["cnt"] or 0)
+
+        top_users_rows = await conn.fetch(
+            """
+            WITH totals AS (
+                SELECT COUNT(*) AS grand_total
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                  AND user_id IS NOT NULL
+            ),
+            ranked AS (
+                SELECT
+                    l.user_id,
+                    COALESCE(u.email, l.user_id) AS email,
+                    COUNT(*) AS req_count
+                FROM api_logs l
+                LEFT JOIN users u ON u.id = l.user_id
+                WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
+                  AND l.user_id IS NOT NULL
+                GROUP BY l.user_id, u.email
+                ORDER BY req_count DESC
+                LIMIT 10
+            )
+            SELECT
+                r.user_id,
+                r.email,
+                r.req_count,
+                CASE WHEN t.grand_total > 0
+                     THEN r.req_count::float / t.grand_total
+                     ELSE 0 END AS fraction
+            FROM ranked r, totals t
+            """,
+            lookback_minutes,
+        )
+
+        by_model_rows = await conn.fetch(
+            """
+            WITH totals AS (
+                SELECT COUNT(*) AS grand_total
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+            ),
+            ranked AS (
+                SELECT model_id AS name, COUNT(*) AS req_count
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                GROUP BY model_id
+                ORDER BY req_count DESC
+                LIMIT 5
+            ),
+            top_total AS (
+                SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
+            )
+            SELECT r.name, r.req_count,
+                CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
+            FROM ranked r, totals t
+            UNION ALL
+            SELECT 'others',
+                GREATEST(t.grand_total - tt.top_req_count, 0),
+                CASE WHEN t.grand_total > 0
+                     THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
+                     ELSE 0 END
+            FROM totals t, top_total tt
+            WHERE t.grand_total > tt.top_req_count
+            ORDER BY req_count DESC
+            """,
+            lookback_minutes,
+        )
+
+        by_provider_rows = await conn.fetch(
+            """
+            WITH totals AS (
+                SELECT COUNT(*) AS grand_total
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+            ),
+            ranked AS (
+                SELECT provider AS name, COUNT(*) AS req_count
+                FROM api_logs
+                WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+                GROUP BY provider
+                ORDER BY req_count DESC
+                LIMIT 4
+            ),
+            top_total AS (
+                SELECT COALESCE(SUM(req_count), 0) AS top_req_count FROM ranked
+            )
+            SELECT r.name, r.req_count,
+                CASE WHEN t.grand_total > 0 THEN r.req_count::float / t.grand_total ELSE 0 END AS fraction
+            FROM ranked r, totals t
+            UNION ALL
+            SELECT 'others',
+                GREATEST(t.grand_total - tt.top_req_count, 0),
+                CASE WHEN t.grand_total > 0
+                     THEN GREATEST(t.grand_total - tt.top_req_count, 0)::float / t.grand_total
+                     ELSE 0 END
+            FROM totals t, top_total tt
+            WHERE t.grand_total > tt.top_req_count
+            ORDER BY req_count DESC
+            """,
+            lookback_minutes,
+        )
+
+        # Sparkline: align with the date_trunc + generate_series pattern used by
+        # /admin/request-metrics so admin chart bucket boundaries are consistent.
+        sparkline_rows = await conn.fetch(
+            """
+            WITH config AS (
+                SELECT ($2::int * 60) AS bucket_seconds
+            ),
+            bounds AS (
+                SELECT
+                    date_trunc('minute', NOW()) AS end_time,
+                    date_trunc('minute', NOW())
+                        - ($1::int * interval '1 minute') AS start_time,
+                    to_timestamp(
+                        floor(
+                            extract(
+                                epoch FROM date_trunc('minute', NOW())
+                                    - ($1::int * interval '1 minute')
+                            ) / config.bucket_seconds
+                        ) * config.bucket_seconds
+                    ) AS aligned_start
+                FROM config
+            ),
+            series AS (
+                SELECT generate_series(
+                    (SELECT aligned_start FROM bounds),
+                    (SELECT end_time FROM bounds),
+                    $2::int * interval '1 minute'
+                ) AS bucket_start
+            ),
+            bucketed_logs AS (
+                SELECT
+                    to_timestamp(
+                        floor(extract(epoch from timestamp) / ($2::int * 60))
+                        * ($2::int * 60)
+                    ) AS bucket_start,
+                    COUNT(*) AS request_count
+                FROM api_logs, bounds
+                WHERE timestamp >= bounds.start_time
+                  AND timestamp <= bounds.end_time
+                GROUP BY 1
+            )
+            SELECT
+                series.bucket_start,
+                COALESCE(bucketed_logs.request_count, 0) AS request_count
+            FROM series
+            LEFT JOIN bucketed_logs
+              ON bucketed_logs.bucket_start = series.bucket_start
+            ORDER BY series.bucket_start ASC
+            """,
+            lookback_minutes,
+            bucket_minutes,
+        )
+
+    return AdminAnalyticsResponse(
+        period=period,
+        active_users=active_users,
+        sparkline=[
+            SparklineBucket(
+                start_time=row["bucket_start"],
+                request_count=int(row["request_count"] or 0),
+            )
+            for row in sparkline_rows
+        ],
+        top_users=[
+            AnalyticsUserEntry(
+                email=str(row["email"]),
+                user_id=str(row["user_id"]),
+                requests=int(row["req_count"]),
+                fraction=float(row["fraction"]),
+            )
+            for row in top_users_rows
+        ],
+        by_model=[
+            AnalyticsBreakdownEntry(
+                name=str(row["name"]) if row["name"] else "unknown",
+                requests=int(row["req_count"]),
+                fraction=float(row["fraction"]),
+            )
+            for row in by_model_rows
+        ],
+        by_provider=[
+            AnalyticsBreakdownEntry(
+                name=str(row["name"]) if row["name"] else "unknown",
+                requests=int(row["req_count"]),
+                fraction=float(row["fraction"]),
+            )
+            for row in by_provider_rows
+        ],
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
+# ── Broadcast Email Endpoints ──────────────────────────────────────────────
+
+
+def _render_or_422(req: BroadcastPreviewRequest) -> dict[str, str]:
+    """Render template (or pass through custom content), mapping ValueError to 422."""
+    try:
+        return render_broadcast_template(
+            req.template_key,
+            req.template_vars,
+            custom_subject=req.subject,
+            custom_body_html=req.body_html,
+            custom_body_text=req.body_text,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/admin/broadcast-email/preview", response_model=BroadcastPreviewResponse)
+async def preview_broadcast(
+    req: BroadcastPreviewRequest,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Return recipient count and rendered email preview without sending."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    rendered = _render_or_422(req)
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) as cnt FROM users
+            WHERE role = ANY($1::text[])
+              AND status = ANY($2::text[])
+            """,
+            req.target_roles or [],
+            req.target_statuses or [],
+        )
+    count = row["cnt"] if row else 0
+
+    return BroadcastPreviewResponse(
+        recipient_count=count,
+        rendered_subject=rendered["subject"],
+        rendered_body_html=rendered["body_html"],
+        rendered_body_text=rendered["body_text"],
+    )
+
+
+@router.post("/admin/broadcast-email/test")
+async def test_broadcast_email(
+    req: BroadcastPreviewRequest,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Send a test email to the requesting admin's address only."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    rendered = _render_or_422(req)
+    if not rendered["subject"] or not rendered["body_html"]:
+        raise HTTPException(status_code=422, detail="subject and body_html are required")
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT email FROM users WHERE email = $1", admin)
+    if not row:
+        raise HTTPException(
+            status_code=400, detail="Admin user not found — cannot resolve email address"
+        )
+    admin_email = row["email"]
+
+    # smtplib is sync; offload to a thread so we don't block the event loop
+    # while waiting on the SMTP server.
+    import asyncio as _asyncio
+
+    ok = await _asyncio.to_thread(
+        send_email,
+        admin_email,
+        f"[TEST] {rendered['subject']}",
+        rendered["body_html"],
+        rendered["body_text"],
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail="Failed to send test email (SMTP error)")
+    return {"message": f"Test email sent to {admin_email}"}
+
+
+@router.post("/admin/broadcast-email", response_model=CreateBroadcastResponse)
+async def create_broadcast(
+    req: CreateBroadcastRequest,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Create a broadcast, snapshot its recipients, and schedule (or fire immediately)."""
+    import uuid as _uuid
+
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    rendered = _render_or_422(req)
+    if not rendered["subject"] or not rendered["body_html"]:
+        raise HTTPException(status_code=422, detail="subject and body_html are required")
+
+    broadcast_id = str(_uuid.uuid4())
+
+    async with db.pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            """
+                INSERT INTO email_broadcasts
+                    (id, subject, body_html, body_text, template_key, template_vars,
+                     target_roles, target_statuses, status, scheduled_at, created_by)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                """,
+            broadcast_id,
+            rendered["subject"],
+            rendered["body_html"],
+            rendered["body_text"],
+            req.template_key,
+            req.template_vars,
+            req.target_roles or [],
+            req.target_statuses or [],
+            "scheduled",
+            req.scheduled_at,
+            admin,
+        )
+
+        # Snapshot recipients at create time so the audience matches what the admin
+        # previewed and can't drift between scheduling and execution.
+        recipients = await conn.fetch(
+            """
+                SELECT id, email FROM users
+                WHERE role = ANY($1::text[])
+                  AND status = ANY($2::text[])
+                """,
+            req.target_roles or [],
+            req.target_statuses or [],
+        )
+        if recipients:
+            await conn.executemany(
+                """
+                    INSERT INTO email_broadcast_recipients (broadcast_id, user_id, email, status)
+                    VALUES ($1, $2, $3, 'pending')
+                    ON CONFLICT DO NOTHING
+                    """,
+                [(broadcast_id, r["id"], r["email"]) for r in recipients],
+            )
+        await conn.execute(
+            "UPDATE email_broadcasts SET recipient_count = $1 WHERE id = $2",
+            len(recipients),
+            broadcast_id,
+        )
+
+    # If APScheduler can't accept the job we don't want a row that says
+    # "scheduled" forever — mark it failed and surface a 503.
+    try:
+        schedule_broadcast(broadcast_id, req.scheduled_at)
+    except Exception as exc:
+        async with db.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE email_broadcasts SET status = 'failed' WHERE id = $1",
+                broadcast_id,
+            )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to register broadcast with scheduler: {exc}",
+        ) from exc
+
+    await log_admin_action(
+        db,
+        admin,
+        "broadcast_email_create",
+        None,
+        {"broadcast_id": broadcast_id, "subject": rendered["subject"]},
+    )
+
+    return CreateBroadcastResponse(
+        id=broadcast_id,
+        status="scheduled",
+        recipient_count=len(recipients),
+        scheduled_at=req.scheduled_at,
+    )
+
+
+@router.get("/admin/broadcast-email", response_model=ListBroadcastsResponse)
+async def list_broadcasts(
+    limit: int = 50,
+    offset: int = 0,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """List all broadcast campaigns, newest first."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    async with db.pool.acquire() as conn:
+        total_row = await conn.fetchrow("SELECT COUNT(*) as cnt FROM email_broadcasts")
+        total = total_row["cnt"] if total_row else 0
+        rows = await conn.fetch(
+            """
+            SELECT id, subject, status, recipient_count, scheduled_at, sent_at,
+                   created_by, created_at
+            FROM email_broadcasts
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            """,
+            limit,
+            offset,
+        )
+
+    broadcasts = [
+        BroadcastListItem(
+            id=r["id"],
+            subject=r["subject"],
+            status=r["status"],
+            recipient_count=r["recipient_count"],
+            scheduled_at=r["scheduled_at"],
+            sent_at=r["sent_at"],
+            created_by=r["created_by"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+    return ListBroadcastsResponse(total=total, broadcasts=broadcasts)
+
+
+@router.get("/admin/broadcast-email/{broadcast_id}", response_model=BroadcastDetailResponse)
+async def get_broadcast_detail(
+    broadcast_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Get broadcast details with per-recipient status (paginated)."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, subject, status, recipient_count, scheduled_at, sent_at,
+                   created_by, created_at
+            FROM email_broadcasts WHERE id = $1
+            """,
+            broadcast_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Broadcast not found")
+
+        total_row = await conn.fetchrow(
+            "SELECT COUNT(*) as cnt FROM email_broadcast_recipients WHERE broadcast_id = $1",
+            broadcast_id,
+        )
+        total_recipients = total_row["cnt"] if total_row else 0
+
+        recipient_rows = await conn.fetch(
+            """
+            SELECT user_id, email, status, error, sent_at
+            FROM email_broadcast_recipients
+            WHERE broadcast_id = $1
+            ORDER BY id
+            LIMIT $2 OFFSET $3
+            """,
+            broadcast_id,
+            limit,
+            offset,
+        )
+
+    broadcast = BroadcastListItem(
+        id=row["id"],
+        subject=row["subject"],
+        status=row["status"],
+        recipient_count=row["recipient_count"],
+        scheduled_at=row["scheduled_at"],
+        sent_at=row["sent_at"],
+        created_by=row["created_by"],
+        created_at=row["created_at"],
+    )
+    recipients = [
+        BroadcastRecipientItem(
+            user_id=r["user_id"],
+            email=r["email"],
+            status=r["status"],
+            error=r["error"],
+            sent_at=r["sent_at"],
+        )
+        for r in recipient_rows
+    ]
+    return BroadcastDetailResponse(
+        broadcast=broadcast,
+        recipients=recipients,
+        total_recipients=total_recipients,
+    )
+
+
+@router.delete("/admin/broadcast-email/{broadcast_id}")
+async def cancel_broadcast(
+    broadcast_id: str,
+    admin: str = Depends(verify_admin_access),
+    db=Depends(get_db_logger),
+):
+    """Cancel a scheduled broadcast. Returns 409 if not in 'scheduled' status."""
+    if not db or not db.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT status FROM email_broadcasts WHERE id = $1", broadcast_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Broadcast not found")
+        if row["status"] != "scheduled":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot cancel broadcast with status '{row['status']}'",
+            )
+        await conn.execute(
+            "UPDATE email_broadcasts SET status = 'cancelled' WHERE id = $1", broadcast_id
+        )
+
+    cancel_broadcast_job(broadcast_id)
+    await log_admin_action(
+        db, admin, "broadcast_email_cancel", None, {"broadcast_id": broadcast_id}
+    )
+    return {"message": "Broadcast cancelled"}
+
+
+@router.get("/admin/export/requests")
+async def admin_export_requests(
+    start_time: datetime,
+    end_time: datetime | None = None,
+    user_id: str | None = None,
+    model_id: str | None = None,
+    errors_only: bool = False,
+    include_content: bool = False,
+    admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> StreamingResponse:
+    """Stream all request logs matching the given filters as JSONL.
+
+    Query Parameters:
+    - start_time: ISO8601 datetime, inclusive lower bound (required)
+    - end_time: ISO8601 datetime, inclusive upper bound (defaults to now)
+    - user_id: Filter by user ID
+    - model_id: Filter by model ID
+    - errors_only: If true, only include requests with errors
+    - include_content: If true, include prompt and response fields
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    if end_time is None:
+        end_time = datetime.now(timezone.utc)
+
+    where_clauses: list[str] = ["l.timestamp >= $1", "l.timestamp <= $2"]
+    params: list[Any] = [start_time, end_time]
+
+    if user_id:
+        where_clauses.append(f"l.user_id = ${len(params) + 1}")
+        params.append(user_id)
+
+    if model_id:
+        where_clauses.append(f"l.model_id = ${len(params) + 1}")
+        params.append(model_id)
+
+    if errors_only:
+        where_clauses.append(
+            "(l.error IS NOT NULL OR l.status_code IS NULL "
+            "OR l.status_code < 200 OR l.status_code >= 400)"
+        )
+
+    content_cols = ", l.prompt, l.response" if include_content else ""
+    batch_size = 500
+
+    start_str = start_time.strftime("%Y%m%d")
+    end_str = end_time.strftime("%Y%m%d")
+    filename = f"requests-{start_str}-{end_str}.jsonl"
+
+    async def generate() -> AsyncGenerator[str, None]:
+        cursor_ts: datetime | None = None
+        cursor_id: str | None = None
+        async with db_logger.pool.acquire() as conn:
+            while True:
+                local_clauses = list(where_clauses)
+                local_params = list(params)
+                if cursor_ts is not None:
+                    cursor_ts_idx = len(local_params) + 1
+                    cursor_id_idx = len(local_params) + 2
+                    local_clauses.append(
+                        f"(l.timestamp, l.request_id) < (${cursor_ts_idx}, ${cursor_id_idx})"
+                    )
+                    local_params.append(cursor_ts)
+                    local_params.append(cursor_id)
+                limit_idx = len(local_params) + 1
+                local_where = "WHERE " + " AND ".join(local_clauses)
+                rows = await conn.fetch(
+                    f"""
+                    SELECT
+                        l.request_id, l.user_id, u.user_name, u.email AS user_email,
+                        l.model_id, l.provider, l.timestamp,
+                        l.status_code, l.latency_ms, l.ttft_ms,
+                        l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
+                        l.cache_read_tokens, l.cache_write_tokens, l.total_tokens,
+                        l.cost_usd, l.error{content_cols}
+                    FROM api_logs l
+                    LEFT JOIN users u ON u.id = l.user_id
+                    {local_where}
+                    ORDER BY l.timestamp DESC, l.request_id DESC
+                    LIMIT ${limit_idx}
+                    """,
+                    *local_params,
+                    batch_size,
+                )
+                if not rows:
+                    break
+                for row in rows:
+                    record: dict[str, Any] = {
+                        "request_id": row["request_id"],
+                        "timestamp": row["timestamp"].isoformat(),
+                        "user_id": row["user_id"],
+                        "user_name": row["user_name"],
+                        "user_email": row["user_email"],
+                        "model_id": row["model_id"],
+                        "provider": row["provider"],
+                        "ttft_ms": row["ttft_ms"],
+                        "latency_ms": row["latency_ms"],
+                        "prompt_tokens": row["prompt_tokens"],
+                        "completion_tokens": row["completion_tokens"],
+                        "reasoning_tokens": row["reasoning_tokens"],
+                        "cache_read_tokens": row["cache_read_tokens"],
+                        "cache_write_tokens": row["cache_write_tokens"],
+                        "total_tokens": row["total_tokens"],
+                        "cost_usd": (str(row["cost_usd"]) if row["cost_usd"] is not None else None),
+                        "status_code": row["status_code"],
+                        "error": row["error"],
+                    }
+                    if include_content:
+                        record["prompt"] = row["prompt"]
+                        record["response"] = row["response"]
+                    yield json.dumps(record) + "\n"
+                if len(rows) < batch_size:
+                    break
+                cursor_ts = rows[-1]["timestamp"]
+                cursor_id = rows[-1]["request_id"]
+
+        await log_admin_action(
+            db_logger,
+            admin_id,
+            "export_requests",
+            None,
+            {
+                "range": f"{start_str}-{end_str}",
+                "include_content": include_content,
+                "user_id": user_id,
+                "model_id": model_id,
+                "errors_only": errors_only,
+            },
+        )
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+@router.get("/admin/provider-quotas", response_model=AdminProviderQuotasResponse)
+async def admin_provider_quotas(
+    _admin_id: str = Depends(verify_admin_access),
+) -> AdminProviderQuotasResponse:
+    """Return current quota status for each upstream LLM provider."""
+    providers = await gather_all()
+    return AdminProviderQuotasResponse(
+        generated_at=datetime.now(timezone.utc),
+        providers=providers,
+    )

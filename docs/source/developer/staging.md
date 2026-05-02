@@ -1,8 +1,8 @@
 # Staging Guide
 
 This staging setup is fully Dockerized. The backend, frontend, database, and
-observability services all run under
-[docker-compose.staging.yml](../../../infrastructure/docker/docker-compose.staging.yml).
+observability services all run under the same
+`infrastructure/docker/docker-compose.yml` that production uses.
 
 ## Why this staging shape
 
@@ -13,10 +13,12 @@ observability services all run under
 
 ## Default ports
 
-- Frontend: `3002`
-- Backend API: `8000`
-- PostgreSQL: `5433`
-- pgAdmin: `5051` when the `admin` profile is enabled
+These are the ports exposed by the production compose file:
+
+- Backend API: `8080` (bound to `127.0.0.1`)
+- Frontend: `3001` (bound to `0.0.0.0`)
+- PostgreSQL: `${DB_PORT:-5432}` (bound to `127.0.0.1`)
+- pgAdmin: `5050` when the `admin` profile is enabled (bound to `127.0.0.1`)
 
 ## First-time server bootstrap
 
@@ -41,10 +43,8 @@ JWT_SECRET_KEY=...
 API_KEY_SECRET=...
 
 NEXT_PUBLIC_DEPLOY_TARGET=staging
-NEXT_PUBLIC_API_BASE=http://localhost:8000
-BACKEND_PORT=8000
-FRONTEND_PORT=3002
-CORS_ALLOWED_ORIGINS=http://localhost:3002,http://localhost:3001,http://localhost:3000
+NEXT_PUBLIC_API_BASE=http://localhost:8080
+CORS_ALLOWED_ORIGINS=http://localhost:3001,http://localhost:3000
 
 USER_AUTH_ENABLED=1
 SIGNUP_ENABLED=1
@@ -62,24 +62,21 @@ ADMIN_EMAILS=you@example.com
 
 ```bash
 cd /path/to/dir
-make staging-up
+make build
 ```
 
 This command:
 
-- pulls prebuilt infra images
+- ensures Docker volumes exist
 - builds the current backend and frontend from the worktree
-- starts the full staging stack with Docker Compose
-
-You can still use [start_staging.sh](../../../scripts/staging/start_staging.sh)
-directly, but `make staging-up` is the recommended day-to-day entry point.
+- starts the full stack with Docker Compose
 
 ## SSH forwarding
 
 From your laptop:
 
 ```bash
-ssh -L 3002:127.0.0.1:3002 -L 8000:127.0.0.1:8000 <user>@staging-internal
+ssh -L 3001:127.0.0.1:3001 -L 8080:127.0.0.1:8080 <user>@staging-internal
 ```
 
 If using VScode-family IDE, setting forwarded ports in IDE GUI is more convenient.
@@ -87,46 +84,52 @@ If using VScode-family IDE, setting forwarded ports in IDE GUI is more convenien
 Then open:
 
 ```text
-http://localhost:3002
+http://localhost:3001
 ```
 
 The staged frontend is built to talk to:
 
 ```text
-http://localhost:8000
+http://localhost:8080
 ```
 
 ## Common operations
 
-Restart the full staging stack:
+Rebuild images and restart all services:
 
 ```bash
-make staging-build
+make build
+```
+
+Rebuild and restart a single service:
+
+```bash
+make build s=backend
 ```
 
 Tail backend logs:
 
 ```bash
-make staging-logs s=backend
+make logs s=backend
 ```
 
-Show staging container status:
+Show container status:
 
 ```bash
-make staging-ps
+make ps
 ```
 
-Restart a single staging service:
+Restart a single service:
 
 ```bash
-make staging-restart s=frontend
+make restart s=frontend
 ```
 
-Reset the staging database completely:
+Reset the database completely:
 
 ```bash
-docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env down -v
-make staging-up
+docker compose -f infrastructure/docker/docker-compose.yml --env-file .env down -v
+make up
 ```
 
 ## Notes for model monitor

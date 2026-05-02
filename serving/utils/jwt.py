@@ -54,7 +54,6 @@ def generate_jti() -> str:
 def create_access_token(
     user_id: str,
     email: str,
-    tier: str = "free",
     session_id: str | None = None,
     expires_delta: timedelta | None = None,
     is_admin: bool = False,
@@ -65,11 +64,10 @@ def create_access_token(
     Args:
         user_id: User ID to encode in token.
         email: User email to encode in token.
-        tier: User tier (default: free).
         session_id: Session ID for token rotation (optional).
         expires_delta: Custom expiration time (default: from env).
         is_admin: Whether user has admin privileges.
-        role: User permission role (free/internal/admin).
+        role: User permission role (free/pro/internal/admin).
 
     Returns:
         Tuple of (token_string, jti).
@@ -86,7 +84,6 @@ def create_access_token(
     payload = {
         "sub": user_id,
         "email": email,
-        "tier": tier,
         "role": role,
         "is_admin": is_admin,
         "jti": jti,

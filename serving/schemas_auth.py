@@ -15,6 +15,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     user_name: UserName
+    turnstile_token: str | None = None
 
 
 class SignupResponse(BaseModel):
@@ -70,7 +71,6 @@ class UserInfo(BaseModel):
     id: str
     email: str
     user_name: str | None = None
-    tier: str = "free"
     role: str = "free"
     status: str = "active"
     email_verified: bool = False

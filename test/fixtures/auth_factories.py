@@ -18,7 +18,7 @@ def create_test_user(**overrides: Any) -> dict[str, Any]:
         User data dict suitable for database insertion
     """
     user_id = generate_ulid()
-    email = f"test_{user_id[:8]}@example.com"
+    email = f"test_{user_id[:8]}@signuptest.dev"
 
     defaults = {
         "id": user_id,
@@ -54,7 +54,7 @@ def create_signup_request(**overrides: Any) -> dict[str, Any]:
     unique_id = secrets.token_hex(4)
 
     defaults = {
-        "email": f"newuser_{unique_id}@example.com",
+        "email": f"newuser_{unique_id}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": f"New User {unique_id}",
     }
@@ -102,7 +102,6 @@ def create_api_key_data(user_id: str, **overrides: Any) -> dict[str, Any]:
         "account_id": user_id,
         "status": "active",
         "quota_daily_cost_usd": 100.00,
-        "tier": "free",
         "created_at": datetime.now(timezone.utc),
         "last_used_at": None,
     }

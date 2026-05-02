@@ -16,6 +16,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
+from .key_pool import KeyPool, KeyPoolExhausted
 from .processors import get_processor
 from .profiles import (
     ProviderProfile,
@@ -33,7 +34,7 @@ from .profiles import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
 logger = get_logger(__name__)
 
@@ -74,6 +75,14 @@ class OpenAICompatAdapter(BaseAdapter):
 
     def __init__(self, config):
         super().__init__(config)
+
+        # Multi-key API rotation pool (None when single api_key is configured).
+        self._key_pool: KeyPool | None = None
+        if config.api_keys:
+            self._key_pool = KeyPool(
+                keys=list(config.api_keys),
+                provider_label=config.provider,
+            )
 
         logger.info(f"[OpenAICompat] Initialized for {config.id} at {config.base_url}")
 
@@ -161,14 +170,16 @@ class OpenAICompatAdapter(BaseAdapter):
             cleaned["content"] = _normalize_text_content(cleaned["content"])
         return cleaned
 
-    def _build_headers(self) -> dict[str, str]:
-        """Build HTTP headers for request."""
+    def _build_headers(self, api_key_override: str | None = None) -> dict[str, str]:
+        """Build HTTP headers for request.
+
+        Args:
+            api_key_override: when set (multi-key flow), use this key instead
+                of ``self.config.api_key``.
+        """
         headers = {"Content-Type": "application/json"}
-        api_key = (
-            self.config.api_key.strip()
-            if isinstance(self.config.api_key, str)
-            else self.config.api_key
-        )
+        raw = api_key_override if api_key_override is not None else self.config.api_key
+        api_key = raw.strip() if isinstance(raw, str) else raw
 
         # Add standard OpenAI authentication
         if api_key and getattr(self.config, "use_bearer_auth", True):
@@ -186,6 +197,175 @@ class OpenAICompatAdapter(BaseAdapter):
             headers.update(extra_headers)
 
         return headers
+
+    async def _post_with_pool(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST JSON with key-pool rotation on 429s.
+
+        When ``self._key_pool`` is None, falls through to the legacy single-key
+        path with retries. When set, loops over keys: a 429 on key K cools K
+        down and the loop tries the next least-loaded key. Pool exhaustion
+        raises the last 429 (or KeyPoolExhausted if none was seen yet), which
+        the caller surfaces as an upstream failure for the router fallback chain.
+        """
+        if self._key_pool is None:
+            headers = self._build_headers()
+            return await self.http.json_post_with_retry(
+                url=url, json=payload, headers=headers, timeout=120, retries=2
+            )
+
+        from serving.observability.metrics import (
+            KEY_POOL_ACTIVE_AFFINITIES,
+            KEY_POOL_COOLDOWNS,
+            KEY_POOL_EXHAUSTED,
+            KEY_POOL_REQUESTS,
+        )
+        from serving.utils import context as req_ctx
+
+        affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
+        provider = self.config.provider
+
+        # Bound the loop to pool size — defensive; acquire already filters
+        # cooled-down keys, so we shouldn't reacquire the same just-cooled one.
+        max_attempts = self._key_pool.size()
+        last_429_error: aiohttp.ClientResponseError | None = None
+
+        for _ in range(max_attempts):
+            try:
+                api_key, lease = self._key_pool.acquire(affinity_key)
+            except KeyPoolExhausted as exhausted:
+                KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+                if last_429_error is not None:
+                    raise last_429_error from exhausted
+                raise
+
+            KEY_POOL_REQUESTS.labels(provider=provider, key_index=str(lease.key_index)).inc()
+
+            headers = self._build_headers(api_key_override=api_key)
+            try:
+                response = await self.http.json_post(
+                    url=url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                )
+                self._key_pool.release(lease, status_code=200, retry_after=None)
+                KEY_POOL_ACTIVE_AFFINITIES.labels(provider=provider).set(
+                    self._key_pool.affinity_count()
+                )
+                return response
+            except aiohttp.ClientResponseError as e:
+                if e.status == 429:
+                    retry_after = e.headers.get("Retry-After") if e.headers else None
+                    self._key_pool.release(lease, status_code=429, retry_after=retry_after)
+                    reason = "retry_after" if retry_after else "default_2min"
+                    KEY_POOL_COOLDOWNS.labels(
+                        provider=provider,
+                        key_index=str(lease.key_index),
+                        reason=reason,
+                    ).inc()
+                    last_429_error = e
+                    continue  # try next key
+                # Non-429 error — release without cooldown, propagate.
+                self._key_pool.release(lease, status_code=e.status, retry_after=None)
+                raise
+
+        # Loop exhausted naturally (every key returned 429 in this single call)
+        KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+        assert last_429_error is not None
+        raise last_429_error
+
+    async def _open_stream_with_pool(
+        self, url: str, payload: dict[str, Any], timeout: Any = None
+    ) -> AsyncGenerator[tuple[Any, Any, str], None]:
+        """Open a streaming POST with key-pool rotation on opening 429s.
+
+        Yields exactly one tuple: ``(stream_iter, lease, first_chunk)``.
+
+        - ``stream_iter`` is the underlying async iterator from ``stream_post``;
+          the caller should continue iterating it after processing
+          ``first_chunk``.
+        - ``lease`` is the ``Lease`` to release (status 200) when the stream
+          ends, or ``None`` when no pool is configured.
+        - ``first_chunk`` is the first chunk already pulled from the iterator
+          (must be processed first by the caller).
+
+        Rotates keys internally on opening 429s (status check happens before
+        any chunk is yielded). Mid-stream errors are not classified — they
+        propagate to the caller as today.
+        """
+        if self._key_pool is None:
+            headers = self._build_headers()
+            stream_iter = self.http.stream_post(
+                url=url, json=payload, headers=headers, timeout=timeout
+            )
+            try:
+                first = await stream_iter.__anext__()
+            except StopAsyncIteration:
+                return  # empty stream — nothing to yield, fall out
+            yield stream_iter, None, first
+            return
+
+        from serving.observability.metrics import (
+            KEY_POOL_ACTIVE_AFFINITIES,
+            KEY_POOL_COOLDOWNS,
+            KEY_POOL_EXHAUSTED,
+            KEY_POOL_REQUESTS,
+        )
+        from serving.utils import context as req_ctx
+
+        affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
+        provider = self.config.provider
+        max_attempts = self._key_pool.size()
+        last_429: aiohttp.ClientResponseError | None = None
+
+        for _ in range(max_attempts):
+            try:
+                api_key, lease = self._key_pool.acquire(affinity_key)
+            except KeyPoolExhausted as exhausted:
+                KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+                if last_429 is not None:
+                    raise last_429 from exhausted
+                raise
+
+            KEY_POOL_REQUESTS.labels(provider=provider, key_index=str(lease.key_index)).inc()
+
+            headers = self._build_headers(api_key_override=api_key)
+            stream_iter = self.http.stream_post(
+                url=url, json=payload, headers=headers, timeout=timeout
+            )
+            try:
+                first = await stream_iter.__anext__()
+            except StopAsyncIteration:
+                # Empty stream — treat as success
+                self._key_pool.release(lease, status_code=200, retry_after=None)
+                KEY_POOL_ACTIVE_AFFINITIES.labels(provider=provider).set(
+                    self._key_pool.affinity_count()
+                )
+                return
+            except aiohttp.ClientResponseError as e:
+                if e.status == 429:
+                    retry_after = e.headers.get("Retry-After") if e.headers else None
+                    self._key_pool.release(lease, status_code=429, retry_after=retry_after)
+                    reason = "retry_after" if retry_after else "default_2min"
+                    KEY_POOL_COOLDOWNS.labels(
+                        provider=provider,
+                        key_index=str(lease.key_index),
+                        reason=reason,
+                    ).inc()
+                    last_429 = e
+                    continue
+                # Non-429 — release without cooldown, propagate
+                self._key_pool.release(lease, status_code=e.status, retry_after=None)
+                raise
+
+            # First chunk read successfully — commit the lease (caller releases on stream end)
+            yield stream_iter, lease, first
+            return
+
+        # Loop exhausted — every key returned 429
+        KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+        assert last_429 is not None
+        raise last_429
 
     def _build_url(self) -> str:
         """Build full endpoint URL (standard OpenAI path)."""
@@ -254,19 +434,10 @@ class OpenAICompatAdapter(BaseAdapter):
 
         # Make request
         url = self._build_url()
-        headers = self._build_headers()
-
         logger.debug(f"[OpenAICompat] POST {url} model={payload.get('model', '<omitted>')}")
         logger.debug(f"[OpenAICompat] Payload: {payload}")
-        logger.debug(f"[OpenAICompat] Headers: {headers}")
 
-        response = await self.http.json_post_with_retry(
-            url=url,
-            json=payload,
-            headers=headers,
-            timeout=120,
-            retries=2,
-        )
+        response = await self._post_with_pool(url, payload)
 
         # Process output format (e.g. remove XML tags)
         processor = get_processor(self._processor_model_id, override=self._processor_override)
@@ -316,9 +487,12 @@ class OpenAICompatAdapter(BaseAdapter):
             ):
                 payload["guided_json"] = schema
         payload = transform_payload_for_profile(self._usage_profile, payload, stream=True)
+        if getattr(self.config, "include_usage_in_stream", False):
+            existing_options = payload.get("stream_options") or {}
+            payload["stream_options"] = {**existing_options, "include_usage": True}
 
         url = self._build_url()
-        headers = self._build_headers()
+        # NOTE: headers are built per-attempt inside _open_stream_with_pool
 
         # Fresh processor per request — avoids shared mutable state across concurrent streams
         processor = get_processor(self._processor_model_id, override=self._processor_override)
@@ -357,10 +531,14 @@ class OpenAICompatAdapter(BaseAdapter):
             if fr:
                 finish_reason = fr
 
-            # Handle content
+            # Accumulate visible content and reasoning independently for the fallback
             content = delta.get("content")
             if isinstance(content, str) and content:
                 total_content += content
+
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if isinstance(reasoning, str) and reasoning:
+                total_content += reasoning
 
             legacy_tool_calls = function_call_delta_to_tool_calls(
                 self._usage_profile, delta.get("function_call")
@@ -401,11 +579,32 @@ class OpenAICompatAdapter(BaseAdapter):
 
         stream_timeout = self._build_stream_timeout()
 
+        # Open the stream via the key-pool-aware helper. The helper performs
+        # 429 rotation BEFORE the first chunk is yielded; once we receive the
+        # primed first chunk, the lease is committed for the lifetime of the
+        # stream and any mid-stream errors propagate as before.
+        primed: str | None = None
+        stream_iter: AsyncIterator[str] | None = None
+        active_lease = None
+
+        async for it, lease, first in self._open_stream_with_pool(
+            url, payload, timeout=stream_timeout
+        ):
+            stream_iter = it
+            active_lease = lease
+            primed = first
+            break  # helper yields exactly once
+
+        async def _drain() -> AsyncIterator[str]:
+            if primed is not None:
+                yield primed
+            if stream_iter is not None:
+                async for c in stream_iter:
+                    yield c
+
         # Stream response
         try:
-            async for chunk in self.http.stream_post(
-                url=url, json=payload, headers=headers, timeout=stream_timeout
-            ):
+            async for chunk in _drain():
                 if not chunk.strip():
                     continue
 
@@ -434,6 +633,16 @@ class OpenAICompatAdapter(BaseAdapter):
                 self.config.id,
                 getattr(stream_timeout, "sock_read", -1.0) if stream_timeout else -1.0,
             )
+        finally:
+            if active_lease is not None and self._key_pool is not None:
+                self._key_pool.release(active_lease, status_code=200, retry_after=None)
+                from serving.observability.metrics import (
+                    KEY_POOL_ACTIVE_AFFINITIES,
+                )
+
+                KEY_POOL_ACTIVE_AFFINITIES.labels(provider=self.config.provider).set(
+                    self._key_pool.affinity_count()
+                )
 
         # Flush processor buffer at end of stream
         # This is crucial for buffered tool calls (e.g. GLM XML, Qwen XML)

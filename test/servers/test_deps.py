@@ -17,12 +17,10 @@ from serving.servers.deps import (
     AppServices,
     get_current_user,
     get_db_logger,
-    get_rate_limiter,
     get_router,
     get_services,
     require_role,
 )
-from serving.servers.rate_limiter import PersistentRateLimiter
 from serving.storage.database import DatabaseLogger
 
 
@@ -32,19 +30,16 @@ class TestAppServices:
     def test_app_services_creation(self):
         """Test creating AppServices with all fields."""
         router = RouteExecutor()
-        rate_limiter = MagicMock(spec=PersistentRateLimiter)
         db_logger = MagicMock(spec=DatabaseLogger)
         routing_manager = MagicMock()
 
         services = AppServices(
             router=router,
-            rate_limiter=rate_limiter,
             db_logger=db_logger,
             routing_manager=routing_manager,
         )
 
         assert services.router is router
-        assert services.rate_limiter is rate_limiter
         assert services.db_logger is db_logger
         assert services.routing_manager is routing_manager
 
@@ -55,7 +50,6 @@ class TestAppServices:
         services = AppServices(router=router)
 
         assert services.router is router
-        assert services.rate_limiter is None
         assert services.db_logger is None
         assert services.routing_manager is None
 
@@ -64,7 +58,6 @@ class TestAppServices:
         annotations = AppServices.__annotations__
 
         assert "router" in annotations
-        assert "rate_limiter" in annotations
         assert "db_logger" in annotations
         assert "routing_manager" in annotations
 
@@ -95,16 +88,6 @@ class TestDependencyFunctions:
 
         assert result is app_services.router
 
-    def test_get_rate_limiter(self, app_services):
-        """Test get_rate_limiter extracts rate limiter from services."""
-
-        def mock_get_services():
-            return app_services
-
-        result = get_rate_limiter(mock_get_services())
-
-        assert result is app_services.rate_limiter
-
     def test_get_db_logger(self, app_services):
         """Test get_db_logger extracts database logger from services."""
 
@@ -114,17 +97,6 @@ class TestDependencyFunctions:
         result = get_db_logger(mock_get_services())
 
         assert result is app_services.db_logger
-
-    def test_get_rate_limiter_when_none(self):
-        """Test get_rate_limiter returns None when not configured."""
-        services = AppServices(router=RouteExecutor())
-
-        def mock_get_services():
-            return services
-
-        result = get_rate_limiter(mock_get_services())
-
-        assert result is None
 
     def test_get_db_logger_when_none(self):
         """Test get_db_logger returns None when not configured."""
@@ -152,10 +124,6 @@ class TestDependencyIntegration:
         def test_router_endpoint(router: RouteExecutor = Depends(get_router)):
             return {"has_router": router is not None}
 
-        @app.get("/test-limiter")
-        def test_limiter_endpoint(limiter=Depends(get_rate_limiter)):
-            return {"has_limiter": limiter is not None}
-
         @app.get("/test-logger")
         def test_logger_endpoint(logger=Depends(get_db_logger)):
             return {"has_logger": logger is not None}
@@ -166,11 +134,6 @@ class TestDependencyIntegration:
         response = client.get("/test-router")
         assert response.status_code == 200
         assert response.json()["has_router"] is True
-
-        # Test rate limiter dependency
-        response = client.get("/test-limiter")
-        assert response.status_code == 200
-        assert response.json()["has_limiter"] is True
 
         # Test db logger dependency
         response = client.get("/test-logger")

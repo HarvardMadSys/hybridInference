@@ -17,7 +17,7 @@ from serving.observability.metrics import (
     normalize_model_label,
     normalize_provider_label,
 )
-from serving.servers.deps import get_db_logger
+from serving.servers.deps import get_db_logger, get_log_store, get_operational_store
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
@@ -79,11 +79,12 @@ async def verify_api_key(
     request: Request,
     authorization: str | None = Header(None),
     x_api_key: str | None = Header(None, alias="X-API-Key"),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> dict[str, Any]:
     """Verify API key and enforce quotas.
 
-    Returns user context dict with user_id, tier, etc.
+    Returns user context dict with user_id, role, etc.
     Raises HTTPException(401/429) on auth/quota failures.
     """
     # Check if auth is enabled
@@ -91,7 +92,6 @@ async def verify_api_key(
         # Auth disabled - allow all, mark as anonymous
         return {
             "user_id": "anonymous",
-            "tier": "free",
             "role": "admin",
             "authenticated": False,
             "is_admin": True,
@@ -116,8 +116,7 @@ async def verify_api_key(
         )
 
     # Validate key against database
-    if not db_logger or not db_logger.pool:
-        # Update metric to reflect database unavailability
+    if not op_store:
         DATABASE_CONNECTED.set(0)
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
@@ -129,29 +128,9 @@ async def verify_api_key(
     key_hash = hash_api_key(api_key)
 
     try:
-        import asyncpg
-
-        async with db_logger.pool.acquire() as conn:
-            user_row = await conn.fetchrow(
-                """
-                SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, k.tier,
-                       u.email, u.role, u.email_verified
-                FROM api_keys k
-                LEFT JOIN users u ON u.id = k.user_id
-                WHERE k.key_hash = $1
-                  AND k.status = 'active'
-                  AND (k.expires_at IS NULL OR k.expires_at > NOW())
-                  AND (u.id IS NULL OR u.status = 'active')
-                """,
-                key_hash,
-            )
-
-        # Database query succeeded - mark as healthy for faster recovery detection
+        user = await op_store.get_auth_context_by_key_hash(key_hash)
         DATABASE_CONNECTED.set(1)
-
-    except asyncpg.PostgresError:
-        # Database-specific error (connection failure, timeout, query error, etc.)
-        # Update metric and re-raise
+    except Exception:
         DATABASE_CONNECTED.set(0)
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
@@ -160,7 +139,7 @@ async def verify_api_key(
         ).inc()
         raise
 
-    if not user_row:
+    if not user:
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
             provider=normalize_provider_label("system"),
@@ -171,7 +150,6 @@ async def verify_api_key(
             detail="Invalid or expired API key",
         )
 
-    user = dict(user_row)
     require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
     if require_verification and user.get("email") and not user.get("email_verified"):
         API_MODEL_REQUESTS.labels(
@@ -184,24 +162,12 @@ async def verify_api_key(
             detail="Email not verified. Please verify your email to continue.",
         )
 
-    # Pre-check daily cost quota
-    # Get cost usage since UTC midnight today
-    async with db_logger.pool.acquire() as conn:
-        usage_row = await conn.fetchrow(
-            """
-            SELECT COALESCE(SUM(cost_usd), 0) AS cost_spent
-            FROM api_logs
-            WHERE user_id = $1
-              AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')
-            """,
-            user["user_id"],
-        )
-
-    cost_spent = float(usage_row["cost_spent"]) if usage_row else 0.0
+    # Pre-check daily cost quota via operational store counter table
+    cost_spent = 0.0
+    if op_store:
+        cost_spent = await op_store.get_user_cost_today(user["user_id"])
 
     # Estimate cost for this request
-    # Strategy: Conservative estimate ~$0.01 per request
-    # Actual cost will be calculated precisely during logging
     estimated_cost = 0.01
 
     # Get quota with fallback for NULL (old rows from migration)
@@ -240,22 +206,20 @@ async def verify_api_key(
         )
 
     # Update last_used timestamp (fire and forget)
-    async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1",
-            user["id"],
-        )
+    await op_store.update_key_last_used(user["id"])
 
     # Return user context
     user_role = user.get("role") or "free"
     return {
         "user_id": user["user_id"],
         "user_name": user["user_name"],
-        "tier": user["tier"],
         "role": user_role,
         "authenticated": True,
         "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,
         "is_admin": user_role == "admin",
+        # key_hash identifies the specific hyi-xxx key in use (a user may
+        # have multiple). Used as the affinity key for multi-key API rotation.
+        "auth_key_hash": key_hash,
     }
 
 
@@ -263,7 +227,7 @@ async def optional_verify_api_key(
     request: Request,
     authorization: str | None = Header(None),
     x_api_key: str | None = Header(None, alias="X-API-Key"),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> dict[str, Any] | None:
     """Lightweight identity lookup — no quota check, no last_used_at write.
 
@@ -286,33 +250,20 @@ async def optional_verify_api_key(
     if not api_key:
         return None  # No key supplied — anonymous
 
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         logger.warning("optional_verify_api_key: DB unavailable, cannot resolve identity")
         raise HTTPException(status_code=500, detail="Database not available for authentication")
 
     try:
         key_hash = hash_api_key(api_key)
     except ValueError as exc:
-        # API_KEY_SECRET not configured — server misconfiguration, not a client error
         logger.error("optional_verify_api_key: API_KEY_SECRET not set")
         raise HTTPException(
             status_code=500, detail="Server authentication misconfiguration"
         ) from exc
 
     try:
-        async with db_logger.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT k.user_id, u.email, u.role, u.email_verified
-                FROM api_keys k
-                LEFT JOIN users u ON u.id = k.user_id
-                WHERE k.key_hash = $1
-                  AND k.status = 'active'
-                  AND (k.expires_at IS NULL OR k.expires_at > NOW())
-                  AND (u.id IS NULL OR u.status = 'active')
-                """,
-                key_hash,
-            )
+        row = await op_store.get_auth_context_lightweight(key_hash)
     except Exception as exc:
         logger.exception("optional_verify_api_key: DB query failed")
         raise HTTPException(status_code=500, detail="Database error during authentication") from exc
@@ -330,6 +281,9 @@ async def optional_verify_api_key(
         "role": user_role,
         "authenticated": True,
         "is_admin": user_role == "admin",
+        # key_hash identifies the specific hyi-xxx key in use (a user may
+        # have multiple). Used as the affinity key for multi-key API rotation.
+        "auth_key_hash": key_hash,
     }
 
 
@@ -393,16 +347,35 @@ async def log_admin_action(
 ) -> None:
     """Log admin action to audit trail.
 
+    Accepts either an OperationalStore or a legacy DatabaseLogger. Callers
+    are migrating to pass the store directly; during transition both are
+    supported.
+
     Args:
-        db_logger: DatabaseLogger instance
+        db_logger: OperationalStore or DatabaseLogger instance
         admin_ip: IP address of admin performing the action
         action: Action type (e.g., 'create_key', 'revoke_key')
         target_user_id: User ID affected by the action (if applicable)
         details: Additional context (will be stored as JSONB)
         success: Whether the action succeeded
     """
-    if not db_logger or not db_logger.pool:
+    if not db_logger:
         return  # Silently skip if logging not configured
+
+    # Use store method if available (new path)
+    if hasattr(db_logger, "log_admin_action"):
+        await db_logger.log_admin_action(
+            admin_ip=admin_ip,
+            action=action,
+            target_user_id=target_user_id,
+            details=details,
+            success=success,
+        )
+        return
+
+    # Legacy path: raw pool access (will be removed after full migration)
+    if not getattr(db_logger, "pool", None):
+        return
 
     import json
 

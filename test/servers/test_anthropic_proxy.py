@@ -48,7 +48,7 @@ def _build_app(user_ctx: dict) -> FastAPI:
     router_exec.register_route("claude-sonnet-4.6", [(adapter, 1.0)], admin_only=True)
 
     app = FastAPI()
-    app.state.services = AppServices(router=router_exec, db_logger=None, rate_limiter=None)
+    app.state.services = AppServices(router=router_exec, db_logger=None)
     app.dependency_overrides[verify_api_key] = lambda: user_ctx
     app.include_router(anthropic_proxy.router)
     return app

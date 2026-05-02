@@ -1,7 +1,7 @@
 """Integration tests for /v1/chat/completions aligned with current server.
 
 Covers non-streaming and streaming flows, model-not-found, invalid payload,
-fallback behavior, and basic rate-limit rejection using injected services.
+and fallback behavior using injected services.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI, status
@@ -139,7 +140,7 @@ def _mk_cfg(model_id: str) -> ModelConfig:
 
 
 @pytest.fixture
-async def completions_app(monkeypatch, mock_rate_limiter, mock_db_logger) -> FastAPI:
+async def completions_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
     """Create a FastAPI app with completions/compat routers and injected services.
 
     Note: We set app.state.services directly to avoid relying on lifespan handling
@@ -155,7 +156,9 @@ async def completions_app(monkeypatch, mock_rate_limiter, mock_db_logger) -> Fas
     app = FastAPI(title="Test Completions App")
     # Inject services on state directly (no lifespan dependency in tests)
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
     )
 
     install_error_handlers(app)
@@ -226,14 +229,14 @@ async def test_invalid_request_returns_400(completions_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_fallback_on_primary_failure(completions_app: FastAPI, mock_rate_limiter):
+async def test_fallback_on_primary_failure(completions_app: FastAPI):
     # Rebuild router with failing primary and working fallback
     router = RouteExecutor()
     router.register_route(
         "gpt-4", [(FailingAdapter(_mk_cfg("gpt-4")), 0.9), (DummyAdapter(_mk_cfg("gpt-4")), 0.1)]
     )
 
-    services = AppServices(router=router, db_logger=None, rate_limiter=mock_rate_limiter)
+    services = AppServices(router=router, db_logger=None, log_store=None)
 
     app = FastAPI(title="Fallback App")
     app.state.services = services  # type: ignore[attr-defined]
@@ -254,40 +257,20 @@ async def test_fallback_on_primary_failure(completions_app: FastAPI, mock_rate_l
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_rejection(completions_app: FastAPI, mock_rate_limiter):
-    # Configure limiter to reject
-    async def reject(model_id: str, messages, max_tokens=None, priority=0, timeout=30.0):
-        return False, {"error": "Rate limit exceeded", "retry_after": 1, "queue_size": 0}
-
-    mock_rate_limiter.acquire_tokens.side_effect = reject  # type: ignore[attr-defined]
-
-    transport = ASGITransport(app=completions_app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/v1/chat/completions",
-            json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
-        )
-        assert resp.status_code == status.HTTP_429_TOO_MANY_REQUESTS
-        assert resp.headers.get("X-RateLimit-RetryAfter") == "1"
-        data = resp.json()
-        assert data["error"]["type"] == "rate_limit_exceeded"
-
-
-@pytest.mark.asyncio
-async def test_synthetic_probe_skips_rate_limit_and_db_logging(
-    monkeypatch, mock_rate_limiter, mock_db_logger
-):
-    """Synthetic probe traffic should not consume rate limits or DB logging."""
+async def test_synthetic_probe_skips_db_logging(monkeypatch, mock_db_logger):
+    """Synthetic probe traffic should not be logged to DB."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
     router.register_route("gpt-4", [(RoutingAwareAdapter(_mk_cfg("gpt-4")), 1.0)])
 
     app = FastAPI(title="Synthetic Probe Test")
+    mock_log_store = MagicMock()
+    mock_log_store.log_request = AsyncMock()
     app.state.services = AppServices(  # type: ignore[attr-defined]
         router=router,
         db_logger=mock_db_logger,
-        rate_limiter=mock_rate_limiter,
+        log_store=mock_log_store,
     )
     install_error_handlers(app)
     app.include_router(completions.router)
@@ -302,14 +285,11 @@ async def test_synthetic_probe_skips_rate_limit_and_db_logging(
 
     assert resp.status_code == status.HTTP_200_OK
     assert resp.headers.get("X-Provider") == "test"
-    mock_rate_limiter.acquire_tokens.assert_not_called()
-    mock_db_logger.log_request.assert_not_called()
+    mock_log_store.log_request.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_reasoning_content_filtered_in_streaming(
-    monkeypatch, mock_rate_limiter, mock_db_logger
-):
+async def test_reasoning_content_filtered_in_streaming(monkeypatch, mock_db_logger):
     """Default /v1/chat/completions behavior is strict OpenAI: no reasoning_content visible."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
@@ -318,7 +298,8 @@ async def test_reasoning_content_filtered_in_streaming(
 
     app = FastAPI(title="Test Strict Mode")
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+        router=router,
+        db_logger=mock_db_logger,
     )
     install_error_handlers(app)
     app.include_router(completions.router)
@@ -365,9 +346,7 @@ async def test_reasoning_content_filtered_in_streaming(
 
 
 @pytest.mark.asyncio
-async def test_reasoning_passthrough_header_preserves_reasoning(
-    monkeypatch, mock_rate_limiter, mock_db_logger
-):
+async def test_reasoning_passthrough_header_preserves_reasoning(monkeypatch, mock_db_logger):
     """X-Reasoning-Passthrough: true preserves reasoning_content for clients that can use it."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
@@ -376,7 +355,8 @@ async def test_reasoning_passthrough_header_preserves_reasoning(
 
     app = FastAPI(title="Test Reasoning Passthrough")
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+        router=router,
+        db_logger=mock_db_logger,
     )
     install_error_handlers(app)
     app.include_router(completions.router)
@@ -423,9 +403,7 @@ async def test_reasoning_passthrough_header_preserves_reasoning(
 
 
 @pytest.mark.asyncio
-async def test_non_stream_default_strict_strips_reasoning_content(
-    monkeypatch, mock_rate_limiter, mock_db_logger
-):
+async def test_non_stream_default_strict_strips_reasoning_content(monkeypatch, mock_db_logger):
     """Non-streaming path should also default to strict OpenAI serialization."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
@@ -434,7 +412,8 @@ async def test_non_stream_default_strict_strips_reasoning_content(
 
     app = FastAPI(title="Test Non-Stream Strict Mode")
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+        router=router,
+        db_logger=mock_db_logger,
     )
     install_error_handlers(app)
     app.include_router(completions.router)
@@ -455,7 +434,7 @@ async def test_non_stream_default_strict_strips_reasoning_content(
 
 @pytest.mark.asyncio
 async def test_non_stream_reasoning_passthrough_header_preserves_reasoning_content(
-    monkeypatch, mock_rate_limiter, mock_db_logger
+    monkeypatch, mock_db_logger
 ):
     """Non-streaming path should preserve reasoning_content when passthrough is requested."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
@@ -465,7 +444,8 @@ async def test_non_stream_reasoning_passthrough_header_preserves_reasoning_conte
 
     app = FastAPI(title="Test Non-Stream Passthrough Mode")
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+        router=router,
+        db_logger=mock_db_logger,
     )
     install_error_handlers(app)
     app.include_router(completions.router)
@@ -487,7 +467,7 @@ async def test_non_stream_reasoning_passthrough_header_preserves_reasoning_conte
 
 @pytest.mark.asyncio
 async def test_non_stream_reasoning_only_strict_returns_empty_visible_output(
-    monkeypatch, mock_rate_limiter, mock_db_logger
+    monkeypatch, mock_db_logger
 ):
     """Strict non-streaming mode should hide reasoning-only output and leave content empty."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
@@ -497,7 +477,8 @@ async def test_non_stream_reasoning_only_strict_returns_empty_visible_output(
 
     app = FastAPI(title="Test Non-Stream Reasoning Only Strict")
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+        router=router,
+        db_logger=mock_db_logger,
     )
     install_error_handlers(app)
     app.include_router(completions.router)
@@ -518,7 +499,7 @@ async def test_non_stream_reasoning_only_strict_returns_empty_visible_output(
 
 @pytest.mark.asyncio
 async def test_non_stream_reasoning_only_passthrough_preserves_reasoning(
-    monkeypatch, mock_rate_limiter, mock_db_logger
+    monkeypatch, mock_db_logger
 ):
     """Passthrough non-streaming mode should expose reasoning-only responses."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
@@ -528,7 +509,8 @@ async def test_non_stream_reasoning_only_passthrough_preserves_reasoning(
 
     app = FastAPI(title="Test Non-Stream Reasoning Only Passthrough")
     app.state.services = AppServices(  # type: ignore[attr-defined]
-        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+        router=router,
+        db_logger=mock_db_logger,
     )
     install_error_handlers(app)
     app.include_router(completions.router)
@@ -553,7 +535,7 @@ async def test_non_stream_reasoning_only_passthrough_preserves_reasoning(
 # ---------------------------------------------------------------------------
 
 
-def _build_admin_gate_app(user_ctx: dict, mock_rate_limiter, mock_db_logger) -> FastAPI:
+def _build_admin_gate_app(user_ctx: dict, mock_db_logger) -> FastAPI:
     """Build test app with an admin_only model and injected user_ctx."""
     router_exec = RouteExecutor()
     router_exec.register_route("public-model", [(DummyAdapter(_mk_cfg("public-model")), 1.0)])
@@ -563,7 +545,8 @@ def _build_admin_gate_app(user_ctx: dict, mock_rate_limiter, mock_db_logger) -> 
 
     app = FastAPI()
     app.state.services = AppServices(
-        router=router_exec, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+        router=router_exec,
+        db_logger=mock_db_logger,
     )
     install_error_handlers(app)
     app.dependency_overrides[verify_api_key] = lambda: user_ctx
@@ -572,11 +555,10 @@ def _build_admin_gate_app(user_ctx: dict, mock_rate_limiter, mock_db_logger) -> 
 
 
 @pytest.mark.asyncio
-async def test_admin_only_rejected_for_non_admin(mock_rate_limiter, mock_db_logger):
+async def test_admin_only_rejected_for_non_admin(mock_db_logger):
     """Non-admin user calling admin_only model gets 404."""
     app = _build_admin_gate_app(
         {"user_id": "user1", "authenticated": True, "is_admin": False},
-        mock_rate_limiter,
         mock_db_logger,
     )
     transport = ASGITransport(app=app)
@@ -589,11 +571,10 @@ async def test_admin_only_rejected_for_non_admin(mock_rate_limiter, mock_db_logg
 
 
 @pytest.mark.asyncio
-async def test_admin_only_allowed_for_admin(mock_rate_limiter, mock_db_logger):
+async def test_admin_only_allowed_for_admin(mock_db_logger):
     """Admin user calling admin_only model gets 200."""
     app = _build_admin_gate_app(
         {"user_id": "admin1", "authenticated": True, "is_admin": True, "role": "admin"},
-        mock_rate_limiter,
         mock_db_logger,
     )
     transport = ASGITransport(app=app)
@@ -763,9 +744,7 @@ class ErrorBeforeAnyTokenAdapter(BaseAdapter):
             yield ""
 
 
-def _build_ttft_app(
-    model_id: str, adapter: BaseAdapter, mock_rate_limiter, mock_db_logger, monkeypatch
-) -> FastAPI:
+def _build_ttft_app(model_id: str, adapter: BaseAdapter, mock_log_store, monkeypatch) -> FastAPI:
     """Build a minimal app for TTFT testing."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
@@ -774,14 +753,16 @@ def _build_ttft_app(
 
     app = FastAPI(title="TTFT Test")
     app.state.services = AppServices(
-        router=router, db_logger=mock_db_logger, rate_limiter=mock_rate_limiter
+        router=router,
+        db_logger=None,
+        log_store=mock_log_store,
     )
     install_error_handlers(app)
     app.include_router(completions.router)
     return app
 
 
-async def _get_db_log_ttft(mock_db_logger, timeout: float = 2.0) -> tuple[bool, int | None]:
+async def _get_db_log_ttft(mock_log_store, timeout: float = 2.0) -> tuple[bool, int | None]:
     """Wait for the background DB log task and return (logged, ttft_ms).
 
     Returns:
@@ -790,31 +771,30 @@ async def _get_db_log_ttft(mock_db_logger, timeout: float = 2.0) -> tuple[bool, 
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if mock_db_logger.log_request.call_count > 0:
-            kwargs = mock_db_logger.log_request.call_args.kwargs
+        if mock_log_store.log_request.call_count > 0:
+            kwargs = mock_log_store.log_request.call_args.kwargs
             return True, kwargs.get("ttft_ms")
         await asyncio.sleep(0.05)
     return False, None
 
 
-async def _wait_for_db_log_kwargs(mock_db_logger, timeout: float = 2.0) -> dict[str, Any] | None:
+async def _wait_for_db_log_kwargs(mock_log_store, timeout: float = 2.0) -> dict[str, Any] | None:
     """Wait for the background DB log task and return kwargs."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if mock_db_logger.log_request.call_count > 0:
-            return mock_db_logger.log_request.call_args.kwargs
+        if mock_log_store.log_request.call_count > 0:
+            return mock_log_store.log_request.call_args.kwargs
         await asyncio.sleep(0.05)
     return None
 
 
 @pytest.mark.asyncio
-async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limiter, mock_db_logger):
+async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_log_store):
     """Streaming request where first delta has only reasoning_content should record ttft_ms."""
     app = _build_ttft_app(
         "deepseek-r1",
         ReasoningOnlyAdapter(_mk_cfg("deepseek-r1")),
-        mock_rate_limiter,
-        mock_db_logger,
+        mock_log_store,
         monkeypatch,
     )
 
@@ -836,22 +816,19 @@ async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_rate_limite
         async for _ in resp.aiter_lines():
             pass
 
-    logged, ttft = await _get_db_log_ttft(mock_db_logger)
+    logged, ttft = await _get_db_log_ttft(mock_log_store)
     assert logged, "DB log_request should have been called"
     assert ttft is not None, "ttft_ms should be recorded when reasoning_content is in first delta"
     assert ttft >= 0
 
 
 @pytest.mark.asyncio
-async def test_keepalive_emitted_without_cancelling_upstream(
-    monkeypatch, mock_rate_limiter, mock_db_logger
-):
+async def test_keepalive_emitted_without_cancelling_upstream(monkeypatch, mock_log_store):
     """A long gap before the first chunk should emit keepalive comments and still deliver output."""
     app = _build_ttft_app(
         "slow-start",
         SlowStartAdapter(_mk_cfg("slow-start"), delay_s=0.05),
-        mock_rate_limiter,
-        mock_db_logger,
+        mock_log_store,
         monkeypatch,
     )
 
@@ -891,14 +868,13 @@ async def test_keepalive_emitted_without_cancelling_upstream(
 
 @pytest.mark.asyncio
 async def test_tool_calls_only_stream_is_not_classified_as_empty(
-    monkeypatch, mock_rate_limiter, mock_db_logger, caplog
+    monkeypatch, mock_log_store, caplog
 ):
     """Tool-calls-only streams are valid output and should not trigger empty-output warnings."""
     app = _build_ttft_app(
         "tool-only",
         ToolCallsOnlyAdapter(_mk_cfg("tool-only")),
-        mock_rate_limiter,
-        mock_db_logger,
+        mock_log_store,
         monkeypatch,
     )
 
@@ -932,7 +908,7 @@ async def test_tool_calls_only_stream_is_not_classified_as_empty(
         "no visible content or tool_calls" in record.getMessage() for record in caplog.records
     )
 
-    db_kwargs = await _wait_for_db_log_kwargs(mock_db_logger)
+    db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
     assert db_kwargs is not None, "expected background DB logging to run"
     response = db_kwargs["response"]
     assert response["choices"][0]["message"]["content"] is None
@@ -942,14 +918,13 @@ async def test_tool_calls_only_stream_is_not_classified_as_empty(
 
 @pytest.mark.asyncio
 async def test_true_empty_terminal_stream_logs_warning_and_db_empty_response(
-    monkeypatch, mock_rate_limiter, mock_db_logger, caplog
+    monkeypatch, mock_log_store, caplog
 ):
     """Streams that end without content or tool calls should be classified as true empty output."""
     app = _build_ttft_app(
         "empty-terminal",
         TrueEmptyTerminalAdapter(_mk_cfg("empty-terminal")),
-        mock_rate_limiter,
-        mock_db_logger,
+        mock_log_store,
         monkeypatch,
     )
 
@@ -979,7 +954,7 @@ async def test_true_empty_terminal_stream_logs_warning_and_db_empty_response(
         if line not in {"data: [DONE]", "data: {}"} and json.loads(line[6:]).get("choices")
     )
 
-    db_kwargs = await _wait_for_db_log_kwargs(mock_db_logger)
+    db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
     assert db_kwargs is not None, "expected background DB logging to run"
     response = db_kwargs["response"]
     assert response["choices"][0]["message"]["content"] is None
@@ -987,13 +962,12 @@ async def test_true_empty_terminal_stream_logs_warning_and_db_empty_response(
 
 
 @pytest.mark.asyncio
-async def test_ttft_preserved_in_error_path(monkeypatch, mock_rate_limiter, mock_db_logger):
+async def test_ttft_preserved_in_error_path(monkeypatch, mock_log_store):
     """If TTFT was recorded before stream error, error-path DB log should include it."""
     app = _build_ttft_app(
         "error-model",
         ErrorAfterFirstTokenAdapter(_mk_cfg("error-model")),
-        mock_rate_limiter,
-        mock_db_logger,
+        mock_log_store,
         monkeypatch,
     )
 
@@ -1014,22 +988,19 @@ async def test_ttft_preserved_in_error_path(monkeypatch, mock_rate_limiter, mock
         async for _ in resp.aiter_lines():
             pass
 
-    logged, ttft = await _get_db_log_ttft(mock_db_logger)
+    logged, ttft = await _get_db_log_ttft(mock_log_store)
     assert logged, "DB log_request should have been called on error path"
     assert ttft is not None, "ttft_ms should be preserved in error-path DB log"
     assert ttft >= 0
 
 
 @pytest.mark.asyncio
-async def test_ttft_null_when_error_before_any_token(
-    monkeypatch, mock_rate_limiter, mock_db_logger
-):
+async def test_ttft_null_when_error_before_any_token(monkeypatch, mock_log_store):
     """If error occurs before any meaningful delta, ttft_ms should be None in DB log."""
     app = _build_ttft_app(
         "fail-model",
         ErrorBeforeAnyTokenAdapter(_mk_cfg("fail-model")),
-        mock_rate_limiter,
-        mock_db_logger,
+        mock_log_store,
         monkeypatch,
     )
 
@@ -1049,7 +1020,7 @@ async def test_ttft_null_when_error_before_any_token(
         async for _ in resp.aiter_lines():
             pass
 
-    logged, ttft = await _get_db_log_ttft(mock_db_logger)
+    logged, ttft = await _get_db_log_ttft(mock_log_store)
     assert logged, "DB log_request should have been called on error path"
     assert ttft is None, "ttft_ms should be None when error occurs before any meaningful delta"
 
@@ -1060,7 +1031,7 @@ async def test_ttft_null_when_error_before_any_token(
 
 
 @pytest.fixture
-async def pin_app(monkeypatch, mock_rate_limiter, mock_db_logger) -> FastAPI:
+async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
     """App with multi-provider routes for pin testing."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")  # all callers are admin
 
@@ -1098,7 +1069,6 @@ async def pin_app(monkeypatch, mock_rate_limiter, mock_db_logger) -> FastAPI:
     app.state.services = AppServices(
         router=router,
         db_logger=mock_db_logger,
-        rate_limiter=mock_rate_limiter,
     )
     install_error_handlers(app)
     app.include_router(completions.router)
@@ -1174,17 +1144,3 @@ async def test_pin_stream_zero_weight_returns_400(pin_client: AsyncClient):
         headers={"X-Route-Pin": "featherless"},
     )
     assert resp.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_pin_miss_releases_rate_limiter(pin_app: FastAPI, pin_client: AsyncClient):
-    """Invalid pin must release acquired rate limiter tokens."""
-    limiter = pin_app.state.services.rate_limiter
-    limiter.release_tokens.reset_mock()
-
-    await pin_client.post(
-        "/v1/chat/completions",
-        json=_chat_body(),
-        headers={"X-Route-Pin": "nonexistent"},
-    )
-    limiter.release_tokens.assert_called_once()

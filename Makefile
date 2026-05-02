@@ -1,6 +1,5 @@
 .PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
-       docker-volumes sync-subscriptions up down restart ps logs build \
-       staging-up staging-down staging-restart staging-ps staging-logs staging-build
+       docker-volumes sync-subscriptions up down restart ps logs build
 
 # Default target
 .DEFAULT_GOAL := help
@@ -36,16 +35,31 @@ lint:  ## Run linters (ruff, pydocstyle)
 	$(UV_RUN) pydocstyle
 	@echo "$(GREEN)OK Linting passed$(RESET)"
 
-test:  ## Run unit/integration tests (exclude external)
-	@echo "$(YELLOW)Running tests (not external)...$(RESET)"
-	$(UV_RUN) pytest -q -m "not external"
+test:  ## Run unit/integration tests (exclude external and db-dependent)
+	@echo "$(YELLOW)Running tests (not external, not dbtest)...$(RESET)"
+	$(UV_RUN) pytest -q -m "not external and not dbtest"
 	@echo "$(GREEN)OK Tests passed$(RESET)"
 
-test-verbose: ## Run tests with verbose output (exclude external)
-	$(UV_RUN) pytest -vv -m "not external"
+test-verbose: ## Run tests with verbose output (exclude external and db-dependent)
+	$(UV_RUN) pytest -vv -m "not external and not dbtest"
 
-test-cov:  ## Run tests with coverage (exclude external)
-	$(UV_RUN) pytest -m "not external" --cov=. --cov-report=term-missing --cov-report=html
+test-cov:  ## Run tests with coverage (exclude external and db-dependent)
+	$(UV_RUN) pytest -m "not external and not dbtest" --cov=. --cov-report=term-missing --cov-report=html
+
+test-db:  ## Run tests that require PostgreSQL (set TEST_DB_* env vars)
+	@echo "$(YELLOW)Running database-dependent tests...$(RESET)"
+	$(UV_RUN) pytest -vv -m "dbtest"
+	@echo "$(GREEN)OK Database tests passed$(RESET)"
+
+test-d1:  ## Run live Cloudflare D1 integration tests (requires D1_ACCOUNT_ID, D1_DATABASE_ID, D1_API_TOKEN in .env)
+	@echo "$(YELLOW)Running D1 integration tests...$(RESET)"
+	$(UV_RUN) pytest -vv -m "d1"
+	@echo "$(GREEN)OK D1 tests passed$(RESET)"
+
+test-all:  ## Run all tests except external (includes db-dependent)
+	@echo "$(YELLOW)Running all tests (not external)...$(RESET)"
+	$(UV_RUN) pytest -q -m "not external"
+	@echo "$(GREEN)OK All tests passed$(RESET)"
 
 test-e2e: ## Run external/E2E tests (may require local server)
 	$(UV_RUN) pytest -m external -vv
@@ -119,7 +133,6 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 
 # ─── Docker / Production ─────────────────────────────────────────────────────
 COMPOSE := docker compose -f infrastructure/docker/docker-compose.yml --env-file .env
-STAGING_COMPOSE := docker compose -f infrastructure/docker/docker-compose.staging.yml --env-file .env
 DOCKER_VOLUMES := hybridinference_postgres_data \
                   hybridinference_alertmanager_data hybridinference_alert_log_data
 
@@ -178,37 +191,4 @@ ifdef s
 	$(COMPOSE) up -d --build $(s)
 else
 	$(COMPOSE) up -d --build
-endif
-
-# ─── Docker / Staging ────────────────────────────────────────────────────────
-staging-up:  ## Start the full staging stack
-	$(STAGING_COMPOSE) pull
-	$(STAGING_COMPOSE) build backend frontend
-	$(STAGING_COMPOSE) up -d
-
-staging-down:  ## Stop the full staging stack
-	$(STAGING_COMPOSE) down
-
-staging-restart:  ## Restart staging services (or: make staging-restart s=backend)
-ifdef s
-	$(STAGING_COMPOSE) restart $(s)
-else
-	$(STAGING_COMPOSE) restart
-endif
-
-staging-ps:  ## Show running staging services
-	$(STAGING_COMPOSE) ps
-
-staging-logs:  ## Tail staging logs (or: make staging-logs s=backend)
-ifdef s
-	$(STAGING_COMPOSE) logs -f $(s)
-else
-	$(STAGING_COMPOSE) logs -f --tail=500
-endif
-
-staging-build:  ## Rebuild staging images and restart (or: make staging-build s=backend)
-ifdef s
-	$(STAGING_COMPOSE) up -d --build $(s)
-else
-	$(STAGING_COMPOSE) up -d --build
 endif

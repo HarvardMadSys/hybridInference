@@ -19,7 +19,7 @@ from httpx import AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices
-from serving.servers.rate_limiter import PersistentRateLimiter
+from serving.storage.base import LogStore, OperationalStore
 from serving.storage.database import DatabaseLogger
 
 # ============================================================================
@@ -95,18 +95,25 @@ def auth_test_env():
     override any .env / inherited env regardless of load order.
     Original values are restored when the session ends.
     """
+    # Respect TEST_DB_* env vars from the process (e.g. command-line overrides),
+    # falling back to Docker-friendly defaults.
+    _db_host = os.environ.get("TEST_DB_HOST", "localhost")
+    _db_port = os.environ.get("TEST_DB_PORT", "5432")
+    _db_name = os.environ.get("TEST_DB_NAME", "freeinference_test_db")
+    _db_user = os.environ.get("TEST_DB_USER", "postgres")
+    _db_pass = os.environ.get("TEST_DB_PASSWORD", "postgres")
     _TEST_DB_VARS = {
-        "DB_HOST": "localhost",
-        "DB_PORT": "5432",
-        "DB_NAME": "freeinference_test_db",
-        "DB_USER": "postgres",
-        "DB_PASSWORD": "postgres",
+        "DB_HOST": _db_host,
+        "DB_PORT": _db_port,
+        "DB_NAME": _db_name,
+        "DB_USER": _db_user,
+        "DB_PASSWORD": _db_pass,
         # Mirror for fixtures that read TEST_DB_* directly
-        "TEST_DB_HOST": "localhost",
-        "TEST_DB_PORT": "5432",
-        "TEST_DB_NAME": "freeinference_test_db",
-        "TEST_DB_USER": "postgres",
-        "TEST_DB_PASSWORD": "postgres",
+        "TEST_DB_HOST": _db_host,
+        "TEST_DB_PORT": _db_port,
+        "TEST_DB_NAME": _db_name,
+        "TEST_DB_USER": _db_user,
+        "TEST_DB_PASSWORD": _db_pass,
     }
     _AUTH_VARS = {
         "JWT_SECRET_KEY": "test-secret-key-32-chars-long!!",
@@ -118,6 +125,8 @@ def auth_test_env():
         "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "10.00",
         # Disabled by default for backward compatibility with existing tests
         "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
+        # Turnstile disabled by default; per-test setenv to enable verification.
+        "TURNSTILE_SECRET_KEY": "",
         # Disable SMTP in tests to avoid sending real emails
         "SMTP_HOST": "",
         "SMTP_USER": "",
@@ -127,7 +136,6 @@ def auth_test_env():
         "DB_ENABLED": "true",
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
-        "RATE_LIMIT_ENABLED": "0",
         "METRICS_ENABLED": "0",
         "OFFLOAD": "0",
     }
@@ -149,6 +157,20 @@ def auth_test_env():
 
 
 # ============================================================================
+# Per-test signup rate-limit reset (prevents bleed across tests since
+# ASGITransport gives every request the same default client host).
+# ============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _reset_signup_rate_limit():
+    from serving.utils.signup_rate_limit import reset_signup_rate_limit_state
+
+    reset_signup_rate_limit_state()
+    yield
+
+
+# ============================================================================
 # Mock fixtures (for non-auth tests)
 # ============================================================================
 
@@ -158,15 +180,23 @@ def mock_env(monkeypatch):
     """Mock environment variables for testing."""
     test_env = {
         "DB_ENABLED": "false",  # Disable DB in tests by default
-        "RATE_LIMIT_ENABLED": "0",  # Disable rate limiting in tests
+        "DB_BACKEND": "postgres",  # Ensure tests default to postgres, not D1 from .env
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
         "LOCAL_BASE_URL": "http://localhost:8001",
         "OFFLOAD": "0",
     }
+    # Clear D1 env vars that may leak from .env
+    for d1_var in ("D1_ACCOUNT_ID", "D1_DATABASE_ID", "D1_API_TOKEN"):
+        monkeypatch.delenv(d1_var, raising=False)
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
-    return test_env
+    # Clear cached settings so bootstrap reads the test env
+    from serving.config.settings import get_settings
+
+    get_settings.cache_clear()
+    yield test_env
+    get_settings.cache_clear()
 
 
 @pytest.fixture
@@ -222,33 +252,50 @@ def mock_db_logger():
 
 
 @pytest.fixture
-def mock_rate_limiter():
-    """Create a mock rate limiter."""
-    limiter = MagicMock(spec=PersistentRateLimiter)
-    limiter.initialize = AsyncMock()
-    limiter._persist_state = AsyncMock()
-    limiter.acquire_tokens = AsyncMock(return_value=(True, {}))
-    limiter.release_tokens = AsyncMock()
-    limiter.get_status = MagicMock(
+def mock_operational_store():
+    """Create a mock operational store with all methods as AsyncMock."""
+    store = MagicMock(spec=OperationalStore)
+    for attr_name in dir(OperationalStore):
+        if not attr_name.startswith("_"):
+            method = getattr(OperationalStore, attr_name)
+            if callable(method):
+                setattr(store, attr_name, AsyncMock())
+    return store
+
+
+@pytest.fixture
+def mock_log_store():
+    """Create a mock log store with all methods as AsyncMock."""
+    store = MagicMock(spec=LogStore)
+    for attr_name in dir(LogStore):
+        if not attr_name.startswith("_"):
+            method = getattr(LogStore, attr_name)
+            if callable(method):
+                setattr(store, attr_name, AsyncMock())
+    # Sensible defaults
+    store.get_user_cost_today = AsyncMock(return_value=0.0)
+    store.get_user_cost_period = AsyncMock(return_value=0.0)
+    store.get_batch_usage = AsyncMock(return_value={})
+    store.get_user_usage_detail = AsyncMock(
         return_value={
-            "configured": True,
-            "capacity": 1000000,
-            "tokens_available": 1000000,
-            "window_seconds": 60,
+            "today": {"cost_usd": 0.0, "requests": 0},
+            "week": {"cost_usd": 0.0, "requests": 0},
+            "month": {"cost_usd": 0.0, "requests": 0},
+            "alltime": {"cost_usd": 0.0, "requests": 0},
         }
     )
-    limiter.get_metrics = MagicMock(return_value={})
-    limiter.reset_circuit_breaker = MagicMock()
-    return limiter
+    store.log_request = AsyncMock()
+    return store
 
 
 @pytest_asyncio.fixture
-async def app_services(mock_router, mock_db_logger, mock_rate_limiter):
+async def app_services(mock_router, mock_db_logger, mock_operational_store, mock_log_store):
     """Create AppServices instance for testing."""
     services = AppServices(
         router=mock_router,
         db_logger=mock_db_logger,
-        rate_limiter=mock_rate_limiter,
+        operational_store=mock_operational_store,
+        log_store=mock_log_store,
         routing_manager=None,
     )
     yield services
@@ -258,10 +305,6 @@ async def app_services(mock_router, mock_db_logger, mock_rate_limiter):
         with contextlib.suppress(Exception):
             # Suppress teardown errors to avoid masking test results
             await services.db_logger.cleanup()
-    if services.rate_limiter:
-        with contextlib.suppress(Exception):
-            # Suppress teardown errors to avoid masking test results
-            await services.rate_limiter._persist_state()
 
 
 @pytest_asyncio.fixture
@@ -388,33 +431,29 @@ async def auth_app_db_logger_fixture(auth_app):
 
 
 @pytest_asyncio.fixture
-async def require_db(auth_app_db_logger):
+async def require_db(auth_app):
     """Skip tests that require database if not available.
 
-    This fixture is mainly for local development where developers might not
-    have PostgreSQL running. In CI, the database is always available via
-    the postgres service container (see .github/workflows/ci.yml).
+    Returns the operational store from the app services, which works with
+    both PostgreSQL and D1 backends.
 
     Usage:
         async def test_user_creation(auth_client, require_db):
-            # This test will be skipped if database is not available locally
-            # In CI, it will always run since postgres service is configured
-            ...
+            # require_db is the operational store
+            await require_db.update_user_fields(user_id, email_verified=True)
     """
-    if (
-        auth_app_db_logger is None
-        or not hasattr(auth_app_db_logger, "pool")
-        or auth_app_db_logger.pool is None
-    ):
+    services = getattr(auth_app.state, "services", None)
+    op_store = getattr(services, "operational_store", None) if services else None
+    if op_store is None:
         pytest.skip("Database not available (start PostgreSQL or check DB config)")
-    return auth_app_db_logger
+    return op_store
 
 
 @pytest_asyncio.fixture(name="auth_client_test_user")
 async def auth_client_test_user_fixture(auth_client):
     """Create a test user for auth tests."""
     user_data = {
-        "email": f"test_{os.urandom(4).hex()}@example.com",
+        "email": f"test_{os.urandom(4).hex()}@signuptest.dev",
         "password": "TestPass123!",
         "user_name": "Test User",
     }

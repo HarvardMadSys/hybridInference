@@ -49,6 +49,10 @@ class ModelConfig:
     provider: str
     base_url: str
     api_key: str | None = None
+    # Optional list of API keys for multi-key rotation. When set, takes
+    # precedence over ``api_key`` and the adapter constructs a KeyPool.
+    # Only one of ``api_key`` / ``api_keys`` should be set per route.
+    api_keys: list[str] | None = None
     # Model type: "chat" for LLMs, "embedding" for embedding models.
     model_type: str = "chat"
     # Public aliases that should also route to this adapter configuration.
@@ -99,6 +103,11 @@ class ModelConfig:
     # RouteWise subscription classification for this route entry.
     # Valid values: "api" (pay-per-token), "quota" (daily quota), "concurrency".
     subscription_type: str = "api"
+    # Whether to send `stream_options: {"include_usage": True}` on streaming requests.
+    # Enable for OpenAI / vLLM / sglang upstreams that support it. Leave False for
+    # providers that strictly validate the request body and reject unknown fields
+    # (e.g. some Ollama/Chutes/Featherless deployments).
+    include_usage_in_stream: bool = False
 
 
 class BaseAdapter(ABC):

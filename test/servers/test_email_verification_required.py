@@ -2,14 +2,16 @@
 
 This test ensures that users with unverified emails cannot login,
 fixing the security vulnerability where unverified users could access the system.
+
+Supports both PostgreSQL and Cloudflare D1 backends.
+Run with: make test-db
 """
 
 import os
 
 import pytest
 
-# Mark all tests in this file as requiring database
-pytestmark = pytest.mark.asyncio
+pytestmark = pytest.mark.dbtest
 
 
 # New helper and fixture
@@ -23,20 +25,15 @@ def email_verification_flag(monkeypatch):
     return _setter
 
 
-async def set_email_verified(require_db, user_id: str, verified: bool) -> None:
-    """Set user's email_verified flag.
+async def set_email_verified(op_store, user_id: str, verified: bool) -> None:
+    """Set user's email_verified flag via the operational store.
 
     Args:
-      require_db: DB fixture ensuring pool availability.
+      op_store: Operational store (from require_db fixture).
       user_id: Target user ID.
       verified: Desired verification state.
     """
-    async with require_db.pool.acquire() as conn:  # type: ignore[attr-defined]
-        await conn.execute(
-            "UPDATE users SET email_verified = $1 WHERE id = $2",
-            verified,
-            user_id,
-        )
+    await op_store.update_user_fields(user_id, email_verified=verified)
 
 
 async def test_unverified_user_cannot_login(auth_client, require_db, email_verification_flag):
@@ -50,7 +47,7 @@ async def test_unverified_user_cannot_login(auth_client, require_db, email_verif
 
     # Sign up a new user
     signup_data = {
-        "email": f"unverified_{os.urandom(4).hex()}@example.com",
+        "email": f"unverified_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Unverified User",
     }
@@ -80,7 +77,7 @@ async def test_verified_user_can_login(auth_client, require_db, email_verificati
 
     # Sign up a new user
     signup_data = {
-        "email": f"verified_{os.urandom(4).hex()}@example.com",
+        "email": f"verified_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Verified User",
     }
@@ -116,7 +113,7 @@ async def test_unverified_user_cannot_refresh_token(
 
     # Sign up a new user
     signup_data = {
-        "email": f"unverified2_{os.urandom(4).hex()}@example.com",
+        "email": f"unverified2_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Unverified User 2",
     }
@@ -157,7 +154,7 @@ async def test_email_verification_can_be_disabled(auth_client, require_db, email
 
     # Sign up a new user
     signup_data = {
-        "email": f"noverify_{os.urandom(4).hex()}@example.com",
+        "email": f"noverify_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "No Verify User",
     }
@@ -183,7 +180,7 @@ async def test_unverified_user_cannot_access_protected_endpoint(
     email_verification_flag(True)
 
     signup_data = {
-        "email": f"protected_{os.urandom(4).hex()}@example.com",
+        "email": f"protected_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Protected User",
     }

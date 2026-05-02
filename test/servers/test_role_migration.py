@@ -4,6 +4,9 @@ This simulates a real upgrade path: a database that already has the old
 ``users_role_check`` constraint allowing ``('free','internal_group','developer','admin')``
 and rows with those old role values.  After ``_create_tables()`` runs, all rows
 must have been migrated to the new 3-role set and the new constraint must be in place.
+
+Requires a running PostgreSQL test database (see TEST_DB_* env vars).
+Run with: make test-db
 """
 
 import pytest
@@ -14,6 +17,8 @@ from serving.storage.database import DatabaseLogger
 from test.fixtures.auth_factories import create_test_user
 
 pytest_plugins = ["test.servers.conftest_auth"]
+
+pytestmark = pytest.mark.dbtest
 
 
 @pytest_asyncio.fixture
@@ -119,6 +124,29 @@ class TestRoleMigration:
                         f"reject-{bad_role}@test.example.com",
                         bad_role,
                     )
+
+    @pytest.mark.asyncio
+    async def test_role_check_accepts_pro(self, auth_db_logger: DatabaseLogger) -> None:
+        """Regression for Task 8 critical: DB CHECK constraint must accept pro role."""
+        pool = auth_db_logger.pool
+        if pool is None:
+            pytest.skip("Database not available")
+
+        user_id = str(ULID())
+        async with pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO users (id, email, password_hash, user_name, role, status)
+                    VALUES ($1, $2, 'x', 'pro test', 'pro', 'active')
+                    """,
+                    user_id,
+                    f"{user_id}@test.example",
+                )
+                row = await conn.fetchrow("SELECT role FROM users WHERE id = $1", user_id)
+                assert row["role"] == "pro"
+            finally:
+                await conn.execute("DELETE FROM users WHERE id = $1", user_id)
 
     @pytest.mark.asyncio
     async def test_migration_is_idempotent(self, migration_db: DatabaseLogger) -> None:

@@ -27,14 +27,13 @@ from serving.schemas import (
     ErrorResponse,
 )
 from serving.servers.auth import verify_api_key
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
-    get_db_logger,
-    get_fairness_scheduler,
+    get_log_store,
     get_model_router_registry,
-    get_rate_limiter,
+    get_operational_store,
     get_router,
 )
-from serving.servers.rate_limiter import TokenCounter
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
@@ -43,11 +42,11 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) -> None:
+def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
     """Schedule a background task to log request to database without blocking HTTP response.
 
     Args:
-        db_logger: Database logger instance
+        log_store: LogStore instance
         request_id: Request identifier for logging
         log_data: Dictionary containing all log request parameters
     """
@@ -55,7 +54,7 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
     async def log_to_db_background():
         """Background task to log request to database."""
         try:
-            await db_logger.log_request(**log_data)
+            await log_store.log_request(**log_data)
             logger.debug(f"Background DB logging completed for request {request_id}")
         except Exception as e:
             # Log error but don't fail the request - it's already sent to client
@@ -67,6 +66,32 @@ def _schedule_db_log_task(db_logger, request_id: str, log_data: dict[str, Any]) 
     # Fire-and-forget background task for non-blocking DB logging
     # We intentionally don't store the reference as we don't need to await it
     asyncio.create_task(log_to_db_background())  # noqa: RUF006
+
+
+def _schedule_cost_increment(
+    op_store: Any,
+    user_id: str,
+    usage: dict[str, int] | None,
+    pricing: dict[str, str] | None,
+) -> None:
+    """Increment the user's daily cost counter for billed requests.
+
+    Only called for successful responses where cost > 0. Runs as a
+    fire-and-forget background task to avoid blocking the response.
+    """
+    from serving.storage.utils import calculate_cost
+
+    cost = calculate_cost(usage, pricing)
+    if not cost or cost <= 0 or not op_store:
+        return
+
+    async def _increment():
+        try:
+            await op_store.increment_user_cost(user_id, cost)
+        except Exception as exc:
+            logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
+
+    asyncio.create_task(_increment())  # noqa: RUF006
 
 
 def _record_routing_observation(
@@ -111,7 +136,7 @@ def _record_routing_observation(
     responses={
         400: {"model": ErrorResponse, "description": "Bad Request"},
         404: {"model": ErrorResponse, "description": "Model Not Found"},
-        429: {"model": ErrorResponse, "description": "Rate Limit Exceeded"},
+        429: {"model": ErrorResponse, "description": "Too Many Requests"},
         500: {"model": ErrorResponse, "description": "Server Error"},
     },
 )
@@ -121,10 +146,10 @@ async def chat_completions(
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
-    rate_limiter=Depends(get_rate_limiter),
-    db_logger=Depends(get_db_logger),
-    fairness_scheduler=Depends(get_fairness_scheduler),
+    log_store=Depends(get_log_store),
+    op_store=Depends(get_operational_store),
     model_router_registry=Depends(get_model_router_registry),
+    _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
 
@@ -222,73 +247,14 @@ async def chat_completions(
     # Always record whether this request is streaming for DB analytics
     params["stream"] = bool(payload.stream)
 
-    # Stable user identifier used by the fairness scheduler
+    # Stable user identifier used by cost tracking
     user_id: str = user_ctx.get("user_id") or "anonymous"
 
-    # Capacity gate: fairness scheduler (VTC) sits before the rate limiter.
-    # When the fairness scheduler is active it owns ALL capacity acquisition
-    # (it calls try_consume_tokens internally).  The raw rate_limiter path is
-    # kept as a fallback for when fairness is disabled via FAIRNESS_ENABLED=0.
-    if not is_synthetic_probe:
-        if fairness_scheduler:
-            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-            logger.debug(
-                "Fairness acquire: model=%s user=%s tokens=%d",
-                model,
-                user_id,
-                estimated_tokens,
-            )
-            success, meta = await fairness_scheduler.acquire(
-                model_id=model,
-                user_id=user_id,
-                estimated_tokens=estimated_tokens,
-                timeout=30.0,
-            )
-        elif rate_limiter:
-            # Fallback: raw rate-limiter when fairness scheduler is not configured
-            priority = 1 if user_ctx.get("authenticated") else 0
-            success, meta = await rate_limiter.acquire_tokens(
-                model_id=model,
-                messages=messages,
-                max_tokens=params.get("max_tokens"),
-                priority=priority,
-                timeout=30.0,
-            )
-        else:
-            success, meta = True, {}
+    # Affinity key for multi-key API rotation — pinned to the specific
+    # hyi-xxx key in use (not user_id, since a user may have multiple keys).
+    from serving.utils import context as req_ctx
 
-        if not success:
-            error_detail: dict[str, Any] = {
-                "error": {
-                    "type": "rate_limit_exceeded",
-                    "message": meta.get("error", "Rate limit exceeded"),
-                    "model": model,
-                    "retry_after": meta.get("retry_after", 60),
-                }
-            }
-            if "tokens_requested" in meta:
-                error_detail["error"]["tokens_requested"] = meta["tokens_requested"]
-            if "queue_size" in meta:
-                error_detail["error"]["queue_size"] = meta["queue_size"]
-
-            headers: dict[str, str] = {
-                "X-RateLimit-RetryAfter": str(meta.get("retry_after", 60)),
-                "X-RateLimit-Model": model,
-            }
-            if rate_limiter:
-                status = rate_limiter.get_status(model)
-                if status.get("configured"):
-                    headers.update(
-                        {
-                            "X-RateLimit-Limit": str(status.get("capacity")),
-                            "X-RateLimit-Remaining": str(int(status.get("tokens_available", 0))),
-                            "X-RateLimit-Window": str(int(status.get("window_seconds", 0))),
-                        }
-                    )
-
-            # Record 429 rate limit error
-            record_model_request("429", "router")
-            raise HTTPException(status_code=429, detail=error_detail, headers=headers)
+    req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
 
     # Generate request ID and metadata
     request_id = f"req_{int(time.time() * 1000000)}"
@@ -383,9 +349,6 @@ async def chat_completions(
             and weight > 0
             for adapter, weight in route.adapters
         ):
-            if rate_limiter and not is_synthetic_probe:
-                estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-                await rate_limiter.release_tokens(model, estimated_tokens)
             record_model_request("400", "router")
             raise HTTPException(
                 status_code=400,
@@ -669,9 +632,9 @@ async def chat_completions(
                     logger.debug(f"Using provider from context for DB logging: {provider}")
 
                 # Prepare data for background database logging (don't await here!)
-                if db_logger and not is_synthetic_probe:
+                if log_store and not is_synthetic_probe:
                     _schedule_db_log_task(
-                        db_logger,
+                        log_store,
                         request_id,
                         {
                             "request_id": request_id,
@@ -715,15 +678,13 @@ async def chat_completions(
                         },
                     )
 
-                # Notify fairness scheduler of actual token cost (streaming success)
-                if fairness_scheduler and not is_synthetic_probe:
-                    _actual_usage = (normalize_usage(usage_data) if usage_data else {}) or {}
-                    await fairness_scheduler.on_request_finish(
-                        model_id=model,
-                        user_id=user_id,
-                        actual_input_tokens=int(_actual_usage.get("prompt_tokens") or 0),
-                        actual_output_tokens=int(_actual_usage.get("completion_tokens") or 0),
+                # Increment daily cost counter for billed requests
+                if not is_synthetic_probe and routing_info:
+                    _usage = response_for_db.get("usage") if response_for_db else usage_data
+                    _s_pricing = routing_info.get("pricing") or get_pricing_for_provider(
+                        provider, routing_info.get("base_url")
                     )
+                    _schedule_cost_increment(op_store, user_id, _usage, _s_pricing)
 
                 # Record routing observation for online learning (RouteWise)
                 if not is_synthetic_probe:
@@ -761,9 +722,9 @@ async def chat_completions(
                 ctx = req_ctx.get()
                 provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-                if db_logger and not is_synthetic_probe:
+                if log_store and not is_synthetic_probe:
                     _schedule_db_log_task(
-                        db_logger,
+                        log_store,
                         request_id,
                         {
                             "request_id": request_id,
@@ -780,21 +741,6 @@ async def chat_completions(
                             "ttft_ms": ttft_ms,
                             "pricing": None,  # Error case - no pricing available
                         },
-                    )
-
-                if rate_limiter and not is_synthetic_probe:
-                    estimated_tokens = TokenCounter.estimate_tokens(
-                        messages, params.get("max_tokens")
-                    )
-                    await rate_limiter.release_tokens(model, estimated_tokens)
-
-                # Notify fairness scheduler even on error so counters stay consistent
-                if fairness_scheduler and not is_synthetic_probe:
-                    await fairness_scheduler.on_request_finish(
-                        model_id=model,
-                        user_id=user_id,
-                        actual_input_tokens=0,
-                        actual_output_tokens=0,
                     )
 
                 error_chunk = {"error": {"message": str(exc), "type": "server_error", "code": 500}}
@@ -854,13 +800,13 @@ async def chat_completions(
                     f"Using provider from context for non-streaming DB logging: {provider}"
                 )
 
-        # Move db_logger.log_request() out of the stream_generator
+        # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
-        if db_logger and not is_synthetic_probe:
+        if log_store and not is_synthetic_probe:
             # Prefer embedded pricing (e.g. adapter-internal fallback)
             pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
             _schedule_db_log_task(
-                db_logger,
+                log_store,
                 request_id,
                 {
                     "request_id": request_id,
@@ -897,6 +843,14 @@ async def chat_completions(
                     "pricing": pricing,
                 },
             )
+
+        # Increment daily cost counter for billed requests (non-streaming)
+        if not is_synthetic_probe:
+            _ns_usage = (
+                normalize_usage(response.get("usage")) if isinstance(response, dict) else None
+            )
+            _ns_pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
+            _schedule_cost_increment(op_store, user_id, _ns_usage, _ns_pricing)
 
         # Emit token counters when usage is available, with anomaly checks
         # Normalize usage to extract reasoning_tokens from nested locations
@@ -960,27 +914,6 @@ async def chat_completions(
                         direction="reasoning",
                     ).inc(reasoning_tokens)
 
-        if rate_limiter and not is_synthetic_probe:
-            actual_tokens = response.get("usage", {}).get("total_tokens")
-            if actual_tokens:
-                estimated = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-                if abs(actual_tokens - estimated) > estimated * 0.2:
-                    logger.warning(
-                        f"Token estimation variance for {model}: estimated {estimated}, actual {actual_tokens}"
-                    )
-
-        # Notify fairness scheduler of actual token cost (non-streaming success)
-        if fairness_scheduler and not is_synthetic_probe:
-            _usage = (
-                normalize_usage(response.get("usage", {})) if isinstance(response, dict) else {}
-            ) or {}
-            await fairness_scheduler.on_request_finish(
-                model_id=model,
-                user_id=user_id,
-                actual_input_tokens=int(_usage.get("prompt_tokens") or 0),
-                actual_output_tokens=int(_usage.get("completion_tokens") or 0),
-            )
-
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
             ns_usage = normalize_usage(raw_usage) or {}
@@ -1002,16 +935,6 @@ async def chat_completions(
         return response
 
     except ProviderPinError as exc:
-        if rate_limiter and not is_synthetic_probe:
-            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-            await rate_limiter.release_tokens(model, estimated_tokens)
-        if fairness_scheduler and not is_synthetic_probe:
-            await fairness_scheduler.on_request_finish(
-                model_id=model,
-                user_id=user_id,
-                actual_input_tokens=0,
-                actual_output_tokens=0,
-            )
         record_model_request("400", "router")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1058,7 +981,7 @@ async def chat_completions(
         if exc_status_code is None:
             exc_status_code = 500
 
-        # Move db_logger.log_request() out of the stream_generator
+        # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
         # Try to get actual provider from context even in error case
         from serving.utils import context as req_ctx
@@ -1066,9 +989,9 @@ async def chat_completions(
         ctx = req_ctx.get()
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-        if db_logger and not is_synthetic_probe:
+        if log_store and not is_synthetic_probe:
             _schedule_db_log_task(
-                db_logger,
+                log_store,
                 request_id,
                 {
                     "request_id": request_id,
@@ -1085,18 +1008,6 @@ async def chat_completions(
                     "pricing": None,  # Error case - no pricing available
                 },
             )
-        if rate_limiter and not is_synthetic_probe:
-            estimated_tokens = TokenCounter.estimate_tokens(messages, params.get("max_tokens"))
-            await rate_limiter.release_tokens(model, estimated_tokens)
-
-        if fairness_scheduler and not is_synthetic_probe:
-            await fairness_scheduler.on_request_finish(
-                model_id=model,
-                user_id=user_id,
-                actual_input_tokens=0,
-                actual_output_tokens=0,
-            )
-
         # Record error status code
         record_model_request(str(exc_status_code), provider_for_error)
 

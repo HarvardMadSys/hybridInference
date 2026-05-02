@@ -87,7 +87,7 @@ export default function DashboardPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-gray-600">Plan:</span>
-              <span className="font-medium capitalize">{state.user?.tier}</span>
+              <span className="font-medium capitalize">{state.user?.role}</span>
             </div>
           </div>
         </div>

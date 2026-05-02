@@ -13,6 +13,8 @@ from fastapi import Request
 
 from serving.servers.auth import hash_api_key, verify_api_key
 from serving.storage.database import DatabaseLogger, calculate_cost
+from serving.storage.postgres_log import PostgresLogStore
+from serving.storage.postgres_operational import PostgresOperationalStore
 
 if TYPE_CHECKING:
     import asyncpg
@@ -130,15 +132,14 @@ async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger, m
         await conn.execute(
             """
             INSERT INTO api_keys (
-                key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd, tier
-            ) VALUES ($1, $2, $3, $4, $5, $6)
+                key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd
+            ) VALUES ($1, $2, $3, $4, $5)
             """,
             key_hash,
             key_prefix,
             user_id,
             "Integration User",
             Decimal("1000.00"),
-            "enterprise",
         )
 
     pricing = {"prompt": "0.15", "completion": "1.25"}
@@ -157,11 +158,22 @@ async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger, m
         pricing=pricing,
     )
 
+    # Build store abstractions from the pool
+    op_store = PostgresOperationalStore(db_logger.pool)
+    await op_store.initialize()
+    log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False, use_chunked_hash=True)
+
+    # Increment the daily cost counter (verify_api_key reads from user_daily_cost,
+    # not api_logs)
+    cost = calculate_cost(usage, pricing) or 0.0
+    await op_store.increment_user_cost(user_id, cost)
+
     mock_request = MagicMock(spec=Request)
     result = await verify_api_key(
         request=mock_request,
         authorization=f"Bearer {plaintext_key}",
-        db_logger=db_logger,
+        op_store=op_store,
+        log_store=log_store,
     )
 
     assert result["user_id"] == user_id

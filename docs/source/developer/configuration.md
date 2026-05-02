@@ -27,36 +27,57 @@ Example:
 ```yaml
 # config/models.yaml
 models:
-    provider: test
+  - id: my-local-model
+    name: My Local Model
+    provider: ollama
+    provider_model_id: "my-local-model"
+    context_length: 65536
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: ollama
+        weight: 1.0
+        base_url: "http://localhost:11434/v1"
+        provider_model_id: "my-local-model"
+
+  - id: my-remote-model
+    name: My Remote Model
+    provider: openai_compat
+    provider_model_id: "actual-model-id"
     context_length: 131072
     max_output_length: 8192
     supports_tools: true
     supports_structured_output: true
-    supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
+    supported_params: [temperature, top_p, max_tokens, stop]
+    pricing:
+      prompt: "1.0"
+      completion: "3.0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
     route:
-      - kind: test
+      - kind: openai_compat
         weight: 1.0
-
-    provider: vllm
-    base_url: ${LOCAL_BASE_URL}
-    provider_model_id: "/models/meta-llama_Llama-4-Scout-17B-16E"  # backend expects this id
-    context_length: 262144
-    max_output_length: 16384
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
-    aliases: ["/models/meta-llama_Llama-4-Scout-17B-16E"]
-    route:
-      - kind: vllm
-        weight: 1.0
-        base_url: ${LOCAL_BASE_URL}
+        base_url: ${PROVIDER_BASE_URL}
+        api_key: ${PROVIDER_API_KEY}
+        provider_model_id: "actual-model-id"
 ```
 
 ### Key Points:
 - `id`: Public model ID exposed by the API (what clients use to call the model)
 - `provider_model_id`: The actual model name sent to the backend provider (e.g., vLLM/freeinference's `/models/...`). If omitted, uses `id`
 - `aliases`: Additional public aliases that are registered alongside `id` to point to the same adapter
-- `provider`: Determines adapter type (`test`, `vllm`, `deepseek`, `gemini`, etc.)
+- `provider`: Determines adapter type. Supported kinds: `openai_compat`, `vllm`, `sglang`, `ollama`, `deepseek`, `openai`, `zhipu`, `chutes`, `featherless`, `gemini`, `claude`, `claude_sub`, `codex_sub`. See [adding-models.md](adding-models.md) for the full reference table.
 - `/v1/models` endpoint dynamically generates its response from registered adapters
 
 ## 3. routing.yaml (Optional)
@@ -215,7 +236,7 @@ Claude subscription models can also be reached through `POST /anthropic/v1/messa
 Important behavior:
 - the request `model` must resolve to a registered model whose provider is `claude_sub`
 - the same shared Claude account pool is used as `/v1/chat/completions`
-- rate limiting and DB logging still apply
+- DB logging still applies
 
 Example client environment:
 

@@ -198,6 +198,7 @@ var/data/**
 data/db/*.db
 data/db/*.sqlite
 data/logs/*.log
+server.log
 
 # OpenRouter specific
 openrouter_logs.db
@@ -339,3 +340,4 @@ storybook-static/
 
 llm-prober-state.json
 server.log
+.worktrees/

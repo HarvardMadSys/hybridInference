@@ -1,13 +1,18 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useId, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import {
+  AdminMetricDistribution,
+  AdminPerformanceMetricsWindow,
   AdminUser,
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
   AuditLogEntry,
+  BroadcastDetailResponse,
+  BroadcastListItem,
+  ProviderQuotaResult,
   StatusCounts,
   UserDetail,
   UserSortBy,
@@ -21,8 +26,18 @@ import {
   listAuditLog,
   listRecentRequests,
   getRequestMetrics,
+  previewBroadcast,
+  sendTestBroadcastEmail,
+  createBroadcast,
+  listBroadcasts,
+  getBroadcastDetail,
+  cancelBroadcast,
+  exportRequests,
+  getPerformanceMetrics,
+  getProviderQuotas,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { AnalyticsTab } from './AnalyticsTab';
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -133,6 +148,198 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
   );
 }
 
+function formatTokens(n: number): string {
+  return Math.round(n).toLocaleString();
+}
+
+function formatBucketEdge(value: number, kind: 'tokens' | 'ms'): string {
+  if (kind === 'tokens') {
+    if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`;
+    return value.toLocaleString();
+  }
+  if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}s`;
+  return `${value}ms`;
+}
+
+function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
+  const rows: Array<{
+    title: string;
+    dist: AdminMetricDistribution;
+    kind: 'tokens' | 'ms';
+  }> = [
+    { title: 'Prompt tokens', dist: metric.prompt_tokens, kind: 'tokens' },
+    { title: 'Response tokens', dist: metric.completion_tokens, kind: 'tokens' },
+    { title: 'TTFT', dist: metric.ttft_ms, kind: 'ms' },
+    { title: 'TBT', dist: metric.tbt_ms, kind: 'ms' },
+  ];
+  const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms'): string => {
+    if (v == null) return '—';
+    return kind === 'ms' ? formatLatency(v) : formatTokens(v);
+  };
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div className="text-[12px] font-semibold text-gray-900">{metric.label}</div>
+        <div className="text-[10px] text-gray-400">{metric.window_minutes}m window</div>
+      </div>
+      <table className="mt-2 w-full">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wider text-gray-400 font-medium">
+            <th className="py-1 text-left">Metric</th>
+            <th className="py-1 text-right">n</th>
+            <th className="py-1 text-right">p50</th>
+            <th className="py-1 text-right">p95</th>
+            <th className="py-1 text-right">p99</th>
+            <th className="py-1 text-right">Dist</th>
+          </tr>
+        </thead>
+        <tbody className="[&>tr+tr>td]:border-t [&>tr+tr>td]:border-gray-100">
+          {rows.map((row) => {
+            const maxBucket = Math.max(...row.dist.histogram.map((b) => b.count), 1);
+            return (
+              <tr key={row.title}>
+                <td className="py-1.5 text-[11px] text-gray-600">{row.title}</td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {row.dist.count.toLocaleString()}
+                </td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {formatValue(row.dist.p50, row.kind)}
+                </td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {formatValue(row.dist.p95, row.kind)}
+                </td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {formatValue(row.dist.p99, row.kind)}
+                </td>
+                <td className="py-1.5 text-right">
+                  {(() => {
+                    const peakIdx = row.dist.histogram.reduce(
+                      (best, b, i, arr) => (b.count > arr[best].count ? i : best),
+                      0,
+                    );
+                    const peak = row.dist.histogram[peakIdx];
+                    const peakLower = peak ? formatBucketEdge(peak.lower_bound, row.kind) : '';
+                    const peakUpper =
+                      peak == null
+                        ? ''
+                        : peak.upper_bound == null
+                          ? '∞'
+                          : formatBucketEdge(peak.upper_bound, row.kind);
+                    const srSummary =
+                      peak && peak.count > 0
+                        ? `Distribution peak [${peakLower}, ${peakUpper}) with ${peak.count.toLocaleString()} samples across ${row.dist.histogram.length} buckets`
+                        : 'Distribution: no samples';
+                    return (
+                      <>
+                        <span className="sr-only">{srSummary}</span>
+                        <div aria-hidden="true" className="ml-auto flex h-5 w-20 items-end gap-px">
+                          {row.dist.histogram.map((b, idx) => {
+                            const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
+                            const upperLabel =
+                              b.upper_bound == null
+                                ? '∞'
+                                : formatBucketEdge(b.upper_bound, row.kind);
+                            const lowerLabel = formatBucketEdge(b.lower_bound, row.kind);
+                            return (
+                              <div
+                                key={`${idx}-${b.lower_bound}`}
+                                className={`min-w-0 flex-1 rounded-t-[1px] ${
+                                  b.count === 0 ? 'bg-gray-200' : 'bg-gray-700'
+                                }`}
+                                style={{ height: `${height}%` }}
+                                title={`[${lowerLabel}, ${upperLabel}): ${b.count.toLocaleString()}`}
+                              />
+                            );
+                          })}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function pct(used: number | null, limit: number | null): number | null {
+  if (used == null || limit == null || limit <= 0) return null;
+  return Math.min(100, (used / limit) * 100);
+}
+
+function formatNum(v: number | null): string {
+  if (v == null) return '—';
+  if (Math.abs(v) < 0.01 && v !== 0) return v.toFixed(4);
+  if (Math.abs(v) < 1 && v !== 0) return v.toFixed(1);
+  if (Number.isInteger(v)) return v.toLocaleString();
+  return v.toFixed(2);
+}
+
+function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
+  const stripeColor = provider.ok
+    ? 'bg-emerald-500'
+    : provider.error === 'not_configured'
+      ? 'bg-gray-300'
+      : 'bg-red-400';
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className={`h-1 ${stripeColor}`} />
+      <div className="p-4">
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="text-[15px] font-semibold text-gray-900">{provider.display_name}</h3>
+          <span
+            className={`tabular-nums text-[11px] ${provider.key_configured ? 'text-gray-500' : 'text-gray-400'}`}
+          >
+            {provider.key_masked ?? 'Not configured'}
+          </span>
+        </div>
+
+        {provider.ok ? (
+          provider.usages.length === 0 ? (
+            <p className="mt-3 text-[12px] text-gray-400">No usage data returned.</p>
+          ) : (
+            <div className="mt-3 space-y-3">
+              {provider.usages.map((u, i) => {
+                const p = pct(u.used, u.limit);
+                return (
+                  <div key={i}>
+                    <div className="flex items-baseline justify-between text-[12px]">
+                      <span className="text-gray-600">{u.label}</span>
+                      <span className="tabular-nums text-gray-700">
+                        {formatNum(u.used)}
+                        {u.limit != null && ` / ${formatNum(u.limit)}`} {u.unit}
+                        {p != null && <span className="ml-1 text-gray-400">({p.toFixed(0)}%)</span>}
+                      </span>
+                    </div>
+                    {p != null && (
+                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
+                        <div
+                          className={`h-full ${
+                            p >= 90 ? 'bg-red-400' : p >= 70 ? 'bg-amber-400' : 'bg-gray-900'
+                          }`}
+                          style={{ width: `${p}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )
+        ) : (
+          <p className="mt-3 text-[12px] text-gray-400">
+            Quota unavailable — <span className="text-gray-500">{provider.error}</span>
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const AUDIT_ACTIONS = [
   'create_user',
   'approve_user',
@@ -147,17 +354,99 @@ const AUDIT_ACTIONS = [
   'update_key',
 ];
 
+function actionLabel(action: string): string {
+  if (!action) return action;
+  const s = action.replace(/_/g, ' ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+type AuditCategory = 'create' | 'approve' | 'reject' | 'update' | 'delete' | 'other';
+
+function actionCategory(action: string): AuditCategory {
+  if (action === 'regenerate_key') return 'create';
+  if (
+    action.startsWith('hard_delete') ||
+    action.startsWith('revoke_') ||
+    action.endsWith('_revoke')
+  )
+    return 'delete';
+  if (action.startsWith('approve_') || action.endsWith('_approve')) return 'approve';
+  if (action.startsWith('reject_') || action.endsWith('_reject') || action.endsWith('_cancel'))
+    return 'reject';
+  if (action.startsWith('create_') || action.endsWith('_create')) return 'create';
+  if (action.startsWith('update_') || action.endsWith('_update')) return 'update';
+  if (action.startsWith('delete_') || action.endsWith('_delete')) return 'delete';
+  return 'other';
+}
+
+const AUDIT_CATEGORY_CLASS: Record<AuditCategory, string> = {
+  create: 'bg-emerald-50 text-emerald-700',
+  approve: 'bg-violet-50 text-violet-700',
+  reject: 'bg-amber-50 text-amber-700',
+  update: 'bg-sky-50 text-sky-700',
+  delete: 'bg-rose-50 text-rose-700',
+  other: 'bg-gray-100 text-gray-700',
+};
+
+function formatRelative(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${Math.max(s, 0)}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatAuditDetailValue(v: unknown): { display: string; full: string } {
+  if (v === null || v === undefined) return { display: '—', full: '—' };
+  if (typeof v === 'string') {
+    const full = v;
+    const display = v.length > 80 ? `${v.slice(0, 80)}…` : v;
+    return { display, full };
+  }
+  if (typeof v === 'number' || typeof v === 'boolean') {
+    const s = String(v);
+    return { display: s, full: s };
+  }
+  const full = JSON.stringify(v);
+  const display = full.length > 80 ? `${full.slice(0, 80)}…` : full;
+  return { display, full };
+}
+
 export default function AdminPage() {
   const { state } = useAuth();
 
   // Top-level tab
-  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'requests'>('users');
+  const [activeTab, setActiveTab] = useState<
+    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'performance'
+  >('users');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
-    if (tab === 'users' || tab === 'audit' || tab === 'requests') {
-      setActiveTab(tab);
+    if (
+      tab === 'users' ||
+      tab === 'audit' ||
+      tab === 'requests' ||
+      tab === 'broadcast' ||
+      tab === 'providers' ||
+      tab === 'analytics' ||
+      tab === 'performance'
+    ) {
+      setActiveTab(
+        tab as
+          | 'users'
+          | 'audit'
+          | 'requests'
+          | 'broadcast'
+          | 'providers'
+          | 'analytics'
+          | 'performance',
+      );
     }
   }, []);
 
@@ -188,16 +477,40 @@ export default function AdminPage() {
   const [detail, setDetail] = useState<UserDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editRole, setEditRole] = useState('');
-  const [editTier, setEditTier] = useState('');
   const [editQuota, setEditQuota] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Broadcast email state
+  const [broadcasts, setBroadcasts] = useState<BroadcastListItem[]>([]);
+  const [broadcastLoading, setBroadcastLoading] = useState(false);
+  const [broadcastDetail, setBroadcastDetail] = useState<BroadcastDetailResponse | null>(null);
+  const [broadcastDetailLoading, setBroadcastDetailLoading] = useState(false);
+  const [bcTemplateKey, setBcTemplateKey] = useState<string>('custom');
+  const [bcTemplateVars, setBcTemplateVars] = useState<Record<string, string>>({});
+  const [bcSubject, setBcSubject] = useState('');
+  const [bcBodyHtml, setBcBodyHtml] = useState('');
+  const [bcScheduleMode, setBcScheduleMode] = useState<'now' | 'later'>('now');
+  const [bcScheduledAt, setBcScheduledAt] = useState('');
+  const [bcPreview, setBcPreview] = useState<{
+    recipient_count: number;
+    rendered_subject: string;
+    rendered_body_html: string;
+  } | null>(null);
+  const [bcPreviewLoading, setBcPreviewLoading] = useState(false);
+  const [bcSending, setBcSending] = useState(false);
+  const [bcConfirm, setBcConfirm] = useState(false);
+  const [bcTestLoading, setBcTestLoading] = useState(false);
+  const [bcTargetRoles, setBcTargetRoles] = useState<string[]>(['free', 'internal', 'admin']);
+  const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
 
   // Audit log state
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditFilter, setAuditFilter] = useState('');
+  const [auditUserFilter, setAuditUserFilter] = useState('');
   const [auditOffset, setAuditOffset] = useState(0);
+  const auditReqIdRef = useRef(0);
   const AUDIT_PAGE_SIZE = 50;
 
   // Requests state
@@ -212,8 +525,19 @@ export default function AdminPage() {
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
+  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
+  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
   const reqJumpInputId = useId();
   const REQ_PAGE_SIZE = 50;
+  const [showExportPanel, setShowExportPanel] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [exportIncludeContent, setExportIncludeContent] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+
+  // Providers state
+  const [providerQuotas, setProviderQuotas] = useState<ProviderQuotaResult[]>([]);
+  const [providerQuotasLoading, setProviderQuotasLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -236,23 +560,26 @@ export default function AdminPage() {
   }, [filter, searchTerm, sortBy]);
 
   const loadAudit = useCallback(async () => {
+    const reqId = ++auditReqIdRef.current;
     setAuditLoading(true);
     setError(null);
     try {
       const d = await listAuditLog(
         auditFilter || undefined,
-        undefined,
+        auditUserFilter || undefined,
         AUDIT_PAGE_SIZE,
         auditOffset,
       );
+      if (auditReqIdRef.current !== reqId) return;
       setAuditEntries(d.entries);
       setAuditTotal(d.total);
     } catch (e) {
+      if (auditReqIdRef.current !== reqId) return;
       setError(getErrorMessage(e));
     } finally {
-      setAuditLoading(false);
+      if (auditReqIdRef.current === reqId) setAuditLoading(false);
     }
-  }, [auditFilter, auditOffset]);
+  }, [auditFilter, auditUserFilter, auditOffset]);
 
   const loadRequests = useCallback(async () => {
     setReqLoading(true);
@@ -287,6 +614,32 @@ export default function AdminPage() {
     }
   }, []);
 
+  const loadPerformanceMetrics = useCallback(async () => {
+    setPerfMetricsLoading(true);
+    setError(null);
+    try {
+      const d = await getPerformanceMetrics();
+      setPerfMetrics(d.windows);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setPerfMetricsLoading(false);
+    }
+  }, []);
+
+  const loadProviderQuotas = useCallback(async () => {
+    setProviderQuotasLoading(true);
+    setError(null);
+    try {
+      const d = await getProviderQuotas();
+      setProviderQuotas(d.providers);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setProviderQuotasLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'users') load();
   }, [load, activeTab]);
@@ -303,10 +656,34 @@ export default function AdminPage() {
   }, [loadRequests, loadRequestMetrics, activeTab]);
 
   useEffect(() => {
+    if (activeTab === 'performance') loadPerformanceMetrics();
+  }, [loadPerformanceMetrics, activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'providers') loadProviderQuotas();
+  }, [loadProviderQuotas, activeTab]);
+
+  useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(t);
   }, [toast]);
+
+  const loadBroadcasts = useCallback(async () => {
+    setBroadcastLoading(true);
+    try {
+      const res = await listBroadcasts(50, 0);
+      setBroadcasts(res.broadcasts);
+    } catch {
+      // non-fatal
+    } finally {
+      setBroadcastLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'broadcast') loadBroadcasts();
+  }, [loadBroadcasts, activeTab]);
 
   const toggleDetail = async (uid: string) => {
     if (expandedId === uid) {
@@ -321,7 +698,6 @@ export default function AdminPage() {
       const d = await getUserDetail(uid);
       setDetail(d);
       setEditRole(d.role || 'free');
-      setEditTier(d.key_tier || 'free');
       setEditQuota(d.quota_daily_usd?.toString() || '100');
     } catch (e) {
       setError(getErrorMessage(e));
@@ -404,7 +780,6 @@ export default function AdminPage() {
     act(async () => {
       const u: Record<string, unknown> = {};
       if (editRole !== (detail.role || 'free')) u.role = editRole;
-      if (editTier !== (detail.key_tier || 'free')) u.tier = editTier;
       if (editQuota !== (detail.quota_daily_usd?.toString() || '100'))
         u.quota_daily_cost_usd = Number(editQuota);
       if (!Object.keys(u).length) return;
@@ -444,7 +819,9 @@ export default function AdminPage() {
     { key: 'deleted', label: 'Deleted', count: counts.deleted },
   ];
 
-  const onTabChange = (tab: 'users' | 'audit' | 'requests') => {
+  const onTabChange = (
+    tab: 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'performance',
+  ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
     params.set('tab', tab);
@@ -459,6 +836,21 @@ export default function AdminPage() {
     }
     if (activeTab === 'audit') {
       loadAudit();
+      return;
+    }
+    if (activeTab === 'broadcast') {
+      loadBroadcasts();
+      return;
+    }
+    if (activeTab === 'providers') {
+      loadProviderQuotas();
+      return;
+    }
+    if (activeTab === 'performance') {
+      loadPerformanceMetrics();
+      return;
+    }
+    if (activeTab === 'analytics') {
       return;
     }
     loadRequests();
@@ -491,10 +883,24 @@ export default function AdminPage() {
           </a>
           <button
             onClick={refreshActiveTab}
-            disabled={loading || auditLoading || reqLoading || reqMetricsLoading}
+            disabled={
+              loading ||
+              auditLoading ||
+              reqLoading ||
+              reqMetricsLoading ||
+              perfMetricsLoading ||
+              providerQuotasLoading
+            }
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
           >
-            {loading || auditLoading || reqLoading || reqMetricsLoading ? 'Loading...' : 'Refresh'}
+            {loading ||
+            auditLoading ||
+            reqLoading ||
+            reqMetricsLoading ||
+            perfMetricsLoading ||
+            providerQuotasLoading
+              ? 'Loading...'
+              : 'Refresh'}
           </button>
         </div>
 
@@ -506,7 +912,17 @@ export default function AdminPage() {
 
         {/* Top-level tab toggle */}
         <div className="mt-6 flex items-center gap-1">
-          {(['users', 'requests', 'audit'] as const).map((tab) => (
+          {(
+            [
+              'users',
+              'requests',
+              'providers',
+              'audit',
+              'broadcast',
+              'analytics',
+              'performance',
+            ] as const
+          ).map((tab) => (
             <button
               key={tab}
               onClick={() => onTabChange(tab)}
@@ -516,7 +932,19 @@ export default function AdminPage() {
                   : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
               }`}
             >
-              {tab === 'users' ? 'Users' : tab === 'requests' ? 'Recent Requests' : 'Audit Log'}
+              {tab === 'users'
+                ? 'Users'
+                : tab === 'requests'
+                  ? 'Recent Requests'
+                  : tab === 'providers'
+                    ? 'Providers'
+                    : tab === 'audit'
+                      ? 'Audit Log'
+                      : tab === 'broadcast'
+                        ? 'Broadcast Email'
+                        : tab === 'analytics'
+                          ? 'Analytics'
+                          : 'Performance'}
             </button>
           ))}
         </div>
@@ -691,11 +1119,6 @@ export default function AdminPage() {
                               {u.has_key && (
                                 <span className="font-mono text-gray-400">{u.key_prefix}</span>
                               )}
-                              {u.has_key && u.key_tier && u.key_tier !== 'free' && (
-                                <span className="font-semibold uppercase text-[10px] text-blue-600">
-                                  {u.key_tier}
-                                </span>
-                              )}
                               {(() => {
                                 const isCostSort =
                                   sortBy === 'cost_today' ||
@@ -867,26 +1290,13 @@ export default function AdminPage() {
                                         className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
                                       >
                                         <option value="free">free</option>
+                                        <option value="pro">pro</option>
                                         <option value="internal">internal</option>
                                         <option value="admin">admin</option>
                                       </select>
                                     </div>
                                     {detail.has_key && (
                                       <>
-                                        <div>
-                                          <div className="text-[11px] font-medium text-gray-500 mb-1">
-                                            Tier
-                                          </div>
-                                          <select
-                                            value={editTier}
-                                            onChange={(e) => setEditTier(e.target.value)}
-                                            className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
-                                          >
-                                            <option value="free">free</option>
-                                            <option value="pro">pro</option>
-                                            <option value="enterprise">enterprise</option>
-                                          </select>
-                                        </div>
                                         <div>
                                           <div className="text-[11px] font-medium text-gray-500 mb-1">
                                             Daily quota
@@ -977,7 +1387,7 @@ export default function AdminPage() {
         {activeTab === 'audit' && (
           <div className="mt-6">
             {/* Action filter */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <select
                 value={auditFilter}
                 onChange={(e) => {
@@ -989,10 +1399,20 @@ export default function AdminPage() {
                 <option value="">All actions</option>
                 {AUDIT_ACTIONS.map((a) => (
                   <option key={a} value={a}>
-                    {a}
+                    {actionLabel(a)}
                   </option>
                 ))}
               </select>
+              <input
+                type="text"
+                value={auditUserFilter}
+                onChange={(e) => {
+                  setAuditUserFilter(e.target.value);
+                  setAuditOffset(0);
+                }}
+                placeholder="Filter by user ID…"
+                className="min-w-[180px] rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+              />
               <span className="text-[12px] text-gray-400 tabular-nums">{auditTotal} entries</span>
             </div>
 
@@ -1008,37 +1428,98 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div>
-                  {auditEntries.map((entry, i) => (
-                    <div
-                      key={entry.id}
-                      className={`py-3 ${i > 0 ? 'border-t border-gray-100' : ''}`}
-                      style={{ paddingLeft: 4, paddingRight: 4 }}
-                    >
-                      <div className="flex items-center gap-3">
-                        <span
-                          className={`inline-block rounded px-2 py-0.5 text-[11px] font-bold ${
-                            entry.success ? 'bg-gray-100 text-gray-700' : 'bg-red-50 text-red-600'
-                          }`}
-                        >
-                          {entry.action}
-                        </span>
-                        {entry.target_user_id && (
-                          <span className="font-mono text-[12px] text-gray-400">
-                            {entry.target_user_id}
+                  {auditEntries.map((entry, i) => {
+                    const cat = actionCategory(entry.action);
+                    const badgeClass = entry.success
+                      ? AUDIT_CATEGORY_CLASS[cat]
+                      : 'bg-red-50 text-red-700';
+                    const rowClass = [
+                      'py-3',
+                      i > 0 ? 'border-t border-gray-100' : '',
+                      !entry.success ? 'border-l-2 border-rose-300 pl-3' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
+                    const absoluteTs = new Date(entry.timestamp).toLocaleString();
+                    const tid = entry.target_user_id;
+                    const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
+                    const detailEntries =
+                      entry.details && typeof entry.details === 'object'
+                        ? Object.entries(entry.details)
+                        : [];
+                    return (
+                      <div
+                        key={entry.id}
+                        className={rowClass}
+                        style={
+                          entry.success ? { paddingLeft: 4, paddingRight: 4 } : { paddingRight: 4 }
+                        }
+                      >
+                        <div className="flex items-center gap-3">
+                          {!entry.success && (
+                            <span className="inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">
+                              FAILED
+                            </span>
+                          )}
+                          <span
+                            className={`inline-block rounded px-2 py-0.5 text-[11px] font-bold ${badgeClass}`}
+                          >
+                            {actionLabel(entry.action)}
                           </span>
+                          {tid && (
+                            <button
+                              onClick={() => {
+                                setAuditUserFilter(tid);
+                                setAuditOffset(0);
+                              }}
+                              title={tid}
+                              aria-label={`Filter by user ${tid}`}
+                              className="font-mono text-[12px] text-gray-500 hover:text-gray-900 hover:underline"
+                            >
+                              <span aria-hidden="true">{tidDisplay}</span>
+                              <span className="sr-only">{tid}</span>
+                            </button>
+                          )}
+                          <time
+                            dateTime={entry.timestamp}
+                            title={absoluteTs}
+                            aria-label={absoluteTs}
+                            className="ml-auto text-[12px] text-gray-400"
+                          >
+                            {formatRelative(entry.timestamp)}
+                          </time>
+                        </div>
+                        {detailEntries.length > 0 && (
+                          <>
+                            <div className="flex flex-wrap gap-1.5 mt-1.5">
+                              {detailEntries.map(([k, v]) => {
+                                const { display, full } = formatAuditDetailValue(v);
+                                return (
+                                  <span
+                                    key={k}
+                                    title={full}
+                                    className="inline-flex items-center gap-1 rounded bg-gray-50 border border-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700"
+                                  >
+                                    <span className="text-gray-400">{k}:</span>
+                                    <span>{display}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                            <details>
+                              <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 mt-1">
+                                Raw JSON
+                              </summary>
+                              <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
+                                {JSON.stringify(entry.details, null, 2)}
+                              </pre>
+                            </details>
+                          </>
                         )}
-                        <span className="ml-auto text-[12px] text-gray-400">
-                          {new Date(entry.timestamp).toLocaleString()}
-                        </span>
+                        <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
                       </div>
-                      {entry.details && Object.keys(entry.details).length > 0 && (
-                        <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
-                          {JSON.stringify(entry.details, null, 2)}
-                        </pre>
-                      )}
-                      <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -1068,6 +1549,27 @@ export default function AdminPage() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ========== Providers Tab ========== */}
+        {activeTab === 'providers' && (
+          <div className="mt-6">
+            {providerQuotasLoading ? (
+              <div className="flex justify-center py-24">
+                <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+              </div>
+            ) : providerQuotas.length === 0 ? (
+              <div className="py-24 text-center">
+                <p className="text-[13px] text-gray-400">No provider data.</p>
+              </div>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {providerQuotas.map((p) => (
+                  <ProviderCard key={p.name} provider={p} />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -1135,7 +1637,96 @@ export default function AdminPage() {
                 Errors only
               </label>
               <span className="text-[12px] text-gray-400 tabular-nums">{reqTotal} entries</span>
+              <button
+                type="button"
+                onClick={() => setShowExportPanel((v) => !v)}
+                className="ml-auto rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50"
+              >
+                Export JSONL
+              </button>
             </div>
+
+            {showExportPanel && (
+              <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[12px] text-gray-500">Start date</span>
+                    <input
+                      type="date"
+                      value={exportStartDate}
+                      onChange={(e) => setExportStartDate(e.target.value)}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[12px] text-gray-500">End date</span>
+                    <input
+                      type="date"
+                      value={exportEndDate}
+                      onChange={(e) => setExportEndDate(e.target.value)}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1.5 pb-2 text-[13px] text-gray-600 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={exportIncludeContent}
+                      onChange={(e) => setExportIncludeContent(e.target.checked)}
+                      className="rounded border-gray-300"
+                    />
+                    Include prompt &amp; response
+                  </label>
+                  <div className="ml-auto flex items-center gap-2 pb-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowExportPanel(false);
+                        setExportStartDate('');
+                        setExportEndDate(new Date().toISOString().slice(0, 10));
+                        setExportIncludeContent(false);
+                      }}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        !exportStartDate ||
+                        exportLoading ||
+                        (!!exportEndDate && exportEndDate < exportStartDate)
+                      }
+                      onClick={async () => {
+                        if (!exportStartDate) return;
+                        setExportLoading(true);
+                        try {
+                          await exportRequests({
+                            startTime: new Date(`${exportStartDate}T00:00:00Z`).toISOString(),
+                            endTime: exportEndDate
+                              ? new Date(`${exportEndDate}T23:59:59Z`).toISOString()
+                              : undefined,
+                            userId: reqUserFilter || undefined,
+                            modelId: reqModelFilter || undefined,
+                            errorsOnly: reqErrorsOnly || undefined,
+                            includeContent: exportIncludeContent || undefined,
+                          });
+                          setShowExportPanel(false);
+                        } catch (err) {
+                          setToast(
+                            `Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+                          );
+                        } finally {
+                          setExportLoading(false);
+                        }
+                      }}
+                      className="rounded-lg bg-gray-900 px-3 py-2 text-[13px] text-white hover:bg-gray-700 disabled:opacity-50"
+                    >
+                      {exportLoading ? 'Exporting…' : 'Export'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Table */}
             <div className="mt-4">
@@ -1185,6 +1776,11 @@ export default function AdminPage() {
                           req.status_code >= 200 &&
                           req.status_code < 400;
                         const isExpanded = reqExpandedId === req.request_id;
+                        const hasCacheTokens =
+                          req.cache_read_tokens != null || req.cache_write_tokens != null;
+                        const cachedTokens = hasCacheTokens
+                          ? (req.cache_read_tokens ?? 0) + (req.cache_write_tokens ?? 0)
+                          : null;
                         return (
                           <Fragment key={req.request_id}>
                             <tr
@@ -1319,6 +1915,12 @@ export default function AdminPage() {
                                       </span>
                                     </div>
                                     <div>
+                                      <span className="text-gray-500">Cached:</span>{' '}
+                                      <span className="text-gray-700">
+                                        {cachedTokens != null ? cachedTokens.toLocaleString() : '—'}
+                                      </span>
+                                    </div>
+                                    <div>
                                       <span className="text-gray-500">Stream:</span>{' '}
                                       <span className="text-gray-700">
                                         {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
@@ -1417,6 +2019,550 @@ export default function AdminPage() {
               )}
             </div>
           </div>
+        )}
+        {activeTab === 'analytics' && <AnalyticsTab />}
+
+        {activeTab === 'performance' && (
+          <div className="mt-5">
+            <div className="mb-2 flex items-center justify-between">
+              <div>
+                <h2 className="text-[14px] font-semibold text-gray-900">Performance metrics</h2>
+                <p className="text-[11px] text-gray-400">
+                  Prompt/response length, time-to-first-token, and inter-token latency
+                  distributions.
+                </p>
+              </div>
+              {perfMetricsLoading && (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+              )}
+            </div>
+            {perfMetrics.length > 0 ? (
+              <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
+                {perfMetrics.map((metric) => (
+                  <PerformanceMetricsCard key={metric.key} metric={metric} />
+                ))}
+              </div>
+            ) : !perfMetricsLoading ? (
+              <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+                <p className="text-[13px] text-gray-400">No performance metrics available.</p>
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {/* ========== Broadcast Email Tab ========== */}
+        {activeTab === 'broadcast' && (
+          <>
+            <div className="mt-8 space-y-6">
+              {/* Composer */}
+              <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                <h2 className="text-[15px] font-semibold text-gray-900 mb-4">Compose Broadcast</h2>
+
+                {/* Template selector */}
+                <div className="mb-4">
+                  <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                    Template
+                  </label>
+                  <select
+                    value={bcTemplateKey}
+                    onChange={(e) => {
+                      setBcTemplateKey(e.target.value);
+                      setBcTemplateVars({});
+                      setBcSubject('');
+                      setBcBodyHtml('');
+                      setBcPreview(null);
+                    }}
+                    className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                  >
+                    <option value="custom">Custom</option>
+                    <option value="maintenance">Maintenance Notice</option>
+                    <option value="announcement">Announcement</option>
+                    <option value="quota_change">Quota Change</option>
+                  </select>
+                </div>
+
+                {/* Template variable fields */}
+                {bcTemplateKey === 'maintenance' && (
+                  <div className="mb-4 grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Date
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="e.g. May 1, 2026"
+                        value={bcTemplateVars['date'] ?? ''}
+                        onChange={(e) => setBcTemplateVars((v) => ({ ...v, date: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Duration
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="e.g. 2 hours"
+                        value={bcTemplateVars['duration'] ?? ''}
+                        onChange={(e) =>
+                          setBcTemplateVars((v) => ({ ...v, duration: e.target.value }))
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+                {bcTemplateKey === 'announcement' && (
+                  <div className="mb-4 space-y-3">
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Feature Name
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="e.g. GPT-5 Support"
+                        value={bcTemplateVars['feature_name'] ?? ''}
+                        onChange={(e) =>
+                          setBcTemplateVars((v) => ({ ...v, feature_name: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Description
+                      </label>
+                      <textarea
+                        rows={3}
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="Describe the new feature..."
+                        value={bcTemplateVars['description'] ?? ''}
+                        onChange={(e) =>
+                          setBcTemplateVars((v) => ({ ...v, description: e.target.value }))
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+                {bcTemplateKey === 'quota_change' && (
+                  <div className="mb-4">
+                    <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                      New Quota
+                    </label>
+                    <input
+                      className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                      placeholder="e.g. $50/day"
+                      value={bcTemplateVars['new_quota'] ?? ''}
+                      onChange={(e) =>
+                        setBcTemplateVars((v) => ({ ...v, new_quota: e.target.value }))
+                      }
+                    />
+                  </div>
+                )}
+                {bcTemplateKey === 'custom' && (
+                  <div className="mb-4 space-y-3">
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Subject
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="Email subject"
+                        value={bcSubject}
+                        onChange={(e) => setBcSubject(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                        Body (HTML)
+                      </label>
+                      <textarea
+                        rows={6}
+                        className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-mono focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        placeholder="<p>Your message here...</p>"
+                        value={bcBodyHtml}
+                        onChange={(e) => setBcBodyHtml(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Recipient filters */}
+                <div className="mb-4 grid grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-[12px] font-medium text-gray-600 mb-2">
+                      Roles
+                    </label>
+                    {['free', 'internal', 'admin'].map((role) => (
+                      <label
+                        key={role}
+                        className="flex items-center gap-2 text-[13px] text-gray-700 mb-1"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={bcTargetRoles.includes(role)}
+                          onChange={(e) =>
+                            setBcTargetRoles((prev) =>
+                              e.target.checked ? [...prev, role] : prev.filter((r) => r !== role),
+                            )
+                          }
+                        />
+                        {role}
+                      </label>
+                    ))}
+                  </div>
+                  <div>
+                    <label className="block text-[12px] font-medium text-gray-600 mb-2">
+                      Statuses
+                    </label>
+                    {['active', 'suspended', 'pending_approval', 'rejected'].map((status) => (
+                      <label
+                        key={status}
+                        className="flex items-center gap-2 text-[13px] text-gray-700 mb-1"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={bcTargetStatuses.includes(status)}
+                          onChange={(e) =>
+                            setBcTargetStatuses((prev) =>
+                              e.target.checked
+                                ? [...prev, status]
+                                : prev.filter((s) => s !== status),
+                            )
+                          }
+                        />
+                        {status.replace('_', ' ')}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Schedule toggle */}
+                <div className="mb-4">
+                  <label className="block text-[12px] font-medium text-gray-600 mb-2">
+                    Send Timing
+                  </label>
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-[13px] text-gray-700">
+                      <input
+                        type="radio"
+                        checked={bcScheduleMode === 'now'}
+                        onChange={() => setBcScheduleMode('now')}
+                      />
+                      Send now
+                    </label>
+                    <label className="flex items-center gap-2 text-[13px] text-gray-700">
+                      <input
+                        type="radio"
+                        checked={bcScheduleMode === 'later'}
+                        onChange={() => setBcScheduleMode('later')}
+                      />
+                      Schedule for later
+                    </label>
+                  </div>
+                  {bcScheduleMode === 'later' && (
+                    <input
+                      type="datetime-local"
+                      className="mt-2 rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+                      value={bcScheduledAt}
+                      onChange={(e) => setBcScheduledAt(e.target.value)}
+                    />
+                  )}
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    disabled={bcPreviewLoading}
+                    onClick={async () => {
+                      setBcPreviewLoading(true);
+                      try {
+                        const res = await previewBroadcast({
+                          template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+                          template_vars: bcTemplateVars,
+                          subject: bcSubject,
+                          body_html: bcBodyHtml,
+                          body_text: '',
+                          target_roles: bcTargetRoles,
+                          target_statuses: bcTargetStatuses,
+                        });
+                        setBcPreview(res);
+                      } catch (err) {
+                        setToast(getErrorMessage(err));
+                      } finally {
+                        setBcPreviewLoading(false);
+                      }
+                    }}
+                    className="rounded-md border border-gray-300 px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    {bcPreviewLoading ? 'Loading…' : 'Preview & Count'}
+                  </button>
+
+                  <button
+                    disabled={bcTestLoading}
+                    onClick={async () => {
+                      setBcTestLoading(true);
+                      try {
+                        await sendTestBroadcastEmail({
+                          template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+                          template_vars: bcTemplateVars,
+                          subject: bcSubject,
+                          body_html: bcBodyHtml,
+                          body_text: '',
+                          target_roles: bcTargetRoles,
+                          target_statuses: bcTargetStatuses,
+                        });
+                        setToast('Test email sent to your address');
+                      } catch (err) {
+                        setToast(getErrorMessage(err));
+                      } finally {
+                        setBcTestLoading(false);
+                      }
+                    }}
+                    className="rounded-md border border-gray-300 px-4 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    {bcTestLoading ? 'Sending…' : 'Send Test to Me'}
+                  </button>
+
+                  <button
+                    onClick={() => setBcConfirm(true)}
+                    disabled={bcSending}
+                    className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+                  >
+                    {bcScheduleMode === 'later' ? 'Schedule' : 'Send Now'}
+                  </button>
+                </div>
+
+                {/* Preview panel */}
+                {bcPreview && (
+                  <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-4">
+                    <div className="text-[13px] font-medium text-blue-800 mb-1">
+                      {bcPreview.recipient_count} recipient
+                      {bcPreview.recipient_count !== 1 ? 's' : ''} match your filters
+                    </div>
+                    <div className="text-[12px] text-blue-700">
+                      Subject: {bcPreview.rendered_subject}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Confirmation modal */}
+              {bcConfirm && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                  <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
+                    <h3 className="text-[15px] font-semibold text-gray-900 mb-2">
+                      Confirm Broadcast
+                    </h3>
+                    <p className="text-[13px] text-gray-600 mb-1">
+                      {bcPreview
+                        ? `This will send to ${bcPreview.recipient_count} recipient(s).`
+                        : 'Send broadcast email?'}
+                    </p>
+                    {bcScheduleMode === 'later' && bcScheduledAt && (
+                      <p className="text-[12px] text-gray-500 mb-4">
+                        Scheduled for: {new Date(bcScheduledAt).toLocaleString()}
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-3 mt-4">
+                      <button
+                        onClick={() => setBcConfirm(false)}
+                        className="rounded-md border border-gray-200 px-4 py-2 text-[13px] text-gray-700 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        disabled={bcSending}
+                        onClick={async () => {
+                          setBcSending(true);
+                          setBcConfirm(false);
+                          try {
+                            await createBroadcast({
+                              template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
+                              template_vars: bcTemplateVars,
+                              subject: bcSubject,
+                              body_html: bcBodyHtml,
+                              body_text: '',
+                              target_roles: bcTargetRoles,
+                              target_statuses: bcTargetStatuses,
+                              scheduled_at:
+                                bcScheduleMode === 'later' && bcScheduledAt
+                                  ? new Date(bcScheduledAt).toISOString()
+                                  : null,
+                            });
+                            setToast(
+                              bcScheduleMode === 'later'
+                                ? 'Broadcast scheduled'
+                                : 'Broadcast queued',
+                            );
+                            await loadBroadcasts();
+                          } catch (err) {
+                            setToast(getErrorMessage(err));
+                          } finally {
+                            setBcSending(false);
+                          }
+                        }}
+                        className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+                      >
+                        Confirm
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* History table */}
+              <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+                <div className="px-6 py-4 border-b border-gray-100">
+                  <h2 className="text-[15px] font-semibold text-gray-900">Send History</h2>
+                </div>
+                {broadcastLoading ? (
+                  <div className="px-6 py-8 text-[13px] text-gray-400">Loading…</div>
+                ) : broadcasts.length === 0 ? (
+                  <div className="px-6 py-8 text-[13px] text-gray-400">No broadcasts yet.</div>
+                ) : (
+                  <table className="w-full text-[13px]">
+                    <thead>
+                      <tr className="border-b border-gray-100 text-left text-[11px] font-medium text-gray-500">
+                        <th className="px-6 py-3">Subject</th>
+                        <th className="px-6 py-3">Status</th>
+                        <th className="px-6 py-3">Recipients</th>
+                        <th className="px-6 py-3">Sent / Scheduled</th>
+                        <th className="px-6 py-3">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {broadcasts.map((bc) => (
+                        <Fragment key={bc.id}>
+                          <tr
+                            className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
+                            onClick={async () => {
+                              if (broadcastDetail?.broadcast.id === bc.id) {
+                                setBroadcastDetail(null);
+                                return;
+                              }
+                              setBroadcastDetailLoading(true);
+                              try {
+                                const detail = await getBroadcastDetail(bc.id);
+                                setBroadcastDetail(detail);
+                              } catch {
+                                /* ignore */
+                              } finally {
+                                setBroadcastDetailLoading(false);
+                              }
+                            }}
+                          >
+                            <td className="px-6 py-3 max-w-[200px] truncate">{bc.subject}</td>
+                            <td className="px-6 py-3">
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                  bc.status === 'sent'
+                                    ? 'bg-green-50 text-green-700'
+                                    : bc.status === 'failed'
+                                      ? 'bg-red-50 text-red-700'
+                                      : bc.status === 'sending'
+                                        ? 'bg-blue-50 text-blue-700'
+                                        : bc.status === 'cancelled'
+                                          ? 'bg-gray-100 text-gray-500'
+                                          : 'bg-yellow-50 text-yellow-700'
+                                }`}
+                              >
+                                {bc.status}
+                              </span>
+                            </td>
+                            <td className="px-6 py-3">{bc.recipient_count.toLocaleString()}</td>
+                            <td className="px-6 py-3 text-gray-500">
+                              {bc.sent_at
+                                ? relTime(bc.sent_at)
+                                : bc.scheduled_at
+                                  ? new Date(bc.scheduled_at).toLocaleString()
+                                  : '—'}
+                            </td>
+                            <td className="px-6 py-3">
+                              {bc.status === 'scheduled' && (
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (!confirm('Cancel this scheduled broadcast?')) return;
+                                    try {
+                                      await cancelBroadcast(bc.id);
+                                      setToast('Broadcast cancelled');
+                                      await loadBroadcasts();
+                                    } catch (err) {
+                                      setToast(getErrorMessage(err));
+                                    }
+                                  }}
+                                  className="text-red-500 hover:underline text-[12px]"
+                                >
+                                  Cancel
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                          {/* Detail drawer */}
+                          {broadcastDetail?.broadcast.id === bc.id && (
+                            <tr>
+                              <td colSpan={5} className="bg-gray-50 px-6 py-4">
+                                {broadcastDetailLoading ? (
+                                  <span className="text-[12px] text-gray-400">
+                                    Loading recipients…
+                                  </span>
+                                ) : (
+                                  <>
+                                    <div className="text-[12px] font-medium text-gray-600 mb-2">
+                                      Recipients ({broadcastDetail.total_recipients})
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-[12px]">
+                                        <thead>
+                                          <tr className="text-left text-[10px] font-medium text-gray-400">
+                                            <th className="pr-4 py-1">Email</th>
+                                            <th className="pr-4 py-1">Status</th>
+                                            <th className="pr-4 py-1">Error</th>
+                                            <th className="pr-4 py-1">Sent At</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {broadcastDetail.recipients.map((r) => (
+                                            <tr
+                                              key={r.user_id}
+                                              className="border-t border-gray-100"
+                                            >
+                                              <td className="pr-4 py-1 text-gray-700">{r.email}</td>
+                                              <td className="pr-4 py-1">
+                                                <span
+                                                  className={
+                                                    r.status === 'sent'
+                                                      ? 'text-green-600'
+                                                      : r.status === 'failed'
+                                                        ? 'text-red-500'
+                                                        : 'text-gray-400'
+                                                  }
+                                                >
+                                                  {r.status}
+                                                </span>
+                                              </td>
+                                              <td className="pr-4 py-1 text-red-400">
+                                                {r.error ?? '—'}
+                                              </td>
+                                              <td className="pr-4 py-1 text-gray-400">
+                                                {r.sent_at ? relTime(r.sent_at) : '—'}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </>
         )}
       </div>
 
