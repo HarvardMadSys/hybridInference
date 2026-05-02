@@ -110,9 +110,7 @@ export function TokenUsageTab() {
         </label>
         {data ? (
           <div className="text-[12px] text-gray-500 pb-1">
-            <div>
-              Updated at {fmtUtcHour(data.refreshed_at)} (hourly refresh)
-            </div>
+            <div>Updated at {fmtUtcHour(data.refreshed_at)} (hourly refresh)</div>
             {range === '1h' ? (
               <div>showing hour {fmtUtcRange(data.window.from, data.window.to)}</div>
             ) : null}
@@ -160,18 +158,10 @@ function Kpi({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ProviderTable({
-  provider,
-  rows,
-}: {
-  provider: string;
-  rows: ProviderTokenUsageRow[];
-}) {
+function ProviderTable({ provider, rows }: { provider: string; rows: ProviderTokenUsageRow[] }) {
   return (
     <div className="rounded-xl border overflow-hidden">
-      <div className="bg-gray-50 px-4 py-2 text-[13px] font-semibold text-gray-900">
-        {provider}
-      </div>
+      <div className="bg-gray-50 px-4 py-2 text-[13px] font-semibold text-gray-900">{provider}</div>
       <table className="w-full text-[12px]">
         <thead className="text-gray-500">
           <tr className="border-t">
@@ -191,9 +181,7 @@ function ProviderTable({
               <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.input_tokens)}</td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.output_tokens)}</td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.cached_tokens)}</td>
-              <td className="px-3 py-2 text-right tabular-nums">
-                {fmtCount(r.reasoning_tokens)}
-              </td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.reasoning_tokens)}</td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.request_count)}</td>
               <td className="px-4 py-2 text-right tabular-nums">{fmtCost(r.cost_usd)}</td>
             </tr>
