@@ -12,7 +12,7 @@ export function Hero(): JSX.Element {
           href="https://madsys.seas.harvard.edu"
           className="text-crimson hover:underline"
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
         >
           Harvard SEAS
         </a>

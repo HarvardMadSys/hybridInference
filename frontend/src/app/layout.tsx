@@ -44,7 +44,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   href="https://madsys.seas.harvard.edu"
                   className="font-serif text-sm text-gray-500 hover:text-crimson"
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                 >
                   Harvard SEAS
                 </a>
@@ -61,16 +61,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   href="https://madsys.seas.harvard.edu"
                   className="hover:text-crimson"
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                 >
                   Harvard SEAS
                 </a>
                 <span aria-hidden="true">·</span>
                 <a
-                  href="https://doc.freeinference.org"
+                  href="https://doc.freeinference.org/"
                   className="hover:text-crimson"
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                 >
                   Docs
                 </a>
@@ -79,7 +79,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   href="https://github.com/HarvardMadSys/hybridInference"
                   className="hover:text-crimson"
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                 >
                   GitHub
                 </a>
