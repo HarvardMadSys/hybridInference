@@ -75,12 +75,14 @@ serving/storage/database.py
 
 ### Components
 
-1. **Bracket-kind parser** — `parse_openrouter_kind(kind: str) -> (base_kind: str, pinned_provider: str | None)` in `serving/servers/registry.py`. Called once at the top of `_make_adapter` to extract the pinned provider into `cfg["openrouter_pinned_provider"]` and reduce the dispatch kind to `"openrouter"`. Validates: `openrouter` → `("openrouter", None)`; `openrouter[deepinfra]` → `("openrouter", "deepinfra")`; rejects `openrouter[]`, nested brackets, whitespace inside. `_make_adapter` is the only existing site that compares `kind` against an adapter name (verified by grep), so no other code paths need changes. The `_make_provider_id` call in the surrounding registry loop runs **before** `_make_adapter` and intentionally receives the raw bracketed string so distinct pins get distinct endpoint_ids.
+1. **Bracket-kind parser** — `parse_openrouter_kind(kind: str) -> (base_kind: str, pinned_provider: str | None)` in `serving/servers/registry.py`. Validates: `openrouter` → `("openrouter", None)`; `openrouter[deepinfra]` → `("openrouter", "deepinfra")`; rejects `openrouter[]`, nested brackets, whitespace inside. **Call sites and order:**
+    - `_make_provider_id(model_id, kind, base_url)` is called by the surrounding registry loop at `registry.py:304` with the **raw, still-bracketed** kind string. This is intentional: distinct pins (`openrouter[deepinfra]` vs `openrouter[fireworks]`) sharing the same `base_url` must produce distinct endpoint_ids for circuit-breaker isolation. No change to this call.
+    - `_make_adapter(kind, cfg)` is called next at `registry.py:322` with the same bracketed kind. The first statement of `_make_adapter` invokes `parse_openrouter_kind` to extract the pinned provider into `cfg["openrouter_pinned_provider"]` and reduce the dispatch-time kind variable to `"openrouter"`. The existing `kind == ...` / `kind in (...)` comparisons inside `_make_adapter` then operate on the normalized base kind. `_make_adapter` is the only site in `serving/` and `routing/` where `kind` is compared against an adapter name (verified by grep), so no other code paths need to learn about the bracket form.
 2. **`OpenRouterAdapter`** — `serving/adapters/openrouter.py`. Subclass of `OpenAICompatAdapter`. Overrides the request payload + header construction hook. Reuses HTTP, streaming, retry, and key-pool plumbing from the parent.
-3. **`ProviderProfile.OPENROUTER`** — new enum value in `serving/adapters/profiles.py`. New `normalize_usage_openrouter(usage_data)` that delegates to `normalize_usage_default` for tokens, then sets `upstream_cost_usd = usage_data.get("cost")` (None when absent). Cache tokens read from `prompt_tokens_details.cached_tokens` in Azure-style (OpenRouter mirrors that shape).
-4. **`UsageInfo.upstream_cost_usd: float | None = None`** — new optional field on `serving/adapters/base.py::UsageInfo`. Serialized in `to_dict()` only when not None, under key `upstream_cost_usd`.
+3. **`ProviderProfile.OPENROUTER`** — new enum value in `serving/adapters/profiles.py`. New `normalize_usage_openrouter(usage_data)` that delegates to `normalize_usage_default` for tokens (which already handles both flat `cache_read_tokens` and `cache_read_input_tokens` shapes), then sets `upstream_cost_usd = usage_data.get("cost")` (None when absent). The exact cache-token field shape returned by OpenRouter (flat vs. nested under `prompt_tokens_details.cached_tokens`) must be confirmed against a live OpenRouter response during implementation; if OpenRouter uses the nested Azure-style shape, the normalizer adds an explicit fallback to `prompt_tokens_details.cached_tokens` (mirroring `normalize_usage_azure_openai`). This is a verification step in the implementation plan, not an assumption to bake in upfront.
+4. **`UsageInfo.upstream_cost_usd: float | None = None`** — new optional field on `serving/adapters/base.py::UsageInfo`. **Not** included in `UsageInfo.to_dict()` (which retains its `dict[str, int]` return type — `to_dict()` is the OpenAI-compatible token-count serializer for clients, and a float cost field would break the type and leak internal data). The cost is read directly off the `UsageInfo` attribute by the caller and passed as a separate `log_request()` argument.
 5. **`api_logs.upstream_cost_usd` column** — `DECIMAL(12, 8) NULL`. Idempotent migration in `serving/storage/database.py` next to the existing `cost_usd` migration.
-6. **`log_request()` plumbing** — accepts `upstream_cost_usd` (extracted from `UsageInfo`) and passes it to the `INSERT INTO api_logs` statement.
+6. **`log_request()` plumbing** — `serving/storage/database.py::DatabaseLogger.log_request()` gains a new keyword-only argument `upstream_cost_usd: float | None = None`, forwarded to the `INSERT INTO api_logs` statement. Existing call sites do not need to change (default `None` → `NULL`); the OpenAI/HTTP completion path that already constructs `UsageInfo` is updated to read `usage_info.upstream_cost_usd` and pass it through.
 7. **`OPENROUTER_API_KEY`** — added to `.env.example` and documented.
 8. **`config/models.yaml`** — one commented example showing both bare and bracket forms.
 9. **`docs/openrouter.md`** — short doc covering the kind syntax, attribution headers, and the cost-logging contract. README already references this path.
@@ -197,9 +199,13 @@ All non-2xx responses use the existing `OpenAICompatAdapter` exception path; dif
 
 ### Manual verification (against staging)
 
-- Add OpenRouter as last fallback leg on `glm-4.7` with `weight: 0` (disabled). Confirm `_make_adapter` accepts the kind.
-- Flip `weight: 1.0` on the OpenRouter leg, break the preceding legs (bad keys), confirm the request lands on OpenRouter and `api_logs.upstream_cost_usd` is set.
-- Verify `/admin` cost reporting numbers are unchanged (they read `cost_usd`).
+End-to-end checks performed on `staging.freeinference.org` after deploy:
+
+- Send a real chat completion to a model whose route is `kind: openrouter` (no pin) and confirm the response is well-formed, the request appears in `api_logs` with `provider="openrouter"`, `cost_usd` set from model-level pricing, and `upstream_cost_usd` populated with OpenRouter's reported cost (`> 0`).
+- Send the same request to a `kind: openrouter[deepinfra]` route; verify in OpenRouter's dashboard / response metadata that the request was served by DeepInfra (and only DeepInfra — no fallback). Verify the row in `api_logs` is logged under a distinct `endpoint_id` from the bare-`openrouter` route.
+- Force the OpenRouter leg to be exercised on an existing multi-leg model (e.g. `glm-4.7`) by setting `weight: 1.0` on the OpenRouter leg and temporarily disabling the preceding legs; confirm the request lands on OpenRouter and `upstream_cost_usd` is set, then restore previous weights.
+- Send an invalid request (e.g. malformed `messages`) to confirm 400 propagates to client without router fallback.
+- Verify the `/admin` cost-reporting dashboards are unchanged: numbers reflect `cost_usd`, not `upstream_cost_usd`.
 
 ## Open Items Resolved Inline
 
