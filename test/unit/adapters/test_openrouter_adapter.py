@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from serving.adapters.base import ModelConfig, UsageInfo
@@ -163,3 +164,57 @@ def test_augment_payload_default_is_noop() -> None:
     payload = {"model": "x", "messages": []}
     out = adapter._augment_payload(dict(payload), stream=False)
     assert out == payload
+
+
+def test_build_final_chunk_omits_upstream_cost_when_usage_info_none() -> None:
+    """When usage_info is None (the default), no upstream_cost_usd in _routing."""
+    cfg = _make_compat_cfg()
+    adapter = OpenAICompatAdapter(cfg)
+    chunk_str = adapter._build_final_chunk(
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        finish_reason="stop",
+    )
+    # SSE chunk format: "data: {...}\n\n" — strip prefix and parse JSON
+    assert chunk_str.startswith("data: ")
+    payload = json.loads(chunk_str[len("data: ") :].strip())
+    routing = payload["_routing"]
+    assert "provider" in routing
+    assert "base_url" in routing
+    assert "endpoint_id" in routing
+    assert "upstream_cost_usd" not in routing
+
+
+def test_build_final_chunk_omits_upstream_cost_when_cost_field_none() -> None:
+    """When usage_info has cost=None, key is omitted."""
+    cfg = _make_compat_cfg()
+    adapter = OpenAICompatAdapter(cfg)
+    info = UsageInfo(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    chunk_str = adapter._build_final_chunk(
+        usage=info.to_dict(),
+        finish_reason="stop",
+        usage_info=info,
+    )
+    payload = json.loads(chunk_str[len("data: ") :].strip())
+    assert "upstream_cost_usd" not in payload["_routing"]
+
+
+def test_build_final_chunk_includes_upstream_cost_when_set() -> None:
+    """When usage_info carries a positive cost, _routing includes it."""
+    cfg = _make_compat_cfg()
+    adapter = OpenAICompatAdapter(cfg)
+    info = UsageInfo(
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        upstream_cost_usd=0.00342,
+    )
+    chunk_str = adapter._build_final_chunk(
+        usage=info.to_dict(),
+        finish_reason="stop",
+        usage_info=info,
+    )
+    payload = json.loads(chunk_str[len("data: ") :].strip())
+    assert payload["_routing"]["upstream_cost_usd"] == 0.00342
+    # And the existing keys are still present
+    assert payload["_routing"]["provider"] == cfg.provider
+    assert payload["_routing"]["base_url"] == cfg.base_url
