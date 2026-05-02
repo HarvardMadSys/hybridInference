@@ -57,13 +57,24 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
             log_status["status"] = "error"
     result["log_store"] = log_status
 
-    # No stores configured = healthy (no DB to fail); stores exist but all
-    # failing = unhealthy.
+    # Track both OR (any store up) and AND (all configured stores up).
+    # `healthy` (OR) preserves backward-compatible /health behavior so the
+    # Docker HEALTHCHECK probe in Dockerfile.backend doesn't restart the
+    # container on transient log_store hiccups while the operational store
+    # is still serving auth.
+    # `all_healthy` (AND) is exposed for stricter readiness probes
+    # (see /health/ready).
     if not result["database_configured"]:
         result["healthy"] = True
+        result["all_healthy"] = True
     else:
-        any_healthy = op_status["status"] == "ok" or log_status["status"] == "ok"
-        result["healthy"] = any_healthy
+        configured_statuses = [
+            s["status"] for s in (op_status, log_status) if s["status"] != "unavailable"
+        ]
+        result["healthy"] = any(s == "ok" for s in configured_statuses)
+        result["all_healthy"] = bool(configured_statuses) and all(
+            s == "ok" for s in configured_statuses
+        )
     DATABASE_CONNECTED.set(1 if result["healthy"] else 0)
     return result
 
@@ -99,10 +110,20 @@ async def health(
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
 ) -> dict[str, Any]:
-    """Health check endpoint with active database connection test.
+    """Liveness check endpoint with active database connection test.
 
-    Performs a lightweight query to detect runtime database failures.
-    Returns 200 OK if service is healthy, 503 Service Unavailable if database is disconnected.
+    Returns 200 when at least one configured store is reachable; surfaces
+    ``status: "degraded"`` in the body when a configured store is down but
+    the service can still serve traffic. Returns 503 only when every
+    configured store is unreachable (full DB outage).
+
+    The 200-with-degraded-body shape is intentional: the Docker
+    HEALTHCHECK in Dockerfile.backend uses ``curl -f /health`` and the
+    frontend's docker-compose ``depends_on.backend.condition:
+    service_healthy`` would tear down healthy backends on transient
+    log_store hiccups if we returned 503 for partial degradation. Strict
+    readiness consumers should use ``/health/ready`` instead, which does
+    AND-logic and returns 503 unless every configured store is up.
     """
     routes_count = len(router_exec.routes)
 
@@ -131,11 +152,53 @@ async def health(
             },
         }
 
+    # At least one store is up. If any configured store is down, surface
+    # `degraded` in the body without flipping the status code.
+    body_status = "healthy" if store_health["all_healthy"] else "degraded"
     return {
-        "status": "healthy",
+        "status": body_status,
         "routes_configured": routes_count,
         "database_configured": True,
         "database_connected": True,
+        "stores": {
+            "operational_store": store_health["operational_store"],
+            "log_store": store_health["log_store"],
+        },
+    }
+
+
+@router.get("/health/ready")
+async def health_ready(
+    response: Response,
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
+) -> dict[str, Any]:
+    """Strict readiness probe: every configured store must be reachable.
+
+    Returns 200 only when all configured stores pass health_check();
+    returns 503 if any configured store is unreachable. Intended for
+    alertmanager / kubelet readiness consumers that want to drain the
+    instance from a load balancer on partial-DB degradation. Distinct
+    from ``/health`` (liveness), which stays 200 with ``status:
+    "degraded"`` to avoid container restart loops.
+    """
+    store_health = await _test_store_health(op_store, log_store)
+
+    if store_health["all_healthy"]:
+        return {
+            "status": "ready",
+            "database_configured": store_health["database_configured"],
+            "stores": {
+                "operational_store": store_health["operational_store"],
+                "log_store": store_health["log_store"],
+            },
+        }
+
+    response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return {
+        "status": "not_ready",
+        "reason": "store_degraded",
+        "database_configured": store_health["database_configured"],
         "stores": {
             "operational_store": store_health["operational_store"],
             "log_store": store_health["log_store"],
