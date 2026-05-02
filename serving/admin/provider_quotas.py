@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -36,6 +36,17 @@ def _mask_key(key: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    """Parse an ISO-8601 string into a UTC-aware datetime; None on failure."""
+    if not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
@@ -71,18 +82,18 @@ async def fetch_chutes() -> ProviderQuotaResult:
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
     try:
-        async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
-            session.get(url, headers=headers, allow_redirects=False) as resp,
-        ):
-            if resp.status in (301, 302, 303, 307, 308, 401, 403):
-                return _err("chutes", "Chutes", key, "auth_failed")
-            if resp.status >= 400:
-                return _err("chutes", "Chutes", key, "unexpected")
-            try:
-                data: dict[str, Any] = await resp.json()
-            except Exception:
-                return _err("chutes", "Chutes", key, "parse_error")
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                    return _err("chutes", "Chutes", key, "auth_failed")
+                if resp.status >= 400:
+                    return _err("chutes", "Chutes", key, "unexpected")
+                try:
+                    data: dict[str, Any] = await resp.json()
+                except Exception:
+                    return _err("chutes", "Chutes", key, "parse_error")
+            usages = _parse_chutes_usage(data)
+            usages.extend(await _fetch_chutes_request_counts(session, headers, data))
     except asyncio.TimeoutError:
         return _err("chutes", "Chutes", key, "timeout")
     except aiohttp.ClientError:
@@ -91,7 +102,6 @@ async def fetch_chutes() -> ProviderQuotaResult:
         logger.exception("fetch_chutes: unexpected error")
         return _err("chutes", "Chutes", key, "unexpected")
 
-    usages = _parse_chutes_usage(data)
     return ProviderQuotaResult(
         name="chutes",
         display_name="Chutes",
@@ -102,6 +112,85 @@ async def fetch_chutes() -> ProviderQuotaResult:
         error=None,
         usages=usages,
     )
+
+
+async def _fetch_chutes_request_counts(
+    session: aiohttp.ClientSession,
+    headers: dict[str, str],
+    sub_data: dict[str, Any],
+) -> list[ProviderQuotaUsage]:
+    """Fetch per-bucket request counts and aggregate over the 4-hour and monthly windows.
+
+    Returns an empty list on any HTTP/parse failure so the parent fetcher
+    can still surface the USD usages.
+    """
+    try:
+        four_hour_block = sub_data.get("four_hour")
+        monthly_block = sub_data.get("monthly")
+        four_hour_reset = (
+            _parse_iso(four_hour_block.get("reset_at"))
+            if isinstance(four_hour_block, dict)
+            else None
+        )
+        anchor_dt = _parse_iso(sub_data.get("anchor_date"))
+        monthly_reset = (
+            _parse_iso(monthly_block.get("reset_at")) if isinstance(monthly_block, dict) else None
+        )
+        if four_hour_reset is None or anchor_dt is None:
+            return []
+
+        four_hour_start = four_hour_reset - timedelta(hours=4)
+        monthly_start = anchor_dt
+
+        url = "https://api.chutes.ai/users/me/usage?limit=2000"
+        async with session.get(url, headers=headers, allow_redirects=False) as resp:
+            if resp.status >= 400:
+                return []
+            try:
+                payload: dict[str, Any] = await resp.json()
+            except Exception:
+                return []
+
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return []
+
+        four_hour_count = 0
+        monthly_count = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            bucket_dt = _parse_iso(item.get("bucket"))
+            if bucket_dt is None:
+                continue
+            count_raw = item.get("count")
+            if not isinstance(count_raw, (int, float)):
+                continue
+            count_int = int(count_raw)
+            if bucket_dt >= four_hour_start:
+                four_hour_count += count_int
+            if bucket_dt >= monthly_start:
+                monthly_count += count_int
+
+        return [
+            ProviderQuotaUsage(
+                label="4-hour requests",
+                used=float(four_hour_count),
+                limit=None,
+                unit="requests",
+                reset_at=four_hour_reset,
+            ),
+            ProviderQuotaUsage(
+                label="Monthly requests",
+                used=float(monthly_count),
+                limit=None,
+                unit="requests",
+                reset_at=monthly_reset,
+            ),
+        ]
+    except Exception:
+        logger.exception("_fetch_chutes_request_counts: unexpected error")
+        return []
 
 
 def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
