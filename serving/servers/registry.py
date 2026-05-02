@@ -130,7 +130,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
-        kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"openai"``, ``"zhipu"``,
+        kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zhipu"``,
               ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``, ``"openrouter"``,
               ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
@@ -157,16 +157,6 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
     if kind == "deepseek":
         cfg = {**cfg, "provider_profile": "deepseek"}
-    elif kind == "openai":
-        cfg = {
-            **cfg,
-            "provider_profile": "azure_openai",
-            "chat_path": "/chat/completions",
-            "use_bearer_auth": False,
-            "auth_header_name": "api-key",
-            "auth_format": "{api_key}",
-            "extra_query": {"api-version": "2024-12-01-preview"},
-        }
     # Zhipu routes through OpenAICompatAdapter with a non-/v1 chat path.
     elif kind == "zhipu":
         cfg = {**cfg, "provider_profile": "zhipu", "chat_path": "/chat/completions"}
@@ -184,7 +174,6 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "ollama",
         "openai_compat",
         "deepseek",
-        "openai",
         "zhipu",
         "minimax",
     ):

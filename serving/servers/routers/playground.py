@@ -48,7 +48,6 @@ _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "openai_compat": "OpenAI Compatible",
     "sglang": "SGLang",
     "deepseek": "DeepSeek",
-    "openai": "OpenAI",
     "minimax": "Minimax",
     "codex_sub": "OpenAI",
 }
