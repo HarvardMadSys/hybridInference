@@ -5,9 +5,13 @@ Covers Anthropic Messages format -> OpenAI Chat Completions format translation.
 
 from __future__ import annotations
 
+import json as _json
 import logging
 
-from serving.adapters.anthropic_translator import anthropic_request_to_openai
+from serving.adapters.anthropic_translator import (
+    OpenAIToAnthropicStreamTranslator,
+    anthropic_request_to_openai,
+)
 
 
 def test_request_text_only_single_turn():
@@ -428,3 +432,179 @@ def test_response_id_preserves_msg_prefix_if_present():
     }
     out = openai_response_to_anthropic(resp, model="m")
     assert out["id"] == "msg_already"
+
+
+# ---------------------------------------------------------------------------
+# Streaming translation: OpenAI SSE -> Anthropic SSE
+# ---------------------------------------------------------------------------
+
+
+def _events(byte_iter):
+    """Parse our emitted SSE bytes into a list of (event_name, parsed_json)."""
+    text = b"".join(byte_iter).decode("utf-8")
+    out = []
+    cur_event = None
+    for line in text.split("\n"):
+        if line.startswith("event: "):
+            cur_event = line[len("event: ") :].strip()
+        elif line.startswith("data: "):
+            payload = line[len("data: ") :].strip()
+            if payload and payload != "[DONE]":
+                out.append((cur_event, _json.loads(payload)))
+            cur_event = None
+    return out
+
+
+def _openai_chunk(delta_obj, finish_reason=None, usage=None):
+    """Build one OpenAI SSE chunk byte-string."""
+    obj = {
+        "id": "chatcmpl-x",
+        "object": "chat.completion.chunk",
+        "model": "m",
+        "choices": [{"index": 0, "delta": delta_obj, "finish_reason": finish_reason}],
+    }
+    if usage is not None:
+        obj["usage"] = usage
+    return ("data: " + _json.dumps(obj) + "\n\n").encode("utf-8")
+
+
+def test_stream_text_only():
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    chunks = []
+    for c in (
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk({"content": "Hi"}),
+        _openai_chunk({"content": " there"}),
+        _openai_chunk(
+            {},
+            finish_reason="stop",
+            usage={"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        ),
+    ):
+        chunks.append(b"".join(t.feed(c)))
+    chunks.append(b"".join(t.finalize()))
+    events = _events(chunks)
+    names = [e[0] for e in events]
+    assert names[0] == "message_start"
+    assert "content_block_start" in names
+    assert any(e[0] == "content_block_delta" and e[1]["delta"]["text"] == "Hi" for e in events)
+    assert any(e[0] == "content_block_delta" and e[1]["delta"]["text"] == " there" for e in events)
+    assert names[-1] == "message_stop"
+    msg_delta = next(e for e in events if e[0] == "message_delta")
+    assert msg_delta[1]["delta"]["stop_reason"] == "end_turn"
+    assert msg_delta[1]["usage"]["output_tokens"] == 2
+
+
+def test_stream_tool_call_fragmented_json():
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    parts = [
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": ""},
+                    }
+                ]
+            }
+        ),
+        _openai_chunk({"tool_calls": [{"index": 0, "function": {"arguments": '{"ci'}}]}),
+        _openai_chunk({"tool_calls": [{"index": 0, "function": {"arguments": 'ty":"SF"}'}}]}),
+        _openai_chunk(
+            {},
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18},
+        ),
+    ]
+    out = b""
+    for c in parts:
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+    starts = [e for e in events if e[0] == "content_block_start"]
+    assert any(s[1]["content_block"]["type"] == "tool_use" for s in starts)
+    deltas = [e for e in events if e[0] == "content_block_delta"]
+    json_pieces = [
+        e[1]["delta"]["partial_json"] for e in deltas if e[1]["delta"]["type"] == "input_json_delta"
+    ]
+    assert "".join(json_pieces) == '{"city":"SF"}'
+    msg_delta = next(e for e in events if e[0] == "message_delta")
+    assert msg_delta[1]["delta"]["stop_reason"] == "tool_use"
+
+
+def test_stream_multi_tool_calls():
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    parts = [
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            }
+        ),
+        _openai_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "c2",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    }
+                ]
+            }
+        ),
+        _openai_chunk({}, finish_reason="tool_calls"),
+    ]
+    out = b""
+    for c in parts:
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+    starts = [
+        e
+        for e in events
+        if e[0] == "content_block_start" and e[1]["content_block"]["type"] == "tool_use"
+    ]
+    assert [s[1]["content_block"]["name"] for s in starts] == ["a", "b"]
+    indices = [e[1]["index"] for e in events if e[0] == "content_block_stop"]
+    assert sorted(set(indices)) == [0, 1]
+
+
+def test_stream_empty_response():
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    out = b""
+    out += b"".join(
+        t.feed(
+            _openai_chunk(
+                {},
+                finish_reason="stop",
+                usage={"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1},
+            )
+        )
+    )
+    out += b"".join(t.finalize())
+    events = _events([out])
+    names = [e[0] for e in events]
+    assert names[0] == "message_start"
+    assert names[-1] == "message_stop"
+
+
+def test_stream_done_sentinel_ignored():
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    out = b""
+    out += b"".join(t.feed(_openai_chunk({"role": "assistant"})))
+    out += b"".join(t.feed(_openai_chunk({"content": "x"})))
+    out += b"".join(t.feed(b"data: [DONE]\n\n"))
+    out += b"".join(t.finalize())
+    events = _events([out])
+    assert any(e[0] == "message_stop" for e in events)

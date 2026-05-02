@@ -10,7 +10,10 @@ Pure functions plus one stateful streaming translator. No I/O, no logging.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # ---------------------------------------------------------------------------
 # Request translation: Anthropic -> OpenAI
@@ -272,3 +275,216 @@ def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[st
         "stop_sequence": None,
         "usage": anthropic_usage,
     }
+
+
+# ---------------------------------------------------------------------------
+# Streaming translation: OpenAI SSE -> Anthropic SSE
+# ---------------------------------------------------------------------------
+
+
+class OpenAIToAnthropicStreamTranslator:
+    """Stateful translator: feed OpenAI SSE chunks, emit Anthropic SSE bytes.
+
+    OpenAI emits per-chunk JSON deltas. Anthropic emits a richer event sequence:
+    message_start -> content_block_start -> content_block_delta...
+    -> content_block_stop -> ... -> message_delta -> message_stop.
+
+    Caller pattern:
+        t = OpenAIToAnthropicStreamTranslator(model="m")
+        async for chunk in upstream_openai_stream:
+            for ant in t.feed(chunk):
+                yield ant
+        for ant in t.finalize():
+            yield ant
+    """
+
+    def __init__(self, *, model: str) -> None:
+        self.model = model
+        self._started = False
+        self._closed = False
+        self._current_text_index: int | None = None
+        self._tool_blocks: dict[
+            int, dict[str, Any]
+        ] = {}  # openai-tool-index -> {anthropic_index, name, id}
+        self._next_index = 0
+        self._finish_reason: str | None = None
+        self._usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        self._buffer = b""
+
+    @property
+    def usage(self) -> dict[str, int]:
+        """Return a copy of current usage counters."""
+        return dict(self._usage)
+
+    def feed(self, chunk: bytes) -> Iterator[bytes]:
+        """Consume one OpenAI SSE chunk and yield zero or more Anthropic SSE frames."""
+        self._buffer += chunk
+        while b"\n\n" in self._buffer:
+            frame, self._buffer = self._buffer.split(b"\n\n", 1)
+            yield from self._handle_frame(frame)
+
+    def finalize(self) -> Iterator[bytes]:
+        """Flush any buffered state and emit the terminal message_delta / message_stop events."""
+        if self._closed:
+            return
+        if not self._started:
+            yield from self._emit_message_start()
+        # Close any open content block.
+        if self._current_text_index is not None:
+            yield self._sse(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": self._current_text_index},
+            )
+            self._current_text_index = None
+        for tb in list(self._tool_blocks.values()):
+            yield self._sse(
+                "content_block_stop", {"type": "content_block_stop", "index": tb["anthropic_index"]}
+            )
+        self._tool_blocks.clear()
+        # Emit message_delta with stop_reason + final usage.
+        stop_reason = _FINISH_REASON_MAP.get(self._finish_reason or "stop", "end_turn")
+        yield self._sse(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                "usage": {"output_tokens": self._usage["output_tokens"]},
+            },
+        )
+        yield self._sse("message_stop", {"type": "message_stop"})
+        self._closed = True
+
+    # -- internals --
+
+    def _handle_frame(self, frame: bytes) -> Iterator[bytes]:
+        for line in frame.split(b"\n"):
+            if not line.startswith(b"data: "):
+                continue
+            payload = line[len(b"data: ") :].strip()
+            if not payload or payload == b"[DONE]":
+                continue
+            try:
+                obj = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            yield from self._handle_chunk(obj)
+
+    def _handle_chunk(self, obj: dict[str, Any]) -> Iterator[bytes]:
+        usage = obj.get("usage")
+        if usage:
+            self._usage["input_tokens"] = int(
+                usage.get("prompt_tokens", self._usage["input_tokens"])
+            )
+            self._usage["output_tokens"] = int(
+                usage.get("completion_tokens", self._usage["output_tokens"])
+            )
+
+        choices = obj.get("choices") or []
+        if not choices:
+            return
+        choice = choices[0]
+        delta = choice.get("delta") or {}
+
+        if not self._started:
+            yield from self._emit_message_start()
+
+        text = delta.get("content")
+        if text:
+            yield from self._emit_text(text)
+
+        for tc in delta.get("tool_calls") or []:
+            yield from self._emit_tool_call_delta(tc)
+
+        fr = choice.get("finish_reason")
+        if fr:
+            self._finish_reason = fr
+
+    def _emit_message_start(self) -> Iterator[bytes]:
+        self._started = True
+        yield self._sse(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_stream",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": self.model,
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": dict(self._usage),
+                },
+            },
+        )
+
+    def _emit_text(self, text: str) -> Iterator[bytes]:
+        if self._current_text_index is None:
+            # Close any open tool blocks first? No - text and tool deltas can interleave;
+            # OpenAI rarely interleaves them in practice. Open new text block.
+            self._current_text_index = self._next_index
+            self._next_index += 1
+            yield self._sse(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": self._current_text_index,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
+        yield self._sse(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": self._current_text_index,
+                "delta": {"type": "text_delta", "text": text},
+            },
+        )
+
+    def _emit_tool_call_delta(self, tc: dict[str, Any]) -> Iterator[bytes]:
+        idx = tc.get("index", 0)
+        fn = tc.get("function") or {}
+        # Close text block if open before opening a tool block (matches Anthropic ordering convention).
+        if idx not in self._tool_blocks and self._current_text_index is not None:
+            yield self._sse(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": self._current_text_index},
+            )
+            self._current_text_index = None
+
+        if idx not in self._tool_blocks:
+            anthropic_index = self._next_index
+            self._next_index += 1
+            self._tool_blocks[idx] = {
+                "anthropic_index": anthropic_index,
+                "id": tc.get("id", ""),
+                "name": fn.get("name", ""),
+            }
+            yield self._sse(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": anthropic_index,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "input": {},
+                    },
+                },
+            )
+
+        anthropic_index = self._tool_blocks[idx]["anthropic_index"]
+        partial = fn.get("arguments")
+        if partial:
+            yield self._sse(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": anthropic_index,
+                    "delta": {"type": "input_json_delta", "partial_json": partial},
+                },
+            )
+
+    def _sse(self, event: str, payload: dict[str, Any]) -> bytes:
+        return f"event: {event}\ndata: {json.dumps(payload)}\n\n".encode()
