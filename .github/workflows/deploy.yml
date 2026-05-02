@@ -18,7 +18,7 @@ jobs:
   deploy:
     name: Deploy Docker Compose stack
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     environment: production
     timeout-minutes: 30
 
