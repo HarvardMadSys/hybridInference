@@ -67,6 +67,20 @@ def _anthropic_error(status: int, message: str) -> JSONResponse:
     )
 
 
+def _upstream_status_from_exc(exc: BaseException) -> int:
+    """Extract the upstream HTTP status code from an exception.
+
+    If the exception carries an upstream status (e.g. ``aiohttp.ClientResponseError``
+    with a 401 from Anthropic), return that status so the client sees the correct
+    error code instead of a blanket 502.  Genuine network / timeout errors have no
+    status and fall back to 502.
+    """
+    status = getattr(exc, "status", None)
+    if isinstance(status, int) and 400 <= status < 600:
+        return status
+    return 502
+
+
 _ANTHROPIC_PATHS = ("/v1/messages", "/anthropic/")
 
 
@@ -320,6 +334,7 @@ async def anthropic_messages(
                 "cache_read_input_tokens": 0,
             }
             stream_failed = False
+            stream_status = 502
             ttft_ms: int | None = None
             ttft_buffer = b""
             try:
@@ -345,20 +360,21 @@ async def anthropic_messages(
                     yield chunk
             except Exception as exc:
                 stream_failed = True
+                stream_status = _upstream_status_from_exc(exc)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
                 import json as _j
 
                 err = {
                     "type": "error",
                     "error": {
-                        "type": "api_error",
-                        "message": scrub_error_for_user(exc, request_id, 502),
+                        "type": _ERROR_TYPE_BY_STATUS.get(stream_status, "api_error"),
+                        "message": scrub_error_for_user(exc, request_id, stream_status),
                     },
                 }
                 yield f"event: error\ndata: {_j.dumps(err)}\n\n".encode()
             finally:
                 latency_ms = int((time.time() - start) * 1000)
-                status_code = 502 if stream_failed else 200
+                status_code = stream_status if stream_failed else 200
                 API_MODEL_REQUESTS.labels(
                     model=normalize_model_label(canonical),
                     provider=normalize_provider_label(adapter.config.provider),
@@ -389,7 +405,10 @@ async def anthropic_messages(
         return _anthropic_error(exc.status_code, str(exc.detail))
     except Exception as exc:
         logger.exception(f"[{request_id}] Adapter messages() failed")
-        return _anthropic_error(502, scrub_error_for_user(exc, request_id, 502))
+        upstream_status = _upstream_status_from_exc(exc)
+        return _anthropic_error(
+            upstream_status, scrub_error_for_user(exc, request_id, upstream_status)
+        )
 
     usage = (resp.get("usage") or {}) if isinstance(resp, dict) else {}
     usage_for_log = {

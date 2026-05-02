@@ -344,6 +344,14 @@ def register_from_models_yaml(
                 api_keys = kept
             else:
                 api_key = expand_env(raw_api_key)
+                if raw_api_key and raw_api_key.startswith("${") and (api_key is None or api_key == ""):
+                    logger.warning(
+                        "Dropping blank api_key for model %s "
+                        "(template: %s) - env var unset or empty",
+                        top_cfg.get("id"),
+                        raw_api_key,
+                    )
+                    continue
 
             # Adapter config inherits from top-level model config
             adapter_cfg = dict(top_cfg)
@@ -381,6 +389,13 @@ def register_from_models_yaml(
 
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
+
+        if not adapters_with_weights:
+            logger.warning(
+                "Skipping model %s - no valid routes after env expansion",
+                top_cfg.get("id"),
+            )
+            continue
 
         # Determine model type: "embedding" models bypass RouteExecutor
         model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"
