@@ -629,3 +629,50 @@ export async function getProviderQuotas(): Promise<AdminProviderQuotasResponse> 
   const resp = await fetchWithAuth(API_BASE, '/admin/provider-quotas');
   return jsonOrThrow<AdminProviderQuotasResponse>(resp);
 }
+
+// ========================================
+// Provider Hourly Performance Stats
+// ========================================
+
+export interface ProviderStatsRow {
+  hour_bucket: string;
+  provider: string;
+  model_id: string;
+  request_count: number;
+  error_count: number;
+  stream_count: number;
+  ttft_p50_ms: number | null;
+  ttft_p95_ms: number | null;
+  ttft_p99_ms: number | null;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  latency_p99_ms: number | null;
+  throughput_avg_tps: number | null;
+  throughput_p50_tps: number | null;
+  throughput_p95_tps: number | null;
+  prompt_tokens_avg: number | null;
+  completion_tokens_avg: number | null;
+  total_completion_tokens: number;
+}
+
+export interface ProviderStatsResponse {
+  rows: ProviderStatsRow[];
+  providers: string[];
+  models: string[];
+}
+
+export async function getProviderStats(params: {
+  provider: string;
+  model_id: string;
+  from?: string;
+  to?: string;
+}): Promise<ProviderStatsResponse> {
+  const search = new URLSearchParams({
+    provider: params.provider,
+    model_id: params.model_id,
+    ...(params.from ? { from: params.from } : {}),
+    ...(params.to ? { to: params.to } : {}),
+  });
+  const resp = await fetchWithAuth(API_BASE, `/admin/api/provider-stats?${search.toString()}`);
+  return jsonOrThrow<ProviderStatsResponse>(resp);
+}

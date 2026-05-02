@@ -38,6 +38,7 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { AnalyticsTab } from './AnalyticsTab';
+import { ProviderPerformanceTab } from './ProviderPerformanceTab';
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -422,7 +423,14 @@ export default function AdminPage() {
 
   // Top-level tab
   const [activeTab, setActiveTab] = useState<
-    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'performance'
+    | 'users'
+    | 'audit'
+    | 'requests'
+    | 'broadcast'
+    | 'providers'
+    | 'provider-perf'
+    | 'analytics'
+    | 'performance'
   >('users');
 
   useEffect(() => {
@@ -434,6 +442,7 @@ export default function AdminPage() {
       tab === 'requests' ||
       tab === 'broadcast' ||
       tab === 'providers' ||
+      tab === 'provider-perf' ||
       tab === 'analytics' ||
       tab === 'performance'
     ) {
@@ -444,6 +453,7 @@ export default function AdminPage() {
           | 'requests'
           | 'broadcast'
           | 'providers'
+          | 'provider-perf'
           | 'analytics'
           | 'performance',
       );
@@ -820,7 +830,15 @@ export default function AdminPage() {
   ];
 
   const onTabChange = (
-    tab: 'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'performance',
+    tab:
+      | 'users'
+      | 'audit'
+      | 'requests'
+      | 'broadcast'
+      | 'providers'
+      | 'provider-perf'
+      | 'analytics'
+      | 'performance',
   ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
@@ -851,6 +869,9 @@ export default function AdminPage() {
       return;
     }
     if (activeTab === 'analytics') {
+      return;
+    }
+    if (activeTab === 'provider-perf') {
       return;
     }
     loadRequests();
@@ -917,6 +938,7 @@ export default function AdminPage() {
               'users',
               'requests',
               'providers',
+              'provider-perf',
               'audit',
               'broadcast',
               'analytics',
@@ -938,13 +960,15 @@ export default function AdminPage() {
                   ? 'Recent Requests'
                   : tab === 'providers'
                     ? 'Providers'
-                    : tab === 'audit'
-                      ? 'Audit Log'
-                      : tab === 'broadcast'
-                        ? 'Broadcast Email'
-                        : tab === 'analytics'
-                          ? 'Analytics'
-                          : 'Performance'}
+                    : tab === 'provider-perf'
+                      ? 'Provider Performance'
+                      : tab === 'audit'
+                        ? 'Audit Log'
+                        : tab === 'broadcast'
+                          ? 'Broadcast Email'
+                          : tab === 'analytics'
+                            ? 'Analytics'
+                            : 'Performance'}
             </button>
           ))}
         </div>
@@ -2021,6 +2045,7 @@ export default function AdminPage() {
           </div>
         )}
         {activeTab === 'analytics' && <AnalyticsTab />}
+        {activeTab === 'provider-perf' && <ProviderPerformanceTab />}
 
         {activeTab === 'performance' && (
           <div className="mt-5">
