@@ -86,6 +86,18 @@ def _parse_iso(value: Any) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def _parse_epoch_ms(value: Any) -> datetime | None:
+    """Parse a Unix epoch milliseconds value (int/float) into a UTC datetime; None on failure."""
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
     return ProviderQuotaResult(
         name=name,
@@ -329,7 +341,6 @@ async def fetch_zai() -> ProviderQuotaResult:
         return _err("zai", "ZAI", key, "parse_error")
 
     usages: list[ProviderQuotaUsage] = []
-    reset_at = _next_reset("monthly")
     for entry in limits:
         if not isinstance(entry, dict):
             continue
@@ -341,6 +352,7 @@ async def fetch_zai() -> ProviderQuotaResult:
         else:
             label, unit = kind.replace("_", " ").title() or "Quota", ""
 
+        entry_reset_at = _parse_epoch_ms(entry.get("nextResetTime"))
         used_raw = entry.get("currentValue") if "currentValue" in entry else entry.get("used")
         limit_raw = entry.get("usage")  # "usage" is the total cap in the ZAI API
 
@@ -353,7 +365,7 @@ async def fetch_zai() -> ProviderQuotaResult:
                     used=float(pct) if isinstance(pct, (int, float)) else None,
                     limit=100.0,
                     unit="%",
-                    reset_at=reset_at,
+                    reset_at=entry_reset_at,
                 )
             )
             continue
@@ -364,7 +376,7 @@ async def fetch_zai() -> ProviderQuotaResult:
                 used=float(used_raw) if isinstance(used_raw, (int, float)) else None,
                 limit=float(limit_raw) if isinstance(limit_raw, (int, float)) else None,
                 unit=unit,
-                reset_at=reset_at,
+                reset_at=entry_reset_at,
             )
         )
 
