@@ -790,3 +790,30 @@ class ProviderTokenUsageResponse(BaseModel):  # type: ignore[no-any-unimported]
     refreshed_at: datetime
     rows: list[ProviderTokenUsageRow]
     totals: ProviderTokenUsageTotals
+
+
+# ---------------------------------------------------------------------------
+# Signup domain allowlist
+# ---------------------------------------------------------------------------
+
+
+class SignupAllowedDomain(BaseModel):  # type: ignore[no-any-unimported]
+    """Single allowlist entry returned by the admin API."""
+
+    domain: str
+    is_wildcard: bool
+    created_at: datetime | None = None
+    created_by: str | None = None
+    created_by_email: str | None = None
+
+
+class ListSignupAllowedDomainsResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """List response for ``GET /admin/signup-domains``."""
+
+    domains: list[SignupAllowedDomain]
+
+
+class AddSignupAllowedDomainRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for ``POST /admin/signup-domains``."""
+
+    domain: str = Field(..., min_length=1, max_length=255)

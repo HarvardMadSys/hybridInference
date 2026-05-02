@@ -643,6 +643,19 @@ class DatabaseLogger:
                 ON admin_audit_log(action, timestamp DESC)
             """)
 
+            # Signup domain allowlist (admin-editable approval policy).
+            # Empty table = all signups auto-approve; non-empty table requires
+            # the signup email's domain to match (exact or wildcard suffix).
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS signup_allowed_domains (
+                    domain TEXT NOT NULL,
+                    is_wildcard BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_by TEXT REFERENCES users(id),
+                    PRIMARY KEY (domain, is_wildcard)
+                )
+            """)
+
             # Critical index for usage analytics (prevents full table scan on cost queries)
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost

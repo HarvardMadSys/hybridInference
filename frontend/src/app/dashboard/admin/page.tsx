@@ -41,6 +41,7 @@ import {
 import { getErrorMessage } from '@/lib/utils/errors';
 import { AnalyticsTab } from './AnalyticsTab';
 import { ProviderPerformanceTab } from './ProviderPerformanceTab';
+import { SettingsTab } from './SettingsTab';
 import { TokenUsageTab } from './TokenUsageTab';
 
 function relTime(s: string | null): string {
@@ -829,6 +830,7 @@ export default function AdminPage() {
     | 'analytics'
     | 'performance'
     | 'token-usage'
+    | 'settings'
   >('users');
 
   useEffect(() => {
@@ -843,7 +845,8 @@ export default function AdminPage() {
       normalized === 'providers' ||
       normalized === 'analytics' ||
       normalized === 'performance' ||
-      normalized === 'token-usage'
+      normalized === 'token-usage' ||
+      normalized === 'settings'
     ) {
       setActiveTab(
         normalized as
@@ -854,7 +857,8 @@ export default function AdminPage() {
           | 'providers'
           | 'analytics'
           | 'performance'
-          | 'token-usage',
+          | 'token-usage'
+          | 'settings',
       );
       if (tab === 'provider-perf') {
         params.set('tab', 'performance');
@@ -1272,7 +1276,8 @@ export default function AdminPage() {
       | 'providers'
       | 'analytics'
       | 'performance'
-      | 'token-usage',
+      | 'token-usage'
+      | 'settings',
   ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
@@ -1307,6 +1312,9 @@ export default function AdminPage() {
       return;
     }
     if (activeTab === 'token-usage') {
+      return;
+    }
+    if (activeTab === 'settings') {
       return;
     }
     loadRequests();
@@ -1378,6 +1386,7 @@ export default function AdminPage() {
               'broadcast',
               'analytics',
               'performance',
+              'settings',
             ] as const
           ).map((tab) => (
             <button
@@ -1403,7 +1412,9 @@ export default function AdminPage() {
                           ? 'Broadcast Email'
                           : tab === 'analytics'
                             ? 'Analytics'
-                            : 'Performance'}
+                            : tab === 'performance'
+                              ? 'Performance'
+                              : 'Settings'}
             </button>
           ))}
         </div>
@@ -2502,6 +2513,7 @@ export default function AdminPage() {
         )}
         {activeTab === 'analytics' && <AnalyticsTab />}
         {activeTab === 'token-usage' && <TokenUsageTab />}
+        {activeTab === 'settings' && <SettingsTab />}
 
         {activeTab === 'performance' && (
           <div className="mt-5 space-y-6">

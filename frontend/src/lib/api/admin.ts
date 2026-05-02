@@ -708,3 +708,48 @@ export async function getProviderTokenUsage(
   );
   return jsonOrThrow<ProviderTokenUsageResponse>(resp);
 }
+
+// ========================================
+// Signup Domain Allowlist
+// ========================================
+
+export interface SignupAllowedDomain {
+  domain: string;
+  is_wildcard: boolean;
+  created_at: string | null;
+  created_by: string | null;
+  created_by_email: string | null;
+}
+
+export interface ListSignupAllowedDomainsResponse {
+  domains: SignupAllowedDomain[];
+}
+
+export async function listSignupAllowedDomains(): Promise<ListSignupAllowedDomainsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/signup-domains');
+  return jsonOrThrow<ListSignupAllowedDomainsResponse>(resp);
+}
+
+export async function addSignupAllowedDomain(domain: string): Promise<SignupAllowedDomain> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/signup-domains', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ domain }),
+  });
+  return jsonOrThrow<SignupAllowedDomain>(resp);
+}
+
+export async function removeSignupAllowedDomain(
+  domain: string,
+  isWildcard: boolean,
+): Promise<void> {
+  const params = new URLSearchParams({ wildcard: String(isWildcard) });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/signup-domains/${encodeURIComponent(domain)}?${params.toString()}`,
+    { method: 'DELETE' },
+  );
+  if (resp.ok) return; // 204 has no body
+  // Delegate to the standard error path; jsonOrThrow throws on !ok.
+  await jsonOrThrow<unknown>(resp);
+}

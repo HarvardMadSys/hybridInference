@@ -664,6 +664,52 @@ class DualWriteOperationalStore(OperationalStore):
             user_id=user_id,
         )
 
+    # -- signup domain allowlist --------------------------------------------
+
+    async def list_signup_allowed_domains(self) -> list[Row]:
+        """Delegate to primary."""
+        return await self._primary.list_signup_allowed_domains()
+
+    async def add_signup_allowed_domain(
+        self,
+        *,
+        domain: str,
+        is_wildcard: bool,
+        created_by: str | None,
+    ) -> Row:
+        """Write to primary, then shadow."""
+        result = await self._primary.add_signup_allowed_domain(
+            domain=domain, is_wildcard=is_wildcard, created_by=created_by
+        )
+        await self._do_shadow(
+            "add_signup_allowed_domain",
+            self._shadow.add_signup_allowed_domain(
+                domain=domain, is_wildcard=is_wildcard, created_by=created_by
+            ),
+            domain=domain,
+        )
+        return result
+
+    async def remove_signup_allowed_domain(self, *, domain: str, is_wildcard: bool) -> bool:
+        """Write to primary, then shadow."""
+        result = await self._primary.remove_signup_allowed_domain(
+            domain=domain, is_wildcard=is_wildcard
+        )
+        await self._do_shadow(
+            "remove_signup_allowed_domain",
+            self._shadow.remove_signup_allowed_domain(domain=domain, is_wildcard=is_wildcard),
+            domain=domain,
+        )
+        return result
+
+    async def signup_allowlist_is_empty(self) -> bool:
+        """Delegate to primary."""
+        return await self._primary.signup_allowlist_is_empty()
+
+    async def is_signup_domain_allowed(self, email: str) -> bool:
+        """Delegate to primary."""
+        return await self._primary.is_signup_domain_allowed(email)
+
 
 # ---------------------------------------------------------------------------
 # DualWriteLogStore

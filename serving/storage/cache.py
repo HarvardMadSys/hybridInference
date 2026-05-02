@@ -543,6 +543,38 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.update_user_preferences(user_id, preferences)
 
+    # -- signup domain allowlist (pass-through) ------------------------------
+
+    async def list_signup_allowed_domains(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_signup_allowed_domains()
+
+    async def add_signup_allowed_domain(
+        self,
+        *,
+        domain: str,
+        is_wildcard: bool,
+        created_by: str | None,
+    ) -> Row:
+        """Delegate to wrapped store."""
+        return await self._store.add_signup_allowed_domain(
+            domain=domain, is_wildcard=is_wildcard, created_by=created_by
+        )
+
+    async def remove_signup_allowed_domain(self, *, domain: str, is_wildcard: bool) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.remove_signup_allowed_domain(
+            domain=domain, is_wildcard=is_wildcard
+        )
+
+    async def signup_allowlist_is_empty(self) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.signup_allowlist_is_empty()
+
+    async def is_signup_domain_allowed(self, email: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.is_signup_domain_allowed(email)
+
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(

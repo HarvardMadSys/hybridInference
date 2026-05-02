@@ -1,0 +1,294 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import {
+  SignupAllowedDomain,
+  addSignupAllowedDomain,
+  listSignupAllowedDomains,
+  removeSignupAllowedDomain,
+} from '@/lib/api/admin';
+import { getErrorMessage } from '@/lib/utils/errors';
+
+// Mirrors the server-side regex in serving/servers/routers/admin.py.
+// Keeping the two in sync is intentional: the server is authoritative,
+// the client just gives faster feedback.
+const DOMAIN_RE = /^([a-z0-9-]+\.)+[a-z]{2,}$/;
+
+type ValidatedInput =
+  | { ok: true; domain: string; isWildcard: boolean }
+  | { ok: false; error: string };
+
+export function validateSignupDomainInput(raw: string): ValidatedInput {
+  const cleaned = (raw || '').trim().toLowerCase();
+  if (!cleaned) return { ok: false, error: 'Enter a domain.' };
+
+  let isWildcard = false;
+  let body = cleaned;
+  if (body.startsWith('*.')) {
+    isWildcard = true;
+    body = body.slice(2);
+  }
+
+  if (!body) {
+    return { ok: false, error: "Wildcard entries need a suffix after '*.' (e.g. *.example.com)." };
+  }
+  if (/[*@\s]/.test(body)) {
+    return { ok: false, error: "Domain may not contain '*', '@', or whitespace." };
+  }
+  if (!DOMAIN_RE.test(body)) {
+    return {
+      ok: false,
+      error: "Use 'example.com' or '*.example.com' (letters, digits, hyphens; TLD ≥ 2 letters).",
+    };
+  }
+  return { ok: true, domain: body, isWildcard };
+}
+
+function relTime(iso: string | null): string {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+export function SettingsTab() {
+  const [domains, setDomains] = useState<SignupAllowedDomain[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [input, setInput] = useState('');
+  const [inputError, setInputError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<SignupAllowedDomain | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const resp = await listSignupAllowedDomains();
+      setDomains(resp.domains);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const flashToast = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 3000);
+  };
+
+  const onAdd = async () => {
+    setInputError(null);
+    const validated = validateSignupDomainInput(input);
+    if (!validated.ok) {
+      setInputError(validated.error);
+      return;
+    }
+    setAdding(true);
+    try {
+      await addSignupAllowedDomain(input.trim());
+      setInput('');
+      flashToast(
+        validated.isWildcard
+          ? `Added wildcard *.${validated.domain}.`
+          : `Added ${validated.domain}.`,
+      );
+      await load();
+    } catch (e) {
+      setInputError(getErrorMessage(e));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const onRemove = async (row: SignupAllowedDomain) => {
+    const key = `${row.domain}|${row.is_wildcard}`;
+    setRemoving(key);
+    try {
+      await removeSignupAllowedDomain(row.domain, row.is_wildcard);
+      flashToast(row.is_wildcard ? `Removed wildcard *.${row.domain}.` : `Removed ${row.domain}.`);
+      await load();
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setRemoving(null);
+      setConfirm(null);
+    }
+  };
+
+  return (
+    <div className="mt-5 space-y-6">
+      <div className="rounded-xl border border-gray-200 bg-white p-5">
+        <div className="mb-3">
+          <h2 className="text-[14px] font-semibold text-gray-900">Signup Policy</h2>
+          <p className="mt-1 text-[12px] text-gray-500">
+            Signups from listed domains auto-approve. Other domains require admin approval. Empty
+            list = all signups auto-approve.
+          </p>
+        </div>
+
+        {/* Add form */}
+        <div className="mb-4 flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                setInputError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !adding) {
+                  e.preventDefault();
+                  onAdd();
+                }
+              }}
+              placeholder="example.com or *.example.com"
+              className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
+              disabled={adding}
+              aria-label="Domain to add"
+            />
+            <button
+              type="button"
+              onClick={onAdd}
+              disabled={adding}
+              className="rounded-md bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+            >
+              {adding ? 'Adding...' : 'Add'}
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-400">
+            Enter <code className="rounded bg-gray-100 px-1">example.com</code> for an exact match
+            or <code className="rounded bg-gray-100 px-1">*.example.com</code> to allow any
+            subdomain. <code className="rounded bg-gray-100 px-1">*.example.com</code> does not
+            match the bare suffix.
+          </p>
+          {inputError && (
+            <p className="text-[12px] text-red-600" role="alert">
+              {inputError}
+            </p>
+          )}
+        </div>
+
+        {/* Status */}
+        {error && (
+          <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
+            {error}{' '}
+            <button onClick={() => setError(null)} className="ml-2 font-bold">
+              &times;
+            </button>
+          </div>
+        )}
+        {toast && (
+          <div className="mb-3 rounded-lg bg-gray-900 px-3 py-2 text-[12px] text-white">
+            {toast}
+          </div>
+        )}
+
+        {/* List */}
+        {loading ? (
+          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+        ) : domains.length === 0 ? (
+          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
+            No allowed domains. All signups auto-approve.
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-md border border-gray-200">
+            <table className="w-full text-[13px]">
+              <thead className="bg-gray-50 text-gray-500">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Domain</th>
+                  <th className="px-3 py-2 text-left font-medium">Type</th>
+                  <th className="px-3 py-2 text-left font-medium">Added</th>
+                  <th className="px-3 py-2 text-right font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {domains.map((d) => {
+                  const key = `${d.domain}|${d.is_wildcard}`;
+                  const isRemoving = removing === key;
+                  return (
+                    <tr key={key} className="bg-white">
+                      <td className="px-3 py-2 text-gray-900">
+                        {d.is_wildcard ? <span>*.{d.domain}</span> : d.domain}
+                      </td>
+                      <td className="px-3 py-2 text-gray-500">
+                        {d.is_wildcard ? 'Wildcard' : 'Exact'}
+                      </td>
+                      <td className="px-3 py-2 text-gray-500">{relTime(d.created_at)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => setConfirm(d)}
+                          disabled={isRemoving}
+                          className="text-[12px] font-medium text-red-600 transition hover:text-red-800 disabled:opacity-40"
+                        >
+                          {isRemoving ? 'Removing...' : 'Remove'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Confirm dialog */}
+      {confirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => setConfirm(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl bg-white p-5 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-[15px] font-semibold text-gray-900">Remove allowed domain</h3>
+            <p className="mt-2 text-[13px] text-gray-600">
+              Future signups from{' '}
+              <code className="rounded bg-gray-100 px-1">
+                {confirm.is_wildcard ? `*.${confirm.domain}` : confirm.domain}
+              </code>{' '}
+              will require admin approval. Existing users keep their current status.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirm(null)}
+                className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => onRemove(confirm)}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-red-700"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

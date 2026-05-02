@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
@@ -10,11 +11,13 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from serving.admin.provider_quotas import gather_all
+from serving.auth.signup_policy import invalidate_allowlist_cache
 from serving.schemas_admin import (
+    AddSignupAllowedDomainRequest,
     AdminAnalyticsResponse,
     AdminHistogramBucket,
     AdminMetricDistribution,
@@ -53,6 +56,7 @@ from serving.schemas_admin import (
     ListAPIKeysResponse,
     ListAuditLogResponse,
     ListBroadcastsResponse,
+    ListSignupAllowedDomainsResponse,
     ListUsersResponse,
     ProviderModelPair,
     ProviderStatsResponse,
@@ -67,6 +71,7 @@ from serving.schemas_admin import (
     ResumeUserRequest,
     ResumeUserResponse,
     RevokeAPIKeyResponse,
+    SignupAllowedDomain,
     SparklineBucket,
     StatusCounts,
     UpdateAPIKeyRequest,
@@ -2697,3 +2702,221 @@ async def admin_provider_token_usage(
         rows=out_rows,
         totals=totals,
     )
+
+
+# ========================================
+# Signup Domain Allowlist (admin-editable approval policy)
+# ========================================
+
+
+# Domain label charset; matches RFC-1035 LDH plus the dot separator. Excludes
+# leading/trailing hyphens implicitly because the regex anchors each label
+# with at least one [a-z0-9-]+ char and forces the TLD to be alpha-only.
+_DOMAIN_RE = re.compile(r"^([a-z0-9-]+\.)+[a-z]{2,}$")
+
+
+def _normalize_signup_domain(raw: str) -> tuple[str, bool]:
+    """Validate and normalize an admin-supplied signup domain entry.
+
+    Strips whitespace, lowercases, peels a leading ``*.`` to flag wildcard
+    intent, and enforces the LDH-plus-dot syntax. Raises ``HTTPException(400)``
+    on any validation failure.
+
+    Returns ``(domain_without_prefix, is_wildcard)``.
+    """
+    cleaned = (raw or "").strip().lower()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Domain is required")
+
+    is_wildcard = False
+    if cleaned.startswith("*."):
+        is_wildcard = True
+        cleaned = cleaned[2:]
+
+    if not cleaned:
+        raise HTTPException(
+            status_code=400,
+            detail="Wildcard entry requires a suffix after '*.' (e.g. *.example.com).",
+        )
+
+    # Reject any remaining wildcard / sentinel chars or whitespace.
+    for bad in ("*", "@", " ", "\t"):
+        if bad in cleaned:
+            raise HTTPException(
+                status_code=400,
+                detail="Domain must not contain '*', '@', or whitespace.",
+            )
+
+    if not _DOMAIN_RE.match(cleaned):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid domain format. Use e.g. 'example.com' or "
+                "'*.example.com' (lowercase letters, digits, hyphens; "
+                "TLD at least 2 letters)."
+            ),
+        )
+
+    return cleaned, is_wildcard
+
+
+def _signup_domain_to_schema(row: dict[str, Any]) -> SignupAllowedDomain:
+    """Convert a store row to the response schema."""
+    return SignupAllowedDomain(
+        domain=row["domain"],
+        is_wildcard=bool(row.get("is_wildcard")),
+        created_at=row.get("created_at"),
+        created_by=row.get("created_by"),
+        created_by_email=row.get("created_by_email"),
+    )
+
+
+@router.get("/admin/signup-domains", response_model=ListSignupAllowedDomainsResponse)
+async def list_signup_allowed_domains_endpoint(
+    _admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> ListSignupAllowedDomainsResponse:
+    """List all allowed signup domains.
+
+    Empty list means all signups auto-approve. Otherwise only listed
+    domains (exact match or ``*.suffix`` wildcard) auto-approve; everyone
+    else lands in ``pending_approval``.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    rows = await op_store.list_signup_allowed_domains()
+    return ListSignupAllowedDomainsResponse(domains=[_signup_domain_to_schema(r) for r in rows])
+
+
+@router.post(
+    "/admin/signup-domains",
+    response_model=SignupAllowedDomain,
+    status_code=201,
+)
+async def add_signup_allowed_domain_endpoint(
+    request: Request,
+    payload: AddSignupAllowedDomainRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> SignupAllowedDomain:
+    r"""Add a domain (or ``*.subdomain`` wildcard) to the signup allowlist.
+
+    Validation: strip + lowercase, ``*.`` prefix flips ``is_wildcard``,
+    remainder must match ``^([a-z0-9-]+\.)+[a-z]{2,}$``.
+
+    Returns 409 if the (domain, is_wildcard) composite key already exists.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    domain, is_wildcard = _normalize_signup_domain(payload.domain)
+
+    # Resolve admin user id when JWT auth was used (admin_id is the email
+    # in that case). Fall back to None for ADMIN_TOKEN where there's no
+    # corresponding users row.
+    created_by: str | None = None
+    user_row = await op_store.get_user_by_email(admin_id) if "@" in admin_id else None
+    if user_row:
+        created_by = user_row["id"]
+
+    # Translate any dup-key violation to a 409. asyncpg raises a typed
+    # UniqueViolationError; D1 surfaces a plain Exception with a string
+    # message — fall back to substring matching for the latter so both
+    # backends behave the same to the API consumer.
+    try:
+        row = await op_store.add_signup_allowed_domain(
+            domain=domain,
+            is_wildcard=is_wildcard,
+            created_by=created_by,
+        )
+    except Exception as exc:
+        is_dup = False
+        try:
+            import asyncpg
+
+            if isinstance(exc, asyncpg.UniqueViolationError):
+                is_dup = True
+        except ImportError:  # pragma: no cover — asyncpg always present in this app
+            pass
+        if not is_dup:
+            msg = str(exc).lower()
+            is_dup = (
+                "unique" in msg or "duplicate" in msg or "primary key" in msg or "constraint" in msg
+            )
+        if is_dup:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Domain '{domain}' "
+                    f"({'wildcard' if is_wildcard else 'exact'}) is already on the allowlist."
+                ),
+            ) from exc
+        raise
+
+    invalidate_allowlist_cache()
+
+    await log_admin_action(
+        op_store,
+        get_client_ip(request),
+        "signup_domain.add",
+        None,
+        {"domain": domain, "is_wildcard": is_wildcard},
+    )
+
+    return _signup_domain_to_schema(row)
+
+
+@router.delete("/admin/signup-domains/{domain}", status_code=204)
+async def remove_signup_allowed_domain_endpoint(
+    request: Request,
+    domain: str,
+    wildcard: bool = Query(False, description="True iff removing a *.suffix entry"),
+    _admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> Response:
+    """Remove a domain from the signup allowlist.
+
+    The ``wildcard`` query param disambiguates the composite key: an
+    entry added as ``example.com`` (exact) and ``*.example.com``
+    (wildcard) coexist as two rows. Pass ``wildcard=true`` to delete
+    the wildcard row, ``wildcard=false`` (default) for the exact row.
+
+    Returns 204 on success, 404 if the row doesn't exist.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    normalized = (domain or "").strip().lower()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Domain is required")
+
+    removed = await op_store.remove_signup_allowed_domain(
+        domain=normalized,
+        is_wildcard=bool(wildcard),
+    )
+    if not removed:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Domain '{normalized}' "
+                f"({'wildcard' if wildcard else 'exact'}) is not on the allowlist."
+            ),
+        )
+
+    invalidate_allowlist_cache()
+
+    await log_admin_action(
+        op_store,
+        get_client_ip(request),
+        "signup_domain.remove",
+        None,
+        {"domain": normalized, "is_wildcard": bool(wildcard)},
+    )
+
+    return Response(status_code=204)

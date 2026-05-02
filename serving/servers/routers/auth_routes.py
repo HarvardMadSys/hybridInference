@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request, Response
 
+from serving.auth.signup_policy import allowlist_is_empty, is_domain_allowed
 from serving.config.settings import is_admin_email, settings
 from serving.schemas_auth import (
     ForgotPasswordRequest,
@@ -155,10 +156,17 @@ async def signup(
     if existing_user:
         raise HTTPException(status_code=409, detail=f"Email {body.email} already registered")
 
-    # Determine initial status based on approval setting
-    require_approval = os.getenv("SIGNUP_REQUIRE_APPROVAL", "0") == "1"
+    # Determine initial status from the admin-editable signup domain
+    # allowlist (replaces the legacy SIGNUP_REQUIRE_APPROVAL env var).
+    # Empty allowlist = all signups auto-approve. Otherwise, only emails
+    # whose domain is on the allowlist (exact or wildcard suffix) auto-
+    # approve; everyone else lands in pending_approval.
     require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
-    initial_status = "pending_approval" if require_approval else "active"
+    if await allowlist_is_empty(op_store) or await is_domain_allowed(body.email, op_store):
+        initial_status = "active"
+    else:
+        initial_status = "pending_approval"
+    require_approval = initial_status == "pending_approval"
 
     # Create user
     user_id = generate_ulid()

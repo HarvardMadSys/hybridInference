@@ -144,6 +144,21 @@ CREATE TABLE IF NOT EXISTS user_daily_cost (
 CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day);
 
 -- -------------------------------------------------------------------
+-- signup_allowed_domains (admin-editable signup approval policy)
+-- Empty table means all signups auto-approve. With rows present,
+-- only listed domains (exact or wildcard suffix) auto-approve and
+-- non-listed signups go to pending_approval. See
+-- serving/auth/signup_policy.py for match rules.
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS signup_allowed_domains (
+    domain      TEXT NOT NULL,
+    is_wildcard INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_by  TEXT,
+    PRIMARY KEY (domain, is_wildcard)
+);
+
+-- -------------------------------------------------------------------
 -- api_logs (slim rows — no prompt/response content)
 -- -------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS api_logs (

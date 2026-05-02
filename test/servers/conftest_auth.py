@@ -152,6 +152,8 @@ async def _cleanup_pg_tables(pool):
         await conn.execute("DELETE FROM password_reset_tokens")
         await conn.execute("DELETE FROM auth_sessions")
         await conn.execute("DELETE FROM api_keys WHERE account_id IS NOT NULL")
+        # signup_allowed_domains references users(id); clear it before users.
+        await conn.execute("DELETE FROM signup_allowed_domains")
         await conn.execute("DELETE FROM users")
 
 
@@ -210,6 +212,7 @@ async def _cleanup_d1_tables(client):
             ("DELETE FROM auth_sessions", None),
             ("DELETE FROM user_daily_cost", None),
             ("DELETE FROM api_keys WHERE account_id IS NOT NULL", None),
+            ("DELETE FROM signup_allowed_domains", None),
             ("DELETE FROM users", None),
         ]
     )

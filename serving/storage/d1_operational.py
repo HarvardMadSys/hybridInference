@@ -1077,3 +1077,101 @@ class D1OperationalStore(OperationalStore):
             for r in result.rows:
                 result_map[r["user_id"]] = float(r["cost"])
         return result_map
+
+    # -- signup domain allowlist --------------------------------------------
+
+    async def list_signup_allowed_domains(self) -> list[Row]:
+        """Return all allowlist rows joined with the creator's email."""
+        result = await self._d1.query(
+            "SELECT d.domain, d.is_wildcard, d.created_at, d.created_by, "
+            "u.email AS created_by_email "
+            "FROM signup_allowed_domains d "
+            "LEFT JOIN users u ON u.id = d.created_by "
+            "ORDER BY d.created_at DESC, d.domain ASC"
+        )
+        rows: list[Row] = []
+        for raw in result.rows:
+            row = dict(raw)
+            row["is_wildcard"] = bool(row.get("is_wildcard"))
+            if isinstance(row.get("created_at"), str):
+                row["created_at"] = _iso_to_dt(row["created_at"])
+            rows.append(row)
+        return rows
+
+    async def add_signup_allowed_domain(
+        self,
+        *,
+        domain: str,
+        is_wildcard: bool,
+        created_by: str | None,
+    ) -> Row:
+        """Insert a new allowlist entry; raises on duplicate composite key."""
+        await self._d1.execute(
+            "INSERT INTO signup_allowed_domains (domain, is_wildcard, created_by) VALUES (?, ?, ?)",
+            [domain, int(is_wildcard), created_by],
+        )
+        result = await self._d1.query(
+            "SELECT d.domain, d.is_wildcard, d.created_at, d.created_by, "
+            "u.email AS created_by_email "
+            "FROM signup_allowed_domains d "
+            "LEFT JOIN users u ON u.id = d.created_by "
+            "WHERE d.domain = ? AND d.is_wildcard = ?",
+            [domain, int(is_wildcard)],
+        )
+        if not result.rows:
+            return {
+                "domain": domain,
+                "is_wildcard": is_wildcard,
+                "created_at": None,
+                "created_by": created_by,
+                "created_by_email": None,
+            }
+        row = dict(result.rows[0])
+        row["is_wildcard"] = bool(row.get("is_wildcard"))
+        if isinstance(row.get("created_at"), str):
+            row["created_at"] = _iso_to_dt(row["created_at"])
+        return row
+
+    async def remove_signup_allowed_domain(self, *, domain: str, is_wildcard: bool) -> bool:
+        """Delete an allowlist entry; returns True if a row was removed."""
+        # D1 returns no row count from execute; check existence first.
+        existing = await self._d1.query(
+            "SELECT 1 FROM signup_allowed_domains WHERE domain = ? AND is_wildcard = ? LIMIT 1",
+            [domain, int(is_wildcard)],
+        )
+        if not existing.rows:
+            return False
+        await self._d1.execute(
+            "DELETE FROM signup_allowed_domains WHERE domain = ? AND is_wildcard = ?",
+            [domain, int(is_wildcard)],
+        )
+        return True
+
+    async def signup_allowlist_is_empty(self) -> bool:
+        """Return True if the allowlist table has no rows."""
+        result = await self._d1.query("SELECT 1 FROM signup_allowed_domains LIMIT 1")
+        return not result.rows
+
+    async def is_signup_domain_allowed(self, email: str) -> bool:
+        """Match *email*'s domain against the allowlist (exact or wildcard)."""
+        if "@" not in email:
+            return False
+        domain = email.rsplit("@", 1)[1].strip().lower()
+        if not domain:
+            return False
+        exact = await self._d1.query(
+            "SELECT 1 FROM signup_allowed_domains WHERE domain = ? AND is_wildcard = 0 LIMIT 1",
+            [domain],
+        )
+        if exact.rows:
+            return True
+        parts = domain.split(".")
+        for i in range(1, len(parts) - 1):
+            suffix = ".".join(parts[i:])
+            wild = await self._d1.query(
+                "SELECT 1 FROM signup_allowed_domains WHERE domain = ? AND is_wildcard = 1 LIMIT 1",
+                [suffix],
+            )
+            if wild.rows:
+                return True
+        return False

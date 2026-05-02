@@ -332,6 +332,20 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day)"
         )
 
+        # --- signup_allowed_domains ---
+        # Admin-editable allowlist of email domains whose signups auto-approve.
+        # Empty table = all signups auto-approve; non-empty = only listed
+        # domains (exact or *.suffix) auto-approve, others go to pending_approval.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS signup_allowed_domains (
+                domain TEXT NOT NULL,
+                is_wildcard BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_by TEXT REFERENCES users(id),
+                PRIMARY KEY (domain, is_wildcard)
+            )
+        """)
+
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
 
@@ -1274,6 +1288,98 @@ class PostgresOperationalStore(OperationalStore):
                 json.dumps(preferences),
                 user_id,
             )
+
+    # -- signup domain allowlist --------------------------------------------
+
+    async def list_signup_allowed_domains(self) -> list[Row]:
+        """Return all allowlist rows joined with the creator's email."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT d.domain, d.is_wildcard, d.created_at, d.created_by, "
+                "u.email AS created_by_email "
+                "FROM signup_allowed_domains d "
+                "LEFT JOIN users u ON u.id = d.created_by "
+                "ORDER BY d.created_at DESC, d.domain ASC"
+            )
+        return [dict(r) for r in rows]
+
+    async def add_signup_allowed_domain(
+        self,
+        *,
+        domain: str,
+        is_wildcard: bool,
+        created_by: str | None,
+    ) -> Row:
+        """Insert a new allowlist entry. Raises on duplicate composite key."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO signup_allowed_domains (domain, is_wildcard, created_by) "
+                "VALUES ($1, $2, $3) "
+                "RETURNING domain, is_wildcard, created_at, created_by",
+                domain,
+                is_wildcard,
+                created_by,
+            )
+        # Backfill creator email so the response shape matches list_*.
+        result = dict(row) if row else {}
+        if result.get("created_by"):
+            async with self._pool.acquire() as conn:
+                creator = await conn.fetchrow(
+                    "SELECT email FROM users WHERE id = $1", result["created_by"]
+                )
+            result["created_by_email"] = creator["email"] if creator else None
+        else:
+            result["created_by_email"] = None
+        return result
+
+    async def remove_signup_allowed_domain(
+        self,
+        *,
+        domain: str,
+        is_wildcard: bool,
+    ) -> bool:
+        """Delete an allowlist entry; returns True when a row was removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM signup_allowed_domains WHERE domain = $1 AND is_wildcard = $2",
+                domain,
+                is_wildcard,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+    async def signup_allowlist_is_empty(self) -> bool:
+        """Return True if the allowlist table has no rows."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT 1 FROM signup_allowed_domains LIMIT 1")
+        return row is None
+
+    async def is_signup_domain_allowed(self, email: str) -> bool:
+        """Match *email*'s domain against the allowlist (exact or wildcard)."""
+        if "@" not in email:
+            return False
+        domain = email.rsplit("@", 1)[1].strip().lower()
+        if not domain:
+            return False
+        async with self._pool.acquire() as conn:
+            exact = await conn.fetchrow(
+                "SELECT 1 FROM signup_allowed_domains WHERE domain = $1 AND is_wildcard = FALSE",
+                domain,
+            )
+            if exact:
+                return True
+            parts = domain.split(".")
+            # Walk parent labels: for a.b.example.com (parts=4) check
+            # b.example.com and example.com. Bare top-level domain is
+            # excluded by stopping at len(parts)-1.
+            for i in range(1, len(parts) - 1):
+                suffix = ".".join(parts[i:])
+                wild = await conn.fetchrow(
+                    "SELECT 1 FROM signup_allowed_domains WHERE domain = $1 AND is_wildcard = TRUE",
+                    suffix,
+                )
+                if wild:
+                    return True
+        return False
 
     # -- cost counters -------------------------------------------------------
 
