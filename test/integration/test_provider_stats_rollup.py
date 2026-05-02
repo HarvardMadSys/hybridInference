@@ -220,3 +220,34 @@ async def test_run_rollup_aggregates_one_hour(db_logger: DatabaseLogger):
     # avg ≈ 36.11
     assert 33.0 <= row["throughput_avg_tps"] <= 40.0
     assert row["total_completion_tokens"] == 200 + 400 + 220 + 160
+
+
+@pytest.mark.asyncio
+async def test_run_rollup_is_idempotent(db_logger: DatabaseLogger):
+    from serving.admin.provider_stats_rollup import run_rollup
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    hour = datetime(2026, 5, 2, 14, 0, tzinfo=timezone.utc)
+    for i in range(3):
+        await _insert_api_log(
+            pool,
+            request_id=f"idem-{i}",
+            provider="anthropic",
+            model_id="claude-opus-4-7",
+            timestamp=hour + timedelta(minutes=5 + i),
+            stream=True,
+            ttft_ms=300 + i * 50,
+            latency_ms=2000 + i * 100,
+            completion_tokens=120,
+        )
+
+    await run_rollup(pool, start=hour, end=hour + timedelta(hours=1))
+    await run_rollup(pool, start=hour, end=hour + timedelta(hours=1))
+
+    async with pool.acquire() as conn:
+        n = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
+        row = await conn.fetchrow("SELECT request_count FROM provider_hourly_stats LIMIT 1")
+    assert n == 1
+    assert row["request_count"] == 3
