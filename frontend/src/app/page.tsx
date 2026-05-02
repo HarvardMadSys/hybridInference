@@ -3,12 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/providers';
-import {
-  CodeExample,
-  Features,
-  Hero,
-  HowItWorks,
-} from '@/components/landing';
+import { CodeExample, Features, Hero, HowItWorks } from '@/components/landing';
 
 export default function HomePage(): JSX.Element {
   const router = useRouter();

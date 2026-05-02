@@ -7,8 +7,8 @@ export function Hero(): JSX.Element {
         Free LLM Inference <span className="text-crimson">for Research</span>
       </h1>
       <p className="mx-auto mt-6 max-w-2xl text-base text-gray-600 sm:text-lg">
-        OpenAI-compatible API powered by frontier open and proprietary models.{' '}
-        Built at Harvard SEAS.
+        OpenAI-compatible API powered by frontier open and proprietary models. Built at Harvard
+        SEAS.
       </p>
       <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
         <Link
