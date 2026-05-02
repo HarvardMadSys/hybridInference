@@ -133,6 +133,15 @@ class BaseAdapter(ABC):
         self.session = None
         # Shared HTTP client for new/updated adapters.
         self.http = AsyncHTTPClient.shared()
+        # Populated after stream_messages() completes; consumed by the router
+        # for DB logging. Concrete subclasses with their own stream_messages()
+        # (e.g. AnthropicAdapter) overwrite this themselves.
+        self.last_stream_usage: dict[str, int] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
 
     @abstractmethod
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
@@ -187,6 +196,13 @@ class BaseAdapter(ABC):
                 yield ant
         for ant in translator.finalize():
             yield ant
+        # Expose accumulated usage for the router's DB-logging step.
+        self.last_stream_usage = {
+            "input_tokens": translator.usage.get("input_tokens", 0),
+            "output_tokens": translator.usage.get("output_tokens", 0),
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
 
     def validate_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Validate and clamp request parameters to provider limits."""

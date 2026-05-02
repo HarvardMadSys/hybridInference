@@ -250,8 +250,58 @@ async def anthropic_messages(
 
     is_streaming = bool(body.get("stream"))
     if is_streaming:
-        # Streaming dispatch lands in Task 13.
-        return _anthropic_error(501, "Streaming on /v1/messages not yet implemented")
+        from fastapi.responses import StreamingResponse
+
+        sse_headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+
+        async def _gen():
+            usage = {"input_tokens": 0, "output_tokens": 0}
+            stream_failed = False
+            try:
+                async for chunk in adapter.stream_messages(body, request_id=request_id):
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode("utf-8")
+                    yield chunk
+            except Exception as exc:
+                stream_failed = True
+                logger.exception(f"[{request_id}] Streaming dispatch failed")
+                import json as _j
+
+                err = {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": f"Stream interrupted: {exc}"},
+                }
+                yield f"event: error\ndata: {_j.dumps(err)}\n\n".encode()
+            finally:
+                if hasattr(adapter, "last_stream_usage"):
+                    usage = adapter.last_stream_usage
+                latency_ms = int((time.time() - start) * 1000)
+                status_code = 502 if stream_failed else 200
+                API_MODEL_REQUESTS.labels(
+                    model=normalize_model_label(canonical),
+                    provider=normalize_provider_label(adapter.config.provider),
+                    status_code=str(status_code),
+                ).inc()
+                if db_logger:
+                    _schedule_db_log(
+                        db_logger,
+                        request_id=request_id,
+                        model_id=canonical,
+                        provider=adapter.config.provider,
+                        usage=usage,
+                        latency_ms=latency_ms,
+                        status_code=status_code,
+                        pricing=adapter.config.pricing
+                        if hasattr(adapter.config, "pricing")
+                        else {},
+                        metadata=metadata,
+                    )
+
+        return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
 
     try:
         resp = await adapter.messages(body, request_id=request_id)
