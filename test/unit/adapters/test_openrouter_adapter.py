@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from serving.adapters.base import ModelConfig, UsageInfo
 from serving.adapters.openai_compat import OpenAICompatAdapter
@@ -218,3 +221,173 @@ def test_build_final_chunk_includes_upstream_cost_when_set() -> None:
     # And the existing keys are still present
     assert payload["_routing"]["provider"] == cfg.provider
     assert payload["_routing"]["base_url"] == cfg.base_url
+
+
+def _make_or_cfg(*, pinned: str | None = None) -> ModelConfig:
+    return ModelConfig(
+        id="or-model",
+        name="OR Model",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_key="sk-or-test",
+        provider_model_id="meta-llama/llama-3.3-70b-instruct",
+        supports_tools=False,
+        supports_structured_output=False,
+        supported_params=["temperature", "top_p", "max_tokens"],
+        provider_profile="openrouter",
+        openrouter_pinned_provider=pinned,
+    )
+
+
+def test_openrouter_adapter_attribution_headers() -> None:
+    from serving.adapters.openrouter import OpenRouterAdapter
+
+    adapter = OpenRouterAdapter(_make_or_cfg())
+    headers = adapter._build_headers()
+    assert headers["HTTP-Referer"] == "https://freeinference.org"
+    assert headers["X-Title"] == "FreeInference"
+    assert headers["Authorization"] == "Bearer sk-or-test"
+
+
+def test_openrouter_adapter_payload_no_pin() -> None:
+    from serving.adapters.openrouter import OpenRouterAdapter
+
+    adapter = OpenRouterAdapter(_make_or_cfg(pinned=None))
+    payload = adapter._augment_payload(
+        {"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+        stream=False,
+    )
+    assert payload["usage"] == {"include": True}
+    assert "provider" not in payload
+    assert "stream_options" not in payload
+
+
+def test_openrouter_adapter_payload_with_pin() -> None:
+    from serving.adapters.openrouter import OpenRouterAdapter
+
+    adapter = OpenRouterAdapter(_make_or_cfg(pinned="deepinfra"))
+    payload = adapter._augment_payload(
+        {"model": "x", "messages": []},
+        stream=False,
+    )
+    assert payload["provider"] == {"order": ["deepinfra"], "allow_fallbacks": False}
+
+
+def test_openrouter_adapter_streaming_payload_includes_stream_options() -> None:
+    from serving.adapters.openrouter import OpenRouterAdapter
+
+    adapter = OpenRouterAdapter(_make_or_cfg())
+    payload = adapter._augment_payload(
+        {"model": "x", "messages": [], "stream": True},
+        stream=True,
+    )
+    assert payload["stream_options"] == {"include_usage": True}
+    assert payload["usage"] == {"include": True}
+
+
+def test_openrouter_adapter_does_not_overwrite_existing_stream_options() -> None:
+    from serving.adapters.openrouter import OpenRouterAdapter
+
+    adapter = OpenRouterAdapter(_make_or_cfg())
+    payload = adapter._augment_payload(
+        {"messages": [], "stream": True, "stream_options": {"foo": "bar"}},
+        stream=True,
+    )
+    assert payload["stream_options"] == {"foo": "bar", "include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_adapter_chat_completion_threads_upstream_cost() -> None:
+    """Non-stream response carries upstream_cost_usd in the _routing block."""
+    from serving.adapters.openrouter import OpenRouterAdapter
+
+    adapter = OpenRouterAdapter(_make_or_cfg(pinned="deepinfra"))
+    upstream_response = {
+        "id": "x",
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cost": 0.00342,
+        },
+    }
+    with patch.object(
+        adapter, "_post_with_pool", AsyncMock(return_value=upstream_response)
+    ) as mock_post:
+        result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    # _routing carries the cost
+    assert result["_routing"]["upstream_cost_usd"] == 0.00342
+    assert result["_routing"]["provider"] == "openrouter"
+    assert result["_routing"]["base_url"] == "https://openrouter.ai/api/v1"
+    # Outbound payload had OpenRouter-specific fields
+    sent_payload = (
+        mock_post.call_args[0][1]
+        if mock_post.call_args.args
+        else mock_post.call_args.kwargs.get("payload") or mock_post.call_args.kwargs["json"]
+    )
+    assert sent_payload["usage"] == {"include": True}
+    assert sent_payload["provider"] == {"order": ["deepinfra"], "allow_fallbacks": False}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_adapter_chat_completion_omits_cost_when_absent() -> None:
+    """When OpenRouter doesn't return cost, _routing has no upstream_cost_usd key."""
+    from serving.adapters.openrouter import OpenRouterAdapter
+
+    adapter = OpenRouterAdapter(_make_or_cfg())
+    upstream_response = {
+        "id": "x",
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    with patch.object(adapter, "_post_with_pool", AsyncMock(return_value=upstream_response)):
+        result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    assert "upstream_cost_usd" not in result["_routing"]
+
+
+def test_openrouter_adapter_endpoint_id_distinct_per_pin() -> None:
+    """Distinct pinned providers must produce distinct endpoint_ids.
+
+    Verifies the property by going through the registry's _make_provider_id
+    with the raw bracketed kind string.
+    """
+    from serving.servers.registry import _make_provider_id
+
+    base = "https://openrouter.ai/api/v1"
+    id_bare = _make_provider_id("llama-3.3-70b", "openrouter", base)
+    id_di = _make_provider_id("llama-3.3-70b", "openrouter[deepinfra]", base)
+    id_fw = _make_provider_id("llama-3.3-70b", "openrouter[fireworks]", base)
+    assert id_bare != id_di
+    assert id_di != id_fw
+    assert id_bare != id_fw
+
+
+@pytest.mark.asyncio
+async def test_non_or_adapter_response_has_no_routing_block() -> None:
+    """Non-OpenRouter OAI-compat adapters must NOT attach a _routing block to non-stream responses."""
+    cfg = _make_compat_cfg()
+    adapter = OpenAICompatAdapter(cfg)
+    upstream_response = {
+        "id": "x",
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    with patch.object(adapter, "_post_with_pool", AsyncMock(return_value=upstream_response)):
+        result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    assert "_routing" not in result
