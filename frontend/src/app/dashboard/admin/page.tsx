@@ -337,21 +337,23 @@ function formatTokens(n: number): string {
 }
 
 function formatThroughput(n: number): string {
-  if (n >= 100) return `${Math.round(n)}/s`;
-  return `${n.toFixed(1)}/s`;
+  if (n >= 1000) {
+    const k = n / 1000;
+    return `${k.toFixed(n % 1000 === 0 ? 0 : 1)}k tok/s`;
+  }
+  if (n >= 100) return `${Math.round(n)} tok/s`;
+  return `${n.toFixed(1)} tok/s`;
 }
 
 function formatBucketEdge(value: number, kind: 'tokens' | 'ms' | 'tps'): string {
+  const formatK = (v: number): string => `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k`;
   if (kind === 'tokens') {
-    if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`;
-    return value.toLocaleString();
+    return value >= 1000 ? formatK(value) : value.toLocaleString();
   }
   if (kind === 'tps') {
-    if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`;
-    return `${value}/s`;
+    return formatThroughput(value);
   }
-  if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}s`;
-  return `${value}ms`;
+  return value >= 1000 ? `${formatK(value)}s` : `${value}ms`;
 }
 
 function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {

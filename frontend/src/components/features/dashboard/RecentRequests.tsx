@@ -61,6 +61,16 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
   const hasCacheTokens = req.cache_read_tokens != null || req.cache_write_tokens != null;
   const cachedTokens = hasCacheTokens ? cacheRead + cacheWrite : null;
 
+  const throughputTps =
+    req.stream &&
+    req.completion_tokens != null &&
+    req.completion_tokens > 1 &&
+    req.ttft_ms != null &&
+    req.latency_ms != null &&
+    req.latency_ms > req.ttft_ms
+      ? ((req.completion_tokens - 1) * 1000) / (req.latency_ms - req.ttft_ms)
+      : null;
+
   return (
     <>
       <tr
@@ -118,12 +128,10 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 <span className="text-gray-500">Cached Tokens:</span>{' '}
                 <span className="text-gray-700">{formatTokens(cachedTokens)}</span>
               </div>
-              {req.stream && req.completion_tokens != null && req.completion_tokens > 1 && req.ttft_ms != null && req.latency_ms != null && req.latency_ms > req.ttft_ms && (
+              {throughputTps != null && (
                 <div>
                   <span className="text-gray-500">Throughput:</span>{' '}
-                  <span className="text-gray-700">
-                    {(((req.completion_tokens - 1) * 1000) / (req.latency_ms - req.ttft_ms)).toFixed(1)} tok/s
-                  </span>
+                  <span className="text-gray-700">{throughputTps.toFixed(1)} tok/s</span>
                 </div>
               )}
               {req.error && (

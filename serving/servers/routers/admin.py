@@ -1336,7 +1336,8 @@ async def admin_get_performance_metrics(
     - completion_tokens (over rows where completion_tokens > 0)
     - ttft_ms (over streaming rows with ttft_ms NOT NULL)
     - throughput_tps (over streaming rows with completion_tokens > 1, derived from
-      (completion_tokens - 1) * 1000 / (latency_ms - ttft_ms); negatives clamped to NULL)
+      (completion_tokens - 1) * 1000 / (latency_ms - ttft_ms); requires
+      latency_ms > ttft_ms — non-positive decode time clamped to NULL)
 
     Only successful requests (status_code 200-399) are included.
     """
