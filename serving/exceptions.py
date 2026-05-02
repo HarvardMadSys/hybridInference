@@ -13,9 +13,10 @@ class HybridInferenceError(Exception):
 
 
 class UserFacingError(HybridInferenceError):
-    """Marker base for exceptions whose message is safe to surface verbatim
-    to end users. Subclasses' str(exc) is passed through scrub_error_for_user
-    unchanged (with a request_id suffix appended).
+    """Marker base for exceptions whose message is safe to surface verbatim.
+
+    Subclasses' str(exc) is passed through scrub_error_for_user unchanged
+    (with a request_id suffix appended).
     """
 
     pass
