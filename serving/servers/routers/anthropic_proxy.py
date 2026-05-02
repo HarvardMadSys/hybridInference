@@ -181,6 +181,7 @@ def _schedule_db_log(
     status_code: int,
     pricing: dict[str, str],
     metadata: dict[str, Any],
+    stream: bool = False,
     error: str | None = None,
 ) -> None:
     """Schedule a background DB log task (same pattern as completions.py)."""
@@ -201,7 +202,7 @@ def _schedule_db_log(
                 latency_ms=latency_ms,
                 status_code=status_code,
                 error=error,
-                params={"surface": "anthropic_proxy", "account_id": account_id},
+                params={"surface": "anthropic_proxy", "account_id": account_id, "stream": stream},
                 metadata=metadata,
                 pricing=pricing,
             )
@@ -514,6 +515,7 @@ async def _forward_non_streaming(
             status_code=200,
             pricing=pricing,
             metadata=metadata,
+            stream=False,
         )
 
     return JSONResponse(content=data)
@@ -565,6 +567,7 @@ async def _forward_streaming(
                 status_code=502,
                 pricing={},
                 metadata=metadata,
+                stream=True,
                 error=f"Upstream connection failed: {exc}",
             )
         return _anthropic_error(502, scrub_error_for_user(exc, request_id, 502))
@@ -589,6 +592,7 @@ async def _forward_streaming(
                     status_code=502,
                     pricing={},
                     metadata=metadata,
+                    stream=True,
                     error=f"Upstream connection failed on retry: {exc}",
                 )
             return _anthropic_error(502, scrub_error_for_user(exc, request_id, 502))
@@ -674,6 +678,7 @@ async def _forward_streaming(
                     status_code=200 if not stream_failed else 502,
                     pricing=pricing,
                     metadata=metadata,
+                    stream=True,
                 )
 
     return StreamingResponse(
