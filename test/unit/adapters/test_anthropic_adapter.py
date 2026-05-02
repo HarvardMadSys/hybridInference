@@ -259,3 +259,20 @@ async def test_stream_messages_identity_passthrough_records_usage(monkeypatch):
     # Forwarded body: model rewritten + stream=True.
     assert captured["json"]["model"] == "claude-opus-4-7"
     assert captured["json"]["stream"] is True
+
+
+def test_registry_returns_anthropic_adapter_for_kind_anthropic():
+    """Smoke test: kind: anthropic dispatches to AnthropicAdapter."""
+    from serving.servers.registry import _make_adapter
+
+    cfg = {
+        "id": "claude-opus-4.7",
+        "name": "Claude Opus 4.7",
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_key": "sk-ant-test",
+        "provider_model_id": "claude-opus-4-7",
+    }
+    adapter = _make_adapter("anthropic", cfg)
+    assert isinstance(adapter, AnthropicAdapter)
+    assert adapter.native_format == "anthropic"

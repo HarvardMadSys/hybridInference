@@ -18,6 +18,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 from serving.adapters import (
+    AnthropicAdapter,
     ClaudeAdapter,
     ClaudeSubscriptionAdapter,
     CodexSubscriptionAdapter,
@@ -131,8 +132,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"openai"``, ``"zhipu"``,
-              ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``, ``"openrouter"``,
-              ``"openrouter[<slug>]"``).
+              ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``,
+              ``"openrouter"``, ``"openrouter[<slug>]"``, ``"anthropic"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -198,6 +199,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         return CodexSubscriptionAdapter(model_cfg)
     if kind == "claude_sub":
         return ClaudeSubscriptionAdapter(model_cfg)
+    if kind == "anthropic":
+        return AnthropicAdapter(model_cfg)
 
     raise ValueError(f"Unknown adapter kind: {kind}")
 
