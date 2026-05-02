@@ -29,8 +29,13 @@ scrape_configs:
   #     - target_label: __address__
   #       replacement: 127.0.0.1:9115 # blackbox-exporter
 
-rule_files:
-  - rules/service_availability.yml
+rule_files: []
+# Note: previously referenced rules/service_availability.yml which was
+# removed in commit ec0dec4 ("remove prometheus + grafana, keep
+# alertmanager + alert-logger"). The rules depended on `up{job="app"}`
+# and the `database_connected` gauge, both of which no longer exist —
+# `prometheus-client` was dropped and metrics are no-op shims. Re-add
+# rule files here only after a metrics source is wired back in.
 
 # Alertmanager configuration
 alerting:
