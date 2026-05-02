@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -679,3 +679,44 @@ class ProviderStatsResponse(BaseModel):
     # The UI uses pairs[0] as the default selection so it never picks a
     # provider x model combination that has no data.
     pairs: list[ProviderModelPair]
+
+
+# ============================================================
+# Provider Token Usage (per-provider, per-model token totals over a
+# selectable hourly window). Powers the admin "Token Usage" tab.
+# ============================================================
+
+
+class ProviderTokenUsageRow(BaseModel):  # type: ignore[no-any-unimported]
+    provider: str
+    model_id: str
+    input_tokens: int
+    output_tokens: int
+    cached_tokens: int
+    reasoning_tokens: int
+    cost_usd: float
+    request_count: int
+
+
+class ProviderTokenUsageTotals(BaseModel):  # type: ignore[no-any-unimported]
+    input_tokens: int
+    output_tokens: int
+    cached_tokens: int
+    reasoning_tokens: int
+    cost_usd: float
+    request_count: int
+
+
+class ProviderTokenUsageWindow(BaseModel):  # type: ignore[no-any-unimported]
+    from_: datetime = Field(alias="from")
+    to: datetime
+
+    model_config = {"populate_by_name": True}
+
+
+class ProviderTokenUsageResponse(BaseModel):  # type: ignore[no-any-unimported]
+    range: Literal["1h", "24h", "7d", "30d"]
+    window: ProviderTokenUsageWindow
+    refreshed_at: datetime
+    rows: list[ProviderTokenUsageRow]
+    totals: ProviderTokenUsageTotals
