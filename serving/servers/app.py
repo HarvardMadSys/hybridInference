@@ -19,7 +19,6 @@ from .middleware.timeout import TimeoutMiddleware
 from .routers import (
     admin,
     anthropic_messages,
-    anthropic_proxy,
     auth_routes,
     compat,
     completions,
@@ -85,7 +84,6 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(completions.router)
     app.include_router(embeddings.router)
-    app.include_router(anthropic_proxy.router)
     app.include_router(anthropic_messages.router)
     app.include_router(qdrant_proxy.router)
     app.include_router(compat.router)
