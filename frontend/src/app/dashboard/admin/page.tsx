@@ -73,6 +73,182 @@ function applyOffsetJump(
   clearInput();
 }
 
+function tryParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+type ChatMessage = {
+  role: string;
+  content: unknown;
+};
+
+function isChatMessage(v: unknown): v is ChatMessage {
+  return isRecord(v) && typeof v.role === 'string' && 'content' in v;
+}
+
+function flattenContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (isRecord(part)) {
+          if (part.type === 'text' && typeof part.text === 'string') return part.text;
+          if (typeof part.type === 'string') return `[${part.type}]`;
+        }
+        return '';
+      })
+      .filter((s) => s.length > 0)
+      .join('\n');
+  }
+  if (content == null) return '';
+  return JSON.stringify(content);
+}
+
+function hasMessages(v: unknown): v is Record<string, unknown> & { messages: ChatMessage[] } {
+  if (!isRecord(v)) return false;
+  const m = v.messages;
+  return Array.isArray(m) && m.length > 0 && m.every(isChatMessage);
+}
+
+type ChatChoice = { message: ChatMessage; finish_reason?: unknown; index?: unknown };
+
+function isChatChoice(v: unknown): v is ChatChoice {
+  return isRecord(v) && isChatMessage(v.message);
+}
+
+function hasChoices(v: unknown): v is Record<string, unknown> & { choices: ChatChoice[] } {
+  if (!isRecord(v)) return false;
+  const c = v.choices;
+  return Array.isArray(c) && c.length > 0 && c.every(isChatChoice);
+}
+
+const ROLE_BADGE: Record<string, string> = {
+  system: 'bg-gray-100 text-gray-700 border-gray-200',
+  user: 'bg-blue-50 text-blue-700 border-blue-200',
+  assistant: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  tool: 'bg-amber-50 text-amber-700 border-amber-200',
+};
+
+function roleBadgeClass(role: string): string {
+  return ROLE_BADGE[role] ?? 'bg-gray-100 text-gray-700 border-gray-200';
+}
+
+function formatScalar(v: unknown): string {
+  if (v == null) return String(v);
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v)) return `[${v.length} items]`;
+  if (isRecord(v)) {
+    const keys = Object.keys(v);
+    return `{${keys.length} keys}`;
+  }
+  return JSON.stringify(v);
+}
+
+function MetaList({
+  data,
+  skip,
+}: {
+  data: Record<string, unknown>;
+  skip: ReadonlyArray<string>;
+}) {
+  const entries = Object.entries(data).filter(([k]) => !skip.includes(k));
+  if (entries.length === 0) return null;
+  return (
+    <dl className="mb-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[11px]">
+      {entries.map(([k, v]) => (
+        <Fragment key={k}>
+          <dt className="text-gray-500">{k}:</dt>
+          <dd className="text-gray-700 break-words font-mono">{formatScalar(v)}</dd>
+        </Fragment>
+      ))}
+    </dl>
+  );
+}
+
+function MessageBlock({ message }: { message: ChatMessage }) {
+  const text = flattenContent(message.content);
+  return (
+    <div className="rounded-md border border-gray-200 bg-white px-2 py-1.5">
+      <div className="mb-1 flex items-center gap-2">
+        <span
+          className={`inline-block rounded border px-1.5 py-px text-[10px] font-medium uppercase tracking-wide ${roleBadgeClass(
+            message.role,
+          )}`}
+        >
+          {message.role}
+        </span>
+      </div>
+      <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-gray-700">
+        {text}
+      </pre>
+    </div>
+  );
+}
+
+function JsonChatView({ data }: { data: unknown }) {
+  if (hasMessages(data)) {
+    return (
+      <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
+        <MetaList data={data} skip={['messages']} />
+        <div className="space-y-1.5">
+          {data.messages.map((m, i) => (
+            <MessageBlock key={i} message={m} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (hasChoices(data)) {
+    return (
+      <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
+        <MetaList data={data} skip={['choices']} />
+        <div className="space-y-1.5">
+          {data.choices.map((c, i) => (
+            <MessageBlock key={i} message={c.message} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <pre className="mt-1 overflow-x-auto rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-700 whitespace-pre-wrap break-words">
+      {JSON.stringify(data, null, 2)}
+    </pre>
+  );
+}
+
+function computePreview(value: string, parsed: unknown): string {
+  if (hasMessages(parsed)) {
+    for (let i = parsed.messages.length - 1; i >= 0; i--) {
+      const m = parsed.messages[i];
+      if (m.role === 'user') {
+        const text = flattenContent(m.content);
+        if (text) return previewText(text);
+      }
+    }
+    const last = parsed.messages[parsed.messages.length - 1];
+    if (last) {
+      const text = flattenContent(last.content);
+      if (text) return previewText(text);
+    }
+  }
+  if (hasChoices(parsed)) {
+    const first = parsed.choices[0];
+    const text = flattenContent(first.message.content);
+    if (text) return previewText(text);
+  }
+  return previewText(value);
+}
+
 function FoldedText({ label, value }: { label: string; value?: string | null }) {
   if (!value) {
     return (
@@ -82,17 +258,24 @@ function FoldedText({ label, value }: { label: string; value?: string | null }) 
     );
   }
 
+  const parsed = tryParseJson(value);
+  const preview = parsed === null ? previewText(value) : computePreview(value, parsed);
+
   return (
     <details className="col-span-full group">
       <summary className="cursor-pointer list-none text-gray-500 flex items-center gap-2">
         <span>{label}:</span>
-        <span className="text-gray-700 whitespace-pre-wrap break-words">{previewText(value)}</span>
+        <span className="text-gray-700 whitespace-pre-wrap break-words">{preview}</span>
         <span className="text-[10px] text-gray-400 group-open:hidden">(show more)</span>
         <span className="text-[10px] text-gray-400 hidden group-open:inline">(show less)</span>
       </summary>
-      <pre className="mt-1 overflow-x-auto rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-700 whitespace-pre-wrap break-words">
-        {value}
-      </pre>
+      {parsed === null ? (
+        <pre className="mt-1 overflow-x-auto rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-700 whitespace-pre-wrap break-words">
+          {value}
+        </pre>
+      ) : (
+        <JsonChatView data={parsed} />
+      )}
     </details>
   );
 }
