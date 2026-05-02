@@ -2,7 +2,7 @@ import Link from 'next/link';
 
 export function Hero(): JSX.Element {
   return (
-    <section className="relative w-full overflow-hidden rounded-2xl bg-gradient-to-br from-white via-gray-50 to-red-50/40 px-6 py-20 text-center shadow-subtle">
+    <section className="relative w-full overflow-hidden rounded-2xl bg-gradient-to-br from-white via-gray-50 to-red-50/30 px-6 py-20 text-center shadow-subtle">
       <h1 className="mx-auto max-w-3xl font-serif text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl md:text-6xl">
         Free LLM Inference <span className="text-crimson">for Research</span>
       </h1>
