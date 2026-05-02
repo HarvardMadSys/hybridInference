@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 15
-    jwt_refresh_token_expire_days: int = 365
+    jwt_refresh_token_expire_days: int = 30
 
     # Cookie
     cookie_secure: bool = True

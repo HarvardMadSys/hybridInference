@@ -444,6 +444,42 @@ class TestRefreshToken:
         assert "access_token" in data
 
     @pytest.mark.asyncio
+    async def test_refresh_rotates_cookie(self, auth_app_client: AsyncClient, test_user):
+        """Refresh must mint a NEW refresh-token cookie and invalidate the old.
+
+        Token rotation is the mitigation against a stolen refresh token:
+        once the legitimate client refreshes, the attacker's copy stops
+        working (because the stored hash has changed in op_store).
+        """
+        login_response = await auth_app_client.post(
+            "/auth/login",
+            json={"email": test_user["email"], "password": test_user["password"]},
+        )
+        original_refresh = login_response.cookies.get("refresh_token")
+        assert original_refresh
+
+        # First refresh: should rotate.
+        first_refresh_response = await auth_app_client.post(
+            "/auth/refresh", cookies={"refresh_token": original_refresh}
+        )
+        assert first_refresh_response.status_code == 200
+        rotated_refresh = first_refresh_response.cookies.get("refresh_token")
+        assert rotated_refresh, "expected new refresh_token cookie on /auth/refresh"
+        assert rotated_refresh != original_refresh, "refresh token was not rotated"
+
+        # Original refresh token must no longer be accepted.
+        replay_response = await auth_app_client.post(
+            "/auth/refresh", cookies={"refresh_token": original_refresh}
+        )
+        assert replay_response.status_code == 401
+
+        # New refresh token still works.
+        followup_response = await auth_app_client.post(
+            "/auth/refresh", cookies={"refresh_token": rotated_refresh}
+        )
+        assert followup_response.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_refresh_without_token(self, auth_app_client: AsyncClient):
         """Test refresh without token fails."""
         response = await auth_app_client.post("/auth/refresh")
