@@ -1014,7 +1014,8 @@ class PostgresOperationalStore(OperationalStore):
         """Fetch the active key for self-registered user by account_id."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, key_prefix, created_at, last_used_at, status "
+                "SELECT id, key_prefix, created_at, last_used_at, status, "
+                "quota_daily_cost_usd "
                 "FROM api_keys WHERE account_id = $1 AND status = 'active'",
                 account_id,
             )
