@@ -316,6 +316,9 @@ class OpenAICompatAdapter(BaseAdapter):
             ):
                 payload["guided_json"] = schema
         payload = transform_payload_for_profile(self._usage_profile, payload, stream=True)
+        if getattr(self.config, "include_usage_in_stream", False):
+            existing_options = payload.get("stream_options") or {}
+            payload["stream_options"] = {**existing_options, "include_usage": True}
 
         url = self._build_url()
         headers = self._build_headers()
