@@ -879,6 +879,9 @@ export default function AdminPage() {
     if (activeTab === 'provider-perf') {
       return;
     }
+    if (activeTab === 'token-usage') {
+      return;
+    }
     loadRequests();
     loadRequestMetrics();
   };
