@@ -35,6 +35,13 @@ function fmtHour(iso: string): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00`;
 }
 
+function modelsForProvider(
+  pairs: { provider: string; model_id: string }[],
+  prov: string,
+): string[] {
+  return Array.from(new Set(pairs.filter((p) => p.provider === prov).map((p) => p.model_id)));
+}
+
 export function ProviderPerformanceTab() {
   const [data, setData] = useState<ProviderStatsResponse | null>(null);
   const [allProviders, setAllProviders] = useState<string[]>([]);
@@ -46,55 +53,29 @@ export function ProviderPerformanceTab() {
   const [error, setError] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
 
-  const modelsForProvider = useMemo(
-    () =>
-      allPairs
-        .filter((p) => p.provider === provider)
-        .map((p) => p.model_id)
-        .filter((v, i, a) => a.indexOf(v) === i),
-    [allPairs, provider],
-  );
+  const filteredModels = useMemo(() => modelsForProvider(allPairs, provider), [allPairs, provider]);
 
-  const fetchFilters = useCallback(
-    async (rangeKey: RangeKey) => {
+  const loadData = useCallback(async (prov: string, mod: string, rangeKey: RangeKey) => {
+    if (!prov || !mod) return;
+    setLoading(true);
+    setError(null);
+    try {
       const window_ = rangeWindow(rangeKey);
       const resp = await getProviderStats({
-        provider: '__none__',
-        model_id: '__none__',
+        provider: prov,
+        model_id: mod,
         from: window_.from,
         to: window_.to,
       });
+      setData(resp);
       setAllProviders(resp.providers);
       setAllPairs(resp.pairs);
-      return resp.pairs;
-    },
-    [],
-  );
-
-  const loadData = useCallback(
-    async (prov: string, mod: string, rangeKey: RangeKey) => {
-      if (!prov || !mod) return;
-      setLoading(true);
-      setError(null);
-      try {
-        const window_ = rangeWindow(rangeKey);
-        const resp = await getProviderStats({
-          provider: prov,
-          model_id: mod,
-          from: window_.from,
-          to: window_.to,
-        });
-        setData(resp);
-        setAllProviders(resp.providers);
-        setAllPairs(resp.pairs);
-      } catch (exc) {
-        setError(getErrorMessage(exc));
-      } finally {
-        setLoading(false);
-      }
-    },
-    [],
-  );
+    } catch (exc) {
+      setError(getErrorMessage(exc));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   const initializedRef = useRef(false);
   useEffect(() => {
@@ -103,12 +84,19 @@ export function ProviderPerformanceTab() {
     let cancelled = false;
     (async () => {
       try {
-        const pairs = await fetchFilters(range);
+        const window_ = rangeWindow(range);
+        const resp = await getProviderStats({
+          provider: '__none__',
+          model_id: '__none__',
+          from: window_.from,
+          to: window_.to,
+        });
         if (cancelled) return;
-        if (pairs.length > 0) {
-          setProvider(pairs[0].provider);
-          setModel(pairs[0].model_id);
-          await loadData(pairs[0].provider, pairs[0].model_id, range);
+        setAllProviders(resp.providers);
+        setAllPairs(resp.pairs);
+        if (resp.pairs.length > 0) {
+          setProvider(resp.pairs[0].provider);
+          setModel(resp.pairs[0].model_id);
         }
       } catch (exc) {
         if (!cancelled) setError(getErrorMessage(exc));
@@ -116,16 +104,10 @@ export function ProviderPerformanceTab() {
         if (!cancelled) setInitializing(false);
       }
     })();
-    return () => { cancelled = true; };
-  }, [range, fetchFilters, loadData]);
-
-  const prevRangeRef = useRef(range);
-  useEffect(() => {
-    if (prevRangeRef.current === range) return;
-    prevRangeRef.current = range;
-    if (!provider || !model) return;
-    void loadData(provider, model, range);
-  }, [range, provider, model, loadData]);
+    return () => {
+      cancelled = true;
+    };
+  }, [range]);
 
   useEffect(() => {
     if (initializing) return;
@@ -159,12 +141,9 @@ export function ProviderPerformanceTab() {
   const handleProviderChange = useCallback(
     (newProvider: string) => {
       setProvider(newProvider);
-      const matching = allPairs
-        .filter((p) => p.provider === newProvider)
-        .map((p) => p.model_id);
-      const unique = matching.filter((v, i, a) => a.indexOf(v) === i);
-      if (unique.length > 0 && !unique.includes(model)) {
-        setModel(unique[0]);
+      const models = modelsForProvider(allPairs, newProvider);
+      if (models.length > 0 && !models.includes(model)) {
+        setModel(models[0]);
       }
     },
     [allPairs, model],
@@ -194,7 +173,7 @@ export function ProviderPerformanceTab() {
             value={model}
             onChange={(e) => setModel(e.target.value)}
           >
-            {modelsForProvider.map((m) => (
+            {filteredModels.map((m) => (
               <option key={m} value={m}>
                 {m}
               </option>
@@ -218,7 +197,7 @@ export function ProviderPerformanceTab() {
       </div>
 
       {error ? <div className="text-red-600 text-sm">{error}</div> : null}
-      {(loading || initializing) ? <div className="text-gray-500 text-sm">Loading…</div> : null}
+      {loading || initializing ? <div className="text-gray-500 text-sm">Loading…</div> : null}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Kpi label="Requests" value={totals.requests.toLocaleString()} />
