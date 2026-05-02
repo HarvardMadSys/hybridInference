@@ -161,77 +161,81 @@ function formatBucketEdge(value: number, kind: 'tokens' | 'ms'): string {
   return `${value}ms`;
 }
 
-function MetricSubPanel({
-  title,
-  dist,
-  kind,
-}: {
-  title: string;
-  dist: AdminMetricDistribution;
-  kind: 'tokens' | 'ms';
-}) {
-  const formatValue = (v: number | null | undefined): string => {
+function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
+  const rows: Array<{
+    title: string;
+    dist: AdminMetricDistribution;
+    kind: 'tokens' | 'ms';
+  }> = [
+    { title: 'Prompt tokens', dist: metric.prompt_tokens, kind: 'tokens' },
+    { title: 'Response tokens', dist: metric.completion_tokens, kind: 'tokens' },
+    { title: 'TTFT', dist: metric.ttft_ms, kind: 'ms' },
+    { title: 'TBT', dist: metric.tbt_ms, kind: 'ms' },
+  ];
+  const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms'): string => {
     if (v == null) return '—';
     return kind === 'ms' ? formatLatency(v) : formatTokens(v);
   };
-  const maxBucket = Math.max(...dist.histogram.map((b) => b.count), 1);
-
   return (
-    <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <div className="text-[12px] font-medium text-gray-700">{title}</div>
-        <div className="text-[11px] tabular-nums text-gray-400">
-          n={dist.count.toLocaleString()}
-        </div>
-      </div>
-      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] tabular-nums text-gray-600">
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-gray-400">p50</div>
-          <div className="font-medium text-gray-900">{formatValue(dist.p50)}</div>
-        </div>
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-gray-400">p95</div>
-          <div className="font-medium text-gray-900">{formatValue(dist.p95)}</div>
-        </div>
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-gray-400">p99</div>
-          <div className="font-medium text-gray-900">{formatValue(dist.p99)}</div>
-        </div>
-      </div>
-      <div className="mt-2 flex h-10 items-end gap-px overflow-hidden rounded-md bg-white px-1 py-1">
-        {dist.histogram.map((b, idx) => {
-          const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
-          const upperLabel = b.upper_bound == null ? '∞' : formatBucketEdge(b.upper_bound, kind);
-          const lowerLabel = formatBucketEdge(b.lower_bound, kind);
-          return (
-            <div
-              key={`${idx}-${b.lower_bound}`}
-              className={`min-w-0 flex-1 rounded-t-sm ${
-                b.count === 0 ? 'bg-gray-200' : 'bg-gray-700'
-              }`}
-              style={{ height: `${height}%` }}
-              title={`[${lowerLabel}, ${upperLabel}): ${b.count.toLocaleString()}`}
-            />
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+    <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
       <div className="flex items-center justify-between">
-        <div className="text-[13px] font-semibold text-gray-900">{metric.label}</div>
-        <div className="text-[11px] text-gray-400">{metric.window_minutes}m window</div>
+        <div className="text-[12px] font-semibold text-gray-900">{metric.label}</div>
+        <div className="text-[10px] text-gray-400">{metric.window_minutes}m window</div>
       </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <MetricSubPanel title="Prompt tokens" dist={metric.prompt_tokens} kind="tokens" />
-        <MetricSubPanel title="Response tokens" dist={metric.completion_tokens} kind="tokens" />
-        <MetricSubPanel title="TTFT" dist={metric.ttft_ms} kind="ms" />
-        <MetricSubPanel title="TBT" dist={metric.tbt_ms} kind="ms" />
-      </div>
+      <table className="mt-2 w-full">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wider text-gray-400 font-medium">
+            <th className="py-1 text-left">Metric</th>
+            <th className="py-1 text-right">n</th>
+            <th className="py-1 text-right">p50</th>
+            <th className="py-1 text-right">p95</th>
+            <th className="py-1 text-right">p99</th>
+            <th className="py-1 text-right">Dist</th>
+          </tr>
+        </thead>
+        <tbody className="[&>tr+tr>td]:border-t [&>tr+tr>td]:border-gray-100">
+          {rows.map((row) => {
+            const maxBucket = Math.max(...row.dist.histogram.map((b) => b.count), 1);
+            return (
+              <tr key={row.title}>
+                <td className="py-1.5 text-[11px] text-gray-600">{row.title}</td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {row.dist.count.toLocaleString()}
+                </td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {formatValue(row.dist.p50, row.kind)}
+                </td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {formatValue(row.dist.p95, row.kind)}
+                </td>
+                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                  {formatValue(row.dist.p99, row.kind)}
+                </td>
+                <td className="py-1.5 text-right">
+                  <div className="ml-auto flex h-5 w-24 items-end gap-px">
+                    {row.dist.histogram.map((b, idx) => {
+                      const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
+                      const upperLabel =
+                        b.upper_bound == null ? '∞' : formatBucketEdge(b.upper_bound, row.kind);
+                      const lowerLabel = formatBucketEdge(b.lower_bound, row.kind);
+                      return (
+                        <div
+                          key={`${idx}-${b.lower_bound}`}
+                          className={`min-w-0 flex-1 rounded-t-[1px] ${
+                            b.count === 0 ? 'bg-gray-200' : 'bg-gray-700'
+                          }`}
+                          style={{ height: `${height}%` }}
+                          title={`[${lowerLabel}, ${upperLabel}): ${b.count.toLocaleString()}`}
+                        />
+                      );
+                    })}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -2004,11 +2008,11 @@ export default function AdminPage() {
         {activeTab === 'analytics' && <AnalyticsTab />}
 
         {activeTab === 'performance' && (
-          <div className="mt-8">
-            <div className="mb-3 flex items-center justify-between">
+          <div className="mt-5">
+            <div className="mb-2 flex items-center justify-between">
               <div>
-                <h2 className="text-[15px] font-semibold text-gray-900">Performance metrics</h2>
-                <p className="text-[12px] text-gray-400">
+                <h2 className="text-[14px] font-semibold text-gray-900">Performance metrics</h2>
+                <p className="text-[11px] text-gray-400">
                   Prompt/response length, time-to-first-token, and inter-token latency
                   distributions.
                 </p>
@@ -2018,7 +2022,7 @@ export default function AdminPage() {
               )}
             </div>
             {perfMetrics.length > 0 ? (
-              <div className="grid gap-3">
+              <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
                 {perfMetrics.map((metric) => (
                   <PerformanceMetricsCard key={metric.key} metric={metric} />
                 ))}
