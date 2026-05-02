@@ -6,8 +6,10 @@
 #   - https://staging.freeinference.org/v1/messages           (recommended)
 #   - https://staging.freeinference.org/anthropic/v1/messages (legacy alias)
 
-export ANTHROPIC_AUTH_TOKEN="hyi-JLL5SnXa14DpKSF3GcQQRmfAm9aDmjxEfod4X5EWrWk"
-export ANTHROPIC_API_KEY="hyi-JLL5SnXa14DpKSF3GcQQRmfAm9aDmjxEfod4X5EWrWk"
+# Set ANTHROPIC_API_KEY in your shell or .env before running this script.
+# Generate a key at https://staging.freeinference.org/dashboard
+: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set (e.g. export ANTHROPIC_API_KEY=hyi-...)}"
+export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_API_KEY}"
 export ANTHROPIC_BASE_URL="https://staging.freeinference.org"
 export CLAUDE_MODEL="claude-opus-4.7"
 

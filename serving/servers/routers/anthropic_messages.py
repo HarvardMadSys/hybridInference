@@ -73,8 +73,20 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     """Path-aware HTTP exception handler.
 
     Emits Anthropic-format errors for requests against the Anthropic surfaces,
-    and the default OpenRouter JSON shape for everything else.
+    and the default OpenRouter JSON shape for everything else. Pre-shaped
+    error bodies (``exc.detail`` is a dict containing ``"error"``) are
+    forwarded verbatim on every surface -- this preserves structured errors
+    such as ``concurrency_limit_exceeded`` regardless of path. Matches the
+    behaviour of the global handler installed by
+    ``serving.servers.middleware.error.install_error_handlers``.
     """
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.detail,
+            headers=dict(exc.headers or {}),
+        )
+
     path = request.url.path
     if any(path.startswith(p) for p in _ANTHROPIC_PATHS):
         return JSONResponse(
