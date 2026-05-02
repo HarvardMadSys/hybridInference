@@ -513,21 +513,19 @@ models:
         weight: 1.0
         base_url: https://chatgpt.com/backend-api/codex
 
-  # ── Anthropic via local cli-proxy ──────────────────────────
-  # These models are upstream Anthropic Claude models served through the local
-  # cli-proxy-api (OpenAI-compatible). The route's `kind` is what registers as
-  # the provider, so the top-level `provider` is set to `openai_compat` to
-  # match — `anthropic` would be cosmetic only and disagree with /v1/models.
+  # ── Anthropic direct (kind: anthropic) ─────────────────────
+  # These models route directly to api.anthropic.com via the AnthropicAdapter.
   #
   - id: claude-sonnet-4.6
     name: Claude Sonnet 4.6
-    provider: openai_compat
+    provider: anthropic
     required_role: internal
     provider_model_id: "claude-sonnet-4-6"
     context_length: 200000
     max_output_length: 64000
     supports_tools: true
-    supported_params: [temperature, max_tokens, stop, tools, tool_choice, top_p]
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
     input_modalities: [text, image]
     output_modalities: [text]
     quantization: "none"
@@ -540,22 +538,22 @@ models:
       input_cache_reads: "0.30"
       input_cache_writes: "3.75"
     route:
-      # Local cli-proxy-api (OpenAI-compatible) fronting Anthropic credentials
-      - kind: openai_compat
+      - kind: anthropic
         weight: 1.0
-        base_url: "http://host.docker.internal:8317/v1"
-        api_key: ${CLI_PROXY_API_KEY}
+        base_url: https://api.anthropic.com
+        api_key: ${ANTHROPIC_API_KEY}
         provider_model_id: "claude-sonnet-4-6"
   #
   - id: claude-opus-4.6
     name: Claude Opus 4.6
-    provider: openai_compat
+    provider: anthropic
     required_role: internal
     provider_model_id: "claude-opus-4-6"
     context_length: 200000
     max_output_length: 128000
     supports_tools: true
-    supported_params: [temperature, max_tokens, stop, tools, tool_choice, top_p]
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
     input_modalities: [text, image]
     output_modalities: [text]
     quantization: "none"
@@ -568,22 +566,22 @@ models:
       input_cache_reads: "0.50"
       input_cache_writes: "6.25"
     route:
-      # Local cli-proxy-api (OpenAI-compatible) fronting Anthropic credentials
-      - kind: openai_compat
+      - kind: anthropic
         weight: 1.0
-        base_url: "http://host.docker.internal:8317/v1"
-        api_key: ${CLI_PROXY_API_KEY}
+        base_url: https://api.anthropic.com
+        api_key: ${ANTHROPIC_API_KEY}
         provider_model_id: "claude-opus-4-6"
   #
   - id: claude-opus-4.7
     name: Claude Opus 4.7
-    provider: openai_compat
+    provider: anthropic
     required_role: internal
     provider_model_id: "claude-opus-4-7"
     context_length: 200000
     max_output_length: 128000
     supports_tools: true
-    supported_params: [temperature, max_tokens, stop, tools, tool_choice, top_p]
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
     input_modalities: [text, image]
     output_modalities: [text]
     quantization: "none"
@@ -596,11 +594,10 @@ models:
       input_cache_reads: "0.50"
       input_cache_writes: "6.25"
     route:
-      # Local cli-proxy-api (OpenAI-compatible) fronting Anthropic credentials
-      - kind: openai_compat
+      - kind: anthropic
         weight: 1.0
-        base_url: "http://host.docker.internal:8317/v1"
-        api_key: ${CLI_PROXY_API_KEY}
+        base_url: https://api.anthropic.com
+        api_key: ${ANTHROPIC_API_KEY}
         provider_model_id: "claude-opus-4-7"
   # ── OpenRouter examples ────────────────────────────────────
   # Bare `kind: openrouter` lets OpenRouter pick the upstream provider
