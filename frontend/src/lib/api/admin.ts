@@ -236,10 +236,7 @@ export async function deleteUser(userId: string, reason: string): Promise<Approv
   return jsonOrThrow<ApproveRejectResponse>(resp);
 }
 
-export async function resumeUser(
-  userId: string,
-  reason?: string,
-): Promise<ApproveRejectResponse> {
+export async function resumeUser(userId: string, reason?: string): Promise<ApproveRejectResponse> {
   const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

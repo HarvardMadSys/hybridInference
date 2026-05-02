@@ -2748,13 +2748,12 @@ export default function AdminPage() {
             </h3>
             <p className="mt-2 text-[12px] text-gray-600">
               This will <span className="font-semibold text-red-700">permanently wipe</span> the
-              user row, all API keys, all api_logs, and prior audit-log entries for this user.
-              This action <span className="font-semibold">cannot be undone</span>.
+              user row, all API keys, all api_logs, and prior audit-log entries for this user. This
+              action <span className="font-semibold">cannot be undone</span>.
             </p>
             <p className="mt-3 text-[12px] text-gray-500">
               Type the user&apos;s email address (
-              <span className="font-mono text-gray-700">{hardDeleteTarget.email}</span>) to
-              confirm:
+              <span className="font-mono text-gray-700">{hardDeleteTarget.email}</span>) to confirm:
             </p>
             <input
               type="text"
@@ -2785,8 +2784,7 @@ export default function AdminPage() {
               <button
                 onClick={doHardDelete}
                 disabled={
-                  hardDeleteEmailConfirm !== hardDeleteTarget.email ||
-                  busy === hardDeleteTarget.id
+                  hardDeleteEmailConfirm !== hardDeleteTarget.email || busy === hardDeleteTarget.id
                 }
                 className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-red-700 transition disabled:opacity-50"
               >
