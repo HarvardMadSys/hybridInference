@@ -51,7 +51,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at               TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     expires_at               TEXT,
     last_used_at             TEXT,
-    tier                     TEXT DEFAULT 'free',
     notes                    TEXT,
     metadata                 TEXT,
     account_id               TEXT

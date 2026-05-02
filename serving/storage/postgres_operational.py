@@ -192,7 +192,6 @@ class PostgresOperationalStore(OperationalStore):
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 expires_at TIMESTAMPTZ,
                 last_used_at TIMESTAMPTZ,
-                tier TEXT DEFAULT 'free',
                 notes TEXT,
                 metadata JSONB
             )
@@ -224,6 +223,11 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique "
             "ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL"
         )
+        # Drop legacy 'tier' column — tier/role unified on users.role
+        # (spec: docs/superpowers/specs/2026-05-02-unify-tier-role-design.md).
+        await conn.execute("""
+            ALTER TABLE api_keys DROP COLUMN IF EXISTS tier
+        """)
 
         # --- auth_sessions ---
         await conn.execute("""
@@ -524,7 +528,7 @@ class PostgresOperationalStore(OperationalStore):
                     f"SELECT u.id, u.email, u.user_name, u.role, u.status, "
                     f"u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
                     f"u.created_at, u.last_login_at, "
-                    f"k.key_prefix, k.status AS key_status, k.tier AS key_tier "
+                    f"k.key_prefix, k.status AS key_status "
                     f"FROM users u "
                     f"LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active' "
                     f"{where_sql} "
@@ -538,7 +542,7 @@ class PostgresOperationalStore(OperationalStore):
                     f"  SELECT u.id, u.email, u.user_name, u.role, u.status, "
                     f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
                     f"  u.created_at, u.last_login_at, "
-                    f"  k.key_prefix, k.status AS key_status, k.tier AS key_tier "
+                    f"  k.key_prefix, k.status AS key_status "
                     f"  FROM users u "
                     f"  LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active' "
                     f"  {where_sql}"
@@ -709,7 +713,7 @@ class PostgresOperationalStore(OperationalStore):
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, k.tier, "
+                "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
                 "u.email, u.role, u.email_verified "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -748,7 +752,6 @@ class PostgresOperationalStore(OperationalStore):
         key_prefix: str,
         user_id: str,
         user_name: str | None = None,
-        tier: str = "free",
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
@@ -760,16 +763,15 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO api_keys "
-                "(key_hash, key_prefix, user_id, user_name, tier, "
+                "(key_hash, key_prefix, user_id, user_name, "
                 "quota_daily_cost_usd, quota_monthly_cost_usd, "
                 "expires_at, notes, metadata, account_id) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10) "
                 "RETURNING id, created_at",
                 key_hash,
                 key_prefix,
                 user_id,
                 user_name,
-                tier,
                 quota_daily_cost_usd,
                 quota_monthly_cost_usd,
                 expires_at,
@@ -792,7 +794,6 @@ class PostgresOperationalStore(OperationalStore):
         self,
         *,
         status: str | None = None,
-        tier: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[int, list[Row]]:
@@ -803,9 +804,6 @@ class PostgresOperationalStore(OperationalStore):
         if status:
             where_clauses.append(f"status = ${len(params) + 1}")
             params.append(status)
-        if tier:
-            where_clauses.append(f"tier = ${len(params) + 1}")
-            params.append(tier)
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
         params.append(limit)
@@ -819,7 +817,7 @@ class PostgresOperationalStore(OperationalStore):
             total = count_row["total"] if count_row else 0
 
             rows = await conn.fetch(
-                f"SELECT user_id, user_name, key_prefix, tier, status, "
+                f"SELECT user_id, user_name, key_prefix, status, "
                 f"quota_daily_cost_usd, quota_monthly_cost_usd, "
                 f"created_at, last_used_at, expires_at, notes "
                 f"FROM api_keys {where_sql} "
@@ -834,7 +832,7 @@ class PostgresOperationalStore(OperationalStore):
         """Fetch full key row for a given *user_id*."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT user_id, user_name, key_prefix, tier, status, "
+                "SELECT user_id, user_name, key_prefix, status, "
                 "quota_daily_cost_usd, quota_monthly_cost_usd, "
                 "created_at, last_used_at, expires_at, notes, metadata "
                 "FROM api_keys WHERE user_id = $1",
@@ -898,7 +896,7 @@ class PostgresOperationalStore(OperationalStore):
         """Fetch key row by account_id or user_id."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT tier FROM api_keys "
+                "SELECT id FROM api_keys "
                 "WHERE (account_id = $1 OR user_id = $1) AND status = 'active' "
                 "LIMIT 1",
                 account_id,

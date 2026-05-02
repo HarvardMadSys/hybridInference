@@ -311,7 +311,7 @@ class D1OperationalStore(OperationalStore):
             f"SELECT u.id, u.email, u.user_name, u.role, u.status, "
             f"u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
             f"u.created_at, u.last_login_at, "
-            f"k.key_prefix, k.status AS key_status, k.tier AS key_tier "
+            f"k.key_prefix, k.status AS key_status "
             f"FROM users u "
             f"LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active' "
             f"{where_sql} "
@@ -384,7 +384,7 @@ class D1OperationalStore(OperationalStore):
         Returns full projection in a single round-trip.
         """
         result = await self._d1.query(
-            "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, k.tier, "
+            "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
             "u.email, u.role "
             "FROM api_keys k "
             "LEFT JOIN users u ON u.id = k.user_id "
@@ -424,7 +424,6 @@ class D1OperationalStore(OperationalStore):
         key_prefix: str,
         user_id: str,
         user_name: str | None = None,
-        tier: str = "free",
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
@@ -436,17 +435,16 @@ class D1OperationalStore(OperationalStore):
         now = _now_iso()
         result = await self._d1.query(
             "INSERT INTO api_keys "
-            "(key_hash, key_prefix, user_id, user_name, tier, "
+            "(key_hash, key_prefix, user_id, user_name, "
             "quota_daily_cost_usd, quota_monthly_cost_usd, "
             "expires_at, notes, metadata, account_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "RETURNING id, created_at",
             [
                 key_hash,
                 key_prefix,
                 user_id,
                 user_name,
-                tier,
                 float(quota_daily_cost_usd),
                 float(quota_monthly_cost_usd) if quota_monthly_cost_usd is not None else None,
                 _dt_to_iso(expires_at),
@@ -473,7 +471,6 @@ class D1OperationalStore(OperationalStore):
         self,
         *,
         status: str | None = None,
-        tier: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[int, list[Row]]:
@@ -484,9 +481,6 @@ class D1OperationalStore(OperationalStore):
         if status:
             where_clauses.append("status = ?")
             params.append(status)
-        if tier:
-            where_clauses.append("tier = ?")
-            params.append(tier)
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -498,7 +492,7 @@ class D1OperationalStore(OperationalStore):
 
         query_params = [*params, limit, offset]
         rows_result = await self._d1.query(
-            f"SELECT user_id, user_name, key_prefix, tier, status, "
+            f"SELECT user_id, user_name, key_prefix, status, "
             f"quota_daily_cost_usd, quota_monthly_cost_usd, "
             f"created_at, last_used_at, expires_at, notes "
             f"FROM api_keys {where_sql} "
@@ -512,7 +506,7 @@ class D1OperationalStore(OperationalStore):
     async def get_key_detail(self, user_id: str) -> Row | None:
         """Fetch full key row for a given user_id."""
         result = await self._d1.query(
-            "SELECT user_id, user_name, key_prefix, tier, status, "
+            "SELECT user_id, user_name, key_prefix, status, "
             "quota_daily_cost_usd, quota_monthly_cost_usd, "
             "created_at, last_used_at, expires_at, notes, metadata "
             "FROM api_keys WHERE user_id = ?",
@@ -589,7 +583,7 @@ class D1OperationalStore(OperationalStore):
     async def get_key_by_account_or_user(self, account_id: str) -> Row | None:
         """Fetch key row by account_id or user_id."""
         result = await self._d1.query(
-            "SELECT tier FROM api_keys "
+            "SELECT id FROM api_keys "
             "WHERE (account_id = ? OR user_id = ?) AND status = 'active' "
             "LIMIT 1",
             [account_id, account_id],
