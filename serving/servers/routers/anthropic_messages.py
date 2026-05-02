@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.config.settings import has_role
+from serving.exceptions import scrub_error_for_user
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     normalize_model_label,
@@ -87,6 +88,20 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
             headers=dict(exc.headers or {}),
         )
 
+    from serving.utils.errors import categorize_exception
+
+    err_type = categorize_exception(exc)
+    logger.error(
+        "http_error",
+        extra={
+            "error_type": err_type,
+            "status_code": exc.status_code,
+            "path": request.url.path,
+            "method": request.method,
+        },
+        exc_info=exc,
+    )
+
     path = request.url.path
     if any(path.startswith(p) for p in _ANTHROPIC_PATHS):
         return JSONResponse(
@@ -102,11 +117,8 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
         )
     # Non-Anthropic paths: produce the same OpenRouter shape as install_error_handlers.
     from serving.servers.middleware.error import _build_error_response
-    from serving.utils.errors import categorize_exception
 
-    content = _build_error_response(
-        str(exc.detail), code=exc.status_code, typ=categorize_exception(exc)
-    )
+    content = _build_error_response(str(exc.detail), code=exc.status_code, typ=err_type)
     return JSONResponse(
         status_code=exc.status_code, content=content, headers=dict(exc.headers or {})
     )
@@ -258,10 +270,17 @@ async def anthropic_messages(
         }
 
         async def _gen():
-            usage = {"input_tokens": 0, "output_tokens": 0}
+            request_usage = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            }
             stream_failed = False
             try:
-                async for chunk in adapter.stream_messages(body, request_id=request_id):
+                async for chunk in adapter.stream_messages(
+                    body, request_id=request_id, usage_sink=request_usage
+                ):
                     if isinstance(chunk, str):
                         chunk = chunk.encode("utf-8")
                     yield chunk
@@ -272,12 +291,13 @@ async def anthropic_messages(
 
                 err = {
                     "type": "error",
-                    "error": {"type": "api_error", "message": f"Stream interrupted: {exc}"},
+                    "error": {
+                        "type": "api_error",
+                        "message": scrub_error_for_user(exc, request_id, 502),
+                    },
                 }
                 yield f"event: error\ndata: {_j.dumps(err)}\n\n".encode()
             finally:
-                if hasattr(adapter, "last_stream_usage"):
-                    usage = adapter.last_stream_usage
                 latency_ms = int((time.time() - start) * 1000)
                 status_code = 502 if stream_failed else 200
                 API_MODEL_REQUESTS.labels(
@@ -291,7 +311,7 @@ async def anthropic_messages(
                         request_id=request_id,
                         model_id=canonical,
                         provider=adapter.config.provider,
-                        usage=usage,
+                        usage=request_usage,
                         latency_ms=latency_ms,
                         status_code=status_code,
                         pricing=adapter.config.pricing
@@ -308,7 +328,7 @@ async def anthropic_messages(
         return _anthropic_error(exc.status_code, str(exc.detail))
     except Exception as exc:
         logger.exception(f"[{request_id}] Adapter messages() failed")
-        return _anthropic_error(502, f"Upstream error: {exc}")
+        return _anthropic_error(502, scrub_error_for_user(exc, request_id, 502))
 
     usage = (resp.get("usage") or {}) if isinstance(resp, dict) else {}
     usage_for_log = {

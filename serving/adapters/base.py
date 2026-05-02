@@ -180,6 +180,7 @@ class BaseAdapter(ABC):
         body: dict[str, Any],
         *,
         request_id: str,
+        usage_sink: dict[str, int] | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Anthropic Messages API streaming. Yields raw Anthropic SSE bytes."""
         from serving.adapters.anthropic_translator import (
@@ -197,12 +198,15 @@ class BaseAdapter(ABC):
         for ant in translator.finalize():
             yield ant
         # Expose accumulated usage for the router's DB-logging step.
-        self.last_stream_usage = {
+        final_usage = {
             "input_tokens": translator.usage.get("input_tokens", 0),
             "output_tokens": translator.usage.get("output_tokens", 0),
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
         }
+        self.last_stream_usage = final_usage  # keep for backward-compat with tests
+        if usage_sink is not None:
+            usage_sink.update(final_usage)
 
     def validate_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Validate and clamp request parameters to provider limits."""
