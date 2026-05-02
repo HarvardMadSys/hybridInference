@@ -348,3 +348,38 @@ async def test_hourly_job_skips_when_locked(db_logger: DatabaseLogger, pg_dsn: s
     finally:
         await holder.execute("SELECT pg_advisory_unlock($1)", ADVISORY_LOCK_KEY)
         await holder.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_if_empty_seeds_history(db_logger: DatabaseLogger):
+    from serving.admin.provider_stats_rollup import backfill_if_empty
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    # Seed 3 distinct hours of traffic
+    for h in (now - timedelta(hours=3), now - timedelta(hours=2), now - timedelta(hours=1)):
+        await _insert_api_log(
+            pool,
+            request_id=f"bf-{h.isoformat()}",
+            provider="zai",
+            model_id="zai/glm-4.6",
+            timestamp=h + timedelta(minutes=5),
+            stream=True,
+            ttft_ms=500,
+            latency_ms=3500,
+            completion_tokens=200,
+        )
+
+    await backfill_if_empty(pool, days=1)
+
+    async with pool.acquire() as conn:
+        n = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
+    assert n == 3
+
+    # Second call must be a no-op (table not empty).
+    await backfill_if_empty(pool, days=1)
+    async with pool.acquire() as conn:
+        n2 = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
+    assert n2 == 3

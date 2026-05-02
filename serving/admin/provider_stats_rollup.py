@@ -209,3 +209,31 @@ async def hourly_job(
             outcome,
         )
         # Metrics emission is added in Task 10.
+
+
+async def backfill_if_empty(
+    pool: asyncpg.Pool,
+    *,
+    days: int = 30,
+) -> int:
+    """If provider_hourly_stats has no rows, aggregate the last `days` of
+    api_logs in a single pass. Idempotent: no-op when rows exist.
+    Returns the number of rows written (0 when skipped).
+    """
+    async with pool.acquire() as conn:
+        any_row = await conn.fetchval("SELECT 1 FROM provider_hourly_stats LIMIT 1")
+    if any_row is not None:
+        logger.info("backfill_if_empty: table populated, skipping")
+        return 0
+
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=days)
+
+    rows = await run_rollup(pool, start=start, end=end)
+    logger.info(
+        "backfill_if_empty: window=[%s, %s) rows=%d",
+        start.isoformat(),
+        end.isoformat(),
+        rows,
+    )
+    return rows
