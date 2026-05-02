@@ -555,3 +555,140 @@ async def test_run_rollup_coalesces_all_null_columns(db_logger: DatabaseLogger):
     assert row["total_cache_read_tokens"] == 0
     assert row["total_reasoning_tokens"] == 0
     assert float(row["total_cost_usd"]) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_backfill_token_columns_fills_null_rows(db_logger: DatabaseLogger):
+    """Helper detects NULL token totals and re-runs rollup hour-by-hour."""
+    from serving.admin.provider_stats_rollup import backfill_token_columns
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    h = now - timedelta(hours=2)
+
+    # Seed an api_logs row that the backfill should aggregate
+    await _insert_api_log(
+        pool,
+        request_id="bf-tok-1",
+        provider="openrouter",
+        model_id="qwen/qwen3-coder",
+        timestamp=h + timedelta(minutes=5),
+        stream=True,
+        ttft_ms=300,
+        latency_ms=3300,
+        completion_tokens=200,
+        prompt_tokens=900,
+        cache_read_tokens=400,
+        reasoning_tokens=50,
+        cost_usd=0.0150000,
+    )
+
+    # Insert a stats row with the legacy schema (NULL token totals).
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_stats (
+                hour_bucket, provider, model_id,
+                request_count, error_count, stream_count,
+                total_completion_tokens
+            ) VALUES ($1, 'openrouter', 'qwen/qwen3-coder', 1, 0, 1, 200)
+            """,
+            h,
+        )
+
+    processed = await backfill_token_columns(pool, days=1)
+    assert processed > 0
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT total_prompt_tokens, total_cache_read_tokens,
+                   total_reasoning_tokens, total_cost_usd
+            FROM provider_hourly_stats
+            WHERE hour_bucket = $1
+              AND provider = 'openrouter' AND model_id = 'qwen/qwen3-coder'
+            """,
+            h,
+        )
+    assert row is not None
+    assert row["total_prompt_tokens"] == 900
+    assert row["total_cache_read_tokens"] == 400
+    assert row["total_reasoning_tokens"] == 50
+    assert float(row["total_cost_usd"]) == pytest.approx(0.015, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_backfill_token_columns_no_op_when_already_populated(
+    db_logger: DatabaseLogger,
+):
+    """Returns 0 without iterating when no NULL rows exist."""
+    from serving.admin.provider_stats_rollup import backfill_token_columns
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_stats (
+                hour_bucket, provider, model_id,
+                request_count, error_count, stream_count,
+                total_completion_tokens, total_prompt_tokens
+            ) VALUES ($1, 'p', 'm', 1, 0, 1, 100, 100)
+            """,
+            now - timedelta(hours=1),
+        )
+
+    processed = await backfill_token_columns(pool, days=1)
+    assert processed == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_token_columns_is_idempotent(db_logger: DatabaseLogger):
+    """Running twice does not change values."""
+    from serving.admin.provider_stats_rollup import backfill_token_columns
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    h = now - timedelta(hours=2)
+
+    await _insert_api_log(
+        pool,
+        request_id="bf-idem-1",
+        provider="zai",
+        model_id="zai/glm-4.6",
+        timestamp=h + timedelta(minutes=5),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=4000,
+        completion_tokens=180,
+        prompt_tokens=700,
+        cache_read_tokens=0,
+        reasoning_tokens=0,
+        cost_usd=0.005,
+    )
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_stats (
+                hour_bucket, provider, model_id,
+                request_count, error_count, stream_count,
+                total_completion_tokens
+            ) VALUES ($1, 'zai', 'zai/glm-4.6', 1, 0, 0, 180)
+            """,
+            h,
+        )
+
+    await backfill_token_columns(pool, days=1)
+    await backfill_token_columns(pool, days=1)  # second pass is a no-op (no NULL rows)
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT total_prompt_tokens FROM provider_hourly_stats WHERE provider='zai'"
+        )
+    assert row["total_prompt_tokens"] == 700

@@ -275,6 +275,61 @@ async def backfill_if_empty(
     return rows_written
 
 
+async def backfill_token_columns(
+    pool: asyncpg.Pool,
+    *,
+    days: int = 30,
+) -> int:
+    """Re-run the rollup hour-by-hour to fill NULL token-total columns.
+
+    Used once after the migration that adds total_prompt_tokens /
+    total_cache_read_tokens / total_reasoning_tokens / total_cost_usd
+    to provider_hourly_stats. No-op when no NULL rows are detected.
+
+    Returns the number of hour buckets processed (0 when skipped).
+    Idempotent: the same UPSERT runs as the hourly job, so calling
+    repeatedly is safe.
+    """
+    async with pool.acquire() as conn:
+        any_null = await conn.fetchval(
+            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL LIMIT 1"
+        )
+    if any_null is None:
+        logger.info("backfill_token_columns: no NULL rows, skipping")
+        return 0
+
+    processed = 0
+
+    async def _do(conn) -> None:
+        nonlocal processed
+        any_null = await conn.fetchval(
+            "SELECT 1 FROM provider_hourly_stats WHERE total_prompt_tokens IS NULL LIMIT 1"
+        )
+        if any_null is None:
+            logger.info("backfill_token_columns: filled by another replica, skipping")
+            return
+
+        end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=days)
+        h = start
+        while h < end:
+            next_h = h + timedelta(hours=1)
+            await conn.execute(ROLLUP_SQL, h, next_h)
+            processed += 1
+            h = next_h
+        logger.info(
+            "backfill_token_columns: window=[%s, %s) hours=%d",
+            start.isoformat(),
+            end.isoformat(),
+            processed,
+        )
+
+    ran = await _try_lock_run(pool, _do)
+    if not ran:
+        logger.info("backfill_token_columns: lock held by another replica, skipping")
+    return processed
+
+
 def register_rollup_job(scheduler, pool: asyncpg.Pool) -> None:
     """Register the hourly rollup job on the existing AsyncIOScheduler.
 
