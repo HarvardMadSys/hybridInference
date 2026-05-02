@@ -1,30 +1,30 @@
+# Template for infrastructure/alertmanager/alertmanager.yml.
+# Copy to alertmanager.yml and replace ${SLACK_WEBHOOK_URL} at deploy
+# time (envsubst recommended; see infrastructure/alertmanager/README.md).
+
 route:
-  receiver: default
+  receiver: blackhole
   group_by: ['alertname']
-  group_wait: 30s
-  group_interval: 2m
-  repeat_interval: 2h
+  group_wait: 1m
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # Allowlist: add new alertnames here explicitly to start paging on them.
+    - match_re:
+        alertname: "ServiceDown|ServiceUnreachable|DatabaseDisconnected"
+      receiver: slack-default
 
 receivers:
-  - name: default
-    # Choose one or more receivers below and fill credentials
-    # Slack Webhook example
+  - name: blackhole
+  - name: slack-default
     slack_configs:
       - send_resolved: true
-        api_url: https://hooks.slack.com/services/T000/B000/XXXX
-        channel: '#alerts'
-        title: '[ALERT] {{ .CommonAnnotations.summary }}'
+        api_url: ${SLACK_WEBHOOK_URL}
+        channel: '#free-inference-alert'
+        title: '{{ if eq .Status "resolved" }}[RESOLVED] {{ end }}[INT-ALERT] {{ .CommonAnnotations.summary }}'
         text: >-
           {{ range .Alerts }}
-          • {{ .Labels.alertname }} ({{ .Labels.severity | default "info" }})
+          {{ if eq .Status "resolved" }}:white_check_mark:{{ else }}:rotating_light:{{ end }}
+          *{{ .Labels.alertname }}* ({{ .Labels.severity }})
             {{ .Annotations.description }}
-            Labels: {{ .Labels }}
           {{ end }}
-    # Email example
-    # email_configs:
-    #   - to: ops@example.com
-    #     from: alertmanager@example.com
-    #     smarthost: smtp.example.com:587
-    #     auth_username: alertmanager@example.com
-    #     auth_identity: alertmanager@example.com
-    #     auth_password: YOUR_SMTP_PASSWORD
