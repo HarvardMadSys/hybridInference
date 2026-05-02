@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -145,8 +146,6 @@ class TestFetchChutes:
     @pytest.mark.asyncio
     async def test_success_returns_usages(self, monkeypatch):
         monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
-        # 4-hour window: reset_at - 4h => start = 2026-05-02T00:00 UTC
-        # Monthly window: anchor_date = 2026-04-11T17:07:09 UTC
         sub_payload = {
             "anchor_date": "2026-04-11T17:07:09",
             "four_hour": {
@@ -162,58 +161,44 @@ class TestFetchChutes:
                 "reset_at": "2026-05-11T17:07:09+00:00",
             },
         }
+        quotas_payload = [
+            {"chute_id": "*", "is_default": True, "quota": 5000},
+        ]
+        # Today's UTC midnight is the daily-window start. Pick buckets relative
+        # to "now" so the test is stable regardless of date.
+        now = datetime.now(timezone.utc)
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        in_window_bucket = (today_midnight + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        out_window_bucket = (today_midnight - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
         usage_payload = {
             "total": 2,
             "page": 0,
             "limit": 2000,
             "items": [
-                # In the 4-hour window (>= 2026-05-02T00:00) and inside month
-                {
-                    "bucket": "2026-05-02T01:00:00",
-                    "amount": 0.0,
-                    "count": 5,
-                    "input_tokens": 100,
-                    "output_tokens": 200,
-                },
-                # Outside the 4-hour window but inside the monthly window
-                {
-                    "bucket": "2026-04-15T00:00:00",
-                    "amount": 0.0,
-                    "count": 99,
-                    "input_tokens": 1000,
-                    "output_tokens": 2000,
-                },
+                {"bucket": in_window_bucket, "amount": 0.0, "count": 7},
+                {"bucket": out_window_bucket, "amount": 0.0, "count": 99},
             ],
         }
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_multi_get(
-                [(200, sub_payload), (200, usage_payload)],
+                [(200, sub_payload), (200, quotas_payload), (200, usage_payload)],
             ),
         ):
             result = await fetch_chutes()
         assert result.ok is True
         assert result.key_configured is True
         assert result.key_masked == "cpk_abcd...3xyz" or result.key_masked.startswith("cpk_abcd")
-        assert any(u.label.lower().startswith("month") for u in result.usages)
-        assert any("4" in u.label or "hour" in u.label.lower() for u in result.usages)
         monthly = next(
             u for u in result.usages if u.label.lower().startswith("month") and u.unit == "USD"
         )
         assert monthly.used == 13.204
         assert monthly.limit == 100.0
-        assert monthly.unit == "USD"
-        # Request-count rows
-        four_hour_req = next(
-            u for u in result.usages if u.label == "4-hour requests" and u.unit == "requests"
+        daily_req = next(
+            u for u in result.usages if u.label == "Daily requests" and u.unit == "requests"
         )
-        assert four_hour_req.used == 5.0
-        assert four_hour_req.limit is None
-        monthly_req = next(
-            u for u in result.usages if u.label == "Monthly requests" and u.unit == "requests"
-        )
-        assert monthly_req.used == 104.0
-        assert monthly_req.limit is None
+        assert daily_req.used == 7.0
+        assert daily_req.limit == 5000.0
 
     @pytest.mark.asyncio
     async def test_request_counts_failure_does_not_break_usd_usages(self, monkeypatch):
@@ -233,6 +218,7 @@ class TestFetchChutes:
                 "reset_at": "2026-05-11T17:07:09+00:00",
             },
         }
+        # quotas endpoint 500 -> daily cap unknown -> request-count row dropped
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_multi_get(
@@ -241,10 +227,8 @@ class TestFetchChutes:
         ):
             result = await fetch_chutes()
         assert result.ok is True
-        # USD usages still present
         usd_usages = [u for u in result.usages if u.unit == "USD"]
         assert len(usd_usages) == 2
-        # No request-count usages
         request_usages = [u for u in result.usages if u.unit == "requests"]
         assert request_usages == []
 

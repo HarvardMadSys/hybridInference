@@ -93,7 +93,7 @@ async def fetch_chutes() -> ProviderQuotaResult:
                 except Exception:
                     return _err("chutes", "Chutes", key, "parse_error")
             usages = _parse_chutes_usage(data)
-            usages.extend(await _fetch_chutes_request_counts(session, headers, data))
+            usages.extend(await _fetch_chutes_request_counts(session, headers))
     except asyncio.TimeoutError:
         return _err("chutes", "Chutes", key, "timeout")
     except aiohttp.ClientError:
@@ -117,30 +117,23 @@ async def fetch_chutes() -> ProviderQuotaResult:
 async def _fetch_chutes_request_counts(
     session: aiohttp.ClientSession,
     headers: dict[str, str],
-    sub_data: dict[str, Any],
 ) -> list[ProviderQuotaUsage]:
-    """Fetch per-bucket request counts and aggregate over the 4-hour and monthly windows.
+    """Fetch the daily request quota and today's request count.
 
-    Returns an empty list on any HTTP/parse failure so the parent fetcher
-    can still surface the USD usages.
+    Chutes enforces a per-day request cap (default 5000) exposed via
+    /users/me/quotas; today's usage is the sum of `count` from
+    /users/me/usage hourly buckets since 00:00 UTC. Returns an empty list
+    on any HTTP/parse failure so the parent fetcher can still surface the
+    USD usages.
     """
     try:
-        four_hour_block = sub_data.get("four_hour")
-        monthly_block = sub_data.get("monthly")
-        four_hour_reset = (
-            _parse_iso(four_hour_block.get("reset_at"))
-            if isinstance(four_hour_block, dict)
-            else None
-        )
-        anchor_dt = _parse_iso(sub_data.get("anchor_date"))
-        monthly_reset = (
-            _parse_iso(monthly_block.get("reset_at")) if isinstance(monthly_block, dict) else None
-        )
-        if four_hour_reset is None or anchor_dt is None:
+        daily_cap = await _fetch_chutes_daily_cap(session, headers)
+        if daily_cap is None:
             return []
 
-        four_hour_start = four_hour_reset - timedelta(hours=4)
-        monthly_start = anchor_dt
+        now = _now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_reset = day_start + timedelta(days=1)
 
         url = "https://api.chutes.ai/users/me/usage?limit=2000"
         async with session.get(url, headers=headers, allow_redirects=False) as resp:
@@ -155,8 +148,7 @@ async def _fetch_chutes_request_counts(
         if not isinstance(items, list):
             return []
 
-        four_hour_count = 0
-        monthly_count = 0
+        daily_count = 0
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -166,31 +158,54 @@ async def _fetch_chutes_request_counts(
             count_raw = item.get("count")
             if not isinstance(count_raw, (int, float)):
                 continue
-            count_int = int(count_raw)
-            if bucket_dt >= four_hour_start:
-                four_hour_count += count_int
-            if bucket_dt >= monthly_start:
-                monthly_count += count_int
+            if bucket_dt >= day_start:
+                daily_count += int(count_raw)
 
         return [
             ProviderQuotaUsage(
-                label="4-hour requests",
-                used=float(four_hour_count),
-                limit=None,
+                label="Daily requests",
+                used=float(daily_count),
+                limit=float(daily_cap),
                 unit="requests",
-                reset_at=four_hour_reset,
-            ),
-            ProviderQuotaUsage(
-                label="Monthly requests",
-                used=float(monthly_count),
-                limit=None,
-                unit="requests",
-                reset_at=monthly_reset,
+                reset_at=day_reset,
             ),
         ]
     except Exception:
         logger.exception("_fetch_chutes_request_counts: unexpected error")
         return []
+
+
+async def _fetch_chutes_daily_cap(
+    session: aiohttp.ClientSession,
+    headers: dict[str, str],
+) -> int | None:
+    """Return the default daily request cap from /users/me/quotas, or None on failure.
+
+    The endpoint returns a list of per-chute quotas; we take the entry
+    with `chute_id == "*"` (or `is_default == True`) as the global cap.
+    """
+    url = "https://api.chutes.ai/users/me/quotas"
+    try:
+        async with session.get(url, headers=headers, allow_redirects=False) as resp:
+            if resp.status >= 400:
+                return None
+            try:
+                payload = await resp.json()
+            except Exception:
+                return None
+    except (asyncio.TimeoutError, aiohttp.ClientError):
+        return None
+
+    if not isinstance(payload, list):
+        return None
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("chute_id") == "*" or entry.get("is_default") is True:
+            quota = entry.get("quota")
+            if isinstance(quota, (int, float)):
+                return int(quota)
+    return None
 
 
 def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
