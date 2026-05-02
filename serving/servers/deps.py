@@ -28,8 +28,6 @@ if TYPE_CHECKING:
     from serving.storage.database import DatabaseLogger
 
     from .concurrency import UserConcurrencyLimiter
-    from .fairness import FairnessScheduler
-    from .rate_limiter import PersistentRateLimiter
 
 
 @dataclass
@@ -42,14 +40,12 @@ class AppServices:
 
     router: RouteExecutor
     embedding_adapters: dict[str, Any] | None = None
-    rate_limiter: PersistentRateLimiter | None = None
     db_logger: DatabaseLogger | None = None
     operational_store: OperationalStore | None = None
     log_store: LogStore | None = None
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
     user_stats_collector: UserStatsCollector | None = None
-    fairness_scheduler: FairnessScheduler | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
 
 
@@ -68,13 +64,6 @@ def get_embedding_adapters(
 ) -> dict[str, Any]:
     """Dependency to obtain the embedding adapters dict."""
     return services.embedding_adapters or {}
-
-
-def get_rate_limiter(
-    services: AppServices = Depends(get_services),
-) -> PersistentRateLimiter | None:
-    """Dependency to obtain the rate limiter (if configured)."""
-    return services.rate_limiter
 
 
 def get_db_logger(
@@ -96,13 +85,6 @@ def get_log_store(
 ) -> LogStore | None:
     """Dependency to obtain the log store (if configured)."""
     return services.log_store
-
-
-def get_fairness_scheduler(
-    services: AppServices = Depends(get_services),
-) -> FairnessScheduler | None:
-    """Dependency to obtain the fairness scheduler (if configured)."""
-    return services.fairness_scheduler
 
 
 def get_user_concurrency_limiter(

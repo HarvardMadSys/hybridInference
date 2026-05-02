@@ -120,16 +120,11 @@ async def admin_mode_app(auth_backend):
     router = RouteExecutor()
     router.register_route("playground-model", [(_PlaygroundAdapter(_cfg("playground-model")), 1.0)])
 
-    rate_limiter = MagicMock()
-    rate_limiter.initialize = AsyncMock()
-    rate_limiter._persist_state = AsyncMock()
-
     services = AppServices(
         router=router,
         db_logger=db_logger,
         operational_store=operational_store,
         log_store=log_store,
-        rate_limiter=rate_limiter,
         routing_manager=None,
     )
 

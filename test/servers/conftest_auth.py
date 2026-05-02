@@ -8,7 +8,7 @@ import os
 import sys
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 # Add project root to Python path
 project_root = Path(__file__).resolve().parents[2]
@@ -64,7 +64,6 @@ def auth_env(monkeypatch):
         # Base URL
         "BASE_URL": "http://localhost:8000",
         # Disable other features
-        "RATE_LIMIT_ENABLED": "0",
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
     }
@@ -355,16 +354,12 @@ async def auth_app_services(auth_backend):
     operational_store, log_store, db_logger, _ = auth_backend
 
     mock_router = MagicMock()
-    mock_rate_limiter = MagicMock()
-    mock_rate_limiter.initialize = AsyncMock()
-    mock_rate_limiter._persist_state = AsyncMock()
 
     services = AppServices(
         router=mock_router,
         db_logger=db_logger,
         operational_store=operational_store,
         log_store=log_store,
-        rate_limiter=mock_rate_limiter,
         routing_manager=None,
     )
 

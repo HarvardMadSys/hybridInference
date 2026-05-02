@@ -87,7 +87,7 @@ async def models_app() -> FastAPI:
     router.register_route("canonical-model", [(a1, 1.0)])
 
     app = FastAPI(title="Models App")
-    app.state.services = AppServices(router=router, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
     app.include_router(models.router)
     return app
 
@@ -120,7 +120,7 @@ async def test_models_aggregation_and_slug(models_client: AsyncClient):
 async def test_models_empty_routes_returns_empty_list():
     router = RouteExecutor()
     app = FastAPI()
-    app.state.services = AppServices(router=router, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
     app.include_router(models.router)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -135,7 +135,7 @@ async def test_models_single_adapter_no_aggregation():
     a = _Adapter(_cfg(id="solo", context=1234, max_out=321, supported=["temperature"], tools=True))
     router.register_route("solo", [(a, 1.0)])
     app = FastAPI()
-    app.state.services = AppServices(router=router, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
     app.include_router(models.router)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -159,7 +159,7 @@ async def test_models_pricing_primary_config_behavior():
     a2.config.pricing = dict(p_secondary)
     router.register_route("price", [(a1, 0.9), (a2, 0.1)])
     app = FastAPI()
-    app.state.services = AppServices(router=router, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
     app.include_router(models.router)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -203,7 +203,7 @@ def _build_admin_app(user_ctx: dict | None) -> FastAPI:
     router_exec.register_route("secret-model", [(secret, 1.0)], admin_only=True)
 
     app = FastAPI()
-    app.state.services = AppServices(router=router_exec, db_logger=None, rate_limiter=None)  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=router_exec, db_logger=None)  # type: ignore[attr-defined]
 
     # Override the optional_verify_api_key dependency to return our test value
     app.dependency_overrides[optional_verify_api_key] = lambda: user_ctx

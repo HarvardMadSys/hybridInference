@@ -50,7 +50,6 @@ async def admin_client(monkeypatch, mock_stores):
         db_logger=MagicMock(),
         operational_store=op_store,
         log_store=log_store,
-        rate_limiter=None,
         routing_manager=None,
     )
     app.state.services = services  # type: ignore[attr-defined]

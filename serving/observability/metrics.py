@@ -176,13 +176,6 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
         registry=REGISTRY,
     )
 
-    RATE_LIMIT_HITS = Counter(
-        "rate_limit_hits_total",
-        "Rate limiter hits by model and outcome",
-        labelnames=("model", "outcome"),  # outcome=accepted|rejected
-        registry=REGISTRY,
-    )
-
     API_MODEL_REQUESTS = Counter(
         "api_model_requests_total",
         "HTTP response status distribution by model and provider",
@@ -246,21 +239,6 @@ if _ENABLED and CollectorRegistry and Counter and Histogram:
     USERS_ACTIVE_MONTHLY = Gauge(
         "users_active_monthly",
         "Number of monthly active users (last 30 days)",
-        registry=REGISTRY,
-    )
-
-    # Rate limiter queueing and wait time
-    RATE_LIMIT_QUEUE_SIZE = Gauge(
-        "rate_limit_queue_size",
-        "Number of requests currently waiting for tokens (per model)",
-        labelnames=("model",),
-        registry=REGISTRY,
-    )
-    RATE_LIMIT_QUEUE_WAIT = Histogram(
-        "rate_limit_queue_wait_seconds",
-        "Time a request waited in the limiter before being accepted",
-        labelnames=("model", "outcome"),  # outcome=accepted|rejected
-        buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30),
         registry=REGISTRY,
     )
 
@@ -471,17 +449,10 @@ else:  # No-op fallbacks to avoid hard dependency during tests
     STREAMING_INTERRUPTION = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
-    RATE_LIMIT_HITS = type(
-        "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
-    )()
     API_MODEL_REQUESTS = type(
         "Noop", (), {"labels": lambda *a, **k: type("L", (), {"inc": _noop})()}
     )()
     API_CONCURRENCY = type("NoopGauge", (), {"inc": _noop, "dec": _noop})()
-    RATE_LIMIT_QUEUE_SIZE = type(
-        "NoopGauge", (), {"labels": lambda *a, **k: type("L", (), {"set": _noop})()}
-    )()
-    RATE_LIMIT_QUEUE_WAIT = API_REQUEST_LATENCY
     CIRCUIT_STATE = type(
         "NoopGauge", (), {"labels": lambda *a, **k: type("L", (), {"set": _noop})()}
     )()
@@ -586,10 +557,6 @@ __all__ = [
     # Provider metrics
     "PROVIDER_AVAILABILITY",
     "PROVIDER_LATENCY",
-    # Rate limiting metrics
-    "RATE_LIMIT_HITS",
-    "RATE_LIMIT_QUEUE_SIZE",
-    "RATE_LIMIT_QUEUE_WAIT",
     # RouteWise metrics
     "ROUTEWISE_BACKUP_WINS",
     "ROUTEWISE_CANARY_DECISIONS",

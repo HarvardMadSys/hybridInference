@@ -236,7 +236,7 @@ Claude subscription models can also be reached through `POST /anthropic/v1/messa
 Important behavior:
 - the request `model` must resolve to a registered model whose provider is `claude_sub`
 - the same shared Claude account pool is used as `/v1/chat/completions`
-- rate limiting and DB logging still apply
+- DB logging still applies
 
 Example client environment:
 

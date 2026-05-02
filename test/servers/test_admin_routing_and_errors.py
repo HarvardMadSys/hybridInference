@@ -48,9 +48,7 @@ async def test_admin_routing_status_with_and_without_manager():
             }
 
     app = FastAPI()
-    app.state.services = AppServices(
-        router=router, db_logger=None, rate_limiter=None, routing_manager=_Mgr()
-    )  # type: ignore[attr-defined]
+    app.state.services = AppServices(router=router, db_logger=None, routing_manager=_Mgr())  # type: ignore[attr-defined]
     app.include_router(models.router)
     app.include_router(admin.router)
 
@@ -64,9 +62,7 @@ async def test_admin_routing_status_with_and_without_manager():
 
     # Case 2: without routing manager
     app2 = FastAPI()
-    app2.state.services = AppServices(
-        router=router, db_logger=None, rate_limiter=None, routing_manager=None
-    )  # type: ignore[attr-defined]
+    app2.state.services = AppServices(router=router, db_logger=None, routing_manager=None)  # type: ignore[attr-defined]
     app2.include_router(models.router)
     app2.include_router(admin.router)
 

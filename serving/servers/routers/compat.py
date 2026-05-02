@@ -9,10 +9,8 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
-    get_fairness_scheduler,
     get_log_store,
     get_model_router_registry,
-    get_rate_limiter,
     get_router,
 )
 
@@ -28,9 +26,7 @@ async def single_completion(
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
-    rate_limiter=Depends(get_rate_limiter),
     log_store=Depends(get_log_store),
-    fairness_scheduler=Depends(get_fairness_scheduler),
     model_router_registry=Depends(get_model_router_registry),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ):
@@ -44,9 +40,7 @@ async def single_completion(
         authorization=authorization,
         user_ctx=user_ctx,
         router_exec=router_exec,
-        rate_limiter=rate_limiter,
         log_store=log_store,
-        fairness_scheduler=fairness_scheduler,
         model_router_registry=model_router_registry,
     )
 
@@ -58,9 +52,7 @@ async def legacy_completions(
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
-    rate_limiter=Depends(get_rate_limiter),
     log_store=Depends(get_log_store),
-    fairness_scheduler=Depends(get_fairness_scheduler),
     model_router_registry=Depends(get_model_router_registry),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ):
@@ -77,8 +69,6 @@ async def legacy_completions(
         authorization=authorization,
         user_ctx=user_ctx,
         router_exec=router_exec,
-        rate_limiter=rate_limiter,
         log_store=log_store,
-        fairness_scheduler=fairness_scheduler,
         model_router_registry=model_router_registry,
     )

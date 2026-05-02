@@ -274,9 +274,6 @@ def _mock_deps():
     async def fake_get_router():
         return _make_router_exec()
 
-    async def fake_get_rate_limiter():
-        return None
-
     async def fake_get_log_store():
         return None
 
@@ -284,7 +281,6 @@ def _mock_deps():
     from serving.servers.concurrency import UserConcurrencyLimiter
     from serving.servers.deps import (
         get_log_store,
-        get_rate_limiter,
         get_router,
         get_user_concurrency_limiter,
     )
@@ -298,7 +294,6 @@ def _mock_deps():
     overrides = {
         verify_api_key: fake_verify_api_key,
         get_router: fake_get_router,
-        get_rate_limiter: fake_get_rate_limiter,
         get_log_store: fake_get_log_store,
         get_user_concurrency_limiter: fake_get_user_concurrency_limiter,
     }

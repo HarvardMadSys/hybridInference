@@ -534,7 +534,6 @@ class TestProviderQuotasRoute:
         services = AppServices(
             router=MagicMock(),
             db_logger=None,
-            rate_limiter=None,
             routing_manager=None,
         )
         app.state.services = services  # type: ignore[attr-defined]
