@@ -21,16 +21,6 @@ export interface ApiKeyResponse {
   created_at: string;
 }
 
-export interface ApiKeyInfo {
-  has_key: boolean;
-  api_key?: string | null;
-  key_prefix?: string;
-  key_masked?: string;
-  created_at?: string;
-  last_used_at?: string;
-  status?: string;
-}
-
 export interface ApiKeyListItem {
   api_key?: string | null;
   key_prefix: string;
@@ -109,11 +99,6 @@ export async function createApiKey(): Promise<ApiKeyResponse> {
     method: 'POST',
   });
   return jsonOrThrow<ApiKeyResponse>(resp);
-}
-
-export async function getApiKey(): Promise<ApiKeyInfo> {
-  const resp = await fetchWithAuth(API_BASE, '/user/api-keys');
-  return jsonOrThrow<ApiKeyInfo>(resp);
 }
 
 export async function listApiKeys(): Promise<ApiKeyListResponse> {

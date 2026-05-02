@@ -2,13 +2,6 @@
 
 import { APIError } from '@/lib/utils/errors';
 
-export interface APIErrorResponse {
-  error_code: string;
-  message: string;
-  timestamp: string;
-  [key: string]: unknown;
-}
-
 let accessToken: string | null = null;
 let refreshPromise: Promise<boolean> | null = null;
 

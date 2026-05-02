@@ -120,18 +120,3 @@ def verify_access_token(token: str) -> dict[str, Any]:
     """
     payload = jwt.decode(token, get_jwt_secret(), algorithms=[get_jwt_algorithm()])
     return payload
-
-
-def decode_token_without_verification(token: str) -> dict[str, Any] | None:
-    """Decode JWT token without verification (for debugging/logging only).
-
-    Args:
-        token: JWT token string to decode.
-
-    Returns:
-        Decoded payload or None if invalid.
-    """
-    try:
-        return jwt.decode(token, options={"verify_signature": False})
-    except Exception:
-        return None

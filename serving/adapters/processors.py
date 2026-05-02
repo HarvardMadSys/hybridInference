@@ -289,7 +289,6 @@ class QwenCoderProcessor(BaseProcessor):
     def __init__(self) -> None:
         self.buffer = ""
         self.in_tool_mode = False
-        self.pre_tool_text = ""
         self.model_id = "qwen3-coder"
 
     def process_stream_chunk(self, chunk: dict[str, Any]) -> list[dict[str, Any]]:

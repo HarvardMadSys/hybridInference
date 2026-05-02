@@ -26,7 +26,6 @@ logger = get_logger(__name__)
 # D1 API limits
 MAX_BATCH_STATEMENTS = 100  # stay well under the 1000 hard limit
 MAX_BOUND_PARAMS = 100
-MAX_LIKE_PATTERN_BYTES = 50
 
 
 class D1Error(Exception):

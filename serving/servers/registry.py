@@ -41,7 +41,6 @@ class ModelRegistrationInfo:
     model_id: str
     strategy: str | None = None
     aliases: list[str] = field(default_factory=list)
-    route_subscription_types: list[str] = field(default_factory=list)
 
 
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"))
@@ -422,13 +421,11 @@ def register_from_models_yaml(
             count += 1 + len(aliases)
 
         # Collect per-model metadata for bootstrap (RouteWise strategy resolution)
-        route_sub_types = [r.get("subscription_type", "api") for r in routes]
         model_infos.append(
             ModelRegistrationInfo(
                 model_id=model_id,
                 strategy=m.get("routing_strategy"),
                 aliases=aliases,
-                route_subscription_types=route_sub_types,
             )
         )
 
