@@ -136,6 +136,7 @@ def _record_routing_observation(
     responses={
         400: {"model": ErrorResponse, "description": "Bad Request"},
         404: {"model": ErrorResponse, "description": "Model Not Found"},
+        429: {"model": ErrorResponse, "description": "Too Many Requests"},
         500: {"model": ErrorResponse, "description": "Server Error"},
     },
 )
