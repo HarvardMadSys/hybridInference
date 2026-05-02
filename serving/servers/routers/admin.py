@@ -221,7 +221,6 @@ async def create_api_key(
         key_prefix=key_prefix,
         user_id=payload.user_id,
         user_name=payload.user_name,
-        tier=payload.tier,
         quota_daily_cost_usd=payload.quota_daily_cost_usd,
         quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
         expires_at=payload.expires_at,
@@ -235,7 +234,6 @@ async def create_api_key(
         "create_key",
         payload.user_id,
         {
-            "tier": payload.tier,
             "quota_daily_usd": float(payload.quota_daily_cost_usd),
             "key_prefix": key_prefix,
         },
@@ -245,7 +243,6 @@ async def create_api_key(
         api_key=plaintext_key,
         user_id=payload.user_id,
         key_prefix=key_prefix,
-        tier=payload.tier,
         quota_daily_cost_usd=payload.quota_daily_cost_usd,
         quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
         expires_at=payload.expires_at,
@@ -257,7 +254,6 @@ async def create_api_key(
 async def list_api_keys(
     request: Request,
     status: str | None = None,
-    tier: str | None = None,
     limit: int = 100,
     offset: int = 0,
     admin_ip: str = Depends(verify_admin_access),
@@ -268,7 +264,6 @@ async def list_api_keys(
 
     Query Parameters:
     - status: Filter by status (active|suspended|revoked)
-    - tier: Filter by tier (free|pro|enterprise)
     - limit: Max results (default: 100)
     - offset: Pagination offset
 
@@ -277,7 +272,7 @@ async def list_api_keys(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    total, rows = await op_store.list_keys(status=status, tier=tier, limit=limit, offset=offset)
+    total, rows = await op_store.list_keys(status=status, limit=limit, offset=offset)
 
     if not rows:
         return ListAPIKeysResponse(total=total, keys=[])
@@ -298,7 +293,6 @@ async def list_api_keys(
                 user_id=uid,
                 user_name=row["user_name"],
                 key_prefix=row["key_prefix"],
-                tier=row["tier"],
                 status=row["status"],
                 quota_daily_cost_usd=row["quota_daily_cost_usd"],
                 quota_monthly_cost_usd=row["quota_monthly_cost_usd"],
@@ -372,7 +366,6 @@ async def get_api_key_detail(
         user_id=row["user_id"],
         user_name=row["user_name"],
         key_prefix=row["key_prefix"],
-        tier=row["tier"],
         status=row["status"],
         quota_daily_cost_usd=row["quota_daily_cost_usd"],
         quota_monthly_cost_usd=row["quota_monthly_cost_usd"],
@@ -582,7 +575,6 @@ async def list_users(
                 has_key=row.get("key_prefix") is not None,
                 key_prefix=row.get("key_prefix"),
                 key_status=row.get("key_status"),
-                key_tier=row.get("key_tier"),
                 usage_today_usd=Decimal(str(row.get("usage_today", 0))),
                 usage_month_usd=Decimal(str(row.get("usage_month", 0))),
                 usage_alltime_usd=Decimal(str(row.get("usage_alltime", 0))),
@@ -745,7 +737,6 @@ async def get_user_detail(
         last_login_at=user_row.get("last_login_at"),
         has_key=has_key,
         key_prefix=key_row["key_prefix"] if key_row else None,
-        key_tier=key_row["tier"] if key_row else None,
         quota_daily_usd=float(key_row["quota_daily_cost_usd"])
         if key_row and key_row.get("quota_daily_cost_usd")
         else None,
@@ -769,7 +760,7 @@ async def update_user(
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> UpdateUserResponse:
-    """Update user account status or API key settings (tier, quota).
+    """Update user account status or API key settings (quota).
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -828,7 +819,7 @@ async def update_user(
     key_fields = {
         k: v
         for k, v in payload_dict.items()
-        if k in ("tier", "quota_daily_cost_usd", "quota_monthly_cost_usd")
+        if k in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
     }
     if key_fields:
         has_key = await op_store.get_active_key_by_account(user_id)
