@@ -6,12 +6,21 @@ import {
   Line,
   LineChart,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
+  ZAxis,
   Legend,
 } from 'recharts';
-import { ProviderStatsResponse, ProviderStatsRow, getProviderStats } from '@/lib/api/admin';
+import {
+  AdminTtftScatterModel,
+  ProviderStatsResponse,
+  ProviderStatsRow,
+  getProviderStats,
+  getTtftScatter,
+} from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 type RangeKey = '24h' | '7d' | '30d';
@@ -42,6 +51,82 @@ function modelsForProvider(
   return Array.from(new Set(pairs.filter((p) => p.provider === prov).map((p) => p.model_id)));
 }
 
+function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
+  // Defensive: drop any non-positive prompt_tokens (log scale would barf).
+  const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
+  const cached = safePoints.filter((p) => p.cache_hit);
+  const uncached = safePoints.filter((p) => !p.cache_hit);
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="truncate text-[13px] font-semibold text-gray-900" title={model.model_id}>
+          {model.model_id}
+        </div>
+        <div className="shrink-0 text-[11px] text-gray-400 tabular-nums">
+          {safePoints.length.toLocaleString()} pts ({cached.length.toLocaleString()} cached,{' '}
+          {uncached.length.toLocaleString()} uncached)
+        </div>
+      </div>
+      <div className="mt-3 h-[260px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <ScatterChart margin={{ top: 8, right: 12, bottom: 24, left: 12 }}>
+            <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
+            <XAxis
+              type="number"
+              dataKey="prompt_tokens"
+              name="Input length"
+              scale="log"
+              domain={['auto', 'auto']}
+              allowDataOverflow
+              tick={{ fontSize: 10, fill: '#6b7280' }}
+              label={{
+                value: 'Input length (tokens)',
+                position: 'insideBottom',
+                offset: -10,
+                style: { fontSize: 11, fill: '#6b7280' },
+              }}
+            />
+            <YAxis
+              type="number"
+              dataKey="ttft_ms"
+              name="TTFT"
+              tick={{ fontSize: 10, fill: '#6b7280' }}
+              label={{
+                value: 'TTFT (ms)',
+                angle: -90,
+                position: 'insideLeft',
+                style: { fontSize: 11, fill: '#6b7280', textAnchor: 'middle' },
+              }}
+            />
+            <ZAxis range={[18, 18]} />
+            <Tooltip
+              cursor={{ strokeDasharray: '3 3' }}
+              contentStyle={{ fontSize: 11 }}
+              labelFormatter={() => ''}
+              wrapperStyle={{ outline: 'none' }}
+            />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Scatter
+              name="Cache hit"
+              data={cached}
+              fill="#10b981"
+              fillOpacity={0.6}
+              shape="circle"
+            />
+            <Scatter
+              name="No cache"
+              data={uncached}
+              fill="#64748b"
+              fillOpacity={0.6}
+              shape="circle"
+            />
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 export function ProviderPerformanceTab() {
   const [data, setData] = useState<ProviderStatsResponse | null>(null);
   const [allProviders, setAllProviders] = useState<string[]>([]);
@@ -52,6 +137,24 @@ export function ProviderPerformanceTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
+  const [ttftScatter, setTtftScatter] = useState<AdminTtftScatterModel[]>([]);
+  const [ttftScatterLoading, setTtftScatterLoading] = useState(false);
+
+  const loadTtftScatter = useCallback(async () => {
+    setTtftScatterLoading(true);
+    try {
+      const resp = await getTtftScatter();
+      setTtftScatter(resp.models);
+    } catch (exc) {
+      setError(getErrorMessage(exc));
+    } finally {
+      setTtftScatterLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadTtftScatter();
+  }, [loadTtftScatter]);
 
   const filteredModels = useMemo(() => modelsForProvider(allPairs, provider), [allPairs, provider]);
 
@@ -239,6 +342,34 @@ export function ProviderPerformanceTab() {
             </LineChart>
           </ResponsiveContainer>
         </div>
+      </div>
+
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h2 className="text-[15px] font-semibold text-gray-900">
+              TTFT vs input length (last 1000 per model)
+            </h2>
+            <p className="text-[12px] text-gray-400">
+              Per-model scatter of time-to-first-token against prompt length, split by prompt-cache
+              hit.
+            </p>
+          </div>
+          {ttftScatterLoading && (
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+          )}
+        </div>
+        {ttftScatter.length > 0 ? (
+          <div className="grid gap-3 lg:grid-cols-2">
+            {ttftScatter.map((m) => (
+              <TtftScatterCard key={m.model_id} model={m} />
+            ))}
+          </div>
+        ) : !ttftScatterLoading ? (
+          <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+            <p className="text-[13px] text-gray-400">No scatter data available.</p>
+          </div>
+        ) : null}
       </div>
     </div>
   );

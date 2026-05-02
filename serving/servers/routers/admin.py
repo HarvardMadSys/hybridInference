@@ -26,6 +26,9 @@ from serving.schemas_admin import (
     AdminRequestMetricsBucket,
     AdminRequestMetricsResponse,
     AdminRequestMetricsWindow,
+    AdminTtftScatterModel,
+    AdminTtftScatterPoint,
+    AdminTtftScatterResponse,
     AnalyticsBreakdownEntry,
     AnalyticsUserEntry,
     APIKeyDetailResponse,
@@ -1555,6 +1558,72 @@ def _decode_throughput_tps(
     if completion_tokens is None or completion_tokens <= 1:
         return None
     return (completion_tokens - 1) / ((latency_ms - ttft_ms) / 1000.0)
+
+
+@router.get("/admin/ttft-scatter", response_model=AdminTtftScatterResponse)
+async def admin_get_ttft_scatter(
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminTtftScatterResponse:
+    """Return TTFT vs input length scatter data for the last 1000 successful
+    streaming requests of each model, with cache-hit flag per point.
+
+    Only successful (status 200-399) streaming rows with a recorded TTFT and
+    a non-empty prompt are returned. `cache_hit` is true iff
+    `cache_read_tokens > 0`.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH ranked AS (
+                SELECT
+                    model_id,
+                    provider,
+                    prompt_tokens,
+                    ttft_ms,
+                    cache_read_tokens,
+                    timestamp,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY model_id ORDER BY timestamp DESC
+                    ) AS rn
+                FROM api_logs
+                WHERE ttft_ms IS NOT NULL
+                  AND prompt_tokens IS NOT NULL
+                  AND prompt_tokens > 0
+                  AND status_code BETWEEN 200 AND 399
+                  AND stream = TRUE
+            )
+            SELECT model_id, provider, prompt_tokens, ttft_ms,
+                   cache_read_tokens, timestamp
+            FROM ranked
+            WHERE rn <= 1000
+            ORDER BY model_id, timestamp DESC
+            """
+        )
+
+    by_model: dict[str, list[AdminTtftScatterPoint]] = {}
+    for row in rows:
+        model_id = row["model_id"]
+        cache_read = row["cache_read_tokens"]
+        point = AdminTtftScatterPoint(
+            prompt_tokens=int(row["prompt_tokens"]),
+            ttft_ms=int(row["ttft_ms"]),
+            cache_hit=cache_read is not None and cache_read > 0,
+            provider=row["provider"],
+            timestamp=row["timestamp"].isoformat(),
+        )
+        by_model.setdefault(model_id, []).append(point)
+
+    models = [
+        AdminTtftScatterModel(model_id=model_id, points=points)
+        for model_id, points in by_model.items()
+    ]
+    models.sort(key=lambda m: len(m.points), reverse=True)
+
+    return AdminTtftScatterResponse(models=models)
 
 
 @router.get("/admin/recent-requests", response_model=AdminRecentRequestsResponse)

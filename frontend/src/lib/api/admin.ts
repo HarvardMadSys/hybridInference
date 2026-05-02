@@ -300,6 +300,32 @@ export async function getPerformanceMetrics(): Promise<AdminPerformanceMetricsRe
   return jsonOrThrow<AdminPerformanceMetricsResponse>(resp);
 }
 
+// ----------------------------------------------------------------------------
+// TTFT vs input length scatter — last 1000 successful streaming requests/model
+// ----------------------------------------------------------------------------
+
+export interface AdminTtftScatterPoint {
+  prompt_tokens: number;
+  ttft_ms: number;
+  cache_hit: boolean;
+  provider: string;
+  timestamp: string;
+}
+
+export interface AdminTtftScatterModel {
+  model_id: string;
+  points: AdminTtftScatterPoint[];
+}
+
+export interface AdminTtftScatterResponse {
+  models: AdminTtftScatterModel[];
+}
+
+export async function getTtftScatter(): Promise<AdminTtftScatterResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/ttft-scatter');
+  return jsonOrThrow<AdminTtftScatterResponse>(resp);
+}
+
 export interface AdminRecentRequestItem {
   request_id: string;
   user_id: string | null;
