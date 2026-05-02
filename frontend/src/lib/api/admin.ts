@@ -682,3 +682,48 @@ export async function getProviderStats(params: {
   const resp = await fetchWithAuth(API_BASE, `/admin/api/provider-stats?${search.toString()}`);
   return jsonOrThrow<ProviderStatsResponse>(resp);
 }
+
+// ========================================
+// Provider Token Usage
+// ========================================
+
+export type TokenUsageRange = '1h' | '24h' | '7d' | '30d';
+
+export interface ProviderTokenUsageRow {
+  provider: string;
+  model_id: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
+  cost_usd: number;
+  request_count: number;
+}
+
+export interface ProviderTokenUsageTotals {
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
+  cost_usd: number;
+  request_count: number;
+}
+
+export interface ProviderTokenUsageResponse {
+  range: TokenUsageRange;
+  window: { from: string; to: string };
+  refreshed_at: string;
+  rows: ProviderTokenUsageRow[];
+  totals: ProviderTokenUsageTotals;
+}
+
+export async function getProviderTokenUsage(
+  range: TokenUsageRange,
+): Promise<ProviderTokenUsageResponse> {
+  const search = new URLSearchParams({ range });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/api/provider-token-usage?${search.toString()}`,
+  );
+  return jsonOrThrow<ProviderTokenUsageResponse>(resp);
+}
