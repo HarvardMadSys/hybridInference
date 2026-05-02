@@ -40,7 +40,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-6">
               <div className="flex items-baseline gap-2">
                 <span className="text-xl font-bold tracking-tight">{config.appName}</span>
-                <span className="font-serif text-sm text-gray-500">Harvard SEAS</span>
+                <a
+                  href="https://madsys.seas.harvard.edu"
+                  className="font-serif text-sm text-gray-500 hover:text-crimson"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Harvard SEAS
+                </a>
               </div>
             </header>
             <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-6 py-12">
@@ -50,7 +57,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
                 <span>© {config.appName}</span>
                 <span aria-hidden="true">·</span>
-                <span>Harvard SEAS</span>
+                <a
+                  href="https://madsys.seas.harvard.edu"
+                  className="hover:text-crimson"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Harvard SEAS
+                </a>
                 <span aria-hidden="true">·</span>
                 <a
                   href="https://doc.freeinference.org"
