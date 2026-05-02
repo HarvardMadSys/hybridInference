@@ -349,7 +349,6 @@ class D1OperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
-        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> None:
@@ -358,7 +357,7 @@ class D1OperationalStore(OperationalStore):
         Sets status='active' and writes the audit row.  Keys remain revoked.
         """
         now = _now_iso()
-        details = json.dumps({"admin_id": admin_id, "reason": reason, "email": email})
+        details = json.dumps({"email": email, "reason": reason})
         await self._d1.batch(
             [
                 ("UPDATE users SET status = 'active' WHERE id = ?", [user_id]),
@@ -375,7 +374,6 @@ class D1OperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
-        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> dict[str, int]:
@@ -388,7 +386,7 @@ class D1OperationalStore(OperationalStore):
         ``api_logs`` lives in Postgres; the caller must purge it separately.
         """
         now = _now_iso()
-        details = json.dumps({"admin_id": admin_id, "reason": reason, "email": email})
+        details = json.dumps({"email": email, "reason": reason})
 
         await self._d1.batch(
             [

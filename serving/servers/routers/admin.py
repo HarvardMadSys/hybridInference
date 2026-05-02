@@ -968,7 +968,6 @@ async def resume_user(
     await op_store.resume_user(
         user_id,
         admin_ip=admin_id,
-        admin_id=admin_id,
         reason=payload.reason,
         email=user_row["email"],
     )
@@ -1004,10 +1003,17 @@ async def hard_delete_user(
 
     ``api_logs`` is purged from the LogStore in a separate cleanup step.
     The two stores live in different pools (and may be different engines),
-    so a true single-transaction guarantee across both is not possible —
-    we do the operational-store wipe first, then api_logs.  A failure
-    between the two leaves orphan log rows; the audit row records the
-    counts that were actually wiped from the operational store.
+    so a true single-transaction guarantee across both is not possible.
+    We purge ``api_logs`` FIRST, then run the operational-store wipe.
+
+    Failure modes:
+    - api_logs DELETE fails: operational state and audit log are untouched;
+      the user remains soft-deleted (``status='deleted'``) and the admin can
+      retry the hard-delete.
+    - api_logs DELETE succeeds but op_store wipe fails: api_logs are gone but
+      the user row + prior audit entries remain — the user is still
+      soft-deleted, so the admin can retry hard-delete (which will re-attempt
+      and succeed since the user is still in ``status='deleted'``).
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -1029,25 +1035,20 @@ async def hard_delete_user(
 
     email = user_row["email"]
 
+    # Purge api_logs FIRST.  Lives in the LogStore (separate pool), so this
+    # cannot share the operational-store transaction.  Doing this first means
+    # if it fails, the user row + audit are untouched and the admin can retry.
+    if db_logger and db_logger.pool:
+        async with db_logger.pool.acquire() as conn:
+            await conn.execute("DELETE FROM api_logs WHERE user_id = $1", user_id)
+
     # Wipe operational rows + write the new hard-delete audit row, atomically.
     await op_store.hard_delete_user(
         user_id,
         admin_ip=admin_id,
-        admin_id=admin_id,
         reason=payload.reason,
         email=email,
     )
-
-    # Now purge api_logs.  Lives in the LogStore (separate pool), so this
-    # cannot share the operational-store transaction.  Known limitation:
-    # if this DELETE fails, the operational-store wipe (and its
-    # ``hard_delete_user`` audit row marked success=True) is already
-    # committed and cannot be rolled back — the api_logs rows persist as
-    # orphans and an admin must clean them up out-of-band.  The exception
-    # propagates to the client as a 500.
-    if db_logger and db_logger.pool:
-        async with db_logger.pool.acquire() as conn:
-            await conn.execute("DELETE FROM api_logs WHERE user_id = $1", user_id)
 
     return HardDeleteUserResponse(
         user_id=user_id,

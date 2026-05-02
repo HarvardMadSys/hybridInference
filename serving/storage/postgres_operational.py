@@ -454,7 +454,6 @@ class PostgresOperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
-        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> None:
@@ -481,7 +480,6 @@ class PostgresOperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
-        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> dict[str, int]:

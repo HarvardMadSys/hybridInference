@@ -1432,7 +1432,8 @@ export default function AdminPage() {
                                           setHardDeleteReason('');
                                           setHardDeleteEmailConfirm('');
                                         }}
-                                        className="text-[12px] text-red-500 hover:text-red-700 transition"
+                                        disabled={busy === u.id}
+                                        className="text-[12px] text-red-500 hover:text-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                       >
                                         Permanently Delete
                                       </button>

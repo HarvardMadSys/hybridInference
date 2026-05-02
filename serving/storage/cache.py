@@ -233,14 +233,11 @@ class CachedOperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
-        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> None:
         """Delegate then invalidate user + auth caches."""
-        await self._store.resume_user(
-            user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
-        )
+        await self._store.resume_user(user_id, admin_ip=admin_ip, reason=reason, email=email)
         await self._cache.delete(self._user_key(user_id))
         await self._cache.delete_pattern("auth:*")
         await self._cache.delete_pattern("auth_light:*")
@@ -250,13 +247,12 @@ class CachedOperationalStore(OperationalStore):
         user_id: str,
         *,
         admin_ip: str,
-        admin_id: str,
         reason: str | None = None,
         email: str | None = None,
     ) -> dict[str, int]:
         """Delegate then invalidate user + auth caches."""
         counts = await self._store.hard_delete_user(
-            user_id, admin_ip=admin_ip, admin_id=admin_id, reason=reason, email=email
+            user_id, admin_ip=admin_ip, reason=reason, email=email
         )
         await self._cache.delete(self._user_key(user_id))
         await self._cache.delete_pattern("auth:*")

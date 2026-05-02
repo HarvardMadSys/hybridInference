@@ -687,6 +687,8 @@ async def test_resume_user_success(admin_client):
     call_kwargs = op_store.resume_user.await_args.kwargs
     assert call_kwargs["email"] == "alice@example.com"
     assert call_kwargs["reason"] == "false alarm"
+    # admin_id kwarg was dropped from the storage chain
+    assert "admin_id" not in call_kwargs
 
 
 @pytest.mark.asyncio
@@ -881,6 +883,12 @@ async def test_hard_delete_user_wipes_data(admin_client):
     services.db_logger.pool = MagicMock()
     services.db_logger.pool.acquire = MagicMock(return_value=pool_acquire_ctx)
 
+    # Track call order: api_logs purge must come BEFORE op_store wipe so a
+    # partial failure leaves the user resumable.
+    manager = MagicMock()
+    manager.attach_mock(pool_conn.execute, "api_logs_execute")
+    manager.attach_mock(op_store.hard_delete_user, "op_store_hard_delete")
+
     response = await client.post(
         "/admin/users/u1/hard-delete",
         headers=AUTH,
@@ -897,9 +905,19 @@ async def test_hard_delete_user_wipes_data(admin_client):
     call_kwargs = op_store.hard_delete_user.await_args.kwargs
     assert call_kwargs["email"] == "alice@example.com"
     assert call_kwargs["reason"] == "user requested"
+    # admin_id kwarg was dropped from the storage chain
+    assert "admin_id" not in call_kwargs
 
     # api_logs purge was issued against the log-store pool
     pool_conn.execute.assert_awaited_once()
     sql_arg = pool_conn.execute.await_args.args[0]
     assert "DELETE FROM api_logs" in sql_arg
     assert pool_conn.execute.await_args.args[1] == "u1"
+
+    # api_logs purge must run BEFORE the op_store wipe.
+    call_names = [c[0] for c in manager.mock_calls]
+    api_logs_idx = call_names.index("api_logs_execute")
+    op_store_idx = call_names.index("op_store_hard_delete")
+    assert api_logs_idx < op_store_idx, (
+        f"api_logs_execute must run before op_store_hard_delete, got {call_names}"
+    )
