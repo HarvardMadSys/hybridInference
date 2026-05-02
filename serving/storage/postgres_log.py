@@ -547,3 +547,48 @@ class PostgresLogStore(LogStore):
                 provider,
             )
         return [dict(r) for r in rows]
+
+    # -- admin: hard-delete user-owned rows ---------------------------------
+
+    async def hard_delete_user_data(self, user_id: str) -> dict[str, int]:
+        """Wipe ``api_logs`` and ``email_broadcast_recipients`` for *user_id*.
+
+        Both DELETEs run in a single transaction.  Returns row counts parsed
+        from asyncpg command tags.  ``email_broadcast_recipients`` is created
+        by ``DatabaseLogger.initialize`` (``database.py``) — when the
+        broadcast subsystem hasn't been provisioned, that DELETE is skipped
+        via a savepoint and the key is omitted from the result.
+        """
+        import asyncpg as _asyncpg
+
+        def _row_count(status: str) -> int:
+            try:
+                return int(status.rsplit(" ", 1)[-1])
+            except (ValueError, IndexError):
+                return 0
+
+        async with self.pool.acquire() as conn, conn.transaction():
+            logs_status = await conn.execute("DELETE FROM api_logs WHERE user_id = $1", user_id)
+            recipients_count: int | None
+            try:
+                # email_broadcast_recipients is created lazily by the broadcast
+                # subsystem — savepoint so a missing table doesn't abort the
+                # outer transaction.
+                async with conn.transaction():
+                    recipients_status = await conn.execute(
+                        "DELETE FROM email_broadcast_recipients WHERE user_id = $1",
+                        user_id,
+                    )
+                recipients_count = _row_count(recipients_status)
+            except _asyncpg.UndefinedTableError as exc:
+                logger.debug(
+                    "email_broadcast_recipients delete skipped for user %s (table absent): %s",
+                    user_id,
+                    exc,
+                )
+                recipients_count = None
+
+        counts = {"api_logs": _row_count(logs_status)}
+        if recipients_count is not None:
+            counts["email_broadcast_recipients"] = recipients_count
+        return counts

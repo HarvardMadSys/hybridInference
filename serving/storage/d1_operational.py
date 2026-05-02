@@ -344,6 +344,76 @@ class D1OperationalStore(OperationalStore):
             ]
         )
 
+    async def resume_user(
+        self,
+        user_id: str,
+        *,
+        admin_ip: str,
+        admin_id: str,
+        reason: str | None = None,
+        email: str | None = None,
+    ) -> None:
+        """Resume a soft-deleted user atomically via D1 batch.
+
+        Sets status='active' and writes the audit row.  Keys remain revoked.
+        """
+        now = _now_iso()
+        details = json.dumps({"admin_id": admin_id, "email": email, "reason": reason})
+        await self._d1.batch(
+            [
+                ("UPDATE users SET status = 'active' WHERE id = ?", [user_id]),
+                (
+                    "INSERT INTO admin_audit_log (timestamp, admin_ip, action, "
+                    "target_user_id, details, success) VALUES (?, ?, ?, ?, ?, ?)",
+                    [now, admin_ip, "resume_user", user_id, details, 1],
+                ),
+            ]
+        )
+
+    async def hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        admin_ip: str,
+        admin_id: str,
+        reason: str | None = None,
+        email: str | None = None,
+    ) -> dict[str, int]:
+        """Permanently delete user row and operationally-linked rows.
+
+        Executed atomically as a D1 batch.  D1 does not return per-statement
+        row counts in the batch response — we return an empty dict and let
+        the audit row record only ``admin_id``, ``email`` and ``reason``.
+
+        ``api_logs`` lives in the configured LogStore; the caller must purge
+        it (and ``email_broadcast_recipients``, when present in that store)
+        separately via ``LogStore.hard_delete_user_data``.
+        """
+        now = _now_iso()
+        details = json.dumps({"admin_id": admin_id, "email": email, "reason": reason})
+
+        await self._d1.batch(
+            [
+                (
+                    "DELETE FROM api_keys WHERE account_id = ? OR user_id = ?",
+                    [user_id, user_id],
+                ),
+                ("DELETE FROM auth_sessions WHERE user_id = ?", [user_id]),
+                ("DELETE FROM email_verification_tokens WHERE user_id = ?", [user_id]),
+                ("DELETE FROM password_reset_tokens WHERE user_id = ?", [user_id]),
+                ("DELETE FROM user_daily_cost WHERE user_id = ?", [user_id]),
+                ("DELETE FROM admin_audit_log WHERE target_user_id = ?", [user_id]),
+                ("DELETE FROM users WHERE id = ?", [user_id]),
+                (
+                    "INSERT INTO admin_audit_log (timestamp, admin_ip, action, "
+                    "target_user_id, details, success) VALUES (?, ?, ?, ?, ?, ?)",
+                    [now, admin_ip, "hard_delete_user", user_id, details, 1],
+                ),
+            ]
+        )
+
+        return {}
+
     async def list_users(
         self,
         *,

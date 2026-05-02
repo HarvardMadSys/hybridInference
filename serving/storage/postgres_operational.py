@@ -449,6 +449,113 @@ class PostgresOperationalStore(OperationalStore):
                 True,
             )
 
+    async def resume_user(
+        self,
+        user_id: str,
+        *,
+        admin_ip: str,
+        admin_id: str,
+        reason: str | None = None,
+        email: str | None = None,
+    ) -> None:
+        """Resume a soft-deleted user: set status='active' and audit.
+
+        API keys remain ``revoked`` — the user re-creates one through the
+        normal flow.  All mutations and the audit-log insert are atomic.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
+            await conn.execute(
+                "INSERT INTO admin_audit_log "
+                "(admin_ip, action, target_user_id, details, success) "
+                "VALUES ($1, $2, $3, $4::jsonb, $5)",
+                admin_ip,
+                "resume_user",
+                user_id,
+                json.dumps({"admin_id": admin_id, "email": email, "reason": reason}),
+                True,
+            )
+
+    async def hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        admin_ip: str,
+        admin_id: str,
+        reason: str | None = None,
+        email: str | None = None,
+    ) -> dict[str, int]:
+        """Permanently delete a user row and all operationally-linked rows.
+
+        ``api_logs`` and ``email_broadcast_recipients`` live in the LogStore —
+        the caller must purge them separately via
+        ``LogStore.hard_delete_user_data``.  Returns ``{table_name: row_count}``
+        for audit details.
+        """
+
+        def _row_count(status: str) -> int:
+            # asyncpg execute() returns "DELETE <n>" / "UPDATE <n>" — parse n
+            try:
+                return int(status.rsplit(" ", 1)[-1])
+            except (ValueError, IndexError):
+                return 0
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            keys_status = await conn.execute(
+                "DELETE FROM api_keys WHERE account_id = $1 OR user_id = $1",
+                user_id,
+            )
+            sessions_status = await conn.execute(
+                "DELETE FROM auth_sessions WHERE user_id = $1", user_id
+            )
+            verif_status = await conn.execute(
+                "DELETE FROM email_verification_tokens WHERE user_id = $1", user_id
+            )
+            reset_status = await conn.execute(
+                "DELETE FROM password_reset_tokens WHERE user_id = $1", user_id
+            )
+            cost_status = await conn.execute(
+                "DELETE FROM user_daily_cost WHERE user_id = $1", user_id
+            )
+            audit_status = await conn.execute(
+                "DELETE FROM admin_audit_log WHERE target_user_id = $1", user_id
+            )
+            user_status = await conn.execute("DELETE FROM users WHERE id = $1", user_id)
+
+            counts = {
+                "api_keys": _row_count(keys_status),
+                "auth_sessions": _row_count(sessions_status),
+                "email_verification_tokens": _row_count(verif_status),
+                "password_reset_tokens": _row_count(reset_status),
+                "user_daily_cost": _row_count(cost_status),
+                "admin_audit_log": _row_count(audit_status),
+                "users": _row_count(user_status),
+            }
+
+            # Insert NEW audit row for the hard-delete itself.  The prior
+            # entries for this user were wiped above — the caller accepted
+            # that compliance loss.  No FK on target_user_id, so an orphan
+            # reference here is fine.
+            await conn.execute(
+                "INSERT INTO admin_audit_log "
+                "(admin_ip, action, target_user_id, details, success) "
+                "VALUES ($1, $2, $3, $4::jsonb, $5)",
+                admin_ip,
+                "hard_delete_user",
+                user_id,
+                json.dumps(
+                    {
+                        "admin_id": admin_id,
+                        "email": email,
+                        "reason": reason,
+                        "rows_wiped": counts,
+                    }
+                ),
+                True,
+            )
+
+        return counts
+
     async def list_users(
         self,
         *,

@@ -45,6 +45,8 @@ from serving.schemas_admin import (
     CreateBroadcastResponse,
     DeleteUserRequest,
     DeleteUserResponse,
+    HardDeleteUserRequest,
+    HardDeleteUserResponse,
     ListAPIKeysResponse,
     ListAuditLogResponse,
     ListBroadcastsResponse,
@@ -55,6 +57,8 @@ from serving.schemas_admin import (
     RegenerateAPIKeyResponse,
     RejectUserRequest,
     RejectUserResponse,
+    ResumeUserRequest,
+    ResumeUserResponse,
     RevokeAPIKeyResponse,
     SparklineBucket,
     StatusCounts,
@@ -80,6 +84,7 @@ from serving.servers.deps import (
 )
 from serving.utils.email import render_broadcast_template, send_email
 from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
+from serving.utils.request_ip import get_client_ip
 
 router = APIRouter()
 
@@ -924,6 +929,135 @@ async def delete_user(
         email=user_row["email"],
         status="deleted",
         message=f"User {user_row['email']} has been deleted.",
+    )
+
+
+# ========================================
+# Resume User Endpoint
+# ========================================
+
+
+@router.post("/admin/users/{user_id}/resume", response_model=ResumeUserResponse)
+async def resume_user(
+    request: Request,
+    user_id: str,
+    payload: ResumeUserRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> ResumeUserResponse:
+    """Resume a soft-deleted user — flip status='deleted' → 'active'.
+
+    API keys remain ``revoked`` — the user must re-create one through the
+    normal flow.  Only soft-deleted users may be resumed.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row:
+        raise HTTPException(404, f"User '{user_id}' not found")
+
+    if user_row["status"] != "deleted":
+        raise HTTPException(
+            409,
+            f"Cannot resume user with status '{user_row['status']}'. "
+            "Only soft-deleted users can be resumed.",
+        )
+
+    await op_store.resume_user(
+        user_id,
+        admin_ip=get_client_ip(request),
+        admin_id=admin_id,
+        reason=payload.reason,
+        email=user_row["email"],
+    )
+
+    return ResumeUserResponse(
+        user_id=user_id,
+        email=user_row["email"],
+        status="active",
+        message=f"User {user_row['email']} has been resumed.",
+    )
+
+
+# ========================================
+# Hard Delete User Endpoint
+# ========================================
+
+
+@router.post("/admin/users/{user_id}/hard-delete", response_model=HardDeleteUserResponse)
+async def hard_delete_user(
+    request: Request,
+    user_id: str,
+    payload: HardDeleteUserRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
+) -> HardDeleteUserResponse:
+    """Permanently delete a user and all linked rows.
+
+    Two-step gate: only allowed when the user is already soft-deleted
+    (status='deleted').  Wipes the user row, all api_keys, sessions/tokens,
+    user_daily_cost, prior admin_audit_log entries, and (via the LogStore)
+    api_logs and email_broadcast_recipients.  A fresh ``hard_delete_user``
+    audit row is recorded.
+
+    The operational store and log store live in different pools (and may be
+    different engines), so a true single-transaction guarantee across both
+    is not possible.  We purge LogStore-owned rows FIRST, then run the
+    operational-store wipe.
+
+    Failure modes:
+    - LogStore wipe fails: operational state and audit log are untouched;
+      the user remains soft-deleted (``status='deleted'``) and the admin can
+      retry the hard-delete.
+    - LogStore wipe succeeds but op_store wipe fails: log rows are gone but
+      the user row + prior audit entries remain — the user is still
+      soft-deleted, so the admin can retry hard-delete (which will re-attempt
+      and succeed since the user is still in ``status='deleted'``).
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    if not payload.confirm:
+        raise HTTPException(400, "confirm=True is required to hard-delete a user")
+
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row:
+        raise HTTPException(404, f"User '{user_id}' not found")
+
+    if user_row["status"] != "deleted":
+        raise HTTPException(
+            409,
+            "Hard delete only allowed on soft-deleted users. Soft delete first.",
+        )
+
+    email = user_row["email"]
+
+    # Purge LogStore-owned rows FIRST (api_logs + email_broadcast_recipients).
+    # Lives in a separate pool, so this cannot share the operational-store
+    # transaction.  Running this first means if it fails, the user row +
+    # audit are untouched and the admin can retry.
+    if log_store is not None:
+        await log_store.hard_delete_user_data(user_id)
+
+    # Wipe operational rows + write the new hard-delete audit row, atomically.
+    await op_store.hard_delete_user(
+        user_id,
+        admin_ip=get_client_ip(request),
+        admin_id=admin_id,
+        reason=payload.reason,
+        email=email,
+    )
+
+    return HardDeleteUserResponse(
+        user_id=user_id,
+        email=email,
+        message=f"User {email} has been permanently deleted.",
     )
 
 

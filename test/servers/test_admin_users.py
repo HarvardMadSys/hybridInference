@@ -28,6 +28,8 @@ def mock_stores():
     op_store.approve_user = AsyncMock()
     op_store.reject_user = AsyncMock()
     op_store.delete_user = AsyncMock()
+    op_store.resume_user = AsyncMock()
+    op_store.hard_delete_user = AsyncMock(return_value={})
     op_store.list_audit_log = AsyncMock(return_value=(0, []))
     op_store.log_admin_action = AsyncMock()
     op_store.update_user_fields = AsyncMock()
@@ -36,6 +38,7 @@ def mock_stores():
 
     log_store = MagicMock()
     log_store.get_batch_usage = AsyncMock(return_value={})
+    log_store.hard_delete_user_data = AsyncMock(return_value={})
 
     return op_store, log_store
 
@@ -654,3 +657,264 @@ async def test_sort_alltime_usage_zero_without_sort(admin_client):
     assert response.status_code == 200
     user = response.json()["users"][0]
     assert float(user["usage_alltime_usd"]) == 0.0
+
+
+# ========================================================================
+# Feature 5: Resume User
+# ========================================================================
+
+
+@pytest.mark.asyncio
+async def test_resume_user_success(admin_client):
+    """POST /admin/users/{id}/resume flips deleted -> active."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+
+    response = await client.post(
+        "/admin/users/u1/resume",
+        headers=AUTH,
+        json={"reason": "false alarm"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "active"
+    assert body["email"] == "alice@example.com"
+    op_store.resume_user.assert_awaited_once()
+    call_kwargs = op_store.resume_user.await_args.kwargs
+    assert call_kwargs["email"] == "alice@example.com"
+    assert call_kwargs["reason"] == "false alarm"
+    # admin_id is the verified admin identifier (JWT email or ADMIN_TOKEN
+    # marker); admin_ip is the request's client IP, derived independently.
+    assert "admin_id" in call_kwargs
+    assert isinstance(call_kwargs["admin_id"], str)
+    assert "admin_ip" in call_kwargs
+    assert isinstance(call_kwargs["admin_ip"], str)
+
+
+@pytest.mark.asyncio
+async def test_resume_user_not_deleted(admin_client):
+    """Cannot resume a user that is not soft-deleted — 409."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "active",
+    }
+
+    response = await client.post(
+        "/admin/users/u1/resume",
+        headers=AUTH,
+        json={"reason": "test"},
+    )
+
+    assert response.status_code == 409
+    op_store.resume_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resume_user_not_found(admin_client):
+    """Resume non-existent user returns 404."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = None
+
+    response = await client.post(
+        "/admin/users/missing/resume",
+        headers=AUTH,
+        json={"reason": "test"},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resume_user_requires_auth(admin_client):
+    """POST /admin/users/{id}/resume without auth returns 401."""
+    client, _op_store, _log_store, _log = admin_client
+    response = await client.post("/admin/users/u1/resume", json={"reason": "test"})
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_resume_user_reason_optional(admin_client):
+    """resume_user accepts an empty body — reason is optional."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+
+    response = await client.post("/admin/users/u1/resume", headers=AUTH, json={})
+
+    assert response.status_code == 200
+    op_store.resume_user.assert_awaited_once()
+
+
+# ========================================================================
+# Feature 6: Hard Delete User
+# ========================================================================
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_user_requires_soft_delete(admin_client):
+    """Hard delete on an active user returns 409."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "active",
+    }
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True, "reason": "test"},
+    )
+
+    assert response.status_code == 409
+    op_store.hard_delete_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_user_rejects_suspended(admin_client):
+    """Hard delete on suspended user returns 409 — must soft-delete first."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "bob@example.com",
+        "status": "suspended",
+    }
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_user_requires_confirm(admin_client):
+    """confirm=False returns 400."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": False, "reason": "test"},
+    )
+
+    assert response.status_code == 400
+    op_store.hard_delete_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_user_missing_confirm(admin_client):
+    """Missing confirm field returns 422 (schema validation)."""
+    client, _op_store, _log_store, _log = admin_client
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"reason": "test"},
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_user_not_found(admin_client):
+    """Hard delete non-existent user returns 404."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = None
+
+    response = await client.post(
+        "/admin/users/missing/hard-delete",
+        headers=AUTH,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_user_requires_auth(admin_client):
+    """POST /admin/users/{id}/hard-delete without auth returns 401."""
+    client, _op_store, _log_store, _log = admin_client
+    response = await client.post("/admin/users/u1/hard-delete", json={"confirm": True})
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_user_wipes_data(admin_client):
+    """soft-deleted user can be hard-deleted; store + log_store are both invoked."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    op_store.hard_delete_user.return_value = {
+        "users": 1,
+        "api_keys": 2,
+        "auth_sessions": 3,
+        "email_verification_tokens": 0,
+        "password_reset_tokens": 0,
+        "user_daily_cost": 0,
+        "admin_audit_log": 5,
+    }
+    log_store.hard_delete_user_data.return_value = {
+        "api_logs": 5,
+        "email_broadcast_recipients": 0,
+    }
+
+    # Track call order: log_store wipe must come BEFORE op_store wipe so a
+    # partial failure leaves the user resumable.
+    manager = MagicMock()
+    manager.attach_mock(log_store.hard_delete_user_data, "log_store_hard_delete_data")
+    manager.attach_mock(op_store.hard_delete_user, "op_store_hard_delete")
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True, "reason": "user requested"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["email"] == "alice@example.com"
+    assert "permanently deleted" in body["message"].lower()
+
+    # Operational store wipe was called with the right args
+    op_store.hard_delete_user.assert_awaited_once()
+    call_kwargs = op_store.hard_delete_user.await_args.kwargs
+    assert call_kwargs["email"] == "alice@example.com"
+    assert call_kwargs["reason"] == "user requested"
+    # admin_id is the verified admin identifier (JWT email or ADMIN_TOKEN
+    # marker); admin_ip is the request's client IP, derived independently.
+    assert "admin_id" in call_kwargs
+    assert isinstance(call_kwargs["admin_id"], str)
+    assert "admin_ip" in call_kwargs
+    assert isinstance(call_kwargs["admin_ip"], str)
+
+    # LogStore wipe was issued with the user_id
+    log_store.hard_delete_user_data.assert_awaited_once_with("u1")
+
+    # LogStore wipe must run BEFORE the op_store wipe.
+    call_names = [c[0] for c in manager.mock_calls]
+    log_idx = call_names.index("log_store_hard_delete_data")
+    op_store_idx = call_names.index("op_store_hard_delete")
+    assert log_idx < op_store_idx, (
+        f"log_store_hard_delete_data must run before op_store_hard_delete, got {call_names}"
+    )
