@@ -24,6 +24,7 @@ class ProviderProfile(str, Enum):
     AZURE_OPENAI = "azure_openai"
     DEFAULT = "default"
     DEEPSEEK = "deepseek"
+    OPENROUTER = "openrouter"
     ZHIPU = "zhipu"
 
 
@@ -33,6 +34,8 @@ def get_usage_normalizer(profile: ProviderProfile) -> Callable[[dict[str, Any]],
         return normalize_usage_azure_openai
     if profile == ProviderProfile.DEEPSEEK:
         return normalize_usage_deepseek
+    if profile == ProviderProfile.OPENROUTER:
+        return normalize_usage_openrouter
     return normalize_usage_default
 
 
@@ -216,6 +219,26 @@ def normalize_usage_deepseek(usage_data: dict[str, Any]) -> UsageInfo:
         cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0)
         or usage_data.get("cache_write_tokens", 0),
     )
+
+
+def normalize_usage_openrouter(usage_data: dict[str, Any]) -> UsageInfo:
+    """OpenRouter usage extraction: standard tokens + optional cost.
+
+    OpenRouter reports `cost` (USD, per-request) when the request body sets
+    `usage: {include: true}`. Cache tokens may be returned either flat
+    (cache_read_tokens) or nested under prompt_tokens_details.cached_tokens
+    depending on the upstream provider OpenRouter routed to; we accept both.
+    """
+    base = normalize_usage_default(usage_data)
+    if base.cache_read_tokens == 0:
+        nested = usage_data.get("prompt_tokens_details") or {}
+        cached = nested.get("cached_tokens") if isinstance(nested, dict) else None
+        if isinstance(cached, int) and cached > 0:
+            base.cache_read_tokens = cached
+
+    cost = usage_data.get("cost")
+    base.upstream_cost_usd = float(cost) if isinstance(cost, (int, float)) else None
+    return base
 
 
 def _normalize_azure_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
