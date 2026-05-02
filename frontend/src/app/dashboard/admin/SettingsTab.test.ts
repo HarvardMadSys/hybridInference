@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateSignupDomainInput } from './SettingsTab';
+import { validateSignupDomainInput } from './signupDomainValidation';
 
 describe('validateSignupDomainInput', () => {
   it('accepts a plain exact domain', () => {
