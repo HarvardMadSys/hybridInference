@@ -750,7 +750,8 @@ async def chat_completions(
                         },
                     )
 
-                error_chunk = {"error": {"message": str(exc), "type": "server_error", "code": 500}}
+                user_msg = scrub_error_for_user(exc, request_id, 500)
+                error_chunk = {"error": {"message": user_msg, "type": "server_error", "code": 500}}
                 error_msg = f"data: {json.dumps(error_chunk)}\n\n"
                 logger.error(f"Yielding error chunk: {error_msg}")
                 yield error_msg
@@ -945,7 +946,10 @@ async def chat_completions(
 
     except ProviderPinError as exc:
         record_model_request("400", "router")
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=scrub_error_for_user(exc, request_id, 400),
+        ) from exc
 
     except Exception as exc:
         # Record failure observation for online learning (RouteWise)

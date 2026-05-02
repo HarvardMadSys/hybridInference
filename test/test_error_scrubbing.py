@@ -82,3 +82,16 @@ def test_none_exception_still_scrubs():
     msg = scrub_error_for_user(None, "req_n", 500)
     assert msg.startswith("Upstream service error")
     assert "(request_id: req_n)" in msg
+
+
+def test_provider_pin_error_is_scrubbed():
+    """ProviderPinError carries a pinned provider name in its message; the
+    user must see the generic 400 message, not the provider name."""
+    from routing.routers import ProviderPinError
+
+    exc = ProviderPinError("Pinned provider 'anthropic' not found for model claude-3-5-sonnet")
+    msg = scrub_error_for_user(exc, "req_p", 400)
+    assert msg.startswith("Invalid request")
+    assert "anthropic" not in msg.lower()
+    assert "claude" not in msg.lower()
+    assert "(request_id: req_p)" in msg
