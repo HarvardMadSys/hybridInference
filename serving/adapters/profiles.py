@@ -28,6 +28,7 @@ class ProviderProfile(str, Enum):
     AZURE_OPENAI = "azure_openai"
     DEFAULT = "default"
     DEEPSEEK = "deepseek"
+    MINIMAX = "minimax"
     OPENROUTER = "openrouter"
     ZHIPU = "zhipu"
 

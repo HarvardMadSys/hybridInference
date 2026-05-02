@@ -51,6 +51,11 @@ def test_minimax_extracted_from_hostname() -> None:
     assert eid == "minimax-m2.7:minimax-api"
 
 
+def test_minimax_kind_uses_kind_api_format() -> None:
+    eid = _make_provider_id("minimax-m2.7", "minimax", "https://api.minimax.io")
+    assert eid == "minimax-m2.7:minimax-api"
+
+
 def test_fallback_on_bad_url() -> None:
     # urlparse doesn't raise on malformed URLs; hostname becomes None → "unknown"
     eid = _make_provider_id("m", "sglang", "not-a-url")

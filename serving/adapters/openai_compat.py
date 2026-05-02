@@ -673,7 +673,7 @@ class OpenAICompatAdapter(BaseAdapter):
             usage_info = None
             final_usage = self._build_fallback_usage(
                 messages=cleaned_messages
-                if self._usage_profile != ProviderProfile.DEFAULT
+                if self._usage_profile == ProviderProfile.AZURE_OPENAI
                 else messages,
                 total_content=total_content,
                 prompt_tokens_override=prompt_tokens_override,

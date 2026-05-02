@@ -131,7 +131,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"openai"``, ``"zhipu"``,
-              ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``, ``"openrouter"``,
+              ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``, ``"openrouter"``,
               ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
@@ -170,6 +170,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     # Zhipu routes through OpenAICompatAdapter with a non-/v1 chat path.
     elif kind == "zhipu":
         cfg = {**cfg, "provider_profile": "zhipu", "chat_path": "/chat/completions"}
+    elif kind == "minimax":
+        cfg = {**cfg, "provider_profile": "minimax"}
 
     model_cfg = ModelConfig(**cfg)
 
@@ -184,6 +186,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "deepseek",
         "openai",
         "zhipu",
+        "minimax",
     ):
         return OpenAICompatAdapter(model_cfg)
 
