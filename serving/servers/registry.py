@@ -24,6 +24,7 @@ from serving.adapters import (
     GeminiAdapter,
     ModelConfig,
     OpenAICompatAdapter,
+    OpenRouterAdapter,
 )
 
 if TYPE_CHECKING:
@@ -130,15 +131,29 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"openai"``, ``"zhipu"``,
-              ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``).
+              ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``, ``"openrouter"``,
+              ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
         A concrete adapter instance.
 
     Raises:
-        ValueError: When ``kind`` is unknown.
+        ValueError: When ``kind`` is unknown or the OpenRouter bracket form
+            is malformed.
     """
+    # Resolve OpenRouter bracket syntax up front so the rest of the dispatch
+    # operates on the bare base kind. parse_openrouter_kind raises on
+    # malformed inputs (empty pin, whitespace, nested brackets).
+    base_kind, pinned_provider = parse_openrouter_kind(kind)
+    if base_kind == "openrouter":
+        cfg = {
+            **cfg,
+            "provider_profile": "openrouter",
+            "openrouter_pinned_provider": pinned_provider,
+        }
+        kind = base_kind  # subsequent dispatch checks compare against the bare kind
+
     # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
     if kind == "deepseek":
         cfg = {**cfg, "provider_profile": "deepseek"}
@@ -171,6 +186,9 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "zhipu",
     ):
         return OpenAICompatAdapter(model_cfg)
+
+    if kind == "openrouter":
+        return OpenRouterAdapter(model_cfg)
 
     if kind == "claude":
         return ClaudeAdapter(model_cfg)
