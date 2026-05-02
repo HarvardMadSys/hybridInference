@@ -10,12 +10,15 @@ import json
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from serving.utils.logging import get_logger
 from serving.utils.token_utils import extract_cache_tokens, extract_reasoning_tokens
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from .base import UsageInfo
+
+logger = get_logger(__name__)
 
 
 class ProviderProfile(str, Enum):
@@ -225,19 +228,26 @@ def normalize_usage_openrouter(usage_data: dict[str, Any]) -> UsageInfo:
     """OpenRouter usage extraction: standard tokens + optional cost.
 
     OpenRouter reports `cost` (USD, per-request) when the request body sets
-    `usage: {include: true}`. Cache tokens may be returned either flat
-    (cache_read_tokens) or nested under prompt_tokens_details.cached_tokens
-    depending on the upstream provider OpenRouter routed to; we accept both.
+    `usage: {include: true}`. Cache and reasoning tokens (flat or nested under
+    prompt_tokens_details / completion_tokens_details) are normalized by
+    normalize_usage_default via the shared token_utils extractors.
     """
     base = normalize_usage_default(usage_data)
-    if base.cache_read_tokens == 0:
-        nested = usage_data.get("prompt_tokens_details") or {}
-        cached = nested.get("cached_tokens") if isinstance(nested, dict) else None
-        if isinstance(cached, int) and cached > 0:
-            base.cache_read_tokens = cached
 
     cost = usage_data.get("cost")
-    base.upstream_cost_usd = float(cost) if isinstance(cost, (int, float)) else None
+    if cost is not None:
+        try:
+            parsed_cost = float(cost)
+            if parsed_cost >= 0:
+                base.upstream_cost_usd = parsed_cost
+            else:
+                logger.warning("OpenRouter returned negative cost %r; ignoring", cost)
+        except (TypeError, ValueError):
+            logger.warning(
+                "OpenRouter returned non-numeric cost %r (type=%s); upstream_cost_usd left null",
+                cost,
+                type(cost).__name__,
+            )
     return base
 
 

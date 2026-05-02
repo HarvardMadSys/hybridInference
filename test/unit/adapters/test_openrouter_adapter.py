@@ -89,3 +89,50 @@ def test_get_usage_normalizer_returns_openrouter_normalizer() -> None:
     normalizer = get_usage_normalizer(ProviderProfile.OPENROUTER)
     info = normalizer({"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0.5})
     assert info.upstream_cost_usd == 0.5
+
+
+def test_normalize_usage_openrouter_string_cost_is_parsed() -> None:
+    """A string-encoded numeric cost (rare but possible from proxies) is parsed."""
+    info = normalize_usage_openrouter(
+        {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+            "cost": "0.00342",
+        }
+    )
+    assert info.upstream_cost_usd == 0.00342
+
+
+def test_normalize_usage_openrouter_non_numeric_cost_is_dropped(caplog) -> None:
+    """A non-numeric cost (e.g. dict, garbage string) is dropped with a warning."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        info = normalize_usage_openrouter(
+            {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "cost": "not-a-number",
+            }
+        )
+    assert info.upstream_cost_usd is None
+    assert any("non-numeric cost" in rec.message for rec in caplog.records)
+
+
+def test_normalize_usage_openrouter_negative_cost_is_dropped(caplog) -> None:
+    """A negative cost is dropped with a warning (defensive against bad upstream data)."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        info = normalize_usage_openrouter(
+            {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "cost": -1.5,
+            }
+        )
+    assert info.upstream_cost_usd is None
+    assert any("negative cost" in rec.message for rec in caplog.records)
