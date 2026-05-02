@@ -118,6 +118,14 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 <span className="text-gray-500">Cached Tokens:</span>{' '}
                 <span className="text-gray-700">{formatTokens(cachedTokens)}</span>
               </div>
+              {req.stream && req.completion_tokens != null && req.completion_tokens > 1 && req.ttft_ms != null && req.latency_ms != null && req.latency_ms > req.ttft_ms && (
+                <div>
+                  <span className="text-gray-500">Throughput:</span>{' '}
+                  <span className="text-gray-700">
+                    {(((req.completion_tokens - 1) * 1000) / (req.latency_ms - req.ttft_ms)).toFixed(1)} tok/s
+                  </span>
+                </div>
+              )}
               {req.error && (
                 <div className="col-span-full mt-1">
                   <span className="text-red-600">Error: {req.error}</span>

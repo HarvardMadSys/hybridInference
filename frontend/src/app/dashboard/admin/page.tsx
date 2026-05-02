@@ -336,10 +336,19 @@ function formatTokens(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
-function formatBucketEdge(value: number, kind: 'tokens' | 'ms'): string {
+function formatThroughput(n: number): string {
+  if (n >= 100) return `${Math.round(n)}/s`;
+  return `${n.toFixed(1)}/s`;
+}
+
+function formatBucketEdge(value: number, kind: 'tokens' | 'ms' | 'tps'): string {
   if (kind === 'tokens') {
     if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`;
     return value.toLocaleString();
+  }
+  if (kind === 'tps') {
+    if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`;
+    return `${value}/s`;
   }
   if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}s`;
   return `${value}ms`;
@@ -349,16 +358,16 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
   const rows: Array<{
     title: string;
     dist: AdminMetricDistribution;
-    kind: 'tokens' | 'ms';
+    kind: 'tokens' | 'ms' | 'tps';
   }> = [
     { title: 'Prompt tokens', dist: metric.prompt_tokens, kind: 'tokens' },
     { title: 'Response tokens', dist: metric.completion_tokens, kind: 'tokens' },
     { title: 'TTFT', dist: metric.ttft_ms, kind: 'ms' },
-    { title: 'TBT', dist: metric.tbt_ms, kind: 'ms' },
+    { title: 'Throughput', dist: metric.throughput_tps, kind: 'tps' },
   ];
-  const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms'): string => {
+  const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms' | 'tps'): string => {
     if (v == null) return '—';
-    return kind === 'ms' ? formatLatency(v) : formatTokens(v);
+    return kind === 'ms' ? formatLatency(v) : kind === 'tps' ? formatThroughput(v) : formatTokens(v);
   };
   return (
     <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
