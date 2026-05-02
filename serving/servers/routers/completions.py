@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from routing.executor import ProviderPinError
 from routing.routers import RoutingObservation
 from serving.config.settings import has_role
+from serving.exceptions import scrub_error_for_user
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     API_TOKEN_ANOMALIES,
@@ -1019,4 +1020,7 @@ async def chat_completions(
         # Record error status code
         record_model_request(str(exc_status_code), provider_for_error)
 
-        raise HTTPException(exc_status_code, str(exc)) from exc
+        raise HTTPException(
+            exc_status_code,
+            scrub_error_for_user(exc, request_id, exc_status_code),
+        ) from exc
