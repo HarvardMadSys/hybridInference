@@ -666,7 +666,16 @@ class ProviderStatsRow(BaseModel):
     total_completion_tokens: int
 
 
+class ProviderModelPair(BaseModel):
+    provider: str
+    model_id: str
+
+
 class ProviderStatsResponse(BaseModel):
     rows: list[ProviderStatsRow]
     providers: list[str]
     models: list[str]
+    # Distinct (provider, model_id) pairs that have data in the window.
+    # The UI uses pairs[0] as the default selection so it never picks a
+    # provider x model combination that has no data.
+    pairs: list[ProviderModelPair]

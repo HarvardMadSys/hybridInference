@@ -219,6 +219,10 @@ async def backfill_if_empty(
     """If provider_hourly_stats has no rows, aggregate the last `days` of
     api_logs in a single pass. Idempotent: no-op when rows exist.
     Returns the number of rows written (0 when skipped).
+
+    Multi-replica safe: takes the same advisory lock used by hourly_job,
+    then re-checks emptiness inside the lock so only one replica performs
+    the (potentially expensive) 30-day aggregation on first deploy.
     """
     async with pool.acquire() as conn:
         any_row = await conn.fetchval("SELECT 1 FROM provider_hourly_stats LIMIT 1")
@@ -226,17 +230,34 @@ async def backfill_if_empty(
         logger.info("backfill_if_empty: table populated, skipping")
         return 0
 
-    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    start = end - timedelta(days=days)
+    rows_written = 0
 
-    rows = await run_rollup(pool, start=start, end=end)
-    logger.info(
-        "backfill_if_empty: window=[%s, %s) rows=%d",
-        start.isoformat(),
-        end.isoformat(),
-        rows,
-    )
-    return rows
+    async def _do(conn) -> None:
+        nonlocal rows_written
+        # Re-check emptiness under the lock — another replica may have just
+        # finished its backfill while we were waiting.
+        any_row = await conn.fetchval("SELECT 1 FROM provider_hourly_stats LIMIT 1")
+        if any_row is not None:
+            logger.info("backfill_if_empty: populated by another replica, skipping")
+            return
+        end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=days)
+        result = await conn.execute(ROLLUP_SQL, start, end)
+        try:
+            rows_written = int(result.rsplit(" ", 1)[-1])
+        except ValueError:
+            rows_written = 0
+        logger.info(
+            "backfill_if_empty: window=[%s, %s) rows=%d",
+            start.isoformat(),
+            end.isoformat(),
+            rows_written,
+        )
+
+    ran = await _try_lock_run(pool, _do)
+    if not ran:
+        logger.info("backfill_if_empty: lock held by another replica, skipping")
+    return rows_written
 
 
 def register_rollup_job(scheduler, pool: asyncpg.Pool) -> None:

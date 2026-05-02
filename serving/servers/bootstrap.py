@@ -33,6 +33,11 @@ from .registry import ModelRegistrationInfo, register_from_models_yaml
 
 logger = get_logger(__name__)
 
+# Strong references to fire-and-forget background tasks created at startup.
+# asyncio holds only weak refs to running tasks, so without this set the
+# garbage collector can cancel mid-flight tasks.
+_BACKGROUND_TASKS: set = set()
+
 
 def _apply_hard_offload(router: RouteExecutor, local_base_url: str) -> None:
     """Apply hard OFFLOAD by filtering out local adapters from routes.
@@ -292,12 +297,21 @@ async def initialize() -> AppServices:
                             sched = email_scheduler.get_scheduler()
                             if sched is not None:
                                 register_rollup_job(sched, db_logger.pool)
-                                try:
-                                    await backfill_if_empty(db_logger.pool, days=30)
-                                except Exception as bf_exc:
-                                    logger.warning(
-                                        f"provider-stats backfill failed (non-fatal): {bf_exc}"
-                                    )
+
+                                # Run backfill in the background so a slow 30-day
+                                # aggregation on a large api_logs table cannot
+                                # block server startup or trip readiness checks.
+                                async def _run_backfill(pool=db_logger.pool):
+                                    try:
+                                        await backfill_if_empty(pool, days=30)
+                                    except Exception as bf_exc:
+                                        logger.warning(
+                                            f"provider-stats backfill failed (non-fatal): {bf_exc}"
+                                        )
+
+                                _bf_task = asyncio.create_task(_run_backfill())
+                                _BACKGROUND_TASKS.add(_bf_task)
+                                _bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
                         except Exception as sched_exc:
                             logger.error(f"Email scheduler startup failed: {sched_exc}")
                             try:

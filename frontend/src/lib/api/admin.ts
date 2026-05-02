@@ -655,10 +655,16 @@ export interface ProviderStatsRow {
   total_completion_tokens: number;
 }
 
+export interface ProviderModelPair {
+  provider: string;
+  model_id: string;
+}
+
 export interface ProviderStatsResponse {
   rows: ProviderStatsRow[];
   providers: string[];
   models: string[];
+  pairs: ProviderModelPair[];
 }
 
 export async function getProviderStats(params: {

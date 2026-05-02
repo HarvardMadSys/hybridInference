@@ -49,6 +49,7 @@ from serving.schemas_admin import (
     ListAuditLogResponse,
     ListBroadcastsResponse,
     ListUsersResponse,
+    ProviderModelPair,
     ProviderStatsResponse,
     ProviderStatsRow,
     RegenerateAPIKeyResponse,
@@ -2234,6 +2235,20 @@ def _truncate_hour(dt: datetime) -> datetime:
     return dt.replace(minute=0, second=0, microsecond=0)
 
 
+def _require_aware_utc(dt: datetime, name: str) -> datetime:
+    """Reject timezone-naive datetimes; convert tz-aware values to UTC.
+
+    Naive datetimes silently compare to TIMESTAMPTZ using the server/session
+    timezone, which produces surprising windows for callers in other zones.
+    """
+    if dt.tzinfo is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"`{name}` must be timezone-aware (e.g. ...Z or ...+00:00)",
+        )
+    return dt.astimezone(timezone.utc)
+
+
 @router.get("/admin/api/provider-stats", response_model=ProviderStatsResponse)
 async def admin_provider_stats(
     request: Request,
@@ -2261,6 +2276,11 @@ async def admin_provider_stats(
         raise HTTPException(status_code=503, detail="database unavailable")
 
     now = datetime.now(timezone.utc)
+    if to is not None:
+        to = _require_aware_utc(to, "to")
+    if from_ is not None:
+        from_ = _require_aware_utc(from_, "from")
+
     end = _truncate_hour(to) if to else _truncate_hour(now)
     start = _truncate_hour(from_) if from_ else end - timedelta(days=_PROVIDER_STATS_DEFAULT_DAYS)
 
@@ -2309,9 +2329,19 @@ async def admin_provider_stats(
             start,
             end,
         )
+        pairs = await conn.fetch(
+            """
+            SELECT DISTINCT provider, model_id FROM provider_hourly_stats
+             WHERE hour_bucket >= $1 AND hour_bucket < $2
+             ORDER BY provider, model_id
+            """,
+            start,
+            end,
+        )
 
     return ProviderStatsResponse(
         rows=[ProviderStatsRow(**dict(r)) for r in rows],
         providers=[r["provider"] for r in providers],
         models=[r["model_id"] for r in models],
+        pairs=[ProviderModelPair(provider=r["provider"], model_id=r["model_id"]) for r in pairs],
     )

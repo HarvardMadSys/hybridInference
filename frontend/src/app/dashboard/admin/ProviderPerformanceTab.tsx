@@ -58,8 +58,13 @@ export function ProviderPerformanceTab() {
       });
       setProviders(resp.providers);
       setModels(resp.models);
-      if (!provider && resp.providers.length > 0) setProvider(resp.providers[0]);
-      if (!model && resp.models.length > 0) setModel(resp.models[0]);
+      // Default to a (provider, model) pair that actually has data —
+      // the providers/models lists alone may pair to an empty slice.
+      if ((!provider || !model) && resp.pairs.length > 0) {
+        const pair = resp.pairs[0];
+        if (!provider) setProvider(pair.provider);
+        if (!model) setModel(pair.model_id);
+      }
     } catch (exc) {
       setError(getErrorMessage(exc));
     }

@@ -25,7 +25,6 @@ def _build_admin_app(db_logger=None) -> FastAPI:
     services = AppServices(
         router=MagicMock(),
         db_logger=db_logger,
-        rate_limiter=None,
         routing_manager=None,
     )
     app.state.services = services  # type: ignore[attr-defined]
@@ -108,6 +107,29 @@ class TestProviderStatsRangeCap:
             )
         app.dependency_overrides.clear()
         assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_naive_datetime_rejected(self):
+        fake_db_logger = MagicMock()
+        fake_db_logger.pool = MagicMock()
+
+        app = _build_admin_app(db_logger=fake_db_logger)
+        _override_admin(app)
+        app.dependency_overrides[get_db_logger] = lambda: fake_db_logger
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(
+                "/admin/api/provider-stats",
+                params={
+                    "provider": "openrouter",
+                    "model_id": "qwen/qwen3-coder",
+                    "from": "2026-01-01T00:00:00",
+                },
+            )
+        app.dependency_overrides.clear()
+        assert resp.status_code == 400
+        assert "timezone-aware" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_no_db_returns_503(self):
