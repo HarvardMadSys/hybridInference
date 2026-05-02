@@ -856,6 +856,11 @@ export default function AdminPage() {
           | 'performance'
           | 'token-usage',
       );
+      if (tab === 'provider-perf') {
+        params.set('tab', 'performance');
+        const next = `${window.location.pathname}?${params.toString()}`;
+        window.history.replaceState({}, '', next);
+      }
     }
   }, []);
 
@@ -939,6 +944,7 @@ export default function AdminPage() {
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
   const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
   const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
+  const [perfRefreshNonce, setPerfRefreshNonce] = useState(0);
   const reqJumpInputId = useId();
   const REQ_PAGE_SIZE = 50;
   const [showExportPanel, setShowExportPanel] = useState(false);
@@ -1294,6 +1300,7 @@ export default function AdminPage() {
     }
     if (activeTab === 'performance') {
       loadPerformanceMetrics();
+      setPerfRefreshNonce((n) => n + 1);
       return;
     }
     if (activeTab === 'analytics') {
@@ -2498,7 +2505,7 @@ export default function AdminPage() {
 
         {activeTab === 'performance' && (
           <div className="mt-5 space-y-6">
-            <ProviderPerformanceTab />
+            <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <div>

@@ -128,7 +128,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   );
 }
 
-export function ProviderPerformanceTab() {
+export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number } = {}) {
   const [data, setData] = useState<ProviderStatsResponse | null>(null);
   const [allProviders, setAllProviders] = useState<string[]>([]);
   const [allPairs, setAllPairs] = useState<{ provider: string; model_id: string }[]>([]);
@@ -157,7 +157,7 @@ export function ProviderPerformanceTab() {
 
   useEffect(() => {
     void loadTtftScatter();
-  }, [loadTtftScatter]);
+  }, [loadTtftScatter, refreshKey]);
 
   const filteredModels = useMemo(() => modelsForProvider(allPairs, provider), [allPairs, provider]);
 
@@ -219,7 +219,7 @@ export function ProviderPerformanceTab() {
     if (initializing) return;
     if (!provider || !model) return;
     void loadData(provider, model, range);
-  }, [provider, model, range, loadData, initializing]);
+  }, [provider, model, range, loadData, initializing, refreshKey]);
 
   const chartData = useMemo(
     () =>
