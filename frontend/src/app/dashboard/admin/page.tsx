@@ -826,7 +826,6 @@ export default function AdminPage() {
     | 'requests'
     | 'broadcast'
     | 'providers'
-    | 'provider-perf'
     | 'analytics'
     | 'performance'
     | 'token-usage'
@@ -835,25 +834,24 @@ export default function AdminPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
+    const normalized = tab === 'provider-perf' ? 'performance' : tab;
     if (
-      tab === 'users' ||
-      tab === 'audit' ||
-      tab === 'requests' ||
-      tab === 'broadcast' ||
-      tab === 'providers' ||
-      tab === 'provider-perf' ||
-      tab === 'analytics' ||
-      tab === 'performance' ||
-      tab === 'token-usage'
+      normalized === 'users' ||
+      normalized === 'audit' ||
+      normalized === 'requests' ||
+      normalized === 'broadcast' ||
+      normalized === 'providers' ||
+      normalized === 'analytics' ||
+      normalized === 'performance' ||
+      normalized === 'token-usage'
     ) {
       setActiveTab(
-        tab as
+        normalized as
           | 'users'
           | 'audit'
           | 'requests'
           | 'broadcast'
           | 'providers'
-          | 'provider-perf'
           | 'analytics'
           | 'performance'
           | 'token-usage',
@@ -1266,7 +1264,6 @@ export default function AdminPage() {
       | 'requests'
       | 'broadcast'
       | 'providers'
-      | 'provider-perf'
       | 'analytics'
       | 'performance'
       | 'token-usage',
@@ -1300,9 +1297,6 @@ export default function AdminPage() {
       return;
     }
     if (activeTab === 'analytics') {
-      return;
-    }
-    if (activeTab === 'provider-perf') {
       return;
     }
     if (activeTab === 'token-usage') {
@@ -1372,7 +1366,6 @@ export default function AdminPage() {
               'users',
               'requests',
               'providers',
-              'provider-perf',
               'token-usage',
               'audit',
               'broadcast',
@@ -1395,17 +1388,15 @@ export default function AdminPage() {
                   ? 'Recent Requests'
                   : tab === 'providers'
                     ? 'Providers'
-                    : tab === 'provider-perf'
-                      ? 'Provider Performance'
-                      : tab === 'token-usage'
-                        ? 'Token Usage'
-                        : tab === 'audit'
-                          ? 'Audit Log'
-                          : tab === 'broadcast'
-                            ? 'Broadcast Email'
-                            : tab === 'analytics'
-                              ? 'Analytics'
-                              : 'Performance'}
+                    : tab === 'token-usage'
+                      ? 'Token Usage'
+                      : tab === 'audit'
+                        ? 'Audit Log'
+                        : tab === 'broadcast'
+                          ? 'Broadcast Email'
+                          : tab === 'analytics'
+                            ? 'Analytics'
+                            : 'Performance'}
             </button>
           ))}
         </div>
@@ -2503,34 +2494,36 @@ export default function AdminPage() {
           </div>
         )}
         {activeTab === 'analytics' && <AnalyticsTab />}
-        {activeTab === 'provider-perf' && <ProviderPerformanceTab />}
         {activeTab === 'token-usage' && <TokenUsageTab />}
 
         {activeTab === 'performance' && (
-          <div className="mt-5">
-            <div className="mb-2 flex items-center justify-between">
-              <div>
-                <h2 className="text-[14px] font-semibold text-gray-900">Performance metrics</h2>
-                <p className="text-[11px] text-gray-400">
-                  Prompt/response length, time-to-first-token, and inter-token latency
-                  distributions.
-                </p>
+          <div className="mt-5 space-y-6">
+            <ProviderPerformanceTab />
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <div>
+                  <h2 className="text-[14px] font-semibold text-gray-900">Performance metrics</h2>
+                  <p className="text-[11px] text-gray-400">
+                    Prompt/response length, time-to-first-token, and inter-token latency
+                    distributions.
+                  </p>
+                </div>
+                {perfMetricsLoading && (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+                )}
               </div>
-              {perfMetricsLoading && (
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-              )}
+              {perfMetrics.length > 0 ? (
+                <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
+                  {perfMetrics.map((metric) => (
+                    <PerformanceMetricsCard key={metric.key} metric={metric} />
+                  ))}
+                </div>
+              ) : !perfMetricsLoading ? (
+                <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+                  <p className="text-[13px] text-gray-400">No performance metrics available.</p>
+                </div>
+              ) : null}
             </div>
-            {perfMetrics.length > 0 ? (
-              <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
-                {perfMetrics.map((metric) => (
-                  <PerformanceMetricsCard key={metric.key} metric={metric} />
-                ))}
-              </div>
-            ) : !perfMetricsLoading ? (
-              <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
-                <p className="text-[13px] text-gray-400">No performance metrics available.</p>
-              </div>
-            ) : null}
           </div>
         )}
 
