@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useId, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import {
@@ -334,18 +334,19 @@ function actionLabel(action: string): string {
 type AuditCategory = 'create' | 'approve' | 'reject' | 'update' | 'delete' | 'other';
 
 function actionCategory(action: string): AuditCategory {
-  if (action === 'create_user' || action === 'create_key' || action === 'regenerate_key')
-    return 'create';
-  if (action === 'approve_user') return 'approve';
-  if (action === 'reject_user') return 'reject';
-  if (action === 'update_user' || action === 'update_key') return 'update';
+  if (action === 'regenerate_key') return 'create';
   if (
-    action === 'delete_user' ||
-    action === 'delete_key' ||
-    action === 'hard_delete_key' ||
-    action === 'revoke_key'
+    action.startsWith('hard_delete') ||
+    action.startsWith('revoke_') ||
+    action.endsWith('_revoke')
   )
     return 'delete';
+  if (action.startsWith('approve_') || action.endsWith('_approve')) return 'approve';
+  if (action.startsWith('reject_') || action.endsWith('_reject') || action.endsWith('_cancel'))
+    return 'reject';
+  if (action.startsWith('create_') || action.endsWith('_create')) return 'create';
+  if (action.startsWith('update_') || action.endsWith('_update')) return 'update';
+  if (action.startsWith('delete_') || action.endsWith('_delete')) return 'delete';
   return 'other';
 }
 
@@ -481,6 +482,7 @@ export default function AdminPage() {
   const [auditFilter, setAuditFilter] = useState('');
   const [auditUserFilter, setAuditUserFilter] = useState('');
   const [auditOffset, setAuditOffset] = useState(0);
+  const auditReqIdRef = useRef(0);
   const AUDIT_PAGE_SIZE = 50;
 
   // Requests state
@@ -530,6 +532,7 @@ export default function AdminPage() {
   }, [filter, searchTerm, sortBy]);
 
   const loadAudit = useCallback(async () => {
+    const reqId = ++auditReqIdRef.current;
     setAuditLoading(true);
     setError(null);
     try {
@@ -539,12 +542,14 @@ export default function AdminPage() {
         AUDIT_PAGE_SIZE,
         auditOffset,
       );
+      if (auditReqIdRef.current !== reqId) return;
       setAuditEntries(d.entries);
       setAuditTotal(d.total);
     } catch (e) {
+      if (auditReqIdRef.current !== reqId) return;
       setError(getErrorMessage(e));
     } finally {
-      setAuditLoading(false);
+      if (auditReqIdRef.current === reqId) setAuditLoading(false);
     }
   }, [auditFilter, auditUserFilter, auditOffset]);
 
@@ -1460,14 +1465,21 @@ export default function AdminPage() {
                                 setAuditOffset(0);
                               }}
                               title={tid}
+                              aria-label={`Filter by user ${tid}`}
                               className="font-mono text-[12px] text-gray-500 hover:text-gray-900 hover:underline"
                             >
-                              {tidDisplay}
+                              <span aria-hidden="true">{tidDisplay}</span>
+                              <span className="sr-only">{tid}</span>
                             </button>
                           )}
-                          <span title={absoluteTs} className="ml-auto text-[12px] text-gray-400">
+                          <time
+                            dateTime={entry.timestamp}
+                            title={absoluteTs}
+                            aria-label={absoluteTs}
+                            className="ml-auto text-[12px] text-gray-400"
+                          >
                             {formatRelative(entry.timestamp)}
-                          </span>
+                          </time>
                         </div>
                         {detailEntries.length > 0 && (
                           <>
