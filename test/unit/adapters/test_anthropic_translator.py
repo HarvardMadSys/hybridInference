@@ -11,6 +11,7 @@ import logging
 from serving.adapters.anthropic_translator import (
     OpenAIToAnthropicStreamTranslator,
     anthropic_request_to_openai,
+    extract_anthropic_usage_from_sse,
 )
 
 
@@ -608,3 +609,47 @@ def test_stream_done_sentinel_ignored():
     out += b"".join(t.finalize())
     events = _events([out])
     assert any(e[0] == "message_stop" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-native SSE usage extraction
+# ---------------------------------------------------------------------------
+
+
+def test_extract_usage_from_anthropic_sse():
+    chunk = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"x","usage":{"input_tokens":42,'
+        b'"cache_creation_input_tokens":3,"cache_read_input_tokens":7}}}\n\n'
+        b"event: message_delta\n"
+        b'data: {"type":"message_delta","usage":{"output_tokens":99}}\n\n'
+    )
+    usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    extract_anthropic_usage_from_sse(chunk, usage)
+    assert usage == {
+        "input_tokens": 42,
+        "output_tokens": 99,
+        "cache_creation_input_tokens": 3,
+        "cache_read_input_tokens": 7,
+    }
+
+
+def test_extract_usage_silently_ignores_garbage():
+    usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    extract_anthropic_usage_from_sse(b"garbage\n\n", usage)
+    assert usage == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }

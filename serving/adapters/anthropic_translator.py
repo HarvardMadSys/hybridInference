@@ -488,3 +488,49 @@ class OpenAIToAnthropicStreamTranslator:
 
     def _sse(self, event: str, payload: dict[str, Any]) -> bytes:
         return f"event: {event}\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-native SSE usage extraction (moved from anthropic_proxy.py)
+# ---------------------------------------------------------------------------
+
+
+def extract_anthropic_usage_from_sse(raw: bytes, usage: dict[str, int]) -> None:
+    """Best-effort parse of Anthropic SSE frames to extract usage counters.
+
+    Mutates ``usage`` in-place. Never raises -- failures are silently ignored
+    so the forwarded stream is never affected.
+
+    Anthropic sends cumulative values, not per-event deltas:
+      message_start.message.usage.input_tokens     -- total input tokens
+      message_delta.usage.output_tokens             -- total output tokens so far
+    """
+    try:
+        text = raw.decode("utf-8", errors="replace")
+        for line in text.split("\n"):
+            if not line.startswith("data: "):
+                continue
+            payload = line[len("data: ") :].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            try:
+                obj = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            event_type = obj.get("type", "")
+            if event_type == "message_start":
+                msg_usage = (obj.get("message") or {}).get("usage") or {}
+                if "input_tokens" in msg_usage:
+                    usage["input_tokens"] = int(msg_usage["input_tokens"])
+                if "cache_creation_input_tokens" in msg_usage:
+                    usage["cache_creation_input_tokens"] = int(
+                        msg_usage["cache_creation_input_tokens"]
+                    )
+                if "cache_read_input_tokens" in msg_usage:
+                    usage["cache_read_input_tokens"] = int(msg_usage["cache_read_input_tokens"])
+            elif event_type == "message_delta":
+                delta_usage = obj.get("usage") or {}
+                if "output_tokens" in delta_usage:
+                    usage["output_tokens"] = int(delta_usage["output_tokens"])
+    except Exception:
+        pass
