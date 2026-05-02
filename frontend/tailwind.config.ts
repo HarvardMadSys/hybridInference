@@ -12,9 +12,15 @@ export default {
           bgLight: '#F9FAFB',
           bgDark: '#0B1220',
         },
+        crimson: {
+          DEFAULT: '#A51C30',
+          dark: '#8B1729',
+          light: '#C8324A',
+        },
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+        serif: ['var(--font-serif)', 'Georgia', 'Cambria', 'Times New Roman', 'serif'],
       },
       borderRadius: {
         lg: '0.5rem',
