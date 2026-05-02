@@ -122,6 +122,11 @@ class ModelConfig:
 class BaseAdapter(ABC):
     """Abstract base class for LLM provider adapters."""
 
+    # Format the adapter speaks natively. Anthropic-native adapters override
+    # messages()/stream_messages() to identity-passthrough; OpenAI-native ones
+    # rely on the default impls below which translate Anthropic <-> OpenAI.
+    native_format: str = "openai"
+
     def __init__(self, config: ModelConfig):
         self.config = config
         # Legacy: some adapters still use self.session; keep for compatibility.
@@ -140,6 +145,48 @@ class BaseAdapter(ABC):
     ) -> AsyncGenerator[str, None]:
         """Execute streaming chat completion request."""
         pass
+
+    async def messages(
+        self,
+        body: dict[str, Any],
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Anthropic Messages API non-streaming. Returns Anthropic-format dict.
+
+        Default impl translates Anthropic -> OpenAI, calls self.chat_completion,
+        translates OpenAI -> Anthropic.
+        """
+        from serving.adapters.anthropic_translator import (
+            anthropic_request_to_openai,
+            openai_response_to_anthropic,
+        )
+
+        oai_messages, oai_params = anthropic_request_to_openai(body)
+        oai_resp = await self.chat_completion(oai_messages, **oai_params)
+        return openai_response_to_anthropic(oai_resp, model=body.get("model", ""))
+
+    async def stream_messages(
+        self,
+        body: dict[str, Any],
+        *,
+        request_id: str,
+    ) -> AsyncGenerator[bytes, None]:
+        """Anthropic Messages API streaming. Yields raw Anthropic SSE bytes."""
+        from serving.adapters.anthropic_translator import (
+            OpenAIToAnthropicStreamTranslator,
+            anthropic_request_to_openai,
+        )
+
+        oai_messages, oai_params = anthropic_request_to_openai(body)
+        oai_params["stream"] = True
+        translator = OpenAIToAnthropicStreamTranslator(model=body.get("model", ""))
+        async for openai_chunk in self.stream_chat_completion(oai_messages, **oai_params):
+            data = openai_chunk.encode("utf-8") if isinstance(openai_chunk, str) else openai_chunk
+            for ant in translator.feed(data):
+                yield ant
+        for ant in translator.finalize():
+            yield ant
 
     def validate_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Validate and clamp request parameters to provider limits."""
