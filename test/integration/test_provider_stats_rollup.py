@@ -506,3 +506,52 @@ async def test_run_rollup_populates_token_totals(db_logger: DatabaseLogger):
     assert row["total_reasoning_tokens"] == 40 + 60
     # Decimal sum
     assert float(row["total_cost_usd"]) == pytest.approx(0.0123 + 0.025 + 0.001, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_run_rollup_coalesces_all_null_columns(db_logger: DatabaseLogger):
+    """When every row has NULL for a SUM'd column, COALESCE returns 0 (not NULL)."""
+    from serving.admin.provider_stats_rollup import run_rollup
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    hour = datetime(2026, 5, 2, 17, 0, tzinfo=timezone.utc)
+    # Seed two rows for one (provider, model) group; both have NULL for
+    # cache_read_tokens, reasoning_tokens, and cost_usd. SUM over an all-NULL
+    # column returns NULL in Postgres, so the only thing that turns these
+    # into 0 in the stored row is the COALESCE wrapper in ROLLUP_SQL.
+    for i in range(2):
+        await _insert_api_log(
+            pool,
+            request_id=f"coal-{i}",
+            provider="provider-x",
+            model_id="model-y",
+            timestamp=hour + timedelta(minutes=5 + i),
+            stream=True,
+            ttft_ms=300,
+            latency_ms=2300,
+            completion_tokens=120,
+            prompt_tokens=500,
+            cache_read_tokens=None,
+            reasoning_tokens=None,
+            cost_usd=None,
+        )
+
+    written = await run_rollup(pool, start=hour, end=hour + timedelta(hours=1))
+    assert written == 1
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT total_cache_read_tokens, total_reasoning_tokens, total_cost_usd
+            FROM provider_hourly_stats
+            WHERE provider = 'provider-x' AND model_id = 'model-y'
+            """
+        )
+
+    assert row is not None
+    # Without COALESCE, these would be None.
+    assert row["total_cache_read_tokens"] == 0
+    assert row["total_reasoning_tokens"] == 0
+    assert float(row["total_cost_usd"]) == 0.0
