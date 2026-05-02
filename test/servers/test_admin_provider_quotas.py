@@ -438,13 +438,13 @@ class TestFetchMinimax:
 
         u_interval = result.usages[0]
         assert u_interval.label == "MiniMax-M2.7 (interval)"
-        assert u_interval.used == 1200.0
+        assert u_interval.used == 3300.0
         assert u_interval.limit == 4500.0
         assert u_interval.reset_at == datetime(2026, 5, 2, 20, 0, 0, tzinfo=timezone.utc)
 
         u_weekly = result.usages[1]
         assert u_weekly.label == "MiniMax-M2.7 (weekly)"
-        assert u_weekly.used == 5000.0
+        assert u_weekly.used == 25000.0
         assert u_weekly.limit == 30000.0
         assert u_weekly.reset_at == datetime(2026, 5, 4, 0, 0, 0, tzinfo=timezone.utc)
 
@@ -484,7 +484,7 @@ class TestFetchMinimax:
 
         u = result.usages[0]
         assert u.label == "MiniMax-M* (interval)"
-        assert u.used == 4500.0
+        assert u.used == 0.0
         assert u.limit == 4500.0
 
 

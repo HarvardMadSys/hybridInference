@@ -415,7 +415,7 @@ async def fetch_minimax() -> ProviderQuotaResult:
             continue
         model_name = str(entry.get("model_name", "Coding plan"))
         total = entry.get("current_interval_total_count")
-        used = entry.get("current_interval_usage_count")
+        remains = entry.get("current_interval_usage_count")
         end = entry.get("end_time")
         reset_dt = None
         if isinstance(end, (int, float)):
@@ -423,17 +423,23 @@ async def fetch_minimax() -> ProviderQuotaResult:
                 reset_dt = datetime.fromtimestamp(end / 1000, tz=timezone.utc)
             except (OSError, OverflowError, ValueError):
                 reset_dt = None
+        if isinstance(total, (int, float)) and isinstance(remains, (int, float)):
+            used_val = float(total) - float(remains)
+        elif isinstance(remains, (int, float)):
+            used_val = float(remains)
+        else:
+            used_val = None
         usages.append(
             ProviderQuotaUsage(
                 label=f"{model_name} (interval)",
-                used=float(used) if isinstance(used, (int, float)) else None,
+                used=used_val,
                 limit=float(total) if isinstance(total, (int, float)) else None,
                 unit="requests",
                 reset_at=reset_dt,
             )
         )
         weekly_total = entry.get("current_weekly_total_count")
-        weekly_used = entry.get("current_weekly_usage_count")
+        weekly_remains = entry.get("current_weekly_usage_count")
         if isinstance(weekly_total, (int, float)) and weekly_total > 0:
             weekly_end = entry.get("weekly_end_time")
             weekly_reset_dt = None
@@ -442,10 +448,16 @@ async def fetch_minimax() -> ProviderQuotaResult:
                     weekly_reset_dt = datetime.fromtimestamp(weekly_end / 1000, tz=timezone.utc)
                 except (OSError, OverflowError, ValueError):
                     weekly_reset_dt = None
+            if isinstance(weekly_total, (int, float)) and isinstance(weekly_remains, (int, float)):
+                weekly_used_val = float(weekly_total) - float(weekly_remains)
+            elif isinstance(weekly_remains, (int, float)):
+                weekly_used_val = float(weekly_remains)
+            else:
+                weekly_used_val = None
             usages.append(
                 ProviderQuotaUsage(
                     label=f"{model_name} (weekly)",
-                    used=float(weekly_used) if isinstance(weekly_used, (int, float)) else None,
+                    used=weekly_used_val,
                     limit=float(weekly_total),
                     unit="requests",
                     reset_at=weekly_reset_dt,
