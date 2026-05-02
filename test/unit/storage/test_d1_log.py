@@ -433,15 +433,25 @@ class TestDetailUsage:
 
         await store._d1.execute(
             "INSERT INTO api_logs (request_id, timestamp, user_id, model_id, provider, "
-            "cost_usd, latency_ms, status_code, outcome) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ["r1", today, "carol", "gpt-4", "openai", 2.0, 100, 200, "success"],
+            "cost_usd, latency_ms, status_code, prompt_tokens, completion_tokens, outcome) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ["r1", today, "carol", "gpt-4", "openai", 2.0, 100, 200, 123, 45, "success"],
+        )
+        await store._d1.execute(
+            "INSERT INTO api_logs (request_id, timestamp, user_id, model_id, provider, "
+            "cost_usd, latency_ms, status_code, prompt_tokens, completion_tokens, outcome) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ["r2", today, "carol", "gpt-4", "openai", 1.0, 80, 200, 77, 22, "success"],
         )
 
         detail = await store.get_user_usage_detail("carol")
-        assert detail["today"]["cost_usd"] == pytest.approx(2.0)
-        assert detail["today"]["requests"] == 1
-        assert detail["alltime"]["cost_usd"] == pytest.approx(2.0)
+        assert detail["today"]["cost_usd"] == pytest.approx(3.0)
+        assert detail["today"]["requests"] == 2
+        assert detail["today"]["prompt_tokens"] == 200
+        assert detail["today"]["completion_tokens"] == 67
+        assert detail["alltime"]["cost_usd"] == pytest.approx(3.0)
+        assert detail["alltime"]["prompt_tokens"] == 200
+        assert detail["alltime"]["completion_tokens"] == 67
 
     async def test_get_key_detail_usage(self, store):
         from datetime import datetime, timezone
