@@ -383,3 +383,37 @@ async def test_backfill_if_empty_seeds_history(db_logger: DatabaseLogger):
     async with pool.acquire() as conn:
         n2 = await conn.fetchval("SELECT COUNT(*) FROM provider_hourly_stats")
     assert n2 == 3
+
+
+@pytest.mark.asyncio
+async def test_provider_hourly_stats_has_token_total_columns(db_logger: DatabaseLogger):
+    """The 4 new BIGINT/DECIMAL totals exist and are nullable."""
+    assert db_logger.pool is not None
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'provider_hourly_stats'
+              AND column_name IN (
+                  'total_prompt_tokens',
+                  'total_cache_read_tokens',
+                  'total_reasoning_tokens',
+                  'total_cost_usd'
+              )
+            """
+        )
+        by_name = {r["column_name"]: r for r in rows}
+
+    assert set(by_name) == {
+        "total_prompt_tokens",
+        "total_cache_read_tokens",
+        "total_reasoning_tokens",
+        "total_cost_usd",
+    }
+    for name in ("total_prompt_tokens", "total_cache_read_tokens", "total_reasoning_tokens"):
+        assert by_name[name]["data_type"] == "bigint", name
+        assert by_name[name]["is_nullable"] == "YES", name
+    assert by_name["total_cost_usd"]["data_type"] == "numeric"
+    assert by_name["total_cost_usd"]["is_nullable"] == "YES"
