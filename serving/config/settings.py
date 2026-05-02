@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     db_dual_write: bool = False
 
     # Database privacy settings
-    db_store_full_content: bool = True
+    # Default False: by default we hash prompt/response content rather than
+    # storing it verbatim. Operators can opt in to full-content logging by
+    # setting DB_STORE_FULL_CONTENT=true after weighing the privacy impact.
+    db_store_full_content: bool = False
 
     # Cloudflare D1 (used when db_backend = "d1")
     d1_account_id: str = ""
