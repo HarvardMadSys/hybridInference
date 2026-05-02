@@ -108,6 +108,7 @@ class Settings(BaseSettings):
     # Pasted from browser DevTools after logging into the provider's web dashboard.
     # Re-paste when the cookie expires.
     minimax_session_cookie: str = ""
+    minimax_group_id: str = ""
     ollama_session_cookie: str = ""
 
     # CORS

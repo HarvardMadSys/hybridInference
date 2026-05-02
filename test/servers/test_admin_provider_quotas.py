@@ -395,31 +395,87 @@ class TestFetchMinimax:
     @pytest.mark.asyncio
     async def test_success_parses_remains(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        monkeypatch.setenv("MINIMAX_GROUP_ID", "test-group-42")
         payload = {
             "base_resp": {"status_code": 0, "status_msg": "success"},
-            "data": {
-                "model_remains": [
-                    {
-                        "model_name": "MiniMax-M2.7",
-                        "remain_count": 720,
-                        "total_count": 1000,
-                        "start_time": "2026-04-29T00:00:00Z",
-                        "end_time": "2026-04-30T00:00:00Z",
-                    }
-                ]
-            },
+            "model_remains": [
+                {
+                    "model_name": "MiniMax-M2.7",
+                    "start_time": 1777734000000,
+                    "end_time": 1777752000000,
+                    "remains_time": 8376729,
+                    "current_interval_total_count": 4500,
+                    "current_interval_usage_count": 1200,
+                    "current_weekly_total_count": 30000,
+                    "current_weekly_usage_count": 5000,
+                    "weekly_start_time": 1777248000000,
+                    "weekly_end_time": 1777852800000,
+                    "weekly_remains_time": 109176729,
+                }
+            ],
         }
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=200, json_data=payload),
-        ):
+        ) as mock_session_cls:
             result = await fetch_minimax()
         assert result.ok is True
-        assert len(result.usages) >= 1
+        assert len(result.usages) == 2
+        session_cm = mock_session_cls.return_value
+        session = session_cm.__aenter__.return_value
+        sent_headers = session.get.call_args.kwargs["headers"]
+        assert sent_headers.get("x-group-id") == "test-group-42"
+
+        u_interval = result.usages[0]
+        assert u_interval.label == "MiniMax-M2.7 (interval)"
+        assert u_interval.used == 1200.0
+        assert u_interval.limit == 4500.0
+        assert u_interval.reset_at == datetime(2026, 5, 2, 20, 0, 0, tzinfo=timezone.utc)
+
+        u_weekly = result.usages[1]
+        assert u_weekly.label == "MiniMax-M2.7 (weekly)"
+        assert u_weekly.used == 5000.0
+        assert u_weekly.limit == 30000.0
+        assert u_weekly.reset_at == datetime(2026, 5, 4, 0, 0, 0, tzinfo=timezone.utc)
+
+    @pytest.mark.asyncio
+    async def test_success_without_group_id(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        monkeypatch.delenv("MINIMAX_GROUP_ID", raising=False)
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "model_remains": [
+                {
+                    "model_name": "MiniMax-M*",
+                    "start_time": 1777734000000,
+                    "end_time": 1777752000000,
+                    "remains_time": 8376729,
+                    "current_interval_total_count": 4500,
+                    "current_interval_usage_count": 4500,
+                    "current_weekly_total_count": 0,
+                    "current_weekly_usage_count": 0,
+                    "weekly_start_time": 1777248000000,
+                    "weekly_end_time": 1777852800000,
+                    "weekly_remains_time": 109176729,
+                }
+            ],
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ) as mock_session_cls:
+            result = await fetch_minimax()
+        assert result.ok is True
+        assert len(result.usages) == 1
+        session_cm = mock_session_cls.return_value
+        session = session_cm.__aenter__.return_value
+        sent_headers = session.get.call_args.kwargs["headers"]
+        assert "x-group-id" not in sent_headers
+
         u = result.usages[0]
-        # used = total - remain
-        assert u.used == 280.0
-        assert u.limit == 1000.0
+        assert u.label == "MiniMax-M* (interval)"
+        assert u.used == 4500.0
+        assert u.limit == 4500.0
 
 
 class TestFetchOllama:

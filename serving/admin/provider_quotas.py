@@ -368,8 +368,11 @@ async def fetch_minimax() -> ProviderQuotaResult:
             usages=[],
         )
 
-    url = "https://api.minimax.io/v1/api/openplatform/coding_plan/remains"
+    url = "https://platform.minimax.io/v1/api/openplatform/coding_plan/remains"
     headers = {"Cookie": cookie}
+    group_id = os.getenv("MINIMAX_GROUP_ID", "")
+    if group_id:
+        headers["x-group-id"] = group_id
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
     try:
@@ -401,8 +404,7 @@ async def fetch_minimax() -> ProviderQuotaResult:
     if base_resp and base_resp.get("status_code") not in (None, 0):
         return _err("minimax", "MiniMax", cookie, "unexpected")
 
-    body = data.get("data") if isinstance(data.get("data"), dict) else data
-    model_remains = body.get("model_remains") if isinstance(body, dict) else None
+    model_remains = data.get("model_remains") if isinstance(data, dict) else None
     if not isinstance(model_remains, list) or not model_remains:
         return _err("minimax", "MiniMax", cookie, "parse_error")
 
@@ -411,27 +413,43 @@ async def fetch_minimax() -> ProviderQuotaResult:
         if not isinstance(entry, dict):
             continue
         model_name = str(entry.get("model_name", "Coding plan"))
-        remain = entry.get("remain_count")
-        total = entry.get("total_count")
+        total = entry.get("current_interval_total_count")
+        used = entry.get("current_interval_usage_count")
         end = entry.get("end_time")
         reset_dt = None
-        if isinstance(end, str):
+        if isinstance(end, (int, float)):
             try:
-                reset_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
-            except ValueError:
+                reset_dt = datetime.fromtimestamp(end / 1000, tz=timezone.utc)
+            except (OSError, OverflowError, ValueError):
                 reset_dt = None
-        used = None
-        if isinstance(remain, (int, float)) and isinstance(total, (int, float)):
-            used = float(total - remain)
         usages.append(
             ProviderQuotaUsage(
-                label=model_name,
-                used=used,
+                label=f"{model_name} (interval)",
+                used=float(used) if isinstance(used, (int, float)) else None,
                 limit=float(total) if isinstance(total, (int, float)) else None,
                 unit="requests",
                 reset_at=reset_dt,
             )
         )
+        weekly_total = entry.get("current_weekly_total_count")
+        weekly_used = entry.get("current_weekly_usage_count")
+        if isinstance(weekly_total, (int, float)) and weekly_total > 0:
+            weekly_end = entry.get("weekly_end_time")
+            weekly_reset_dt = None
+            if isinstance(weekly_end, (int, float)):
+                try:
+                    weekly_reset_dt = datetime.fromtimestamp(weekly_end / 1000, tz=timezone.utc)
+                except (OSError, OverflowError, ValueError):
+                    weekly_reset_dt = None
+            usages.append(
+                ProviderQuotaUsage(
+                    label=f"{model_name} (weekly)",
+                    used=float(weekly_used) if isinstance(weekly_used, (int, float)) else None,
+                    limit=float(weekly_total),
+                    unit="requests",
+                    reset_at=weekly_reset_dt,
+                )
+            )
 
     if not usages:
         return _err("minimax", "MiniMax", cookie, "parse_error")
