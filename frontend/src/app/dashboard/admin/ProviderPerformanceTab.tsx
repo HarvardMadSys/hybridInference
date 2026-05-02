@@ -69,17 +69,11 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-gray-600">
         <span className="inline-flex items-center gap-1.5">
-          <span
-            className="h-2 w-2 rounded-full bg-emerald-500 opacity-60"
-            aria-hidden="true"
-          />
+          <span className="h-2 w-2 rounded-full bg-emerald-500 opacity-60" aria-hidden="true" />
           Cache hit ({cached.length.toLocaleString()})
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span
-            className="h-2 w-2 rounded-full bg-slate-500 opacity-60"
-            aria-hidden="true"
-          />
+          <span className="h-2 w-2 rounded-full bg-slate-500 opacity-60" aria-hidden="true" />
           No cache ({uncached.length.toLocaleString()})
         </span>
       </div>
