@@ -48,9 +48,7 @@ Drop all `^(free|pro|enterprise)$` regex patterns. The role pattern stays.
 
 ### Config (`serving/config/settings.py`)
 
-- Rename env-backed setting `signup_default_tier` → `signup_default_role`. New signups get this value written to `users.role`.
-- Default value: `'free'`. Validate against `VALID_ROLES`.
-- Update the signup code path to call the new name.
+- Remove the `signup_default_tier` setting. It is declared but never read anywhere — verified by `grep -rn 'signup_default_tier' serving/`. New signups already default `users.role` to `'free'` via the column default in the `users` table.
 
 ### Unrelated, leave alone
 
