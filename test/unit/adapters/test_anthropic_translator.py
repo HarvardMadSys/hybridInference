@@ -5,6 +5,8 @@ Covers Anthropic Messages format -> OpenAI Chat Completions format translation.
 
 from __future__ import annotations
 
+import logging
+
 from serving.adapters.anthropic_translator import anthropic_request_to_openai
 
 
@@ -129,9 +131,6 @@ def test_request_tools_translated():
             },
         }
     ]
-
-
-import logging
 
 
 def test_request_cache_control_blocks_dropped(caplog):
