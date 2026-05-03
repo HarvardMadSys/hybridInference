@@ -1085,47 +1085,44 @@ export default function AdminPage() {
     }
   }, [reqOffset, reqUserFilter, reqModelFilter, reqErrorsOnly]);
 
-  const handleToggleRequestRow = useCallback(
-    (requestId: string) => {
-      setReqExpandedId((current) => {
-        const next = current === requestId ? null : requestId;
-        if (next !== null) {
-          setReqContentCache((prev) => {
-            if (prev.has(next)) return prev;
-            const updated = new Map(prev);
-            updated.set(next, { prompt: null, response: null, loading: true });
-            return updated;
-          });
-          getRecentRequestContent(next)
-            .then((content) => {
-              setReqContentCache((prev) => {
-                const updated = new Map(prev);
-                updated.set(next, {
-                  prompt: content.prompt,
-                  response: content.response,
-                  loading: false,
-                });
-                return updated;
+  const handleToggleRequestRow = useCallback((requestId: string) => {
+    setReqExpandedId((current) => {
+      const next = current === requestId ? null : requestId;
+      if (next !== null) {
+        setReqContentCache((prev) => {
+          if (prev.has(next)) return prev;
+          const updated = new Map(prev);
+          updated.set(next, { prompt: null, response: null, loading: true });
+          return updated;
+        });
+        getRecentRequestContent(next)
+          .then((content) => {
+            setReqContentCache((prev) => {
+              const updated = new Map(prev);
+              updated.set(next, {
+                prompt: content.prompt,
+                response: content.response,
+                loading: false,
               });
-            })
-            .catch((e) => {
-              setReqContentCache((prev) => {
-                const updated = new Map(prev);
-                updated.set(next, {
-                  prompt: null,
-                  response: null,
-                  loading: false,
-                  error: getErrorMessage(e),
-                });
-                return updated;
-              });
+              return updated;
             });
-        }
-        return next;
-      });
-    },
-    [],
-  );
+          })
+          .catch((e) => {
+            setReqContentCache((prev) => {
+              const updated = new Map(prev);
+              updated.set(next, {
+                prompt: null,
+                response: null,
+                loading: false,
+                error: getErrorMessage(e),
+              });
+              return updated;
+            });
+          });
+      }
+      return next;
+    });
+  }, []);
 
   const loadRequestMetrics = useCallback(async () => {
     setReqMetricsLoading(true);
