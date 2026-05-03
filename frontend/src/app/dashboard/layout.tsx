@@ -1,7 +1,7 @@
 /**
- * Dashboard layout: aligns content to the top of the flex column instead of
- * inheriting the root layout's vertical centering.
+ * Dashboard layout: lets dashboard pages occupy the parent <main>'s full
+ * max-w-5xl width without the previous w-screen full-bleed hack.
  */
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  return <div className="w-full self-start">{children}</div>;
+  return <div className="w-full">{children}</div>;
 }
