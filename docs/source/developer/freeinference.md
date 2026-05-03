@@ -13,13 +13,13 @@ Client ──▶ Cloudflare ──▶ Nginx (:443) ──▶ FastAPI  (:8080)
 | Layer | Role |
 |-------|------|
 | **Cloudflare** | CDN, DDoS protection, edge SSL termination. SSL/TLS mode set to **Full (strict)** so Cloudflare verifies the origin certificate. `CF-Connecting-IP` header carries the real client IP. |
-| **Nginx** | TLS termination (Let's Encrypt cert), path-based routing (see below), per-location body size limits (`/v1/` is bumped to 50 MB for Qdrant upserts and large completions; everything else uses the Nginx 1 MB default), WebSocket upgrade. |
+| **Nginx** | TLS termination (Let's Encrypt cert), path-based routing (see below), per-location body size limits (`/v1/` is bumped to 50 MB to accommodate large completion payloads and Qdrant vector upserts via the `/v1/qdrant` proxy; everything else uses the Nginx 1 MB default), WebSocket upgrade. |
 | **FastAPI** | API logic — request authentication, model routing, backpressure, Qdrant proxy, and observability. Listens on `127.0.0.1:8080`. |
 
 Nginx path routing:
 
 - `/v1/`, `/auth/`, `/user/`, `/admin/`, `/internal/playground/` → FastAPI
-- `/pgadmin/` → pgAdmin — gated by `auth_request` against FastAPI's `/internal/verify-*` endpoints, so only admins reach it
+- `/pgadmin/` → pgAdmin — gated by `auth_request` against FastAPI's `/internal/verify-admin` endpoint, so only admins reach it
 - everything else → frontend
 
 Docker Compose manages all services (backend, frontend, PostgreSQL, Alertmanager,

@@ -29,10 +29,7 @@ Key Features
    Free inference for coding agents and development tools
 
 **Multiple Models**
-   Access GLM, Qwen, MiniMax, Llama, and other powerful models
-
-**Codebase Indexing**
-   Free embedding endpoint (BGE-M3) for semantic code search in Roo Code and Kilo Code
+   Access GLM, Qwen, MiniMax, and other powerful models
 
 **IDE Integration**
    Easy setup with Cursor, Codex, Roo Code, Kilo Code, and more
@@ -67,30 +64,27 @@ Available Models
    * - **GLM-5** :sup:`recommended`
      - 200K tokens
      - Most capable, bilingual
+   * - GLM-5.1
+     - 200K tokens
+     - Latest GLM-5 generation
+   * - GLM-5 Turbo
+     - 200K tokens
+     - Faster GLM-5 variant
    * - GLM-4.7
      - 200K tokens
      - Long context, bilingual
-   * - GLM-4.7-Flash
-     - 200K tokens
-     - Fast and cost-effective
    * - **MiniMax M2.5** :sup:`new`
      - 1M tokens
      - Ultra-long context, multimodal
-   * - MiniMax M2
+   * - MiniMax M2.7
      - 196K tokens
      - Large codebases
-   * - Qwen3 Coder 30B
-     - 32K tokens
-     - Code generation
-   * - Llama 3.3 70B :sup:`limited`
-     - 131K tokens
-     - General coding tasks
-   * - Llama 4 Maverick :sup:`limited`
-     - 128K tokens
-     - Multimodal support
-   * - **BGE-M3** (Embedding)
-     - 8K tokens
-     - Codebase indexing
+   * - Qwen3.6 27B
+     - 65K tokens
+     - Self-hosted code generation
+   * - Qwen3.6 35B
+     - 65K tokens
+     - Self-hosted code generation
 
 See the complete :doc:`models` list for all available models.
 

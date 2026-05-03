@@ -46,7 +46,6 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 - Context length: 200,000 tokens
 - Max output: 128,000 tokens
-- Architecture: 745B MoE (44B active parameters)
 - Quantization: fp8
 - Input modalities: text
 - Output modalities: text
@@ -144,7 +143,6 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 - Context length: 1,000,000 tokens
 - Max output: 131,072 tokens
-- Architecture: 230B MoE (10B active parameters)
 - Quantization: bf16
 - Input modalities: text, image
 - Output modalities: text

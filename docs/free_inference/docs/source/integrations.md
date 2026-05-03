@@ -6,7 +6,7 @@ Learn how to configure FreeInference with popular coding agents and IDEs.
 
 ## Codex
 
-[Codex](https://codex.so/) is a powerful AI coding assistant.
+[Codex](https://github.com/openai/codex) is a powerful AI coding assistant.
 
 ### Configuration Steps
 
@@ -66,7 +66,7 @@ source ~/.bashrc
    - **macOS**: `Cmd + ,`
    - **Windows/Linux**: `Ctrl + ,`
 
-2. Navigate to **API Keys** section in the settings
+2. Navigate to **Models** section in the settings
 
 3. Find the **OpenAI API Key** field and enter your FreeInference API key
 
@@ -87,7 +87,7 @@ source ~/.bashrc
 
 ## Roo Code & Kilo Code
 
-[Roo Code](https://roo.dev/) and [Kilo Code](https://kilo.dev/) are AI coding assistants with similar configuration.
+[Roo Code](https://roocode.com) and [Kilo Code](https://kilocode.ai) are AI coding assistants with similar configuration.
 
 ### Configuration Steps
 
@@ -103,7 +103,7 @@ source ~/.bashrc
    API Key: your-api-key-here
    ```
 
-5. Select your preferred model (e.g., `glm-4.7`, `glm-4.7-flash`, `llama-3.3-70b-instruct`, etc.)
+5. Select your preferred model (e.g., `glm-5`, `glm-5.1`, `glm-4.7`, `minimax-m2.5`, etc.)
 
 6. Save settings and start using with FreeInference!
 
@@ -111,7 +111,9 @@ source ~/.bashrc
 
 ## Codebase Indexing
 
-FreeInference provides a free embedding endpoint (`/v1/embeddings`) powered by **BGE-M3** (1024 dimensions) and a **shared Qdrant vector database** via the proxy at `/v1/qdrant`. This enables codebase indexing for semantic code search in supported IDEs — no local Docker setup needed.
+FreeInference exposes an embedding endpoint at `/v1/embeddings` and a Qdrant proxy at `/v1/qdrant` for codebase indexing in supported IDEs.
+
+> **Note:** Embedding model availability changes over time. Check `https://freeinference.org/v1/models` for the currently registered embedding model id and substitute it for `bge-m3` in the examples below if needed.
 
 ### Roo Code
 
@@ -211,7 +213,7 @@ If you get "model not found" errors:
 
 - Check the [available models](models.md) list
 - Ensure the model name is exactly as listed (case-sensitive)
-- Try switching to a different model like `glm-4.7` or `glm-4.7-flash`
+- Try switching to a different model like `glm-5` or `glm-4.7`
 
 ### Codex-Specific Issues
 

@@ -7,8 +7,8 @@ The routing system implements a two-layer architecture for intelligent traffic d
 ### Decision Layer (`routing/manager.py` + `routing/strategies.py`)
 Reads `config/routing.yaml` and computes weight distributions between local and remote deployments. Currently supports a fixed-ratio strategy with plans for expansion.
 
-### Execution Layer (`routing/executor.py`)
-Performs weighted random selection based on computed weights and provides automatic fallback to alternative adapters on request failure.
+### Execution Layer (`routing/routers/`)
+Performs weighted random selection based on computed weights and provides automatic fallback to alternative adapters on request failure. The concrete `FixedRouter` lives in `routing/routers/`; `routing/executor.py` is a backward-compatibility shim that re-exports `FixedRouter` as `RouteExecutor` along with `ProviderPinError` and `RouteConfig`.
 
 ## Features
 

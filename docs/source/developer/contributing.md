@@ -22,7 +22,7 @@ This project follows industry best practices:
 
 - **Code Style**: Google Python Style Guide (formatted with ruff)
 - **Linting**: ruff with extensive rule sets
-- **Type Checking**: mypy with strict mode
+- **Type Checking**: mypy is available as a dev dependency; the project does not enforce strict mode (no `[tool.mypy]` block in `pyproject.toml`)
 - **Documentation**: Google-style docstrings (pydocstyle)
 
 ### Pre-commit Hooks
@@ -69,7 +69,7 @@ make test
 make test-cov
 
 # Run specific test file
-uv run pytest test/test_routing.py
+uv run pytest test/unit/routing/test_manager.py
 ```
 
 ## Documentation

@@ -14,9 +14,9 @@ FreeInference provides free access to state-of-the-art language models specifica
 ## Supported IDEs & Coding Agents
 
 - **[Cursor](https://cursor.sh/)** - AI-powered code editor
-- **[Codex](https://codex.so/)** - Terminal-based coding assistant
-- **[Roo Code](https://roo.dev/)** - VS Code & JetBrains extension
-- **[Kilo Code](https://kilo.dev/)** - AI coding assistant
+- **[Codex](https://github.com/openai/codex)** - Terminal-based coding assistant
+- **[Roo Code](https://roocode.com)** - VS Code & JetBrains extension
+- **[Kilo Code](https://kilocode.ai)** - AI coding assistant
 - And any tool that supports OpenAI-compatible APIs
 
 ## Quick Start
@@ -24,7 +24,7 @@ FreeInference provides free access to state-of-the-art language models specifica
 ### Cursor Setup
 
 1. Open Settings (`Cmd + ,` or `Ctrl + ,`)
-2. Go to **API Keys** section
+2. Go to **Models** section
 3. Enter your FreeInference API key
 4. Click **Override OpenAI Base URL**
 5. Enter: `https://freeinference.org/v1`

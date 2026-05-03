@@ -77,7 +77,7 @@ models:
 - `id`: Public model ID exposed by the API (what clients use to call the model)
 - `provider_model_id`: The actual model name sent to the backend provider (e.g., vLLM/freeinference's `/models/...`). If omitted, uses `id`
 - `aliases`: Additional public aliases that are registered alongside `id` to point to the same adapter
-- `provider`: Determines adapter type. Supported kinds: `openai_compat`, `vllm`, `sglang`, `ollama`, `deepseek`, `openai`, `zhipu`, `chutes`, `featherless`, `gemini`, `claude`, `claude_sub`, `codex_sub`. See [adding-models.md](adding-models.md) for the full reference table.
+- `provider`: Determines adapter type. Supported kinds (dispatched in `serving/servers/registry.py:_make_adapter`): `openai_compat`, `vllm`, `sglang`, `ollama`, `chutes`, `featherless`, `deepseek`, `zhipu`, `minimax`, `openrouter` (also `openrouter[<slug>]` to pin a sub-provider), `gemini`, `claude`, `anthropic`, `claude_sub`, `codex_sub`. See [adding-models.md](adding-models.md) for the full reference table.
 - `/v1/models` endpoint dynamically generates its response from registered adapters
 
 ## 3. routing.yaml (Optional)
@@ -131,9 +131,8 @@ Simply omit `routing.yaml` to use default weights from `models.yaml` (typically 
 
 ### Start the Server:
 ```bash
-python -m serving.servers.app
-# Or use uvicorn/pm2/supervisor for production
-# uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
+# Use uvicorn (no __main__ block in serving.servers.app)
+uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
 ```
 
 ### Verify Operation:
@@ -316,8 +315,6 @@ CODEX_FAILURE_THRESHOLD=3
 ```
 
 Codex currently exposes only the OpenAI-compatible northbound surface (`POST /v1/chat/completions`); there is no separate Codex-native public route yet.
-
-For Codex-specific details, see the repository design doc `docs/codex-subscription-design.md`.
 
 ## 6. FAQ
 

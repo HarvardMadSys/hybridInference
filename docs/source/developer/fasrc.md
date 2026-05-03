@@ -39,17 +39,17 @@
 4. create the ssh tunnel
 
     ```
-    ssh -N -f -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=60 -R 0.0.0.0:8000:localhost:8000 murphy@freeinference.org
+    ssh -N -f -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=60 -R 0.0.0.0:8000:localhost:8000 <user>@freeinference.org
     # you need to change the port name
 
-    # run this monitor script could continuously maintain the ssh
-    nohup ./tunnel_monitor.sh > /dev/null 2>&1 &
+    # to keep the tunnel up across disconnects, wrap the ssh command in
+    # systemd, autossh, or a small shell loop of your choice.
     ```
 
 5. check if the reverse proxy work
 
     ```
-    curl http://freeinference.org:8001/v1/models
+    curl https://freeinference.org/v1/models
     ```
 
 

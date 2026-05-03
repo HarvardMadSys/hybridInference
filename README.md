@@ -19,7 +19,7 @@ hybridInference/
 └── client/         # Client tooling (loaders, runners, metrics)
 ```
 
-For service-specific deployment and routing details, refer to `docs/openrouter.md`, `docs/freeinference.md`, and `docs/routing.md`. For extension guides (adding models or new providers), see `docs/adding_models.md`.
+For service-specific deployment and routing details, refer to `docs/source/developer/openrouter.md`, `docs/source/developer/freeinference.md`, and `docs/source/developer/routing.md`. For extension guides (adding models or new providers), see `docs/source/developer/adding-models.md`.
 
 ## Development Setup
 
@@ -32,7 +32,7 @@ For service-specific deployment and routing details, refer to `docs/openrouter.m
 
 ```bash
 # Clone the repository
-git clone https://github.com/HarvardSys/hybridInference.git
+git clone https://github.com/HarvardMadSys/hybridInference.git
 cd hybridInference
 
 # Set up development environment
@@ -163,7 +163,7 @@ make test-verbose
 make test-cov
 
 # Specific test file
-uv run pytest test/test_routing.py
+uv run pytest test/unit/routing/test_manager.py
 
 # Run tests with markers
 uv run pytest -m "not slow"  # Skip slow tests
