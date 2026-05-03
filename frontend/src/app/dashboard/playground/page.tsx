@@ -693,10 +693,7 @@ export default function PlaygroundPage() {
                   {msgs.map((msg, i) => {
                     const isUser = msg.role === 'user';
                     const isWaiting =
-                      streaming &&
-                      i === msgs.length - 1 &&
-                      !msg.content &&
-                      !msg.reasoningContent;
+                      streaming && i === msgs.length - 1 && !msg.content && !msg.reasoningContent;
                     const isCopied = copiedIdx === i;
                     const hasReasoning = !!msg.reasoningContent;
                     const isThinkingExpanded = expandedThinking.has(i);
