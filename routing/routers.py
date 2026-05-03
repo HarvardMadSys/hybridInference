@@ -36,6 +36,12 @@ from serving.observability.metrics import (
 )
 from serving.utils import context as req_ctx
 
+# Strong references to fire-and-forget Slack alert tasks. asyncio holds only
+# weak refs to scheduled tasks, so without this set the GC may cancel an alert
+# mid-flight (e.g. when the breaker that scheduled it is dropped). Tasks
+# remove themselves via add_done_callback once they finish.
+_ALERT_TASKS: set[asyncio.Task[bool]] = set()
+
 # ============================================================================
 # Exceptions
 # ============================================================================
@@ -264,10 +270,8 @@ class _CircuitBreaker:
                 ).inc()
                 # Fire-and-forget Slack alert on CLOSED→OPEN or HALF_OPEN→OPEN.
                 if prev_state in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
-                    with contextlib.suppress(RuntimeError):
-                        # RuntimeError when there's no running event loop (e.g.
-                        # unit tests outside pytest-asyncio). Best-effort alert.
-                        self._alert_task = asyncio.ensure_future(
+                    try:
+                        task = asyncio.ensure_future(
                             alert_slack(
                                 AlertSeverity.ERROR,
                                 "Provider circuit opened",
@@ -283,6 +287,15 @@ class _CircuitBreaker:
                                 cooldown_sec=300,
                             )
                         )
+                    except RuntimeError:
+                        # No running event loop (e.g., unit test outside
+                        # pytest-asyncio). Best-effort alert; skip silently.
+                        pass
+                    else:
+                        # Keep a strong reference until the task finishes so
+                        # the GC cannot cancel it mid-flight.
+                        _ALERT_TASKS.add(task)
+                        task.add_done_callback(_ALERT_TASKS.discard)
 
 
 # ============================================================================
