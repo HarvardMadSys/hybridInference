@@ -89,6 +89,37 @@ def test_extract_reasoning_content_messages_field():
 
 
 @pytest.mark.unit
+def test_extract_reasoning_content_strips_whitespace():
+    payload = json.dumps(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "reasoning_content": "  \n\nthought one\n\n  ",
+                    }
+                },
+                {
+                    "message": {
+                        "role": "assistant",
+                        "reasoning_content": "\n\nthought two  ",
+                    }
+                },
+            ]
+        }
+    )
+    assert extract_reasoning_content(payload) == "thought one\n\nthought two"
+
+
+@pytest.mark.unit
+def test_extract_reasoning_content_whitespace_only_treated_as_empty():
+    payload = json.dumps(
+        {"choices": [{"message": {"role": "assistant", "reasoning_content": "   \n\n  "}}]}
+    )
+    assert extract_reasoning_content(payload) is None
+
+
+@pytest.mark.unit
 def test_extract_reasoning_content_empty_returns_none():
     assert extract_reasoning_content(json.dumps({"choices": []})) is None
     assert (

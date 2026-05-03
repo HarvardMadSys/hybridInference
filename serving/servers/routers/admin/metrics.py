@@ -734,40 +734,33 @@ def extract_reasoning_content(response_str: str | None) -> str | None:
 
     pieces: list[str] = []
 
+    def _add_from_message(msg: Any) -> None:
+        if not isinstance(msg, dict):
+            return
+        value = msg.get("reasoning_content")
+        if not (isinstance(value, str) and value.strip()):
+            value = msg.get("reasoning")
+        if isinstance(value, str) and value.strip():
+            pieces.append(value.strip())
+
     choices = data.get("choices")
     if isinstance(choices, list):
         for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            message = choice.get("message")
-            if not isinstance(message, dict):
-                continue
-            value = message.get("reasoning_content")
-            if not (isinstance(value, str) and value):
-                value = message.get("reasoning")
-            if isinstance(value, str) and value:
-                pieces.append(value)
+            if isinstance(choice, dict):
+                _add_from_message(choice.get("message"))
 
     messages = data.get("messages")
     if isinstance(messages, list):
         for message in messages:
-            if not isinstance(message, dict):
-                continue
-            value = message.get("reasoning_content")
-            if not (isinstance(value, str) and value):
-                value = message.get("reasoning")
-            if isinstance(value, str) and value:
-                pieces.append(value)
+            _add_from_message(message)
 
     content = data.get("content")
     if isinstance(content, list):
         for item in content:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "thinking":
+            if isinstance(item, dict) and item.get("type") == "thinking":
                 value = item.get("thinking")
-                if isinstance(value, str) and value:
-                    pieces.append(value)
+                if isinstance(value, str) and value.strip():
+                    pieces.append(value.strip())
 
     if not pieces:
         return None
