@@ -43,6 +43,8 @@ All agents use the same FreeInference API key. If you don't have one yet, see th
 
 ```bash
 curl -fsSL -o setup_claude_code.sh https://raw.githubusercontent.com/HarvardMadSys/hybridInference/main/scripts/setup_claude_code.sh
+# Inspect the script before running it (recommended security practice):
+less setup_claude_code.sh
 bash setup_claude_code.sh
 ```
 
@@ -51,6 +53,8 @@ Or pass your key directly:
 ```bash
 FREEINFERENCE_API_KEY="your-key-here" bash setup_claude_code.sh
 ```
+
+> **Security note:** Always review remote shell scripts before executing them. You can also clone this repository and run `scripts/setup_claude_code.sh` from your local checkout instead of fetching it over the network.
 
 ### Manual Setup
 
@@ -71,9 +75,10 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
 | Model | Description |
 |-------|-------------|
 | `claude-sonnet-4.6` | Default model in Claude Code |
-| `claude-opus-4.6` | Most capable |
+| `claude-opus-4.6` | High-capability Opus generation |
+| `claude-opus-4.7` | Latest Opus (1M context) |
 
-> **Note:** Claude models require internal role access. Publicly available models (`glm-5`, `minimax-m2.5`, etc.) are not compatible with Claude Code since it only supports Anthropic-format APIs.
+> **Note:** Claude models require internal role access. Publicly available models (`glm-5`, `minimax-m2.5`, etc.) are not compatible with Claude Code since it only supports Anthropic-format APIs. The list above is a curated set — query `https://freeinference.org/anthropic/v1/models` (with your API key) for the live registry.
 
 ---
 
@@ -110,7 +115,7 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
 
 1. Install the **Continue** extension from the VS Code Marketplace or JetBrains Marketplace
 
-2. Open Continue settings — click the gear icon or run `Cmd + Shift + P` → "Continue: Open Config"
+2. Open Continue settings — click the gear icon or run `Cmd + Shift + P` (macOS) / `Ctrl + Shift + P` (Windows/Linux) → "Continue: Open Config"
 
 3. Edit `config.json` (or `config.yaml`). Add or modify the `models` section:
 
@@ -270,7 +275,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="glm-5",
+    model="glm-5.1",
     messages=[{"role": "user", "content": "Hello"}],
 )
 
@@ -283,7 +288,7 @@ print(response.choices[0].message.content)
 curl -X POST https://freeinference.org/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-here" \
-  -d '{"model": "glm-5", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+  -d '{"model": "glm-5.1", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
 ```
 
 ### Node.js (OpenAI SDK)
@@ -297,7 +302,7 @@ const client = new OpenAI({
 });
 
 const response = await client.chat.completions.create({
-  model: "glm-5",
+  model: "glm-5.1",
   messages: [{ role: "user", content: "Hello" }],
 });
 
@@ -466,9 +471,12 @@ If you get "model not found" errors:
 | Cline | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | Continue | OpenAI | `https://freeinference.org/v1` | `~/.continue/config.json` |
 | Aider | OpenAI | `https://freeinference.org/v1` | Environment variables |
+| Twinny | OpenAI | `https://freeinference.org/v1` | Extension settings |
+| CodeGPT | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | Roo Code | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | Kilo Code | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | Windsurf | OpenAI | `https://freeinference.org/v1` | Cascade → Model Provider |
+| JetBrains AI | via plugin | `https://freeinference.org/v1` | Use Roo Code / Continue / CodeGPT plugin |
 | Any OpenAI client | OpenAI | `https://freeinference.org/v1` | Client config |
 
 ---

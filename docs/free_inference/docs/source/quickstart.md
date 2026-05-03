@@ -23,8 +23,12 @@ Choose your coding agent below and follow the steps. For detailed setup and trou
 
 ```bash
 curl -fsSL -o setup_claude_code.sh https://raw.githubusercontent.com/HarvardMadSys/hybridInference/main/scripts/setup_claude_code.sh
+# Inspect the script before running (recommended):
+less setup_claude_code.sh
 bash setup_claude_code.sh
 ```
+
+> **Security note:** Always review remote shell scripts before executing them. You can also clone the repo and run `scripts/setup_claude_code.sh` from your local checkout.
 
 ### Roo Code / Kilo Code / Cline
 
@@ -35,18 +39,19 @@ bash setup_claude_code.sh
 
 ### Continue
 
-Add to `~/.continue/config.json`:
+Add a new model entry to the `models` array in `~/.continue/config.json` (merge with your existing config — don't overwrite it):
+
 ```json
 {
-  "models": [{
-    "title": "FreeInference",
-    "provider": "openai",
-    "model": "glm-5.1",
-    "apiBase": "https://freeinference.org/v1",
-    "apiKey": "your-api-key-here"
-  }]
+  "title": "FreeInference",
+  "provider": "openai",
+  "model": "glm-5.1",
+  "apiBase": "https://freeinference.org/v1",
+  "apiKey": "your-api-key-here"
 }
 ```
+
+> **Note:** If `~/.continue/config.json` doesn't exist yet, wrap the entry above as `{"models": [ <entry> ]}`. Otherwise, append it to your existing `models` array so prior models and settings are preserved.
 
 ### Aider
 
