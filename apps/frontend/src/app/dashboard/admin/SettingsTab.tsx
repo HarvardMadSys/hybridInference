@@ -105,9 +105,7 @@ export function SettingsTab() {
     try {
       const updatedFlag = await updateRuntimeSetting(flag.key, !flag.value);
       flashToast(`${updatedFlag.key} ${updatedFlag.value ? 'enabled' : 'disabled'}`);
-      setFeatureFlags((prev) =>
-        prev.map((f) => (f.key === updatedFlag.key ? updatedFlag : f)),
-      );
+      setFeatureFlags((prev) => prev.map((f) => (f.key === updatedFlag.key ? updatedFlag : f)));
     } catch (e) {
       flashToast(`Failed to update ${flag.key}: ${getErrorMessage(e)}`);
     } finally {
