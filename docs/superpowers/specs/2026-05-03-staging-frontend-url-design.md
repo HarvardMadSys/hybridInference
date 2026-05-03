@@ -49,7 +49,7 @@ FRONTEND_URL=https://freeinference.org
 BASE_URL=https://freeinference.org
 ```
 
-(Whether `BASE_URL` already appears in `.env.example` will be checked during implementation; if so, only `FRONTEND_URL` needs adding.)
+Implementation outcome: `BASE_URL` was not already documented in `.env.example`, so both `FRONTEND_URL` and `BASE_URL` were added.
 
 ## Deployment change (manual, by repo owner)
 
