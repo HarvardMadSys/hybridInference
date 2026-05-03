@@ -151,6 +151,11 @@ class Settings(BaseSettings):
     failed_request_alert_window_minutes: int = Field(default=5, ge=1)
     failed_request_alert_cooldown_minutes: int = Field(default=5, ge=0)
 
+    # Debug: when True, log full request payloads (including user prompts) at
+    # DEBUG level in the OpenAI-compatible adapter. Defaults to False to avoid
+    # leaking user content into logs in production.
+    log_full_payload: bool = False
+
     class Config:
         """Pydantic configuration for Settings class."""
 

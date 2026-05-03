@@ -26,6 +26,11 @@ QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
 
 
 def is_user_auth_enabled() -> bool:
+    """Return whether API-key user auth is enabled.
+
+    Fail-closed by default: auth is enabled unless ``USER_AUTH_ENABLED``
+    is explicitly set to a falsy value (parsed by Pydantic).
+    """
     return get_settings().user_auth_enabled
 
 
@@ -36,6 +41,7 @@ def generate_api_key() -> str:
 
 
 def hash_api_key(plaintext_key: str) -> str:
+    """Hash an API key using HMAC-SHA256 keyed by ``API_KEY_SECRET``."""
     secret = get_settings().api_key_secret.encode()
     if not secret:
         raise ValueError("API_KEY_SECRET must be set in environment")

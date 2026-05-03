@@ -21,6 +21,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -135,7 +137,11 @@ class ClaudeAdapter(BaseAdapter):
         }
 
         data = await self.http.json_post_with_retry(
-            endpoint, json=payload, headers=headers, timeout=120, retries=3
+            endpoint,
+            json=payload,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=120),
+            retries=3,
         )
 
         if "Code" in data and "Error" in data:
@@ -232,7 +238,11 @@ class ClaudeAdapter(BaseAdapter):
             # Google Vertex API may return non-streaming JSON instead of SSE
             # Try to use ndjson mode which is more tolerant
             async for line in self.http.stream_post(
-                endpoint, json=payload, headers=headers, mode="auto", timeout=120
+                endpoint,
+                json=payload,
+                headers=headers,
+                mode="auto",
+                timeout=aiohttp.ClientTimeout(total=120),
             ):
                 if not line.strip():
                     continue
@@ -423,8 +433,6 @@ class ClaudeAdapter(BaseAdapter):
                     yield done_sentinel()
                     break
         except Exception as e:
-            import aiohttp
-
             logger.error(f"[CLAUDE STREAM ERROR] {type(e).__name__}: {e}")
             if isinstance(e, aiohttp.ClientResponseError):
                 logger.error(f"Response status: {e.status}, message: {e.message}")

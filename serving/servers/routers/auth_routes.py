@@ -52,6 +52,7 @@ REFRESH_TOKEN_COOKIE = "refresh_token"
 
 
 def get_base_url(request: Request) -> str:
+    """Return the configured ``BASE_URL`` or fall back to the request scheme+host."""
     base_url = settings.base_url
     if base_url:
         return base_url.rstrip("/")
@@ -59,6 +60,7 @@ def get_base_url(request: Request) -> str:
 
 
 def hash_refresh_token(token: str) -> str:
+    """Hash a refresh token with SHA-256 for storage in the sessions table."""
     return hashlib.sha256(token.encode()).hexdigest()
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 import uuid
 from types import SimpleNamespace
@@ -13,6 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 
+from serving.config.settings import get_settings
 from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
@@ -439,7 +439,7 @@ class OpenAICompatAdapter(BaseAdapter):
         # Make request
         url = self._build_url()
         logger.debug(f"[OpenAICompat] POST {url} model={payload.get('model', '<omitted>')}")
-        if os.getenv("LOG_FULL_PAYLOAD"):
+        if get_settings().log_full_payload:
             logger.debug(f"[OpenAICompat] Payload: {payload}")
 
         response = await self._post_with_pool(url, payload)
