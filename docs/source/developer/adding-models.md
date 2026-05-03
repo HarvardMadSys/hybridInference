@@ -69,8 +69,6 @@ curl -s -X POST http://localhost:8080/v1/chat/completions \
 
 Note on aliases: If you want the model to appear under an OpenRouter-style slug (e.g., a local vLLM path), add it in `aliases` so clients can call either name.
 
-OFFLOAD behavior: When `OFFLOAD=1`, the service will remove all local adapters whose `base_url` matches `LOCAL_BASE_URL` and only use remote adapters. See “Hybrid Routing & OFFLOAD” below.
-
 ## Adding a New Provider
 
 If you need to integrate a completely new provider, follow these steps:
@@ -410,12 +408,9 @@ The `kind` field in each route entry selects the backend adapter. All kinds mark
 | `claude_sub` | Subscription | Claude via OAuth account pool — see §5 of configuration.md |
 | `codex_sub` | Subscription | Codex CLI via OAuth account pool — see §5 of configuration.md |
 
-### Hybrid Routing & OFFLOAD
+### Hybrid Routing
 
 - Weighted routes are applied at registration time. You can further adjust weights or override distribution centrally using `config/routing.yaml` (loaded by the `RoutingManager`).
-- If `OFFLOAD=1`, the bootstrap process removes any adapter whose `base_url` matches `LOCAL_BASE_URL`, effectively forcing traffic to remote providers only.
-
-This lets you flip from hybrid to remote-only during incidents without editing YAML.
 
 ## BaseAdapter API Reference
 

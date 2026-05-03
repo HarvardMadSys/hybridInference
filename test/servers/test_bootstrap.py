@@ -222,44 +222,11 @@ models:
         )
 
         monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
-        monkeypatch.setenv("OFFLOAD", "0")
 
         router = RouteExecutor()
 
         await bootstrap._init_router_and_models(router)
 
-        assert "remote-model" in router.routes
-        assert len(router.routes["remote-model"].adapters) == 1
-
-    @pytest.mark.asyncio
-    async def test_init_router_with_offload_no_local(self, monkeypatch, tmp_path):
-        """Hard OFFLOAD should keep remote-only models untouched."""
-        models_yaml = tmp_path / "remote_models.yaml"
-        models_yaml.write_text(
-            """
-models:
-  - id: remote-model
-    name: Remote Only Model
-    provider: zhipu
-    context_length: 8192
-    max_output_length: 4096
-    route:
-      - kind: zhipu
-        weight: 1.0
-        base_url: https://api.example.com
-        api_key: test-key
-"""
-        )
-
-        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
-        monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
-        monkeypatch.setenv("OFFLOAD", "1")
-
-        router = RouteExecutor()
-
-        await bootstrap._init_router_and_models(router)
-
-        # No local adapters to remove; remote model should remain intact
         assert "remote-model" in router.routes
         assert len(router.routes["remote-model"].adapters) == 1
 

@@ -34,7 +34,7 @@ hybridInference/
 ## Features
 
 - **OpenRouter API compatibility**: Implements `/v1/chat/completions`, `/v1/models`, and related schemas.
-- **Hybrid routing**: Combine local VLLM workers with hosted APIs; supports hard/soft offload.
+- **Hybrid routing**: Combine local VLLM workers with hosted APIs.
 - **Resilient adapters**: Automatic retry/fallback when a provider returns errors.
 - **Usage accounting**: Prompt/completion token tracking and persisted request logs.
 - **Streaming responses**: Server-Sent Events (SSE) for incremental output.
@@ -64,7 +64,6 @@ cp .env.example .env
 Populate it with provider credentials and runtime configuration:
 ```bash
 LOCAL_BASE_URL=https://freeinference.org/v1
-OFFLOAD=0
 DEEPSEEK_API_KEY=your-deepseek-api-key
 GEMINI_API_KEY=your-gemini-api-key
 USE_SQLITE_LOG=true
