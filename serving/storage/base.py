@@ -534,6 +534,63 @@ class OperationalStore(ABC):
     ) -> None:
         """Atomically replace the full preferences JSONB column."""
 
+    # -- signup domain allowlist --------------------------------------------
+
+    @abstractmethod
+    async def list_signup_allowed_domains(self) -> list[Row]:
+        """Return all rows in ``signup_allowed_domains`` ordered by created_at DESC.
+
+        Each row contains: ``domain``, ``is_wildcard``, ``created_at``,
+        ``created_by`` (user id), and ``created_by_email`` (joined from users
+        table; may be None when the creator was deleted or unknown).
+        """
+
+    @abstractmethod
+    async def add_signup_allowed_domain(
+        self,
+        *,
+        domain: str,
+        is_wildcard: bool,
+        created_by: str | None,
+    ) -> Row:
+        """Insert a new allowlist entry. Returns the inserted row.
+
+        Implementations must raise an exception on duplicate composite key
+        ``(domain, is_wildcard)``.
+        """
+
+    @abstractmethod
+    async def remove_signup_allowed_domain(
+        self,
+        *,
+        domain: str,
+        is_wildcard: bool,
+    ) -> bool:
+        """Delete an allowlist entry. Returns True if a row was removed."""
+
+    @abstractmethod
+    async def signup_allowlist_is_empty(self) -> bool:
+        """Return True when ``signup_allowed_domains`` has no rows.
+
+        Hot-path read used during signup; callers should layer their own
+        TTL cache for performance.
+        """
+
+    @abstractmethod
+    async def is_signup_domain_allowed(self, email: str) -> bool:
+        """Return True if *email*'s domain is on the signup allowlist.
+
+        Match rules:
+        - Exact match against rows where ``is_wildcard=FALSE``.
+        - Suffix match against rows where ``is_wildcard=TRUE``: walks parent
+          labels of the email's domain. ``*.example.com`` matches
+          ``a.example.com`` and ``a.b.example.com`` but **not** the bare
+          suffix ``example.com``.
+
+        Returns False on malformed email (no ``@`` or empty domain) and on
+        an empty allowlist (callers handle "empty allowlist = allow").
+        """
+
 
 # ---------------------------------------------------------------------------
 # LogStore — api_logs, api_stats_hourly

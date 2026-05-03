@@ -332,6 +332,46 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day)"
         )
 
+        # --- signup_allowed_domains ---
+        # Admin-editable allowlist of email domains whose signups auto-approve.
+        # Empty table = all signups auto-approve; non-empty = only listed
+        # domains (exact or *.suffix) auto-approve, others go to pending_approval.
+        # ``created_by`` uses ON DELETE SET NULL so hard-deleting a user who
+        # once added an entry doesn't fail with a FK violation; the field is
+        # informational/audit only.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS signup_allowed_domains (
+                domain TEXT NOT NULL,
+                is_wildcard BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+                PRIMARY KEY (domain, is_wildcard)
+            )
+        """)
+
+        # Migration: existing databases created the FK without
+        # ON DELETE SET NULL, which blocks hard_delete_user. Rebuild the
+        # constraint in place. Auto-generated name is
+        # ``signup_allowed_domains_created_by_fkey``.
+        try:
+            async with conn.transaction():
+                await conn.execute(
+                    "ALTER TABLE signup_allowed_domains "
+                    "DROP CONSTRAINT IF EXISTS signup_allowed_domains_created_by_fkey"
+                )
+                await conn.execute(
+                    "ALTER TABLE signup_allowed_domains "
+                    "ADD CONSTRAINT signup_allowed_domains_created_by_fkey "
+                    "FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL"
+                )
+        except _asyncpg.PostgresError as exc:
+            logger.error(
+                "Failed to rebuild signup_allowed_domains_created_by_fkey "
+                "with ON DELETE SET NULL; transaction rolled back. error=%s",
+                exc,
+            )
+            raise
+
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
 
@@ -1274,6 +1314,110 @@ class PostgresOperationalStore(OperationalStore):
                 json.dumps(preferences),
                 user_id,
             )
+
+    # -- signup domain allowlist --------------------------------------------
+
+    async def list_signup_allowed_domains(self) -> list[Row]:
+        """Return all allowlist rows joined with the creator's email."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT d.domain, d.is_wildcard, d.created_at, d.created_by, "
+                "u.email AS created_by_email "
+                "FROM signup_allowed_domains d "
+                "LEFT JOIN users u ON u.id = d.created_by "
+                "ORDER BY d.created_at DESC, d.domain ASC"
+            )
+        return [dict(r) for r in rows]
+
+    async def add_signup_allowed_domain(
+        self,
+        *,
+        domain: str,
+        is_wildcard: bool,
+        created_by: str | None,
+    ) -> Row:
+        """Insert a new allowlist entry. Raises on duplicate composite key."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO signup_allowed_domains (domain, is_wildcard, created_by) "
+                "VALUES ($1, $2, $3) "
+                "RETURNING domain, is_wildcard, created_at, created_by",
+                domain,
+                is_wildcard,
+                created_by,
+            )
+        # Backfill creator email so the response shape matches list_*.
+        result = dict(row) if row else {}
+        if result.get("created_by"):
+            async with self._pool.acquire() as conn:
+                creator = await conn.fetchrow(
+                    "SELECT email FROM users WHERE id = $1", result["created_by"]
+                )
+            result["created_by_email"] = creator["email"] if creator else None
+        else:
+            result["created_by_email"] = None
+        return result
+
+    async def remove_signup_allowed_domain(
+        self,
+        *,
+        domain: str,
+        is_wildcard: bool,
+    ) -> bool:
+        """Delete an allowlist entry; returns True when a row was removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM signup_allowed_domains WHERE domain = $1 AND is_wildcard = $2",
+                domain,
+                is_wildcard,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+    async def signup_allowlist_is_empty(self) -> bool:
+        """Return True if the allowlist table has no rows."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT 1 FROM signup_allowed_domains LIMIT 1")
+        return row is None
+
+    async def is_signup_domain_allowed(self, email: str) -> bool:
+        """Match *email*'s domain against the allowlist (exact or wildcard).
+
+        Uses a single round-trip: builds the set of candidate strings
+        (the email domain itself, plus each parent suffix that could be
+        a wildcard match) and checks whether any allowlist row matches
+        with the appropriate ``is_wildcard`` flag. The bare top-level
+        domain is excluded from wildcard candidates so ``*.acme.com``
+        does not match ``alice@acme.com``.
+        """
+        if "@" not in email:
+            return False
+        domain = email.rsplit("@", 1)[1].strip().lower()
+        if not domain:
+            return False
+
+        parts = domain.split(".")
+        # Wildcard candidates: parent suffixes that *.suffix would match.
+        # For a.b.example.com (parts=4): b.example.com, example.com.
+        # Stops at len(parts)-1 to exclude the bare TLD.
+        wildcard_candidates = [".".join(parts[i:]) for i in range(1, len(parts) - 1)]
+        # Single query covers both exact and wildcard checks: for each
+        # returned row, decide acceptance based on its is_wildcard flag.
+        candidates = list({domain, *wildcard_candidates})
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT domain, is_wildcard FROM signup_allowed_domains "
+                "WHERE domain = ANY($1::text[])",
+                candidates,
+            )
+        wildcard_set = set(wildcard_candidates)
+        for row in rows:
+            row_domain = row["domain"]
+            row_is_wildcard = bool(row["is_wildcard"])
+            if not row_is_wildcard and row_domain == domain:
+                return True
+            if row_is_wildcard and row_domain in wildcard_set:
+                return True
+        return False
 
     # -- cost counters -------------------------------------------------------
 

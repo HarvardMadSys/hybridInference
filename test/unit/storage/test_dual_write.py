@@ -64,6 +64,8 @@ _OP_WRITES = {
     "log_admin_action",
     "increment_user_cost",
     "update_user_preferences",
+    "add_signup_allowed_domain",
+    "remove_signup_allowed_domain",
 }
 
 _OP_READS = _get_abstract_methods(OperationalStore) - _OP_WRITES - _LIFECYCLE
