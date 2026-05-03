@@ -23,6 +23,7 @@ import json
 import time
 from typing import Any
 
+import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
@@ -386,6 +387,43 @@ def _finalize_response_acc(acc: dict | None) -> dict | None:
     return acc
 
 
+def _log_failure(
+    log_store,
+    *,
+    request_id: str,
+    canonical: str,
+    adapter,
+    metadata: dict[str, Any],
+    params_for_log: dict[str, Any],
+    messages_for_log,
+    start: float,
+    status_code: int,
+    error_message: str,
+) -> None:
+    latency_ms = int((time.time() - start) * 1000)
+    API_MODEL_REQUESTS.labels(
+        model=normalize_model_label(canonical),
+        provider=normalize_provider_label(adapter.config.provider),
+        status_code=str(status_code),
+    ).inc()
+    if log_store:
+        _schedule_log_store_task(
+            log_store,
+            request_id=request_id,
+            model_id=canonical,
+            provider=adapter.config.provider,
+            usage={},
+            latency_ms=latency_ms,
+            status_code=status_code,
+            pricing=adapter.config.pricing,
+            metadata=metadata,
+            params=params_for_log,
+            prompt=messages_for_log,
+            response=None,
+            error=error_message,
+        )
+
+
 _SSE_LEFTOVER_CAP = 65536
 
 
@@ -512,6 +550,7 @@ async def anthropic_messages(
                 "cache_read_input_tokens": 0,
             }
             stream_failed = False
+            stream_status_code: int = 200
             stream_error_message: str | None = None
             ttft_ms: int | None = None
             ttft_buffer = b""
@@ -541,8 +580,22 @@ async def anthropic_messages(
                     for event_type, data in events:
                         response_acc = _apply_sse_event(response_acc, event_type, data)
                     yield chunk
+            except aiohttp.ClientResponseError as exc:
+                stream_failed = True
+                stream_status_code = exc.status
+                stream_error_message = scrub_error_for_user(exc, request_id, exc.status)
+                logger.exception(f"[{request_id}] Streaming dispatch failed")
+                err = {
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": stream_error_message,
+                    },
+                }
+                yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
             except Exception as exc:
                 stream_failed = True
+                stream_status_code = 502
                 stream_error_message = scrub_error_for_user(exc, request_id, 502)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
                 err = {
@@ -555,11 +608,10 @@ async def anthropic_messages(
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
             finally:
                 latency_ms = int((time.time() - start) * 1000)
-                status_code = 502 if stream_failed else 200
                 API_MODEL_REQUESTS.labels(
                     model=normalize_model_label(canonical),
                     provider=normalize_provider_label(adapter.config.provider),
-                    status_code=str(status_code),
+                    status_code=str(stream_status_code),
                 ).inc()
                 if log_store:
                     _schedule_log_store_task(
@@ -569,10 +621,8 @@ async def anthropic_messages(
                         provider=adapter.config.provider,
                         usage=request_usage,
                         latency_ms=latency_ms,
-                        status_code=status_code,
-                        pricing=adapter.config.pricing
-                        if hasattr(adapter.config, "pricing")
-                        else {},
+                        status_code=stream_status_code,
+                        pricing=adapter.config.pricing,
                         metadata=metadata,
                         params=params_for_log,
                         prompt=messages_for_log,
@@ -587,54 +637,50 @@ async def anthropic_messages(
         resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
     except HTTPException as exc:
         error_message = str(exc.detail)
-        latency_ms = int((time.time() - start) * 1000)
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(canonical),
-            provider=normalize_provider_label(adapter.config.provider),
-            status_code=str(exc.status_code),
-        ).inc()
-        if log_store:
-            _schedule_log_store_task(
-                log_store,
-                request_id=request_id,
-                model_id=canonical,
-                provider=adapter.config.provider,
-                usage={},
-                latency_ms=latency_ms,
-                status_code=exc.status_code,
-                pricing=adapter.config.pricing if hasattr(adapter.config, "pricing") else {},
-                metadata=metadata,
-                params=params_for_log,
-                prompt=messages_for_log,
-                response=None,
-                error=error_message,
-            )
+        _log_failure(
+            log_store,
+            request_id=request_id,
+            canonical=canonical,
+            adapter=adapter,
+            metadata=metadata,
+            params_for_log=params_for_log,
+            messages_for_log=messages_for_log,
+            start=start,
+            status_code=exc.status_code,
+            error_message=error_message,
+        )
         return _anthropic_error(exc.status_code, error_message)
+    except aiohttp.ClientResponseError as exc:
+        error_message = scrub_error_for_user(exc, request_id, exc.status)
+        logger.exception(f"[{request_id}] Adapter messages() failed")
+        _log_failure(
+            log_store,
+            request_id=request_id,
+            canonical=canonical,
+            adapter=adapter,
+            metadata=metadata,
+            params_for_log=params_for_log,
+            messages_for_log=messages_for_log,
+            start=start,
+            status_code=exc.status,
+            error_message=error_message,
+        )
+        return _anthropic_error(exc.status, error_message)
     except Exception as exc:
         error_message = scrub_error_for_user(exc, request_id, 502)
         logger.exception(f"[{request_id}] Adapter messages() failed")
-        latency_ms = int((time.time() - start) * 1000)
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(canonical),
-            provider=normalize_provider_label(adapter.config.provider),
-            status_code="502",
-        ).inc()
-        if log_store:
-            _schedule_log_store_task(
-                log_store,
-                request_id=request_id,
-                model_id=canonical,
-                provider=adapter.config.provider,
-                usage={},
-                latency_ms=latency_ms,
-                status_code=502,
-                pricing=adapter.config.pricing if hasattr(adapter.config, "pricing") else {},
-                metadata=metadata,
-                params=params_for_log,
-                prompt=messages_for_log,
-                response=None,
-                error=error_message,
-            )
+        _log_failure(
+            log_store,
+            request_id=request_id,
+            canonical=canonical,
+            adapter=adapter,
+            metadata=metadata,
+            params_for_log=params_for_log,
+            messages_for_log=messages_for_log,
+            start=start,
+            status_code=502,
+            error_message=error_message,
+        )
         return _anthropic_error(502, error_message)
 
     usage = (resp.get("usage") or {}) if isinstance(resp, dict) else {}
