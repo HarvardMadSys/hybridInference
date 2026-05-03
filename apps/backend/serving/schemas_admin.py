@@ -652,6 +652,28 @@ class AdminProviderQuotasResponse(BaseModel):
     providers: list[ProviderQuotaResult]
 
 
+class RuntimeSettingItem(BaseModel):
+    """A single runtime setting with current value and metadata."""
+
+    key: str
+    value: Any
+    value_type: str
+    default_value: Any
+    description: str
+
+
+class ListSettingsResponse(BaseModel):
+    """Response payload for listing runtime settings."""
+
+    settings: list[RuntimeSettingItem]
+
+
+class UpdateSettingRequest(BaseModel):
+    """Request payload for updating a runtime setting."""
+
+    value: Any
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -686,6 +708,8 @@ __all__ = [
     "HardDeleteUserResponse",
     "ListAPIKeysResponse",
     "ListAuditLogResponse",
+    "ListSettingsResponse",
+    "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
@@ -695,12 +719,14 @@ __all__ = [
     "ResumeUserRequest",
     "ResumeUserResponse",
     "RevokeAPIKeyResponse",
+    "RuntimeSettingItem",
     "SparklineBucket",
     "StatusCounts",
     "SummaryCard",
     "SummaryUserItem",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
+    "UpdateSettingRequest",
     "UpdateUserRequest",
     "UpdateUserResponse",
     "UserCostHistoryPoint",

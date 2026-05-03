@@ -591,6 +591,22 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.is_signup_domain_allowed(email)
 
+    # -- site settings (pass-through) -----------------------------------------
+
+    async def get_setting(self, key: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_setting(key)
+
+    async def set_setting(
+        self, key: str, value: str, value_type: str, updated_by: str | None
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_setting(key, value, value_type, updated_by)
+
+    async def list_settings(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_settings()
+
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(

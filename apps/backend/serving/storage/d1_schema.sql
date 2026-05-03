@@ -183,3 +183,14 @@ CREATE TABLE IF NOT EXISTS api_logs (
 CREATE INDEX IF NOT EXISTS idx_api_logs_timestamp ON api_logs(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_api_logs_user ON api_logs(user_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_api_logs_model ON api_logs(model_id, provider, timestamp DESC);
+
+-- -------------------------------------------------------------------
+-- site_settings (runtime feature flags)
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS site_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    value_type  TEXT NOT NULL DEFAULT 'str',
+    updated_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_by  TEXT
+);

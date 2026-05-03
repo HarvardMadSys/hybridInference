@@ -612,6 +612,25 @@ class OperationalStore(ABC):
         an empty allowlist (callers handle "empty allowlist = allow").
         """
 
+    # -- site settings (runtime feature flags) --------------------------------
+
+    @abstractmethod
+    async def get_setting(self, key: str) -> Row | None:
+        """Fetch a single site_settings row by key.
+
+        Returns columns: key, value, value_type, updated_at, updated_by.
+        """
+
+    @abstractmethod
+    async def set_setting(
+        self, key: str, value: str, value_type: str, updated_by: str | None
+    ) -> None:
+        """Upsert a site_settings row."""
+
+    @abstractmethod
+    async def list_settings(self) -> list[Row]:
+        """Return all site_settings rows."""
+
 
 # ---------------------------------------------------------------------------
 # LogStore — api_logs, api_stats_hourly
