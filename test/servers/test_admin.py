@@ -243,15 +243,15 @@ async def test_admin_performance_metrics_distributions(auth_client, require_db):
                     if dist["min"] is not None and dist["max"] is not None:
                         assert dist["min"] <= dist["max"]
 
-        # Also sanity-check the 5-minute window for our specific data:
+        # Also sanity-check the 1-hour window for our specific data:
         # we inserted 10 streaming-OK rows with prompt_tokens 10..100 and the
         # 1 non-stream row with prompt_tokens=7.  So count >= 11 for prompt_tokens
         # and >= 10 for ttft_ms (only the streaming rows count there).
-        five_min = next(w for w in body["windows"] if w["key"] == "5m")
-        assert five_min["prompt_tokens"]["count"] >= 11
-        assert five_min["ttft_ms"]["count"] >= 10
+        one_hour = next(w for w in body["windows"] if w["key"] == "1h")
+        assert one_hour["prompt_tokens"]["count"] >= 11
+        assert one_hour["ttft_ms"]["count"] >= 10
         # throughput: 10 valid streaming rows; the buggy row's throughput is clamped to NULL
-        assert five_min["throughput_tps"]["count"] >= 10
+        assert one_hour["throughput_tps"]["count"] >= 10
     finally:
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM api_logs WHERE model_id = $1", tag)
