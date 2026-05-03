@@ -13,7 +13,7 @@ Get started with FreeInference in 5 minutes.
 ### Cursor
 
 1. Open Settings (`Cmd + ,` or `Ctrl + ,`)
-2. Go to **API Keys** → Enter your API key
+2. Go to **Models** → Enter your API key
 3. Click **Override OpenAI Base URL** → Enter: `https://freeinference.org/v1`
 4. Enable the toggle and start coding
 
