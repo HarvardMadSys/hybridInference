@@ -403,6 +403,51 @@ async def test_reasoning_content_visible_by_default_in_streaming(monkeypatch, mo
 
 
 @pytest.mark.asyncio
+async def test_streaming_reasoning_content_persisted_to_db(
+    monkeypatch, mock_db_logger, mock_log_store
+):
+    """Streaming reasoning_content is accumulated into the DB-logged response."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
+
+    app = FastAPI(title="Test Streaming Reasoning Persisted")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "glm-4.6",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp,
+    ):
+        assert resp.status_code == status.HTTP_200_OK
+        async for _ in resp.aiter_lines():
+            pass
+
+    kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert kwargs is not None, "log_request was never called"
+    response = kwargs["response"]
+    assert isinstance(response, dict)
+    message = response["choices"][0]["message"]
+    assert "reasoning_content" in message
+    assert message["reasoning_content"]
+
+
+@pytest.mark.asyncio
 async def test_non_stream_strict_strips_reasoning_content(monkeypatch, mock_db_logger):
     """X-Reasoning-Passthrough: false strips reasoning_content from non-streaming response."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")

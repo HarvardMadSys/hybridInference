@@ -101,12 +101,11 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
               <>
                 <span className="mx-0.5 text-gray-300">/</span>
                 <span
-                  className="rounded bg-purple-50 px-1 text-[10px] font-medium text-purple-700"
+                  className="inline-flex items-center rounded bg-purple-50 px-1 text-[10px] font-medium text-purple-700"
                   title={`${req.reasoning_tokens.toLocaleString()} reasoning tokens`}
                 >
-                  R
+                  R {formatTokens(req.reasoning_tokens)}
                 </span>
-                {formatTokens(req.reasoning_tokens)}
               </>
             )}
           </div>
