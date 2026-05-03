@@ -123,7 +123,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: freeinference_test_db
         ports:
-          - 5432:5432
+          - 5433:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -163,7 +163,7 @@ jobs:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Database configuration for auth tests
           DB_HOST: localhost
-          DB_PORT: 5432
+          DB_PORT: 5433
           DB_NAME: freeinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
@@ -190,7 +190,7 @@ jobs:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Database configuration for auth tests
           DB_HOST: localhost
-          DB_PORT: 5432
+          DB_PORT: 5433
           DB_NAME: freeinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
