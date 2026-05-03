@@ -63,7 +63,7 @@ class _SlidingWindow:
 
 
 class FailedRequestRateRule:
-    """Rule 1: any-non-2xx rate over a sliding window."""
+    """Rule 1: 4xx/5xx error rate over a sliding window."""
 
     name = "failed_request_rate"
 

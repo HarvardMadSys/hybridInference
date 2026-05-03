@@ -399,11 +399,9 @@ async def initialize() -> AppServices:
             from serving.observability.log_handler import AlertingLogHandler
 
             alert_handler = AlertingLogHandler(maxsize=10_000)
-            # Attach to the request-log logger so request-shaped rules see records.
-            _stdlogging.getLogger("serving.servers.middleware.request_log").addHandler(
-                alert_handler
-            )
-            # Also attach to root for state-change events (auth, concurrency, etc.).
+            _req_log = _stdlogging.getLogger("serving.servers.middleware.request_log")
+            _req_log.addHandler(alert_handler)
+            _req_log.propagate = False
             _stdlogging.getLogger().addHandler(alert_handler)
 
             alert_cfg = load_alert_config(settings.alerts_config_path)
@@ -416,8 +414,8 @@ async def initialize() -> AppServices:
             )
             await alert_engine.start()
             logger.info("alert engine started")
-        except Exception as exc:
-            logger.error(f"Alert engine startup failed: {exc}")
+        except Exception:
+            logger.exception("Alert engine startup failed")
             alert_engine = None
     else:
         logger.info("alerts disabled (ALERTS_ENABLED=false)")
@@ -446,8 +444,14 @@ async def shutdown(services: AppServices) -> None:
     if services.alert_engine is not None:
         try:
             await services.alert_engine.stop()
-        except Exception as exc:
-            logger.error(f"Alert engine shutdown failed: {exc}")
+        except Exception:
+            logger.exception("Alert engine shutdown failed")
+        handler = getattr(services.alert_engine, "_handler", None)
+        if handler is not None:
+            import logging as _stdlogging
+
+            _stdlogging.getLogger("serving.servers.middleware.request_log").removeHandler(handler)
+            _stdlogging.getLogger().removeHandler(handler)
 
     # Broadcast email scheduler
     try:

@@ -67,10 +67,9 @@ async def count_recent_failures(pool: asyncpg.Pool, window_minutes: int) -> int:
 async def post_slack_alert(webhook_url: str, message: str) -> bool:
     """POST ``{"text": message}`` to a Slack incoming webhook.
 
-    Backward-compatible thin wrapper. The implementation lives in
-    :func:`serving.observability.alerts._post_to_slack`; this wrapper exists so
-    existing callers and tests keep working unchanged. Network and HTTP errors
-    are caught and logged inside ``_post_to_slack``; this function never raises.
+    This wrapper performs its own ``httpx`` POST so that existing callers and
+    test patch-points continue to work.  Network and HTTP errors are caught
+    and logged; this function never raises.
 
     Args:
         webhook_url: Slack incoming-webhook URL.
@@ -79,10 +78,6 @@ async def post_slack_alert(webhook_url: str, message: str) -> bool:
     Returns:
         True when Slack returned a 2xx response, False on any error.
     """
-    # Delegate to the unified sink's transport. Tests that patch
-    # ``failed_request_alerter.httpx.AsyncClient`` continue to work because
-    # ``alerts._post_to_slack`` opens its own client; we route through the
-    # legacy local httpx import below to preserve patch points.
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(webhook_url, json={"text": message})
