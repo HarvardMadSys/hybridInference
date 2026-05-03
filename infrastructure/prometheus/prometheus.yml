@@ -33,9 +33,11 @@ rule_files: []
 # Note: previously referenced rules/service_availability.yml which was
 # removed in commit ec0dec4 ("remove prometheus + grafana, keep
 # alertmanager + alert-logger"). The rules depended on `up{job="app"}`
-# and the `database_connected` gauge, both of which no longer exist —
-# `prometheus-client` was dropped and metrics are no-op shims. Re-add
-# rule files here only after a metrics source is wired back in.
+# (no scrape job is configured for the app — see scrape_configs above —
+# so `up` would always be 0 if even reachable) and the
+# `database_connected` gauge (the `prometheus-client` library was
+# dropped and the gauge is now a no-op shim). Re-add rule files here
+# only after a Prometheus metrics endpoint is wired back in.
 
 # Alertmanager configuration
 alerting:

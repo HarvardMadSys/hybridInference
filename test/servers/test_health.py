@@ -30,9 +30,7 @@ async def _set_store_health(store, healthy: bool) -> None:
     store.health_check = AsyncMock(return_value=healthy)
 
 
-async def test_health_both_stores_ok_returns_healthy(
-    test_client, app_services
-) -> None:
+async def test_health_both_stores_ok_returns_healthy(test_client, app_services) -> None:
     await _set_store_health(app_services.operational_store, True)
     await _set_store_health(app_services.log_store, True)
 
@@ -44,9 +42,7 @@ async def test_health_both_stores_ok_returns_healthy(
     assert body["database_connected"] is True
 
 
-async def test_health_op_only_up_returns_200_degraded(
-    test_client, app_services
-) -> None:
+async def test_health_op_only_up_returns_200_degraded(test_client, app_services) -> None:
     """log_store down, op_store up → 200 with degraded body.
 
     Must NOT return 503 — that would trigger Docker HEALTHCHECK restart
@@ -65,9 +61,7 @@ async def test_health_op_only_up_returns_200_degraded(
     assert body["stores"]["log_store"]["status"] == "error"
 
 
-async def test_health_log_only_up_returns_200_degraded(
-    test_client, app_services
-) -> None:
+async def test_health_log_only_up_returns_200_degraded(test_client, app_services) -> None:
     """op_store down, log_store up → 200 with degraded body."""
     await _set_store_health(app_services.operational_store, False)
     await _set_store_health(app_services.log_store, True)
@@ -81,9 +75,7 @@ async def test_health_log_only_up_returns_200_degraded(
     assert body["stores"]["log_store"]["status"] == "ok"
 
 
-async def test_health_both_stores_down_returns_503(
-    test_client, app_services
-) -> None:
+async def test_health_both_stores_down_returns_503(test_client, app_services) -> None:
     await _set_store_health(app_services.operational_store, False)
     await _set_store_health(app_services.log_store, False)
 
@@ -95,9 +87,7 @@ async def test_health_both_stores_down_returns_503(
     assert body["reason"] == "database_disconnected"
 
 
-async def test_health_ready_both_stores_ok_returns_200(
-    test_client, app_services
-) -> None:
+async def test_health_ready_both_stores_ok_returns_200(test_client, app_services) -> None:
     await _set_store_health(app_services.operational_store, True)
     await _set_store_health(app_services.log_store, True)
 
@@ -108,9 +98,7 @@ async def test_health_ready_both_stores_ok_returns_200(
     assert body["status"] == "ready"
 
 
-async def test_health_ready_op_only_up_returns_503(
-    test_client, app_services
-) -> None:
+async def test_health_ready_op_only_up_returns_503(test_client, app_services) -> None:
     """Strict AND: log_store down → not ready, even though /health is 200."""
     await _set_store_health(app_services.operational_store, True)
     await _set_store_health(app_services.log_store, False)
@@ -123,9 +111,7 @@ async def test_health_ready_op_only_up_returns_503(
     assert body["reason"] == "store_degraded"
 
 
-async def test_health_ready_log_only_up_returns_503(
-    test_client, app_services
-) -> None:
+async def test_health_ready_log_only_up_returns_503(test_client, app_services) -> None:
     await _set_store_health(app_services.operational_store, False)
     await _set_store_health(app_services.log_store, True)
 
@@ -136,9 +122,7 @@ async def test_health_ready_log_only_up_returns_503(
     assert body["status"] == "not_ready"
 
 
-async def test_health_ready_both_down_returns_503(
-    test_client, app_services
-) -> None:
+async def test_health_ready_both_down_returns_503(test_client, app_services) -> None:
     await _set_store_health(app_services.operational_store, False)
     await _set_store_health(app_services.log_store, False)
 

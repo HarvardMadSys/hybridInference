@@ -72,7 +72,7 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
-_QUIET_PATHS = frozenset({"/health", "/health/deep", "/metrics"})
+_QUIET_PATHS = frozenset({"/health", "/health/deep", "/health/ready", "/metrics"})
 
 
 class _QuietPathFilter(logging.Filter):
