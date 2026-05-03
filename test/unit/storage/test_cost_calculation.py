@@ -87,6 +87,27 @@ def test_cost_calculation_clamps_when_cache_exceeds_prompt() -> None:
     assert cost == pytest.approx(expected)
 
 
+def test_cost_calculation_no_cache_price_falls_back_to_prompt_rate() -> None:
+    """Issue #338 review: if cache tokens are reported but no cache-specific
+    price is configured (default 0), cached tokens must be billed at the
+    regular prompt rate rather than silently dropped — otherwise models
+    that report cache tokens but lack cache pricing get under-billed."""
+    usage = {
+        "prompt_tokens": 10000,
+        "completion_tokens": 0,
+        "cache_read_tokens": 8000,
+        "cache_write_tokens": 0,
+    }
+    pricing = {"prompt": "3.0", "completion": "15.0"}  # no input_cache_reads/writes
+
+    cost = calculate_cost(usage, pricing)
+
+    # billable_prompt stays at 10000 (cache not subtracted because no cache price);
+    # cache_read contributes 0 itself. Total = 10000 * $3 / 1M.
+    expected = 10000 * 3.0 / 1_000_000
+    assert cost == pytest.approx(expected)
+
+
 def test_cost_calculation_missing_pricing_returns_none() -> None:
     usage = {"prompt_tokens": 1000}
 

@@ -85,7 +85,11 @@ def calculate_cost(
     any cached portion. The cached subset is reported separately in
     ``cache_read_tokens`` / ``cache_write_tokens`` and billed at its own
     rate, so we subtract it from ``prompt_tokens`` before applying
-    ``prompt_price`` to avoid double-charging.
+    ``prompt_price`` to avoid double-charging. Cached tokens are only
+    subtracted when a specific cache price is configured (>0); otherwise
+    they fall back to being billed at the regular prompt rate so models
+    that report cache tokens but lack cache-specific pricing aren't
+    silently under-billed.
     """
     if not usage or not pricing:
         return None
@@ -102,7 +106,12 @@ def calculate_cost(
         cache_read_price = float(pricing.get("input_cache_reads", "0"))
         cache_write_price = float(pricing.get("input_cache_writes", "0"))
 
-        billable_prompt_tokens = max(prompt_tokens - cache_read_tokens - cache_write_tokens, 0.0)
+        billable_prompt_tokens = prompt_tokens
+        if cache_read_price > 0:
+            billable_prompt_tokens -= cache_read_tokens
+        if cache_write_price > 0:
+            billable_prompt_tokens -= cache_write_tokens
+        billable_prompt_tokens = max(billable_prompt_tokens, 0.0)
 
         return (
             (billable_prompt_tokens * prompt_price / 1_000_000)
