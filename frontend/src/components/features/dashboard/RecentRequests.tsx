@@ -2,6 +2,7 @@
 
 import { useId, useState } from 'react';
 import { useRecentRequests } from '@/lib/hooks';
+import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import type { RecentRequestItem } from '@/lib/api/user';
 
 const PAGE_SIZE = 20;
@@ -77,15 +78,16 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
         className="border-b border-gray-100 hover:bg-gray-50/60 cursor-pointer transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
-        <td className="whitespace-nowrap py-3 pl-4 pr-3 text-sm">
+        <td className="py-3 pl-4 pr-3 text-sm">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-gray-900">{req.model_id}</span>
+            <span className="font-medium text-gray-900 whitespace-nowrap">{req.model_id}</span>
             {req.stream && (
               <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20">
                 stream
               </span>
             )}
           </div>
+          {req.error && <InlineErrorText message={req.error} />}
         </td>
         <td className="whitespace-nowrap px-3 py-3 text-sm">
           <StatusBadge code={req.status_code} />
