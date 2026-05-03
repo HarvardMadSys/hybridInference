@@ -22,7 +22,12 @@ export const BUILTIN_VIEWS: SavedView[] = [
     id: 'anomalies',
     name: 'Anomalies',
     builtin: true,
-    filterState: { ...DEFAULT_FILTER_STATE, view: 'anomalies' },
+    filterState: {
+      ...DEFAULT_FILTER_STATE,
+      minCostToday: 1.0,
+      anomaly: true,
+      view: 'anomalies',
+    },
   },
   {
     id: 'near-quota',

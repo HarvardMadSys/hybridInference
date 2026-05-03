@@ -67,6 +67,7 @@ export interface ListUsersOptions {
   quotaState?: QuotaStateFilter;
   provider?: string;
   activeWithinHours?: number;
+  anomaly?: boolean;
 }
 
 export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersResponse> {
@@ -83,6 +84,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
   if (opts.activeWithinHours !== undefined) {
     params.set('active_within_hours', String(opts.activeWithinHours));
   }
+  if (opts.anomaly !== undefined) params.set('anomaly', String(opts.anomaly));
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);
   return jsonOrThrow<ListUsersResponse>(resp);
 }

@@ -612,6 +612,7 @@ class PostgresOperationalStore(OperationalStore):
         quota_state: Literal["near", "over", "custom", "default"] | None = None,
         provider: str | None = None,
         active_within_hours: int | None = None,
+        anomaly: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -629,6 +630,10 @@ class PostgresOperationalStore(OperationalStore):
           the last 30 days. Uses the ``provider`` column on api_logs.
         - ``active_within_hours``: ``users.last_login_at`` must be within the
           window.
+        - ``anomaly``: when ``True``, keep only users whose today's spend is
+          anomalously high vs. prior 7-day avg (today >= $1, history >= 3
+          days, today >= 5x avg). Reads ``user_daily_cost`` post-query — same
+          rule as ``get_users_summary``.
         """
         # Build WHERE clause
         where_clauses: list[str] = []
@@ -890,11 +895,72 @@ class PostgresOperationalStore(OperationalStore):
             allowed = {r["user_id"] for r in prov_rows}
             result_rows = [r for r in result_rows if r["id"] in allowed]
 
+        # Anomaly filter — same rule as get_users_summary:
+        #   today >= $1 AND days_with_history >= 3 AND today >= 5x avg_prior_7d.
+        # We pull prior-7d cost stats per remaining user_id from
+        # user_daily_cost, then drop rows that don't meet the threshold.
+        if anomaly and result_rows:
+            from datetime import datetime, timedelta, timezone
+
+            anomaly_multiplier = _Decimal("5.0")
+            anomaly_min_today = _Decimal("1.00")
+            anomaly_min_history_days = 3
+
+            today_str = datetime.now(timezone.utc).date().isoformat()
+            prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
+            prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+
+            user_ids4 = [r["id"] for r in result_rows]
+            async with self._pool.acquire() as conn4:
+                today_rows = await conn4.fetch(
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost "
+                    "FROM user_daily_cost "
+                    "WHERE day = $1 AND user_id = ANY($2::text[]) "
+                    "GROUP BY user_id",
+                    today_str,
+                    user_ids4,
+                )
+                prior_rows = await conn4.fetch(
+                    "SELECT user_id, "
+                    "       COALESCE(SUM(cost_usd), 0) AS total, "
+                    "       COUNT(DISTINCT day) AS days_with_history "
+                    "FROM user_daily_cost "
+                    "WHERE day BETWEEN $1 AND $2 AND user_id = ANY($3::text[]) "
+                    "GROUP BY user_id",
+                    prior_7d_start,
+                    prior_7d_end,
+                    user_ids4,
+                )
+
+            today_costs = {r["user_id"]: _Decimal(str(r["today_cost"] or 0)) for r in today_rows}
+            prior_stats = {
+                r["user_id"]: (
+                    _Decimal(str(r["total"] or 0)),
+                    int(r["days_with_history"] or 0),
+                )
+                for r in prior_rows
+            }
+
+            anomalous: list[Row] = []
+            for r in result_rows:
+                today = today_costs.get(r["id"], _Decimal("0"))
+                prior_total, days = prior_stats.get(r["id"], (_Decimal("0"), 0))
+                avg_7d = (prior_total / days) if days > 0 else _Decimal("0")
+                if (
+                    days >= anomaly_min_history_days
+                    and today >= anomaly_min_today
+                    and avg_7d > 0
+                    and today >= anomaly_multiplier * avg_7d
+                ):
+                    anomalous.append(r)
+            result_rows = anomalous
+
         if (
             min_cost_today is not None
             or min_cost_month is not None
             or quota_state in ("near", "over")
             or provider
+            or anomaly
         ):
             total = len(result_rows)
 

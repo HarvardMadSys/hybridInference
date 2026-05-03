@@ -9,6 +9,7 @@ export const DEFAULT_FILTER_STATE: FilterState = {
   quotaState: null,
   provider: null,
   activeWithinHours: null,
+  anomaly: null,
   view: null,
 };
 
@@ -40,6 +41,8 @@ export function filterStateFromUrl(params: URLSearchParams): FilterState {
   const status = params.get('status');
   const sortBy = params.get('sort_by');
   const quotaState = params.get('quota_state');
+  const anomalyRaw = params.get('anomaly');
+  const anomaly = anomalyRaw === 'true' ? true : anomalyRaw === 'false' ? false : null;
   return {
     status: VALID_STATUS.includes(status as UserStatus) ? (status as UserStatus) : null,
     search: params.get('q') ?? '',
@@ -51,6 +54,7 @@ export function filterStateFromUrl(params: URLSearchParams): FilterState {
       : null,
     provider: params.get('provider'),
     activeWithinHours: parseNumber(params.get('active_within_hours')),
+    anomaly,
     view: params.get('view'),
   };
 }
@@ -67,6 +71,7 @@ export function filterStateToUrl(state: FilterState): string {
   if (state.activeWithinHours !== null) {
     out.set('active_within_hours', String(state.activeWithinHours));
   }
+  if (state.anomaly !== null) out.set('anomaly', String(state.anomaly));
   if (state.view) out.set('view', state.view);
   return out.toString();
 }
@@ -91,6 +96,7 @@ export function filterStateToParams(
   if (state.activeWithinHours !== null) {
     params.set('active_within_hours', String(state.activeWithinHours));
   }
+  if (state.anomaly !== null) params.set('anomaly', String(state.anomaly));
   params.set('limit', String(pagination.limit ?? 100));
   params.set('offset', String(pagination.offset ?? 0));
   return params;

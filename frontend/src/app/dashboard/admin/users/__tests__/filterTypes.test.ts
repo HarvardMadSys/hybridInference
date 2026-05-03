@@ -16,6 +16,7 @@ describe('filterStateFromUrl / filterStateToUrl', () => {
       minCostToday: 10,
       quotaState: 'near' as const,
       provider: 'anthropic',
+      anomaly: true,
       view: null,
     };
     const url = filterStateToUrl(state);
@@ -55,6 +56,7 @@ describe('filterStateToParams', () => {
       provider: 'anthropic',
       activeWithinHours: 24,
       quotaState: 'near',
+      anomaly: true,
     });
     const obj = Object.fromEntries(params.entries());
     expect(obj).toMatchObject({
@@ -63,6 +65,7 @@ describe('filterStateToParams', () => {
       provider: 'anthropic',
       active_within_hours: '24',
       quota_state: 'near',
+      anomaly: 'true',
     });
   });
 });

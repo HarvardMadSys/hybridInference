@@ -1072,6 +1072,20 @@ async def test_list_users_quota_state_invalid_returns_422(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_list_users_anomaly_param_passes_through(admin_client):
+    """GET /admin/users?anomaly=true forwards anomaly=True to op_store.list_users."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.list_users = AsyncMock(return_value=(0, [], {}))
+
+    resp = await client.get("/admin/users?anomaly=true", headers=AUTH)
+    assert resp.status_code == 200
+
+    op_store.list_users.assert_awaited_once()
+    kwargs = op_store.list_users.await_args.kwargs
+    assert kwargs["anomaly"] is True
+
+
+@pytest.mark.asyncio
 async def test_get_users_summary_with_top_users(admin_client):
     """Summary card 'top' SummaryUserItem fields are serialized correctly."""
     client, op_store, _log_store, _log = admin_client

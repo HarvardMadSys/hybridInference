@@ -16,7 +16,7 @@ Key differences from PostgreSQL:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import OperationalStore, Row
@@ -430,6 +430,7 @@ class D1OperationalStore(OperationalStore):
         quota_state: Literal["near", "over", "custom", "default"] | None = None,
         provider: str | None = None,
         active_within_hours: int | None = None,
+        anomaly: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return (total_count, user_rows, status_counts_row).
 
@@ -438,7 +439,8 @@ class D1OperationalStore(OperationalStore):
 
         New filters mirror the postgres variant; ``provider`` is a no-op in
         D1 (api_logs lives in Postgres) — callers running on D1 should not
-        pass ``provider``.
+        pass ``provider``. ``anomaly`` filters using ``user_daily_cost`` which
+        D1 keeps locally (same rule as ``get_users_summary``).
         """
         where_clauses: list[str] = []
         params: list[Any] = []
@@ -611,10 +613,69 @@ class D1OperationalStore(OperationalStore):
                 provider,
             )
 
+        # Anomaly filter — same rule as get_users_summary:
+        #   today >= $1 AND days_with_history >= 3 AND today >= 5x avg_prior_7d.
+        # ``user_daily_cost`` lives in D1 so we can compute this locally.
+        if anomaly and result_rows:
+            from decimal import Decimal as _Decimal
+
+            anomaly_multiplier = _Decimal("5.0")
+            anomaly_min_today = _Decimal("1.00")
+            anomaly_min_history_days = 3
+
+            today = datetime.now(timezone.utc).date().isoformat()
+            prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
+            prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+
+            user_ids_a = [r["id"] for r in result_rows]
+            placeholders_a = ",".join(["?"] * len(user_ids_a))
+
+            today_result = await self._d1.query(
+                f"SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost "
+                f"FROM user_daily_cost WHERE day = ? AND user_id IN ({placeholders_a}) "
+                f"GROUP BY user_id",
+                [today, *user_ids_a],
+            )
+            today_costs = {
+                r["user_id"]: _Decimal(str(r["today_cost"] or 0)) for r in today_result.rows
+            }
+
+            prior_result = await self._d1.query(
+                f"SELECT user_id, "
+                f"       COALESCE(SUM(cost_usd), 0) AS total, "
+                f"       COUNT(DISTINCT day) AS days_with_history "
+                f"FROM user_daily_cost "
+                f"WHERE day BETWEEN ? AND ? AND user_id IN ({placeholders_a}) "
+                f"GROUP BY user_id",
+                [prior_7d_start, prior_7d_end, *user_ids_a],
+            )
+            prior_stats = {
+                r["user_id"]: (
+                    _Decimal(str(r["total"] or 0)),
+                    int(r["days_with_history"] or 0),
+                )
+                for r in prior_result.rows
+            }
+
+            anomalous: list[Row] = []
+            for r in result_rows:
+                t = today_costs.get(r["id"], _Decimal("0"))
+                prior_total, days = prior_stats.get(r["id"], (_Decimal("0"), 0))
+                avg_7d = (prior_total / days) if days > 0 else _Decimal("0")
+                if (
+                    days >= anomaly_min_history_days
+                    and t >= anomaly_min_today
+                    and avg_7d > 0
+                    and t >= anomaly_multiplier * avg_7d
+                ):
+                    anomalous.append(r)
+            result_rows = anomalous
+
         if (
             min_cost_today is not None
             or min_cost_month is not None
             or quota_state in ("near", "over")
+            or anomaly
         ):
             total = len(result_rows)
 

@@ -68,6 +68,7 @@ export interface FilterState {
   quotaState: QuotaStateFilter | null;
   provider: string | null;
   activeWithinHours: number | null;
+  anomaly: boolean | null;
   view: string | null; // built-in or saved-view id
 }
 

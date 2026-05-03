@@ -352,6 +352,7 @@ class CachedOperationalStore(OperationalStore):
         quota_state: Literal["near", "over", "custom", "default"] | None = None,
         provider: str | None = None,
         active_within_hours: int | None = None,
+        anomaly: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Delegate to wrapped store."""
         return await self._store.list_users(
@@ -365,6 +366,7 @@ class CachedOperationalStore(OperationalStore):
             quota_state=quota_state,
             provider=provider,
             active_within_hours=active_within_hours,
+            anomaly=anomaly,
         )
 
     async def update_key_last_used(self, key_id: int) -> None:

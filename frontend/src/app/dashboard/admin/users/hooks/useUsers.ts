@@ -21,6 +21,7 @@ export function useUsers(state: FilterState, limit = 100, offset = 0) {
         quotaState: state.quotaState ?? undefined,
         provider: state.provider ?? undefined,
         activeWithinHours: state.activeWithinHours ?? undefined,
+        anomaly: state.anomaly ?? undefined,
       }),
     staleTime: THIRTY_S,
   });

@@ -62,6 +62,7 @@ async def list_users(
     quota_state: Literal["near", "over", "custom", "default"] | None = None,
     provider: str | None = None,
     active_within_hours: int | None = None,
+    anomaly: bool | None = None,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ListUsersResponse:
@@ -80,6 +81,9 @@ async def list_users(
     - provider: keep only users who hit ``provider`` in api_logs in the last
       30 days (Postgres-only — D1 deployments ignore this).
     - active_within_hours: ``last_login_at`` must be within the window.
+    - anomaly: when ``true``, keep only users whose today's spend is
+      anomalously high vs. their prior 7-day average (today >= $1, history
+      >= 3 days, today >= 5x avg).
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -97,6 +101,7 @@ async def list_users(
         quota_state=quota_state,
         provider=provider,
         active_within_hours=active_within_hours,
+        anomaly=anomaly,
     )
 
     status_counts = StatusCounts(
