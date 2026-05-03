@@ -70,8 +70,12 @@ async def test_create_api_key_success(admin_client, monkeypatch):
     op_store.check_active_key_exists.return_value = False
     op_store.create_key.return_value = {"id": 1, "created_at": created_at}
 
-    monkeypatch.setattr("serving.servers.routers.admin.api_keys.generate_api_key", lambda: "hyi-fixed-key")
-    monkeypatch.setattr("serving.servers.routers.admin.api_keys.hash_api_key", lambda _: "hashed-key")
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.api_keys.generate_api_key", lambda: "hyi-fixed-key"
+    )
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.api_keys.hash_api_key", lambda _: "hashed-key"
+    )
 
     response = await client.post(
         "/admin/api-keys",
@@ -263,7 +267,9 @@ async def test_revoke_api_key_hard_delete(admin_client):
 async def test_regenerate_api_key_success(admin_client, monkeypatch):
     client, op_store, _log_store, log_action = admin_client
     op_store.regenerate_key.return_value = "hyi-old"
-    monkeypatch.setattr("serving.servers.routers.admin.api_keys.generate_api_key", lambda: "hyi-new-key")
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.api_keys.generate_api_key", lambda: "hyi-new-key"
+    )
     monkeypatch.setattr("serving.servers.routers.admin.api_keys.hash_api_key", lambda _: "new-hash")
 
     response = await client.post(

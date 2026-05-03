@@ -226,7 +226,9 @@ async def test_create_inserts_broadcast_and_snapshots_recipients(admin_client, m
     def _fake_schedule(broadcast_id, run_at):
         sched_calls.append((broadcast_id, run_at))
 
-    monkeypatch.setattr("serving.servers.routers.admin.broadcast.schedule_broadcast", _fake_schedule)
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.broadcast.schedule_broadcast", _fake_schedule
+    )
 
     resp = await client.post(
         "/admin/broadcast-email",
@@ -314,7 +316,9 @@ async def test_cancel_returns_409_when_not_scheduled(admin_client, monkeypatch):
     client, conn, _log = admin_client
     conn.fetchrow.return_value = {"status": "sent"}
 
-    monkeypatch.setattr("serving.servers.routers.admin.broadcast.cancel_broadcast_job", lambda _bid: None)
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.broadcast.cancel_broadcast_job", lambda _bid: None
+    )
 
     resp = await client.delete(
         "/admin/broadcast-email/some-id",
