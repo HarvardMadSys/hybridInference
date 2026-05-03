@@ -2,7 +2,7 @@
 
 This guide explains how to add support for new LLM models and providers to the hybridInference gateway while keeping full OpenRouter/OpenAI API compatibility.
 
-Reference PR for provider integration example: https://github.com/HarvardSys/hybridInference/pull/34
+Reference PR for provider integration example: https://github.com/HarvardMadSys/hybridInference/pull/34
 
 ## Overview
 
@@ -261,16 +261,40 @@ from serving.adapters import (
 )
 ```
 
-Add a branch in the `_make_adapter` function:
+Wire the new kind into `_make_adapter`. There are two patterns, depending on the protocol:
+
+**A) OpenAI-compatible providers (preferred when possible).** Most new providers expose an OpenAI-style `/chat/completions` endpoint. In that case do NOT add a custom adapter class — instead, register a `provider_profile` and add the `kind` to the OpenAI-compat dispatch tuple. Example for a hypothetical "your_provider":
+
 ```python
-def _make_adapter(kind: str, cfg: dict[str, Any]):
-    """Construct a provider adapter from a kind string and model config."""
-    model_cfg = ModelConfig(**cfg)
-    # ... existing conditions
-    if kind == "your_provider":
-        return YourProviderAdapter(model_cfg)
-    raise ValueError(f"Unknown adapter kind: {kind}")
+elif kind == "your_provider":
+    cfg = {**cfg, "provider_profile": "your_provider"}
+
+# ...further down in the same function:
+if kind in (
+    "vllm",
+    "sglang",
+    "chutes",
+    "featherless",
+    "ollama",
+    "openai_compat",
+    "deepseek",
+    "zhipu",
+    "minimax",
+    "your_provider",  # <-- add it here
+):
+    return OpenAICompatAdapter(model_cfg)
 ```
+
+This is how `deepseek`, `zhipu`, and `minimax` are integrated today: a per-provider profile in `serving/adapters/profiles.py` carries any usage-metric or path quirks, and `OpenAICompatAdapter` does the rest.
+
+**B) Genuinely custom protocols.** If the provider speaks a non-OpenAI wire format (e.g., Gemini's `generateContent`, the Anthropic Messages API, Codex/Claude OAuth subscriptions, OpenRouter's provider-pinning header), add a dedicated adapter class and a dispatch branch:
+
+```python
+if kind == "your_provider":
+    return YourProviderAdapter(model_cfg)
+```
+
+`gemini`, `claude`, `anthropic`, `claude_sub`, `codex_sub`, and `openrouter` all follow this pattern.
 
 ### Step 3: Add Model Configuration
 
@@ -400,13 +424,15 @@ The `kind` field in each route entry selects the backend adapter. All kinds mark
 | `vllm` | OpenAI-compat | Local vLLM inference server |
 | `sglang` | OpenAI-compat | Local SGLang inference server |
 | `ollama` | OpenAI-compat | Local or remote Ollama server |
-| `deepseek` | OpenAI-compat | DeepSeek API (applies DeepSeek usage profile) |
-| `openai` | OpenAI-compat | Azure OpenAI (applies `api-key` header auth) |
-| `zhipu` | OpenAI-compat | Zhipu / Z.AI API (uses non-`/v1` chat path) |
 | `chutes` | OpenAI-compat | Chutes.ai hosted inference |
 | `featherless` | OpenAI-compat | Featherless.ai hosted inference |
+| `deepseek` | OpenAI-compat | DeepSeek API (applies DeepSeek usage profile) |
+| `zhipu` | OpenAI-compat | Zhipu / Z.AI API (uses non-`/v1` chat path) |
+| `minimax` | OpenAI-compat | MiniMax API (applies MiniMax usage profile) |
+| `openrouter` | Custom | OpenRouter aggregator. Use the bracket form `openrouter[<slug>]` (e.g. `openrouter[deepinfra]`) to pin a sub-provider. |
 | `gemini` | Custom | Google Gemini API (message format translation) |
 | `claude` | Custom | Anthropic Claude API (direct API key, not subscription) |
+| `anthropic` | Custom | Generic Anthropic Messages API client |
 | `claude_sub` | Subscription | Claude via OAuth account pool — see §5 of configuration.md |
 | `codex_sub` | Subscription | Codex CLI via OAuth account pool — see §5 of configuration.md |
 
@@ -525,13 +551,13 @@ if params.get("response_format", {}).get("type") == "json_object":
 
 ### Rate Limiting (Optional)
 
-If the provider has known token policies and you want server-side fairness controls, add a limiter configuration in `serving/servers/bootstrap.py` alongside existing examples (Gemini/DeepSeek/Zhipu). This enables per-model queues, burst control, and persistent counters.
+`serving/servers/bootstrap.py` does not currently configure per-provider rate limiters; the only in-process limiter wired there is `UserConcurrencyLimiter`. Static limits live in `serving/config/settings.py` (see the `signup_rate_limit_*` and `login_rate_limit_*` fields). If you need a per-provider token-bucket or quota, add it to `serving/admin/provider_quotas.py` (or a new module) and surface it through `serving/servers/deps.py`.
 
 ## Examples
 
 ### Example 1: OpenAI-Compatible Provider
 
-See `serving/adapters/deepseek.py` for a simple OpenAI-compatible implementation.
+DeepSeek does not have its own adapter file. It is wired through `OpenAICompatAdapter` by setting `provider_profile = "deepseek"` in `serving/servers/registry.py:_make_adapter`; the profile itself lives in `serving/adapters/profiles.py`. Follow that pattern for any new OpenAI-compatible provider.
 
 ### Example 2: Custom API Format
 
@@ -539,7 +565,7 @@ See `serving/adapters/gemini.py` for handling non-standard API formats with mess
 
 ### Example 3: Local Deployment
 
-See `serving/adapters/vllm.py` for integrating local inference servers.
+Local vLLM and SGLang servers reuse `serving/adapters/openai_compat.py` (`OpenAICompatAdapter`). The `vllm` and `sglang` kinds just dispatch to the same class — local-vs-remote routing is handled by `base_url` and the `RoutingManager`, not by a dedicated adapter file.
 
 ## Troubleshooting
 

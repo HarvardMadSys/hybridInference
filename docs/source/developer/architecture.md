@@ -123,7 +123,7 @@ Both share `AccountPool` (from `codex_token.py`) for health-aware rotation. Each
 
 For Claude, the account pool is shared process-wide between:
 - `ClaudeSubscriptionAdapter` (OpenAI-compatible `/v1/chat/completions`)
-- `anthropic_proxy.py` (`POST /anthropic/v1/messages`)
+- `serving/servers/routers/anthropic_messages.py` (`POST /anthropic/v1/messages`)
 
 This shared singleton keeps cooldown and revoke state consistent across both surfaces.
 

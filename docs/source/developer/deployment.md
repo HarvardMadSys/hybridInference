@@ -20,7 +20,9 @@ curl http://localhost:8080/health
 ```
 
 This starts 5 containers: backend (FastAPI), frontend (Next.js), PostgreSQL,
-Alertmanager, and alert-logger. All ports bind to `127.0.0.1` only.
+Alertmanager, and alert-logger. Backend, PostgreSQL, Alertmanager, and pgAdmin
+bind to `127.0.0.1` by default; the frontend binds to `0.0.0.0` (override with
+the `FRONTEND_HOST` env var) so it can be reached by Nginx on the host.
 
 ## Prerequisites
 
