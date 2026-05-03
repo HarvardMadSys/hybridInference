@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
-from serving.adapters import ClaudeSubscriptionAdapter, CodexSubscriptionAdapter
 from serving.config.settings import USER_CONCURRENCY_LIMITS, get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
@@ -82,35 +81,6 @@ def _init_db_logger() -> DatabaseLogger | None:
         return None
 
 
-def _warn_missing_subscription_files(router: RouteExecutor) -> None:
-    """Warn at startup if subscription adapters are configured but accounts files are missing."""
-    needs_codex = False
-    needs_claude = False
-
-    for route in router.routes.values():
-        for adapter, _ in route.adapters:
-            if isinstance(adapter, CodexSubscriptionAdapter):
-                needs_codex = True
-            elif isinstance(adapter, ClaudeSubscriptionAdapter):
-                needs_claude = True
-
-    if not needs_codex and not needs_claude:
-        return
-
-    settings = get_settings()
-
-    if needs_codex and not Path(settings.codex_accounts_file).exists():
-        logger.warning(
-            f"codex_sub route configured but accounts file not found: "
-            f"{settings.codex_accounts_file} — requests will fail until credentials are imported"
-        )
-    if needs_claude and not Path(settings.claude_sub_accounts_file).exists():
-        logger.warning(
-            f"claude_sub route configured but accounts file not found: "
-            f"{settings.claude_sub_accounts_file} — requests will fail until credentials are imported"
-        )
-
-
 async def _init_router_and_models(
     router: RouteExecutor,
 ) -> tuple[dict, list[ModelRegistrationInfo]]:
@@ -146,7 +116,6 @@ async def _init_router_and_models(
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
 
-    _warn_missing_subscription_files(router)
     return embedding_adapters, model_infos
 
 

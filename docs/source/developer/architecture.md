@@ -33,8 +33,7 @@ HybridInference is designed as a modular, high-performance inference gateway.
 │ │ (DeepSeek, Zhipu,      │ │
 │ │  Chutes, Featherless)  │ │
 │ │ Gemini API             │ │
-│ │ Claude Sub (OAuth)     │ │
-│ │ Codex Sub (OAuth)      │ │
+│ │ Anthropic API          │ │
 │ └────────────────────────┘ │
 └───────────────────────┘
 ```
@@ -88,57 +87,6 @@ Deployment and observability:
 
 - Docker Compose service definitions and Dockerfiles
 - Alertmanager and alert logger
-
-### Subscription Adapters
-
-Some providers are accessed through **OAuth subscription accounts** rather than static API keys. These adapters have a layered credential architecture:
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│               Subscription Adapter (e.g. claude_sub)         │
-│   ┌────────────────────┐  ┌────────────────────────────┐    │
-│   │   AccountPool       │  │  CredentialProvider         │    │
-│   │   (codex_token.py)  │  │  (claude_token.py)          │    │
-│   │                     │  │                             │    │
-│   │  Health-aware       │  │  OAuth token lifecycle:     │    │
-│   │  round-robin        │  │  - refresh before expiry    │    │
-│   │  rotation           │  │  - invalid_grant detection  │    │
-│   │                     │  │  - state persistence (JSON) │    │
-│   │  deactivate/activate│  │  - transition_state()       │    │
-│   └────────────────────┘  └────────────────────────────┘    │
-│                                                              │
-│   Account states: active → cooldown → revoked/disabled       │
-│   Fallback: optional paid API key when all accounts down     │
-└──────────────────────────────────────────────────────────────┘
-```
-
-Two subscription adapters currently exist:
-
-| Adapter | Provider | Protocol | Credential File |
-|---|---|---|---|
-| `ClaudeSubscriptionAdapter` | Anthropic (Claude Code OAuth) | Messages API | `var/data/claude_accounts.json` |
-| `CodexSubscriptionAdapter` | OpenAI (Codex CLI OAuth) | Responses API | `var/data/codex_accounts.json` |
-
-Both share `AccountPool` (from `codex_token.py`) for health-aware rotation. Each has its own `CredentialProvider` for provider-specific OAuth endpoints.
-
-For Claude, the account pool is shared process-wide between:
-- `ClaudeSubscriptionAdapter` (OpenAI-compatible `/v1/chat/completions`)
-- `serving/servers/routers/anthropic_messages.py` (`POST /anthropic/v1/messages`)
-
-This shared singleton keeps cooldown and revoke state consistent across both surfaces.
-
-### Northbound API Surfaces
-
-The gateway currently exposes more than one client-facing protocol surface:
-
-| Surface | Endpoint | Typical clients | Notes |
-|---|---|---|---|
-| OpenAI-compatible Chat Completions | `POST /v1/chat/completions` | SDKs, OpenAI-compatible tools | Primary public surface |
-| Anthropic-compatible Messages | `POST /anthropic/v1/messages` | Claude Code CLI | Only models routed through `provider: claude_sub` are eligible |
-
-The Anthropic surface is an **identity surface translator**: the client-facing and upstream protocols are both Anthropic Messages API, so the route mainly performs auth, model resolution, credential injection, and usage logging.
-
-For account lifecycle and credential management details, see [Configuration Guide](configuration.md) §5.
 
 ## Key Design Principles
 

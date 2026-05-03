@@ -676,7 +676,7 @@ class FixedRouter(BaseRouter):
                     operation="chat_completion",
                 ).observe(time.perf_counter() - started)
                 self._on_success(endpoint_id)
-            # Preserve adapter-set _routing (e.g. codex_sub fallback overrides);
+            # Preserve adapter-set _routing if present;
             # only set default routing if the adapter didn't provide one.
             if "_routing" not in resp:
                 resp["_routing"] = {

@@ -62,7 +62,7 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
 
-    # Reasoning effort (for Codex models: "low", "medium", "high")
+    # Reasoning effort: "low", "medium", "high"
     reasoning_effort: str | None = None
 
     # Reasoning / thinking control (Zhipu GLM-4.7/GLM-5, MiniMax M2.5)

@@ -23,14 +23,6 @@ function makeModel(overrides: Partial<ModelCatalogItem> = {}): ModelCatalogItem 
 }
 
 describe('isDashboardModelVisible', () => {
-  it('hides codex_sub even when showInternalModels=true', () => {
-    expect(isDashboardModelVisible(makeModel({ owned_by: 'codex_sub' }), true)).toBe(false);
-  });
-
-  it('hides claude_sub even when showInternalModels=true', () => {
-    expect(isDashboardModelVisible(makeModel({ owned_by: 'claude_sub' }), true)).toBe(false);
-  });
-
   it('with showInternalModels=false, hides Anthropic-owned models case-insensitively', () => {
     expect(isDashboardModelVisible(makeModel({ owned_by: 'Anthropic' }), false)).toBe(false);
   });

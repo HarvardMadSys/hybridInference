@@ -12,8 +12,8 @@ Why not in-flight pinning?
 - The handler's synchronous checks (e.g. `model not in router_exec.routes`)
   fire before any awaitable, so an AttributeError on a stub router
   releases the concurrency slot before the second request can race.
-- The anthropic proxy resolves the model via router_exec.routes, looking
-  for a claude_sub adapter, which a stub router cannot supply cleanly.
+- The anthropic messages router resolves the model via router_exec.routes,
+  which a stub router cannot supply cleanly.
 
 Pre-acquire is sufficient to verify wiring: the dependency runs before
 the handler body, so a pre-filled slot → 429 if and only if the dep is

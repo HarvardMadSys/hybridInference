@@ -16,8 +16,6 @@ There is a single guide for both needs. Depending on your case, follow one of:
 
 If the provider is already supported, you only need to add configuration.
 
-> **Subscription providers** (Claude, Codex) use OAuth account pools instead of API keys. See `developer/configuration.md`, section `Subscription Adapters (Claude / Codex)`, for setup instructions. The rest of this guide covers API-key-based providers.
-
 1. **Add model configuration** in `config/models.yaml`:
 
 ```yaml
@@ -285,14 +283,14 @@ if kind in (
 
 This is how `deepseek`, `zhipu`, and `minimax` are integrated today: a per-provider profile in `serving/adapters/profiles.py` carries any usage-metric or path quirks, and `OpenAICompatAdapter` does the rest.
 
-**B) Genuinely custom protocols.** If the provider speaks a non-OpenAI wire format (e.g., Gemini's `generateContent`, the Anthropic Messages API, Codex/Claude OAuth subscriptions, OpenRouter's provider-pinning header), add a dedicated adapter class and a dispatch branch:
+**B) Genuinely custom protocols.** If the provider speaks a non-OpenAI wire format (e.g., Gemini's `generateContent`, the Anthropic Messages API, OpenRouter's provider-pinning header), add a dedicated adapter class and a dispatch branch:
 
 ```python
 if kind == "your_provider":
     return YourProviderAdapter(model_cfg)
 ```
 
-`gemini`, `claude`, `anthropic`, `claude_sub`, `codex_sub`, and `openrouter` all follow this pattern.
+`gemini`, `claude`, `anthropic`, and `openrouter` all follow this pattern.
 
 ### Step 3: Add Model Configuration
 
@@ -431,8 +429,6 @@ The `kind` field in each route entry selects the backend adapter. All kinds mark
 | `gemini` | Custom | Google Gemini API (message format translation) |
 | `claude` | Custom | Anthropic Claude API (direct API key, not subscription) |
 | `anthropic` | Custom | Generic Anthropic Messages API client |
-| `claude_sub` | Subscription | Claude via OAuth account pool — see §5 of configuration.md |
-| `codex_sub` | Subscription | Codex CLI via OAuth account pool — see §5 of configuration.md |
 
 ### Hybrid Routing
 

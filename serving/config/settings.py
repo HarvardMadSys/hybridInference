@@ -97,20 +97,6 @@ class Settings(BaseSettings):
     qdrant_base_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
 
-    # Codex subscription
-    codex_accounts_file: str = "var/data/codex_accounts.json"
-    codex_fallback_api_key: str = ""
-    codex_token_refresh_margin: int = 30
-    codex_account_cooldown: int = 60
-    codex_failure_threshold: int = 3
-
-    # Claude subscription
-    claude_sub_accounts_file: str = "var/data/claude_accounts.json"
-    claude_sub_fallback_api_key: str = ""
-    claude_sub_token_refresh_margin: int = 300  # 5 min (tokens last ~1 hour)
-    claude_sub_account_cooldown: int = 60
-    claude_sub_failure_threshold: int = 3
-
     # Provider quota cookies (admin dashboard "Providers" tab)
     # Pasted from browser DevTools after logging into the provider's web dashboard.
     # Re-paste when the cookie expires.

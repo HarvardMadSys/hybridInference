@@ -1,5 +1,5 @@
 .PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
-       docker-volumes sync-subscriptions up down restart ps logs build
+       docker-volumes up down restart ps logs build
 
 # Default target
 .DEFAULT_GOAL := help
@@ -144,26 +144,7 @@ docker-volumes:  ## Create external Docker volumes required by production compos
 		fi; \
 	done
 
-sync-subscriptions:  ## Import CLI OAuth credentials for subscription adapters
-	@mkdir -p var/data
-	@test -w var/data || { echo "$(YELLOW)var/data is not writable. Fix with: sudo chown -R $$(id -u):$$(id -g) var/data$(RESET)"; exit 1; }
-	@echo "$(YELLOW)Syncing subscription credentials...$(RESET)"
-	@if [ -f "$$HOME/.codex/auth.json" ]; then \
-		$(UV_RUN) python scripts/import_codex_auth.py \
-			&& echo "$(GREEN)  codex: imported$(RESET)" \
-			|| echo "$(YELLOW)  codex: import FAILED (see error above)$(RESET)"; \
-	else \
-		echo "  codex: skipped (~/.codex/auth.json not found; run codex --login)"; \
-	fi
-	@if [ -f "$$HOME/.claude/.credentials.json" ] || [ -f "$$HOME/.claude/credentials.json" ] || [ -f "$$HOME/.claude/auth.json" ]; then \
-		$(UV_RUN) python scripts/import_claude_auth.py \
-			&& echo "$(GREEN)  claude: imported$(RESET)" \
-			|| echo "$(YELLOW)  claude: import FAILED (see error above)$(RESET)"; \
-	else \
-		echo "  claude: skipped (~/.claude/ credentials not found; run claude login)"; \
-	fi
-
-up: docker-volumes sync-subscriptions  ## Start all services
+up: docker-volumes  ## Start all services
 	$(COMPOSE) up -d
 
 down:  ## Stop all services
