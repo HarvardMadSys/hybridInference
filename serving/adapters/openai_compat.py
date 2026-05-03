@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 
+from serving.config.settings import get_settings
 from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
@@ -437,7 +439,8 @@ class OpenAICompatAdapter(BaseAdapter):
         # Make request
         url = self._build_url()
         logger.debug(f"[OpenAICompat] POST {url} model={payload.get('model', '<omitted>')}")
-        logger.debug(f"[OpenAICompat] Payload: {payload}")
+        if get_settings().log_full_payload:
+            logger.debug(f"[OpenAICompat] Payload: {payload}")
 
         response = await self._post_with_pool(url, payload)
 
@@ -771,7 +774,7 @@ class OpenAICompatAdapter(BaseAdapter):
             routing["upstream_cost_usd"] = usage_info.upstream_cost_usd
 
         chunk = {
-            "id": f"chatcmpl-{int(time.time() * 1000)}",
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": self.config.id,

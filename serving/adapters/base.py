@@ -1,6 +1,7 @@
 """Base adapter interface and shared utilities for LLM providers."""
 
 import time
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -243,7 +244,7 @@ class BaseAdapter(ABC):
     ) -> dict[str, Any]:
         """Format provider response into OpenAI-compatible schema."""
         response = {
-            "id": f"chatcmpl-{int(time.time() * 1000)}",
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
             "object": "chat.completion",
             "created": int(time.time()),
             "model": model,
@@ -288,7 +289,7 @@ class BaseAdapter(ABC):
         import json
 
         chunk = {
-            "id": f"chatcmpl-{int(time.time() * 1000)}",
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": model,

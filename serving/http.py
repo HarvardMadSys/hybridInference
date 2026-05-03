@@ -40,7 +40,7 @@ class AsyncHTTPClient:
         if self._session is None or self._session.closed:
             # Set a conservative default timeout; callers can override per request.
             timeout = aiohttp.ClientTimeout(total=60)
-            connector = aiohttp.TCPConnector(limit=0)
+            connector = aiohttp.TCPConnector(limit=200, limit_per_host=50)
             self._session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=connector,
