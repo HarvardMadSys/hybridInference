@@ -11,15 +11,6 @@ scenarios:
     max_tokens: 256
     repetitions: 1
 
-  - id: forced_tool_codex_stream
-    type: forced_tool_call
-    tools_fixture: tools-codex-3.yaml
-    forced_tool_name: execute_shell
-    user_prompt: "Execute a shell command to list the files in the current directory."
-    required_capabilities: [chat, streaming, tools]
-    max_tokens: 512
-    repetitions: 1
-
   - id: forced_tool_claude_code_stream
     type: forced_tool_call
     tools_fixture: tools-claude-code-6.yaml
@@ -48,15 +39,6 @@ scenarios:
     max_tokens: 256
     repetitions: 1
 
-  - id: forced_tool_codex_nonstream
-    type: forced_tool_call_nonstream
-    tools_fixture: tools-codex-3.yaml
-    forced_tool_name: execute_shell
-    user_prompt: "Execute a shell command to list the files in the current directory."
-    required_capabilities: [chat, tools]
-    max_tokens: 512
-    repetitions: 1
-
   - id: forced_tool_claude_code_nonstream
     type: forced_tool_call_nonstream
     tools_fixture: tools-claude-code-6.yaml
@@ -68,14 +50,6 @@ scenarios:
 
   # ── Auto tool call (streaming) ───────────────────────────────────────
 
-  - id: auto_tool_codex_stream
-    type: auto_tool_call
-    tools_fixture: tools-codex-3.yaml
-    user_prompt: "Read the file at /etc/hostname and tell me the hostname."
-    required_capabilities: [chat, streaming, tools]
-    max_tokens: 512
-    repetitions: 1
-
   - id: auto_tool_claude_code_stream
     type: auto_tool_call
     tools_fixture: tools-claude-code-6.yaml
@@ -85,15 +59,6 @@ scenarios:
     repetitions: 1
 
   # ── Multi-turn tool call (streaming) ─────────────────────────────────
-
-  - id: multi_turn_codex_stream
-    type: multi_turn_tool
-    tools_fixture: tools-codex-3.yaml
-    forced_tool_name: execute_shell
-    user_prompt: "Execute a shell command to check disk usage."
-    required_capabilities: [chat, streaming, tools]
-    max_tokens: 512
-    repetitions: 1
 
   - id: multi_turn_claude_code_stream
     type: multi_turn_tool
