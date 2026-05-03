@@ -725,12 +725,12 @@ async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
 
 @pytest.mark.asyncio
 async def test_streaming_logs_prompt_and_cache_separate_tokens(anthropic_test_client, monkeypatch):
-    """Streaming path must persist the request prompt. ``prompt_tokens`` follows
-    OpenAI semantics — it includes the cached subset (input + cache_read +
-    cache_write). The cached subset is *also* stored separately in
-    cache_read_tokens / cache_write_tokens; calculate_cost subtracts those
-    before applying prompt_price so cache is not double-billed. Response stays
-    None on streaming (matches the OpenAI streaming logging contract)."""
+    """Streaming path must persist the request prompt and accumulated response.
+    ``prompt_tokens`` follows OpenAI semantics — it includes the cached subset
+    (input + cache_read + cache_write). The cached subset is *also* stored
+    separately in cache_read_tokens / cache_write_tokens; calculate_cost
+    subtracts those before applying prompt_price so cache is not
+    double-billed."""
     upstream_sse = (
         b"event: message_start\n"
         b'data: {"type":"message_start","message":{"id":"msg_s","model":"claude-opus-4-7",'
@@ -793,7 +793,12 @@ async def test_streaming_logs_prompt_and_cache_separate_tokens(anthropic_test_cl
     await __import__("asyncio").wait_for(captured_event.wait(), timeout=2.0)
 
     assert captured["prompt"] == messages
-    assert captured["response"] is None
+    resp = captured["response"]
+    assert resp is not None
+    assert resp["id"] == "msg_s"
+    assert resp["role"] == "assistant"
+    assert resp["stop_reason"] == "end_turn"
+    assert resp["content"] == [{"type": "text", "text": "hi"}]
     usage = captured["usage"]
     # prompt_tokens = input_tokens + cache_read + cache_write (OpenAI semantic)
     assert usage["prompt_tokens"] == 4 + 20 + 10
