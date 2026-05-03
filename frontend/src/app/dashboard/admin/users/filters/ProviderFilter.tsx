@@ -1,6 +1,6 @@
 'use client';
 
-const OPTIONS = ['', 'anthropic', 'openai', 'gemini', 'mistral', 'openrouter'];
+const OPTIONS = ['', 'anthropic', 'codex_sub', 'minimax', 'ollama', 'zhipu'];
 
 interface Props {
   value: string | null;
