@@ -1,7 +1,9 @@
 """User dashboard routes for API key management and usage statistics."""
 
+import asyncio
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -57,6 +59,53 @@ router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
 QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
+
+# In-process TTL cache for the per-user ``api_logs`` row count powering
+# ``/user/recent-requests``. The dashboard polls every 60s and the COUNT(*)
+# scales with history size, so caching it per (user, model) keeps the hot
+# path to just the paginated SELECT. Mirrors serving/auth/signup_policy.py.
+_RECENT_REQUESTS_COUNT_TTL_SECONDS: float = 60.0
+_RECENT_REQUESTS_COUNT_CACHE: dict[tuple[str, str | None], tuple[float, int]] = {}
+_RECENT_REQUESTS_COUNT_LOCK = asyncio.Lock()
+
+
+async def _get_cached_user_request_count(conn: Any, user_id: str, model_id: str | None) -> int:
+    """Return the cached or freshly-queried ``api_logs`` row count for *user_id*.
+
+    Cached for ``_RECENT_REQUESTS_COUNT_TTL_SECONDS`` to keep heavy-history
+    users from paying a full COUNT(*) on every 60s dashboard poll.
+    """
+    key = (user_id, model_id)
+    now = time.monotonic()
+    cached = _RECENT_REQUESTS_COUNT_CACHE.get(key)
+    if cached is not None and (now - cached[0]) < _RECENT_REQUESTS_COUNT_TTL_SECONDS:
+        return cached[1]
+
+    async with _RECENT_REQUESTS_COUNT_LOCK:
+        # Re-check after acquiring the lock to coalesce concurrent callers.
+        cached = _RECENT_REQUESTS_COUNT_CACHE.get(key)
+        now = time.monotonic()
+        if cached is not None and (now - cached[0]) < _RECENT_REQUESTS_COUNT_TTL_SECONDS:
+            return cached[1]
+
+        where_clauses = ["user_id = $1"]
+        params: list[Any] = [user_id]
+        if model_id:
+            params.append(model_id)
+            where_clauses.append(f"model_id = ${len(params)}")
+        where_sql = " AND ".join(where_clauses)
+
+        count_row = await conn.fetchrow(
+            f"""
+            SELECT COUNT(*) as total
+            FROM api_logs
+            WHERE {where_sql}
+            """,
+            *params,
+        )
+        total = int(count_row["total"] or 0) if count_row else 0
+        _RECENT_REQUESTS_COUNT_CACHE[key] = (time.monotonic(), total)
+        return total
 
 
 def _get_daily_quota_reset_at() -> datetime:
@@ -756,16 +805,8 @@ async def get_recent_requests(
             offset_idx = len(params) + 2
             page_params = [*params, limit, offset]
 
-            # Get total count
-            count_row = await conn.fetchrow(
-                f"""
-                SELECT COUNT(*) as total
-                FROM api_logs
-                WHERE {where_sql}
-                """,
-                *params,
-            )
-            total = int(count_row["total"] or 0) if count_row else 0
+            # Cached COUNT(*) — see ``_get_cached_user_request_count``.
+            total = await _get_cached_user_request_count(conn, current_user["user_id"], model_id)
 
             # Get paginated recent requests
             rows = await conn.fetch(
