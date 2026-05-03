@@ -41,6 +41,7 @@ from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
 router = APIRouter()
+_background_tasks: set = set()
 
 
 def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
@@ -66,7 +67,9 @@ def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) 
 
     # Fire-and-forget background task for non-blocking DB logging
     # We intentionally don't store the reference as we don't need to await it
-    asyncio.create_task(log_to_db_background())  # noqa: RUF006
+    _task = asyncio.create_task(log_to_db_background())
+    _background_tasks.add(_task)
+    _task.add_done_callback(_background_tasks.discard)
 
 
 def _schedule_cost_increment(
@@ -92,7 +95,9 @@ def _schedule_cost_increment(
         except Exception as exc:
             logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
 
-    asyncio.create_task(_increment())  # noqa: RUF006
+    _task = asyncio.create_task(_increment())
+    _background_tasks.add(_task)
+    _task.add_done_callback(_background_tasks.discard)
 
 
 def _record_routing_observation(

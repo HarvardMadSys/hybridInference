@@ -63,7 +63,7 @@ def _init_db_logger() -> DatabaseLogger | None:
             "user": settings.db_user,
             "password": settings.db_password,
         }
-        logger.info(
+        logger.debug(
             f"Initializing PostgreSQL logger: "
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )

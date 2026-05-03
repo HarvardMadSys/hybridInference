@@ -155,7 +155,7 @@ async def signup(
     # Check if email already exists
     existing_user = await op_store.get_user_by_email(body.email)
     if existing_user:
-        raise HTTPException(status_code=409, detail=f"Email {body.email} already registered")
+        raise HTTPException(status_code=409, detail="Registration failed. Please try again.")
 
     # Determine initial status from the admin-editable signup domain
     # allowlist (replaces the legacy SIGNUP_REQUIRE_APPROVAL env var).
