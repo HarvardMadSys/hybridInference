@@ -479,40 +479,6 @@ models:
         api_key: ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
 
-  # --- Codex Subscription Models (uncomment when accounts are configured) ---
-  # Requires: var/data/codex_accounts.json with valid OAuth credentials.
-  # See docs/codex-subscription-design.md for setup instructions.
-  #
-  # Reasoning effort is controlled via the `reasoning_effort` request param
-  # ("low", "medium", "high") — no separate model entries needed per effort level.
-  #
-  - id: gpt-5.4
-    name: GPT-5.4
-    provider: codex_sub
-    required_role: internal
-    provider_model_id: "gpt-5.4"
-    base_url: ${CODEX_BASE_URL}
-    quantization: "none"
-    input_modalities: ["text", "image"]
-    output_modalities: ["text"]
-    context_length: 1050000
-    max_output_length: 128000
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, max_tokens, stop, tools, tool_choice, reasoning_effort]
-    # OpenAI API https://openai.com/api/pricing/ (GPT-5.4)
-    pricing:
-      prompt: "2.50"
-      completion: "15.00"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0.25"
-      input_cache_writes: "0"
-    route:
-      - kind: codex_sub
-        weight: 1.0
-        base_url: ${CODEX_BASE_URL}
-
   # ── Anthropic direct (kind: anthropic) ─────────────────────
   # These models route directly to api.anthropic.com via the AnthropicAdapter.
   #
