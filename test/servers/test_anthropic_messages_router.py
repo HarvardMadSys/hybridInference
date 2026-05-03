@@ -657,3 +657,145 @@ async def test_streaming_ttft_ms_handles_split_event_name(anthropic_test_client,
             pass
 
     assert isinstance(captured.get("ttft_ms"), int)
+
+
+# ---------------------------------------------------------------------------
+# DB-logging payload: prompt/response threading + cache-inclusive token math
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
+    anthropic_test_client, monkeypatch
+):
+    """Non-streaming path must persist the request prompt + upstream response
+    into the DB and must fold cache_read/cache_creation tokens into
+    prompt_tokens / total_tokens (OpenAI-style semantics expected by every
+    downstream report)."""
+    upstream_resp = {
+        "id": "msg_log",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "Hello"}],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 7,
+            "output_tokens": 3,
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 50,
+        },
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    captured: dict = {}
+    captured_event = __import__("asyncio").Event()
+
+    async def fake_log_request(**kwargs):
+        captured.update(kwargs)
+        captured_event.set()
+
+    services = anthropic_test_client._transport.app.state.services
+    services.log_store.log_request = fake_log_request
+
+    messages = [{"role": "user", "content": "hello there"}]
+    body = {"model": NATIVE_MODEL, "max_tokens": 50, "messages": messages}
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 200
+
+    await __import__("asyncio").wait_for(captured_event.wait(), timeout=2.0)
+
+    assert captured["prompt"] == messages
+    assert captured["response"] == upstream_resp
+    usage = captured["usage"]
+    # input_tokens=7 + cache_read=100 + cache_write=50 -> prompt_tokens=157
+    assert usage["prompt_tokens"] == 157
+    assert usage["completion_tokens"] == 3
+    assert usage["total_tokens"] == 160
+    assert usage["cache_read_tokens"] == 100
+    assert usage["cache_write_tokens"] == 50
+
+
+@pytest.mark.asyncio
+async def test_streaming_logs_prompt_and_cache_inclusive_tokens(
+    anthropic_test_client, monkeypatch
+):
+    """Streaming path must persist the request prompt and fold cache tokens
+    into prompt_tokens / total_tokens. Response stays None on streaming
+    (matches the OpenAI streaming logging contract)."""
+    upstream_sse = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_s","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":4,"output_tokens":0,'
+        b'"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}\n\n'
+        b"event: content_block_start\n"
+        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+        b"event: content_block_delta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n'
+        b"event: message_delta\n"
+        b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n'
+        b"event: message_stop\n"
+        b'data: {"type":"message_stop"}\n\n'
+    )
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield upstream_sse
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    captured: dict = {}
+    captured_event = __import__("asyncio").Event()
+
+    async def fake_log_request(**kwargs):
+        captured.update(kwargs)
+        captured_event.set()
+
+    services = anthropic_test_client._transport.app.state.services
+    services.log_store.log_request = fake_log_request
+
+    messages = [{"role": "user", "content": "say hi"}]
+    body = {"model": NATIVE_MODEL, "max_tokens": 50, "stream": True, "messages": messages}
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    await __import__("asyncio").wait_for(captured_event.wait(), timeout=2.0)
+
+    assert captured["prompt"] == messages
+    assert captured["response"] is None
+    usage = captured["usage"]
+    # input=4 + cache_read=20 + cache_write=10 = 34
+    assert usage["prompt_tokens"] == 34
+    assert usage["completion_tokens"] == 2
+    assert usage["total_tokens"] == 36
+    assert usage["cache_read_tokens"] == 20
+    assert usage["cache_write_tokens"] == 10

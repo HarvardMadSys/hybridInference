@@ -209,9 +209,30 @@ def _schedule_log_store_task(
     pricing: dict[str, str],
     metadata: dict[str, Any],
     params: dict[str, Any],
+    prompt: list[dict[str, Any]] | str | None = None,
+    response: dict[str, Any] | str | None = None,
     ttft_ms: int | None = None,
 ) -> None:
-    """Schedule a background log store task (fire-and-forget)."""
+    """Schedule a background log store task (fire-and-forget).
+
+    ``usage`` is the upstream Anthropic usage shape with ``input_tokens`` /
+    ``output_tokens`` (and optional ``cache_read_input_tokens`` /
+    ``cache_creation_input_tokens``). It is normalized here to the OpenAI-style
+    keys used in the ``api_logs`` table so dashboards/queries that consume
+    ``prompt_tokens`` and ``total_tokens`` get cache-inclusive counts that
+    match what is actually billed.
+    """
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    output_tokens = int(usage.get("output_tokens", 0) or 0)
+    cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+    cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    # OpenAI semantics (used by every downstream report): prompt_tokens
+    # includes cached input. Anthropic's input_tokens does not, so add cache
+    # read + write here. Otherwise Anthropic-surface rows undercount whenever
+    # prompt caching is active.
+    prompt_tokens = input_tokens + cache_read + cache_write
+    total_tokens = prompt_tokens + output_tokens
+    prompt_for_log: list[dict[str, Any]] | str = prompt if prompt is not None else []
 
     async def _log() -> None:
         try:
@@ -219,14 +240,14 @@ def _schedule_log_store_task(
                 request_id=request_id,
                 model_id=model_id,
                 provider=provider,
-                prompt=[],
-                response=None,
+                prompt=prompt_for_log,
+                response=response,
                 usage={
-                    "prompt_tokens": usage.get("input_tokens", 0),
-                    "completion_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
-                    "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
-                    "cache_write_tokens": usage.get("cache_creation_input_tokens", 0),
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                    "cache_read_tokens": cache_read,
+                    "cache_write_tokens": cache_write,
                 },
                 latency_ms=latency_ms,
                 status_code=status_code,
@@ -378,6 +399,8 @@ async def anthropic_messages(
                         else {},
                         metadata=metadata,
                         params=params_for_log,
+                        prompt=body.get("messages"),
+                        response=None,
                         ttft_ms=ttft_ms,
                     )
 
@@ -417,5 +440,7 @@ async def anthropic_messages(
             pricing=adapter.config.pricing,
             metadata=metadata,
             params=params_for_log,
+            prompt=body.get("messages"),
+            response=resp if isinstance(resp, dict) else None,
         )
     return JSONResponse(content=resp)
