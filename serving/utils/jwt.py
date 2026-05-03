@@ -32,8 +32,17 @@ def get_access_token_expire_minutes() -> int:
 
 
 def get_refresh_token_expire_days() -> int:
-    """Get refresh token expiration time in days (default: 365)."""
-    return int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "365"))
+    """Get refresh token expiration time in days (default: 30).
+
+    Reduced from 365 to 30 to limit the blast radius of a stolen refresh
+    token. /auth/refresh rotates the token JTI on every call, but the
+    underlying session (``OperationalStore.rotate_session``) keeps its
+    original ``expires_at``. A session created today therefore hard-expires
+    in ~30 days regardless of activity — users will see a forced re-login.
+    """
+    from serving.config.settings import settings
+
+    return settings.jwt_refresh_token_expire_days
 
 
 def generate_ulid() -> str:
