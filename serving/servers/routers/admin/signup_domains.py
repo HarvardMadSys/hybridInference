@@ -1,4 +1,4 @@
-"""Admin API endpoints for user and system management."""
+"""Admin signup-domain allowlist endpoints."""
 
 from __future__ import annotations
 
@@ -14,21 +14,11 @@ from serving.schemas_admin import (
     ListSignupAllowedDomainsResponse,
     SignupAllowedDomain,
 )
-from serving.servers.auth import (
-    log_admin_action,
-)
-from serving.servers.deps import (
-    get_operational_store,
-    verify_admin_access,
-)
+from serving.servers.auth import log_admin_action
+from serving.servers.deps import get_operational_store, verify_admin_access
 from serving.utils.request_ip import get_client_ip
 
-router = APIRouter()
-
-
-# ========================================
-# Signup Domain Allowlist (admin-editable approval policy)
-# ========================================
+router = APIRouter(prefix="/admin")
 
 
 # Domain label charset; matches RFC-1035 LDH plus the dot separator. Each
@@ -94,7 +84,7 @@ def _signup_domain_to_schema(row: dict[str, Any]) -> SignupAllowedDomain:
     )
 
 
-@router.get("/admin/signup-domains", response_model=ListSignupAllowedDomainsResponse)
+@router.get("/signup-domains", response_model=ListSignupAllowedDomainsResponse)
 async def list_signup_allowed_domains_endpoint(
     _admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
@@ -114,7 +104,7 @@ async def list_signup_allowed_domains_endpoint(
 
 
 @router.post(
-    "/admin/signup-domains",
+    "/signup-domains",
     response_model=SignupAllowedDomain,
     status_code=201,
 )
@@ -182,7 +172,7 @@ async def add_signup_allowed_domain_endpoint(
     return _signup_domain_to_schema(row)
 
 
-@router.delete("/admin/signup-domains/{domain}", status_code=204)
+@router.delete("/signup-domains/{domain}", status_code=204)
 async def remove_signup_allowed_domain_endpoint(
     request: Request,
     domain: str,

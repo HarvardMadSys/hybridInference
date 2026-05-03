@@ -15,10 +15,10 @@ from serving.servers.routers.admin import (
     export,
     metrics,
     providers,
+    signup_domains,
     stats,
     users,
 )
-from serving.servers.routers.admin._admin_legacy import router as _legacy_router
 from serving.servers.routers.admin.metrics import _decode_throughput_tps
 
 router = APIRouter()
@@ -28,8 +28,8 @@ router.include_router(broadcast.router)
 router.include_router(export.router)
 router.include_router(metrics.router)
 router.include_router(providers.router)
+router.include_router(signup_domains.router)
 router.include_router(stats.router)
 router.include_router(users.router)
-router.include_router(_legacy_router)
 
 __all__ = ["_decode_throughput_tps", "router"]
