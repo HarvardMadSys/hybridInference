@@ -319,28 +319,28 @@ class TestListUsersNewFilters:
         pg_conn.fetch.side_effect = [[], []]
 
         # Should not raise
-        total, rows, _ = await store.list_users(min_cost_today=Decimal("10"))
+        _total, rows, _ = await store.list_users(min_cost_today=Decimal("10"))
         assert rows == []
 
     async def test_accepts_quota_state_kwarg(self, store, pg_conn):
         pg_conn.fetchrow.return_value = {"total": 0}
         pg_conn.fetch.side_effect = [[], []]
 
-        total, rows, _ = await store.list_users(quota_state="custom")
+        _total, rows, _ = await store.list_users(quota_state="custom")
         assert rows == []
 
     async def test_accepts_provider_kwarg(self, store, pg_conn):
         pg_conn.fetchrow.return_value = {"total": 0}
         pg_conn.fetch.side_effect = [[], []]
 
-        total, rows, _ = await store.list_users(provider="anthropic")
+        _total, rows, _ = await store.list_users(provider="anthropic")
         assert rows == []
 
     async def test_accepts_active_within_hours_kwarg(self, store, pg_conn):
         pg_conn.fetchrow.return_value = {"total": 0}
         pg_conn.fetch.side_effect = [[], []]
 
-        total, rows, _ = await store.list_users(active_within_hours=24)
+        _total, rows, _ = await store.list_users(active_within_hours=24)
         assert rows == []
 
     async def test_search_now_includes_id_and_key_prefix(self, store, pg_conn):
@@ -402,7 +402,7 @@ class TestListUsersNewFilters:
             [],
         ]
 
-        total, rows, _ = await store.list_users(min_cost_today=Decimal("10"))
+        _total, rows, _ = await store.list_users(min_cost_today=Decimal("10"))
 
         ids = {r["id"] for r in rows}
         assert ids == {"expensive"}

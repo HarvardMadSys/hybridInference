@@ -457,15 +457,11 @@ class D1OperationalStore(OperationalStore):
                 "             AND k2.status = 'active' "
                 "             AND k2.key_prefix LIKE ?))"
             )
-            params.extend(
-                [f"%{truncated}%", f"%{truncated}%", f"{truncated}%", f"{truncated}%"]
-            )
+            params.extend([f"%{truncated}%", f"%{truncated}%", f"{truncated}%", f"{truncated}%"])
         if active_within_hours is not None:
             # SQLite stores last_login_at as TEXT (ISO 8601). Compare against
             # a strftime cutoff.
-            where_clauses.append(
-                "u.last_login_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)"
-            )
+            where_clauses.append("u.last_login_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)")
             params.append(f"-{int(active_within_hours)} hours")
         if quota_state == "default":
             where_clauses.append(
@@ -548,9 +544,7 @@ class D1OperationalStore(OperationalStore):
                 f"WHERE account_id IN ({placeholders2}) AND status = 'active'",
                 user_ids2,
             )
-            quotas = {
-                q["account_id"]: q["quota_daily_cost_usd"] for q in quota_result.rows
-            }
+            quotas = {q["account_id"]: q["quota_daily_cost_usd"] for q in quota_result.rows}
 
             filtered: list[Row] = []
             for r in result_rows:
@@ -558,9 +552,9 @@ class D1OperationalStore(OperationalStore):
                 if not quota or float(quota) <= 0:
                     continue
                 pct = today_costs.get(r["id"], 0.0) / float(quota)
-                if quota_state == "near" and pct >= 0.80:
-                    filtered.append(r)
-                elif quota_state == "over" and pct >= 1.0:
+                if (quota_state == "near" and pct >= 0.80) or (
+                    quota_state == "over" and pct >= 1.0
+                ):
                     filtered.append(r)
             result_rows = filtered
 
@@ -584,14 +578,11 @@ class D1OperationalStore(OperationalStore):
                     f"GROUP BY user_id",
                     [today, *user_ids3],
                 )
-                today_map = {
-                    r["user_id"]: _Decimal(str(r["cost"])) for r in today_result.rows
-                }
+                today_map = {r["user_id"]: _Decimal(str(r["cost"])) for r in today_result.rows}
                 result_rows = [
                     r
                     for r in result_rows
-                    if today_map.get(r["id"], _Decimal("0"))
-                    >= _Decimal(str(min_cost_today))
+                    if today_map.get(r["id"], _Decimal("0")) >= _Decimal(str(min_cost_today))
                 ]
 
             if min_cost_month is not None and result_rows:
@@ -603,14 +594,11 @@ class D1OperationalStore(OperationalStore):
                     f"GROUP BY user_id",
                     [f"{month_prefix}%", *user_ids4],
                 )
-                month_map = {
-                    r["user_id"]: _Decimal(str(r["cost"])) for r in month_result.rows
-                }
+                month_map = {r["user_id"]: _Decimal(str(r["cost"])) for r in month_result.rows}
                 result_rows = [
                     r
                     for r in result_rows
-                    if month_map.get(r["id"], _Decimal("0"))
-                    >= _Decimal(str(min_cost_month))
+                    if month_map.get(r["id"], _Decimal("0")) >= _Decimal(str(min_cost_month))
                 ]
 
         # provider filter is a no-op in D1: api_logs lives in Postgres in this
@@ -1307,9 +1295,7 @@ class D1OperationalStore(OperationalStore):
         pending_count_result = await self._d1.query(
             "SELECT COUNT(*) AS c FROM users WHERE status = 'pending_approval'"
         )
-        pending_count = (
-            pending_count_result.rows[0]["c"] if pending_count_result.rows else 0
-        )
+        pending_count = pending_count_result.rows[0]["c"] if pending_count_result.rows else 0
         pending_result = await self._d1.query(
             "SELECT id, email, user_name, role, created_at "
             "FROM users WHERE status = 'pending_approval' "
@@ -1389,12 +1375,10 @@ class D1OperationalStore(OperationalStore):
                     near_quota.append(dict(base_item))
 
         top_spenders.sort(key=lambda x: x["today_cost_usd"], reverse=True)
-        anomalies.sort(key=lambda x: (x["multiplier"] or 0), reverse=True)
+        anomalies.sort(key=lambda x: x["multiplier"] or 0, reverse=True)
         near_quota.sort(
             key=lambda x: (
-                float(x["today_cost_usd"]) / x["quota_daily_usd"]
-                if x["quota_daily_usd"]
-                else 0
+                float(x["today_cost_usd"]) / x["quota_daily_usd"] if x["quota_daily_usd"] else 0
             ),
             reverse=True,
         )

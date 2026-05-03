@@ -347,10 +347,24 @@ class CachedOperationalStore(OperationalStore):
         ] = "created",
         limit: int = 100,
         offset: int = 0,
+        min_cost_today: Decimal | None = None,
+        min_cost_month: Decimal | None = None,
+        quota_state: Literal["near", "over", "custom", "default"] | None = None,
+        provider: str | None = None,
+        active_within_hours: int | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Delegate to wrapped store."""
         return await self._store.list_users(
-            status=status, search=search, sort_by=sort_by, limit=limit, offset=offset
+            status=status,
+            search=search,
+            sort_by=sort_by,
+            limit=limit,
+            offset=offset,
+            min_cost_today=min_cost_today,
+            min_cost_month=min_cost_month,
+            quota_state=quota_state,
+            provider=provider,
+            active_within_hours=active_within_hours,
         )
 
     async def update_key_last_used(self, key_id: int) -> None:

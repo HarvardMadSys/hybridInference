@@ -656,8 +656,7 @@ class PostgresOperationalStore(OperationalStore):
             filter_params.append(f"{search}%")
         if active_within_hours is not None:
             where_clauses.append(
-                f"u.last_login_at >= NOW() - "
-                f"${len(filter_params) + 1}::int * INTERVAL '1 hour'"
+                f"u.last_login_at >= NOW() - ${len(filter_params) + 1}::int * INTERVAL '1 hour'"
             )
             filter_params.append(active_within_hours)
         if quota_state == "default":
@@ -871,9 +870,9 @@ class PostgresOperationalStore(OperationalStore):
                     continue
                 today = float(r.get("usage_today", 0) or 0)
                 pct = today / float(quota)
-                if quota_state == "near" and pct >= 0.80:
-                    filtered.append(r)
-                elif quota_state == "over" and pct >= 1.0:
+                if (quota_state == "near" and pct >= 0.80) or (
+                    quota_state == "over" and pct >= 1.0
+                ):
                     filtered.append(r)
             result_rows = filtered
 
@@ -1680,12 +1679,8 @@ class PostgresOperationalStore(OperationalStore):
             anomaly_min_today = _Decimal("1.00")
 
         today_str = datetime.now(timezone.utc).date().isoformat()
-        prior_7d_start = (
-            datetime.now(timezone.utc).date() - timedelta(days=7)
-        ).isoformat()
-        prior_7d_end = (
-            datetime.now(timezone.utc).date() - timedelta(days=1)
-        ).isoformat()
+        prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
+        prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
 
         async with self._pool.acquire() as conn:
             # 1. Pending count + top
@@ -1778,12 +1773,10 @@ class PostgresOperationalStore(OperationalStore):
                         near_quota.append(dict(base_item))
 
             top_spenders.sort(key=lambda x: x["today_cost_usd"], reverse=True)
-            anomalies.sort(key=lambda x: (x["multiplier"] or 0), reverse=True)
+            anomalies.sort(key=lambda x: x["multiplier"] or 0, reverse=True)
             near_quota.sort(
                 key=lambda x: (
-                    float(x["today_cost_usd"]) / x["quota_daily_usd"]
-                    if x["quota_daily_usd"]
-                    else 0
+                    float(x["today_cost_usd"]) / x["quota_daily_usd"] if x["quota_daily_usd"] else 0
                 ),
                 reverse=True,
             )

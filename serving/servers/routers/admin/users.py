@@ -56,6 +56,12 @@ async def list_users(
     ] = "created",
     limit: int = 100,
     offset: int = 0,
+    # Phase 1 admin Users redesign — new filters
+    min_cost_today: Decimal | None = None,
+    min_cost_month: Decimal | None = None,
+    quota_state: Literal["near", "over", "custom", "default"] | None = None,
+    provider: str | None = None,
+    active_within_hours: int | None = None,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ListUsersResponse:
@@ -63,10 +69,17 @@ async def list_users(
 
     Query Parameters:
     - status: Filter by status (pending_approval|active|suspended|rejected|deleted)
-    - search: Search by email or user_name (case-insensitive ILIKE)
+    - search: Search by email, user_name, user id prefix, or active key prefix
     - sort_by: Sort order (created|cost_today|cost_month|cost_alltime|last_login)
     - limit: Max results (default: 100)
     - offset: Pagination offset
+    - min_cost_today / min_cost_month: filter to users whose today/month spend
+      meets the threshold (USD).
+    - quota_state: ``default`` / ``custom`` filter on whether the user's active
+      key has a quota override; ``near`` / ``over`` use today's spend vs quota.
+    - provider: keep only users who hit ``provider`` in api_logs in the last
+      30 days (Postgres-only — D1 deployments ignore this).
+    - active_within_hours: ``last_login_at`` must be within the window.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -74,7 +87,16 @@ async def list_users(
         raise HTTPException(500, "Database not configured")
 
     total, rows, sc = await op_store.list_users(
-        status=status, search=search, sort_by=sort_by, limit=limit, offset=offset
+        status=status,
+        search=search,
+        sort_by=sort_by,
+        limit=limit,
+        offset=offset,
+        min_cost_today=min_cost_today,
+        min_cost_month=min_cost_month,
+        quota_state=quota_state,
+        provider=provider,
+        active_within_hours=active_within_hours,
     )
 
     status_counts = StatusCounts(
@@ -114,6 +136,121 @@ async def list_users(
         )
 
     return ListUsersResponse(total=total, users=users, status_counts=status_counts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1: Cost history + summary endpoints
+#
+# IMPORTANT: these static-path routes must be registered BEFORE any
+# parameterized route whose path could shadow them (e.g. PATCH /users/{id}).
+# FastAPI/Starlette matches the first route whose path pattern matches; if a
+# parameterized route is registered first, /users/summary matches it and
+# Starlette returns 405 because the method doesn't match.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/users/cost-history", response_model=BulkUserCostHistoryResponse)
+async def admin_get_bulk_user_cost_history(
+    user_ids: str = "",  # comma-separated
+    days: int = 7,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> BulkUserCostHistoryResponse:
+    """Bulk daily cost history for many users (one round-trip per page).
+
+    Query params:
+    - ``user_ids``: comma-separated user IDs (max 200)
+    - ``days``: 1..90 inclusive (default 7)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    if days < 1 or days > 90:
+        raise HTTPException(422, "days must be between 1 and 90")
+
+    ids = [s.strip() for s in user_ids.split(",") if s.strip()]
+    if not ids:
+        return BulkUserCostHistoryResponse(days=days, histories={})
+    if len(ids) > 200:
+        raise HTTPException(422, "Maximum 200 user_ids per request")
+
+    raw = await op_store.get_bulk_user_cost_history(ids, days=days)
+    histories = {
+        uid: [
+            UserCostHistoryPoint(
+                day=p["day"],
+                cost_usd=Decimal(str(p["cost_usd"])),
+                requests=p["requests"],
+            )
+            for p in points
+        ]
+        for uid, points in raw.items()
+    }
+    return BulkUserCostHistoryResponse(days=days, histories=histories)
+
+
+@router.get("/users/summary", response_model=UsersSummaryResponse)
+async def admin_get_users_summary(
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> UsersSummaryResponse:
+    """Aggregated summary stats for the 4 dashboard cards."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    raw = await op_store.get_users_summary()
+
+    def _card(card_raw: dict) -> SummaryCard:
+        return SummaryCard(
+            count=card_raw["count"],
+            top=[
+                SummaryUserItem(
+                    id=u["id"],
+                    email=u["email"],
+                    user_name=u.get("user_name"),
+                    role=u.get("role", "free"),
+                    today_cost_usd=Decimal(str(u.get("today_cost_usd", 0))),
+                    avg_prior_7d_usd=Decimal(str(u.get("avg_prior_7d_usd", 0))),
+                    quota_daily_usd=u.get("quota_daily_usd"),
+                    multiplier=u.get("multiplier"),
+                )
+                for u in card_raw["top"]
+            ],
+        )
+
+    return UsersSummaryResponse(
+        pending=_card(raw["pending"]),
+        top_spenders_today=_card(raw["top_spenders_today"]),
+        anomalies=_card(raw["anomalies"]),
+        near_quota=_card(raw["near_quota"]),
+    )
+
+
+@router.get("/users/{user_id}/cost-history", response_model=UserCostHistoryResponse)
+async def admin_get_user_cost_history(
+    user_id: str,
+    days: int = 7,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> UserCostHistoryResponse:
+    """Daily cost history for a single user (1..90 days, default 7)."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    if days < 1 or days > 90:
+        raise HTTPException(422, "days must be between 1 and 90")
+
+    raw = await op_store.get_user_cost_history(user_id, days=days)
+    return UserCostHistoryResponse(
+        user_id=user_id,
+        days=days,
+        points=[
+            UserCostHistoryPoint(
+                day=p["day"],
+                cost_usd=Decimal(str(p["cost_usd"])),
+                requests=p["requests"],
+            )
+            for p in raw
+        ],
+    )
 
 
 @router.post("/users/{user_id}/approve", response_model=ApproveUserResponse)
@@ -592,117 +729,4 @@ async def hard_delete_user(
         user_id=user_id,
         email=email,
         message=f"User {email} has been permanently deleted.",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Phase 1: Cost history + summary endpoints
-#
-# IMPORTANT: the bulk and summary routes must be registered BEFORE the
-# parameterized ``/users/{user_id}/cost-history`` route so FastAPI's matcher
-# resolves the literal paths first.
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@router.get("/users/cost-history", response_model=BulkUserCostHistoryResponse)
-async def admin_get_bulk_user_cost_history(
-    user_ids: str = "",  # comma-separated
-    days: int = 7,
-    admin_id: str = Depends(verify_admin_access),
-    op_store=Depends(get_operational_store),
-) -> BulkUserCostHistoryResponse:
-    """Bulk daily cost history for many users (one round-trip per page).
-
-    Query params:
-    - ``user_ids``: comma-separated user IDs (max 200)
-    - ``days``: 1..90 inclusive (default 7)
-    """
-    if not op_store:
-        raise HTTPException(500, "Database not configured")
-    if days < 1 or days > 90:
-        raise HTTPException(422, "days must be between 1 and 90")
-
-    ids = [s.strip() for s in user_ids.split(",") if s.strip()]
-    if not ids:
-        return BulkUserCostHistoryResponse(days=days, histories={})
-    if len(ids) > 200:
-        raise HTTPException(422, "Maximum 200 user_ids per request")
-
-    raw = await op_store.get_bulk_user_cost_history(ids, days=days)
-    histories = {
-        uid: [
-            UserCostHistoryPoint(
-                day=p["day"],
-                cost_usd=Decimal(str(p["cost_usd"])),
-                requests=p["requests"],
-            )
-            for p in points
-        ]
-        for uid, points in raw.items()
-    }
-    return BulkUserCostHistoryResponse(days=days, histories=histories)
-
-
-@router.get("/users/summary", response_model=UsersSummaryResponse)
-async def admin_get_users_summary(
-    admin_id: str = Depends(verify_admin_access),
-    op_store=Depends(get_operational_store),
-) -> UsersSummaryResponse:
-    """Aggregated summary stats for the 4 dashboard cards."""
-    if not op_store:
-        raise HTTPException(500, "Database not configured")
-
-    raw = await op_store.get_users_summary()
-
-    def _card(card_raw: dict) -> SummaryCard:
-        return SummaryCard(
-            count=card_raw["count"],
-            top=[
-                SummaryUserItem(
-                    id=u["id"],
-                    email=u["email"],
-                    user_name=u.get("user_name"),
-                    role=u.get("role", "free"),
-                    today_cost_usd=Decimal(str(u.get("today_cost_usd", 0))),
-                    avg_prior_7d_usd=Decimal(str(u.get("avg_prior_7d_usd", 0))),
-                    quota_daily_usd=u.get("quota_daily_usd"),
-                    multiplier=u.get("multiplier"),
-                )
-                for u in card_raw["top"]
-            ],
-        )
-
-    return UsersSummaryResponse(
-        pending=_card(raw["pending"]),
-        top_spenders_today=_card(raw["top_spenders_today"]),
-        anomalies=_card(raw["anomalies"]),
-        near_quota=_card(raw["near_quota"]),
-    )
-
-
-@router.get("/users/{user_id}/cost-history", response_model=UserCostHistoryResponse)
-async def admin_get_user_cost_history(
-    user_id: str,
-    days: int = 7,
-    admin_id: str = Depends(verify_admin_access),
-    op_store=Depends(get_operational_store),
-) -> UserCostHistoryResponse:
-    """Daily cost history for a single user (1..90 days, default 7)."""
-    if not op_store:
-        raise HTTPException(500, "Database not configured")
-    if days < 1 or days > 90:
-        raise HTTPException(422, "days must be between 1 and 90")
-
-    raw = await op_store.get_user_cost_history(user_id, days=days)
-    return UserCostHistoryResponse(
-        user_id=user_id,
-        days=days,
-        points=[
-            UserCostHistoryPoint(
-                day=p["day"],
-                cost_usd=Decimal(str(p["cost_usd"])),
-                requests=p["requests"],
-            )
-            for p in raw
-        ],
     )

@@ -979,9 +979,7 @@ async def test_get_bulk_cost_history_route(admin_client):
         }
     )
 
-    resp = await client.get(
-        "/admin/users/cost-history?user_ids=u1,u2&days=7", headers=AUTH
-    )
+    resp = await client.get("/admin/users/cost-history?user_ids=u1,u2&days=7", headers=AUTH)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -1031,6 +1029,46 @@ async def test_get_users_summary_route(admin_client):
     assert body["anomalies"]["count"] == 1
     assert body["top_spenders_today"]["count"] == 10
     assert body["near_quota"]["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_users_passes_new_filters_through(admin_client):
+    """GET /admin/users?<new filters> forwards them to op_store.list_users."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.list_users = AsyncMock(return_value=(0, [], {}))
+
+    resp = await client.get(
+        "/admin/users?min_cost_today=5&quota_state=near&provider=anthropic&active_within_hours=24",
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+
+    op_store.list_users.assert_awaited_once()
+    kwargs = op_store.list_users.await_args.kwargs
+    assert kwargs["min_cost_today"] == Decimal("5")
+    assert kwargs["quota_state"] == "near"
+    assert kwargs["provider"] == "anthropic"
+    assert kwargs["active_within_hours"] == 24
+
+
+@pytest.mark.asyncio
+async def test_list_users_min_cost_month_passes_through(admin_client):
+    """min_cost_month forwarded as Decimal."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.list_users = AsyncMock(return_value=(0, [], {}))
+    resp = await client.get("/admin/users?min_cost_month=10.5", headers=AUTH)
+    assert resp.status_code == 200
+    kwargs = op_store.list_users.await_args.kwargs
+    assert kwargs["min_cost_month"] == Decimal("10.5")
+
+
+@pytest.mark.asyncio
+async def test_list_users_quota_state_invalid_returns_422(admin_client):
+    """Unknown quota_state returns 422."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.list_users = AsyncMock(return_value=(0, [], {}))
+    resp = await client.get("/admin/users?quota_state=bogus", headers=AUTH)
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
