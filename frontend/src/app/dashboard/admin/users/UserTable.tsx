@@ -49,8 +49,7 @@ export function UserTable(props: UserTableProps) {
   const showSparkline = density === 'comfortable';
   const colSpan = showSparkline ? 10 : 9;
 
-  const sortIndicator = (col: FilterState['sortBy']) =>
-    filterState.sortBy === col ? ' ↓' : '';
+  const sortIndicator = (col: FilterState['sortBy']) => (filterState.sortBy === col ? ' ↓' : '');
 
   const toggleDetail = async (userId: string) => {
     if (expandedId === userId) {
@@ -171,23 +170,14 @@ export function UserTable(props: UserTableProps) {
               <th className="w-8 px-2 py-2" />
               <th className="px-2 py-2">Email</th>
               <th className="px-2 py-2">Role</th>
-              <th
-                className="cursor-pointer px-2 py-2"
-                onClick={() => onSortChange('cost_today')}
-              >
+              <th className="cursor-pointer px-2 py-2" onClick={() => onSortChange('cost_today')}>
                 Today{sortIndicator('cost_today')}
               </th>
               {showSparkline && <th className="w-16 px-2 py-2">7d</th>}
-              <th
-                className="cursor-pointer px-2 py-2"
-                onClick={() => onSortChange('cost_month')}
-              >
+              <th className="cursor-pointer px-2 py-2" onClick={() => onSortChange('cost_month')}>
                 Month{sortIndicator('cost_month')}
               </th>
-              <th
-                className="cursor-pointer px-2 py-2"
-                onClick={() => onSortChange('cost_alltime')}
-              >
+              <th className="cursor-pointer px-2 py-2" onClick={() => onSortChange('cost_alltime')}>
                 All-time{sortIndicator('cost_alltime')}
               </th>
               <th className="px-2 py-2">Status</th>
@@ -303,9 +293,7 @@ export function UserTable(props: UserTableProps) {
             }}
           />
           <div className="relative mx-4 w-full max-w-sm rounded-xl border border-gray-200 bg-white p-5 shadow-2xl">
-            <h3 className="text-[15px] font-semibold text-gray-900">
-              Delete {deleteTarget.email}
-            </h3>
+            <h3 className="text-[15px] font-semibold text-gray-900">Delete {deleteTarget.email}</h3>
             <p className="mt-1 text-[12px] text-gray-400">
               This will revoke API keys, purge sessions, and set the account to deleted.
             </p>
@@ -355,10 +343,9 @@ export function UserTable(props: UserTableProps) {
               Permanently delete {hardDeleteTarget.email}
             </h3>
             <p className="mt-2 text-[12px] text-gray-600">
-              This will{' '}
-              <span className="font-semibold text-red-700">permanently wipe</span> the user row,
-              all API keys, all api_logs, and prior audit-log entries for this user. This action{' '}
-              <span className="font-semibold">cannot be undone</span>.
+              This will <span className="font-semibold text-red-700">permanently wipe</span> the
+              user row, all API keys, all api_logs, and prior audit-log entries for this user. This
+              action <span className="font-semibold">cannot be undone</span>.
             </p>
             <p className="mt-3 text-[12px] text-gray-500">
               Type the user&apos;s email address (

@@ -95,11 +95,7 @@ function SaveDialog({
           className="w-full rounded border px-2 py-1 text-sm"
         />
         <div className="mt-3 flex justify-end gap-2 text-sm">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="rounded bg-gray-100 px-3 py-1"
-          >
+          <button type="button" onClick={onCancel} className="rounded bg-gray-100 px-3 py-1">
             Cancel
           </button>
           <button

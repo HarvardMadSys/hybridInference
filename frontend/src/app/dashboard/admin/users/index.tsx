@@ -257,11 +257,7 @@ export default function UsersTab({
       {usersQuery.error && (
         <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
           Failed to load users.
-          <button
-            type="button"
-            onClick={() => usersQuery.refetch()}
-            className="ml-2 underline"
-          >
+          <button type="button" onClick={() => usersQuery.refetch()} className="ml-2 underline">
             Retry
           </button>
         </div>

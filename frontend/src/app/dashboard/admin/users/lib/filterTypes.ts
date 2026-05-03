@@ -28,12 +28,7 @@ const VALID_SORT: ReadonlyArray<SortBy> = [
   'last_login',
 ];
 
-const VALID_QUOTA: ReadonlyArray<QuotaStateFilter> = [
-  'near',
-  'over',
-  'custom',
-  'default',
-];
+const VALID_QUOTA: ReadonlyArray<QuotaStateFilter> = ['near', 'over', 'custom', 'default'];
 
 function parseNumber(s: string | null): number | null {
   if (s === null || s === '') return null;

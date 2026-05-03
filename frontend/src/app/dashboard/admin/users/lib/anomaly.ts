@@ -6,10 +6,7 @@ export interface AnomalyOptions {
   returnMultiplier?: boolean;
 }
 
-export function isAnomalous(
-  todayCostUsd: number,
-  priorDailyCostsUsd: number[],
-): boolean;
+export function isAnomalous(todayCostUsd: number, priorDailyCostsUsd: number[]): boolean;
 export function isAnomalous(
   todayCostUsd: number,
   priorDailyCostsUsd: number[],
