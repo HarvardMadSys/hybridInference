@@ -231,6 +231,18 @@ async def initialize() -> AppServices:
                             if sched is not None:
                                 register_rollup_job(sched, db_logger.pool)
 
+                                # Failed-request Slack alerter (no-op if
+                                # SLACK_WEBHOOK_URL is unset).
+                                from serving.admin.failed_request_alerter import (
+                                    register_alerter_job,
+                                )
+
+                                register_alerter_job(db_logger.pool, settings)
+                            elif settings.slack_webhook_url.strip():
+                                logger.warning(
+                                    "Slack alerter not registered: APScheduler did not start"
+                                )
+
                                 # Run backfill in the background so a slow 30-day
                                 # aggregation on a large api_logs table cannot
                                 # block server startup or trip readiness checks.

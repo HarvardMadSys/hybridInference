@@ -7,7 +7,7 @@ All environment variables are centralized here for easy tracking and testing.
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 
@@ -143,6 +143,13 @@ class Settings(BaseSettings):
     enable_routewise: bool = False
     # Experiment mode: when True, disable fallback in BaseRouter for A/B testing
     experiment_mode: bool = False
+
+    # Slack alerting (optional). Empty SLACK_WEBHOOK_URL disables the feature
+    # entirely — no scheduler job is registered and no errors are raised.
+    slack_webhook_url: str = ""
+    failed_request_alert_threshold: int = Field(default=20, ge=0)
+    failed_request_alert_window_minutes: int = Field(default=5, ge=1)
+    failed_request_alert_cooldown_minutes: int = Field(default=5, ge=0)
 
     class Config:
         """Pydantic configuration for Settings class."""
