@@ -8,11 +8,12 @@ work via `from serving.servers.routers import admin`.
 
 from fastapi import APIRouter
 
-from serving.servers.routers.admin import api_keys, metrics, stats, users
+from serving.servers.routers.admin import analytics, api_keys, metrics, stats, users
 from serving.servers.routers.admin._admin_legacy import router as _legacy_router
 from serving.servers.routers.admin.metrics import _decode_throughput_tps
 
 router = APIRouter()
+router.include_router(analytics.router)
 router.include_router(api_keys.router)
 router.include_router(metrics.router)
 router.include_router(stats.router)
