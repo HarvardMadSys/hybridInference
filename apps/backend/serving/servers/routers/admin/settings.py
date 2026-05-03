@@ -6,7 +6,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY, RuntimeSettings
+from serving.config.runtime_settings import (
+    RUNTIME_SETTINGS_REGISTRY,
+    RuntimeSettings,
+    get_runtime_settings,
+)
 from serving.schemas_admin import (
     ListSettingsResponse,
     RuntimeSettingItem,
@@ -19,15 +23,23 @@ from serving.utils.request_ip import get_client_ip
 router = APIRouter(prefix="/admin")
 
 
+def _require_runtime_settings(rt: RuntimeSettings | None) -> RuntimeSettings:
+    """Return the singleton or raise 503 if the app hasn't initialized it yet."""
+    if rt is None:
+        raise HTTPException(status_code=503, detail="Runtime settings not initialized")
+    return rt
+
+
 @router.get("/settings", response_model=ListSettingsResponse)
 async def list_runtime_settings_endpoint(
     _admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
+    rt: RuntimeSettings | None = Depends(get_runtime_settings),
 ) -> ListSettingsResponse:
     """List all runtime settings with current values and defaults."""
     if not op_store:
         raise HTTPException(500, "Database not configured")
-    rt = RuntimeSettings(op_store)
+    rt = _require_runtime_settings(rt)
     items = await rt.list_all()
     return ListSettingsResponse(
         settings=[
@@ -50,10 +62,12 @@ async def update_runtime_setting_endpoint(
     payload: UpdateSettingRequest,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
+    rt: RuntimeSettings | None = Depends(get_runtime_settings),
 ) -> RuntimeSettingItem:
     """Update a single runtime setting by key."""
     if not op_store:
         raise HTTPException(500, "Database not configured")
+    rt = _require_runtime_settings(rt)
 
     entry = RUNTIME_SETTINGS_REGISTRY.get(key)
     if entry is None:
@@ -89,7 +103,7 @@ async def update_runtime_setting_endpoint(
 
     await op_store.set_setting(key, str(value), expected_type, admin_id)
 
-    rt = RuntimeSettings(op_store)
+    # Invalidate the singleton's TTL cache so the new value is visible immediately.
     rt.invalidate_key(key)
 
     ip = get_client_ip(request)

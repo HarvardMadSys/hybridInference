@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.config.runtime_settings import RuntimeSettings
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 
@@ -33,6 +34,7 @@ async def admin_client(monkeypatch, mock_stores):
         db_logger=MagicMock(),
         operational_store=op_store,
         log_store=MagicMock(),
+        runtime_settings=RuntimeSettings(op_store),
     )
     app.state.services = services
     app.include_router(admin_router.router)

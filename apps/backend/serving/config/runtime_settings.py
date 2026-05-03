@@ -16,6 +16,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from fastapi import Request  # noqa: TC002 — required at runtime for FastAPI Depends
+
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -131,6 +133,23 @@ class RuntimeSettings:
         self._cache[key] = (now, default)
         return default
 
+    def get_cached(self, key: str) -> tuple[bool, Any]:
+        """Return ``(found, value)`` for a non-expired cached entry.
+
+        Synchronous; does **not** touch the database. Use only on hot
+        synchronous paths where awaiting :meth:`get_bool` (or peers) is
+        impossible. If the cache hasn't been populated yet, returns
+        ``(False, None)`` and the caller should fall back to its
+        environment-variable / default behaviour.
+        """
+        cached = self._cache.get(key)
+        if cached is None:
+            return False, None
+        cached_at, value = cached
+        if (time.monotonic() - cached_at) >= self._ttl:
+            return False, None
+        return True, value
+
     def invalidate_cache(self) -> None:
         """Clear all cached setting values."""
         self._cache.clear()
@@ -181,6 +200,14 @@ def get_runtime_settings_instance() -> RuntimeSettings:
     return _runtime_settings
 
 
-def get_runtime_settings(request: Any) -> RuntimeSettings:
-    """Return the RuntimeSettings from app state (FastAPI dependency)."""
-    return request.app.state.services.runtime_settings
+def get_runtime_settings(request: Request) -> RuntimeSettings | None:
+    """Return the RuntimeSettings from app state (FastAPI dependency).
+
+    May be ``None`` early in startup before bootstrap initializes services.
+    Callers that require a non-``None`` instance should raise an HTTP 503
+    when they receive ``None``.
+    """
+    services = getattr(request.app.state, "services", None)
+    if services is None:
+        return None
+    return getattr(services, "runtime_settings", None)
