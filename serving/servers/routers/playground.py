@@ -134,7 +134,6 @@ class PlaygroundChatRequest(BaseModel):
     messages: list[dict[str, str]]
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1, le=32768)
-    reasoning_effort: str | None = None
     provider: str | None = None
 
 
@@ -176,8 +175,6 @@ async def playground_chat(
             "temperature": body.temperature,
             "max_tokens": body.max_tokens,
         }
-        if body.reasoning_effort:
-            kwargs["reasoning_effort"] = body.reasoning_effort
         async for chunk in router_exec.stream_chat_completion(
             body.model,
             effective_messages,
