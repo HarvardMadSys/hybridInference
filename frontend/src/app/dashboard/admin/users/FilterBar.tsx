@@ -50,7 +50,10 @@ export function FilterBar({ state, onChange, density, onDensityChange }: FilterB
         onChange={(e) => setSearchInput(e.target.value)}
         className="min-w-48 flex-1 rounded border border-gray-300 bg-white px-3 py-1 text-sm"
       />
-      <StatusFilter value={state.status} onChange={(status) => onChange({ ...stateRef.current, status })} />
+      <StatusFilter
+        value={state.status}
+        onChange={(status) => onChange({ ...stateRef.current, status })}
+      />
       <UsageFilter
         minCostToday={state.minCostToday}
         minCostMonth={state.minCostMonth}
