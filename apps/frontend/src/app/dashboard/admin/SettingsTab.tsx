@@ -103,9 +103,11 @@ export function SettingsTab() {
   const onToggleFlag = async (flag: RuntimeSettingItem) => {
     setTogglingKey(flag.key);
     try {
-      await updateRuntimeSetting(flag.key, !flag.value);
-      flashToast(`${flag.key} ${!flag.value ? 'enabled' : 'disabled'}`);
-      await loadFlags();
+      const updatedFlag = await updateRuntimeSetting(flag.key, !flag.value);
+      flashToast(`${updatedFlag.key} ${updatedFlag.value ? 'enabled' : 'disabled'}`);
+      setFeatureFlags((prev) =>
+        prev.map((f) => (f.key === updatedFlag.key ? updatedFlag : f)),
+      );
     } catch (e) {
       flashToast(`Failed to update ${flag.key}: ${getErrorMessage(e)}`);
     } finally {
@@ -206,6 +208,7 @@ export function SettingsTab() {
                     type="button"
                     role="switch"
                     aria-checked={isOn}
+                    aria-label={`Toggle ${flag.key.replace(/_/g, ' ')}`}
                     disabled={isToggling}
                     onClick={() => onToggleFlag(flag)}
                     className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
