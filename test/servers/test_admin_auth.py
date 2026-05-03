@@ -10,7 +10,6 @@ import pytest
 from fastapi import HTTPException, Request
 
 from serving.servers.auth import log_admin_action, verify_admin_token
-from serving.servers.routers import admin as admin_router
 
 
 @pytest.fixture
