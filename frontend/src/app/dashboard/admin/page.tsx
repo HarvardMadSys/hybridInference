@@ -173,6 +173,25 @@ function hasMessages(v: unknown): v is Record<string, unknown> & { messages: Cha
   return Array.isArray(m) && m.length > 0 && m.every(isChatMessage);
 }
 
+function isChatMessageArray(v: unknown): v is ChatMessage[] {
+  return Array.isArray(v) && v.length > 0 && v.every(isChatMessage);
+}
+
+type AnthropicMessageResponse = Record<string, unknown> & {
+  type: 'message';
+  role: string;
+  content: unknown;
+};
+
+function isAnthropicMessageResponse(v: unknown): v is AnthropicMessageResponse {
+  if (!isRecord(v)) return false;
+  if (v.type !== 'message') return false;
+  if (typeof v.role !== 'string') return false;
+  if (!('content' in v)) return false;
+  const c = v.content;
+  return typeof c === 'string' || Array.isArray(c);
+}
+
 type ChatChoice = { message: ChatMessage; finish_reason?: unknown; index?: unknown };
 
 function isChatChoice(v: unknown): v is ChatChoice {
@@ -316,6 +335,17 @@ function MessageBlock({ message }: { message: ChatMessage }) {
 }
 
 function JsonChatView({ data }: { data: unknown }) {
+  if (isChatMessageArray(data)) {
+    return (
+      <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
+        <div className="space-y-1.5">
+          {data.map((m, i) => (
+            <MessageBlock key={`${i}-${m.role}`} message={m} />
+          ))}
+        </div>
+      </div>
+    );
+  }
   if (hasMessages(data)) {
     return (
       <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
@@ -336,6 +366,17 @@ function JsonChatView({ data }: { data: unknown }) {
           {data.choices.map((c, i) => (
             <MessageBlock key={typeof c.index === 'number' ? c.index : i} message={c.message} />
           ))}
+        </div>
+      </div>
+    );
+  }
+  if (isAnthropicMessageResponse(data)) {
+    const message: ChatMessage = { role: data.role, content: data.content };
+    return (
+      <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
+        <MetaList data={data} skip={['content']} />
+        <div className="space-y-1.5">
+          <MessageBlock message={message} />
         </div>
       </div>
     );
@@ -364,40 +405,50 @@ function messageReasoning(m: ChatMessage): string {
   return '';
 }
 
-function computePreview(parsed: unknown, fallback: string): string {
-  if (hasMessages(parsed)) {
-    for (let i = parsed.messages.length - 1; i >= 0; i--) {
-      const m = parsed.messages[i];
-      if (m.role === 'user') {
-        const text = flattenContent(m.content);
-        if (text) return previewText(text);
-      }
-    }
-    for (let i = parsed.messages.length - 1; i >= 0; i--) {
-      const m = parsed.messages[i];
-      if (m.role === 'assistant') {
-        const text = flattenContent(m.content);
-        if (text) return previewText(text);
-        const tc = toolCallsPreview(m);
-        if (tc) return previewText(tc);
-        const refusal = messageRefusal(m);
-        if (refusal) return previewText(`[refusal] ${refusal}`);
-        const reasoning = messageReasoning(m);
-        if (reasoning) return previewText(`[reasoning] ${reasoning}`);
-        break;
-      }
-    }
-    const last = parsed.messages[parsed.messages.length - 1];
-    if (last) {
-      const text = flattenContent(last.content);
+function previewFromMessages(messages: ChatMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'user') {
+      const text = flattenContent(m.content);
       if (text) return previewText(text);
-      const tc = toolCallsPreview(last);
-      if (tc) return previewText(tc);
-      const refusal = messageRefusal(last);
-      if (refusal) return previewText(`[refusal] ${refusal}`);
-      const reasoning = messageReasoning(last);
-      if (reasoning) return previewText(`[reasoning] ${reasoning}`);
     }
+  }
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'assistant') {
+      const text = flattenContent(m.content);
+      if (text) return previewText(text);
+      const tc = toolCallsPreview(m);
+      if (tc) return previewText(tc);
+      const refusal = messageRefusal(m);
+      if (refusal) return previewText(`[refusal] ${refusal}`);
+      const reasoning = messageReasoning(m);
+      if (reasoning) return previewText(`[reasoning] ${reasoning}`);
+      break;
+    }
+  }
+  const last = messages[messages.length - 1];
+  if (last) {
+    const text = flattenContent(last.content);
+    if (text) return previewText(text);
+    const tc = toolCallsPreview(last);
+    if (tc) return previewText(tc);
+    const refusal = messageRefusal(last);
+    if (refusal) return previewText(`[refusal] ${refusal}`);
+    const reasoning = messageReasoning(last);
+    if (reasoning) return previewText(`[reasoning] ${reasoning}`);
+  }
+  return null;
+}
+
+function computePreview(parsed: unknown, fallback: string): string {
+  if (isChatMessageArray(parsed)) {
+    const p = previewFromMessages(parsed);
+    if (p !== null) return p;
+  }
+  if (hasMessages(parsed)) {
+    const p = previewFromMessages(parsed.messages);
+    if (p !== null) return p;
   }
   if (hasChoices(parsed)) {
     const first = parsed.choices[0];
@@ -410,6 +461,11 @@ function computePreview(parsed: unknown, fallback: string): string {
     if (refusal) return previewText(`[refusal] ${refusal}`);
     const reasoning = messageReasoning(m);
     if (reasoning) return previewText(`[reasoning] ${reasoning}`);
+  }
+  if (isAnthropicMessageResponse(parsed)) {
+    const m: ChatMessage = { role: parsed.role, content: parsed.content };
+    const text = flattenContent(m.content);
+    if (text) return previewText(text);
   }
   return previewText(fallback);
 }
