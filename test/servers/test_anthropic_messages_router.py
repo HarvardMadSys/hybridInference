@@ -669,9 +669,8 @@ async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
     anthropic_test_client, monkeypatch
 ):
     """Non-streaming path must persist the request prompt + upstream response
-    into the DB and must fold cache_read/cache_creation tokens into
-    prompt_tokens / total_tokens (OpenAI-style semantics expected by every
-    downstream report)."""
+    into the DB. Cache tokens must appear in cache_read_tokens / cache_write_tokens
+    only, not folded into prompt_tokens (calculate_cost bills them separately)."""
     upstream_resp = {
         "id": "msg_log",
         "type": "message",
@@ -714,19 +713,20 @@ async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
     assert captured["prompt"] == messages
     assert captured["response"] == upstream_resp
     usage = captured["usage"]
-    # input_tokens=7 + cache_read=100 + cache_write=50 -> prompt_tokens=157
-    assert usage["prompt_tokens"] == 157
+    # prompt_tokens = input_tokens only (cache billed separately via cache_read/write columns)
+    assert usage["prompt_tokens"] == 7
     assert usage["completion_tokens"] == 3
-    assert usage["total_tokens"] == 160
+    assert usage["total_tokens"] == 10
     assert usage["cache_read_tokens"] == 100
     assert usage["cache_write_tokens"] == 50
 
 
 @pytest.mark.asyncio
-async def test_streaming_logs_prompt_and_cache_inclusive_tokens(anthropic_test_client, monkeypatch):
-    """Streaming path must persist the request prompt and fold cache tokens
-    into prompt_tokens / total_tokens. Response stays None on streaming
-    (matches the OpenAI streaming logging contract)."""
+async def test_streaming_logs_prompt_and_cache_separate_tokens(anthropic_test_client, monkeypatch):
+    """Streaming path must persist the request prompt. Cache tokens must appear
+    in cache_read_tokens / cache_write_tokens columns only — not folded into
+    prompt_tokens, which would double-bill via calculate_cost. Response stays
+    None on streaming (matches the OpenAI streaming logging contract)."""
     upstream_sse = (
         b"event: message_start\n"
         b'data: {"type":"message_start","message":{"id":"msg_s","model":"claude-opus-4-7",'
@@ -791,9 +791,9 @@ async def test_streaming_logs_prompt_and_cache_inclusive_tokens(anthropic_test_c
     assert captured["prompt"] == messages
     assert captured["response"] is None
     usage = captured["usage"]
-    # input=4 + cache_read=20 + cache_write=10 = 34
-    assert usage["prompt_tokens"] == 34
+    # prompt_tokens = input_tokens only; cache stored separately
+    assert usage["prompt_tokens"] == 4
     assert usage["completion_tokens"] == 2
-    assert usage["total_tokens"] == 36
+    assert usage["total_tokens"] == 6
     assert usage["cache_read_tokens"] == 20
     assert usage["cache_write_tokens"] == 10

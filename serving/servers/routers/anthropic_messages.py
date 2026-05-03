@@ -19,6 +19,7 @@ this router only owns:
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from typing import Any
 
@@ -217,21 +218,17 @@ def _schedule_log_store_task(
 
     ``usage`` is the upstream Anthropic usage shape with ``input_tokens`` /
     ``output_tokens`` (and optional ``cache_read_input_tokens`` /
-    ``cache_creation_input_tokens``). It is normalized here to the OpenAI-style
-    keys used in the ``api_logs`` table so dashboards/queries that consume
-    ``prompt_tokens`` and ``total_tokens`` get cache-inclusive counts that
-    match what is actually billed.
+    ``cache_creation_input_tokens``). Cache tokens are stored in the dedicated
+    ``cache_read_tokens`` / ``cache_write_tokens`` columns. ``calculate_cost``
+    already bills them separately, so they must NOT be folded into
+    ``prompt_tokens`` to avoid double-counting.
     """
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
     cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
     cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
-    # OpenAI semantics (used by every downstream report): prompt_tokens
-    # includes cached input. Anthropic's input_tokens does not, so add cache
-    # read + write here. Otherwise Anthropic-surface rows undercount whenever
-    # prompt caching is active.
-    prompt_tokens = input_tokens + cache_read + cache_write
-    total_tokens = prompt_tokens + output_tokens
+    prompt_tokens = input_tokens
+    total_tokens = input_tokens + output_tokens
     prompt_for_log: list[dict[str, Any]] | str = prompt if prompt is not None else []
 
     async def _log() -> None:
@@ -299,6 +296,10 @@ async def anthropic_messages(
     body["model"] = canonical
 
     forwarded_headers = _extract_forwarded_headers(request)
+
+    # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
+    # (strips cache_control blocks). The log must preserve the original client payload.
+    messages_for_log = copy.deepcopy(body.get("messages"))
 
     if adapter.native_format == "openai":
         dropped = _sanitize_for_openai_backend(body)
@@ -399,7 +400,7 @@ async def anthropic_messages(
                         else {},
                         metadata=metadata,
                         params=params_for_log,
-                        prompt=body.get("messages"),
+                        prompt=messages_for_log,
                         response=None,
                         ttft_ms=ttft_ms,
                     )
@@ -440,7 +441,7 @@ async def anthropic_messages(
             pricing=adapter.config.pricing,
             metadata=metadata,
             params=params_for_log,
-            prompt=body.get("messages"),
+            prompt=messages_for_log,
             response=resp if isinstance(resp, dict) else None,
         )
     return JSONResponse(content=resp)
