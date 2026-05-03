@@ -144,6 +144,13 @@ class Settings(BaseSettings):
     # Experiment mode: when True, disable fallback in BaseRouter for A/B testing
     experiment_mode: bool = False
 
+    # Slack alerting (optional). Empty SLACK_WEBHOOK_URL disables the feature
+    # entirely — no scheduler job is registered and no errors are raised.
+    slack_webhook_url: str = ""
+    failed_request_alert_threshold: int = 20
+    failed_request_alert_window_minutes: int = 5
+    failed_request_alert_cooldown_minutes: int = 5
+
     class Config:
         """Pydantic configuration for Settings class."""
 
