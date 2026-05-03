@@ -70,7 +70,7 @@ jobs:
     runs-on: self-hosted
     defaults:
       run:
-        working-directory: ./frontend
+        working-directory: ./apps/frontend
 
     steps:
       - uses: actions/checkout@v6
@@ -89,13 +89,13 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: ${{ steps.check-lock.outputs.cache }}
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci || npm install
 
       - name: npm audit (high/critical)
-        working-directory: frontend
+        working-directory: apps/frontend
         run: npm audit --omit=dev --audit-level=high
         continue-on-error: false
 
@@ -236,7 +236,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: infrastructure/docker/Dockerfile.${{ matrix.image }}
+          file: deploy/docker/Dockerfile.${{ matrix.image }}
           push: false
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}

@@ -14,6 +14,6 @@ regexes = [
 [[allowlists]]
 description = "Test fixtures and design plan/spec markdown — fake credentials in code samples."
 paths = [
-  '''^test/.*\.py$''',
-  '''^docs/superpowers/(plans|specs)/.*\.md$''',
+  '''^tests/.*\.py$''',
+  '''^docs/agents/(plans|specs)/.*\.md$''',
 ]

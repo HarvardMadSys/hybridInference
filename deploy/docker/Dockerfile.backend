@@ -1,0 +1,38 @@
+# ---- Stage 1: build ----
+FROM python:3.12-slim AS builder
+
+RUN pip install uv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+# --no-install-project: only install dependencies, not the project itself.
+# The project source is copied in the runtime stage and used via PYTHONPATH.
+RUN uv sync --frozen --no-dev --no-install-project
+
+# ---- Stage 2: runtime ----
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy virtualenv from builder
+COPY --from=builder /app/.venv .venv
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Copy application source (only the packages needed at runtime)
+COPY apps/backend/serving/ serving/
+COPY apps/backend/routing/ routing/
+COPY config/ config/
+
+# config/ will be overridden by a read-only volume mount at runtime,
+# but we copy a default so the image can run standalone for testing.
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["uvicorn", "serving.servers.app:app", \
+     "--host", "0.0.0.0", "--port", "8080", "--no-server-header"]

@@ -1,3 +1,3 @@
 [submodule "llm-prober"]
-	path = llm-prober
+	path = services/llm-prober
 	url = git@github.com:HarvardMadSys/freeinference-prober.git

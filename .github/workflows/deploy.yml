@@ -80,4 +80,4 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "${PROD_USER}@${PROD_HOST}" \
-            "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} bash scripts/deploy_production.sh"
+            "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} bash ops/deploy/deploy_production.sh"

@@ -1,0 +1,31 @@
+# ---- Stage 1: build ----
+FROM python:3.12-slim AS builder
+
+RUN pip install uv
+
+WORKDIR /app/llm-prober
+COPY services/llm-prober/pyproject.toml llm-prober/uv.lock llm-prober/README.md ./
+COPY services/llm-prober/src ./src
+RUN uv sync --frozen --no-dev
+
+# ---- Stage 2: runtime ----
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/llm-prober
+
+COPY --from=builder /app/llm-prober/.venv .venv
+COPY services/llm-prober/src ./src
+COPY services/llm-prober/README.md ./README.md
+
+ENV PATH="/app/llm-prober/.venv/bin:$PATH"
+ENV PYTHONPATH="/app/llm-prober/src"
+
+EXPOSE 9101
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:9101/api/health || exit 1
+
+CMD ["python", "-m", "llm_prober", "--config", "/app/config.yml"]

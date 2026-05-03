@@ -29,16 +29,16 @@ repos:
     hooks:
       - id: ruff
         args: ["--fix", "--exit-non-zero-on-fix"]
-        exclude: "^(test|scripts)/"
+        exclude: "^(tests|ops)/"
       - id: ruff-format
-        exclude: "^(test|scripts)/"
+        exclude: "^(tests|ops)/"
 
   - repo: https://github.com/pycqa/pydocstyle
     rev: 6.3.0
     hooks:
       - id: pydocstyle
         additional_dependencies: ["tomli"]
-        exclude: "^(test|tests)/"
+        exclude: "^tests/"
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.18.4
@@ -54,7 +54,7 @@ repos:
     rev: v8.56.0
     hooks:
       - id: eslint
-        files: ^frontend/.*\.[jt]sx?$
+        files: ^apps/frontend/.*\.[jt]sx?$
         types: [file]
         additional_dependencies:
           - eslint@8.57.1
@@ -71,4 +71,4 @@ repos:
     rev: v3.1.0
     hooks:
       - id: prettier
-        files: ^frontend/.*\.(ts|tsx|js|jsx|json|css|md)$
+        files: ^apps/frontend/.*\.(ts|tsx|js|jsx|json|css|md)$

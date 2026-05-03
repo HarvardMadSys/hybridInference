@@ -1,0 +1,14 @@
+[Unit]
+Description=Alertmanager Webhook Logger (JSONL)
+After=network.target alertmanager.service
+
+[Service]
+Type=simple
+User=freeinference
+WorkingDirectory=/srv/hybridInference
+ExecStart=/srv/hybridInference/.venv/bin/python /srv/hybridInference/services/alert-logger/alert_logger.py
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

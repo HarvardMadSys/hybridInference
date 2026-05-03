@@ -78,8 +78,8 @@ There is no special multi-key rotation for OpenRouter — a single account-level
 
 ## Specs and design history
 
-- Design spec: `docs/superpowers/specs/2026-05-02-openrouter-upstream-design.md`
-- Implementation plan: `docs/superpowers/plans/2026-05-02-openrouter-upstream.md`
+- Design spec: `docs/agents/specs/2026-05-02-openrouter-upstream-design.md`
+- Implementation plan: `docs/agents/plans/2026-05-02-openrouter-upstream.md`
 
 ## See also
 
