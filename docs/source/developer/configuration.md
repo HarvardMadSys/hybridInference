@@ -140,7 +140,7 @@ uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
 - `POST /v1/chat/completions` - Routes requests based on configured ratios
 - `GET /routing` - Shows current routing configuration
 
-## 6. FAQ
+## 5. FAQ
 
 **Q: What if routing.yaml conflicts with models.yaml?**
 A: `routing.yaml` only adjusts weights; it doesn't add/remove adapters. The candidate set comes from `models.yaml` and environment variables.

@@ -101,7 +101,6 @@ targets:
     tags: [minimax, public]
 
   # Admin-only chat models
-
   - name: claude-sonnet-4.6-admin
     model: claude-sonnet-4.6
     suite_type: gateway-public
