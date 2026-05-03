@@ -31,6 +31,15 @@ def is_user_auth_enabled() -> bool:
     Fail-closed by default: auth is enabled unless ``USER_AUTH_ENABLED``
     is explicitly set to a falsy value (parsed by Pydantic).
     """
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        cached = rs._cache.get("user_auth_enabled")
+        if cached is not None:
+            return bool(cached[1])
+    except Exception:
+        pass
     return get_settings().user_auth_enabled
 
 

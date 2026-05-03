@@ -832,3 +832,40 @@ export async function removeSignupAllowedDomain(
   // Delegate to the standard error path; jsonOrThrow throws on !ok.
   await jsonOrThrow<unknown>(resp);
 }
+
+// ========================================
+// Runtime Settings (Feature Flags)
+// ========================================
+
+export interface RuntimeSettingItem {
+  key: string;
+  value: unknown;
+  value_type: string;
+  default_value: unknown;
+  description: string;
+}
+
+export interface ListSettingsResponse {
+  settings: RuntimeSettingItem[];
+}
+
+export async function listRuntimeSettings(): Promise<ListSettingsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/settings');
+  return jsonOrThrow<ListSettingsResponse>(resp);
+}
+
+export async function updateRuntimeSetting(
+  key: string,
+  value: unknown,
+): Promise<RuntimeSettingItem> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/settings/${encodeURIComponent(key)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    },
+  );
+  return jsonOrThrow<RuntimeSettingItem>(resp);
+}

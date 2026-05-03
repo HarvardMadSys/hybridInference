@@ -5,7 +5,10 @@ import {
   SignupAllowedDomain,
   addSignupAllowedDomain,
   listSignupAllowedDomains,
+  listRuntimeSettings,
   removeSignupAllowedDomain,
+  RuntimeSettingItem,
+  updateRuntimeSetting,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -38,12 +41,14 @@ export function SettingsTab() {
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<SignupAllowedDomain | null>(null);
-  // Track the active toast timeout so we can clear it on unmount and
-  // avoid calling setState on an unmounted component if the user
-  // navigates away within the 3s window.
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
+  const [featureFlags, setFeatureFlags] = useState<RuntimeSettingItem[]>([]);
+  const [flagsLoading, setFlagsLoading] = useState(true);
+  const [flagsError, setFlagsError] = useState<string | null>(null);
+  const [togglingKey, setTogglingKey] = useState<string | null>(null);
+
+  const loadDomains = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -56,12 +61,24 @@ export function SettingsTab() {
     }
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  const loadFlags = useCallback(async () => {
+    setFlagsLoading(true);
+    setFlagsError(null);
+    try {
+      const resp = await listRuntimeSettings();
+      setFeatureFlags(resp.settings.filter((s) => s.value_type === 'bool'));
+    } catch (e) {
+      setFlagsError(getErrorMessage(e));
+    } finally {
+      setFlagsLoading(false);
+    }
+  }, []);
 
-  // Clear any pending toast timeout when the component unmounts so we
-  // never fire setState on an unmounted component.
+  useEffect(() => {
+    loadDomains();
+    loadFlags();
+  }, [loadDomains, loadFlags]);
+
   useEffect(
     () => () => {
       if (toastTimeoutRef.current !== null) {
@@ -83,6 +100,19 @@ export function SettingsTab() {
     }, 3000);
   };
 
+  const onToggleFlag = async (flag: RuntimeSettingItem) => {
+    setTogglingKey(flag.key);
+    try {
+      await updateRuntimeSetting(flag.key, !flag.value);
+      flashToast(`${flag.key} ${!flag.value ? 'enabled' : 'disabled'}`);
+      await loadFlags();
+    } catch (e) {
+      flashToast(`Failed to update ${flag.key}: ${getErrorMessage(e)}`);
+    } finally {
+      setTogglingKey(null);
+    }
+  };
+
   const onAdd = async () => {
     setInputError(null);
     const validated = validateSignupDomainInput(input);
@@ -99,7 +129,7 @@ export function SettingsTab() {
           ? `Added wildcard *.${validated.domain}.`
           : `Added ${validated.domain}.`,
       );
-      await load();
+      await loadDomains();
     } catch (e) {
       setInputError(getErrorMessage(e));
     } finally {
@@ -113,7 +143,7 @@ export function SettingsTab() {
     try {
       await removeSignupAllowedDomain(row.domain, row.is_wildcard);
       flashToast(row.is_wildcard ? `Removed wildcard *.${row.domain}.` : `Removed ${row.domain}.`);
-      await load();
+      await loadDomains();
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -124,6 +154,78 @@ export function SettingsTab() {
 
   return (
     <div className="mt-5 space-y-6">
+      {/* Feature Flags */}
+      <div className="rounded-xl border border-gray-200 bg-white p-5">
+        <div className="mb-3">
+          <h2 className="text-[14px] font-semibold text-gray-900">Feature Flags</h2>
+          <p className="mt-1 text-[12px] text-gray-500">
+            Toggle runtime features without restarting the server. Changes take effect immediately.
+          </p>
+        </div>
+
+        {flagsError && (
+          <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
+            {flagsError}{' '}
+            <button onClick={() => setFlagsError(null)} className="ml-2 font-bold">
+              &times;
+            </button>
+          </div>
+        )}
+
+        {flagsLoading ? (
+          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+        ) : featureFlags.length === 0 ? (
+          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
+            No feature flags available.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {featureFlags.map((flag) => {
+              const isToggling = togglingKey === flag.key;
+              const isOn = !!flag.value;
+              const isDefault = flag.value === flag.default_value;
+              return (
+                <div
+                  key={flag.key}
+                  className="flex items-center justify-between rounded-lg border border-gray-100 px-4 py-3"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-medium text-gray-900">
+                        {flag.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                      </span>
+                      {!isDefault && (
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                          Modified
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-gray-500">{flag.description}</p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={isOn}
+                    disabled={isToggling}
+                    onClick={() => onToggleFlag(flag)}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
+                      isOn ? 'bg-gray-900' : 'bg-gray-200'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                        isOn ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Signup Policy */}
       <div className="rounded-xl border border-gray-200 bg-white p-5">
         <div className="mb-3">
           <h2 className="text-[14px] font-semibold text-gray-900">Signup Policy</h2>

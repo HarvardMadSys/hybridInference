@@ -740,6 +740,26 @@ class DualWriteOperationalStore(OperationalStore):
         """Delegate to primary."""
         return await self._primary.is_signup_domain_allowed(email)
 
+    # -- site settings --------------------------------------------------------
+
+    async def get_setting(self, key: str) -> Row | None:
+        """Delegate to primary."""
+        return await self._primary.get_setting(key)
+
+    async def set_setting(
+        self, key: str, value: str, value_type: str, updated_by: str | None
+    ) -> None:
+        await self._primary.set_setting(key, value, value_type, updated_by)
+        self._do_shadow(
+            "set_setting",
+            self._shadow.set_setting(key, value, value_type, updated_by),
+            key=key,
+        )
+
+    async def list_settings(self) -> list[Row]:
+        """Delegate to primary."""
+        return await self._primary.list_settings()
+
 
 # ---------------------------------------------------------------------------
 # DualWriteLogStore

@@ -47,6 +47,7 @@ class AppServices:
     model_router_registry: ModelRouterRegistry | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
+    runtime_settings: Any | None = None
 
 
 def get_services(request: Request) -> AppServices:
@@ -186,6 +187,15 @@ async def get_current_user(
         )
 
     require_verification = get_settings().signup_require_email_verification
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        cached = rs._cache.get("signup_require_email_verification")
+        if cached is not None:
+            require_verification = bool(cached[1])
+    except Exception:
+        pass
     if require_verification and not user_row["email_verified"]:
         raise HTTPException(
             status_code=403,
@@ -267,6 +277,15 @@ async def verify_admin_access(
             if not user_row or user_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="Admin account is no longer active.")
             require_verification = get_settings().signup_require_email_verification
+            try:
+                from serving.config.runtime_settings import get_runtime_settings_instance
+
+                rs = get_runtime_settings_instance()
+                cached = rs._cache.get("signup_require_email_verification")
+                if cached is not None:
+                    require_verification = bool(cached[1])
+            except Exception:
+                pass
             if require_verification and not user_row["email_verified"]:
                 raise HTTPException(
                     status_code=403,

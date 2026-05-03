@@ -117,7 +117,15 @@ async def signup(
     settings.signup_rate_limit_per_hour and signup_rate_limit_per_day.
     """
     # Check if signup is enabled
-    if not settings.signup_enabled:
+    _signup_enabled = settings.signup_enabled
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        _signup_enabled = await rs.get_bool("signup_enabled")
+    except Exception:
+        pass
+    if not _signup_enabled:
         raise HTTPException(
             status_code=403,
             detail="Public signup is currently disabled. Please contact administrator.",
@@ -161,6 +169,13 @@ async def signup(
     # whose domain is on the allowlist (exact or wildcard suffix) auto-
     # approve; everyone else lands in pending_approval.
     require_verification = settings.signup_require_email_verification
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        require_verification = await rs.get_bool("signup_require_email_verification")
+    except Exception:
+        pass
     if await allowlist_is_empty(op_store) or await is_domain_allowed(body.email, op_store):
         initial_status = "active"
     else:
@@ -280,6 +295,13 @@ async def login(
 
     # Check if email verification is required and if email is verified
     require_verification = settings.signup_require_email_verification
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        require_verification = await rs.get_bool("signup_require_email_verification")
+    except Exception:
+        pass
     if require_verification and not user_row["email_verified"]:
         raise HTTPException(
             status_code=403,
@@ -444,6 +466,13 @@ async def refresh(
 
     # Check if email verification is required and if email is verified
     require_verification = settings.signup_require_email_verification
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        require_verification = await rs.get_bool("signup_require_email_verification")
+    except Exception:
+        pass
     if require_verification and not user_row["email_verified"]:
         raise HTTPException(
             status_code=403,

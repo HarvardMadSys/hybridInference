@@ -439,7 +439,17 @@ class OpenAICompatAdapter(BaseAdapter):
         # Make request
         url = self._build_url()
         logger.debug(f"[OpenAICompat] POST {url} model={payload.get('model', '<omitted>')}")
-        if get_settings().log_full_payload:
+        _log_payload = get_settings().log_full_payload
+        try:
+            from serving.config.runtime_settings import get_runtime_settings_instance
+
+            rs = get_runtime_settings_instance()
+            cached = rs._cache.get("log_full_payload")
+            if cached is not None:
+                _log_payload = bool(cached[1])
+        except Exception:
+            pass
+        if _log_payload:
             logger.debug(f"[OpenAICompat] Payload: {payload}")
 
         response = await self._post_with_pool(url, payload)

@@ -420,6 +420,17 @@ async def initialize() -> AppServices:
     else:
         logger.info("alerts disabled (ALERTS_ENABLED=false)")
 
+    # Runtime settings (DB-backed feature flags with TTL cache)
+    runtime_settings = None
+    if operational_store:
+        try:
+            from serving.config.runtime_settings import init_runtime_settings
+
+            runtime_settings = init_runtime_settings(operational_store)
+            logger.info("Runtime settings initialized")
+        except Exception as exc:
+            logger.warning(f"Runtime settings initialization failed: {exc}")
+
     return AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
@@ -430,6 +441,7 @@ async def initialize() -> AppServices:
         model_router_registry=model_router_registry,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
+        runtime_settings=runtime_settings,
     )
 
 

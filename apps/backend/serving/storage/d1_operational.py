@@ -1512,3 +1512,28 @@ class D1OperationalStore(OperationalStore):
             if row_is_wildcard and row_domain in wildcard_set:
                 return True
         return False
+
+    # -- site settings --------------------------------------------------------
+
+    async def get_setting(self, key: str) -> Row | None:
+        result = await self._d1.query(
+            "SELECT key, value, value_type, updated_at, updated_by "
+            "FROM site_settings WHERE key = ?",
+            [key],
+        )
+        return result.rows[0] if result.rows else None
+
+    async def set_setting(
+        self, key: str, value: str, value_type: str, updated_by: str | None
+    ) -> None:
+        await self._d1.execute(
+            "INSERT OR REPLACE INTO site_settings (key, value, value_type, updated_at, updated_by) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [key, value, value_type, _now_iso(), updated_by],
+        )
+
+    async def list_settings(self) -> list[Row]:
+        result = await self._d1.query(
+            "SELECT key, value, value_type, updated_at, updated_by FROM site_settings ORDER BY key"
+        )
+        return result.rows

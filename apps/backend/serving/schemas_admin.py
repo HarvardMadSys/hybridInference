@@ -652,6 +652,22 @@ class AdminProviderQuotasResponse(BaseModel):
     providers: list[ProviderQuotaResult]
 
 
+class RuntimeSettingItem(BaseModel):
+    key: str
+    value: Any
+    value_type: str
+    default_value: Any
+    description: str
+
+
+class ListSettingsResponse(BaseModel):
+    settings: list[RuntimeSettingItem]
+
+
+class UpdateSettingRequest(BaseModel):
+    value: Any
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -686,6 +702,8 @@ __all__ = [
     "HardDeleteUserResponse",
     "ListAPIKeysResponse",
     "ListAuditLogResponse",
+    "ListSettingsResponse",
+    "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
@@ -695,12 +713,14 @@ __all__ = [
     "ResumeUserRequest",
     "ResumeUserResponse",
     "RevokeAPIKeyResponse",
+    "RuntimeSettingItem",
     "SparklineBucket",
     "StatusCounts",
     "SummaryCard",
     "SummaryUserItem",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
+    "UpdateSettingRequest",
     "UpdateUserRequest",
     "UpdateUserResponse",
     "UserCostHistoryPoint",

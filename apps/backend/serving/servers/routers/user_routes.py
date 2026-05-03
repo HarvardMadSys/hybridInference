@@ -305,6 +305,13 @@ async def create_api_key(
 
     # Check if email is verified
     require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        require_verification = await rs.get_bool("signup_require_email_verification")
+    except Exception:
+        pass
     if require_verification and not current_user.get("email_verified"):
         raise HTTPException(status_code=403, detail="Email is not verified.")
 

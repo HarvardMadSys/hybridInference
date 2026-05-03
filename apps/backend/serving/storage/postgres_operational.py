@@ -372,6 +372,17 @@ class PostgresOperationalStore(OperationalStore):
             )
             raise
 
+        # --- site_settings ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS site_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                value_type TEXT NOT NULL DEFAULT 'str',
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_by TEXT
+            )
+        """)
+
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
 
@@ -1566,6 +1577,40 @@ class PostgresOperationalStore(OperationalStore):
             if row_is_wildcard and row_domain in wildcard_set:
                 return True
         return False
+
+    # -- site settings --------------------------------------------------------
+
+    async def get_setting(self, key: str) -> Row | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT key, value, value_type, updated_at, updated_by "
+                "FROM site_settings WHERE key = $1",
+                key,
+            )
+        return dict(row) if row else None
+
+    async def set_setting(
+        self, key: str, value: str, value_type: str, updated_by: str | None
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO site_settings (key, value, value_type, updated_at, updated_by) "
+                "VALUES ($1, $2, $3, NOW(), $4) "
+                "ON CONFLICT (key) DO UPDATE SET "
+                "value = $2, value_type = $3, updated_at = NOW(), updated_by = $4",
+                key,
+                value,
+                value_type,
+                updated_by,
+            )
+
+    async def list_settings(self) -> list[Row]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key, value, value_type, updated_at, updated_by "
+                "FROM site_settings ORDER BY key"
+            )
+        return [dict(r) for r in rows]
 
     # -- cost counters -------------------------------------------------------
 
