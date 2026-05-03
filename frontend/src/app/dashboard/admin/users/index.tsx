@@ -48,6 +48,15 @@ export default function UsersTab({
   );
   const [density, setDensity] = useState<Density>('comfortable');
 
+  // In Next.js App Router, useSearchParams() is reactive: it returns a new
+  // object on every URL change (including browser back/forward). Sync
+  // filterState whenever searchParams changes so the table stays in sync with
+  // the URL even when the user navigates history without going through
+  // applyFilterState.
+  useEffect(() => {
+    setFilterState(filterStateFromUrl(searchParams));
+  }, [searchParams]);
+
   const applyFilterState = useCallback(
     (next: FilterState) => {
       setFilterState(next);
