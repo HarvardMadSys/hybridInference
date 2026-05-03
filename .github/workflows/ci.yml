@@ -94,6 +94,11 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
+      - name: npm audit (high/critical)
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: false
+
       - name: Run ESLint
         run: npm run lint
 
@@ -212,6 +217,29 @@ jobs:
           fail_ci_if_error: false
           verbose: true
         continue-on-error: true
+
+  docker-build:
+    name: Docker Build (${{ matrix.image }})
+    runs-on: self-hosted
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [frontend, backend]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.image }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.${{ matrix.image }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
   security:
     name: Security Scan
