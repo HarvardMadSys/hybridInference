@@ -22,7 +22,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 35  # 29 unique paths x multi-method routes; from pre-flight snapshot
+    expected = 36  # bumped from 35 in #349 (added /recent-requests/{id}/content)
     routes = [r for r in admin.router.routes if hasattr(r, "path") and r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"

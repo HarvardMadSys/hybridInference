@@ -188,6 +188,12 @@ async def test_list_response_omits_prompt_and_response(admin_client_capture):
                     "cost_usd": None,
                     "error": None,
                     "user_ip": None,
+                    # Deliberately seed prompt/response into the row to prove
+                    # the response model strips them; if a future regression
+                    # reintroduces them on AdminRecentRequestItem, this test
+                    # will catch it.
+                    "prompt": "should-not-appear",
+                    "response": "should-not-appear",
                 }
             ]
         return []
