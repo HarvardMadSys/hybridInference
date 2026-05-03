@@ -44,9 +44,7 @@ def _sweep_inactive(buckets: dict[str, deque[float]], cutoff: float) -> None:
             del buckets[key]
 
 
-async def check_and_record_login(
-    email: str, ip: str
-) -> tuple[bool, str | None]:
+async def check_and_record_login(email: str, ip: str) -> tuple[bool, str | None]:
     """Record a login attempt and return whether it should be allowed.
 
     Returns (True, None) if both the per-email and per-IP windows have

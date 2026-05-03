@@ -338,9 +338,7 @@ class TestLoginAbuseProtection:
     """Per-email and per-IP rate limits on /auth/login."""
 
     @pytest.mark.asyncio
-    async def test_login_rate_limited_per_email(
-        self, auth_app_client: AsyncClient, test_user
-    ):
+    async def test_login_rate_limited_per_email(self, auth_app_client: AsyncClient, test_user):
         """Per-email bucket trips after `login_rate_limit_per_15min` attempts.
 
         Default is 5: after 5 wrong-password attempts within 15 minutes,
