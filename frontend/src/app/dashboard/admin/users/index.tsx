@@ -80,13 +80,13 @@ export default function UsersTab({
     setLoading(true);
     setError(null);
     try {
-      const d = await listUsers(
-        filter || undefined,
-        100,
-        0,
-        searchTerm || undefined,
-        sortBy !== 'created' ? sortBy : undefined,
-      );
+      const d = await listUsers({
+        status: filter || undefined,
+        limit: 100,
+        offset: 0,
+        search: searchTerm || undefined,
+        sortBy: sortBy !== 'created' ? sortBy : undefined,
+      });
       setUsers(d.users);
       setCounts(d.status_counts);
     } catch (e) {

@@ -1,5 +1,10 @@
 import { fetchWithAuth, jsonOrThrow } from './client';
 import { config } from '@/config/env';
+import type {
+  CostHistoryPoint,
+  QuotaStateFilter,
+  UsersSummary,
+} from '@/app/dashboard/admin/users/types';
 
 const API_BASE = config.apiBase;
 
@@ -51,21 +56,79 @@ export interface ApproveRejectResponse {
   message: string;
 }
 
-export async function listUsers(
-  status?: string,
-  limit = 100,
-  offset = 0,
-  search?: string,
-  sortBy?: UserSortBy,
-): Promise<ListUsersResponse> {
+export interface ListUsersOptions {
+  status?: string;
+  search?: string;
+  sortBy?: UserSortBy;
+  limit?: number;
+  offset?: number;
+  minCostToday?: number;
+  minCostMonth?: number;
+  quotaState?: QuotaStateFilter;
+  provider?: string;
+  activeWithinHours?: number;
+}
+
+export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersResponse> {
   const params = new URLSearchParams();
-  if (status) params.set('status', status);
-  if (search) params.set('search', search);
-  if (sortBy) params.set('sort_by', sortBy);
-  params.set('limit', String(limit));
-  params.set('offset', String(offset));
+  if (opts.status) params.set('status', opts.status);
+  if (opts.search) params.set('search', opts.search);
+  if (opts.sortBy) params.set('sort_by', opts.sortBy);
+  params.set('limit', String(opts.limit ?? 100));
+  params.set('offset', String(opts.offset ?? 0));
+  if (opts.minCostToday !== undefined) params.set('min_cost_today', String(opts.minCostToday));
+  if (opts.minCostMonth !== undefined) params.set('min_cost_month', String(opts.minCostMonth));
+  if (opts.quotaState) params.set('quota_state', opts.quotaState);
+  if (opts.provider) params.set('provider', opts.provider);
+  if (opts.activeWithinHours !== undefined) {
+    params.set('active_within_hours', String(opts.activeWithinHours));
+  }
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);
   return jsonOrThrow<ListUsersResponse>(resp);
+}
+
+// ========================================
+// Users cost-history + summary (new in admin Users redesign)
+// ========================================
+
+export interface UserCostHistoryResponse {
+  user_id: string;
+  days: number;
+  points: CostHistoryPoint[];
+}
+
+export interface BulkCostHistoryResponse {
+  days: number;
+  histories: Record<string, CostHistoryPoint[]>;
+}
+
+export async function getUserCostHistory(
+  userId: string,
+  days = 7,
+): Promise<UserCostHistoryResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/cost-history?days=${days}`,
+  );
+  return jsonOrThrow<UserCostHistoryResponse>(resp);
+}
+
+export async function getBulkCostHistory(
+  userIds: string[],
+  days = 7,
+): Promise<BulkCostHistoryResponse> {
+  if (userIds.length === 0) return { days, histories: {} };
+  const params = new URLSearchParams({
+    user_ids: userIds.join(','),
+    days: String(days),
+  });
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/cost-history?${params.toString()}`);
+  return jsonOrThrow<BulkCostHistoryResponse>(resp);
+}
+
+export async function getUsersSummary(): Promise<UsersSummary> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/users/summary');
+  return jsonOrThrow<UsersSummary>(resp);
 }
 
 export async function approveUser(userId: string, note?: string): Promise<ApproveRejectResponse> {
