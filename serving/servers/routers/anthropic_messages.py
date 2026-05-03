@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import time
 from typing import Any
 
@@ -262,6 +263,170 @@ def _schedule_log_store_task(
     asyncio.create_task(_log())  # noqa: RUF006
 
 
+# --- Anthropic SSE accumulator ---------------------------------------------
+
+
+def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | None:
+    """Update *acc* in-place given one Anthropic SSE event; return the (possibly new) accumulator.
+
+    Best-effort: any malformed event is swallowed so streaming logging never
+    impacts the forwarded client stream.
+    """
+    if event_type in ("ping", "message_stop", "error", ""):
+        return acc
+    try:
+        payload = json.loads(data)
+    except (json.JSONDecodeError, ValueError):
+        return acc
+    if not isinstance(payload, dict):
+        return acc
+
+    try:
+        if event_type == "message_start":
+            msg = payload.get("message") or {}
+            if not isinstance(msg, dict):
+                return acc
+            return {
+                "id": msg.get("id"),
+                "type": "message",
+                "role": msg.get("role", "assistant"),
+                "model": msg.get("model"),
+                "content": list(msg.get("content") or []),
+                "stop_reason": msg.get("stop_reason"),
+                "stop_sequence": msg.get("stop_sequence"),
+                "usage": dict(msg.get("usage") or {}),
+            }
+
+        if acc is None:
+            return acc
+
+        if event_type == "content_block_start":
+            idx = payload.get("index")
+            block_in = payload.get("content_block")
+            if not isinstance(idx, int) or not isinstance(block_in, dict):
+                return acc
+            block = dict(block_in)
+            if block.get("type") == "text":
+                block.setdefault("text", "")
+            elif block.get("type") == "tool_use":
+                block.setdefault("input", {})
+                block["_partial_json"] = ""
+            content = acc["content"]
+            while len(content) <= idx:
+                content.append(None)
+            content[idx] = block
+
+        elif event_type == "content_block_delta":
+            idx = payload.get("index")
+            delta = payload.get("delta") or {}
+            if not isinstance(idx, int) or not isinstance(delta, dict):
+                return acc
+            content = acc["content"]
+            if 0 <= idx < len(content) and isinstance(content[idx], dict):
+                block = content[idx]
+                dtype = delta.get("type")
+                if dtype == "text_delta":
+                    block["text"] = block.get("text", "") + (delta.get("text") or "")
+                elif dtype == "input_json_delta":
+                    block["_partial_json"] = block.get("_partial_json", "") + (
+                        delta.get("partial_json") or ""
+                    )
+                elif dtype == "thinking_delta":
+                    block["thinking"] = block.get("thinking", "") + (delta.get("thinking") or "")
+
+        elif event_type == "content_block_stop":
+            idx = payload.get("index")
+            if not isinstance(idx, int):
+                return acc
+            content = acc["content"]
+            if 0 <= idx < len(content) and isinstance(content[idx], dict):
+                _finalize_block(content[idx])
+
+        elif event_type == "message_delta":
+            delta = payload.get("delta") or {}
+            if isinstance(delta, dict):
+                if "stop_reason" in delta:
+                    acc["stop_reason"] = delta["stop_reason"]
+                if "stop_sequence" in delta:
+                    acc["stop_sequence"] = delta["stop_sequence"]
+            extra_usage = payload.get("usage") or {}
+            if isinstance(extra_usage, dict):
+                if "output_tokens" in extra_usage:
+                    acc["usage"]["output_tokens"] = extra_usage["output_tokens"]
+                for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+                    if k in extra_usage:
+                        acc["usage"][k] = extra_usage[k]
+    except Exception:
+        # Logging must never disrupt the forwarded stream; drop this event.
+        pass
+
+    return acc
+
+
+def _finalize_block(block: dict) -> None:
+    """Resolve any partial-JSON buffer on a tool_use block; remove sentinel keys."""
+    if block.get("type") == "tool_use" and "_partial_json" in block:
+        raw = block.pop("_partial_json")
+        try:
+            block["input"] = json.loads(raw) if raw else block.get("input") or {}
+        except (json.JSONDecodeError, ValueError):
+            if raw:
+                block["input"] = raw  # type: ignore[assignment]
+
+
+def _finalize_response_acc(acc: dict | None) -> dict | None:
+    """Normalize the accumulator for persistence: finalize partial blocks, drop sentinels."""
+    if not isinstance(acc, dict):
+        return acc
+    for block in acc.get("content") or []:
+        if isinstance(block, dict):
+            _finalize_block(block)
+    return acc
+
+
+_SSE_LEFTOVER_CAP = 65536
+
+
+def _parse_sse_chunk(buffer: bytes, raw: bytes) -> tuple[list[tuple[str, str]], bytes]:
+    r"""Extract complete SSE events from *buffer* + *raw*; return (events, leftover).
+
+    Events are delimited by a blank line; both ``\n\n`` and ``\r\n\r\n``
+    are recognized. The trailing partial event is returned as *leftover* so the
+    caller can prepend it to the next chunk. Leftover is capped at
+    ``_SSE_LEFTOVER_CAP`` bytes; a malformed stream without separators will be
+    discarded rather than grow without bound.
+    """
+    buffer = buffer + raw
+    events: list[tuple[str, str]] = []
+    pos = 0
+    while True:
+        sep_n = buffer.find(b"\n\n", pos)
+        sep_r = buffer.find(b"\r\n\r\n", pos)
+        if sep_n >= 0 and (sep_r < 0 or sep_n < sep_r):
+            sep, sep_len = sep_n, 2
+        elif sep_r >= 0:
+            sep, sep_len = sep_r, 4
+        else:
+            break
+        block = buffer[pos:sep].decode("utf-8", errors="replace").strip()
+        pos = sep + sep_len
+        if not block:
+            continue
+        event_type = ""
+        data_lines: list[str] = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event_type = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:") :].strip())
+        if data_lines:
+            events.append((event_type, "\n".join(data_lines)))
+    leftover = buffer[pos:]
+    if len(leftover) > _SSE_LEFTOVER_CAP:
+        leftover = b""
+    return events, leftover
+
+
 # --- Route handler ---------------------------------------------------------
 
 
@@ -347,6 +512,8 @@ async def anthropic_messages(
             stream_failed = False
             ttft_ms: int | None = None
             ttft_buffer = b""
+            response_acc: dict | None = None
+            sse_buffer = b""
             try:
                 async for chunk in adapter.stream_messages(
                     body,
@@ -367,12 +534,13 @@ async def anthropic_messages(
                                 ttft_buffer = b""
                         elif len(ttft_buffer) > 16384:
                             ttft_buffer = b""
+                    events, sse_buffer = _parse_sse_chunk(sse_buffer, chunk)
+                    for event_type, data in events:
+                        response_acc = _apply_sse_event(response_acc, event_type, data)
                     yield chunk
             except Exception as exc:
                 stream_failed = True
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
-                import json as _j
-
                 err = {
                     "type": "error",
                     "error": {
@@ -380,7 +548,7 @@ async def anthropic_messages(
                         "message": scrub_error_for_user(exc, request_id, 502),
                     },
                 }
-                yield f"event: error\ndata: {_j.dumps(err)}\n\n".encode()
+                yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
             finally:
                 latency_ms = int((time.time() - start) * 1000)
                 status_code = 502 if stream_failed else 200
@@ -404,7 +572,7 @@ async def anthropic_messages(
                         metadata=metadata,
                         params=params_for_log,
                         prompt=messages_for_log,
-                        response=None,
+                        response=_finalize_response_acc(response_acc),
                         ttft_ms=ttft_ms,
                     )
 
