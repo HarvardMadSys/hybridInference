@@ -20,31 +20,37 @@ export function SavedViews({ current, onApply }: SavedViewsProps) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       {all.map((v) => (
-        <button
-          key={v.id}
-          type="button"
-          onClick={() => onApply(v.filterState)}
-          className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-            activeId === v.id
-              ? 'border-blue-600 bg-blue-600 text-white'
-              : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
-          }`}
-        >
-          {v.name}
+        // Wrap in a div so the two sibling buttons are valid interactive elements
+        // (no nested buttons — that's invalid HTML and breaks a11y).
+        <div key={v.id} className="flex items-stretch">
+          <button
+            type="button"
+            onClick={() => onApply(v.filterState)}
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+              v.builtin ? '' : 'rounded-r-none border-r-0'
+            } ${
+              activeId === v.id
+                ? 'border-blue-600 bg-blue-600 text-white'
+                : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            {v.name}
+          </button>
           {!v.builtin && (
-            <span
-              role="button"
+            <button
+              type="button"
               aria-label={`Delete view ${v.name}`}
-              className="ml-2 text-gray-400 hover:text-red-500"
-              onClick={(e) => {
-                e.stopPropagation();
-                remove(v.id);
-              }}
+              onClick={() => remove(v.id)}
+              className={`rounded-r-full border border-l-0 px-2 text-xs transition-colors ${
+                activeId === v.id
+                  ? 'border-blue-600 bg-blue-600 text-blue-200 hover:text-white'
+                  : 'border-gray-300 bg-white text-gray-400 hover:bg-red-50 hover:text-red-500'
+              }`}
             >
               ×
-            </span>
+            </button>
           )}
-        </button>
+        </div>
       ))}
       <button
         type="button"
@@ -56,10 +62,19 @@ export function SavedViews({ current, onApply }: SavedViewsProps) {
       {showSaveDialog && (
         <SaveDialog
           onSave={(name) => {
-            const id = name
+            const baseId = name
               .trim()
               .toLowerCase()
               .replace(/[^a-z0-9]+/g, '-');
+            // Ensure the slug is unique: append -2, -3, … if it already exists
+            // in either built-in views or existing custom views.
+            const existingIds = new Set(all.map((v) => v.id));
+            let id = baseId;
+            let suffix = 2;
+            while (existingIds.has(id)) {
+              id = `${baseId}-${suffix}`;
+              suffix += 1;
+            }
             save({
               id,
               name: name.trim(),
