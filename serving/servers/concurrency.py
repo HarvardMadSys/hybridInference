@@ -108,6 +108,14 @@ class UserConcurrencyLimiter:
         else:
             USER_CONCURRENCY_ACQUIRES_TOTAL.labels(role=label, outcome="rejected").inc()
             USER_CONCURRENCY_REJECTED_TOTAL.labels(role=label).inc()
+            logger.warning(
+                "concurrency_rejected",
+                extra={
+                    "event": "concurrency_rejected",
+                    "user_id": user_id,
+                    "role": label,
+                },
+            )
         return granted, slot.capacity, label
 
     def release(self, user_id: str) -> None:

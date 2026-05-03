@@ -80,42 +80,48 @@ async def test_alerter_no_fire_under_threshold():
     alerter = _make_alerter(pool, threshold=20)
 
     with patch(
-        "serving.admin.failed_request_alerter.post_slack_alert",
+        "serving.admin.failed_request_alerter.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
-    ) as mock_post:
+    ) as mock_alert:
         await alerter.run_check()
 
-    mock_post.assert_not_awaited()
+    mock_alert.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_alerter_fires_over_threshold():
-    """count == 21 (one over threshold of 20) must POST to Slack with expected body."""
+    """count == 21 (one over threshold of 20) must call alert_slack with expected context."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=21)
     alerter = _make_alerter(pool, threshold=20, window=5)
 
     with patch(
-        "serving.admin.failed_request_alerter.post_slack_alert",
+        "serving.admin.failed_request_alerter.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
-    ) as mock_post:
+    ) as mock_alert:
         await alerter.run_check()
 
-    mock_post.assert_awaited_once()
-    args, _kwargs = mock_post.await_args
-    webhook, message = args
-    assert webhook == "https://hooks.slack.test/abc"
-    assert "21 failed requests" in message
-    assert "5 minutes" in message
-    assert "threshold: 20" in message
-    assert ":rotating_light:" in message
+    mock_alert.assert_awaited_once()
+    args, kwargs = mock_alert.await_args
+    severity, title, context = args
+    assert severity.value == "error"
+    assert "Failed-request rate exceeded" in title
+    assert context["count"] == 21
+    assert context["window_minutes"] == 5
+    assert context["threshold"] == 20
+    assert kwargs["dedupe_key"] == "failed_request_rate_db"
 
 
 @pytest.mark.asyncio
-async def test_alerter_fires_via_httpx_payload():
-    """End-to-end through post_slack_alert: httpx receives {"text": ...}."""
+async def test_alerter_fires_via_httpx_payload(monkeypatch):
+    """End-to-end through alert_slack: httpx receives {"text": ...}."""
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/abc")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=25)
     alerter = _make_alerter(pool, threshold=20)
@@ -131,15 +137,18 @@ async def test_alerter_fires_via_httpx_payload():
         async def __aexit__(self_inner, *_a):
             return False
 
+    # Patch httpx in the alerts module — that's where the new sink posts.
     with patch(
-        "serving.admin.failed_request_alerter.httpx.AsyncClient",
+        "serving.observability.alerts.httpx.AsyncClient",
         return_value=_ClientCtx(),
     ):
         await alerter.run_check()
 
     fake_client.post.assert_awaited_once()
     _args, kwargs = fake_client.post.await_args
-    assert kwargs["json"]["text"].startswith(":rotating_light: 25 failed requests")
+    body = kwargs["json"]["text"]
+    assert "Failed-request rate exceeded" in body
+    assert "25" in body
 
 
 @pytest.mark.asyncio
@@ -159,14 +168,14 @@ async def test_alerter_cooldown_suppresses_repeat():
     alerter = _make_alerter(pool, threshold=20, cooldown=5, now_fn=_clock)
 
     with patch(
-        "serving.admin.failed_request_alerter.post_slack_alert",
+        "serving.admin.failed_request_alerter.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
-    ) as mock_post:
+    ) as mock_alert:
         await alerter.run_check()  # fires
         await alerter.run_check()  # suppressed by cooldown
 
-    assert mock_post.await_count == 1
+    assert mock_alert.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -186,14 +195,14 @@ async def test_alerter_cooldown_expires_then_fires():
     alerter = _make_alerter(pool, threshold=20, cooldown=5, now_fn=_clock)
 
     with patch(
-        "serving.admin.failed_request_alerter.post_slack_alert",
+        "serving.admin.failed_request_alerter.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
-    ) as mock_post:
+    ) as mock_alert:
         await alerter.run_check()
         await alerter.run_check()
 
-    assert mock_post.await_count == 2
+    assert mock_alert.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -213,14 +222,14 @@ async def test_alerter_failed_post_does_not_start_cooldown():
     alerter = _make_alerter(pool, threshold=20, cooldown=5, now_fn=_clock)
 
     with patch(
-        "serving.admin.failed_request_alerter.post_slack_alert",
+        "serving.admin.failed_request_alerter.alert_slack",
         new_callable=AsyncMock,
         return_value=False,
-    ) as mock_post:
+    ) as mock_alert:
         await alerter.run_check()  # first POST fails
         await alerter.run_check()  # should retry — cooldown not started
 
-    assert mock_post.await_count == 2
+    assert mock_alert.await_count == 2
 
 
 # ── register_alerter_job ─────────────────────────────────────────────────
@@ -364,13 +373,13 @@ async def test_alerter_swallows_query_exception():
     alerter = _make_alerter(pool)
 
     with patch(
-        "serving.admin.failed_request_alerter.post_slack_alert",
+        "serving.admin.failed_request_alerter.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
-    ) as mock_post:
+    ) as mock_alert:
         await alerter.run_check()  # must not raise
 
-    mock_post.assert_not_awaited()
+    mock_alert.assert_not_awaited()
 
 
 # Smoke check: timedelta math is what we expect — fences the cooldown semantics.

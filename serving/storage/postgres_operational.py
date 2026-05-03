@@ -1604,6 +1604,46 @@ class PostgresOperationalStore(OperationalStore):
             )
         return float(row["cost_usd"]) if row else 0.0
 
+    async def query_users_over_daily_threshold(
+        self,
+        thresholds: dict[str, float],
+    ) -> list[tuple[str, str, float]]:
+        """Return users whose today's cost exceeds the per-role threshold.
+
+        Joins the daily-cost counter table to the users table for today's row,
+        and filters by the per-role threshold. Used by the
+        ``UserCostOverrunJob`` periodic alert.
+
+        Roles and thresholds are passed as bound parameters via a VALUES-based
+        CTE built with ``unnest``, so callers may pass arbitrary dict keys
+        without risking SQL injection.
+        """
+        if not thresholds:
+            return []
+        roles = list(thresholds.keys())
+        values = [float(thresholds[r]) for r in roles]
+        # ``user_daily_cost.day`` is stored as TEXT (YYYY-MM-DD); compare on
+        # the same representation. Roles/thresholds flow in as bound params
+        # via unnest, eliminating the previous f-string interpolation.
+        sql = """
+            WITH thresholds(role, threshold) AS (
+                SELECT * FROM unnest($1::text[], $2::numeric[])
+            )
+            SELECT u.id AS user_id, u.role AS role,
+                   COALESCE(udc.cost_usd, 0)::float AS daily_cost
+            FROM users u
+            JOIN thresholds t ON t.role = u.role
+            LEFT JOIN user_daily_cost udc
+              ON udc.user_id = u.id
+             AND udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')
+            WHERE COALESCE(udc.cost_usd, 0) > t.threshold
+            ORDER BY daily_cost DESC
+            LIMIT 100
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, roles, values)
+        return [(r["user_id"], r["role"], float(r["daily_cost"])) for r in rows]
+
     async def get_user_cost_period(
         self,
         user_id: str,

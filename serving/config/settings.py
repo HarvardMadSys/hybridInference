@@ -7,7 +7,7 @@ All environment variables are centralized here for easy tracking and testing.
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 
@@ -136,6 +136,18 @@ class Settings(BaseSettings):
     failed_request_alert_threshold: int = Field(default=20, ge=0)
     failed_request_alert_window_minutes: int = Field(default=5, ge=1)
     failed_request_alert_cooldown_minutes: int = Field(default=5, ge=0)
+
+    # Alerting framework (replaces Prometheus)
+    alerts_enabled: bool = Field(default=False, alias="ALERTS_ENABLED")
+    slack_alerts_webhook_url: str = Field(default="", alias="SLACK_ALERTS_WEBHOOK_URL")
+    alerts_config_path: str = Field(default="config/alerts.yaml", alias="ALERTS_CONFIG_PATH")
+
+    @model_validator(mode="after")
+    def _alerts_webhook_fallback(self) -> "Settings":
+        """Fall back to existing SLACK_WEBHOOK_URL when SLACK_ALERTS_WEBHOOK_URL unset."""
+        if not self.slack_alerts_webhook_url and self.slack_webhook_url:
+            object.__setattr__(self, "slack_alerts_webhook_url", self.slack_webhook_url)
+        return self
 
     # Debug: when True, log full request payloads (including user prompts) at
     # DEBUG level in the OpenAI-compatible adapter. Defaults to False to avoid
