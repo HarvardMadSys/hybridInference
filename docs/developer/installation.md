@@ -102,7 +102,7 @@ This repository hosts both documentation sites used by the project:
 - **Developer documentation** (deployment, architecture, internals) lives at
   `docs/developer/` and is published to <https://internaldoc.freeinference.org/>.
 - **User-facing documentation** (API quickstart, models, IDE integrations)
-  lives at `docs/user/docs/developer/` and is published to
+  lives at `docs/free_inference/docs/developer/` and is published to
   <https://doc.freeinference.org/>.
 
 Both sites are deployed automatically by Cloudflare Pages on push to `main`.

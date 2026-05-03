@@ -79,7 +79,7 @@ target-version = "py310"
 src = ["apps/backend", "."]
 exclude = [
   "services/llm-prober",
-  "docs/user",
+  "docs/free_inference",
   "services/freeinference-harness",
   ".venv",
 ]
