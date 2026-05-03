@@ -513,6 +513,7 @@ class AdminRecentRequestContentResponse(BaseModel):
 
     prompt: str | None = None
     response: str | None = None
+    reasoning_content: str | None = None
 
 
 # ── Analytics Dashboard ──────────────────────────────────────────────────────

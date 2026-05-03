@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -710,4 +711,64 @@ async def admin_get_recent_request_content(
     return AdminRecentRequestContentResponse(
         prompt=row["prompt"],
         response=row["response"],
+        reasoning_content=extract_reasoning_content(row["response"]),
     )
+
+
+def extract_reasoning_content(response_str: str | None) -> str | None:
+    """Extract reasoning_content from a stored OpenAI-style response JSON.
+
+    Returns the concatenated reasoning_content / reasoning string from
+    response.choices[*].message.reasoning_content (or .reasoning),
+    or response.messages[*].reasoning_content, joined by blank lines.
+    Returns None if nothing found or response is not parseable.
+    """
+    if not response_str:
+        return None
+    try:
+        data = json.loads(response_str)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    pieces: list[str] = []
+
+    choices = data.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            value = message.get("reasoning_content")
+            if not (isinstance(value, str) and value):
+                value = message.get("reasoning")
+            if isinstance(value, str) and value:
+                pieces.append(value)
+
+    messages = data.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            value = message.get("reasoning_content")
+            if not (isinstance(value, str) and value):
+                value = message.get("reasoning")
+            if isinstance(value, str) and value:
+                pieces.append(value)
+
+    content = data.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "thinking":
+                value = item.get("thinking")
+                if isinstance(value, str) and value:
+                    pieces.append(value)
+
+    if not pieces:
+        return None
+    return "\n\n".join(pieces)
