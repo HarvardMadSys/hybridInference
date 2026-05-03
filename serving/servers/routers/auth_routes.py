@@ -1,7 +1,6 @@
 """Authentication routes for user signup, login, logout, and email verification."""
 
 import hashlib
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -53,16 +52,13 @@ REFRESH_TOKEN_COOKIE = "refresh_token"
 
 
 def get_base_url(request: Request) -> str:
-    """Get base URL from request or environment variable."""
-    base_url = os.getenv("BASE_URL")
+    base_url = settings.base_url
     if base_url:
         return base_url.rstrip("/")
-    # Fallback to request URL
     return f"{request.url.scheme}://{request.url.netloc}"
 
 
 def hash_refresh_token(token: str) -> str:
-    """Hash refresh token for storage."""
     return hashlib.sha256(token.encode()).hexdigest()
 
 
@@ -119,7 +115,7 @@ async def signup(
     settings.signup_rate_limit_per_hour and signup_rate_limit_per_day.
     """
     # Check if signup is enabled
-    if os.getenv("SIGNUP_ENABLED", "1") != "1":
+    if not settings.signup_enabled:
         raise HTTPException(
             status_code=403,
             detail="Public signup is currently disabled. Please contact administrator.",
@@ -162,7 +158,7 @@ async def signup(
     # Empty allowlist = all signups auto-approve. Otherwise, only emails
     # whose domain is on the allowlist (exact or wildcard suffix) auto-
     # approve; everyone else lands in pending_approval.
-    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    require_verification = settings.signup_require_email_verification
     if await allowlist_is_empty(op_store) or await is_domain_allowed(body.email, op_store):
         initial_status = "active"
     else:
@@ -281,7 +277,7 @@ async def login(
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     # Check if email verification is required and if email is verified
-    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    require_verification = settings.signup_require_email_verification
     if require_verification and not user_row["email_verified"]:
         raise HTTPException(
             status_code=403,
@@ -445,7 +441,7 @@ async def refresh(
         )
 
     # Check if email verification is required and if email is verified
-    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    require_verification = settings.signup_require_email_verification
     if require_verification and not user_row["email_verified"]:
         raise HTTPException(
             status_code=403,

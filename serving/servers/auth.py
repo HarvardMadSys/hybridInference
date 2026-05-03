@@ -2,7 +2,6 @@
 
 import hashlib
 import hmac
-import os
 import secrets
 from base64 import urlsafe_b64encode
 from datetime import datetime, timedelta, timezone
@@ -11,6 +10,7 @@ from typing import Any
 from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
+from serving.config.settings import get_settings
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     DATABASE_CONNECTED,
@@ -26,13 +26,7 @@ QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
 
 
 def is_user_auth_enabled() -> bool:
-    """Return whether API-key user auth is enabled.
-
-    Fail closed by default: auth is enabled unless explicitly disabled with
-    USER_AUTH_ENABLED=0/false/no/off.
-    """
-    raw = os.getenv("USER_AUTH_ENABLED", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    return get_settings().user_auth_enabled
 
 
 def generate_api_key() -> str:
@@ -42,16 +36,14 @@ def generate_api_key() -> str:
 
 
 def hash_api_key(plaintext_key: str) -> str:
-    """Hash API key using HMAC-SHA256 with server secret."""
-    secret = os.getenv("API_KEY_SECRET", "").encode()
+    secret = get_settings().api_key_secret.encode()
     if not secret:
         raise ValueError("API_KEY_SECRET must be set in environment")
     return hmac.new(secret, plaintext_key.encode(), hashlib.sha256).hexdigest()
 
 
 def _api_key_cipher() -> Fernet:
-    """Build a reversible cipher from the API key secret."""
-    secret = os.getenv("API_KEY_SECRET", "").encode()
+    secret = get_settings().api_key_secret.encode()
     if not secret:
         raise ValueError("API_KEY_SECRET must be set in environment")
     key = urlsafe_b64encode(hashlib.sha256(secret).digest())
@@ -150,7 +142,7 @@ async def verify_api_key(
             detail="Invalid or expired API key",
         )
 
-    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    require_verification = get_settings().signup_require_email_verification
     if require_verification and user.get("email") and not user.get("email_verified"):
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
@@ -271,7 +263,7 @@ async def optional_verify_api_key(
     if not row:
         return None  # Key invalid or expired — treat as anonymous
 
-    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    require_verification = get_settings().signup_require_email_verification
     if require_verification and row["email"] and not row["email_verified"]:
         return None
 
@@ -316,8 +308,8 @@ async def verify_admin_token(
             detail="Missing admin token. Use 'Authorization: Bearer {ADMIN_TOKEN}' header.",
         )
 
-    token = authorization[7:]  # Strip "Bearer " prefix
-    admin_token = os.getenv("ADMIN_TOKEN", "")
+    token = authorization[7:]
+    admin_token = get_settings().admin_token
 
     if not admin_token:
         raise HTTPException(

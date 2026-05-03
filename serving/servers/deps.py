@@ -7,13 +7,13 @@ test and avoids hidden global state.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
+from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
@@ -183,7 +183,7 @@ async def get_current_user(
             detail=f"Account is {user_row['status']}. Please contact support.",
         )
 
-    require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+    require_verification = get_settings().signup_require_email_verification
     if require_verification and not user_row["email_verified"]:
         raise HTTPException(
             status_code=403,
@@ -245,8 +245,6 @@ async def verify_admin_access(
     Returns:
         Admin identifier string (email for JWT auth, IP for token auth).
     """
-    import os
-
     from serving.utils.jwt import verify_access_token
 
     if not authorization or not authorization.startswith("Bearer "):
@@ -257,18 +255,16 @@ async def verify_admin_access(
 
     token = authorization[7:]
 
-    # Try JWT first: valid JWTs contain a "sub" claim with a user ID
     try:
         payload = verify_access_token(token)
         user_id = payload.get("sub")
         email = payload.get("email", "")
 
-        # Verify user still exists, is active, and has admin role in DB
         if op_store and user_id:
             user_row = await op_store.get_user_by_id(user_id)
             if not user_row or user_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="Admin account is no longer active.")
-            require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
+            require_verification = get_settings().signup_require_email_verification
             if require_verification and not user_row["email_verified"]:
                 raise HTTPException(
                     status_code=403,
@@ -293,7 +289,7 @@ async def verify_admin_access(
         pass
 
     # Fall back to ADMIN_TOKEN
-    admin_token = os.getenv("ADMIN_TOKEN", "")
+    admin_token = get_settings().admin_token
     if not admin_token:
         raise HTTPException(
             status_code=401,
