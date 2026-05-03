@@ -191,10 +191,8 @@ async def get_current_user(
         from serving.config.runtime_settings import get_runtime_settings_instance
 
         rs = get_runtime_settings_instance()
-        cached = rs._cache.get("signup_require_email_verification")
-        if cached is not None:
-            require_verification = bool(cached[1])
-    except Exception:
+        require_verification = await rs.get_bool("signup_require_email_verification")
+    except (RuntimeError, KeyError):
         pass
     if require_verification and not user_row["email_verified"]:
         raise HTTPException(
@@ -281,10 +279,8 @@ async def verify_admin_access(
                 from serving.config.runtime_settings import get_runtime_settings_instance
 
                 rs = get_runtime_settings_instance()
-                cached = rs._cache.get("signup_require_email_verification")
-                if cached is not None:
-                    require_verification = bool(cached[1])
-            except Exception:
+                require_verification = await rs.get_bool("signup_require_email_verification")
+            except (RuntimeError, KeyError):
                 pass
             if require_verification and not user_row["email_verified"]:
                 raise HTTPException(

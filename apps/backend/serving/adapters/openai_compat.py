@@ -444,10 +444,8 @@ class OpenAICompatAdapter(BaseAdapter):
             from serving.config.runtime_settings import get_runtime_settings_instance
 
             rs = get_runtime_settings_instance()
-            cached = rs._cache.get("log_full_payload")
-            if cached is not None:
-                _log_payload = bool(cached[1])
-        except Exception:
+            _log_payload = await rs.get_bool("log_full_payload")
+        except (RuntimeError, KeyError):
             pass
         if _log_payload:
             logger.debug(f"[OpenAICompat] Payload: {payload}")

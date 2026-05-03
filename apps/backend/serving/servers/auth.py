@@ -35,10 +35,10 @@ def is_user_auth_enabled() -> bool:
         from serving.config.runtime_settings import get_runtime_settings_instance
 
         rs = get_runtime_settings_instance()
-        cached = rs._cache.get("user_auth_enabled")
-        if cached is not None:
-            return bool(cached[1])
-    except Exception:
+        found, value = rs.get_cached("user_auth_enabled")
+        if found:
+            return bool(value)
+    except (RuntimeError, KeyError):
         pass
     return get_settings().user_auth_enabled
 

@@ -123,7 +123,7 @@ async def signup(
 
         rs = get_runtime_settings_instance()
         _signup_enabled = await rs.get_bool("signup_enabled")
-    except Exception:
+    except (RuntimeError, KeyError):
         pass
     if not _signup_enabled:
         raise HTTPException(
@@ -174,7 +174,7 @@ async def signup(
 
         rs = get_runtime_settings_instance()
         require_verification = await rs.get_bool("signup_require_email_verification")
-    except Exception:
+    except (RuntimeError, KeyError):
         pass
     if await allowlist_is_empty(op_store) or await is_domain_allowed(body.email, op_store):
         initial_status = "active"
@@ -300,7 +300,7 @@ async def login(
 
         rs = get_runtime_settings_instance()
         require_verification = await rs.get_bool("signup_require_email_verification")
-    except Exception:
+    except (RuntimeError, KeyError):
         pass
     if require_verification and not user_row["email_verified"]:
         raise HTTPException(
@@ -471,7 +471,7 @@ async def refresh(
 
         rs = get_runtime_settings_instance()
         require_verification = await rs.get_bool("signup_require_email_verification")
-    except Exception:
+    except (RuntimeError, KeyError):
         pass
     if require_verification and not user_row["email_verified"]:
         raise HTTPException(
