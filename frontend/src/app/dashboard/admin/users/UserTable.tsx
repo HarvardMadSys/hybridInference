@@ -50,6 +50,8 @@ export function UserTable(props: UserTableProps) {
   const colSpan = showSparkline ? 10 : 9;
 
   const sortIndicator = (col: FilterState['sortBy']) => (filterState.sortBy === col ? ' ↓' : '');
+  const ariaSortFor = (col: FilterState['sortBy']): 'ascending' | 'none' =>
+    filterState.sortBy === col ? 'ascending' : 'none';
 
   const toggleDetail = async (userId: string) => {
     if (expandedId === userId) {
@@ -186,15 +188,33 @@ export function UserTable(props: UserTableProps) {
               <th className="w-8 px-2 py-2" />
               <th className="px-2 py-2">Email</th>
               <th className="px-2 py-2">Role</th>
-              <th className="cursor-pointer px-2 py-2" onClick={() => onSortChange('cost_today')}>
-                Today{sortIndicator('cost_today')}
+              <th className="px-2 py-2" aria-sort={ariaSortFor('cost_today')}>
+                <button
+                  type="button"
+                  className="cursor-pointer"
+                  onClick={() => onSortChange('cost_today')}
+                >
+                  Today{sortIndicator('cost_today')}
+                </button>
               </th>
               {showSparkline && <th className="w-16 px-2 py-2">7d</th>}
-              <th className="cursor-pointer px-2 py-2" onClick={() => onSortChange('cost_month')}>
-                Month{sortIndicator('cost_month')}
+              <th className="px-2 py-2" aria-sort={ariaSortFor('cost_month')}>
+                <button
+                  type="button"
+                  className="cursor-pointer"
+                  onClick={() => onSortChange('cost_month')}
+                >
+                  Month{sortIndicator('cost_month')}
+                </button>
               </th>
-              <th className="cursor-pointer px-2 py-2" onClick={() => onSortChange('cost_alltime')}>
-                All-time{sortIndicator('cost_alltime')}
+              <th className="px-2 py-2" aria-sort={ariaSortFor('cost_alltime')}>
+                <button
+                  type="button"
+                  className="cursor-pointer"
+                  onClick={() => onSortChange('cost_alltime')}
+                >
+                  All-time{sortIndicator('cost_alltime')}
+                </button>
               </th>
               <th className="px-2 py-2">Status</th>
               <th className="w-8 px-2 py-2" />
