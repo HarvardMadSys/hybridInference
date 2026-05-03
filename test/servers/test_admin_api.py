@@ -53,7 +53,7 @@ async def admin_client(monkeypatch, mock_stores):
     client = AsyncClient(transport=transport, base_url="http://test")
 
     mock_log_action = AsyncMock()
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.log_admin_action", mock_log_action)
+    monkeypatch.setattr("serving.servers.routers.admin.api_keys.log_admin_action", mock_log_action)
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("API_KEY_SECRET", "unit-test-secret")
 
@@ -70,8 +70,8 @@ async def test_create_api_key_success(admin_client, monkeypatch):
     op_store.check_active_key_exists.return_value = False
     op_store.create_key.return_value = {"id": 1, "created_at": created_at}
 
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.generate_api_key", lambda: "hyi-fixed-key")
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.hash_api_key", lambda _: "hashed-key")
+    monkeypatch.setattr("serving.servers.routers.admin.api_keys.generate_api_key", lambda: "hyi-fixed-key")
+    monkeypatch.setattr("serving.servers.routers.admin.api_keys.hash_api_key", lambda _: "hashed-key")
 
     response = await client.post(
         "/admin/api-keys",
@@ -263,8 +263,8 @@ async def test_revoke_api_key_hard_delete(admin_client):
 async def test_regenerate_api_key_success(admin_client, monkeypatch):
     client, op_store, _log_store, log_action = admin_client
     op_store.regenerate_key.return_value = "hyi-old"
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.generate_api_key", lambda: "hyi-new-key")
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.hash_api_key", lambda _: "new-hash")
+    monkeypatch.setattr("serving.servers.routers.admin.api_keys.generate_api_key", lambda: "hyi-new-key")
+    monkeypatch.setattr("serving.servers.routers.admin.api_keys.hash_api_key", lambda _: "new-hash")
 
     response = await client.post(
         "/admin/api-keys/alice/regenerate",
