@@ -10,7 +10,6 @@ import pytest
 from fastapi import HTTPException, Request
 
 from serving.servers.auth import log_admin_action, verify_admin_token
-from serving.servers.routers import admin as admin_router
 
 
 @pytest.fixture
@@ -65,7 +64,9 @@ def test_serialize_for_audit_handles_decimal_and_datetime():
         "plain": "ok",
     }
 
-    result = admin_router._serialize_for_audit(data)
+    from serving.servers.routers.admin._common import _serialize_for_audit
+
+    result = _serialize_for_audit(data)
 
     assert float(result["quota"]) == pytest.approx(123.45)
     assert result["expires"] == now.isoformat()

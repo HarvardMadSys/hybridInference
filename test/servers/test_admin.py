@@ -268,7 +268,7 @@ class TestDecodeThroughputHelper:
 
     @staticmethod
     def _call(**kwargs):
-        from serving.servers.routers.admin import _decode_throughput_tps
+        from serving.servers.routers.admin.metrics import _decode_throughput_tps
 
         return _decode_throughput_tps(**kwargs)
 
