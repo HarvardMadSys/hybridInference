@@ -44,10 +44,10 @@ class AlertSeverity(str, enum.Enum):
 
 
 _EMOJI = {
-    AlertSeverity.CRITICAL: "🚨",
-    AlertSeverity.ERROR: "❌",
-    AlertSeverity.WARN: "⚠️",
-    AlertSeverity.INFO: "ℹ️",
+    AlertSeverity.CRITICAL: "\U0001f6a8",  # rotating-light
+    AlertSeverity.ERROR: "❌",  # cross-mark
+    AlertSeverity.WARN: "⚠️",  # warning-sign
+    AlertSeverity.INFO: "\u2139\ufe0f",  # information-source
 }
 
 

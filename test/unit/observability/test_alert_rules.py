@@ -151,7 +151,7 @@ async def test_fivexx_rate_fires_on_threshold(monkeypatch):
                 handler.queue.put_nowait(_fake_record(503))
             await _drain_until(handler, mock_alert)
             assert mock_alert.await_count >= 1
-            args, kwargs = mock_alert.call_args
+            args, _kwargs = mock_alert.call_args
             # title should mention 5xx
             assert "5xx" in args[1]
         finally:

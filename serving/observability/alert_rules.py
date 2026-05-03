@@ -11,20 +11,20 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol
 
-from serving.observability.alert_config import (
-    AlertConfig,
-    CountRule,
-    LatencyRule,
-    ProviderHourlySpend,
-    RateRule,
-    UserOverrun,
-)
 from serving.observability.alerts import AlertSeverity, alert_slack
-from serving.observability.log_handler import AlertingLogHandler
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+    from serving.observability.alert_config import (
+        AlertConfig,
+        CountRule,
+        LatencyRule,
+        ProviderHourlySpend,
+        RateRule,
+        UserOverrun,
+    )
+    from serving.observability.log_handler import AlertingLogHandler
     from serving.storage.base import LogStore, OperationalStore
 
 log = logging.getLogger(__name__)
@@ -98,8 +98,7 @@ class FailedRequestRateRule:
             "Failed-request rate exceeded",
             {
                 "rate": (
-                    f"{pct:.1f}% ({failed} of {len(items)} requests, "
-                    f"last {self._cfg.window_sec}s)"
+                    f"{pct:.1f}% ({failed} of {len(items)} requests, last {self._cfg.window_sec}s)"
                 ),
                 "top_providers": top or "n/a",
             },
@@ -150,8 +149,7 @@ class FivexxRateRule:
             "5xx rate exceeded",
             {
                 "rate": (
-                    f"{pct:.1f}% ({failed} of {len(items)} requests, "
-                    f"last {self._cfg.window_sec}s)"
+                    f"{pct:.1f}% ({failed} of {len(items)} requests, last {self._cfg.window_sec}s)"
                 ),
                 "top_providers": top_p or "n/a",
                 "top_status_codes": top_s or "n/a",
@@ -389,9 +387,9 @@ class AlertEngine:
         *,
         handler: AlertingLogHandler,
         config: AlertConfig,
-        scheduler: "AsyncIOScheduler | None",
-        op_store: "OperationalStore | None",
-        log_store: "LogStore | None",
+        scheduler: AsyncIOScheduler | None,
+        op_store: OperationalStore | None,
+        log_store: LogStore | None,
     ) -> None:
         self._handler = handler
         self._config = config
@@ -416,12 +414,12 @@ class AlertEngine:
         )
 
     async def stop(self) -> None:
+        import contextlib as _cl
+
         if self._task and not self._task.done():
             self._task.cancel()
-            try:
+            with _cl.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         for job in self._scheduled_jobs:
             try:
                 job.remove()
@@ -446,9 +444,7 @@ class AlertEngine:
             cost_job = UserCostOverrunJob(self._config.cost.user_overrun, self._op_store)
             scheduled = self._scheduler.add_job(
                 cost_job.run,
-                trigger=IntervalTrigger(
-                    seconds=self._config.cost.user_overrun.check_interval_sec
-                ),
+                trigger=IntervalTrigger(seconds=self._config.cost.user_overrun.check_interval_sec),
                 id="alert_user_cost_overrun",
                 replace_existing=True,
             )

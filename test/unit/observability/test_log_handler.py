@@ -28,7 +28,7 @@ async def test_handler_drops_oldest_on_overflow():
     logger.setLevel(logging.INFO)
     try:
         for i in range(5):
-            logger.info("m%d" % i)
+            logger.info("m%d", i)
 
         # Queue holds latest 2, dropped count = 3
         msgs = []

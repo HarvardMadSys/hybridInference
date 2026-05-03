@@ -264,8 +264,10 @@ class _CircuitBreaker:
                 ).inc()
                 # Fire-and-forget Slack alert on CLOSED→OPEN or HALF_OPEN→OPEN.
                 if prev_state in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
-                    try:
-                        asyncio.ensure_future(
+                    with contextlib.suppress(RuntimeError):
+                        # RuntimeError when there's no running event loop (e.g.
+                        # unit tests outside pytest-asyncio). Best-effort alert.
+                        self._alert_task = asyncio.ensure_future(
                             alert_slack(
                                 AlertSeverity.ERROR,
                                 "Provider circuit opened",
@@ -273,9 +275,7 @@ class _CircuitBreaker:
                                     "provider": self.provider,
                                     "consecutive_failures": self.consecutive_failures,
                                     "availability": (
-                                        f"{availability:.2f}"
-                                        if availability is not None
-                                        else "n/a"
+                                        f"{availability:.2f}" if availability is not None else "n/a"
                                     ),
                                     "reason": reason or "unknown",
                                 },
@@ -283,10 +283,6 @@ class _CircuitBreaker:
                                 cooldown_sec=300,
                             )
                         )
-                    except RuntimeError:
-                        # No running event loop (e.g. unit tests outside pytest-asyncio).
-                        # Alert is best-effort; skip silently.
-                        pass
 
 
 # ============================================================================

@@ -46,7 +46,7 @@ class AppServices:
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
-    alert_engine: "AlertEngine | None" = None
+    alert_engine: AlertEngine | None = None
 
 
 def get_services(request: Request) -> AppServices:
