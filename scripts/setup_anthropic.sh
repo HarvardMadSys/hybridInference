@@ -13,6 +13,9 @@ export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_API_KEY}"
 export ANTHROPIC_BASE_URL="https://staging.freeinference.org"
 export CLAUDE_MODEL="claude-opus-4.7"
 
+mv ~/.claude ~/.claude.backup.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
+mv ~/.claude.json ~/.claude.json.backup.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
+
 mkdir -p ~/.claude
 cat > ~/.claude/settings.json <<EOF
 {
