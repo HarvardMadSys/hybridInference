@@ -43,7 +43,11 @@ class SanitizeResponseResult:
 def resolve_mode(headers: Mapping[str, str]) -> SerializerMode:
     """Resolve serializer mode from request headers.
 
-    Default is reasoning passthrough. Opt-in strict OpenAI via X-Reasoning-Passthrough: false.
+    Default is reasoning passthrough. Opt in to strict OpenAI by sending
+    ``X-Reasoning-Passthrough`` set to any of ``false``, ``0``, or ``no``
+    (case-insensitive, surrounding whitespace ignored). Any other value
+    — including missing, empty, ``true``, or unrecognized strings — leaves
+    the response in passthrough mode.
     """
     passthrough_raw = headers.get("x-reasoning-passthrough", "").strip().lower()
     if passthrough_raw in ("false", "0", "no"):

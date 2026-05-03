@@ -36,8 +36,8 @@ def test_resolve_mode_strict_false():
 
 
 @pytest.mark.unit
-def test_resolve_mode_strict_case_insensitive():
-    """Header is case-insensitive."""
+def test_resolve_mode_strict_accepted_falsy_values():
+    """All documented falsy header values opt into strict mode (case-insensitive)."""
     from starlette.datastructures import Headers
 
     for val in ("False", "FALSE", "no", "0"):
