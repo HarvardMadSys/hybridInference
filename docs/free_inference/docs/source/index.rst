@@ -12,6 +12,7 @@ Quick Links
 * :doc:`quickstart` - Get started in 5 minutes
 * :doc:`integrations` - Configure with Cursor, Codex, and other coding agents
 * :doc:`models` - View available models
+* :doc:`api_headers` - API headers reference
 
 .. toctree::
    :maxdepth: 2
@@ -21,6 +22,7 @@ Quick Links
    quickstart
    integrations
    models
+   api_headers
 
 Key Features
 ------------

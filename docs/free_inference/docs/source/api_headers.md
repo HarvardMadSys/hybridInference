@@ -1,0 +1,116 @@
+# API Headers Reference
+
+Headers you can send with requests to the FreeInference API.
+
+## Authentication
+
+### `Authorization`
+
+Authenticate requests using your API key.
+
+```bash
+Authorization: Bearer hyi-your-api-key
+```
+
+### `X-API-Key`
+
+Alternative authentication header. Accepts the same API key value without the `Bearer` prefix.
+
+```bash
+X-API-Key: hyi-your-api-key
+```
+
+## Request Behavior
+
+### `X-Reasoning-Passthrough`
+
+Controls how `reasoning_content` is handled in responses from `/v1/chat/completions`.
+
+| Value | Behavior |
+|-------|----------|
+| (missing or any other value) | **Passthrough mode** — `reasoning_content` is included in the response |
+| `false`, `0`, `no` (case-insensitive) | **Strict OpenAI mode** — `reasoning_content` is stripped from the response |
+
+```bash
+X-Reasoning-Passthrough: false
+```
+
+### `X-Session-ID`
+
+Attach a stable session identifier for request correlation. This value is logged and can be used to trace a session across multiple requests.
+
+```bash
+X-Session-ID: 20260503-120000-abc123
+```
+
+### `X-Probe`
+
+Mark a request as a synthetic health probe. When set to `synthetic` (case-insensitive), the request does not affect metrics or generate verbose logs.
+
+```bash
+X-Probe: synthetic
+```
+
+### `X-Route-Pin`
+
+Force routing to a specific provider backend. **Admin-only** — silently ignored for non-admin users.
+
+```bash
+X-Route-Pin: provider-name
+```
+
+## Anthropic API
+
+### `Anthropic-Version`
+
+Required when using the `/v1/messages` or `/anthropic/v1/messages` endpoints. Also affects the model list format returned by `/v1/models` when detected.
+
+```bash
+Anthropic-Version: 2023-06-01
+```
+
+### `anthropic-beta`
+
+Enable Anthropic beta features. This header is forwarded directly to the upstream Anthropic API.
+
+```bash
+anthropic-beta: feature-name
+```
+
+## Tracing
+
+### `X-Request-ID`
+
+Attach a custom request identifier. If not provided, one is auto-generated. The value is echoed back in the response.
+
+```bash
+X-Request-ID: my-custom-request-id
+```
+
+## Qdrant Proxy
+
+### `api-key`
+
+Authentication for the Qdrant proxy endpoint at `/v1/qdrant/`. Mapped to `Authorization: Bearer <value>` internally.
+
+```bash
+api-key: your-qdrant-key
+```
+
+## Proxy Headers
+
+The following headers are used for client IP resolution when the server is behind a reverse proxy (requires `TRUST_PROXY_HEADERS=1`):
+
+| Header | Description |
+|--------|-------------|
+| `X-Forwarded-For` | Client IP as set by the proxy |
+| `X-Real-IP` | Fallback client IP header |
+| `CF-Connecting-IP` | Client IP as set by Cloudflare |
+
+## Standard Headers
+
+| Header | Description |
+|--------|-------------|
+| `Content-Type` | Request content type (e.g., `application/json`) |
+| `User-Agent` | Client identification; affects Anthropic client detection |
+| `Host` | Logged for debugging |
