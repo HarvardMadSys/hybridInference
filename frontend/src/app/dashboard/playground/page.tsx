@@ -9,6 +9,8 @@ import {
   type KeyboardEvent,
   type ChangeEvent,
 } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
@@ -32,6 +34,7 @@ interface PlaygroundModel {
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  reasoningContent?: string;
   durationMs?: number;
   ttftMs?: number;
   completionTokens?: number;
@@ -45,6 +48,7 @@ interface PlaygroundSession {
   selectedProvider: string | null;
   systemPrompt: string;
   temperature: number;
+  maxTokens: number;
   messages: Message[];
   input: string;
 }
@@ -57,6 +61,7 @@ function createSession(id: string, defaultModelId = ''): PlaygroundSession {
     selectedProvider: null,
     systemPrompt: '',
     temperature: 0.7,
+    maxTokens: 4096,
     messages: [],
     input: '',
   };
@@ -92,10 +97,12 @@ export default function PlaygroundPage() {
   const [activeSessionId, setActiveSessionId] = useState('s-1');
   const [streaming, setStreaming] = useState(false);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
   const chatRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const pendingRef = useRef('');
+  const pendingReasoningRef = useRef('');
   const rafRef = useRef<number | null>(null);
   const counterRef = useRef(2);
   const streamStartRef = useRef<number>(0);
@@ -106,6 +113,7 @@ export default function PlaygroundPage() {
   const modelId = session?.selectedModelId || '';
   const sysPrompt = session?.systemPrompt || '';
   const temp = session?.temperature ?? 0.7;
+  const maxTok = session?.maxTokens ?? 4096;
   const msgs = session?.messages || [];
   const input = session?.input || '';
   const model = models.find((m) => m.id === modelId) ?? null;
@@ -139,14 +147,22 @@ export default function PlaygroundPage() {
   }, []);
 
   const flushDelta = useCallback(() => {
-    if (!pendingRef.current) return;
-    const d = pendingRef.current;
+    const contentDelta = pendingRef.current;
+    const reasoningDelta = pendingReasoningRef.current;
+    if (!contentDelta && !reasoningDelta) return;
     pendingRef.current = '';
+    pendingReasoningRef.current = '';
     patch((s) => {
       const copy = [...s.messages];
       const last = copy[copy.length - 1];
       if (!last) return s;
-      copy[copy.length - 1] = { ...last, content: last.content + d };
+      copy[copy.length - 1] = {
+        ...last,
+        ...(contentDelta ? { content: last.content + contentDelta } : {}),
+        ...(reasoningDelta
+          ? { reasoningContent: (last.reasoningContent || '') + reasoningDelta }
+          : {}),
+      };
       return { ...s, messages: copy };
     });
   }, [patch]);
@@ -190,11 +206,13 @@ export default function PlaygroundPage() {
     abortRef.current?.abort();
     abortRef.current = null;
     pendingRef.current = '';
+    pendingReasoningRef.current = '';
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
     setStreaming(false);
+    setExpandedThinking(new Set());
     patch((s) => ({ ...s, messages: [], input: '' }));
   }, [patch]);
 
@@ -225,6 +243,7 @@ export default function PlaygroundPage() {
     (id: string) => {
       if (streaming || id === activeSessionId) return;
       pendingRef.current = '';
+      pendingReasoningRef.current = '';
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
@@ -240,6 +259,18 @@ export default function PlaygroundPage() {
     setTimeout(() => setCopiedIdx(null), 1500);
   }, []);
 
+  const toggleThinking = useCallback((idx: number) => {
+    setExpandedThinking((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) {
+        next.delete(idx);
+      } else {
+        next.add(idx);
+      }
+      return next;
+    });
+  }, []);
+
   const send = useCallback(async () => {
     if (!session) return;
     const text = session.input.trim();
@@ -250,7 +281,10 @@ export default function PlaygroundPage() {
     patch((s) => ({
       ...s,
       title: getSessionTitle({ ...s, messages: newMsgs }),
-      messages: [...newMsgs, { role: 'assistant', content: '', modelName: model?.name }],
+      messages: [
+        ...newMsgs,
+        { role: 'assistant', content: '', reasoningContent: '', modelName: model?.name },
+      ],
       input: '',
     }));
     setStreaming(true);
@@ -270,6 +304,7 @@ export default function PlaygroundPage() {
           system_prompt: sysPrompt,
           messages: newMsgs.map((m) => ({ role: m.role, content: m.content })),
           temperature: temp,
+          max_tokens: maxTok,
           ...(selectedProvider ? { provider: selectedProvider } : {}),
         }),
         signal: ctrl.signal,
@@ -306,12 +341,16 @@ export default function PlaygroundPage() {
             if (parsed.usage?.completion_tokens) {
               completionTokensRef.current = parsed.usage.completion_tokens;
             }
-            const delta = parsed.choices?.[0]?.delta?.content;
-            if (delta) {
+            const delta = parsed.choices?.[0]?.delta;
+            if (delta?.content) {
               if (!firstTokenTimeRef.current) {
                 firstTokenTimeRef.current = performance.now();
               }
-              pendingRef.current += delta;
+              pendingRef.current += delta.content;
+              scheduleFlush();
+            }
+            if (delta?.reasoning_content) {
+              pendingReasoningRef.current += delta.reasoning_content;
               scheduleFlush();
             }
           } catch {
@@ -343,12 +382,16 @@ export default function PlaygroundPage() {
         const c = [...s.messages];
         const last = c[c.length - 1];
         if (last && last.role === 'assistant') {
-          c[c.length - 1] = {
+          const cleaned: Message = {
             ...last,
             durationMs: elapsed,
             ttftMs: ttft,
             completionTokens: tokens,
           };
+          if (!cleaned.reasoningContent) {
+            delete cleaned.reasoningContent;
+          }
+          c[c.length - 1] = cleaned;
         }
         return { ...s, messages: c };
       });
@@ -362,6 +405,7 @@ export default function PlaygroundPage() {
     model?.name,
     sysPrompt,
     temp,
+    maxTok,
     selectedProvider,
     patch,
     flushDelta,
@@ -573,6 +617,27 @@ export default function PlaygroundPage() {
                 </div>
 
                 <div>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                      Max Tokens
+                    </label>
+                    <span className="text-xs tabular-nums text-gray-400">{maxTok}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="256"
+                    max="32768"
+                    step="256"
+                    value={maxTok}
+                    onChange={(e) =>
+                      patch((s) => ({ ...s, maxTokens: parseInt(e.target.value, 10) }))
+                    }
+                    disabled={streaming}
+                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-indigo-500 disabled:opacity-50"
+                  />
+                </div>
+
+                <div>
                   <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
                     System instructions
                   </label>
@@ -627,8 +692,14 @@ export default function PlaygroundPage() {
                 <div className="mx-auto max-w-3xl space-y-6">
                   {msgs.map((msg, i) => {
                     const isUser = msg.role === 'user';
-                    const isWaiting = streaming && i === msgs.length - 1 && !msg.content;
+                    const isWaiting =
+                      streaming &&
+                      i === msgs.length - 1 &&
+                      !msg.content &&
+                      !msg.reasoningContent;
                     const isCopied = copiedIdx === i;
+                    const hasReasoning = !!msg.reasoningContent;
+                    const isThinkingExpanded = expandedThinking.has(i);
 
                     return (
                       <div key={`${msg.role}-${i}`} className="group">
@@ -705,7 +776,48 @@ export default function PlaygroundPage() {
                               <span className="text-xs">Generating response...</span>
                             </div>
                           ) : (
-                            <div className="whitespace-pre-wrap">{msg.content}</div>
+                            <>
+                              {hasReasoning && (
+                                <div className="mb-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleThinking(i)}
+                                    className="flex items-center gap-1.5 text-xs text-gray-500 transition hover:text-gray-300"
+                                  >
+                                    <svg
+                                      className={`h-3 w-3 transition-transform ${
+                                        isThinkingExpanded ? 'rotate-90' : ''
+                                      }`}
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M9 5l7 7-7 7"
+                                      />
+                                    </svg>
+                                    <span>Thinking...</span>
+                                  </button>
+                                  {isThinkingExpanded && (
+                                    <div className="mt-2 rounded-lg border border-gray-800 bg-gray-950 px-4 py-3 text-xs leading-6 text-gray-500 whitespace-pre-wrap">
+                                      {msg.reasoningContent}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {isUser ? (
+                                <div className="whitespace-pre-wrap">{msg.content}</div>
+                              ) : (
+                                <div className="prose prose-invert prose-sm max-w-none prose-pre:bg-gray-950 prose-pre:border prose-pre:border-gray-800 prose-code:text-indigo-300 prose-a:text-indigo-400">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                    {msg.content}
+                                  </ReactMarkdown>
+                                </div>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
@@ -735,6 +847,7 @@ export default function PlaygroundPage() {
                         const parts = [model.name];
                         if (selectedProvider) parts.push(selectedProvider);
                         parts.push(`temp ${temp.toFixed(1)}`);
+                        parts.push(`max ${maxTok}`);
                         if (sysPrompt.trim()) parts.push('custom instructions');
                         return parts.join(' / ');
                       })()}
