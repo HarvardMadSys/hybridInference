@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { AdminUser, UserDetail } from '@/lib/api/admin';
 import { getUserDetail, updateUser as apiUpdateUser } from '@/lib/api/admin';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
@@ -130,6 +130,22 @@ export function UserTable(props: UserTableProps) {
   const [hardDeleteTarget, setHardDeleteTarget] = useState<AdminUser | null>(null);
   const [hardDeleteReason, setHardDeleteReason] = useState('');
   const [hardDeleteEmailConfirm, setHardDeleteEmailConfirm] = useState('');
+
+  // Close delete/hard-delete modals if their target row leaves the visible list
+  // (filter change, pagination). Without this, the modal stays open with a
+  // stale target and the user could submit an action against a row they can no
+  // longer see.
+  useEffect(() => {
+    if (deleteTarget && !users.some((u) => u.id === deleteTarget.id)) {
+      setDeleteTarget(null);
+      setDeleteReason('');
+    }
+    if (hardDeleteTarget && !users.some((u) => u.id === hardDeleteTarget.id)) {
+      setHardDeleteTarget(null);
+      setHardDeleteReason('');
+      setHardDeleteEmailConfirm('');
+    }
+  }, [users, deleteTarget, hardDeleteTarget]);
 
   const doDelete = async () => {
     if (!deleteTarget || !deleteReason.trim()) return;
