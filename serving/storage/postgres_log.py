@@ -142,6 +142,22 @@ class PostgresLogStore(LogStore):
         except Exception:
             return False
 
+    async def query_provider_hourly_spend(self, hour_iso: str) -> dict[str, float]:
+        """Return per-provider total cost (USD) for the given UTC hour bucket.
+
+        ``hour_iso`` is an ISO-8601 timestamp truncated to the hour (e.g.
+        ``2026-05-03T12:00:00+00:00``). Used by ``ProviderHourlySpendJob``.
+        """
+        sql = """
+            SELECT provider, COALESCE(SUM(cost_usd), 0) AS total
+            FROM api_logs
+            WHERE date_trunc('hour', timestamp) = $1::timestamptz
+            GROUP BY provider
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(sql, hour_iso)
+        return {r["provider"]: float(r["total"]) for r in rows if r["provider"]}
+
     # -- request logging -----------------------------------------------------
 
     async def log_request(
