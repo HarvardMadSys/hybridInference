@@ -319,7 +319,7 @@ class TestArchiveDay:
         assert summary["row_count"] == 0
         assert summary["skipped"] is True
 
-    @patch("scripts.cloudflare.r2_archive_logs._upload_to_r2", new_callable=AsyncMock)
+    @patch("ops.cloudflare.r2_archive_logs._upload_to_r2", new_callable=AsyncMock)
     async def test_archive_day_uploads_and_deletes(self, mock_upload, d1):
         from ops.cloudflare.r2_archive_logs import archive_day
 

@@ -169,13 +169,13 @@ class TestCheckpoint:
 
     def test_load_empty_when_no_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "scripts.cloudflare.d1_migrate._CHECKPOINT_FILE", tmp_path / "missing.json"
+            "ops.cloudflare.d1_migrate._CHECKPOINT_FILE", tmp_path / "missing.json"
         )
         assert _load_checkpoint() == {}
 
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
         ckpt_file = tmp_path / "checkpoint.json"
-        monkeypatch.setattr("scripts.cloudflare.d1_migrate._CHECKPOINT_FILE", ckpt_file)
+        monkeypatch.setattr("ops.cloudflare.d1_migrate._CHECKPOINT_FILE", ckpt_file)
 
         state = {"users": {"offset": 50, "migrated": 50}}
         _save_checkpoint(state)
@@ -185,7 +185,7 @@ class TestCheckpoint:
 
     def test_save_creates_parent_dirs(self, tmp_path, monkeypatch):
         ckpt_file = tmp_path / "nested" / "dir" / "checkpoint.json"
-        monkeypatch.setattr("scripts.cloudflare.d1_migrate._CHECKPOINT_FILE", ckpt_file)
+        monkeypatch.setattr("ops.cloudflare.d1_migrate._CHECKPOINT_FILE", ckpt_file)
 
         _save_checkpoint({"test": True})
         assert ckpt_file.exists()

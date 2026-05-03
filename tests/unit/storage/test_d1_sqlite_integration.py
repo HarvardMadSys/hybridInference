@@ -27,7 +27,9 @@ import pytest
 # SQLite-backed fake D1Client
 # ---------------------------------------------------------------------------
 
-SCHEMA_PATH = Path(__file__).resolve().parents[3] / "serving" / "storage" / "d1_schema.sql"
+SCHEMA_PATH = (
+    Path(__file__).resolve().parents[3] / "apps" / "backend" / "serving" / "storage" / "d1_schema.sql"
+)
 
 
 class _SqliteD1Client:

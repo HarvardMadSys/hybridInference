@@ -18,7 +18,9 @@ import pytest
 
 from serving.storage.dual_write import DualWriteLogStore, DualWriteOperationalStore
 
-SCHEMA_PATH = Path(__file__).resolve().parents[3] / "serving" / "storage" / "d1_schema.sql"
+SCHEMA_PATH = (
+    Path(__file__).resolve().parents[3] / "apps" / "backend" / "serving" / "storage" / "d1_schema.sql"
+)
 
 
 # ---------------------------------------------------------------------------
