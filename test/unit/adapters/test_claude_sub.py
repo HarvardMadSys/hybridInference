@@ -540,9 +540,10 @@ class TestStreamChatCompletion:
         # Final usage chunk (before [DONE])
         final = json.loads(chunks[-2][6:])
         usage = final["usage"]
-        assert usage["prompt_tokens"] == 250  # 400 - 150 cache_read
+        # Cache-inclusive prompt_tokens: 400 + 150 + 80
+        assert usage["prompt_tokens"] == 630
         assert usage["completion_tokens"] == 20
-        assert usage["total_tokens"] == 420  # 400 + 20
+        assert usage["total_tokens"] == 650  # 630 + 20
         assert usage["cache_read_tokens"] == 150
         assert usage["cache_write_tokens"] == 80
 

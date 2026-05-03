@@ -334,7 +334,9 @@ class ClaudeAdapter(BaseAdapter):
                             model=self.config.id,
                             messages=messages,
                             total_content=total_content,
-                            prompt_tokens_override=max(0, input_tokens - cache_read_input_tokens)
+                            prompt_tokens_override=(
+                                input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+                            )
                             if input_tokens > 0
                             else None,
                             completion_tokens_override=output_tokens if output_tokens > 0 else None,
@@ -353,7 +355,9 @@ class ClaudeAdapter(BaseAdapter):
                         model=self.config.id,
                         messages=messages,
                         total_content=total_content,
-                        prompt_tokens_override=max(0, input_tokens - cache_read_input_tokens)
+                        prompt_tokens_override=(
+                            input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+                        )
                         if input_tokens > 0
                         else None,
                         completion_tokens_override=output_tokens if output_tokens > 0 else None,

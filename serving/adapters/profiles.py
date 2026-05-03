@@ -129,32 +129,29 @@ def normalize_usage_default(usage_data: dict[str, Any]) -> UsageInfo:
 
 
 def normalize_usage_deepseek(usage_data: dict[str, Any]) -> UsageInfo:
-    """DeepSeek-specific usage extraction: prompt_cache_hit/miss -> cache_read_tokens, prompt_tokens.
+    """DeepSeek-specific usage extraction.
 
-    DeepSeek returns prompt_cache_hit_tokens and prompt_cache_miss_tokens.
-    For cost calculation:
-    - cache_read_tokens = prompt_cache_hit_tokens
-    - prompt_tokens = prompt_cache_miss_tokens (only non-cached tokens charged at full price)
+    DeepSeek returns prompt_cache_hit_tokens (cache reads) and
+    prompt_cache_miss_tokens (uncached) alongside prompt_tokens. Per their
+    API, prompt_tokens already includes the cached portion (OpenAI semantic),
+    so we keep it as-is and just surface cache_read_tokens for separate
+    rate-application in calculate_cost.
     """
     from .base import UsageInfo
 
-    cache_hit = usage_data.get("prompt_cache_hit_tokens", 0)
-    cache_miss = usage_data.get("prompt_cache_miss_tokens", 0)
-    prompt_tokens_raw = usage_data.get("prompt_tokens", 0)
+    cache_hit = usage_data.get("prompt_cache_hit_tokens", 0) or 0
+    cache_miss = usage_data.get("prompt_cache_miss_tokens", 0) or 0
+    prompt_tokens_raw = usage_data.get("prompt_tokens", 0) or 0
 
-    if cache_hit > 0 or cache_miss > 0:
-        actual_prompt_tokens = cache_miss
-        actual_cache_read = cache_hit
-    else:
-        actual_prompt_tokens = prompt_tokens_raw
-        actual_cache_read = 0
+    # If upstream omits prompt_tokens but provides hit+miss, reconstruct.
+    prompt_tokens = prompt_tokens_raw if prompt_tokens_raw else (cache_hit + cache_miss)
 
     return UsageInfo(
-        prompt_tokens=actual_prompt_tokens,
+        prompt_tokens=prompt_tokens,
         completion_tokens=usage_data.get("completion_tokens", 0),
         total_tokens=usage_data.get("total_tokens", 0),
         reasoning_tokens=usage_data.get("reasoning_tokens", 0),
-        cache_read_tokens=actual_cache_read,
+        cache_read_tokens=cache_hit,
         cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0)
         or usage_data.get("cache_write_tokens", 0),
     )
