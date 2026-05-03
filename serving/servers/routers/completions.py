@@ -130,6 +130,27 @@ def _record_routing_observation(
     active_router.record_observation(obs)
 
 
+def _build_db_params(
+    params: dict[str, Any],
+    provider: str,
+    base_url: str | None,
+    get_adapter_config_for_provider: Any,
+) -> dict[str, Any]:
+    _params = dict(params)
+    _params.update(
+        {
+            "max_tokens": _params.get("max_tokens")
+            if _params.get("max_tokens") is not None
+            else getattr(
+                get_adapter_config_for_provider(provider, base_url),
+                "max_output_length",
+                None,
+            )
+        }
+    )
+    return _params
+
+
 @router.post(
     "/v1/chat/completions",
     response_model=ChatCompletionResponse,
@@ -653,30 +674,11 @@ async def chat_completions(
                             else usage_data,
                             "latency_ms": int((time.time() - start_time) * 1000),
                             "status_code": 200,
-                            "params": (
-                                (
-                                    lambda p: (
-                                        p.update(
-                                            {
-                                                "max_tokens": p.get("max_tokens")
-                                                if p.get("max_tokens") is not None
-                                                else (
-                                                    getattr(
-                                                        get_adapter_config_for_provider(
-                                                            provider,
-                                                            routing_info.get("base_url")
-                                                            if routing_info
-                                                            else None,
-                                                        ),
-                                                        "max_output_length",
-                                                        None,
-                                                    )
-                                                )
-                                            }
-                                        )
-                                        or p
-                                    )
-                                )(dict(params))
+                            "params": _build_db_params(
+                                params,
+                                provider,
+                                routing_info.get("base_url") if routing_info else None,
+                                get_adapter_config_for_provider,
                             ),
                             "metadata": metadata,
                             "ttft_ms": ttft_ms,
@@ -828,25 +830,11 @@ async def chat_completions(
                     else None,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": 200,
-                    "params": (
-                        (
-                            lambda p: (
-                                p.update(
-                                    {
-                                        "max_tokens": p.get("max_tokens")
-                                        if p.get("max_tokens") is not None
-                                        else (
-                                            getattr(
-                                                get_adapter_config_for_provider(provider, base_url),
-                                                "max_output_length",
-                                                None,
-                                            )
-                                        )
-                                    }
-                                )
-                                or p
-                            )
-                        )(dict(params))
+                    "params": _build_db_params(
+                        params,
+                        provider,
+                        base_url,
+                        get_adapter_config_for_provider,
                     ),
                     "metadata": metadata,
                     "pricing": pricing,

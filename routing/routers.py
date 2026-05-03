@@ -43,6 +43,10 @@ class ProviderPinError(ValueError):
     """Raised when a pinned provider is not found or disabled for a model."""
 
 
+class AllCircuitsOpenError(RuntimeError):
+    """Raised when all provider circuits are open (full outage)."""
+
+
 # ============================================================================
 # Data Classes
 # ============================================================================
@@ -625,7 +629,13 @@ class FixedRouter(BaseRouter):
             (adapter, weight) for (adapter, weight, cb) in snapshot if cb.allow_request()
         ]
 
-        pool = allowed if allowed else [(a, w) for (a, w, _cb) in snapshot]
+        if not allowed:
+            provider_names = [_get_endpoint_id(a) for a, _w, _cb in snapshot]
+            raise AllCircuitsOpenError(
+                f"All provider circuits are open for model {model_id}: {provider_names}"
+            )
+
+        pool = allowed
 
         rand = random.random()
         cumulative = 0.0
