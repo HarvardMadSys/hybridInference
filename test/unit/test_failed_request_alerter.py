@@ -14,7 +14,7 @@ import pytest
 async def test_count_recent_failures_query():
     """The failure-count SQL must filter on status_code >= 500 OR error IS NOT NULL."""
     from serving.admin.failed_request_alerter import (
-        FAILED_REQUEST_COUNT_SQL_TEMPLATE,
+        FAILED_REQUEST_COUNT_SQL,
         count_recent_failures,
     )
 
@@ -24,16 +24,25 @@ async def test_count_recent_failures_query():
     result = await count_recent_failures(pool, window_minutes=5)
 
     assert result == 7
-    # Verify the predicate text — both status-code and error filters present.
-    assert "status_code >= 500" in FAILED_REQUEST_COUNT_SQL_TEMPLATE
-    assert "error IS NOT NULL" in FAILED_REQUEST_COUNT_SQL_TEMPLATE
-    # Verify the SQL passed to fetchval also carries those clauses and the
-    # interpolated window.
-    pool.fetchval.assert_awaited_once()
-    sent_sql = pool.fetchval.await_args.args[0]
-    assert "status_code >= 500" in sent_sql
-    assert "error IS NOT NULL" in sent_sql
-    assert "5 minutes" in sent_sql
+    # Verify the constant-level predicate text.
+    assert "status_code >= 500" in FAILED_REQUEST_COUNT_SQL
+    assert "error IS NOT NULL" in FAILED_REQUEST_COUNT_SQL
+    # Verify the call was parameterized: SQL string + bind arg, not interpolated.
+    pool.fetchval.assert_awaited_once_with(FAILED_REQUEST_COUNT_SQL, 5)
+
+
+@pytest.mark.asyncio
+async def test_count_recent_failures_rejects_nonpositive_window():
+    """window_minutes <= 0 must raise ValueError before touching the pool."""
+    from serving.admin.failed_request_alerter import count_recent_failures
+
+    pool = MagicMock()
+    pool.fetchval = AsyncMock()
+
+    with pytest.raises(ValueError, match="window_minutes must be > 0"):
+        await count_recent_failures(pool, window_minutes=0)
+
+    pool.fetchval.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -239,6 +248,23 @@ def test_register_disabled_when_webhook_empty():
         return_value=fake_scheduler,
     ):
         failed_request_alerter.register_alerter_job(pool, _settings_stub(webhook_url=""))
+
+    fake_scheduler.add_job.assert_not_called()
+
+
+def test_register_disabled_when_webhook_whitespace():
+    """Whitespace-only SLACK_WEBHOOK_URL must be treated as unset — no job registered."""
+    from serving.admin import failed_request_alerter
+
+    fake_scheduler = MagicMock()
+    pool = MagicMock()
+
+    with patch.object(
+        failed_request_alerter,
+        "get_scheduler",
+        return_value=fake_scheduler,
+    ):
+        failed_request_alerter.register_alerter_job(pool, _settings_stub(webhook_url="   "))
 
     fake_scheduler.add_job.assert_not_called()
 

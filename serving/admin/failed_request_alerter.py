@@ -28,21 +28,12 @@ logger = get_logger(__name__)
 
 # Module-level SQL so tests can introspect the predicate text.
 # Client errors (4xx) intentionally excluded — alert is for service-side failures.
-FAILED_REQUEST_COUNT_SQL_TEMPLATE = (
+# Parameterized: $1 = window_minutes (int). Avoids string interpolation, allows plan caching.
+FAILED_REQUEST_COUNT_SQL = (
     "SELECT COUNT(*) FROM api_logs "
-    "WHERE timestamp > NOW() - INTERVAL '{minutes} minutes' "
+    "WHERE timestamp > NOW() - make_interval(mins => $1) "
     "AND (status_code >= 500 OR error IS NOT NULL)"
 )
-
-
-def _build_count_sql(window_minutes: int) -> str:
-    """Render the failure-count SQL with a sanitized integer interval.
-
-    ``window_minutes`` is cast to ``int`` before interpolation so the value
-    can never be a SQL injection vector even though it originates from
-    operator-controlled settings.
-    """
-    return FAILED_REQUEST_COUNT_SQL_TEMPLATE.format(minutes=int(window_minutes))
 
 
 async def count_recent_failures(pool: asyncpg.Pool, window_minutes: int) -> int:
@@ -52,13 +43,17 @@ async def count_recent_failures(pool: asyncpg.Pool, window_minutes: int) -> int:
 
     Args:
         pool: The asyncpg pool to query.
-        window_minutes: Sliding-window size in minutes (must be a non-negative int).
+        window_minutes: Sliding-window size in minutes (must be > 0).
 
     Returns:
         The integer count of failed rows, or 0 when the query yields ``None``.
+
+    Raises:
+        ValueError: If ``window_minutes`` is not a positive integer.
     """
-    sql = _build_count_sql(window_minutes)
-    result = await pool.fetchval(sql)
+    if window_minutes <= 0:
+        raise ValueError(f"window_minutes must be > 0, got {window_minutes}")
+    result = await pool.fetchval(FAILED_REQUEST_COUNT_SQL, window_minutes)
     return int(result or 0)
 
 
@@ -178,7 +173,8 @@ def register_alerter_job(pool: asyncpg.Pool, settings: Settings) -> None:
     """
     from apscheduler.triggers.interval import IntervalTrigger
 
-    if not settings.slack_webhook_url:
+    webhook_url = settings.slack_webhook_url.strip()
+    if not webhook_url:
         logger.info("Slack alerter disabled (SLACK_WEBHOOK_URL not set)")
         return
 
@@ -189,7 +185,7 @@ def register_alerter_job(pool: asyncpg.Pool, settings: Settings) -> None:
 
     alerter = FailedRequestAlerter(
         pool=pool,
-        webhook_url=settings.slack_webhook_url,
+        webhook_url=webhook_url,
         threshold=settings.failed_request_alert_threshold,
         window_minutes=settings.failed_request_alert_window_minutes,
         cooldown_minutes=settings.failed_request_alert_cooldown_minutes,

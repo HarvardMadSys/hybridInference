@@ -306,6 +306,10 @@ async def initialize() -> AppServices:
                                 )
 
                                 register_alerter_job(db_logger.pool, settings)
+                            elif settings.slack_webhook_url.strip():
+                                logger.warning(
+                                    "Slack alerter not registered: APScheduler did not start"
+                                )
 
                                 # Run backfill in the background so a slow 30-day
                                 # aggregation on a large api_logs table cannot
