@@ -20,8 +20,8 @@ sys.path.insert(0, os.path.abspath("../.."))
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "HybridInference"
-copyright = "2025, Harvard System Lab"
-author = "Muxin Tian"
+copyright = "2025-2026, Harvard System Lab"
+author = "Harvard System Lab"
 release = "0.1.0"
 
 # -- General configuration ---------------------------------------------------
@@ -75,9 +75,7 @@ intersphinx_mapping = {
 }
 
 templates_path = ["_templates"]
-exclude_patterns = [
-    "developer/adapter-consolidation.md",
-]
+exclude_patterns = []
 
 # Source file suffixes
 source_suffix = {

@@ -1,15 +1,17 @@
 Prometheus Stack
 ================
 
-This directory contains Prometheus scrape configuration, recording/alerting rules, and Grafana dashboards (under `../grafana/`).
+> **Note:** Prometheus has been removed from the active deployment stack (see
+> `docs/source/developer/deployment.md`). The configuration files here are
+> preserved for potential re-introduction.
+
+This directory contains Prometheus scrape configuration, recording/alerting rules,
+and Alertmanager integration.
 
 Layout
 - `prometheus/`
   - `prometheus.yml`          Scrape configuration (defaults to `localhost:8000/metrics`).
   - `rules/`                  Recording and alerting rules (SLO/cost/availability).
-- `../grafana/`
-  - `dashboards/`             Importable Grafana dashboard JSON files.
-  - `README.md`               Import instructions.
 - `../alertmanager/`
   - `alertmanager.yml.example` Example Alertmanager routing (Slack).
 
@@ -21,10 +23,7 @@ Quick Start (local)
      prom/prometheus:latest \
      --config.file=/etc/prometheus/prometheus.yml
 
-2) Import Grafana dashboards:
-   - See `../grafana/README.md` for dashboard import steps and variables.
-
-3) Alerts and notifications (optional, recommended):
+2) Alerts and notifications (optional, recommended):
    - Alertmanager setup: see `../alertmanager/README.md`.
    - Rules under `prometheus/rules/` enabled by default:
      - `service_availability.yml`: `ServiceDown`, `ServiceUnreachable`,

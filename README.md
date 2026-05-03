@@ -1,4 +1,4 @@
-# hybridInference
+# HybridInference
 
 A high-performance hybrid inference server providing local deployment and offline API access to various LLM providers.
 
@@ -8,15 +8,19 @@ A high-performance hybrid inference server providing local deployment and offlin
 
 ```
 hybridInference/
-├── serving/        # FastAPI gateway, adapters, observability, storage
-├── routing/        # Routing manager and execution strategies
-├── config/         # Model + routing configuration files
-├── infrastructure/ # Systemd units, observability manifests, deployment assets
-├── scripts/        # Operational and perf tooling
-├── docs/           # Architecture and integration guides
-├── var/            # Runtime artifacts (e.g., SQLite logs)
-├── test/           # Test suite
-└── client/         # Client tooling (loaders, runners, metrics)
+├── serving/              # FastAPI gateway, adapters, observability, storage
+├── routing/              # Routing manager and execution strategies
+├── config/               # Model + routing configuration files
+├── infrastructure/       # Systemd units, observability manifests, deployment assets
+├── frontend/             # Next.js web UI
+├── scripts/              # Operational and perf tooling
+├── docs/                 # Architecture and integration guides
+├── var/                  # Runtime artifacts (e.g., SQLite logs)
+├── test/                 # Test suite
+├── client/               # Client tooling (loaders, runners, metrics)
+├── freeinference-harness/# Standalone black-box API test harness
+├── llm-prober/           # LLM probing utilities
+└── data/                 # Data files
 ```
 
 For service-specific deployment and routing details, refer to `docs/source/developer/openrouter.md`, `docs/source/developer/freeinference.md`, and `docs/source/developer/routing.md`. For extension guides (adding models or new providers), see `docs/source/developer/adding-models.md`.
@@ -80,9 +84,6 @@ make format
 
 # Run linters
 make lint
-
-# Type checking
-make typecheck
 
 # Run tests
 make test

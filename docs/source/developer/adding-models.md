@@ -601,4 +601,4 @@ Local vLLM and SGLang servers reuse `serving/adapters/openai_compat.py` (`OpenAI
 - [OpenRouter Gateway Overview](openrouter.md) — Architecture and endpoints
 - [Routing Configuration](routing.md) — Central weight overrides and strategy
 - [Configuration Guide](configuration.md) — Environment and YAML configuration
-- [API Reference](https://freeinference.org/docs/api-reference) — Top-level usage and running
+- [API Reference](https://doc.freeinference.org/) — Top-level usage and running

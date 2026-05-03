@@ -1,8 +1,8 @@
-"""Sphinx configuration for the Free Inference user documentation.
+"""Sphinx configuration for the FreeInference user documentation.
 
 This module configures Sphinx extensions, HTML theme, and source parsers
 used to build the user-facing documentation. This documentation focuses
-on helping users get started and use the Free Inference API.
+on helping users get started and use the FreeInference API.
 """
 
 # Configuration file for the Sphinx documentation builder.
@@ -19,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = "Free Inference"
-copyright = "2025, Harvard System Lab"
+project = "FreeInference"
+copyright = "2025-2026, Harvard System Lab"
 author = "Harvard System Lab"
 release = "0.1.0"
 
@@ -44,7 +44,6 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
 }
 
-templates_path = ["_templates"]
 exclude_patterns = []
 
 # Source file suffixes

@@ -80,3 +80,7 @@ There is no special multi-key rotation for OpenRouter — a single account-level
 
 - Design spec: `docs/superpowers/specs/2026-05-02-openrouter-upstream-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-05-02-openrouter-upstream.md`
+
+## See also
+
+- [OpenRouter-Compatible API Gateway](source/developer/openrouter.md) — full gateway architecture, adapter details, and development guide

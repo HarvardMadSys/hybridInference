@@ -76,6 +76,14 @@ class RoundRobinStrategy:
 
 2. Update `routing/manager.py` to use the new strategy based on `routing_strategy` config.
 
+### RouteWise Strategy
+
+In addition to the fixed-ratio strategy, a cost-aware `routewise` strategy is
+available. It is configured via `config/routewise.yaml` and uses a primal-dual
+decision algorithm to balance cost and latency across providers. See
+`config/routewise.yaml` for the full set of tuning parameters and the design
+specs under `docs/superpowers/specs/`.
+
 ### Health Monitoring
 
 Health checks are optional and can be enabled by setting `health_check > 0` in the configuration. The system performs simple GET requests to `/health` endpoints and adjusts weights accordingly.

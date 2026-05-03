@@ -149,7 +149,7 @@ A: `routing.yaml` only adjusts weights; it doesn't add/remove adapters. The cand
 A: Set `health_check: 0` or omit the field entirely.
 
 **Q: Can I use other routing strategies?**
-A: Currently only `fixed` is built-in. You can add new strategies in `routing/strategies.py` and configure them in `routing.yaml`.
+A: Currently `fixed` and `routewise` are built-in. `fixed` uses weighted ratios; `routewise` provides cost-aware routing (see `config/routewise.yaml`). You can add new strategies in `routing/strategies.py` and configure them in `routing.yaml`.
 
 **Q: What happens during failover?**
 A: The system automatically tries alternative adapters when the primary fails, ensuring continuous service availability.

@@ -30,8 +30,9 @@ The only required inputs are:
 - sampling count
 
 The standalone harness is now the only maintained black-box entry point for
-this workflow. The earlier pytest prototype under `test/external/` has been
-retired to avoid duplicate logic and drifting pass/fail rules.
+this workflow. The earlier pytest prototype under `test/external/` is being
+retired to avoid duplicate logic and drifting pass/fail rules; migration is
+tracked as part of Phase 2.
 
 ## Test Layers
 
