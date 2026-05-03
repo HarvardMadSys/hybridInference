@@ -1,6 +1,7 @@
 'use client';
 
 import toast from 'react-hot-toast';
+import { useAuth, hasRole } from '@/components/providers/AuthProvider';
 import { useModels } from '@/lib/hooks';
 import type { ModelCatalogItem } from '@/lib/api/user';
 
@@ -22,18 +23,23 @@ function copyModelId(modelId: string): void {
   toast.success('Model ID copied to clipboard');
 }
 
-/** Hide first-party OpenAI / Anthropic catalog entries from the dashboard list. */
-function isDashboardModelVisible(model: ModelCatalogItem): boolean {
+function isDashboardModelVisible(model: ModelCatalogItem, userRole: string | undefined): boolean {
   const p = model.owned_by.toLowerCase();
   if (p === 'codex_sub' || p === 'claude_sub') return false;
-  if (p.includes('openai')) return false;
-  if (p.includes('anthropic')) return false;
+  // First-party OpenAI/Anthropic catalog entries are gated to internal+ users on the backend;
+  // only hide them in the UI for users without that access.
+  if (!hasRole(userRole, 'internal')) {
+    if (p.includes('openai')) return false;
+    if (p.includes('anthropic')) return false;
+  }
   return true;
 }
 
 export function ModelsSection(): JSX.Element {
   const { data, isLoading, error } = useModels();
-  const models = (data?.data ?? []).filter(isDashboardModelVisible);
+  const { state } = useAuth();
+  const userRole = state.user?.role;
+  const models = (data?.data ?? []).filter((m) => isDashboardModelVisible(m, userRole));
 
   return (
     <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-5">
