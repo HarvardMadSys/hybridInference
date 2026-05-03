@@ -290,7 +290,7 @@ async def test_synthetic_probe_skips_db_logging(monkeypatch, mock_db_logger):
 
 @pytest.mark.asyncio
 async def test_reasoning_content_filtered_in_streaming(monkeypatch, mock_db_logger):
-    """Default /v1/chat/completions behavior is strict OpenAI: no reasoning_content visible."""
+    """X-Reasoning-Passthrough: false strips reasoning_content from streaming output."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
@@ -315,6 +315,7 @@ async def test_reasoning_content_filtered_in_streaming(monkeypatch, mock_db_logg
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": True,
             },
+            headers={"X-Reasoning-Passthrough": "false"},
         ) as resp,
     ):
         assert resp.status_code == status.HTTP_200_OK
@@ -323,7 +324,7 @@ async def test_reasoning_content_filtered_in_streaming(monkeypatch, mock_db_logg
             if line.startswith("data: "):
                 lines.append(line)
 
-        # Default: reasoning_content should NOT appear
+        # Strict mode: reasoning_content should NOT appear
         for line in lines:
             if line != "data: [DONE]" and line != "data: {}":
                 try:
@@ -331,7 +332,7 @@ async def test_reasoning_content_filtered_in_streaming(monkeypatch, mock_db_logg
                     if chunk.get("choices"):
                         delta = chunk["choices"][0].get("delta", {})
                         assert "reasoning_content" not in delta, (
-                            "reasoning_content should be stripped in default strict mode"
+                            "reasoning_content should be stripped in strict mode"
                         )
                 except json.JSONDecodeError:
                     pass
@@ -346,14 +347,14 @@ async def test_reasoning_content_filtered_in_streaming(monkeypatch, mock_db_logg
 
 
 @pytest.mark.asyncio
-async def test_reasoning_passthrough_header_preserves_reasoning(monkeypatch, mock_db_logger):
-    """X-Reasoning-Passthrough: true preserves reasoning_content for clients that can use it."""
+async def test_reasoning_content_visible_by_default_in_streaming(monkeypatch, mock_db_logger):
+    """Default /v1/chat/completions behavior preserves reasoning_content."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
     router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
-    app = FastAPI(title="Test Reasoning Passthrough")
+    app = FastAPI(title="Test Default Passthrough")
     app.state.services = AppServices(  # type: ignore[attr-defined]
         router=router,
         db_logger=mock_db_logger,
@@ -372,7 +373,6 @@ async def test_reasoning_passthrough_header_preserves_reasoning(monkeypatch, moc
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": True,
             },
-            headers={"X-Reasoning-Passthrough": "true"},
         ) as resp,
     ):
         assert resp.status_code == status.HTTP_200_OK
@@ -392,7 +392,7 @@ async def test_reasoning_passthrough_header_preserves_reasoning(monkeypatch, moc
                             saw_reasoning = True
                 except json.JSONDecodeError:
                     pass
-        assert saw_reasoning, "reasoning_content should be preserved with X-Reasoning-Passthrough"
+        assert saw_reasoning, "reasoning_content should be visible by default"
 
         content = "".join(
             json.loads(line[6:])["choices"][0]["delta"].get("content", "")
@@ -403,8 +403,8 @@ async def test_reasoning_passthrough_header_preserves_reasoning(monkeypatch, moc
 
 
 @pytest.mark.asyncio
-async def test_non_stream_default_strict_strips_reasoning_content(monkeypatch, mock_db_logger):
-    """Non-streaming path should also default to strict OpenAI serialization."""
+async def test_non_stream_strict_strips_reasoning_content(monkeypatch, mock_db_logger):
+    """X-Reasoning-Passthrough: false strips reasoning_content from non-streaming response."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
@@ -423,6 +423,7 @@ async def test_non_stream_default_strict_strips_reasoning_content(monkeypatch, m
         resp = await client.post(
             "/v1/chat/completions",
             json={"model": "glm-4.6", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"X-Reasoning-Passthrough": "false"},
         )
 
     assert resp.status_code == status.HTTP_200_OK
@@ -433,16 +434,14 @@ async def test_non_stream_default_strict_strips_reasoning_content(monkeypatch, m
 
 
 @pytest.mark.asyncio
-async def test_non_stream_reasoning_passthrough_header_preserves_reasoning_content(
-    monkeypatch, mock_db_logger
-):
-    """Non-streaming path should preserve reasoning_content when passthrough is requested."""
+async def test_non_stream_default_preserves_reasoning_content(monkeypatch, mock_db_logger):
+    """Default non-streaming response preserves reasoning_content."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
     router.register_route("glm-4.6", [(AdapterWithReasoningContent(_mk_cfg("glm-4.6")), 1.0)])
 
-    app = FastAPI(title="Test Non-Stream Passthrough Mode")
+    app = FastAPI(title="Test Non-Stream Default Passthrough")
     app.state.services = AppServices(  # type: ignore[attr-defined]
         router=router,
         db_logger=mock_db_logger,
@@ -455,7 +454,6 @@ async def test_non_stream_reasoning_passthrough_header_preserves_reasoning_conte
         resp = await client.post(
             "/v1/chat/completions",
             json={"model": "glm-4.6", "messages": [{"role": "user", "content": "Hi"}]},
-            headers={"X-Reasoning-Passthrough": "true"},
         )
 
     assert resp.status_code == status.HTTP_200_OK
@@ -469,7 +467,7 @@ async def test_non_stream_reasoning_passthrough_header_preserves_reasoning_conte
 async def test_non_stream_reasoning_only_strict_returns_empty_visible_output(
     monkeypatch, mock_db_logger
 ):
-    """Strict non-streaming mode should hide reasoning-only output and leave content empty."""
+    """Strict mode (X-Reasoning-Passthrough: false) should hide reasoning-only output."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
@@ -488,6 +486,7 @@ async def test_non_stream_reasoning_only_strict_returns_empty_visible_output(
         resp = await client.post(
             "/v1/chat/completions",
             json={"model": "glm-5", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"X-Reasoning-Passthrough": "false"},
         )
 
     assert resp.status_code == status.HTTP_200_OK
