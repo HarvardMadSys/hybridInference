@@ -8,6 +8,7 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import random
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 
     from serving.adapters.base import BaseAdapter
 
+from serving.observability.alerts import AlertSeverity, alert_slack
 from serving.observability.metrics import (
     API_FALLBACKS,
     API_TTFT,
@@ -253,12 +255,38 @@ class _CircuitBreaker:
             if availability is not None and availability < self.min_availability:
                 trip = True
             if trip:
+                prev_state = self.state
                 self.state = _CircuitState.OPEN
                 self.last_opened = time.perf_counter()
                 CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(1)
                 CIRCUIT_OPEN_TOTAL.labels(
                     provider=normalize_provider_label(self.provider), reason=reason
                 ).inc()
+                # Fire-and-forget Slack alert on CLOSED→OPEN or HALF_OPEN→OPEN.
+                if prev_state in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
+                    try:
+                        asyncio.ensure_future(
+                            alert_slack(
+                                AlertSeverity.ERROR,
+                                "Provider circuit opened",
+                                {
+                                    "provider": self.provider,
+                                    "consecutive_failures": self.consecutive_failures,
+                                    "availability": (
+                                        f"{availability:.2f}"
+                                        if availability is not None
+                                        else "n/a"
+                                    ),
+                                    "reason": reason or "unknown",
+                                },
+                                dedupe_key=f"circuit_open:{self.provider}",
+                                cooldown_sec=300,
+                            )
+                        )
+                    except RuntimeError:
+                        # No running event loop (e.g. unit tests outside pytest-asyncio).
+                        # Alert is best-effort; skip silently.
+                        pass
 
 
 # ============================================================================
