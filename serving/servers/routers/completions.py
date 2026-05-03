@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from routing.executor import ProviderPinError
-from routing.routers import RoutingObservation
+from routing.routers import AllCircuitsOpenError, RoutingObservation
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
 from serving.observability.metrics import (
@@ -135,6 +135,24 @@ def _record_routing_observation(
     active_router.record_observation(obs)
 
 
+def _build_db_params(
+    params: dict[str, Any],
+    provider: str,
+    base_url: str | None,
+    get_adapter_config_for_provider: Any,
+) -> dict[str, Any]:
+    _params = dict(params)
+    if _params.get("max_tokens") is None:
+        # ``get_adapter_config_for_provider`` returns ``None`` for unregistered
+        # providers (e.g., the synthetic "router" placeholder). ``getattr(None,
+        # "x", default)`` raises ``AttributeError`` rather than returning the
+        # default, so guard explicitly before reading the attribute.
+        config = get_adapter_config_for_provider(provider, base_url)
+        if config is not None:
+            _params["max_tokens"] = getattr(config, "max_output_length", None)
+    return _params
+
+
 @router.post(
     "/v1/chat/completions",
     response_model=ChatCompletionResponse,
@@ -144,6 +162,7 @@ def _record_routing_observation(
         404: {"model": ErrorResponse, "description": "Model Not Found"},
         429: {"model": ErrorResponse, "description": "Too Many Requests"},
         500: {"model": ErrorResponse, "description": "Server Error"},
+        503: {"model": ErrorResponse, "description": "Service Unavailable"},
     },
 )
 async def chat_completions(
@@ -658,30 +677,11 @@ async def chat_completions(
                             else usage_data,
                             "latency_ms": int((time.time() - start_time) * 1000),
                             "status_code": 200,
-                            "params": (
-                                (
-                                    lambda p: (
-                                        p.update(
-                                            {
-                                                "max_tokens": p.get("max_tokens")
-                                                if p.get("max_tokens") is not None
-                                                else (
-                                                    getattr(
-                                                        get_adapter_config_for_provider(
-                                                            provider,
-                                                            routing_info.get("base_url")
-                                                            if routing_info
-                                                            else None,
-                                                        ),
-                                                        "max_output_length",
-                                                        None,
-                                                    )
-                                                )
-                                            }
-                                        )
-                                        or p
-                                    )
-                                )(dict(params))
+                            "params": _build_db_params(
+                                params,
+                                provider,
+                                routing_info.get("base_url") if routing_info else None,
+                                get_adapter_config_for_provider,
                             ),
                             "metadata": metadata,
                             "ttft_ms": ttft_ms,
@@ -833,25 +833,11 @@ async def chat_completions(
                     else None,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": 200,
-                    "params": (
-                        (
-                            lambda p: (
-                                p.update(
-                                    {
-                                        "max_tokens": p.get("max_tokens")
-                                        if p.get("max_tokens") is not None
-                                        else (
-                                            getattr(
-                                                get_adapter_config_for_provider(provider, base_url),
-                                                "max_output_length",
-                                                None,
-                                            )
-                                        )
-                                    }
-                                )
-                                or p
-                            )
-                        )(dict(params))
+                    "params": _build_db_params(
+                        params,
+                        provider,
+                        base_url,
+                        get_adapter_config_for_provider,
                     ),
                     "metadata": metadata,
                     "pricing": pricing,
@@ -954,6 +940,17 @@ async def chat_completions(
         raise HTTPException(
             status_code=400,
             detail=scrub_error_for_user(exc, request_id, 400),
+        ) from exc
+
+    except AllCircuitsOpenError as exc:
+        # Full provider outage: every circuit breaker for this model is open.
+        # Surface this as 503 Service Unavailable so clients can distinguish
+        # "we're temporarily overloaded / all upstreams down" from a generic
+        # 500 server error.
+        record_model_request("503", "router")
+        raise HTTPException(
+            status_code=503,
+            detail=scrub_error_for_user(exc, request_id, 503),
         ) from exc
 
     except Exception as exc:
