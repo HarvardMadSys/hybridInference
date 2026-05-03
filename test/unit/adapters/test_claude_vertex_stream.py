@@ -433,9 +433,10 @@ class TestBuildFinalUsage:
             cache_read_input_tokens=200,
             cache_creation_input_tokens=50,
         )
-        assert usage["prompt_tokens"] == 300  # 500 - 200
+        # Cache-inclusive prompt_tokens: 500 + 200 + 50
+        assert usage["prompt_tokens"] == 750
         assert usage["completion_tokens"] == 100
-        assert usage["total_tokens"] == 600  # 500 + 100
+        assert usage["total_tokens"] == 850  # 750 + 100
         assert usage["cache_read_tokens"] == 200
         assert usage["cache_write_tokens"] == 50
 
@@ -520,7 +521,8 @@ class TestClaudeAdapterStream:
 
         final = json.loads(chunks[-2][6:])
         usage = final["usage"]
-        assert usage["prompt_tokens"] == 300  # 500 - 200 cache_read
+        # Cache-inclusive prompt_tokens: 500 + 200 + 50
+        assert usage["prompt_tokens"] == 750
         assert usage["completion_tokens"] == 30
         assert usage["cache_read_tokens"] == 200
         assert usage["cache_write_tokens"] == 50
@@ -661,8 +663,8 @@ class TestClaudeAdapterVertexMessage:
         # Final usage chunk (before [DONE])
         final = json.loads(chunks[-2][6:])
         usage = final["usage"]
-        # make_final_usage_chunk: prompt_tokens_override = max(0, 1000 - 500) = 500
-        assert usage["prompt_tokens"] == 500
+        # Cache-inclusive prompt_tokens: 1000 + 500 + 100
+        assert usage["prompt_tokens"] == 1600
         assert usage["completion_tokens"] == 200
         assert usage["cache_read_tokens"] == 500
         assert usage["cache_write_tokens"] == 100

@@ -177,7 +177,8 @@ async def test_deepseek_profile_non_streaming_usage_normalizes_cache_fields():
     result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
     usage = result["usage"]
-    assert usage["prompt_tokens"] == 50
+    # Cache-inclusive: keep upstream prompt_tokens (200 = 150 cache_hit + 50 cache_miss)
+    assert usage["prompt_tokens"] == 200
     assert usage["cache_read_tokens"] == 150
     assert usage["completion_tokens"] == 10
     assert usage["total_tokens"] == 210
@@ -222,7 +223,8 @@ async def test_deepseek_profile_streaming_usage_normalizes_cache_fields():
     usage_chunks = [p for p in final_payloads if "usage" in p]
     assert len(usage_chunks) >= 1
     usage = usage_chunks[-1]["usage"]
-    assert usage["prompt_tokens"] == 20
+    # Cache-inclusive: keep upstream prompt_tokens (200 = 180 cache_hit + 20 cache_miss)
+    assert usage["prompt_tokens"] == 200
     assert usage["cache_read_tokens"] == 180
     assert "prompt_cache_hit_tokens" not in usage
     assert "prompt_cache_miss_tokens" not in usage

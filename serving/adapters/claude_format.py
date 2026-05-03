@@ -455,10 +455,14 @@ def parse_usage(usage_data: dict[str, Any]) -> UsageInfo:
     output_tokens = int(usage_data.get("output_tokens", 0) or 0)
     thinking_tokens = int(usage_data.get("thinking_tokens", 0) or 0)
 
+    # Anthropic's input_tokens, cache_read_input_tokens, and cache_creation_input_tokens
+    # are disjoint. Use the cache-inclusive (OpenAI-style) total here so storage and
+    # cost calculation see a consistent prompt_tokens semantic across providers.
+    prompt_tokens = input_tokens + cache_read + cache_write
     return UsageInfo(
-        prompt_tokens=max(0, input_tokens - cache_read),
+        prompt_tokens=prompt_tokens,
         completion_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
+        total_tokens=prompt_tokens + output_tokens,
         cache_read_tokens=cache_read,
         cache_write_tokens=cache_write,
         reasoning_tokens=thinking_tokens,
@@ -646,11 +650,14 @@ def build_final_usage(
     cache_creation_input_tokens: int = 0,
 ) -> dict[str, Any]:
     """Build final usage dict with cache token separation for streaming."""
-    non_cached_prompt = max(0, input_tokens - cache_read_input_tokens)
+    # Anthropic input/cache_read/cache_creation are disjoint; report
+    # prompt_tokens cache-inclusive (OpenAI semantic) for consistent storage
+    # and downstream cost calculation.
+    prompt_tokens = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
     usage: dict[str, Any] = {
-        "prompt_tokens": non_cached_prompt,
+        "prompt_tokens": int(prompt_tokens),
         "completion_tokens": int(output_tokens),
-        "total_tokens": int(input_tokens + output_tokens),
+        "total_tokens": int(prompt_tokens + output_tokens),
     }
     if cache_read_input_tokens > 0:
         usage["cache_read_tokens"] = int(cache_read_input_tokens)
