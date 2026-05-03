@@ -10,7 +10,6 @@ describe('built-in views', () => {
       'anomalies',
       'near-quota',
       'recently-active',
-      'new-this-week',
     ]);
   });
 

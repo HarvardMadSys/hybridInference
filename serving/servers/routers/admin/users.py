@@ -6,7 +6,7 @@ import json as _json
 from decimal import Decimal
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from serving.schemas_admin import (
     ApproveUserRequest,
@@ -54,14 +54,14 @@ async def list_users(
     sort_by: Literal[
         "created", "cost_today", "cost_month", "cost_alltime", "last_login"
     ] = "created",
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     # Phase 1 admin Users redesign — new filters
-    min_cost_today: Decimal | None = None,
-    min_cost_month: Decimal | None = None,
+    min_cost_today: Decimal | None = Query(None, ge=0),
+    min_cost_month: Decimal | None = Query(None, ge=0),
     quota_state: Literal["near", "over", "custom", "default"] | None = None,
     provider: str | None = None,
-    active_within_hours: int | None = None,
+    active_within_hours: int | None = Query(None, ge=1),
     anomaly: bool | None = None,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),

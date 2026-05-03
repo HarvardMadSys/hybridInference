@@ -46,17 +46,9 @@ export const BUILTIN_VIEWS: SavedView[] = [
       view: 'recently-active',
     },
   },
-  {
-    id: 'new-this-week',
-    name: 'New this week',
-    builtin: true,
-    filterState: {
-      ...DEFAULT_FILTER_STATE,
-      sortBy: 'created',
-      activeWithinHours: 24 * 7,
-      view: 'new-this-week',
-    },
-  },
+  // "New this week" intentionally absent: the backend has no
+  // `created_within_hours` filter, and reusing `activeWithinHours` would
+  // exclude brand-new users who haven't logged in. Tracked as a follow-up.
 ];
 
 export function getViewById(id: string): SavedView | undefined {

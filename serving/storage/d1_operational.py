@@ -659,6 +659,9 @@ class D1OperationalStore(OperationalStore):
 
             anomalous: list[Row] = []
             for r in result_rows:
+                # Per spec: anomaly applies only to active users.
+                if r.get("status") != "active":
+                    continue
                 t = today_costs.get(r["id"], _Decimal("0"))
                 prior_total, days = prior_stats.get(r["id"], (_Decimal("0"), 0))
                 avg_7d = (prior_total / days) if days > 0 else _Decimal("0")
