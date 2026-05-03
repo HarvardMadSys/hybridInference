@@ -18,6 +18,7 @@ class AlertingLogHandler(logging.Handler):
         self.dropped_count = 0
 
     def emit(self, record: logging.LogRecord) -> None:
+        """Push the record onto the bounded queue, dropping the oldest on overflow."""
         try:
             self.queue.put_nowait(record)
         except asyncio.QueueFull:

@@ -1,5 +1,7 @@
-"""AlertEngine: drains AlertingLogHandler queue, runs rule-based alerts,
-and schedules periodic SQL alerts via APScheduler.
+"""AlertEngine for in-process Slack alerting.
+
+Drains the AlertingLogHandler queue, runs rule-based alerts, and schedules
+periodic SQL alerts via APScheduler.
 """
 
 from __future__ import annotations
@@ -70,6 +72,7 @@ class FailedRequestRateRule:
         self._window = _SlidingWindow(cfg.window_sec)
 
     async def on_record(self, record: logging.LogRecord) -> None:
+        """Inspect a request-log record and fire an alert if the failure rate exceeds threshold."""
         if not self._cfg.enabled:
             return
         if record.name != _REQUEST_LOG_LOGGER:
@@ -117,6 +120,7 @@ class FivexxRateRule:
         self._window = _SlidingWindow(cfg.window_sec)
 
     async def on_record(self, record: logging.LogRecord) -> None:
+        """Inspect a request-log record and fire an alert if the 5xx rate exceeds threshold."""
         if not self._cfg.enabled:
             return
         if record.name != _REQUEST_LOG_LOGGER:
@@ -169,6 +173,7 @@ class P95LatencyRule:
         self._windows: dict[str, _SlidingWindow] = {}
 
     async def on_record(self, record: logging.LogRecord) -> None:
+        """Track per-provider durations and alert when p95 exceeds the configured threshold."""
         if not self._cfg.enabled:
             return
         if record.name != _REQUEST_LOG_LOGGER:
@@ -219,6 +224,7 @@ class AuthFailureSpikeRule:
         self._window = _SlidingWindow(cfg.window_sec)
 
     async def on_record(self, record: logging.LogRecord) -> None:
+        """Track auth-failure events and alert when the count exceeds threshold in-window."""
         if not self._cfg.enabled:
             return
         if getattr(record, "event", None) != "auth_failure":
@@ -268,6 +274,7 @@ class ConcurrencyExhaustedRule:
         self._window = _SlidingWindow(cfg.window_sec)
 
     async def on_record(self, record: logging.LogRecord) -> None:
+        """Track concurrency-rejected events and alert when the in-window count exceeds threshold."""
         if not self._cfg.enabled:
             return
         if getattr(record, "event", None) != "concurrency_rejected":
@@ -317,6 +324,7 @@ class UserCostOverrunJob:
         self._op_store = op_store
 
     async def run(self) -> None:
+        """Query users whose daily cost exceeds their role threshold and emit alerts."""
         if not self._cfg.enabled or self._op_store is None:
             return
         try:
@@ -352,6 +360,7 @@ class ProviderHourlySpendJob:
         self._log_store = log_store
 
     async def run(self) -> None:
+        """Query per-provider hourly spend and emit alerts when budgets are exceeded."""
         if not self._cfg.enabled or self._log_store is None:
             return
         now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
@@ -401,9 +410,11 @@ class AlertEngine:
         self._scheduled_jobs: list[Any] = []
 
     def is_running(self) -> bool:
+        """Return True if the drain task is alive."""
         return self._task is not None and not self._task.done()
 
     async def start(self) -> None:
+        """Build rules, schedule periodic jobs, and start the drain task."""
         self._build_rules()
         self._schedule_periodic_jobs()
         self._task = asyncio.create_task(self._drain(), name="AlertEngine.drain")
@@ -414,6 +425,7 @@ class AlertEngine:
         )
 
     async def stop(self) -> None:
+        """Cancel the drain task and remove scheduled jobs."""
         import contextlib as _cl
 
         if self._task and not self._task.done():
