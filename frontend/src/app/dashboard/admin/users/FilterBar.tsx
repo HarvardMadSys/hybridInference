@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Density, FilterState } from './types';
 import { StatusFilter } from './filters/StatusFilter';
 import { UsageFilter } from './filters/UsageFilter';
@@ -17,16 +17,23 @@ interface FilterBarProps {
 
 export function FilterBar({ state, onChange, density, onDensityChange }: FilterBarProps) {
   const [searchInput, setSearchInput] = useState(state.search);
+  // Keep a ref to the latest state so the debounce callback always merges into
+  // the most recent state rather than the stale closure value.
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   // Sync searchInput when state.search changes externally (e.g. saved view applied)
   useEffect(() => {
     setSearchInput(state.search);
   }, [state.search]);
 
-  // Debounce search 300ms
+  // Debounce search 300ms. Read stateRef.current inside the timeout so we
+  // always merge into the latest filter state — not the stale closure copy.
   useEffect(() => {
     const t = setTimeout(() => {
-      if (searchInput !== state.search) onChange({ ...state, search: searchInput });
+      if (searchInput !== stateRef.current.search) {
+        onChange({ ...stateRef.current, search: searchInput });
+      }
     }, 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
