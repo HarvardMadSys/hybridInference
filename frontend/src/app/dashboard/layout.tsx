@@ -1,9 +1,7 @@
 /**
- * Dashboard layout: overrides root layout's vertical centering so that
- * content-heavy pages (admin panel, settings, etc.) align to the top.
+ * Dashboard layout: lets dashboard pages occupy the parent <main>'s full
+ * max-w-5xl width without the previous w-screen full-bleed hack.
  */
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="relative left-1/2 w-screen -translate-x-1/2 self-start px-6">{children}</div>
-  );
+  return <div className="w-full">{children}</div>;
 }
