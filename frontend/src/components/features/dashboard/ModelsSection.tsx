@@ -23,12 +23,13 @@ function copyModelId(modelId: string): void {
   toast.success('Model ID copied to clipboard');
 }
 
-function isDashboardModelVisible(model: ModelCatalogItem, userRole: string | undefined): boolean {
+export function isDashboardModelVisible(
+  model: ModelCatalogItem,
+  showInternalModels: boolean,
+): boolean {
   const p = model.owned_by.toLowerCase();
   if (p === 'codex_sub' || p === 'claude_sub') return false;
-  // First-party OpenAI/Anthropic catalog entries are gated to internal+ users on the backend;
-  // only hide them in the UI for users without that access.
-  if (!hasRole(userRole, 'internal')) {
+  if (!showInternalModels) {
     if (p.includes('openai')) return false;
     if (p.includes('anthropic')) return false;
   }
@@ -38,8 +39,8 @@ function isDashboardModelVisible(model: ModelCatalogItem, userRole: string | und
 export function ModelsSection(): JSX.Element {
   const { data, isLoading, error } = useModels();
   const { state } = useAuth();
-  const userRole = state.user?.role;
-  const models = (data?.data ?? []).filter((m) => isDashboardModelVisible(m, userRole));
+  const showInternalModels = hasRole(state.user?.role, 'internal');
+  const models = (data?.data ?? []).filter((m) => isDashboardModelVisible(m, showInternalModels));
 
   return (
     <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-5">
