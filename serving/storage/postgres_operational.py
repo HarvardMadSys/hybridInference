@@ -606,11 +606,29 @@ class PostgresOperationalStore(OperationalStore):
         ] = "created",
         limit: int = 100,
         offset: int = 0,
+        # NEW filters (Phase 1 admin Users redesign)
+        min_cost_today: Decimal | None = None,
+        min_cost_month: Decimal | None = None,
+        quota_state: Literal["near", "over", "custom", "default"] | None = None,
+        provider: str | None = None,
+        active_within_hours: int | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
         Cost-based sorts use CTEs that join against ``api_logs`` (which lives
         in the same Postgres instance for this implementation).
+
+        Additional filters (all keyword-only):
+        - ``min_cost_today`` / ``min_cost_month``: filter to users whose
+          today/month spend meets the threshold (post-query — applied after
+          rows + costs are loaded).
+        - ``quota_state``: ``"default"`` / ``"custom"`` filter pre-query via
+          EXISTS on api_keys; ``"near"`` / ``"over"`` are post-query because
+          they compare today's cost against quota.
+        - ``provider``: keep only users who hit ``provider`` in api_logs in
+          the last 30 days. Uses the ``provider`` column on api_logs.
+        - ``active_within_hours``: ``users.last_login_at`` must be within the
+          window.
         """
         # Build WHERE clause
         where_clauses: list[str] = []
@@ -620,11 +638,39 @@ class PostgresOperationalStore(OperationalStore):
             where_clauses.append(f"u.status = ${len(filter_params) + 1}")
             filter_params.append(status)
         if search:
+            # Search now also matches user.id prefix and active key_prefix.
+            substr_idx = len(filter_params) + 1  # %search%
+            id_idx = len(filter_params) + 2  # search% (id prefix)
+            kp_idx = len(filter_params) + 3  # search% (key prefix)
             where_clauses.append(
-                f"(u.email ILIKE ${len(filter_params) + 1} "
-                f"OR u.user_name ILIKE ${len(filter_params) + 1})"
+                f"(u.email ILIKE ${substr_idx} "
+                f"OR u.user_name ILIKE ${substr_idx} "
+                f"OR u.id::text LIKE ${id_idx} "
+                f"OR EXISTS (SELECT 1 FROM api_keys k2 "
+                f"           WHERE k2.account_id = u.id "
+                f"             AND k2.status = 'active' "
+                f"             AND k2.key_prefix LIKE ${kp_idx}))"
             )
             filter_params.append(f"%{search}%")
+            filter_params.append(f"{search}%")
+            filter_params.append(f"{search}%")
+        if active_within_hours is not None:
+            where_clauses.append(
+                f"u.last_login_at >= NOW() - "
+                f"${len(filter_params) + 1}::int * INTERVAL '1 hour'"
+            )
+            filter_params.append(active_within_hours)
+        if quota_state == "default":
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
+                "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NULL)"
+            )
+        elif quota_state == "custom":
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
+                "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NOT NULL)"
+            )
+        # 'near' / 'over' applied post-query below
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -788,6 +834,70 @@ class PostgresOperationalStore(OperationalStore):
             r["usage_month"] = r.get("usage_month") or month_map.get(r["id"], 0)
             r.setdefault("usage_alltime", 0)
             result_rows.append(r)
+
+        # Post-query filters that need cost data we already loaded.
+        # NOTE: ``total`` becomes approximate after these filters — recomputed
+        # below to reflect the post-filter row count. Acceptable for an admin
+        # tool. Pushing these to SQL would require non-trivial CTE changes.
+        from decimal import Decimal as _Decimal
+
+        if min_cost_today is not None:
+            result_rows = [
+                r
+                for r in result_rows
+                if _Decimal(str(r.get("usage_today", 0) or 0)) >= min_cost_today
+            ]
+        if min_cost_month is not None:
+            result_rows = [
+                r
+                for r in result_rows
+                if _Decimal(str(r.get("usage_month", 0) or 0)) >= min_cost_month
+            ]
+
+        if quota_state in ("near", "over") and result_rows:
+            user_ids2 = [r["id"] for r in result_rows]
+            async with self._pool.acquire() as conn2:
+                quota_rows = await conn2.fetch(
+                    "SELECT account_id, quota_daily_cost_usd "
+                    "FROM api_keys WHERE account_id = ANY($1::text[]) "
+                    "  AND status = 'active'",
+                    user_ids2,
+                )
+            quotas = {q["account_id"]: q["quota_daily_cost_usd"] for q in quota_rows}
+            filtered: list[Row] = []
+            for r in result_rows:
+                quota = quotas.get(r["id"])
+                if not quota or float(quota) <= 0:
+                    continue
+                today = float(r.get("usage_today", 0) or 0)
+                pct = today / float(quota)
+                if quota_state == "near" and pct >= 0.80:
+                    filtered.append(r)
+                elif quota_state == "over" and pct >= 1.0:
+                    filtered.append(r)
+            result_rows = filtered
+
+        if provider and result_rows:
+            user_ids3 = [r["id"] for r in result_rows]
+            async with self._pool.acquire() as conn3:
+                prov_rows = await conn3.fetch(
+                    "SELECT DISTINCT user_id FROM api_logs "
+                    "WHERE user_id = ANY($1::text[]) "
+                    "  AND provider = $2 "
+                    "  AND timestamp >= NOW() - INTERVAL '30 days'",
+                    user_ids3,
+                    provider,
+                )
+            allowed = {r["user_id"] for r in prov_rows}
+            result_rows = [r for r in result_rows if r["id"] in allowed]
+
+        if (
+            min_cost_today is not None
+            or min_cost_month is not None
+            or quota_state in ("near", "over")
+            or provider
+        ):
+            total = len(result_rows)
 
         return total, result_rows, status_counts
 

@@ -424,11 +424,21 @@ class D1OperationalStore(OperationalStore):
         ] = "created",
         limit: int = 100,
         offset: int = 0,
+        # NEW filters (Phase 1 admin Users redesign)
+        min_cost_today: Any = None,
+        min_cost_month: Any = None,
+        quota_state: Literal["near", "over", "custom", "default"] | None = None,
+        provider: str | None = None,
+        active_within_hours: int | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return (total_count, user_rows, status_counts_row).
 
         Cost-based sorts are not supported in D1 (api_logs is in Postgres).
         They fall back to created_at ordering; the caller enriches costs.
+
+        New filters mirror the postgres variant; ``provider`` is a no-op in
+        D1 (api_logs lives in Postgres) — callers running on D1 should not
+        pass ``provider``.
         """
         where_clauses: list[str] = []
         params: list[Any] = []
@@ -439,8 +449,34 @@ class D1OperationalStore(OperationalStore):
         if search:
             # D1 LIKE patterns limited to 50 bytes; truncate search term
             truncated = search[:46]  # 46 + len("%%") = 48, safely under 50
-            where_clauses.append("(u.email LIKE ? OR u.user_name LIKE ?)")
-            params.extend([f"%{truncated}%", f"%{truncated}%"])
+            where_clauses.append(
+                "(u.email LIKE ? OR u.user_name LIKE ? "
+                "OR u.id LIKE ? "
+                "OR EXISTS (SELECT 1 FROM api_keys k2 "
+                "           WHERE k2.account_id = u.id "
+                "             AND k2.status = 'active' "
+                "             AND k2.key_prefix LIKE ?))"
+            )
+            params.extend(
+                [f"%{truncated}%", f"%{truncated}%", f"{truncated}%", f"{truncated}%"]
+            )
+        if active_within_hours is not None:
+            # SQLite stores last_login_at as TEXT (ISO 8601). Compare against
+            # a strftime cutoff.
+            where_clauses.append(
+                "u.last_login_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)"
+            )
+            params.append(f"-{int(active_within_hours)} hours")
+        if quota_state == "default":
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
+                "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NULL)"
+            )
+        elif quota_state == "custom":
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
+                "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NOT NULL)"
+            )
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -490,7 +526,111 @@ class D1OperationalStore(OperationalStore):
             query_params,
         )
 
-        return total, rows_result.rows, status_counts
+        result_rows: list[Row] = list(rows_result.rows)
+
+        # Post-query quota_state near/over: needs today's cost vs quota.
+        # D1 keeps user_daily_cost so today's cost is available locally.
+        if quota_state in ("near", "over") and result_rows:
+            user_ids2 = [r["id"] for r in result_rows]
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            placeholders2 = ",".join(["?"] * len(user_ids2))
+            cost_result = await self._d1.query(
+                f"SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                f"FROM user_daily_cost "
+                f"WHERE day = ? AND user_id IN ({placeholders2}) "
+                f"GROUP BY user_id",
+                [today, *user_ids2],
+            )
+            today_costs = {r["user_id"]: float(r["cost"]) for r in cost_result.rows}
+
+            quota_result = await self._d1.query(
+                f"SELECT account_id, quota_daily_cost_usd FROM api_keys "
+                f"WHERE account_id IN ({placeholders2}) AND status = 'active'",
+                user_ids2,
+            )
+            quotas = {
+                q["account_id"]: q["quota_daily_cost_usd"] for q in quota_result.rows
+            }
+
+            filtered: list[Row] = []
+            for r in result_rows:
+                quota = quotas.get(r["id"])
+                if not quota or float(quota) <= 0:
+                    continue
+                pct = today_costs.get(r["id"], 0.0) / float(quota)
+                if quota_state == "near" and pct >= 0.80:
+                    filtered.append(r)
+                elif quota_state == "over" and pct >= 1.0:
+                    filtered.append(r)
+            result_rows = filtered
+
+        # min_cost_today / min_cost_month: enrich from user_daily_cost,
+        # then apply the threshold.
+        if (min_cost_today is not None or min_cost_month is not None) and result_rows:
+            from decimal import Decimal as _Decimal
+
+            user_ids3 = [r["id"] for r in result_rows]
+            placeholders3 = ",".join(["?"] * len(user_ids3))
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+
+            today_map: dict[str, _Decimal] = {}
+            month_map: dict[str, _Decimal] = {}
+
+            if min_cost_today is not None:
+                today_result = await self._d1.query(
+                    f"SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    f"FROM user_daily_cost WHERE day = ? AND user_id IN ({placeholders3}) "
+                    f"GROUP BY user_id",
+                    [today, *user_ids3],
+                )
+                today_map = {
+                    r["user_id"]: _Decimal(str(r["cost"])) for r in today_result.rows
+                }
+                result_rows = [
+                    r
+                    for r in result_rows
+                    if today_map.get(r["id"], _Decimal("0"))
+                    >= _Decimal(str(min_cost_today))
+                ]
+
+            if min_cost_month is not None and result_rows:
+                user_ids4 = [r["id"] for r in result_rows]
+                placeholders4 = ",".join(["?"] * len(user_ids4))
+                month_result = await self._d1.query(
+                    f"SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    f"FROM user_daily_cost WHERE day LIKE ? AND user_id IN ({placeholders4}) "
+                    f"GROUP BY user_id",
+                    [f"{month_prefix}%", *user_ids4],
+                )
+                month_map = {
+                    r["user_id"]: _Decimal(str(r["cost"])) for r in month_result.rows
+                }
+                result_rows = [
+                    r
+                    for r in result_rows
+                    if month_map.get(r["id"], _Decimal("0"))
+                    >= _Decimal(str(min_cost_month))
+                ]
+
+        # provider filter is a no-op in D1: api_logs lives in Postgres in this
+        # hybrid deployment. Callers running on the D1 stack should not pass
+        # ``provider`` — log a warning if they do but don't error.
+        if provider:
+            logger.warning(
+                "list_users(provider=%r) requested on D1 store — "
+                "api_logs is in Postgres; ignoring provider filter.",
+                provider,
+            )
+
+        if (
+            min_cost_today is not None
+            or min_cost_month is not None
+            or quota_state in ("near", "over")
+        ):
+            total = len(result_rows)
+
+        return total, result_rows, status_counts
 
     async def approve_user(
         self,
