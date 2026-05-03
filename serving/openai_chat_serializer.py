@@ -1,8 +1,8 @@
 """OpenAI chat stream serialization for the public /v1/chat/completions surface.
 
 Provides serializer modes and chunk sanitization so completions.py can maintain
-a unified API contract: default strict OpenAI (no reasoning_content visible),
-opt-in passthrough via X-Reasoning-Passthrough header.
+a unified API contract: default passthrough (reasoning_content visible),
+opt-in strict OpenAI via X-Reasoning-Passthrough: false header.
 """
 
 from __future__ import annotations
@@ -43,12 +43,12 @@ class SanitizeResponseResult:
 def resolve_mode(headers: Mapping[str, str]) -> SerializerMode:
     """Resolve serializer mode from request headers.
 
-    Default is strict OpenAI. Opt-in passthrough via X-Reasoning-Passthrough: true.
+    Default is reasoning passthrough. Opt-in strict OpenAI via X-Reasoning-Passthrough: false.
     """
     passthrough_raw = headers.get("x-reasoning-passthrough", "").strip().lower()
-    if passthrough_raw in ("true", "1", "yes"):
-        return SerializerMode.REASONING_PASSTHROUGH
-    return SerializerMode.STRICT_OPENAI
+    if passthrough_raw in ("false", "0", "no"):
+        return SerializerMode.STRICT_OPENAI
+    return SerializerMode.REASONING_PASSTHROUGH
 
 
 def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:

@@ -1,8 +1,8 @@
 """Unit tests for OpenAI chat stream serializer.
 
 Explicit tests for the public /v1/chat/completions API contract:
-- Default strict mode: no reasoning_content visible to clients
-- X-Reasoning-Passthrough: true preserves reasoning_content
+- Default passthrough mode: reasoning_content visible to clients
+- X-Reasoning-Passthrough: false enables strict mode (no reasoning_content)
 """
 
 from __future__ import annotations
@@ -18,40 +18,40 @@ from serving.openai_chat_serializer import (
 
 
 @pytest.mark.unit
-def test_resolve_mode_default_strict():
-    """Default (no header) resolves to strict_openai."""
+def test_resolve_mode_default_passthrough():
+    """Default (no header) resolves to reasoning_passthrough."""
     from starlette.datastructures import Headers
 
     h = Headers({})
-    assert resolve_mode(h) == SerializerMode.STRICT_OPENAI
-
-
-@pytest.mark.unit
-def test_resolve_mode_passthrough_true():
-    """X-Reasoning-Passthrough: true enables passthrough."""
-    from starlette.datastructures import Headers
-
-    h = Headers({"x-reasoning-passthrough": "true"})
     assert resolve_mode(h) == SerializerMode.REASONING_PASSTHROUGH
 
 
 @pytest.mark.unit
-def test_resolve_mode_passthrough_case_insensitive():
-    """Header is case-insensitive."""
-    from starlette.datastructures import Headers
-
-    for val in ("True", "TRUE", "yes", "1"):
-        h = Headers({"x-reasoning-passthrough": val})
-        assert resolve_mode(h) == SerializerMode.REASONING_PASSTHROUGH
-
-
-@pytest.mark.unit
-def test_resolve_mode_false_stays_strict():
-    """X-Reasoning-Passthrough: false stays strict."""
+def test_resolve_mode_strict_false():
+    """X-Reasoning-Passthrough: false enables strict mode."""
     from starlette.datastructures import Headers
 
     h = Headers({"x-reasoning-passthrough": "false"})
     assert resolve_mode(h) == SerializerMode.STRICT_OPENAI
+
+
+@pytest.mark.unit
+def test_resolve_mode_strict_case_insensitive():
+    """Header is case-insensitive."""
+    from starlette.datastructures import Headers
+
+    for val in ("False", "FALSE", "no", "0"):
+        h = Headers({"x-reasoning-passthrough": val})
+        assert resolve_mode(h) == SerializerMode.STRICT_OPENAI
+
+
+@pytest.mark.unit
+def test_resolve_mode_true_stays_passthrough():
+    """X-Reasoning-Passthrough: true stays passthrough."""
+    from starlette.datastructures import Headers
+
+    h = Headers({"x-reasoning-passthrough": "true"})
+    assert resolve_mode(h) == SerializerMode.REASONING_PASSTHROUGH
 
 
 @pytest.mark.unit
