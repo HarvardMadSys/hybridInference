@@ -1581,6 +1581,7 @@ class PostgresOperationalStore(OperationalStore):
     # -- site settings --------------------------------------------------------
 
     async def get_setting(self, key: str) -> Row | None:
+        """Fetch a single site_settings row by key."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT key, value, value_type, updated_at, updated_by "
@@ -1592,6 +1593,7 @@ class PostgresOperationalStore(OperationalStore):
     async def set_setting(
         self, key: str, value: str, value_type: str, updated_by: str | None
     ) -> None:
+        """Upsert a site_settings row."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO site_settings (key, value, value_type, updated_at, updated_by) "
@@ -1605,6 +1607,7 @@ class PostgresOperationalStore(OperationalStore):
             )
 
     async def list_settings(self) -> list[Row]:
+        """Return all site_settings rows ordered by key."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT key, value, value_type, updated_at, updated_by "

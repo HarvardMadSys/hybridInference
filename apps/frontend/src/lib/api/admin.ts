@@ -858,14 +858,10 @@ export async function updateRuntimeSetting(
   key: string,
   value: unknown,
 ): Promise<RuntimeSettingItem> {
-  const resp = await fetchWithAuth(
-    API_BASE,
-    `/admin/settings/${encodeURIComponent(key)}`,
-    {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value }),
-    },
-  );
+  const resp = await fetchWithAuth(API_BASE, `/admin/settings/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  });
   return jsonOrThrow<RuntimeSettingItem>(resp);
 }

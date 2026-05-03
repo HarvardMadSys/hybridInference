@@ -749,6 +749,7 @@ class DualWriteOperationalStore(OperationalStore):
     async def set_setting(
         self, key: str, value: str, value_type: str, updated_by: str | None
     ) -> None:
+        """Upsert a site_settings row on primary and shadow-write to secondary."""
         await self._primary.set_setting(key, value, value_type, updated_by)
         self._do_shadow(
             "set_setting",

@@ -85,18 +85,22 @@ class RuntimeSettings:
         return None
 
     async def get_bool(self, key: str) -> bool:
+        """Return the setting value as a bool."""
         val = await self._get(key)
         return bool(val)
 
     async def get_int(self, key: str) -> int:
+        """Return the setting value as an int."""
         val = await self._get(key)
         return int(val) if val is not None else 0
 
     async def get_float(self, key: str) -> float:
+        """Return the setting value as a float."""
         val = await self._get(key)
         return float(val) if val is not None else 0.0
 
     async def get_str(self, key: str) -> str:
+        """Return the setting value as a string."""
         val = await self._get(key)
         return str(val) if val is not None else ""
 
@@ -128,12 +132,15 @@ class RuntimeSettings:
         return default
 
     def invalidate_cache(self) -> None:
+        """Clear all cached setting values."""
         self._cache.clear()
 
     def invalidate_key(self, key: str) -> None:
+        """Remove a single key from the cache."""
         self._cache.pop(key, None)
 
     async def list_all(self) -> list[dict[str, Any]]:
+        """Return metadata for every registered setting."""
         from serving.config.settings import get_settings
 
         settings = get_settings()
@@ -161,16 +168,19 @@ _runtime_settings: RuntimeSettings | None = None
 
 
 def init_runtime_settings(store: Any) -> RuntimeSettings:
+    """Create and register the global RuntimeSettings singleton."""
     global _runtime_settings
     _runtime_settings = RuntimeSettings(store)
     return _runtime_settings
 
 
 def get_runtime_settings_instance() -> RuntimeSettings:
+    """Return the global RuntimeSettings singleton or raise if not initialized."""
     if _runtime_settings is None:
         raise RuntimeError("RuntimeSettings not initialized")
     return _runtime_settings
 
 
 def get_runtime_settings(request: Any) -> RuntimeSettings:
+    """Return the RuntimeSettings from app state (FastAPI dependency)."""
     return request.app.state.services.runtime_settings
