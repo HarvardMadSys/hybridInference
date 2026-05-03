@@ -39,23 +39,22 @@ dependencies = [
 include-package-data = true
 
 [tool.setuptools.packages.find]
+where = ["apps/backend"]
 include = [
   "serving",
   "serving.*",
   "routing",
   "routing.*",
-  "client",
-  "client.*",
+  "benchmark",
+  "benchmark.*",
   "utils",
   "utils.*",
-  "docs",
-  "docs.*",
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["apps/backend", "."]
 asyncio_mode = "auto"
-testpaths = ["test", "tests"]
+testpaths = ["tests"]
 timeout = 300
 addopts = [
   "-ra",
@@ -77,10 +76,11 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+src = ["apps/backend", "."]
 exclude = [
-  "llm-prober",
-  "docs/free_inference",
-  "freeinference-harness",
+  "services/llm-prober",
+  "docs/user",
+  "services/freeinference-harness",
   ".venv",
 ]
 
@@ -127,7 +127,7 @@ add-ignore = [
   "D107",  # __init__ docstring not required
 ]
 match = ".+\\.py"
-match-dir = "(?!tests|test|.venv|data|node_modules|frontend).*"
+match-dir = "(?!tests|.venv|node_modules|apps/frontend).*"
 
 [dependency-groups]
 dev = [

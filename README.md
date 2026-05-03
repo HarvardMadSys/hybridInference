@@ -8,22 +8,23 @@ A high-performance hybrid inference server providing local deployment and offlin
 
 ```
 HybridInference/
-├── serving/               # FastAPI gateway, adapters, observability, storage
-├── routing/               # Routing manager and execution strategies
-├── config/                # Model + routing configuration files
-├── infrastructure/        # Systemd units, observability manifests, deployment assets
-├── frontend/              # Next.js web UI
-├── scripts/               # Operational and perf tooling
-├── docs/                  # Architecture and integration guides
-├── var/                   # Runtime artifacts (e.g., SQLite logs)
-├── test/                  # Test suite
-├── client/                # Client tooling (loaders, runners, metrics)
-├── freeinference-harness/ # Standalone black-box API test harness
-├── llm-prober/            # LLM probing utilities
-└── data/                  # Data files
+├── apps/
+│   ├── backend/             # FastAPI gateway (serving/), routing/, benchmark/
+│   └── frontend/            # Next.js web UI
+├── services/
+│   ├── llm-prober/          # LLM probing utilities (git submodule)
+│   ├── freeinference-harness/ # Standalone black-box API test harness
+│   └── alert-logger/        # Alertmanager webhook logger
+├── config/                  # Model + routing configuration files
+├── deploy/                  # Systemd units, Docker, observability manifests
+├── ops/                     # Operational tooling: deploy/, setup/, runtime/, admin/, perf/, db/, cloudflare/
+├── docs/                    # developer/, user/, agents/, reviews/
+├── tests/                   # Test suite (with fixtures/data/)
+├── var/                     # Runtime artifacts (e.g., SQLite logs)
+└── examples/                # Examples
 ```
 
-For service-specific deployment and routing details, refer to `docs/source/developer/openrouter.md`, `docs/source/developer/freeinference.md`, and `docs/source/developer/routing.md`. For extension guides (adding models or new providers), see `docs/source/developer/adding-models.md`.
+For service-specific deployment and routing details, refer to `docs/developer/openrouter.md`, `docs/developer/freeinference.md`, and `docs/developer/routing.md`. For extension guides (adding models or new providers), see `docs/developer/adding-models.md`.
 
 ## Development Setup
 
@@ -164,7 +165,7 @@ make test-verbose
 make test-cov
 
 # Specific test file
-uv run pytest test/unit/routing/test_manager.py
+uv run pytest tests/unit/routing/test_manager.py
 
 # Run tests with markers
 uv run pytest -m "not slow"  # Skip slow tests

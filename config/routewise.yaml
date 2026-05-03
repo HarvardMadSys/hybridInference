@@ -1,6 +1,6 @@
 # RouteWise cost-aware routing configuration.
 #
-# See docs/superpowers/specs/ for design specifications.
+# See docs/agents/specs/ for design specifications.
 # All values shown below are defaults.  Override individual fields as needed;
 # any key omitted will use its default value.
 

@@ -1,0 +1,29 @@
+[Unit]
+Description=HybridInference
+Wants=network-online.target
+After=network-online.target home.mount
+
+[Service]
+User=hybridinference
+Group=hybridinference
+Type=simple
+WorkingDirectory=/srv/hybridInference
+ExecStart=/srv/hybridInference/.venv/bin/uvicorn serving.servers.app:app \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --no-server-header
+
+
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+Environment=PYTHONPATH=/srv/hybridInference
+
+NoNewPrivileges=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

@@ -4,15 +4,13 @@ __pycache__
 *.pyc
 
 # Frontend build artifacts
-frontend/node_modules
-frontend/.next
+apps/frontend/node_modules
+apps/frontend/.next
 
 # Data & logs (never bake into images)
 var/
-data/
 
 # Dev/test
-test/
 tests/
 docs/
 
@@ -20,7 +18,7 @@ docs/
 alertmanager-*.linux-amd64/
 
 # Rollback backup (created during migration)
-infrastructure/docker/.rollback-backup/
+deploy/docker/.rollback-backup/
 
 # IDE
 .vscode/
