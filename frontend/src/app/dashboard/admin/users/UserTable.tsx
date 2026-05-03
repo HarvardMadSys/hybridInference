@@ -24,6 +24,14 @@ interface UserTableProps {
   onRegenerateKey: (userId: string) => Promise<void>;
 }
 
+interface ConfirmAction {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  confirmTone: 'danger' | 'neutral';
+  onConfirm: () => void | Promise<void>;
+}
+
 function median(nums: number[]): number {
   if (nums.length === 0) return 0;
   const sorted = [...nums].sort((a, b) => a - b);
@@ -93,16 +101,23 @@ export function UserTable(props: UserTableProps) {
     }
   };
 
-  const doSuspend = async (userId: string) => {
-    if (!confirm('Suspend this user?')) return;
-    setBusy(userId);
-    try {
-      await props.onSuspend(userId);
-      setExpandedId(null);
-      setDetail(null);
-    } finally {
-      setBusy(null);
-    }
+  const doSuspend = (userId: string) => {
+    setConfirmAction({
+      title: 'Suspend user?',
+      body: 'The user will be unable to authenticate or use their API key while suspended.',
+      confirmLabel: 'Suspend',
+      confirmTone: 'danger',
+      onConfirm: async () => {
+        setBusy(userId);
+        try {
+          await props.onSuspend(userId);
+          setExpandedId(null);
+          setDetail(null);
+        } finally {
+          setBusy(null);
+        }
+      },
+    });
   };
 
   const doReactivate = async (userId: string) => {
@@ -132,11 +147,17 @@ export function UserTable(props: UserTableProps) {
   const [hardDeleteTarget, setHardDeleteTarget] = useState<AdminUser | null>(null);
   const [hardDeleteReason, setHardDeleteReason] = useState('');
   const [hardDeleteEmailConfirm, setHardDeleteEmailConfirm] = useState('');
+  // Reject modal state — replaces window.prompt (UX consistency + a11y).
+  const [rejectTarget, setRejectTarget] = useState<UserRowType | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  // Generic confirm modal — replaces window.confirm for suspend/regen-key
+  // so the same custom-modal pattern is used everywhere in this table.
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
 
-  // Close delete/hard-delete modals if their target row leaves the visible list
-  // (filter change, pagination). Without this, the modal stays open with a
-  // stale target and the user could submit an action against a row they can no
-  // longer see.
+  // Close delete/hard-delete/reject modals if their target row leaves the
+  // visible list (filter change, pagination). Without this, the modal stays
+  // open with a stale target and the user could submit an action against a
+  // row they can no longer see.
   useEffect(() => {
     if (deleteTarget && !users.some((u) => u.id === deleteTarget.id)) {
       setDeleteTarget(null);
@@ -147,7 +168,11 @@ export function UserTable(props: UserTableProps) {
       setHardDeleteReason('');
       setHardDeleteEmailConfirm('');
     }
-  }, [users, deleteTarget, hardDeleteTarget]);
+    if (rejectTarget && !users.some((u) => u.id === rejectTarget.id)) {
+      setRejectTarget(null);
+      setRejectReason('');
+    }
+  }, [users, deleteTarget, hardDeleteTarget, rejectTarget]);
 
   const doDelete = async () => {
     if (!deleteTarget || !deleteReason.trim()) return;
@@ -158,6 +183,18 @@ export function UserTable(props: UserTableProps) {
       setDeleteReason('');
       setExpandedId(null);
       setDetail(null);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doReject = async () => {
+    if (!rejectTarget || !rejectReason.trim()) return;
+    setBusy(rejectTarget.id);
+    try {
+      await props.onReject(rejectTarget.id, rejectReason.trim());
+      setRejectTarget(null);
+      setRejectReason('');
     } finally {
       setBusy(null);
     }
@@ -264,16 +301,24 @@ export function UserTable(props: UserTableProps) {
                       props.onApprove(u.id).finally(() => setBusy(null));
                     }}
                     onReject={() => {
-                      const reason = window.prompt('Reject reason?') ?? '';
-                      if (reason) {
-                        setBusy(u.id);
-                        props.onReject(u.id, reason).finally(() => setBusy(null));
-                      }
+                      setRejectTarget(u);
+                      setRejectReason('');
                     }}
                     onRegenerateKey={() => {
-                      if (!confirm(`Regenerate key for ${u.email}?`)) return;
-                      setBusy(u.id);
-                      props.onRegenerateKey(u.id).finally(() => setBusy(null));
+                      setConfirmAction({
+                        title: 'Regenerate API key?',
+                        body: `Regenerate the API key for ${u.email}? The old key will stop working immediately.`,
+                        confirmLabel: 'Regenerate',
+                        confirmTone: 'danger',
+                        onConfirm: async () => {
+                          setBusy(u.id);
+                          try {
+                            await props.onRegenerateKey(u.id);
+                          } finally {
+                            setBusy(null);
+                          }
+                        },
+                      });
                     }}
                   />
                   {isExpanded && (
@@ -357,6 +402,87 @@ export function UserTable(props: UserTableProps) {
                 className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-red-700 transition disabled:opacity-50"
               >
                 {busy === deleteTarget.id ? '...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reject modal — replaces window.prompt for rejection reason. */}
+      {rejectTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/20 backdrop-blur-[2px]"
+            onClick={() => {
+              setRejectTarget(null);
+              setRejectReason('');
+            }}
+          />
+          <div className="relative mx-4 w-full max-w-sm rounded-xl border border-gray-200 bg-white p-5 shadow-2xl">
+            <h3 className="text-[15px] font-semibold text-gray-900">Reject {rejectTarget.email}</h3>
+            <p className="mt-1 text-[12px] text-gray-400">
+              The user will see this reason in their pending-approval state.
+            </p>
+            <textarea
+              className="mt-3 w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] placeholder:text-gray-300 focus:border-gray-400 focus:outline-none"
+              rows={3}
+              placeholder="Reason for rejection..."
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              autoFocus
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setRejectTarget(null);
+                  setRejectReason('');
+                }}
+                className="rounded-md px-3 py-1.5 text-[13px] text-gray-400 hover:text-gray-900 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={doReject}
+                disabled={!rejectReason.trim() || busy === rejectTarget.id}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-red-700 transition disabled:opacity-50"
+              >
+                {busy === rejectTarget.id ? '...' : 'Reject'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Generic confirm modal — replaces window.confirm for suspend/regen-key. */}
+      {confirmAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/20 backdrop-blur-[2px]"
+            onClick={() => setConfirmAction(null)}
+          />
+          <div className="relative mx-4 w-full max-w-sm rounded-xl border border-gray-200 bg-white p-5 shadow-2xl">
+            <h3 className="text-[15px] font-semibold text-gray-900">{confirmAction.title}</h3>
+            <p className="mt-2 text-[13px] text-gray-600">{confirmAction.body}</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmAction(null)}
+                className="rounded-md px-3 py-1.5 text-[13px] text-gray-400 hover:text-gray-900 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  const action = confirmAction;
+                  setConfirmAction(null);
+                  await action.onConfirm();
+                }}
+                className={`rounded-md px-3 py-1.5 text-[12px] font-semibold text-white transition ${
+                  confirmAction.confirmTone === 'danger'
+                    ? 'bg-red-600 hover:bg-red-700'
+                    : 'bg-gray-700 hover:bg-gray-800'
+                }`}
+              >
+                {confirmAction.confirmLabel}
               </button>
             </div>
           </div>
