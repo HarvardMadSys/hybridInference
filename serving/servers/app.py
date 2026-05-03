@@ -42,6 +42,16 @@ async def lifespan(app: FastAPI):
     # added at import time. LOG_LEVEL=DEBUG disables suppression.
     attach_quiet_access_filter()
 
+    import logging as _logging
+
+    _sec_logger = _logging.getLogger(__name__)
+    if not settings.jwt_secret_key:
+        _sec_logger.critical("jwt_secret_key is empty — tokens will be insecure")
+    if not settings.api_key_secret:
+        _sec_logger.critical("api_key_secret is empty — API key generation will be insecure")
+    if not settings.admin_token:
+        _sec_logger.warning("admin_token is empty — admin endpoints will be inaccessible")
+
     services: AppServices = await bootstrap.initialize()
     app.state.services = services  # type: ignore[attr-defined]
     try:
