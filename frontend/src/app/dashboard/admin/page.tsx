@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
+import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import {
   AdminMetricDistribution,
   AdminPerformanceMetricsWindow,
@@ -1760,9 +1761,9 @@ export default function AdminPage() {
                               className="border-b border-gray-100 hover:bg-gray-50/60 cursor-pointer transition-colors"
                               onClick={() => handleToggleRequestRow(req.request_id)}
                             >
-                              <td className="whitespace-nowrap py-2.5 pl-4 pr-3 text-[13px]">
+                              <td className="py-2.5 pl-4 pr-3 text-[13px]">
                                 <div className="flex items-center gap-1.5 font-medium text-gray-900">
-                                  <span>{req.model_id}</span>
+                                  <span className="whitespace-nowrap">{req.model_id}</span>
                                   {req.reasoning_tokens != null && req.reasoning_tokens > 0 && (
                                     <span
                                       className="inline-flex items-center rounded-md bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 ring-1 ring-inset ring-purple-600/20"
@@ -1773,14 +1774,7 @@ export default function AdminPage() {
                                   )}
                                 </div>
                                 <div className="text-[11px] text-gray-400">{req.provider}</div>
-                                {req.error && (
-                                  <p
-                                    className="mt-0.5 max-w-[280px] truncate text-[11px] text-red-500"
-                                    title={req.error}
-                                  >
-                                    {req.error}
-                                  </p>
-                                )}
+                                {req.error && <InlineErrorText message={req.error} size="xs" />}
                               </td>
                               <td className="whitespace-nowrap px-3 py-2.5 text-[12px] font-mono text-gray-500">
                                 {req.user_id ? (

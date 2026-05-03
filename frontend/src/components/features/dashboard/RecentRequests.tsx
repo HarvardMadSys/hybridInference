@@ -2,6 +2,7 @@
 
 import { useId, useState } from 'react';
 import { useRecentRequests } from '@/lib/hooks';
+import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import type { RecentRequestItem } from '@/lib/api/user';
 
 const PAGE_SIZE = 20;
@@ -86,11 +87,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
               </span>
             )}
           </div>
-          {req.error && (
-            <p className="mt-0.5 max-w-[280px] truncate text-xs text-red-500" title={req.error}>
-              {req.error}
-            </p>
-          )}
+          {req.error && <InlineErrorText message={req.error} />}
         </td>
         <td className="whitespace-nowrap px-3 py-3 text-sm">
           <StatusBadge code={req.status_code} />
