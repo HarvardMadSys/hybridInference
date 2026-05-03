@@ -659,6 +659,10 @@ class DualWriteOperationalStore(OperationalStore):
         """Delegate to primary."""
         return await self._primary.get_bulk_user_cost_history(user_ids, days=days)
 
+    async def get_users_summary(self, **kwargs: Any) -> Row:
+        """Delegate to primary (read-only aggregation, no shadow needed)."""
+        return await self._primary.get_users_summary(**kwargs)
+
     # -- preferences ---------------------------------------------------------
 
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:

@@ -1144,6 +1144,152 @@ class D1OperationalStore(OperationalStore):
                 )
         return out
 
+    async def get_users_summary(
+        self,
+        *,
+        top_n: int = 5,
+        anomaly_multiplier: float = 5.0,
+        anomaly_min_today: Any = None,
+        anomaly_min_history_days: int = 3,
+        near_quota_pct: float = 0.80,
+    ) -> Row:
+        """D1/SQLite variant of get_users_summary.
+
+        Mirrors the postgres method but uses ``date('now', ...)`` and
+        SQLite-flavoured boolean comparisons.
+        """
+        from decimal import Decimal as _Decimal
+
+        if anomaly_min_today is None:
+            anomaly_min_today = _Decimal("1.00")
+
+        # Pending count + top
+        pending_count_result = await self._d1.query(
+            "SELECT COUNT(*) AS c FROM users WHERE status = 'pending_approval'"
+        )
+        pending_count = (
+            pending_count_result.rows[0]["c"] if pending_count_result.rows else 0
+        )
+        pending_result = await self._d1.query(
+            "SELECT id, email, user_name, role, created_at "
+            "FROM users WHERE status = 'pending_approval' "
+            "ORDER BY created_at DESC LIMIT ?",
+            [top_n],
+        )
+
+        # Today / 7d-avg per active user.
+        usage_result = await self._d1.query(
+            """
+            WITH today_costs AS (
+                SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost
+                FROM user_daily_cost
+                WHERE day = date('now')
+                GROUP BY user_id
+            ),
+            prior_7d AS (
+                SELECT user_id,
+                       COALESCE(SUM(cost_usd), 0) AS total,
+                       COUNT(DISTINCT day) AS days_with_history
+                FROM user_daily_cost
+                WHERE day BETWEEN date('now', '-7 days') AND date('now', '-1 days')
+                GROUP BY user_id
+            )
+            SELECT u.id, u.email, u.user_name, u.role,
+                   COALESCE(t.today_cost, 0) AS today_cost,
+                   COALESCE(p.total, 0) AS prior_7d_total,
+                   COALESCE(p.days_with_history, 0) AS days_with_history,
+                   k.quota_daily_cost_usd
+            FROM users u
+            LEFT JOIN today_costs t ON t.user_id = u.id
+            LEFT JOIN prior_7d p ON p.user_id = u.id
+            LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
+            WHERE u.status = 'active'
+            """
+        )
+
+        top_spenders: list[Row] = []
+        anomalies: list[Row] = []
+        near_quota: list[Row] = []
+
+        for r in usage_result.rows:
+            today = _Decimal(str(r["today_cost"] or 0))
+            prior = _Decimal(str(r["prior_7d_total"] or 0))
+            days = int(r["days_with_history"] or 0)
+            avg_7d = (prior / days) if days > 0 else _Decimal("0")
+            quota = r["quota_daily_cost_usd"]
+
+            base_item = {
+                "id": r["id"],
+                "email": r["email"],
+                "user_name": r["user_name"],
+                "role": r["role"] or "free",
+                "today_cost_usd": today,
+                "avg_prior_7d_usd": avg_7d,
+                "quota_daily_usd": float(quota) if quota else None,
+                "multiplier": None,
+            }
+
+            if today > 0:
+                top_spenders.append(dict(base_item))
+
+            if (
+                days >= anomaly_min_history_days
+                and today >= anomaly_min_today
+                and avg_7d > 0
+                and today >= _Decimal(str(anomaly_multiplier)) * avg_7d
+            ):
+                multiplier = float(today / avg_7d) if avg_7d > 0 else None
+                anomaly_item = dict(base_item)
+                anomaly_item["multiplier"] = multiplier
+                anomalies.append(anomaly_item)
+
+            if quota and float(quota) > 0:
+                pct = float(today) / float(quota)
+                if pct >= near_quota_pct:
+                    near_quota.append(dict(base_item))
+
+        top_spenders.sort(key=lambda x: x["today_cost_usd"], reverse=True)
+        anomalies.sort(key=lambda x: (x["multiplier"] or 0), reverse=True)
+        near_quota.sort(
+            key=lambda x: (
+                float(x["today_cost_usd"]) / x["quota_daily_usd"]
+                if x["quota_daily_usd"]
+                else 0
+            ),
+            reverse=True,
+        )
+
+        return {
+            "pending": {
+                "count": pending_count,
+                "top": [
+                    {
+                        "id": r["id"],
+                        "email": r["email"],
+                        "user_name": r["user_name"],
+                        "role": r["role"] or "free",
+                        "today_cost_usd": _Decimal("0"),
+                        "avg_prior_7d_usd": _Decimal("0"),
+                        "quota_daily_usd": None,
+                        "multiplier": None,
+                    }
+                    for r in pending_result.rows
+                ],
+            },
+            "top_spenders_today": {
+                "count": len([s for s in top_spenders if s["today_cost_usd"] > 0]),
+                "top": top_spenders[:top_n],
+            },
+            "anomalies": {
+                "count": len(anomalies),
+                "top": anomalies[:top_n],
+            },
+            "near_quota": {
+                "count": len(near_quota),
+                "top": near_quota[:top_n],
+            },
+        }
+
     # -- signup domain allowlist --------------------------------------------
 
     async def list_signup_allowed_domains(self) -> list[Row]:

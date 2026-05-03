@@ -606,3 +606,7 @@ class CachedOperationalStore(OperationalStore):
     ) -> dict[str, list[Row]]:
         """Delegate to wrapped store."""
         return await self._store.get_bulk_user_cost_history(user_ids, days=days)
+
+    async def get_users_summary(self, **kwargs: Any) -> Row:
+        """Delegate to wrapped store (no caching — admin dashboard endpoint)."""
+        return await self._store.get_users_summary(**kwargs)
