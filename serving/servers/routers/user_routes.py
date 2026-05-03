@@ -74,6 +74,22 @@ _RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES: int = 4096
 _RECENT_REQUESTS_COUNT_CACHE: OrderedDict[tuple[str, str | None], tuple[float, int]] = OrderedDict()
 
 
+def _build_user_recent_requests_filters(
+    user_id: str, model_id: str | None
+) -> tuple[str, list[Any]]:
+    """Build the shared WHERE clause + bind params for /user/recent-requests.
+
+    Used by both the COUNT cache helper and the paginated SELECT so the two
+    queries cannot drift if a future filter is added.
+    """
+    where_clauses = ["user_id = $1"]
+    params: list[Any] = [user_id]
+    if model_id:
+        params.append(model_id)
+        where_clauses.append(f"model_id = ${len(params)}")
+    return " AND ".join(where_clauses), params
+
+
 async def _get_cached_user_request_count(conn: Any, user_id: str, model_id: str | None) -> int:
     """Return the cached or freshly-queried ``api_logs`` row count for *user_id*.
 
@@ -87,13 +103,7 @@ async def _get_cached_user_request_count(conn: Any, user_id: str, model_id: str 
         _RECENT_REQUESTS_COUNT_CACHE.move_to_end(key)
         return cached[1]
 
-    where_clauses = ["user_id = $1"]
-    params: list[Any] = [user_id]
-    if model_id:
-        params.append(model_id)
-        where_clauses.append(f"model_id = ${len(params)}")
-    where_sql = " AND ".join(where_clauses)
-
+    where_sql, params = _build_user_recent_requests_filters(user_id, model_id)
     count_row = await conn.fetchrow(
         f"""
         SELECT COUNT(*) as total
@@ -796,13 +806,9 @@ async def get_recent_requests(
 
     async with db_logger.pool.acquire() as conn:
         try:
-            where_clauses = ["user_id = $1"]
-            params: list[Any] = [current_user["user_id"]]
-            if model_id:
-                params.append(model_id)
-                where_clauses.append(f"model_id = ${len(params)}")
-            where_sql = " AND ".join(where_clauses)
-
+            where_sql, params = _build_user_recent_requests_filters(
+                current_user["user_id"], model_id
+            )
             limit_idx = len(params) + 1
             offset_idx = len(params) + 2
             page_params = [*params, limit, offset]
