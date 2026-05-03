@@ -218,17 +218,21 @@ def _schedule_log_store_task(
 
     ``usage`` is the upstream Anthropic usage shape with ``input_tokens`` /
     ``output_tokens`` (and optional ``cache_read_input_tokens`` /
-    ``cache_creation_input_tokens``). Cache tokens are stored in the dedicated
-    ``cache_read_tokens`` / ``cache_write_tokens`` columns. ``calculate_cost``
-    already bills them separately, so they must NOT be folded into
-    ``prompt_tokens`` to avoid double-counting.
+    ``cache_creation_input_tokens``). To match OpenAI semantics used by the
+    rest of the system (admin dashboard, completions logger, downstream
+    metrics), ``prompt_tokens`` here is the *total* input including the
+    cached subset (input_tokens + cache_read + cache_write). The cached
+    subset is also stored in the dedicated ``cache_read_tokens`` /
+    ``cache_write_tokens`` columns for separate billing; ``calculate_cost``
+    subtracts the cached portion from ``prompt_tokens`` before applying
+    ``prompt_price`` so cache is not double-billed.
     """
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
     cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
     cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
-    prompt_tokens = input_tokens
-    total_tokens = input_tokens + output_tokens
+    prompt_tokens = input_tokens + cache_read + cache_write
+    total_tokens = prompt_tokens + output_tokens
     prompt_for_log: list[dict[str, Any]] | str = prompt if prompt is not None else []
 
     async def _log() -> None:

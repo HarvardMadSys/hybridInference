@@ -17,8 +17,12 @@ def test_cost_calculation_basic() -> None:
 
 
 def test_cost_calculation_with_cache_and_reasoning() -> None:
+    # OpenAI semantic: prompt_tokens is the *total* input including the cached
+    # subset (here 6000 = 1000 uncached + 5000 cache_read). calculate_cost must
+    # subtract the cached portion before applying prompt_price so cache is not
+    # double-billed.
     usage = {
-        "prompt_tokens": 1000,
+        "prompt_tokens": 6000,
         "completion_tokens": 500,
         "reasoning_tokens": 200,
         "cache_read_tokens": 5000,
@@ -37,6 +41,49 @@ def test_cost_calculation_with_cache_and_reasoning() -> None:
         + (200 * 0.42 / 1_000_000)
         + (5000 * 0.028 / 1_000_000)
     )
+    assert cost == pytest.approx(expected)
+
+
+def test_cost_calculation_subtracts_cache_from_prompt() -> None:
+    """Issue #338: with prompt_tokens=10000 and cache_read_tokens=8000, the
+    prompt-rate charge must apply to 2000 tokens (uncached delta), not 10000."""
+    usage = {
+        "prompt_tokens": 10000,
+        "completion_tokens": 0,
+        "cache_read_tokens": 8000,
+        "cache_write_tokens": 0,
+    }
+    pricing = {
+        "prompt": "3.0",
+        "completion": "15.0",
+        "input_cache_reads": "0.30",
+        "input_cache_writes": "3.75",
+    }
+
+    cost = calculate_cost(usage, pricing)
+
+    expected = (2000 * 3.0 / 1_000_000) + (8000 * 0.30 / 1_000_000)
+    assert cost == pytest.approx(expected)
+
+
+def test_cost_calculation_clamps_when_cache_exceeds_prompt() -> None:
+    """Malformed usage where cache > prompt must not produce a negative
+    prompt-rate charge; billable prompt tokens clamp to 0."""
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 0,
+        "cache_read_tokens": 500,
+    }
+    pricing = {
+        "prompt": "3.0",
+        "completion": "15.0",
+        "input_cache_reads": "0.30",
+    }
+
+    cost = calculate_cost(usage, pricing)
+
+    # billable_prompt clamps to 0; only cache is charged
+    expected = 500 * 0.30 / 1_000_000
     assert cost == pytest.approx(expected)
 
 

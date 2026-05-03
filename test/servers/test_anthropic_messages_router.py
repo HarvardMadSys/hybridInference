@@ -669,8 +669,10 @@ async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
     anthropic_test_client, monkeypatch
 ):
     """Non-streaming path must persist the request prompt + upstream response
-    into the DB. Cache tokens must appear in cache_read_tokens / cache_write_tokens
-    only, not folded into prompt_tokens (calculate_cost bills them separately)."""
+    into the DB. ``prompt_tokens`` follows OpenAI semantics: it is the total
+    input including the cached subset. Cache tokens are *also* stored in the
+    dedicated cache_read_tokens / cache_write_tokens columns; calculate_cost
+    subtracts them from prompt_tokens before applying prompt_price."""
     upstream_resp = {
         "id": "msg_log",
         "type": "message",
@@ -713,19 +715,21 @@ async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
     assert captured["prompt"] == messages
     assert captured["response"] == upstream_resp
     usage = captured["usage"]
-    # prompt_tokens = input_tokens only (cache billed separately via cache_read/write columns)
-    assert usage["prompt_tokens"] == 7
+    # prompt_tokens = input_tokens + cache_read + cache_write (OpenAI semantic)
+    assert usage["prompt_tokens"] == 7 + 100 + 50
     assert usage["completion_tokens"] == 3
-    assert usage["total_tokens"] == 10
+    assert usage["total_tokens"] == 7 + 100 + 50 + 3
     assert usage["cache_read_tokens"] == 100
     assert usage["cache_write_tokens"] == 50
 
 
 @pytest.mark.asyncio
 async def test_streaming_logs_prompt_and_cache_separate_tokens(anthropic_test_client, monkeypatch):
-    """Streaming path must persist the request prompt. Cache tokens must appear
-    in cache_read_tokens / cache_write_tokens columns only — not folded into
-    prompt_tokens, which would double-bill via calculate_cost. Response stays
+    """Streaming path must persist the request prompt. ``prompt_tokens`` follows
+    OpenAI semantics — it includes the cached subset (input + cache_read +
+    cache_write). The cached subset is *also* stored separately in
+    cache_read_tokens / cache_write_tokens; calculate_cost subtracts those
+    before applying prompt_price so cache is not double-billed. Response stays
     None on streaming (matches the OpenAI streaming logging contract)."""
     upstream_sse = (
         b"event: message_start\n"
@@ -791,9 +795,9 @@ async def test_streaming_logs_prompt_and_cache_separate_tokens(anthropic_test_cl
     assert captured["prompt"] == messages
     assert captured["response"] is None
     usage = captured["usage"]
-    # prompt_tokens = input_tokens only; cache stored separately
-    assert usage["prompt_tokens"] == 4
+    # prompt_tokens = input_tokens + cache_read + cache_write (OpenAI semantic)
+    assert usage["prompt_tokens"] == 4 + 20 + 10
     assert usage["completion_tokens"] == 2
-    assert usage["total_tokens"] == 6
+    assert usage["total_tokens"] == 4 + 20 + 10 + 2
     assert usage["cache_read_tokens"] == 20
     assert usage["cache_write_tokens"] == 10
