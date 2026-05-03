@@ -47,102 +47,86 @@ export function UserRow({
   const today = Number(user.usage_today_usd);
   const prior = (history ?? []).slice(0, 7).map((p) => Number(p.cost_usd));
   const anomalous = isAnomalous(today, prior);
-  const nearQuota = false; // computed in summary; no per-row quota lookup here for now
-  const badge = anomalous ? '⚠' : nearQuota ? '◐' : null;
+  const badge = anomalous ? '⚠' : null;
   const rowHeight = density === 'compact' ? 'h-9' : 'h-14';
   const showSparkline = density === 'comfortable';
   const cellBucket = todayCostBucket(today, pageMedianToday);
 
   return (
-    <>
-      <tr
-        onClick={onToggleExpanded}
-        className={`${rowHeight} cursor-pointer border-b hover:bg-gray-50`}
-      >
-        <td className="px-2 text-center">
-          <span className={statusMark.color} title={statusMark.title}>
-            {statusMark.glyph}
-          </span>
-        </td>
-        <td className="px-2">
-          <div className="font-medium text-gray-900">{user.email}</div>
-          {density === 'comfortable' && user.user_name && (
-            <div className="text-xs text-gray-500">{user.user_name}</div>
-          )}
-        </td>
-        <td className="px-2 text-xs uppercase text-gray-600">
-          {user.role !== 'free' ? user.role : null}
-        </td>
-        <td className={`px-2 font-mono text-sm ${cellBucket}`}>${today.toFixed(2)}</td>
-        {showSparkline && (
-          <td className="px-2">
-            <Sparkline points={history ?? []} />
-          </td>
+    <tr
+      onClick={onToggleExpanded}
+      className={`${rowHeight} cursor-pointer border-b hover:bg-gray-50 ${expanded ? 'bg-gray-50' : ''}`}
+    >
+      <td className="px-2 text-center">
+        <span className={statusMark.color} title={statusMark.title}>
+          {statusMark.glyph}
+        </span>
+      </td>
+      <td className="px-2">
+        <div className="font-medium text-gray-900">{user.email}</div>
+        {density === 'comfortable' && user.user_name && (
+          <div className="text-xs text-gray-500">{user.user_name}</div>
         )}
-        <td className="px-2 font-mono text-sm">${Number(user.usage_month_usd).toFixed(2)}</td>
-        <td className="px-2 font-mono text-sm text-gray-600">
-          ${Number(user.usage_alltime_usd).toFixed(2)}
-        </td>
-        <td className="px-2 text-xs">{user.status.replace('_', ' ')}</td>
-        <td className="px-2 text-center">
-          {badge && (
-            <span
-              className={`inline-block rounded-full px-1 text-xs ${
-                anomalous ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
-              }`}
-              title={anomalous ? 'Anomaly: ≥5x 7d avg' : 'Near or over quota'}
-            >
-              {badge}
-            </span>
-          )}
-        </td>
+      </td>
+      <td className="px-2 text-xs uppercase text-gray-600">
+        {user.role !== 'free' ? user.role : null}
+      </td>
+      <td className={`px-2 font-mono text-sm ${cellBucket}`}>${today.toFixed(2)}</td>
+      {showSparkline && (
         <td className="px-2">
-          {user.status === 'pending_approval' && (
-            <div className="flex gap-1">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onApprove();
-                }}
-                className="rounded bg-emerald-600 px-2 py-0.5 text-xs text-white"
-              >
-                Approve
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onReject();
-                }}
-                className="rounded bg-red-600 px-2 py-0.5 text-xs text-white"
-              >
-                Reject
-              </button>
-            </div>
-          )}
-          {user.status === 'active' && user.has_key && (
+          <Sparkline points={history ?? []} />
+        </td>
+      )}
+      <td className="px-2 font-mono text-sm">${Number(user.usage_month_usd).toFixed(2)}</td>
+      <td className="px-2 font-mono text-sm text-gray-600">
+        ${Number(user.usage_alltime_usd).toFixed(2)}
+      </td>
+      <td className="px-2 text-xs">{user.status.replace('_', ' ')}</td>
+      <td className="px-2 text-center">
+        {badge && (
+          <span
+            className="inline-block rounded-full bg-red-100 px-1 text-xs text-red-700"
+            title="Anomaly: ≥5x 7d avg"
+          >
+            {badge}
+          </span>
+        )}
+      </td>
+      <td className="px-2">
+        {user.status === 'pending_approval' && (
+          <div className="flex gap-1">
             <button
-              type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onRegenerateKey();
+                onApprove();
               }}
-              className="rounded bg-gray-200 px-2 py-0.5 text-xs"
+              className="rounded bg-emerald-600 px-2 py-0.5 text-xs text-white"
             >
-              Regenerate
+              Approve
             </button>
-          )}
-        </td>
-      </tr>
-      {expanded && (
-        <tr className="bg-gray-50">
-          <td colSpan={showSparkline ? 10 : 9} className="px-4 py-3">
-            {/* UserDetailPanel slot - rendered by UserTable */}
-            <span data-detail-slot={user.id} />
-          </td>
-        </tr>
-      )}
-    </>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onReject();
+              }}
+              className="rounded bg-red-600 px-2 py-0.5 text-xs text-white"
+            >
+              Reject
+            </button>
+          </div>
+        )}
+        {user.status === 'active' && user.has_key && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRegenerateKey();
+            }}
+            className="rounded bg-gray-200 px-2 py-0.5 text-xs"
+          >
+            Regenerate
+          </button>
+        )}
+      </td>
+    </tr>
   );
 }
