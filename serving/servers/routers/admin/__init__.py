@@ -8,4 +8,4 @@ work via `from serving.servers.routers import admin`.
 
 from serving.servers.routers.admin._admin_legacy import _decode_throughput_tps, router
 
-__all__ = ["router", "_decode_throughput_tps"]
+__all__ = ["_decode_throughput_tps", "router"]

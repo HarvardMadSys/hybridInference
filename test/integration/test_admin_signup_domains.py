@@ -58,7 +58,7 @@ async def admin_client(monkeypatch, mock_stores):
     client = AsyncClient(transport=transport, base_url="http://test")
 
     mock_log_action = AsyncMock()
-    monkeypatch.setattr("serving.servers.routers.admin.log_admin_action", mock_log_action)
+    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.log_admin_action", mock_log_action)
     # verify_admin_access tries JWT first; provide a JWT secret so the
     # decode call doesn't crash the dependency before the ADMIN_TOKEN
     # fallback runs.
