@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { getErrorMessage } from '@/lib/utils/errors';
 import {
   approveUser,
@@ -17,7 +18,7 @@ import { FilterBar } from './FilterBar';
 import { UserTable } from './UserTable';
 import { useUsers } from './hooks/useUsers';
 import { useBulkCostHistory } from './hooks/useUserCostHistory';
-import { DEFAULT_FILTER_STATE } from './lib/filterTypes';
+import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
 import { getViewById } from './lib/views';
 import type { Density, FilterState, UserRow } from './types';
 import type { SummaryCardId } from './SummaryCards';
@@ -37,9 +38,24 @@ export default function UsersTab({
   onLoadingChange,
   refreshNonce,
 }: UsersTabProps) {
-  // Filter state — kept local; URL persistence is a documented follow-up.
-  const [filterState, setFilterState] = useState<FilterState>(DEFAULT_FILTER_STATE);
+  // Filter state — initialized from URL on mount so reload + shared links
+  // preserve filters. `applyFilterState` (below) keeps state and URL in sync.
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [filterState, setFilterState] = useState<FilterState>(() =>
+    filterStateFromUrl(searchParams),
+  );
   const [density, setDensity] = useState<Density>('comfortable');
+
+  const applyFilterState = useCallback(
+    (next: FilterState) => {
+      setFilterState(next);
+      const qs = filterStateToUrl(next);
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [pathname, router],
+  );
 
   // New API key banner (shown after a regenerate)
   const [newKey, setNewKey] = useState<string | null>(null);
@@ -101,7 +117,7 @@ export default function UsersTab({
   // Card click → apply built-in view filter
   const onCardClick = (cardId: SummaryCardId) => {
     const view = getViewById(cardId);
-    if (view) setFilterState(view.filterState);
+    if (view) applyFilterState(view.filterState);
   };
 
   // Action handlers — wrap admin API fns and refetch on success.
@@ -190,10 +206,10 @@ export default function UsersTab({
   return (
     <div className="mt-6 space-y-4">
       <SummaryCards onCardClick={onCardClick} />
-      <SavedViews current={filterState} onApply={setFilterState} />
+      <SavedViews current={filterState} onApply={applyFilterState} />
       <FilterBar
         state={filterState}
-        onChange={setFilterState}
+        onChange={applyFilterState}
         density={density}
         onDensityChange={setDensity}
       />
@@ -256,7 +272,7 @@ export default function UsersTab({
           costHistories={costHistories}
           density={density}
           filterState={filterState}
-          onSortChange={(sortBy) => setFilterState({ ...filterState, sortBy })}
+          onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
           {...handlers}
         />
       )}
