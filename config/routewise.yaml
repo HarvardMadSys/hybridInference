@@ -1,6 +1,6 @@
 # RouteWise cost-aware routing configuration.
 #
-# Structure follows the ADR (docs/algorithm/routewise_nimbus_main_integration_plan.md).
+# See docs/superpowers/specs/ for design specifications.
 # All values shown below are defaults.  Override individual fields as needed;
 # any key omitted will use its default value.
 

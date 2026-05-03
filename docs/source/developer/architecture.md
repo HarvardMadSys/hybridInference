@@ -32,6 +32,7 @@ HybridInference is designed as a modular, high-performance inference gateway.
 │ │ OpenAI-compat APIs     │ │
 │ │ (DeepSeek, Zhipu,      │ │
 │ │  Chutes, Featherless)  │ │
+│ │ OpenRouter             │ │
 │ │ Gemini API             │ │
 │ │ Anthropic API          │ │
 │ └────────────────────────┘ │

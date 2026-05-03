@@ -185,6 +185,6 @@ pytest test/servers/test_bootstrap.py -q
 
 ## Related Docs
 
-- [FreeInference Deployment](freeinference.md): Deployment history and rationale for running FastAPI directly on port 80.
+- [FreeInference Deployment](freeinference.md): Current production deployment architecture (Cloudflare + Nginx + FastAPI) and historical deployment iterations.
 - [Routing](routing.md): Detailed routing manager configuration and strategy extension guide.
 - [Adding Models](adding-models.md): How to add new models (YAML) and integrate new providers (adapter) in one place.

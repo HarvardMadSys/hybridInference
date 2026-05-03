@@ -76,6 +76,19 @@ class RoundRobinStrategy:
 
 2. Update `routing/manager.py` to use the new strategy based on `routing_strategy` config.
 
+### RouteWise Strategy
+
+In addition to the deployment-wide fixed-ratio strategy in `routing.yaml`, a
+cost-aware `routewise` strategy is available as a per-model opt-in. It is
+enabled by adding `routing_strategy: routewise` to a model entry in
+`config/models.yaml`; tuning parameters (decision rule, predictor, quota,
+shadow-price bounds, canary rollout, etc.) live in `config/routewise.yaml`.
+On startup, `serving/servers/bootstrap.py` instantiates a single
+`RouteWiseRouter` if any model opts in (or `enable_routewise=true` in
+settings) and registers it for those models via `model_router_registry`. See
+`config/routewise.yaml` for the full set of tuning parameters and the design
+specs under `docs/superpowers/specs/`.
+
 ### Health Monitoring
 
 Health checks are optional and can be enabled by setting `health_check > 0` in the configuration. The system performs simple GET requests to `/health` endpoints and adjusts weights accordingly.
