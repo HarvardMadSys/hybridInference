@@ -723,9 +723,7 @@ async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
 
 
 @pytest.mark.asyncio
-async def test_streaming_logs_prompt_and_cache_inclusive_tokens(
-    anthropic_test_client, monkeypatch
-):
+async def test_streaming_logs_prompt_and_cache_inclusive_tokens(anthropic_test_client, monkeypatch):
     """Streaming path must persist the request prompt and fold cache tokens
     into prompt_tokens / total_tokens. Response stays None on streaming
     (matches the OpenAI streaming logging contract)."""
