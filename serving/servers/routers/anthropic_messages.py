@@ -388,9 +388,9 @@ _SSE_LEFTOVER_CAP = 65536
 
 
 def _parse_sse_chunk(buffer: bytes, raw: bytes) -> tuple[list[tuple[str, str]], bytes]:
-    """Extract complete SSE events from *buffer* + *raw*; return (events, leftover).
+    r"""Extract complete SSE events from *buffer* + *raw*; return (events, leftover).
 
-    Events are delimited by a blank line; both ``\\n\\n`` and ``\\r\\n\\r\\n``
+    Events are delimited by a blank line; both ``\n\n`` and ``\r\n\r\n``
     are recognized. The trailing partial event is returned as *leftover* so the
     caller can prepend it to the next chunk. Leftover is capped at
     ``_SSE_LEFTOVER_CAP`` bytes; a malformed stream without separators will be
