@@ -201,6 +201,63 @@ class ListUsersResponse(BaseModel):
     status_counts: StatusCounts = Field(default_factory=StatusCounts)
 
 
+# ========================================
+# User Cost History & Summary Schemas
+# ========================================
+
+
+class UserCostHistoryPoint(BaseModel):
+    """One day of per-user cost data."""
+
+    day: str  # "YYYY-MM-DD" UTC
+    cost_usd: Decimal = Field(default=Decimal("0"))
+    requests: int = 0
+
+
+class UserCostHistoryResponse(BaseModel):
+    """Daily cost history for a single user."""
+
+    user_id: str
+    days: int
+    points: list[UserCostHistoryPoint]
+
+
+class BulkUserCostHistoryResponse(BaseModel):
+    """Daily cost history for many users (one round-trip per page)."""
+
+    days: int
+    histories: dict[str, list[UserCostHistoryPoint]]  # keyed by user_id
+
+
+class SummaryUserItem(BaseModel):
+    """User entry inside a summary card (sub-set of UserListItem)."""
+
+    id: str
+    email: str
+    user_name: str | None = None
+    role: str = "free"
+    today_cost_usd: Decimal = Field(default=Decimal("0"))
+    avg_prior_7d_usd: Decimal = Field(default=Decimal("0"))
+    quota_daily_usd: float | None = None
+    multiplier: float | None = None  # today / avg, anomaly card only
+
+
+class SummaryCard(BaseModel):
+    """A single summary-card payload: count + top examples."""
+
+    count: int
+    top: list[SummaryUserItem]
+
+
+class UsersSummaryResponse(BaseModel):
+    """Aggregated counts and exemplar users for the 4 dashboard cards."""
+
+    pending: SummaryCard
+    top_spenders_today: SummaryCard
+    anomalies: SummaryCard
+    near_quota: SummaryCard
+
+
 class ApproveUserRequest(BaseModel):
     """Request payload for approving a user registration."""
 
@@ -619,6 +676,7 @@ __all__ = [
     "ApproveUserRequest",
     "ApproveUserResponse",
     "AuditLogEntry",
+    "BulkUserCostHistoryResponse",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
     "DeleteUserRequest",
@@ -638,12 +696,17 @@ __all__ = [
     "RevokeAPIKeyResponse",
     "SparklineBucket",
     "StatusCounts",
+    "SummaryCard",
+    "SummaryUserItem",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
     "UpdateUserRequest",
     "UpdateUserResponse",
+    "UserCostHistoryPoint",
+    "UserCostHistoryResponse",
     "UserDetailResponse",
     "UserListItem",
+    "UsersSummaryResponse",
 ]
 
 
