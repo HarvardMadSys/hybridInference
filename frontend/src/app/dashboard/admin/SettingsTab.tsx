@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   SignupAllowedDomain,
   addSignupAllowedDomain,
@@ -38,6 +38,10 @@ export function SettingsTab() {
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<SignupAllowedDomain | null>(null);
+  // Track the active toast timeout so we can clear it on unmount and
+  // avoid calling setState on an unmounted component if the user
+  // navigates away within the 3s window.
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -56,9 +60,27 @@ export function SettingsTab() {
     load();
   }, [load]);
 
+  // Clear any pending toast timeout when the component unmounts so we
+  // never fire setState on an unmounted component.
+  useEffect(
+    () => () => {
+      if (toastTimeoutRef.current !== null) {
+        clearTimeout(toastTimeoutRef.current);
+        toastTimeoutRef.current = null;
+      }
+    },
+    [],
+  );
+
   const flashToast = (msg: string) => {
+    if (toastTimeoutRef.current !== null) {
+      clearTimeout(toastTimeoutRef.current);
+    }
     setToast(msg);
-    window.setTimeout(() => setToast(null), 3000);
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimeoutRef.current = null;
+    }, 3000);
   };
 
   const onAdd = async () => {

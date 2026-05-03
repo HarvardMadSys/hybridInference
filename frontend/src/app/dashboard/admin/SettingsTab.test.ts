@@ -47,4 +47,22 @@ describe('validateSignupDomainInput', () => {
       expect(r.ok).toBe(false);
     },
   );
+
+  // Leading/trailing hyphens per label are invalid per RFC 1035.
+  it.each([['-foo.com'], ['foo-.com'], ['sub.-foo.com'], ['sub.foo-.com'], ['-foo-.com']])(
+    'rejects label with leading/trailing hyphen %s',
+    (value) => {
+      const r = validateSignupDomainInput(value);
+      expect(r.ok).toBe(false);
+    },
+  );
+
+  // Single-char labels and interior hyphens remain valid.
+  it.each([['a.com'], ['a-b.com'], ['1foo.com'], ['x1-y2.example.io']])(
+    'accepts valid label shape %s',
+    (value) => {
+      const r = validateSignupDomainInput(value);
+      expect(r.ok).toBe(true);
+    },
+  );
 });

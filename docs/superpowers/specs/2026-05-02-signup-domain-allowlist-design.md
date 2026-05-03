@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS signup_allowed_domains (
     domain TEXT NOT NULL,
     is_wildcard BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    created_by TEXT REFERENCES users(id),
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     PRIMARY KEY (domain, is_wildcard)
 );
 ```

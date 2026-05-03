@@ -646,15 +646,41 @@ class DatabaseLogger:
             # Signup domain allowlist (admin-editable approval policy).
             # Empty table = all signups auto-approve; non-empty table requires
             # the signup email's domain to match (exact or wildcard suffix).
+            # ``created_by`` uses ON DELETE SET NULL so hard-deleting a user
+            # who once added an allowlist entry doesn't fail with a FK
+            # violation; the audit value is informational only.
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS signup_allowed_domains (
                     domain TEXT NOT NULL,
                     is_wildcard BOOLEAN NOT NULL DEFAULT FALSE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    created_by TEXT REFERENCES users(id),
+                    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
                     PRIMARY KEY (domain, is_wildcard)
                 )
             """)
+
+            # Migration: existing databases created the FK without
+            # ON DELETE SET NULL, which blocks hard_delete_user. Rebuild
+            # the constraint in place. The auto-generated constraint name
+            # is ``signup_allowed_domains_created_by_fkey``.
+            try:
+                async with conn.transaction():
+                    await conn.execute("""
+                        ALTER TABLE signup_allowed_domains
+                        DROP CONSTRAINT IF EXISTS signup_allowed_domains_created_by_fkey
+                    """)
+                    await conn.execute("""
+                        ALTER TABLE signup_allowed_domains
+                        ADD CONSTRAINT signup_allowed_domains_created_by_fkey
+                        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+                    """)
+            except asyncpg.PostgresError as exc:
+                logger.error(
+                    "Failed to rebuild signup_allowed_domains_created_by_fkey "
+                    "with ON DELETE SET NULL; transaction rolled back. error=%s",
+                    exc,
+                )
+                raise
 
             # Critical index for usage analytics (prevents full table scan on cost queries)
             await conn.execute("""

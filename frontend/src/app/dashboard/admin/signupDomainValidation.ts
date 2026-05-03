@@ -1,7 +1,8 @@
 // Mirrors the server-side regex in serving/servers/routers/admin.py.
 // Keeping the two in sync is intentional: the server is authoritative,
-// the client just gives faster feedback.
-const DOMAIN_RE = /^([a-z0-9-]+\.)+[a-z]{2,}$/;
+// the client just gives faster feedback. Each label must start and end
+// with an alphanumeric character (no leading/trailing hyphens).
+const DOMAIN_RE = /^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
 
 export type ValidatedInput =
   | { ok: true; domain: string; isWildcard: boolean }

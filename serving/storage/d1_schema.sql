@@ -150,6 +150,10 @@ CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day);
 -- non-listed signups go to pending_approval. See
 -- serving/auth/signup_policy.py for match rules.
 -- -------------------------------------------------------------------
+-- ``created_by`` references users(id) but is informational only and is
+-- left unconstrained on D1 (the schema rebuild is sufficient, there is
+-- no migration runner). On Postgres it carries an ON DELETE SET NULL FK
+-- so hard-deleting a user who created an entry does not fail.
 CREATE TABLE IF NOT EXISTS signup_allowed_domains (
     domain      TEXT NOT NULL,
     is_wildcard INTEGER NOT NULL DEFAULT 0,

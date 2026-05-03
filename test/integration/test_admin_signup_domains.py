@@ -213,6 +213,12 @@ async def test_post_wildcard_prefix_detected(admin_client):
         "acme.*",
         "x.123",  # numeric TLD
         "*..acme.com",
+        # Leading/trailing hyphens per label are invalid per RFC 1035.
+        "-foo.com",
+        "foo-.com",
+        "sub.-foo.com",
+        "sub.foo-.com",
+        "-foo-.com",
     ],
 )
 @pytest.mark.asyncio
@@ -228,28 +234,35 @@ async def test_post_rejects_malformed(admin_client, value):
     op_store.add_signup_allowed_domain.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a.com",  # single-char label
+        "a-b.com",  # interior hyphen
+        "1foo.com",  # numeric leading char
+        "x1-y2.example.io",
+    ],
+)
 @pytest.mark.asyncio
-async def test_post_returns_409_on_duplicate(admin_client):
-    """Store-level unique-violation surfaces as 409."""
+async def test_post_accepts_valid_label_shapes(admin_client, value):
+    """Labels with interior hyphens and digits are accepted."""
     client, op_store, _log, _audit = admin_client
-    op_store.add_signup_allowed_domain.side_effect = Exception(
-        "duplicate key value violates unique constraint"
-    )
+    op_store.add_signup_allowed_domain.return_value = _row(value)
     response = await client.post(
         "/admin/signup-domains",
         headers=AUTH,
-        json={"domain": "acme.com"},
+        json={"domain": value},
     )
-    assert response.status_code == 409
+    assert response.status_code == 201, value
 
 
 @pytest.mark.asyncio
 async def test_post_returns_409_on_asyncpg_unique_violation(admin_client):
-    """A typed asyncpg.UniqueViolationError is also recognized as 409.
+    """A typed asyncpg.UniqueViolationError is recognized as 409.
 
-    This proves the 409 detection doesn't rely on string matching alone —
-    important because asyncpg error messages are not part of its API
-    contract and can change between PG versions.
+    Duplicate-key detection now relies *only* on the typed exception
+    path; untyped exceptions are propagated as 500 so unrelated DB
+    errors aren't silently masked as duplicates.
     """
     import asyncpg
 
@@ -261,6 +274,30 @@ async def test_post_returns_409_on_asyncpg_unique_violation(admin_client):
         json={"domain": "acme.com"},
     )
     assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_post_does_not_mask_unrelated_db_errors_as_409(admin_client):
+    """Plain Exception("...constraint...") is NOT classified as a duplicate.
+
+    Previously a string-matching fallback could turn unrelated DB errors
+    (FK violations, syntax errors mentioning "constraint", etc.) into a
+    spurious 409. The new policy lets them propagate as a 500 — the
+    endpoint does not catch the untyped exception.
+    """
+    client, op_store, _log, _audit = admin_client
+    op_store.add_signup_allowed_domain.side_effect = Exception(
+        "duplicate key value violates unique constraint"
+    )
+    # ASGITransport re-raises app exceptions to the caller by default.
+    # That re-raise is itself proof the endpoint did not classify the
+    # error as 409 — if it had, we'd get a Response back instead.
+    with pytest.raises(Exception, match="duplicate key value"):
+        await client.post(
+            "/admin/signup-domains",
+            headers=AUTH,
+            json={"domain": "acme.com"},
+        )
 
 
 # ---------------------------------------------------------------------------

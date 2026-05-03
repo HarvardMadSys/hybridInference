@@ -1153,25 +1153,34 @@ class D1OperationalStore(OperationalStore):
         return not result.rows
 
     async def is_signup_domain_allowed(self, email: str) -> bool:
-        """Match *email*'s domain against the allowlist (exact or wildcard)."""
+        """Match *email*'s domain against the allowlist (exact or wildcard).
+
+        Uses a single round-trip with a dynamic ``IN (?, ?, …)`` over the
+        email domain plus each parent suffix that could be a wildcard
+        match. The bare top-level domain is excluded from wildcard
+        candidates so ``*.acme.com`` does not match ``alice@acme.com``.
+        """
         if "@" not in email:
             return False
         domain = email.rsplit("@", 1)[1].strip().lower()
         if not domain:
             return False
-        exact = await self._d1.query(
-            "SELECT 1 FROM signup_allowed_domains WHERE domain = ? AND is_wildcard = 0 LIMIT 1",
-            [domain],
-        )
-        if exact.rows:
-            return True
+
         parts = domain.split(".")
-        for i in range(1, len(parts) - 1):
-            suffix = ".".join(parts[i:])
-            wild = await self._d1.query(
-                "SELECT 1 FROM signup_allowed_domains WHERE domain = ? AND is_wildcard = 1 LIMIT 1",
-                [suffix],
-            )
-            if wild.rows:
+        wildcard_candidates = [".".join(parts[i:]) for i in range(1, len(parts) - 1)]
+        candidates = list({domain, *wildcard_candidates})
+        placeholders = ", ".join(["?"] * len(candidates))
+        result = await self._d1.query(
+            f"SELECT domain, is_wildcard FROM signup_allowed_domains "
+            f"WHERE domain IN ({placeholders})",
+            candidates,
+        )
+        wildcard_set = set(wildcard_candidates)
+        for row in result.rows:
+            row_domain = row.get("domain")
+            row_is_wildcard = bool(row.get("is_wildcard"))
+            if not row_is_wildcard and row_domain == domain:
+                return True
+            if row_is_wildcard and row_domain in wildcard_set:
                 return True
         return False

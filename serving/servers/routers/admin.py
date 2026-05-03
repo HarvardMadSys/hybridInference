@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
+import asyncpg
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -2709,10 +2711,11 @@ async def admin_provider_token_usage(
 # ========================================
 
 
-# Domain label charset; matches RFC-1035 LDH plus the dot separator. Excludes
-# leading/trailing hyphens implicitly because the regex anchors each label
-# with at least one [a-z0-9-]+ char and forces the TLD to be alpha-only.
-_DOMAIN_RE = re.compile(r"^([a-z0-9-]+\.)+[a-z]{2,}$")
+# Domain label charset; matches RFC-1035 LDH plus the dot separator. Each
+# label must start and end with an alphanumeric character (no leading or
+# trailing hyphens), with optional alphanumeric/hyphen characters in between.
+# The TLD must be at least two alpha-only characters.
+_DOMAIN_RE = re.compile(r"^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$")
 
 
 def _normalize_signup_domain(raw: str) -> tuple[str, bool]:
@@ -2804,7 +2807,8 @@ async def add_signup_allowed_domain_endpoint(
     r"""Add a domain (or ``*.subdomain`` wildcard) to the signup allowlist.
 
     Validation: strip + lowercase, ``*.`` prefix flips ``is_wildcard``,
-    remainder must match ``^([a-z0-9-]+\.)+[a-z]{2,}$``.
+    remainder must match ``^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$``
+    (each label must start and end with an alphanumeric character).
 
     Returns 409 if the (domain, is_wildcard) composite key already exists.
 
@@ -2823,39 +2827,27 @@ async def add_signup_allowed_domain_endpoint(
     if user_row:
         created_by = user_row["id"]
 
-    # Translate any dup-key violation to a 409. asyncpg raises a typed
-    # UniqueViolationError; D1 surfaces a plain Exception with a string
-    # message — fall back to substring matching for the latter so both
-    # backends behave the same to the API consumer.
+    # Translate dup-key violations to 409. We rely solely on asyncpg's typed
+    # UniqueViolationError so unrelated DB errors (FK violations, syntax
+    # errors that happen to mention the word "constraint", etc.) surface
+    # as 500 instead of being silently masked as duplicates. D1 backends
+    # that surface duplicates via untyped exceptions will propagate as 500;
+    # store implementations that want 409 semantics on D1 should raise a
+    # typed exception we recognize here.
     try:
         row = await op_store.add_signup_allowed_domain(
             domain=domain,
             is_wildcard=is_wildcard,
             created_by=created_by,
         )
-    except Exception as exc:
-        is_dup = False
-        try:
-            import asyncpg
-
-            if isinstance(exc, asyncpg.UniqueViolationError):
-                is_dup = True
-        except ImportError:  # pragma: no cover — asyncpg always present in this app
-            pass
-        if not is_dup:
-            msg = str(exc).lower()
-            is_dup = (
-                "unique" in msg or "duplicate" in msg or "primary key" in msg or "constraint" in msg
-            )
-        if is_dup:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Domain '{domain}' "
-                    f"({'wildcard' if is_wildcard else 'exact'}) is already on the allowlist."
-                ),
-            ) from exc
-        raise
+    except asyncpg.UniqueViolationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Domain '{domain}' "
+                f"({'wildcard' if is_wildcard else 'exact'}) is already on the allowlist."
+            ),
+        ) from exc
 
     invalidate_allowlist_cache()
 
