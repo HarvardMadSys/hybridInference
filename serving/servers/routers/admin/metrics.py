@@ -34,9 +34,7 @@ router = APIRouter(prefix="/admin")
 
 
 REQUEST_METRIC_WINDOWS: tuple[tuple[str, str, int, int], ...] = (
-    ("5m", "Last 5 min", 5, 1),
     ("1h", "Last 1 hour", 60, 5),
-    ("4h", "Last 4 hours", 240, 15),
     ("1d", "Last 1 day", 1440, 60),
     ("1w", "Last 1 week", 10080, 360),
     ("1mo", "Last 1 month", 43200, 1440),
