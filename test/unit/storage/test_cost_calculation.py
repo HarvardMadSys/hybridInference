@@ -126,3 +126,166 @@ def test_cost_calculation_zero_pricing() -> None:
     pricing = {"prompt": "0", "completion": "0"}
 
     assert calculate_cost(usage, pricing) == 0.0
+
+
+# --- End-to-end producer → calculate_cost regression tests ----------------
+#
+# These tests pipe a realistic upstream usage payload through the adapter-layer
+# normalizers and assert that calculate_cost produces the expected billing.
+# They catch contract drift: if a producer reverts to the old "prompt_tokens
+# excludes cache" semantic, billable_prompt collapses to (often) 0 and cost
+# under-bills silently.
+
+
+def test_claude_parse_usage_to_calculate_cost_disjoint_billing() -> None:
+    """Anthropic upstream → claude_format.parse_usage → calculate_cost.
+
+    With Anthropic's disjoint fields (input=21, cache_read=100, cache_write=50),
+    billable_prompt should be 21 (just input_tokens), and cache_read/write
+    bill at their own rates. Total cost matches the expected disjoint sum.
+    """
+    from serving.adapters.claude_format import parse_usage
+
+    info = parse_usage(
+        {
+            "input_tokens": 21,
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 50,
+            "output_tokens": 30,
+        }
+    )
+
+    # producer contract: prompt_tokens is cache-inclusive total input
+    assert info.prompt_tokens == 21 + 100 + 50
+    assert info.cache_read_tokens == 100
+    assert info.cache_write_tokens == 50
+
+    usage = {
+        "prompt_tokens": info.prompt_tokens,
+        "completion_tokens": info.completion_tokens,
+        "cache_read_tokens": info.cache_read_tokens,
+        "cache_write_tokens": info.cache_write_tokens,
+    }
+    pricing = {
+        "prompt": "3.0",
+        "completion": "15.0",
+        "input_cache_reads": "0.30",
+        "input_cache_writes": "3.75",
+    }
+
+    cost = calculate_cost(usage, pricing)
+
+    expected = (
+        (21 * 3.0 / 1_000_000)
+        + (30 * 15.0 / 1_000_000)
+        + (100 * 0.30 / 1_000_000)
+        + (50 * 3.75 / 1_000_000)
+    )
+    assert cost == pytest.approx(expected)
+
+
+def test_claude_build_final_usage_to_calculate_cost_disjoint_billing() -> None:
+    """Streaming path: claude_format.build_final_usage → calculate_cost.
+
+    Same upstream numbers as the non-streaming path; cost should match.
+    """
+    from serving.adapters.claude_format import build_final_usage
+
+    usage = build_final_usage(
+        input_tokens=21,
+        output_tokens=30,
+        cache_read_input_tokens=100,
+        cache_creation_input_tokens=50,
+    )
+
+    assert usage["prompt_tokens"] == 21 + 100 + 50
+    assert usage["total_tokens"] == 21 + 100 + 50 + 30
+
+    pricing = {
+        "prompt": "3.0",
+        "completion": "15.0",
+        "input_cache_reads": "0.30",
+        "input_cache_writes": "3.75",
+    }
+
+    cost = calculate_cost(usage, pricing)
+
+    expected = (
+        (21 * 3.0 / 1_000_000)
+        + (30 * 15.0 / 1_000_000)
+        + (100 * 0.30 / 1_000_000)
+        + (50 * 3.75 / 1_000_000)
+    )
+    assert cost == pytest.approx(expected)
+
+
+def test_deepseek_normalize_usage_to_calculate_cost() -> None:
+    """DeepSeek upstream → profiles.normalize_usage_deepseek → calculate_cost.
+
+    DeepSeek already reports cache-inclusive prompt_tokens (OpenAI-style)
+    plus prompt_cache_hit/miss. Normalizer must keep prompt_tokens as-is so
+    calculate_cost subtracts only the cache_read portion, leaving the miss
+    portion (200) billed at the prompt rate.
+    """
+    from serving.adapters.profiles import normalize_usage_deepseek
+
+    info = normalize_usage_deepseek(
+        {
+            "prompt_tokens": 1000,
+            "prompt_cache_hit_tokens": 800,
+            "prompt_cache_miss_tokens": 200,
+            "completion_tokens": 50,
+        }
+    )
+
+    assert info.prompt_tokens == 1000
+    assert info.cache_read_tokens == 800
+
+    usage = {
+        "prompt_tokens": info.prompt_tokens,
+        "completion_tokens": info.completion_tokens,
+        "cache_read_tokens": info.cache_read_tokens,
+    }
+    pricing = {
+        "prompt": "0.27",
+        "completion": "1.10",
+        "input_cache_reads": "0.07",
+    }
+
+    cost = calculate_cost(usage, pricing)
+
+    # billable_prompt = 1000 - 800 = 200 (the miss portion)
+    expected = (200 * 0.27 / 1_000_000) + (50 * 1.10 / 1_000_000) + (800 * 0.07 / 1_000_000)
+    assert cost == pytest.approx(expected)
+
+
+def test_anthropic_messages_log_usage_to_calculate_cost() -> None:
+    """Anthropic Messages router log shape → calculate_cost.
+
+    Mirrors the dict that _schedule_log_store_task in
+    serving/servers/routers/anthropic_messages.py builds before passing to
+    log_request, ensuring the storage-layer billing matches the producer's
+    cache-inclusive prompt_tokens.
+    """
+    input_tokens, cache_read, cache_write, output_tokens = 50, 100_000, 0, 200
+    prompt_tokens = input_tokens + cache_read + cache_write
+    usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": output_tokens,
+        "total_tokens": prompt_tokens + output_tokens,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+    }
+    pricing = {
+        "prompt": "3.0",
+        "completion": "15.0",
+        "input_cache_reads": "0.30",
+        "input_cache_writes": "3.75",
+    }
+
+    cost = calculate_cost(usage, pricing)
+
+    # cached should be << prompt (the bug from #338 is the reverse)
+    assert cache_read < prompt_tokens
+    expected = (50 * 3.0 / 1_000_000) + (200 * 15.0 / 1_000_000) + (100_000 * 0.30 / 1_000_000)
+    assert cost == pytest.approx(expected)
