@@ -1474,6 +1474,74 @@ class PostgresOperationalStore(OperationalStore):
             )
         return float(row["total"]) if row else 0.0
 
+    async def get_user_cost_history(
+        self,
+        user_id: str,
+        days: int = 7,
+    ) -> list[Row]:
+        """Return up to ``days`` of daily cost rows for ``user_id``.
+
+        Output: list of {"day": str (ISO date YYYY-MM-DD), "cost_usd": Decimal,
+        "requests": int}, ordered by day ascending. Days with zero activity
+        are NOT included — caller fills gaps if needed.
+        """
+        if days <= 0:
+            return []
+        # ``day`` is stored as TEXT (YYYY-MM-DD) — compute cutoff in Python.
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT day, cost_usd, requests "
+                "FROM user_daily_cost "
+                "WHERE user_id = $1 "
+                "  AND day >= $2 "
+                "ORDER BY day ASC",
+                user_id,
+                cutoff,
+            )
+        return [
+            {
+                "day": r["day"].isoformat() if hasattr(r["day"], "isoformat") else r["day"],
+                "cost_usd": r["cost_usd"],
+                "requests": r["requests"],
+            }
+            for r in rows
+        ]
+
+    async def get_bulk_user_cost_history(
+        self,
+        user_ids: list[str],
+        days: int = 7,
+    ) -> dict[str, list[Row]]:
+        """Bulk variant of get_user_cost_history — one query, grouped by user."""
+        if not user_ids or days <= 0:
+            return {}
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, day, cost_usd, requests "
+                "FROM user_daily_cost "
+                "WHERE user_id = ANY($1::text[]) "
+                "  AND day >= $2 "
+                "ORDER BY user_id, day ASC",
+                user_ids,
+                cutoff,
+            )
+        out: dict[str, list[Row]] = {uid: [] for uid in user_ids}
+        for r in rows:
+            out[r["user_id"]].append(
+                {
+                    "day": r["day"].isoformat() if hasattr(r["day"], "isoformat") else r["day"],
+                    "cost_usd": r["cost_usd"],
+                    "requests": r["requests"],
+                }
+            )
+        return out
+
     async def get_batch_usage(
         self,
         user_ids: list[str],

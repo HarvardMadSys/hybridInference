@@ -649,6 +649,16 @@ class DualWriteOperationalStore(OperationalStore):
         """Delegate to primary."""
         return await self._primary.get_batch_usage(user_ids, period)
 
+    async def get_user_cost_history(self, user_id: str, days: int = 7) -> list[Row]:
+        """Delegate to primary."""
+        return await self._primary.get_user_cost_history(user_id, days=days)
+
+    async def get_bulk_user_cost_history(
+        self, user_ids: list[str], days: int = 7
+    ) -> dict[str, list[Row]]:
+        """Delegate to primary."""
+        return await self._primary.get_bulk_user_cost_history(user_ids, days=days)
+
     # -- preferences ---------------------------------------------------------
 
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:

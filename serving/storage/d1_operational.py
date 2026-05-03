@@ -1078,6 +1078,72 @@ class D1OperationalStore(OperationalStore):
                 result_map[r["user_id"]] = float(r["cost"])
         return result_map
 
+    async def get_user_cost_history(
+        self,
+        user_id: str,
+        days: int = 7,
+    ) -> list[Row]:
+        """Return up to ``days`` of daily cost rows for ``user_id`` (D1 variant).
+
+        Output mirrors the postgres variant: list of {"day", "cost_usd",
+        "requests"} ordered ascending by day.
+        """
+        if days <= 0:
+            return []
+        from decimal import Decimal as _Decimal
+
+        result = await self._d1.query(
+            "SELECT day, cost_usd, requests "
+            "FROM user_daily_cost "
+            "WHERE user_id = ? "
+            "  AND day >= date('now', ?) "
+            "ORDER BY day ASC",
+            [user_id, f"-{days - 1} days"],
+        )
+        return [
+            {
+                "day": r["day"],
+                "cost_usd": _Decimal(str(r["cost_usd"])),
+                "requests": r["requests"],
+            }
+            for r in result.rows
+        ]
+
+    async def get_bulk_user_cost_history(
+        self,
+        user_ids: list[str],
+        days: int = 7,
+    ) -> dict[str, list[Row]]:
+        """Bulk variant — chunked to respect the 100-bound-param D1 limit."""
+        if not user_ids or days <= 0:
+            return {}
+        from decimal import Decimal as _Decimal
+
+        # 1 slot for the date offset; chunk users to fit under 100 binds.
+        _CHUNK = 99
+        out: dict[str, list[Row]] = {uid: [] for uid in user_ids}
+        date_offset = f"-{days - 1} days"
+        for i in range(0, len(user_ids), _CHUNK):
+            chunk = user_ids[i : i + _CHUNK]
+            placeholders = ",".join(["?"] * len(chunk))
+            result = await self._d1.query(
+                f"SELECT user_id, day, cost_usd, requests "
+                f"FROM user_daily_cost "
+                f"WHERE user_id IN ({placeholders}) "
+                f"  AND day >= date('now', ?) "
+                f"ORDER BY user_id, day ASC",
+                [*chunk, date_offset],
+            )
+            for r in result.rows:
+                out[r["user_id"]].append(
+                    {
+                        "day": r["day"],
+                        "cost_usd": _Decimal(str(r["cost_usd"])),
+                        "requests": r["requests"],
+                    }
+                )
+        return out
+
     # -- signup domain allowlist --------------------------------------------
 
     async def list_signup_allowed_domains(self) -> list[Row]:

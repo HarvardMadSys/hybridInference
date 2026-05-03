@@ -596,3 +596,13 @@ class CachedOperationalStore(OperationalStore):
     ) -> dict[str, float]:
         """Delegate to wrapped store."""
         return await self._store.get_batch_usage(user_ids, period)
+
+    async def get_user_cost_history(self, user_id: str, days: int = 7) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.get_user_cost_history(user_id, days=days)
+
+    async def get_bulk_user_cost_history(
+        self, user_ids: list[str], days: int = 7
+    ) -> dict[str, list[Row]]:
+        """Delegate to wrapped store."""
+        return await self._store.get_bulk_user_cost_history(user_ids, days=days)
