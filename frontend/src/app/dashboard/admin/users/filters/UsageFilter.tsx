@@ -17,8 +17,11 @@ function toInputString(v: number | null): string {
   return v === null ? '' : String(v);
 }
 
+// Return null for empty/non-finite strings to avoid NaN in state/URL params.
 function parseInput(s: string): number | null {
-  return s === '' ? null : Number(s);
+  if (s === '') return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
 }
 
 export function UsageFilter({ minCostToday, minCostMonth, activeWithinHours, onChange }: Props) {
@@ -37,33 +40,26 @@ export function UsageFilter({ minCostToday, minCostMonth, activeWithinHours, onC
     setHoursInput(toInputString(activeWithinHours));
   }, [activeWithinHours]);
 
-  // Debounce 300ms (matches FilterBar search debounce)
-  useEffect(() => {
-    const t = setTimeout(() => {
-      const next = parseInput(todayInput);
-      if (next !== minCostToday) onChange({ minCostToday: next });
-    }, 300);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [todayInput]);
+  // No debounce here: FilterBar wraps onChange in applyFilterState which
+  // already debounces search. Numeric inputs are infrequent enough that
+  // immediate propagation is fine and avoids stale-closure clobber issues.
+  const handleTodayChange = (val: string) => {
+    setTodayInput(val);
+    const next = parseInput(val);
+    if (next !== minCostToday) onChange({ minCostToday: next });
+  };
 
-  useEffect(() => {
-    const t = setTimeout(() => {
-      const next = parseInput(monthInput);
-      if (next !== minCostMonth) onChange({ minCostMonth: next });
-    }, 300);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monthInput]);
+  const handleMonthChange = (val: string) => {
+    setMonthInput(val);
+    const next = parseInput(val);
+    if (next !== minCostMonth) onChange({ minCostMonth: next });
+  };
 
-  useEffect(() => {
-    const t = setTimeout(() => {
-      const next = parseInput(hoursInput);
-      if (next !== activeWithinHours) onChange({ activeWithinHours: next });
-    }, 300);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hoursInput]);
+  const handleHoursChange = (val: string) => {
+    setHoursInput(val);
+    const next = parseInput(val);
+    if (next !== activeWithinHours) onChange({ activeWithinHours: next });
+  };
 
   return (
     <div className="flex items-center gap-2 text-sm">
@@ -74,7 +70,7 @@ export function UsageFilter({ minCostToday, minCostMonth, activeWithinHours, onC
           min={0}
           step="0.01"
           value={todayInput}
-          onChange={(e) => setTodayInput(e.target.value)}
+          onChange={(e) => handleTodayChange(e.target.value)}
           className="w-16 rounded border px-1 py-0.5"
         />
       </label>
@@ -85,7 +81,7 @@ export function UsageFilter({ minCostToday, minCostMonth, activeWithinHours, onC
           min={0}
           step="0.01"
           value={monthInput}
-          onChange={(e) => setMonthInput(e.target.value)}
+          onChange={(e) => handleMonthChange(e.target.value)}
           className="w-16 rounded border px-1 py-0.5"
         />
       </label>
@@ -95,7 +91,7 @@ export function UsageFilter({ minCostToday, minCostMonth, activeWithinHours, onC
           type="number"
           min={1}
           value={hoursInput}
-          onChange={(e) => setHoursInput(e.target.value)}
+          onChange={(e) => handleHoursChange(e.target.value)}
           className="w-16 rounded border px-1 py-0.5"
         />
       </label>
