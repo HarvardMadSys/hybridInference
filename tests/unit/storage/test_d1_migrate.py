@@ -168,9 +168,7 @@ class TestCheckpoint:
     """Tests for checkpoint save/load."""
 
     def test_load_empty_when_no_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "ops.cloudflare.d1_migrate._CHECKPOINT_FILE", tmp_path / "missing.json"
-        )
+        monkeypatch.setattr("ops.cloudflare.d1_migrate._CHECKPOINT_FILE", tmp_path / "missing.json")
         assert _load_checkpoint() == {}
 
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
