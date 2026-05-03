@@ -1,9 +1,7 @@
 /**
- * Dashboard layout: overrides root layout's vertical centering so that
- * content-heavy pages (admin panel, settings, etc.) align to the top.
+ * Dashboard layout: aligns content to the top of the flex column instead of
+ * inheriting the root layout's vertical centering.
  */
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="relative left-1/2 w-screen -translate-x-1/2 self-start px-6">{children}</div>
-  );
+  return <div className="w-full self-start">{children}</div>;
 }
