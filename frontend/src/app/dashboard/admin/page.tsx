@@ -1774,7 +1774,10 @@ export default function AdminPage() {
                                 </div>
                                 <div className="text-[11px] text-gray-400">{req.provider}</div>
                                 {req.error && (
-                                  <p className="mt-0.5 max-w-[280px] truncate text-[11px] text-red-500" title={req.error}>
+                                  <p
+                                    className="mt-0.5 max-w-[280px] truncate text-[11px] text-red-500"
+                                    title={req.error}
+                                  >
                                     {req.error}
                                   </p>
                                 )}
