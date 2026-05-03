@@ -7,6 +7,7 @@ round-robin rotation across multiple subscription accounts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import tempfile
@@ -187,9 +188,17 @@ class CredentialProvider:
         try:
             os.write(fd, data.encode())
             os.close(fd)
+            # File holds OAuth refresh tokens — long-lived account access.
+            # chmod the temp file BEFORE rename so the destination is never
+            # observable with looser perms (eliminates TOCTOU window).
+            os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, self._accounts_file)
         except Exception:
-            os.close(fd) if not os.get_inheritable(fd) else None
+            # fd may already be closed (from line above) or still open if
+            # we failed before close. Suppress EBADF so we never mask the
+            # original exception.
+            with contextlib.suppress(OSError):
+                os.close(fd)
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
             raise

@@ -334,6 +334,55 @@ class TestLogin:
         assert response.status_code == 403  # Forbidden for suspended account
 
 
+class TestLoginAbuseProtection:
+    """Per-email and per-IP rate limits on /auth/login."""
+
+    @pytest.mark.asyncio
+    async def test_login_rate_limited_per_email(self, auth_app_client: AsyncClient, test_user):
+        """Per-email bucket trips after `login_rate_limit_per_15min` attempts.
+
+        Default is 5: after 5 wrong-password attempts within 15 minutes,
+        a 6th attempt against the same email returns 429 with Retry-After.
+        """
+        for _ in range(5):
+            response = await auth_app_client.post(
+                "/auth/login",
+                json={"email": test_user["email"], "password": "WrongPassword123!"},
+            )
+            assert response.status_code == 401
+
+        response = await auth_app_client.post(
+            "/auth/login",
+            json={"email": test_user["email"], "password": "WrongPassword123!"},
+        )
+        assert response.status_code == 429
+        assert "Retry-After" in response.headers
+
+    @pytest.mark.asyncio
+    async def test_login_rate_limited_per_ip(self, auth_app_client: AsyncClient):
+        """Per-IP bucket trips at `login_rate_limit_per_hour_per_ip`.
+
+        Vary the email each attempt so the per-email bucket cannot trip;
+        the per-IP limit (default 20) must be the gating factor.
+        """
+        for i in range(20):
+            response = await auth_app_client.post(
+                "/auth/login",
+                json={
+                    "email": f"unique-{i}@example.com",
+                    "password": "AnyPassword123!",
+                },
+            )
+            assert response.status_code in (401, 403)
+
+        response = await auth_app_client.post(
+            "/auth/login",
+            json={"email": "next@example.com", "password": "AnyPassword123!"},
+        )
+        assert response.status_code == 429
+        assert response.headers.get("Retry-After") == "3600"
+
+
 class TestLogout:
     """Test user logout endpoint."""
 
@@ -391,6 +440,42 @@ class TestRefreshToken:
         assert response.status_code == 200
         data = response.json()
         assert "access_token" in data
+
+    @pytest.mark.asyncio
+    async def test_refresh_rotates_cookie(self, auth_app_client: AsyncClient, test_user):
+        """Refresh must mint a NEW refresh-token cookie and invalidate the old.
+
+        Token rotation is the mitigation against a stolen refresh token:
+        once the legitimate client refreshes, the attacker's copy stops
+        working (because the stored hash has changed in op_store).
+        """
+        login_response = await auth_app_client.post(
+            "/auth/login",
+            json={"email": test_user["email"], "password": test_user["password"]},
+        )
+        original_refresh = login_response.cookies.get("refresh_token")
+        assert original_refresh
+
+        # First refresh: should rotate.
+        first_refresh_response = await auth_app_client.post(
+            "/auth/refresh", cookies={"refresh_token": original_refresh}
+        )
+        assert first_refresh_response.status_code == 200
+        rotated_refresh = first_refresh_response.cookies.get("refresh_token")
+        assert rotated_refresh, "expected new refresh_token cookie on /auth/refresh"
+        assert rotated_refresh != original_refresh, "refresh token was not rotated"
+
+        # Original refresh token must no longer be accepted.
+        replay_response = await auth_app_client.post(
+            "/auth/refresh", cookies={"refresh_token": original_refresh}
+        )
+        assert replay_response.status_code == 401
+
+        # New refresh token still works.
+        followup_response = await auth_app_client.post(
+            "/auth/refresh", cookies={"refresh_token": rotated_refresh}
+        )
+        assert followup_response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_refresh_without_token(self, auth_app_client: AsyncClient):

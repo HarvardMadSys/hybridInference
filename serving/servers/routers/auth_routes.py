@@ -42,6 +42,7 @@ from serving.utils.jwt import (
     get_refresh_token_expire_days,
 )
 from serving.utils.logging import get_logger
+from serving.utils.login_rate_limit import check_and_record_login
 from serving.utils.request_ip import get_client_ip
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.turnstile import verify_turnstile_token
@@ -65,18 +66,18 @@ def hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    """Read a boolean-like environment flag."""
-    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
-
-
 def _refresh_cookie_options() -> dict[str, object]:
-    """Return shared options for refresh-token cookie operations."""
+    """Return shared options for refresh-token cookie operations.
+
+    Reads from validated `settings` (not raw env) so tests and Pydantic
+    field defaults are the single source of truth. Defaults: secure=True,
+    samesite=lax, domain unset.
+    """
     return {
         "httponly": True,
-        "secure": _env_flag("COOKIE_SECURE"),
-        "samesite": os.getenv("COOKIE_SAMESITE", "lax"),
-        "domain": os.getenv("COOKIE_DOMAIN"),
+        "secure": settings.cookie_secure,
+        "samesite": settings.cookie_samesite,
+        "domain": settings.cookie_domain,
         "path": "/",
     }
 
@@ -240,20 +241,34 @@ async def signup(
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
+    request: Request,
     response: Response,
     body: LoginRequest,
     op_store=Depends(get_operational_store),
 ) -> LoginResponse:
     """Login with email and password.
 
-    Returns access token (15 min) and sets refresh token as HttpOnly cookie (365 days by default).
+    Returns access token (15 min) and sets refresh token as HttpOnly cookie
+    (30 days by default).
 
-    Rate limits:
+    Rate limits (configurable via settings.login_rate_limit_per_15min and
+    settings.login_rate_limit_per_hour_per_ip):
     - 5 attempts per 15 minutes per email
     - 20 attempts per hour per IP
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
+
+    # Record on entry so probing varied passwords cannot bypass the limit.
+    client_ip = get_client_ip(request)
+    allowed, reason = await check_and_record_login(body.email, client_ip)
+    if not allowed:
+        retry_after = "3600" if reason == "ip" else "900"
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Please try again later.",
+            headers={"Retry-After": retry_after},
+        )
 
     # Find user by email
     user_row = await op_store.get_user_by_email(body.email)

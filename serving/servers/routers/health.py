@@ -86,7 +86,7 @@ async def root() -> dict[str, Any]:
             "/v1/models": "List available models",
             "/openrouter/models": "OpenRouter format models list",
             "/routing": "Show routing configuration",
-            "/stats": "API usage statistics",
+            "/admin/stats": "API usage statistics (admin auth required)",
             "/health": "Health check",
         },
     }

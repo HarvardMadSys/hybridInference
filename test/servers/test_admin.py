@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
-from serving.servers.deps import AppServices
+from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin, models
 
 if TYPE_CHECKING:
@@ -37,6 +37,7 @@ async def admin_app(mock_db_logger) -> FastAPI:
     router.register_route("canonical-model", [(_Adapter(_cfg("canonical-model")), 1.0)])
     app = FastAPI(title="Admin App")
     app.state.services = AppServices(router=router, db_logger=mock_db_logger)  # type: ignore[attr-defined]
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(models.router)
     app.include_router(admin.router)
     return app
@@ -55,6 +56,7 @@ async def test_admin_stats_without_db_logger():
     services = AppServices(router=router, db_logger=None)
     app = FastAPI()
     app.state.services = services  # type: ignore[attr-defined]
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.include_router(admin.router)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

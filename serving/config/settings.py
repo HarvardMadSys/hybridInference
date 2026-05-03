@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     db_dual_write: bool = False
 
     # Database privacy settings
-    db_store_full_content: bool = True
+    # Default False: by default we hash prompt/response content rather than
+    # storing it verbatim. Operators can opt in to full-content logging by
+    # setting DB_STORE_FULL_CONTENT=true after weighing the privacy impact.
+    db_store_full_content: bool = False
 
     # Cloudflare D1 (used when db_backend = "d1")
     d1_account_id: str = ""
@@ -51,7 +54,7 @@ class Settings(BaseSettings):
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 15
-    jwt_refresh_token_expire_days: int = 365
+    jwt_refresh_token_expire_days: int = 30
 
     # Cookie
     cookie_secure: bool = True
@@ -66,7 +69,11 @@ class Settings(BaseSettings):
     # Rate limiting
     signup_rate_limit_per_hour: int = 5
     signup_rate_limit_per_day: int = 10
+    # Per-email window (default 5 attempts / 15 min) and per-IP window
+    # (default 20 attempts / hour). The login limiter records attempts on
+    # entry so probing varied passwords cannot bypass the limit.
     login_rate_limit_per_15min: int = 5
+    login_rate_limit_per_hour_per_ip: int = 20
 
     # Cloudflare Turnstile (signup captcha)
     turnstile_site_key: str = ""
