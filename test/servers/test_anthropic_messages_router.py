@@ -806,3 +806,88 @@ async def test_streaming_logs_prompt_and_cache_separate_tokens(anthropic_test_cl
     assert usage["total_tokens"] == 4 + 20 + 10 + 2
     assert usage["cache_read_tokens"] == 20
     assert usage["cache_write_tokens"] == 10
+
+
+@pytest.mark.asyncio
+async def test_streaming_logged_response_reassembles_split_sse_frames(
+    anthropic_test_client, monkeypatch
+):
+    """SSE events split across raw chunk boundaries must still aggregate into the logged response."""
+    full_sse = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_split","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}\n\n'
+        b"event: content_block_start\n"
+        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+        b"event: content_block_delta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n'
+        b"event: content_block_delta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}\n\n'
+        b"event: content_block_stop\n"
+        b'data: {"type":"content_block_stop","index":0}\n\n'
+        b"event: message_delta\n"
+        b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n'
+        b"event: message_stop\n"
+        b'data: {"type":"message_stop"}\n\n'
+    )
+    # Split mid-JSON inside the second content_block_delta event so the chunk
+    # boundary lands inside an SSE frame's `data:` line.
+    split_at = full_sse.index(b'"text":" world"') + 5
+    chunks = [full_sse[:split_at], full_sse[split_at:]]
+
+    class _FakeContent:
+        async def iter_any(self):
+            for c in chunks:
+                yield c
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    captured: dict = {}
+    captured_event = __import__("asyncio").Event()
+
+    async def fake_log_request(**kwargs):
+        captured.update(kwargs)
+        captured_event.set()
+
+    services = anthropic_test_client._transport.app.state.services
+    services.log_store.log_request = fake_log_request
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    await __import__("asyncio").wait_for(captured_event.wait(), timeout=2.0)
+
+    resp = captured["response"]
+    assert resp is not None
+    assert resp["id"] == "msg_split"
+    assert resp["stop_reason"] == "end_turn"
+    assert resp["content"] == [{"type": "text", "text": "hello world"}]

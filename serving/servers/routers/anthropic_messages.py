@@ -267,102 +267,149 @@ def _schedule_log_store_task(
 
 
 def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | None:
-    """Update *acc* in-place given one Anthropic SSE event; return the (possibly new) accumulator."""
+    """Update *acc* in-place given one Anthropic SSE event; return the (possibly new) accumulator.
+
+    Best-effort: any malformed event is swallowed so streaming logging never
+    impacts the forwarded client stream.
+    """
     if event_type in ("ping", "message_stop", "error", ""):
         return acc
     try:
         payload = json.loads(data)
     except (json.JSONDecodeError, ValueError):
         return acc
-
-    if event_type == "message_start":
-        msg = payload.get("message", {})
-        return {
-            "id": msg.get("id"),
-            "type": "message",
-            "role": msg.get("role", "assistant"),
-            "model": msg.get("model"),
-            "content": list(msg.get("content") or []),
-            "stop_reason": msg.get("stop_reason"),
-            "stop_sequence": msg.get("stop_sequence"),
-            "usage": dict(msg.get("usage") or {}),
-        }
-
-    if acc is None:
+    if not isinstance(payload, dict):
         return acc
 
-    if event_type == "content_block_start":
-        idx = payload["index"]
-        block = dict(payload["content_block"])
-        if block.get("type") == "text":
-            block.setdefault("text", "")
-        elif block.get("type") == "tool_use":
-            block.setdefault("input", {})
-            block["_partial_json"] = ""
-        content = acc["content"]
-        while len(content) <= idx:
-            content.append(None)
-        content[idx] = block
+    try:
+        if event_type == "message_start":
+            msg = payload.get("message") or {}
+            if not isinstance(msg, dict):
+                return acc
+            return {
+                "id": msg.get("id"),
+                "type": "message",
+                "role": msg.get("role", "assistant"),
+                "model": msg.get("model"),
+                "content": list(msg.get("content") or []),
+                "stop_reason": msg.get("stop_reason"),
+                "stop_sequence": msg.get("stop_sequence"),
+                "usage": dict(msg.get("usage") or {}),
+            }
 
-    elif event_type == "content_block_delta":
-        idx = payload["index"]
-        delta = payload["delta"]
-        content = acc["content"]
-        if idx < len(content) and content[idx] is not None:
-            block = content[idx]
-            dtype = delta.get("type")
-            if dtype == "text_delta":
-                block["text"] = block.get("text", "") + delta.get("text", "")
-            elif dtype == "input_json_delta":
-                block["_partial_json"] = block.get("_partial_json", "") + delta.get(
-                    "partial_json", ""
-                )
-            elif dtype == "thinking_delta":
-                block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
+        if acc is None:
+            return acc
 
-    elif event_type == "content_block_stop":
-        idx = payload["index"]
-        content = acc["content"]
-        if idx < len(content) and content[idx] is not None:
-            block = content[idx]
-            if block.get("type") == "tool_use" and "_partial_json" in block:
-                raw = block.pop("_partial_json")
-                try:
-                    block["input"] = json.loads(raw) if raw else {}
-                except (json.JSONDecodeError, ValueError):
-                    block["input"] = raw  # type: ignore[assignment]
+        if event_type == "content_block_start":
+            idx = payload.get("index")
+            block_in = payload.get("content_block")
+            if not isinstance(idx, int) or not isinstance(block_in, dict):
+                return acc
+            block = dict(block_in)
+            if block.get("type") == "text":
+                block.setdefault("text", "")
+            elif block.get("type") == "tool_use":
+                block.setdefault("input", {})
+                block["_partial_json"] = ""
+            content = acc["content"]
+            while len(content) <= idx:
+                content.append(None)
+            content[idx] = block
 
-    elif event_type == "message_delta":
-        delta = payload.get("delta", {})
-        if "stop_reason" in delta:
-            acc["stop_reason"] = delta["stop_reason"]
-        if "stop_sequence" in delta:
-            acc["stop_sequence"] = delta["stop_sequence"]
-        extra_usage = payload.get("usage", {})
-        if "output_tokens" in extra_usage:
-            acc["usage"]["output_tokens"] = extra_usage["output_tokens"]
-        for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
-            if k in extra_usage:
-                acc["usage"][k] = extra_usage[k]
+        elif event_type == "content_block_delta":
+            idx = payload.get("index")
+            delta = payload.get("delta") or {}
+            if not isinstance(idx, int) or not isinstance(delta, dict):
+                return acc
+            content = acc["content"]
+            if 0 <= idx < len(content) and isinstance(content[idx], dict):
+                block = content[idx]
+                dtype = delta.get("type")
+                if dtype == "text_delta":
+                    block["text"] = block.get("text", "") + (delta.get("text") or "")
+                elif dtype == "input_json_delta":
+                    block["_partial_json"] = block.get("_partial_json", "") + (
+                        delta.get("partial_json") or ""
+                    )
+                elif dtype == "thinking_delta":
+                    block["thinking"] = block.get("thinking", "") + (delta.get("thinking") or "")
+
+        elif event_type == "content_block_stop":
+            idx = payload.get("index")
+            if not isinstance(idx, int):
+                return acc
+            content = acc["content"]
+            if 0 <= idx < len(content) and isinstance(content[idx], dict):
+                _finalize_block(content[idx])
+
+        elif event_type == "message_delta":
+            delta = payload.get("delta") or {}
+            if isinstance(delta, dict):
+                if "stop_reason" in delta:
+                    acc["stop_reason"] = delta["stop_reason"]
+                if "stop_sequence" in delta:
+                    acc["stop_sequence"] = delta["stop_sequence"]
+            extra_usage = payload.get("usage") or {}
+            if isinstance(extra_usage, dict):
+                if "output_tokens" in extra_usage:
+                    acc["usage"]["output_tokens"] = extra_usage["output_tokens"]
+                for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+                    if k in extra_usage:
+                        acc["usage"][k] = extra_usage[k]
+    except Exception:
+        # Logging must never disrupt the forwarded stream; drop this event.
+        pass
 
     return acc
+
+
+def _finalize_block(block: dict) -> None:
+    """Resolve any partial-JSON buffer on a tool_use block; remove sentinel keys."""
+    if block.get("type") == "tool_use" and "_partial_json" in block:
+        raw = block.pop("_partial_json")
+        try:
+            block["input"] = json.loads(raw) if raw else block.get("input") or {}
+        except (json.JSONDecodeError, ValueError):
+            if raw:
+                block["input"] = raw  # type: ignore[assignment]
+
+
+def _finalize_response_acc(acc: dict | None) -> dict | None:
+    """Normalize the accumulator for persistence: finalize partial blocks, drop sentinels."""
+    if not isinstance(acc, dict):
+        return acc
+    for block in acc.get("content") or []:
+        if isinstance(block, dict):
+            _finalize_block(block)
+    return acc
+
+
+_SSE_LEFTOVER_CAP = 65536
 
 
 def _parse_sse_chunk(buffer: bytes, raw: bytes) -> tuple[list[tuple[str, str]], bytes]:
     """Extract complete SSE events from *buffer* + *raw*; return (events, leftover).
 
-    Events are delimited by a blank line (``\\n\\n``); any trailing partial
-    event is returned as *leftover* so the caller can prepend it to the next
-    chunk.
+    Events are delimited by a blank line; both ``\\n\\n`` and ``\\r\\n\\r\\n``
+    are recognized. The trailing partial event is returned as *leftover* so the
+    caller can prepend it to the next chunk. Leftover is capped at
+    ``_SSE_LEFTOVER_CAP`` bytes; a malformed stream without separators will be
+    discarded rather than grow without bound.
     """
-    buffer += raw
+    buffer = buffer + raw
     events: list[tuple[str, str]] = []
+    pos = 0
     while True:
-        sep = buffer.find(b"\n\n")
-        if sep < 0:
+        sep_n = buffer.find(b"\n\n", pos)
+        sep_r = buffer.find(b"\r\n\r\n", pos)
+        if sep_n >= 0 and (sep_r < 0 or sep_n < sep_r):
+            sep, sep_len = sep_n, 2
+        elif sep_r >= 0:
+            sep, sep_len = sep_r, 4
+        else:
             break
-        block = buffer[:sep].decode("utf-8", errors="replace").strip()
-        buffer = buffer[sep + 2 :]
+        block = buffer[pos:sep].decode("utf-8", errors="replace").strip()
+        pos = sep + sep_len
         if not block:
             continue
         event_type = ""
@@ -374,7 +421,10 @@ def _parse_sse_chunk(buffer: bytes, raw: bytes) -> tuple[list[tuple[str, str]], 
                 data_lines.append(line[len("data:") :].strip())
         if data_lines:
             events.append((event_type, "\n".join(data_lines)))
-    return events, buffer
+    leftover = buffer[pos:]
+    if len(leftover) > _SSE_LEFTOVER_CAP:
+        leftover = b""
+    return events, leftover
 
 
 # --- Route handler ---------------------------------------------------------
@@ -522,7 +572,7 @@ async def anthropic_messages(
                         metadata=metadata,
                         params=params_for_log,
                         prompt=messages_for_log,
-                        response=response_acc,
+                        response=_finalize_response_acc(response_acc),
                         ttft_ms=ttft_ms,
                     )
 
