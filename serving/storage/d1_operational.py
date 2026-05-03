@@ -16,7 +16,7 @@ Key differences from PostgreSQL:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import OperationalStore, Row
@@ -424,12 +424,32 @@ class D1OperationalStore(OperationalStore):
         ] = "created",
         limit: int = 100,
         offset: int = 0,
+        # NEW filters (Phase 1 admin Users redesign)
+        min_cost_today: Any = None,
+        min_cost_month: Any = None,
+        quota_state: Literal["near", "over", "custom", "default"] | None = None,
+        provider: str | None = None,
+        active_within_hours: int | None = None,
+        anomaly: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return (total_count, user_rows, status_counts_row).
 
         Cost-based sorts are not supported in D1 (api_logs is in Postgres).
         They fall back to created_at ordering; the caller enriches costs.
+
+        Filters mirror the postgres variant; ``provider`` is a no-op in
+        D1 (api_logs lives in Postgres) — callers running on D1 should not
+        pass ``provider``. ``anomaly`` filters using ``user_daily_cost`` which
+        D1 keeps locally (same rule as ``get_users_summary``).
+
+        All filters are applied in SQL so ``total``, the returned rows, and
+        pagination are consistent. ``status_counts`` is intentionally computed
+        from the unfiltered users table — it serves as a global navigation aid
+        showing how many users exist per status across the whole dataset,
+        independent of the table view's filters.
         """
+        from decimal import Decimal as _Decimal
+
         where_clauses: list[str] = []
         params: list[Any] = []
 
@@ -439,8 +459,106 @@ class D1OperationalStore(OperationalStore):
         if search:
             # D1 LIKE patterns limited to 50 bytes; truncate search term
             truncated = search[:46]  # 46 + len("%%") = 48, safely under 50
-            where_clauses.append("(u.email LIKE ? OR u.user_name LIKE ?)")
-            params.extend([f"%{truncated}%", f"%{truncated}%"])
+            where_clauses.append(
+                "(u.email LIKE ? OR u.user_name LIKE ? "
+                "OR u.id LIKE ? "
+                "OR EXISTS (SELECT 1 FROM api_keys k2 "
+                "           WHERE k2.account_id = u.id "
+                "             AND k2.status = 'active' "
+                "             AND k2.key_prefix LIKE ?))"
+            )
+            params.extend([f"%{truncated}%", f"%{truncated}%", f"{truncated}%", f"{truncated}%"])
+        if active_within_hours is not None:
+            # SQLite stores last_login_at as TEXT (ISO 8601). Compare against
+            # a strftime cutoff.
+            where_clauses.append("u.last_login_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)")
+            params.append(f"-{int(active_within_hours)} hours")
+        if quota_state == "default":
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
+                "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NULL)"
+            )
+        elif quota_state == "custom":
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
+                "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NOT NULL)"
+            )
+
+        # D1 (SQLite) cost-based filters use user_daily_cost since api_logs
+        # lives in Postgres in the hybrid deployment.
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+        prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
+        prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+
+        if min_cost_today is not None:
+            where_clauses.append(
+                "COALESCE((SELECT SUM(cost_usd) FROM user_daily_cost dc "
+                "  WHERE dc.user_id = u.id AND dc.day = ?), 0) >= ?"
+            )
+            params.extend([today, str(min_cost_today)])
+        if min_cost_month is not None:
+            where_clauses.append(
+                "COALESCE((SELECT SUM(cost_usd) FROM user_daily_cost dc "
+                "  WHERE dc.user_id = u.id AND dc.day LIKE ?), 0) >= ?"
+            )
+            params.extend([f"{month_prefix}%", str(min_cost_month)])
+        if quota_state in ("near", "over"):
+            threshold = "0.80" if quota_state == "near" else "1.00"
+            where_clauses.append(
+                f"EXISTS ("
+                f"  SELECT 1 FROM api_keys kq "
+                f"  WHERE kq.account_id = u.id "
+                f"    AND kq.status = 'active' "
+                f"    AND kq.quota_daily_cost_usd IS NOT NULL "
+                f"    AND kq.quota_daily_cost_usd > 0 "
+                f"    AND COALESCE((SELECT SUM(cost_usd) FROM user_daily_cost dc "
+                f"                  WHERE dc.user_id = u.id AND dc.day = ?), 0) "
+                f"        >= {threshold} * kq.quota_daily_cost_usd"
+                f")"
+            )
+            params.append(today)
+        if anomaly:
+            # Anomaly: active users with today >= $1, history >= 3 days,
+            # today >= 5x prior-7d average (excluding today).
+            where_clauses.append(
+                "u.status = 'active' AND EXISTS ("
+                "  SELECT 1 FROM ("
+                "    SELECT COALESCE(SUM(cost_usd), 0) AS today_cost "
+                "    FROM user_daily_cost "
+                "    WHERE user_id = u.id AND day = ?"
+                "  ) t, ("
+                "    SELECT COALESCE(SUM(cost_usd), 0) AS total_prior, "
+                "           COUNT(DISTINCT day) AS days_history "
+                "    FROM user_daily_cost "
+                "    WHERE user_id = u.id AND day BETWEEN ? AND ?"
+                "  ) p "
+                "  WHERE t.today_cost >= ? "
+                "    AND p.days_history >= ? "
+                "    AND p.total_prior > 0 "
+                "    AND t.today_cost >= ? * (p.total_prior * 1.0 / p.days_history)"
+                ")"
+            )
+            params.extend(
+                [
+                    today,
+                    prior_7d_start,
+                    prior_7d_end,
+                    str(_Decimal("1.00")),
+                    3,
+                    str(_Decimal("5.0")),
+                ]
+            )
+
+        # provider filter is a no-op in D1: api_logs lives in Postgres in this
+        # hybrid deployment. Callers running on the D1 stack should not pass
+        # ``provider`` — log a warning if they do but don't error.
+        if provider:
+            logger.warning(
+                "list_users(provider=%r) requested on D1 store — "
+                "api_logs is in Postgres; ignoring provider filter.",
+                provider,
+            )
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -454,7 +572,7 @@ class D1OperationalStore(OperationalStore):
         }
         order_clause = _sort_map[sort_by]
 
-        # Total count
+        # Total count — uses the SAME WHERE clause as the row query.
         count_result = await self._d1.query(
             f"SELECT COUNT(*) as total FROM users u {where_sql}",
             params,
@@ -490,7 +608,9 @@ class D1OperationalStore(OperationalStore):
             query_params,
         )
 
-        return total, rows_result.rows, status_counts
+        result_rows: list[Row] = list(rows_result.rows)
+
+        return total, result_rows, status_counts
 
     async def approve_user(
         self,
@@ -1077,6 +1197,214 @@ class D1OperationalStore(OperationalStore):
             for r in result.rows:
                 result_map[r["user_id"]] = float(r["cost"])
         return result_map
+
+    async def get_user_cost_history(
+        self,
+        user_id: str,
+        days: int = 7,
+    ) -> list[Row]:
+        """Return up to ``days`` of daily cost rows for ``user_id`` (D1 variant).
+
+        Output mirrors the postgres variant: list of {"day", "cost_usd",
+        "requests"} ordered ascending by day.
+        """
+        if days <= 0:
+            return []
+        from decimal import Decimal as _Decimal
+
+        result = await self._d1.query(
+            "SELECT day, cost_usd, requests "
+            "FROM user_daily_cost "
+            "WHERE user_id = ? "
+            "  AND day >= date('now', ?) "
+            "ORDER BY day ASC",
+            [user_id, f"-{days - 1} days"],
+        )
+        return [
+            {
+                "day": r["day"],
+                "cost_usd": _Decimal(str(r["cost_usd"])),
+                "requests": r["requests"],
+            }
+            for r in result.rows
+        ]
+
+    async def get_bulk_user_cost_history(
+        self,
+        user_ids: list[str],
+        days: int = 7,
+    ) -> dict[str, list[Row]]:
+        """Bulk variant — chunked to respect the 100-bound-param D1 limit."""
+        if not user_ids or days <= 0:
+            return {}
+        from decimal import Decimal as _Decimal
+
+        # 1 slot for the date offset; chunk users to fit under 100 binds.
+        _CHUNK = 99
+        out: dict[str, list[Row]] = {uid: [] for uid in user_ids}
+        date_offset = f"-{days - 1} days"
+        for i in range(0, len(user_ids), _CHUNK):
+            chunk = user_ids[i : i + _CHUNK]
+            placeholders = ",".join(["?"] * len(chunk))
+            result = await self._d1.query(
+                f"SELECT user_id, day, cost_usd, requests "
+                f"FROM user_daily_cost "
+                f"WHERE user_id IN ({placeholders}) "
+                f"  AND day >= date('now', ?) "
+                f"ORDER BY user_id, day ASC",
+                [*chunk, date_offset],
+            )
+            for r in result.rows:
+                out[r["user_id"]].append(
+                    {
+                        "day": r["day"],
+                        "cost_usd": _Decimal(str(r["cost_usd"])),
+                        "requests": r["requests"],
+                    }
+                )
+        return out
+
+    async def get_users_summary(
+        self,
+        *,
+        top_n: int = 5,
+        anomaly_multiplier: float = 5.0,
+        anomaly_min_today: Any = None,
+        anomaly_min_history_days: int = 3,
+        near_quota_pct: float = 0.80,
+    ) -> Row:
+        """D1/SQLite variant of get_users_summary.
+
+        Mirrors the postgres method but uses ``date('now', ...)`` and
+        SQLite-flavoured boolean comparisons.
+        """
+        from decimal import Decimal as _Decimal
+
+        if anomaly_min_today is None:
+            anomaly_min_today = _Decimal("1.00")
+
+        # Pending count + top
+        pending_count_result = await self._d1.query(
+            "SELECT COUNT(*) AS c FROM users WHERE status = 'pending_approval'"
+        )
+        pending_count = pending_count_result.rows[0]["c"] if pending_count_result.rows else 0
+        pending_result = await self._d1.query(
+            "SELECT id, email, user_name, role, created_at "
+            "FROM users WHERE status = 'pending_approval' "
+            "ORDER BY created_at DESC LIMIT ?",
+            [top_n],
+        )
+
+        # Today / 7d-avg per active user.
+        usage_result = await self._d1.query(
+            """
+            WITH today_costs AS (
+                SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost
+                FROM user_daily_cost
+                WHERE day = date('now')
+                GROUP BY user_id
+            ),
+            prior_7d AS (
+                SELECT user_id,
+                       COALESCE(SUM(cost_usd), 0) AS total,
+                       COUNT(DISTINCT day) AS days_with_history
+                FROM user_daily_cost
+                WHERE day BETWEEN date('now', '-7 days') AND date('now', '-1 days')
+                GROUP BY user_id
+            )
+            SELECT u.id, u.email, u.user_name, u.role,
+                   COALESCE(t.today_cost, 0) AS today_cost,
+                   COALESCE(p.total, 0) AS prior_7d_total,
+                   COALESCE(p.days_with_history, 0) AS days_with_history,
+                   k.quota_daily_cost_usd
+            FROM users u
+            LEFT JOIN today_costs t ON t.user_id = u.id
+            LEFT JOIN prior_7d p ON p.user_id = u.id
+            LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
+            WHERE u.status = 'active'
+            """
+        )
+
+        top_spenders: list[Row] = []
+        anomalies: list[Row] = []
+        near_quota: list[Row] = []
+
+        for r in usage_result.rows:
+            today = _Decimal(str(r["today_cost"] or 0))
+            prior = _Decimal(str(r["prior_7d_total"] or 0))
+            days = int(r["days_with_history"] or 0)
+            avg_7d = (prior / days) if days > 0 else _Decimal("0")
+            quota = r["quota_daily_cost_usd"]
+
+            base_item = {
+                "id": r["id"],
+                "email": r["email"],
+                "user_name": r["user_name"],
+                "role": r["role"] or "free",
+                "today_cost_usd": today,
+                "avg_prior_7d_usd": avg_7d,
+                "quota_daily_usd": float(quota) if quota else None,
+                "multiplier": None,
+            }
+
+            if today > 0:
+                top_spenders.append(dict(base_item))
+
+            if (
+                days >= anomaly_min_history_days
+                and today >= anomaly_min_today
+                and avg_7d > 0
+                and today >= _Decimal(str(anomaly_multiplier)) * avg_7d
+            ):
+                multiplier = float(today / avg_7d) if avg_7d > 0 else None
+                anomaly_item = dict(base_item)
+                anomaly_item["multiplier"] = multiplier
+                anomalies.append(anomaly_item)
+
+            if quota and float(quota) > 0:
+                pct = float(today) / float(quota)
+                if pct >= near_quota_pct:
+                    near_quota.append(dict(base_item))
+
+        top_spenders.sort(key=lambda x: x["today_cost_usd"], reverse=True)
+        anomalies.sort(key=lambda x: x["multiplier"] or 0, reverse=True)
+        near_quota.sort(
+            key=lambda x: (
+                float(x["today_cost_usd"]) / x["quota_daily_usd"] if x["quota_daily_usd"] else 0
+            ),
+            reverse=True,
+        )
+
+        return {
+            "pending": {
+                "count": pending_count,
+                "top": [
+                    {
+                        "id": r["id"],
+                        "email": r["email"],
+                        "user_name": r["user_name"],
+                        "role": r["role"] or "free",
+                        "today_cost_usd": _Decimal("0"),
+                        "avg_prior_7d_usd": _Decimal("0"),
+                        "quota_daily_usd": None,
+                        "multiplier": None,
+                    }
+                    for r in pending_result.rows
+                ],
+            },
+            "top_spenders_today": {
+                "count": len([s for s in top_spenders if s["today_cost_usd"] > 0]),
+                "top": top_spenders[:top_n],
+            },
+            "anomalies": {
+                "count": len(anomalies),
+                "top": anomalies[:top_n],
+            },
+            "near_quota": {
+                "count": len(near_quota),
+                "top": near_quota[:top_n],
+            },
+        }
 
     # -- signup domain allowlist --------------------------------------------
 

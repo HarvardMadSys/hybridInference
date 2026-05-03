@@ -208,6 +208,13 @@ class OperationalStore(ABC):
         ] = "created",
         limit: int = 100,
         offset: int = 0,
+        # Phase 1 admin Users redesign — additional filters
+        min_cost_today: Decimal | None = None,
+        min_cost_month: Decimal | None = None,
+        quota_state: Literal["near", "over", "custom", "default"] | None = None,
+        provider: str | None = None,
+        active_within_hours: int | None = None,
+        anomaly: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -219,6 +226,20 @@ class OperationalStore(ABC):
 
         ``status_counts_row`` is a dict with keys ``all``, ``pending_approval``,
         ``active``, ``suspended``, ``rejected``, ``deleted``.
+
+        Additional kw-only filters (all default to ``None`` — no-op):
+        - ``min_cost_today`` / ``min_cost_month``: filter to users whose
+          today/month spend meets the threshold (USD).
+        - ``quota_state``: ``"default"``/``"custom"`` filter on the user's
+          active key quota; ``"near"``/``"over"`` compare today's spend
+          against quota.
+        - ``provider``: keep only users who hit ``provider`` in api_logs in
+          the last 30 days. D1 deployments may treat this as a no-op.
+        - ``active_within_hours``: ``last_login_at`` within the window.
+        - ``anomaly``: when ``True``, keep only users whose today's spend is
+          anomalously high vs. their prior 7-day average. Uses the same rule
+          as ``get_users_summary``: today >= $1, days_with_history >= 3,
+          today >= 5x prior_7d_avg. Reads ``user_daily_cost``.
         """
 
     @abstractmethod

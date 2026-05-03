@@ -144,10 +144,26 @@ class DualWriteOperationalStore(OperationalStore):
         ] = "created",
         limit: int = 100,
         offset: int = 0,
+        min_cost_today: Decimal | None = None,
+        min_cost_month: Decimal | None = None,
+        quota_state: Literal["near", "over", "custom", "default"] | None = None,
+        provider: str | None = None,
+        active_within_hours: int | None = None,
+        anomaly: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Delegate to primary."""
         return await self._primary.list_users(
-            status=status, search=search, sort_by=sort_by, limit=limit, offset=offset
+            status=status,
+            search=search,
+            sort_by=sort_by,
+            limit=limit,
+            offset=offset,
+            min_cost_today=min_cost_today,
+            min_cost_month=min_cost_month,
+            quota_state=quota_state,
+            provider=provider,
+            active_within_hours=active_within_hours,
+            anomaly=anomaly,
         )
 
     # -- users: writes -------------------------------------------------------
@@ -648,6 +664,20 @@ class DualWriteOperationalStore(OperationalStore):
     ) -> dict[str, float]:
         """Delegate to primary."""
         return await self._primary.get_batch_usage(user_ids, period)
+
+    async def get_user_cost_history(self, user_id: str, days: int = 7) -> list[Row]:
+        """Delegate to primary."""
+        return await self._primary.get_user_cost_history(user_id, days=days)
+
+    async def get_bulk_user_cost_history(
+        self, user_ids: list[str], days: int = 7
+    ) -> dict[str, list[Row]]:
+        """Delegate to primary."""
+        return await self._primary.get_bulk_user_cost_history(user_ids, days=days)
+
+    async def get_users_summary(self, **kwargs: Any) -> Row:
+        """Delegate to primary (read-only aggregation, no shadow needed)."""
+        return await self._primary.get_users_summary(**kwargs)
 
     # -- preferences ---------------------------------------------------------
 
