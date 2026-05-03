@@ -1,9 +1,9 @@
 """Admin router package.
 
-This file aggregates per-domain sub-routers. During the in-progress
-split (see docs/superpowers/specs/2026-05-03-admin-router-split-design.md)
-the legacy single-file router is exposed here so callers continue to
-work via `from serving.servers.routers import admin`.
+Aggregates nine domain-focused sub-routers (analytics, api_keys, broadcast,
+export, metrics, providers, signup_domains, stats, users) into a single
+``router`` exported at this level. Callers use
+``from serving.servers.routers import admin`` unchanged.
 """
 
 from fastapi import APIRouter

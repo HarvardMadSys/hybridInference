@@ -44,8 +44,13 @@ async def admin_export_requests(
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
 
+    if start_time.tzinfo is None:
+        raise HTTPException(422, "start_time must be timezone-aware (e.g. 2024-01-01T00:00:00Z)")
+
     if end_time is None:
         end_time = datetime.now(timezone.utc)
+    elif end_time.tzinfo is None:
+        raise HTTPException(422, "end_time must be timezone-aware (e.g. 2024-01-01T00:00:00Z)")
 
     where_clauses: list[str] = ["l.timestamp >= $1", "l.timestamp <= $2"]
     params: list[Any] = [start_time, end_time]
@@ -74,83 +79,86 @@ async def admin_export_requests(
     async def generate() -> AsyncGenerator[str, None]:
         cursor_ts: datetime | None = None
         cursor_id: str | None = None
-        async with db_logger.pool.acquire() as conn:
-            while True:
-                local_clauses = list(where_clauses)
-                local_params = list(params)
-                if cursor_ts is not None:
-                    cursor_ts_idx = len(local_params) + 1
-                    cursor_id_idx = len(local_params) + 2
-                    local_clauses.append(
-                        f"(l.timestamp, l.request_id) < (${cursor_ts_idx}, ${cursor_id_idx})"
+        try:
+            async with db_logger.pool.acquire() as conn:
+                while True:
+                    local_clauses = list(where_clauses)
+                    local_params = list(params)
+                    if cursor_ts is not None:
+                        cursor_ts_idx = len(local_params) + 1
+                        cursor_id_idx = len(local_params) + 2
+                        local_clauses.append(
+                            f"(l.timestamp, l.request_id) < (${cursor_ts_idx}, ${cursor_id_idx})"
+                        )
+                        local_params.append(cursor_ts)
+                        local_params.append(cursor_id)
+                    limit_idx = len(local_params) + 1
+                    local_where = "WHERE " + " AND ".join(local_clauses)
+                    rows = await conn.fetch(
+                        f"""
+                        SELECT
+                            l.request_id, l.user_id, u.user_name, u.email AS user_email,
+                            l.model_id, l.provider, l.timestamp,
+                            l.status_code, l.latency_ms, l.ttft_ms,
+                            l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
+                            l.cache_read_tokens, l.cache_write_tokens, l.total_tokens,
+                            l.cost_usd, l.error{content_cols}
+                        FROM api_logs l
+                        LEFT JOIN users u ON u.id = l.user_id
+                        {local_where}
+                        ORDER BY l.timestamp DESC, l.request_id DESC
+                        LIMIT ${limit_idx}
+                        """,
+                        *local_params,
+                        batch_size,
                     )
-                    local_params.append(cursor_ts)
-                    local_params.append(cursor_id)
-                limit_idx = len(local_params) + 1
-                local_where = "WHERE " + " AND ".join(local_clauses)
-                rows = await conn.fetch(
-                    f"""
-                    SELECT
-                        l.request_id, l.user_id, u.user_name, u.email AS user_email,
-                        l.model_id, l.provider, l.timestamp,
-                        l.status_code, l.latency_ms, l.ttft_ms,
-                        l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
-                        l.cache_read_tokens, l.cache_write_tokens, l.total_tokens,
-                        l.cost_usd, l.error{content_cols}
-                    FROM api_logs l
-                    LEFT JOIN users u ON u.id = l.user_id
-                    {local_where}
-                    ORDER BY l.timestamp DESC, l.request_id DESC
-                    LIMIT ${limit_idx}
-                    """,
-                    *local_params,
-                    batch_size,
-                )
-                if not rows:
-                    break
-                for row in rows:
-                    record: dict[str, Any] = {
-                        "request_id": row["request_id"],
-                        "timestamp": row["timestamp"].isoformat(),
-                        "user_id": row["user_id"],
-                        "user_name": row["user_name"],
-                        "user_email": row["user_email"],
-                        "model_id": row["model_id"],
-                        "provider": row["provider"],
-                        "ttft_ms": row["ttft_ms"],
-                        "latency_ms": row["latency_ms"],
-                        "prompt_tokens": row["prompt_tokens"],
-                        "completion_tokens": row["completion_tokens"],
-                        "reasoning_tokens": row["reasoning_tokens"],
-                        "cache_read_tokens": row["cache_read_tokens"],
-                        "cache_write_tokens": row["cache_write_tokens"],
-                        "total_tokens": row["total_tokens"],
-                        "cost_usd": (str(row["cost_usd"]) if row["cost_usd"] is not None else None),
-                        "status_code": row["status_code"],
-                        "error": row["error"],
-                    }
-                    if include_content:
-                        record["prompt"] = row["prompt"]
-                        record["response"] = row["response"]
-                    yield json.dumps(record) + "\n"
-                if len(rows) < batch_size:
-                    break
-                cursor_ts = rows[-1]["timestamp"]
-                cursor_id = rows[-1]["request_id"]
-
-        await log_admin_action(
-            db_logger,
-            admin_id,
-            "export_requests",
-            None,
-            {
-                "range": f"{start_str}-{end_str}",
-                "include_content": include_content,
-                "user_id": user_id,
-                "model_id": model_id,
-                "errors_only": errors_only,
-            },
-        )
+                    if not rows:
+                        break
+                    for row in rows:
+                        record: dict[str, Any] = {
+                            "request_id": row["request_id"],
+                            "timestamp": row["timestamp"].isoformat(),
+                            "user_id": row["user_id"],
+                            "user_name": row["user_name"],
+                            "user_email": row["user_email"],
+                            "model_id": row["model_id"],
+                            "provider": row["provider"],
+                            "ttft_ms": row["ttft_ms"],
+                            "latency_ms": row["latency_ms"],
+                            "prompt_tokens": row["prompt_tokens"],
+                            "completion_tokens": row["completion_tokens"],
+                            "reasoning_tokens": row["reasoning_tokens"],
+                            "cache_read_tokens": row["cache_read_tokens"],
+                            "cache_write_tokens": row["cache_write_tokens"],
+                            "total_tokens": row["total_tokens"],
+                            "cost_usd": (
+                                str(row["cost_usd"]) if row["cost_usd"] is not None else None
+                            ),
+                            "status_code": row["status_code"],
+                            "error": row["error"],
+                        }
+                        if include_content:
+                            record["prompt"] = row["prompt"]
+                            record["response"] = row["response"]
+                        yield json.dumps(record) + "\n"
+                    if len(rows) < batch_size:
+                        break
+                    cursor_ts = rows[-1]["timestamp"]
+                    cursor_id = rows[-1]["request_id"]
+        finally:
+            await log_admin_action(
+                db_logger,
+                admin_id,
+                "export_requests",
+                None,
+                {
+                    "range": f"{start_str}-{end_str}",
+                    "include_content": include_content,
+                    "user_id": user_id,
+                    "model_id": model_id,
+                    "errors_only": errors_only,
+                },
+            )
 
     return StreamingResponse(
         generate(),

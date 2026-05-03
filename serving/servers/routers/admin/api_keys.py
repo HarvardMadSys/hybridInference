@@ -38,7 +38,7 @@ router = APIRouter(prefix="/admin")
 async def create_api_key(
     request: Request,
     payload: CreateAPIKeyRequest,
-    admin_ip: str = Depends(verify_admin_access),
+    admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> CreateAPIKeyResponse:
     """Create a new API key for a user.
@@ -53,7 +53,7 @@ async def create_api_key(
     if await op_store.check_active_key_exists(payload.user_id):
         await log_admin_action(
             op_store,
-            admin_ip,
+            admin_id,
             "create_key",
             payload.user_id,
             {"error": "user_id already exists"},
@@ -83,7 +83,7 @@ async def create_api_key(
 
     await log_admin_action(
         op_store,
-        admin_ip,
+        admin_id,
         "create_key",
         payload.user_id,
         {
@@ -109,7 +109,7 @@ async def list_api_keys(
     status: str | None = None,
     limit: int = 100,
     offset: int = 0,
-    admin_ip: str = Depends(verify_admin_access),
+    admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
 ) -> ListAPIKeysResponse:
@@ -165,7 +165,7 @@ async def list_api_keys(
 async def get_api_key_detail(
     request: Request,
     user_id: str,
-    admin_ip: str = Depends(verify_admin_access),
+    admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
 ) -> APIKeyDetailResponse:
@@ -236,7 +236,7 @@ async def update_api_key(
     request: Request,
     user_id: str,
     payload: UpdateAPIKeyRequest,
-    admin_ip: str = Depends(verify_admin_access),
+    admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> UpdateAPIKeyResponse:
     """Update an existing API key's settings.
@@ -260,7 +260,7 @@ async def update_api_key(
 
     await log_admin_action(
         op_store,
-        admin_ip,
+        admin_id,
         "update_key",
         user_id,
         _serialize_for_audit({"updated_fields": list(payload_dict), "new_values": payload_dict}),
@@ -278,7 +278,7 @@ async def revoke_api_key(
     request: Request,
     user_id: str,
     hard_delete: bool = False,
-    admin_ip: str = Depends(verify_admin_access),
+    admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> RevokeAPIKeyResponse:
     """Revoke or delete an API key.
@@ -309,7 +309,7 @@ async def revoke_api_key(
             f"API key for user '{user_id}' has been revoked. User can no longer access the API."
         )
 
-    await log_admin_action(op_store, admin_ip, action_type, user_id, {"hard_delete": hard_delete})
+    await log_admin_action(op_store, admin_id, action_type, user_id, {"hard_delete": hard_delete})
 
     return RevokeAPIKeyResponse(user_id=user_id, action=response_action, message=message)
 
@@ -318,7 +318,7 @@ async def revoke_api_key(
 async def regenerate_api_key(
     request: Request,
     user_id: str,
-    admin_ip: str = Depends(verify_admin_access),
+    admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> RegenerateAPIKeyResponse:
     """Regenerate API key for a user (e.g., after suspected compromise).
@@ -348,7 +348,7 @@ async def regenerate_api_key(
 
     await log_admin_action(
         op_store,
-        admin_ip,
+        admin_id,
         "regenerate_key",
         user_id,
         {"old_key_prefix": old_key_prefix, "new_key_prefix": new_key_prefix},

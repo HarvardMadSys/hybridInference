@@ -456,7 +456,7 @@ async def delete_user(
     # and inserts audit log — all in a single transaction.
     await op_store.delete_user(
         user_id,
-        admin_ip=admin_id,
+        admin_ip=get_client_ip(request),
         admin_id=admin_id,
         reason=payload.reason,
         email=user_row["email"],
