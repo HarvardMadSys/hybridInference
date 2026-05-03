@@ -556,9 +556,7 @@ export default function PlaygroundPage() {
                     <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">
                       Temperature
                     </label>
-                    <span className="text-xs tabular-nums text-gray-400">
-                      {temp.toFixed(1)}
-                    </span>
+                    <span className="text-xs tabular-nums text-gray-400">{temp.toFixed(1)}</span>
                   </div>
                   <input
                     type="range"
