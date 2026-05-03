@@ -616,33 +616,46 @@ class PostgresOperationalStore(OperationalStore):
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
-        Cost-based sorts use CTEs that join against ``api_logs`` (which lives
-        in the same Postgres instance for this implementation).
+        All filters are applied in SQL so ``total``, the returned rows, and
+        pagination are consistent. Cost-based filters and sorts use CTEs that
+        join against ``api_logs`` (which lives in the same Postgres instance
+        for this implementation).
 
-        Additional filters (all keyword-only):
+        Filters (all keyword-only):
         - ``min_cost_today`` / ``min_cost_month``: filter to users whose
-          today/month spend meets the threshold (post-query — applied after
-          rows + costs are loaded).
-        - ``quota_state``: ``"default"`` / ``"custom"`` filter pre-query via
-          EXISTS on api_keys; ``"near"`` / ``"over"`` are post-query because
-          they compare today's cost against quota.
+          today/month spend in api_logs meets the threshold (USD).
+        - ``quota_state``: ``"default"`` / ``"custom"`` filter via EXISTS on
+          api_keys; ``"near"`` (>=80% of daily quota) / ``"over"`` (>=100%)
+          compare today's api_logs spend against the active key's quota.
         - ``provider``: keep only users who hit ``provider`` in api_logs in
           the last 30 days. Uses the ``provider`` column on api_logs.
         - ``active_within_hours``: ``users.last_login_at`` must be within the
           window.
-        - ``anomaly``: when ``True``, keep only users whose today's spend is
-          anomalously high vs. prior 7-day avg (today >= $1, history >= 3
-          days, today >= 5x avg). Reads ``user_daily_cost`` post-query — same
-          rule as ``get_users_summary``.
+        - ``anomaly``: when ``True``, keep only *active* users whose today's
+          spend is anomalously high vs. their prior 7-day average (today >=
+          $1, history >= 3 days, today >= 5x avg). Uses ``user_daily_cost``
+          (same rule as ``get_users_summary``).
 
-        Note: ``status_counts`` is intentionally computed from the pre-filter
-        SQL result and is NOT narrowed by the post-query filters
-        (min_cost_today, min_cost_month, quota_state near/over, provider,
-        anomaly). It serves as a global navigation aid showing how many users
-        exist per status across the whole dataset, independent of the current
-        cost/anomaly filters applied to the table rows.
+        ``total`` reflects the count after every filter is applied.
+        ``status_counts`` is intentionally computed from the unfiltered users
+        table (no filters applied) — it serves as a global navigation aid
+        showing how many users exist per status across the whole dataset,
+        independent of the table view's filters.
         """
-        # Build WHERE clause
+        # ──────────────────────────────────────────────────────────────────
+        # Shared SQL fragments used by both the count query and the row
+        # query so total/rows are guaranteed consistent.
+        # ──────────────────────────────────────────────────────────────────
+        from datetime import datetime, timedelta, timezone
+        from decimal import Decimal as _Decimal
+
+        anomaly_multiplier = _Decimal("5.0")
+        anomaly_min_today = _Decimal("1.00")
+        anomaly_min_history_days = 3
+        today_str = datetime.now(timezone.utc).date().isoformat()
+        prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
+        prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+
         where_clauses: list[str] = []
         filter_params: list[Any] = []
 
@@ -681,11 +694,105 @@ class PostgresOperationalStore(OperationalStore):
                 "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
                 "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NOT NULL)"
             )
-        # 'near' / 'over' applied post-query below
+        if provider:
+            # Keep users who hit `provider` in the last 30 days.
+            where_clauses.append(
+                f"EXISTS (SELECT 1 FROM api_logs l WHERE l.user_id = u.id "
+                f"  AND l.provider = ${len(filter_params) + 1} "
+                f"  AND l.timestamp >= NOW() - INTERVAL '30 days')"
+            )
+            filter_params.append(provider)
+
+        # Whether we need today/month aggregates for filtering or sorting.
+        needs_today_filter = (
+            min_cost_today is not None or quota_state in ("near", "over") or sort_by == "cost_today"
+        )
+        needs_month_filter = min_cost_month is not None or sort_by == "cost_month"
+        needs_alltime_sort = sort_by == "cost_alltime"
+        needs_today = needs_today_filter or needs_alltime_sort
+        needs_month = needs_month_filter or needs_alltime_sort
+        needs_alltime = needs_alltime_sort
+
+        # Cost-based scalar correlated subqueries — placed in WHERE so
+        # filters apply before LIMIT/OFFSET.
+        if min_cost_today is not None:
+            where_clauses.append(
+                f"COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"  WHERE l.user_id = u.id "
+                f"    AND l.timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')), 0) "
+                f">= ${len(filter_params) + 1}"
+            )
+            filter_params.append(min_cost_today)
+        if min_cost_month is not None:
+            where_clauses.append(
+                f"COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"  WHERE l.user_id = u.id "
+                f"    AND l.timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')), 0) "
+                f">= ${len(filter_params) + 1}"
+            )
+            filter_params.append(min_cost_month)
+        if quota_state in ("near", "over"):
+            # threshold: 0.80 for near, 1.00 for over.
+            threshold = "0.80" if quota_state == "near" else "1.00"
+            where_clauses.append(
+                f"EXISTS ("
+                f"  SELECT 1 FROM api_keys kq "
+                f"  WHERE kq.account_id = u.id "
+                f"    AND kq.status = 'active' "
+                f"    AND kq.quota_daily_cost_usd IS NOT NULL "
+                f"    AND kq.quota_daily_cost_usd > 0 "
+                f"    AND COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"                  WHERE l.user_id = u.id "
+                f"                    AND l.timestamp >= date_trunc('day', "
+                f"                                                  NOW() AT TIME ZONE 'UTC')"
+                f"                 ), 0) >= {threshold} * kq.quota_daily_cost_usd"
+                f")"
+            )
+        if anomaly:
+            # Anomaly applies only to active users (status='active').
+            # Today's user_daily_cost row must exist with cost >= $1 AND
+            # prior 7-day window must have >=3 days of history AND today
+            # must be >= 5x the prior-7d average.
+            today_idx = len(filter_params) + 1
+            prior_start_idx = len(filter_params) + 2
+            prior_end_idx = len(filter_params) + 3
+            min_today_idx = len(filter_params) + 4
+            min_history_idx = len(filter_params) + 5
+            multiplier_idx = len(filter_params) + 6
+            where_clauses.append(
+                f"u.status = 'active' AND EXISTS ("
+                f"  WITH t AS ("
+                f"    SELECT COALESCE(SUM(cost_usd), 0) AS today_cost "
+                f"    FROM user_daily_cost "
+                f"    WHERE user_id = u.id AND day = ${today_idx} "
+                f"  ), p AS ("
+                f"    SELECT COALESCE(SUM(cost_usd), 0) AS total_prior, "
+                f"           COUNT(DISTINCT day) AS days_history "
+                f"    FROM user_daily_cost "
+                f"    WHERE user_id = u.id "
+                f"      AND day BETWEEN ${prior_start_idx} AND ${prior_end_idx}"
+                f"  ) "
+                f"  SELECT 1 FROM t, p "
+                f"  WHERE t.today_cost >= ${min_today_idx} "
+                f"    AND p.days_history >= ${min_history_idx} "
+                f"    AND p.total_prior > 0 "
+                f"    AND t.today_cost >= ${multiplier_idx} * (p.total_prior / p.days_history)"
+                f")"
+            )
+            filter_params.extend(
+                [
+                    today_str,
+                    prior_7d_start,
+                    prior_7d_end,
+                    anomaly_min_today,
+                    anomaly_min_history_days,
+                    anomaly_multiplier,
+                ]
+            )
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-        # Sort clause map
+        # Sort clause map (uses fu.* aliases defined in the CTE below).
         _sort_clauses = {
             "created": "fu.created_at DESC, fu.id",
             "cost_today": "COALESCE(ut.cost, 0) DESC, fu.created_at DESC, fu.id",
@@ -695,24 +802,20 @@ class PostgresOperationalStore(OperationalStore):
         }
         order_clause = _sort_clauses[sort_by]
 
-        needs_today = sort_by in ("cost_today", "cost_alltime")
-        needs_month = sort_by in ("cost_month", "cost_alltime")
-        needs_alltime = sort_by == "cost_alltime"
-        needs_any_cte = needs_today or needs_month or needs_alltime
-
         limit_idx = len(filter_params) + 1
         offset_idx = len(filter_params) + 2
         query_params = [*filter_params, limit, offset]
 
         async with self._pool.acquire() as conn:
-            # Total count
+            # Total count — uses the SAME WHERE clause as the row query,
+            # so total reflects every applied filter.
             count_row = await conn.fetchrow(
                 f"SELECT COUNT(*) as total FROM users u {where_sql}",
                 *filter_params,
             )
             total = count_row["total"] if count_row else 0
 
-            # Status counts (unfiltered)
+            # Status counts (unfiltered — global navigation aid).
             count_rows = await conn.fetch(
                 "SELECT status, COUNT(*) as cnt FROM users GROUP BY status"
             )
@@ -726,89 +829,77 @@ class PostgresOperationalStore(OperationalStore):
                 "deleted": sc.get("deleted", 0),
             }
 
-            # Main query
-            if not needs_any_cte:
-                rows = await conn.fetch(
-                    f"SELECT u.id, u.email, u.user_name, u.role, u.status, "
-                    f"u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
-                    f"u.created_at, u.last_login_at, "
-                    f"k.key_prefix, k.status AS key_status "
-                    f"FROM users u "
-                    f"LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active' "
-                    f"{where_sql} "
-                    f"ORDER BY {_sort_clauses[sort_by].replace('fu.', 'u.')} "
-                    f"LIMIT ${limit_idx} OFFSET ${offset_idx}",
-                    *query_params,
+            # Main query — always uses CTE form (filtered_users) so we can
+            # share the WHERE clause and join optional cost CTEs uniformly.
+            cte_parts = [
+                f"filtered_users AS ("
+                f"  SELECT u.id, u.email, u.user_name, u.role, u.status, "
+                f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
+                f"  u.created_at, u.last_login_at, "
+                f"  k.key_prefix, k.status AS key_status "
+                f"  FROM users u "
+                f"  LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active' "
+                f"  {where_sql}"
+                f")"
+            ]
+            join_parts: list[str] = []
+            select_extras: list[str] = []
+
+            if needs_today:
+                cte_parts.append(
+                    "usage_today AS ("
+                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
+                    "  FROM api_logs"
+                    "  WHERE user_id IN (SELECT id FROM filtered_users)"
+                    "    AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')"
+                    "  GROUP BY user_id"
+                    ")"
                 )
-            else:
-                cte_parts = [
-                    f"filtered_users AS ("
-                    f"  SELECT u.id, u.email, u.user_name, u.role, u.status, "
-                    f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
-                    f"  u.created_at, u.last_login_at, "
-                    f"  k.key_prefix, k.status AS key_status "
-                    f"  FROM users u "
-                    f"  LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active' "
-                    f"  {where_sql}"
-                    f")"
-                ]
-                join_parts: list[str] = []
-                select_extras: list[str] = []
+                join_parts.append("LEFT JOIN usage_today ut ON ut.user_id = fu.id")
+                select_extras.append("COALESCE(ut.cost, 0) AS usage_today")
 
-                if needs_today:
-                    cte_parts.append(
-                        "usage_today AS ("
-                        "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
-                        "  FROM api_logs"
-                        "  WHERE user_id IN (SELECT id FROM filtered_users)"
-                        "    AND timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC')"
-                        "  GROUP BY user_id"
-                        ")"
-                    )
-                    join_parts.append("LEFT JOIN usage_today ut ON ut.user_id = fu.id")
-                    select_extras.append("COALESCE(ut.cost, 0) AS usage_today")
-
-                if needs_month:
-                    cte_parts.append(
-                        "usage_month AS ("
-                        "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
-                        "  FROM api_logs"
-                        "  WHERE user_id IN (SELECT id FROM filtered_users)"
-                        "    AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')"
-                        "  GROUP BY user_id"
-                        ")"
-                    )
-                    join_parts.append("LEFT JOIN usage_month um ON um.user_id = fu.id")
-                    select_extras.append("COALESCE(um.cost, 0) AS usage_month")
-
-                if needs_alltime:
-                    cte_parts.append(
-                        "usage_alltime AS ("
-                        "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
-                        "  FROM api_logs"
-                        "  WHERE user_id IN (SELECT id FROM filtered_users)"
-                        "  GROUP BY user_id"
-                        ")"
-                    )
-                    join_parts.append("LEFT JOIN usage_alltime ua ON ua.user_id = fu.id")
-                    select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
-
-                extra_cols = ", " + ", ".join(select_extras) if select_extras else ""
-                joins = " ".join(join_parts)
-                ctes = ", ".join(cte_parts)
-
-                rows = await conn.fetch(
-                    f"WITH {ctes} "
-                    f"SELECT fu.*{extra_cols} FROM filtered_users fu {joins} "
-                    f"ORDER BY {order_clause} "
-                    f"LIMIT ${limit_idx} OFFSET ${offset_idx}",
-                    *query_params,
+            if needs_month:
+                cte_parts.append(
+                    "usage_month AS ("
+                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
+                    "  FROM api_logs"
+                    "  WHERE user_id IN (SELECT id FROM filtered_users)"
+                    "    AND timestamp >= date_trunc('month', NOW() AT TIME ZONE 'UTC')"
+                    "  GROUP BY user_id"
+                    ")"
                 )
+                join_parts.append("LEFT JOIN usage_month um ON um.user_id = fu.id")
+                select_extras.append("COALESCE(um.cost, 0) AS usage_month")
+
+            if needs_alltime:
+                cte_parts.append(
+                    "usage_alltime AS ("
+                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
+                    "  FROM api_logs"
+                    "  WHERE user_id IN (SELECT id FROM filtered_users)"
+                    "  GROUP BY user_id"
+                    ")"
+                )
+                join_parts.append("LEFT JOIN usage_alltime ua ON ua.user_id = fu.id")
+                select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
+
+            extra_cols = ", " + ", ".join(select_extras) if select_extras else ""
+            joins = " ".join(join_parts)
+            ctes = ", ".join(cte_parts)
+
+            rows = await conn.fetch(
+                f"WITH {ctes} "
+                f"SELECT fu.*{extra_cols} FROM filtered_users fu {joins} "
+                f"ORDER BY {order_clause} "
+                f"LIMIT ${limit_idx} OFFSET ${offset_idx}",
+                *query_params,
+            )
 
             if not rows:
                 return total, [], status_counts
 
-            # Post-fetch: batch-query usage dimensions not in CTEs
+            # Post-fetch: batch-query usage dimensions not in CTEs so the
+            # response always carries today/month costs for the page.
             user_ids = [row["id"] for row in rows if row["key_prefix"]]
 
             if user_ids and not needs_today:
@@ -837,7 +928,7 @@ class PostgresOperationalStore(OperationalStore):
             else:
                 month_map = {}
 
-        # Assemble result rows with usage columns
+        # Assemble result rows with usage columns.
         result_rows: list[Row] = []
         for row in rows:
             r = dict(row)
@@ -845,135 +936,6 @@ class PostgresOperationalStore(OperationalStore):
             r["usage_month"] = r.get("usage_month") or month_map.get(r["id"], 0)
             r.setdefault("usage_alltime", 0)
             result_rows.append(r)
-
-        # Post-query filters that need cost data we already loaded.
-        # NOTE: ``total`` becomes approximate after these filters — recomputed
-        # below to reflect the post-filter row count. Acceptable for an admin
-        # tool. Pushing these to SQL would require non-trivial CTE changes.
-        from decimal import Decimal as _Decimal
-
-        if min_cost_today is not None:
-            result_rows = [
-                r
-                for r in result_rows
-                if _Decimal(str(r.get("usage_today", 0) or 0)) >= min_cost_today
-            ]
-        if min_cost_month is not None:
-            result_rows = [
-                r
-                for r in result_rows
-                if _Decimal(str(r.get("usage_month", 0) or 0)) >= min_cost_month
-            ]
-
-        if quota_state in ("near", "over") and result_rows:
-            user_ids2 = [r["id"] for r in result_rows]
-            async with self._pool.acquire() as conn2:
-                quota_rows = await conn2.fetch(
-                    "SELECT account_id, quota_daily_cost_usd "
-                    "FROM api_keys WHERE account_id = ANY($1::text[]) "
-                    "  AND status = 'active'",
-                    user_ids2,
-                )
-            quotas = {q["account_id"]: q["quota_daily_cost_usd"] for q in quota_rows}
-            filtered: list[Row] = []
-            for r in result_rows:
-                quota = quotas.get(r["id"])
-                if not quota or float(quota) <= 0:
-                    continue
-                today = float(r.get("usage_today", 0) or 0)
-                pct = today / float(quota)
-                if (quota_state == "near" and pct >= 0.80) or (
-                    quota_state == "over" and pct >= 1.0
-                ):
-                    filtered.append(r)
-            result_rows = filtered
-
-        if provider and result_rows:
-            user_ids3 = [r["id"] for r in result_rows]
-            async with self._pool.acquire() as conn3:
-                prov_rows = await conn3.fetch(
-                    "SELECT DISTINCT user_id FROM api_logs "
-                    "WHERE user_id = ANY($1::text[]) "
-                    "  AND provider = $2 "
-                    "  AND timestamp >= NOW() - INTERVAL '30 days'",
-                    user_ids3,
-                    provider,
-                )
-            allowed = {r["user_id"] for r in prov_rows}
-            result_rows = [r for r in result_rows if r["id"] in allowed]
-
-        # Anomaly filter — same rule as get_users_summary:
-        #   today >= $1 AND days_with_history >= 3 AND today >= 5x avg_prior_7d.
-        # We pull prior-7d cost stats per remaining user_id from
-        # user_daily_cost, then drop rows that don't meet the threshold.
-        if anomaly and result_rows:
-            from datetime import datetime, timedelta, timezone
-
-            anomaly_multiplier = _Decimal("5.0")
-            anomaly_min_today = _Decimal("1.00")
-            anomaly_min_history_days = 3
-
-            today_str = datetime.now(timezone.utc).date().isoformat()
-            prior_7d_start = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
-            prior_7d_end = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
-
-            user_ids4 = [r["id"] for r in result_rows]
-            async with self._pool.acquire() as conn4:
-                today_rows = await conn4.fetch(
-                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost "
-                    "FROM user_daily_cost "
-                    "WHERE day = $1 AND user_id = ANY($2::text[]) "
-                    "GROUP BY user_id",
-                    today_str,
-                    user_ids4,
-                )
-                prior_rows = await conn4.fetch(
-                    "SELECT user_id, "
-                    "       COALESCE(SUM(cost_usd), 0) AS total, "
-                    "       COUNT(DISTINCT day) AS days_with_history "
-                    "FROM user_daily_cost "
-                    "WHERE day BETWEEN $1 AND $2 AND user_id = ANY($3::text[]) "
-                    "GROUP BY user_id",
-                    prior_7d_start,
-                    prior_7d_end,
-                    user_ids4,
-                )
-
-            today_costs = {r["user_id"]: _Decimal(str(r["today_cost"] or 0)) for r in today_rows}
-            prior_stats = {
-                r["user_id"]: (
-                    _Decimal(str(r["total"] or 0)),
-                    int(r["days_with_history"] or 0),
-                )
-                for r in prior_rows
-            }
-
-            anomalous: list[Row] = []
-            for r in result_rows:
-                # Per spec: anomaly applies only to active users — a suspended
-                # or deleted user with a cost spike isn't actionable.
-                if r.get("status") != "active":
-                    continue
-                today = today_costs.get(r["id"], _Decimal("0"))
-                prior_total, days = prior_stats.get(r["id"], (_Decimal("0"), 0))
-                avg_7d = (prior_total / days) if days > 0 else _Decimal("0")
-                if (
-                    days >= anomaly_min_history_days
-                    and today >= anomaly_min_today
-                    and avg_7d > 0
-                    and today >= anomaly_multiplier * avg_7d
-                ):
-                    anomalous.append(r)
-            result_rows = anomalous
-
-        if (
-            min_cost_today is not None
-            or min_cost_month is not None
-            or quota_state in ("near", "over")
-            or provider
-            or anomaly
-        ):
-            total = len(result_rows)
 
         return total, result_rows, status_counts
 

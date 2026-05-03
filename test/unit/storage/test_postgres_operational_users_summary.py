@@ -357,26 +357,15 @@ class TestListUsersNewFilters:
         assert "key_prefix" in joined
         assert "u.id::text" in joined
 
-    async def test_min_cost_today_filters_rows_post_query(self, store, pg_conn):
-        pg_conn.fetchrow.return_value = {"total": 2}
+    async def test_min_cost_today_filtered_in_sql(self, store, pg_conn):
+        # With min_cost_today applied in SQL via a correlated subquery on
+        # api_logs, the row query already returns only matching rows. We
+        # verify the SQL contains the cost filter and that ``total`` reflects
+        # the filtered count.
+        pg_conn.fetchrow.return_value = {"total": 1}
         pg_conn.fetch.side_effect = [
             [{"status": "active", "cnt": 2}],  # status counts
             [
-                {
-                    "id": "cheap",
-                    "email": "c@x.com",
-                    "user_name": None,
-                    "role": "free",
-                    "status": "active",
-                    "email_verified": True,
-                    "approval_note": None,
-                    "reviewed_at": None,
-                    "reviewed_by": None,
-                    "created_at": None,
-                    "last_login_at": None,
-                    "key_prefix": "hyi-c",
-                    "key_status": "active",
-                },
                 {
                     "id": "expensive",
                     "email": "e@x.com",
@@ -391,18 +380,22 @@ class TestListUsersNewFilters:
                     "last_login_at": None,
                     "key_prefix": "hyi-e",
                     "key_status": "active",
+                    "usage_today": Decimal("100.00"),
                 },
             ],
-            # today's costs lookup (since needs_today is False)
-            [
-                {"user_id": "cheap", "cost": Decimal("0.50")},
-                {"user_id": "expensive", "cost": Decimal("100.00")},
-            ],
-            # month's costs lookup
+            # month's costs lookup (post-fetch enrichment)
             [],
         ]
 
-        _total, rows, _ = await store.list_users(min_cost_today=Decimal("10"))
+        total, rows, _ = await store.list_users(min_cost_today=Decimal("10"))
 
         ids = {r["id"] for r in rows}
         assert ids == {"expensive"}
+        assert total == 1
+        # Verify the SQL includes the today cost threshold check.
+        all_sqls = [c.args[0] for c in pg_conn.fetch.call_args_list] + [
+            c.args[0] for c in pg_conn.fetchrow.call_args_list
+        ]
+        joined = " ".join(all_sqls)
+        assert "date_trunc('day'" in joined
+        assert "SUM(cost_usd)" in joined
