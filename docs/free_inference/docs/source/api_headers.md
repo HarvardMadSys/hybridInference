@@ -63,7 +63,7 @@ X-Route-Pin: provider-name
 
 ### `Anthropic-Version`
 
-Required when using the `/v1/messages` or `/anthropic/v1/messages` endpoints. Also affects the model list format returned by `/v1/models` when detected.
+Optional — used only for Anthropic client detection (e.g., to switch the response shape returned by `/v1/models`). Not enforced on `/v1/messages` or `/anthropic/v1/messages`, and not forwarded upstream by this gateway.
 
 ```bash
 Anthropic-Version: 2023-06-01
@@ -103,9 +103,8 @@ The following headers are used for client IP resolution when the server is behin
 
 | Header | Description |
 |--------|-------------|
-| `X-Forwarded-For` | Client IP as set by the proxy |
+| `X-Forwarded-For` | Client IP as set by the proxy (first entry is used) |
 | `X-Real-IP` | Fallback client IP header |
-| `CF-Connecting-IP` | Client IP as set by Cloudflare |
 
 ## Standard Headers
 
