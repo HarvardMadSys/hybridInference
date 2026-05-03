@@ -188,7 +188,7 @@ Implemented as a single SQL query against `user_daily_cost` joined to `users`, c
 
 - `/admin/users/summary` — anomaly threshold edge cases (4.99×, 5.0×, 5.01×; $0.99 vs $1.00; 2 vs 3 days history).
 - `/admin/users` extended params — each new param filters correctly; combinations narrow as expected; existing tests pass unchanged (param additions are backward compatible).
-- `/admin/users/cost-history` — single + bulk; days param; nonexistent user → 404.
+- `/admin/users/cost-history` — single + bulk; days param; nonexistent user or user with no cost rows → **200 + empty `points` list** (not 404). Returning 200+empty is intentional: the UI shows a flat sparkline rather than an error state, which is less noisy for new users who simply have no daily-cost rows yet.
 
 ### Edge cases captured
 

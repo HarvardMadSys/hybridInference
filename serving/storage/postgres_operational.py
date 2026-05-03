@@ -634,6 +634,13 @@ class PostgresOperationalStore(OperationalStore):
           anomalously high vs. prior 7-day avg (today >= $1, history >= 3
           days, today >= 5x avg). Reads ``user_daily_cost`` post-query — same
           rule as ``get_users_summary``.
+
+        Note: ``status_counts`` is intentionally computed from the pre-filter
+        SQL result and is NOT narrowed by the post-query filters
+        (min_cost_today, min_cost_month, quota_state near/over, provider,
+        anomaly). It serves as a global navigation aid showing how many users
+        exist per status across the whole dataset, independent of the current
+        cost/anomaly filters applied to the table rows.
         """
         # Build WHERE clause
         where_clauses: list[str] = []

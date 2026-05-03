@@ -441,6 +441,13 @@ class D1OperationalStore(OperationalStore):
         D1 (api_logs lives in Postgres) — callers running on D1 should not
         pass ``provider``. ``anomaly`` filters using ``user_daily_cost`` which
         D1 keeps locally (same rule as ``get_users_summary``).
+
+        Note: ``status_counts`` is intentionally computed from the pre-filter
+        SQL result and is NOT narrowed by the post-query filters
+        (min_cost_today, min_cost_month, quota_state near/over, anomaly).
+        It serves as a global navigation aid showing how many users exist per
+        status across the whole dataset, independent of the current cost/
+        anomaly filters applied to the table rows.
         """
         where_clauses: list[str] = []
         params: list[Any] = []
