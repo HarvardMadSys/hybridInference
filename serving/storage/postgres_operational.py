@@ -1604,6 +1604,41 @@ class PostgresOperationalStore(OperationalStore):
             )
         return float(row["cost_usd"]) if row else 0.0
 
+    async def query_users_over_daily_threshold(
+        self,
+        thresholds: dict[str, float],
+    ) -> list[tuple[str, str, float]]:
+        """Return users whose today's cost exceeds the per-role threshold.
+
+        Joins the daily-cost counter table to the users table for today's row,
+        and filters by the per-role threshold. Used by the
+        ``UserCostOverrunJob`` periodic alert.
+        """
+        if not thresholds:
+            return []
+        # Build CASE expression for thresholds (parameter-safe: roles/values from config)
+        cases = "\n".join(
+            f"WHEN u.role = '{role}' THEN {float(threshold)}"
+            for role, threshold in thresholds.items()
+        )
+        sql = f"""
+            SELECT u.id AS user_id, COALESCE(u.role, 'free') AS role,
+                   COALESCE(udc.cost_usd, 0)::float AS daily_cost
+            FROM users u
+            LEFT JOIN user_daily_cost udc
+              ON udc.user_id = u.id
+             AND udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')
+            WHERE COALESCE(udc.cost_usd, 0) > CASE
+                {cases}
+                ELSE 1e18
+            END
+            ORDER BY daily_cost DESC
+            LIMIT 100
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql)
+        return [(r["user_id"], r["role"], float(r["daily_cost"])) for r in rows]
+
     async def get_user_cost_period(
         self,
         user_id: str,
