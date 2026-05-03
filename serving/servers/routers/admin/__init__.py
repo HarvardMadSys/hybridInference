@@ -14,6 +14,7 @@ from serving.servers.routers.admin import (
     broadcast,
     export,
     metrics,
+    providers,
     stats,
     users,
 )
@@ -26,6 +27,7 @@ router.include_router(api_keys.router)
 router.include_router(broadcast.router)
 router.include_router(export.router)
 router.include_router(metrics.router)
+router.include_router(providers.router)
 router.include_router(stats.router)
 router.include_router(users.router)
 router.include_router(_legacy_router)
