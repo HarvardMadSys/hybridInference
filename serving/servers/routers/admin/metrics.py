@@ -11,6 +11,7 @@ from serving.schemas_admin import (
     AdminMetricDistribution,
     AdminPerformanceMetricsResponse,
     AdminPerformanceMetricsWindow,
+    AdminRecentRequestContentResponse,
     AdminRecentRequestItem,
     AdminRecentRequestsResponse,
     AdminRequestMetricsBucket,
@@ -556,6 +557,7 @@ async def admin_list_recent_requests(
     request: Request,
     limit: int = 50,
     offset: int = 0,
+    days: int = 7,
     user_id: str | None = None,
     model_id: str | None = None,
     status_code: int | None = None,
@@ -568,6 +570,7 @@ async def admin_list_recent_requests(
     Query Parameters:
     - limit: Max results (default: 50, max: 200)
     - offset: Pagination offset
+    - days: Lookback window in days (default: 7, clamped to [1, 90])
     - user_id: Filter by user ID
     - model_id: Filter by model ID
     - status_code: Filter by HTTP status code
@@ -580,10 +583,13 @@ async def admin_list_recent_requests(
 
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
+    days = max(1, min(days, 90))
 
-    # Build WHERE clause
+    # Build WHERE clause — always bound by lookback window so neither the
+    # COUNT nor the SELECT scans the full retention range.
     where_clauses: list[str] = []
-    params: list[Any] = []
+    params: list[Any] = [days]
+    where_clauses.append(f"l.timestamp >= NOW() - make_interval(days => ${len(params)}::int)")
 
     if user_id:
         where_clauses.append(f"l.user_id = ${len(params) + 1}")
@@ -603,7 +609,7 @@ async def admin_list_recent_requests(
             "OR l.status_code < 200 OR l.status_code >= 400)"
         )
 
-    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    where_sql = "WHERE " + " AND ".join(where_clauses)
 
     async with db_logger.pool.acquire() as conn:
         # Get total count
@@ -613,7 +619,9 @@ async def admin_list_recent_requests(
         )
         total = int(count_row["total"] or 0) if count_row else 0
 
-        # Get paginated results
+        # Get paginated results. prompt/response are deliberately excluded —
+        # they are fetched on-demand via /admin/recent-requests/{id}/content
+        # when the admin expands a row.
         limit_idx = len(params) + 1
         offset_idx = len(params) + 2
         rows = await conn.fetch(
@@ -624,7 +632,7 @@ async def admin_list_recent_requests(
                 l.status_code, l.latency_ms, l.ttft_ms, l.stream,
                 l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
                 l.cache_read_tokens, l.cache_write_tokens,
-                l.total_tokens, l.cost_usd, l.prompt, l.response, l.error,
+                l.total_tokens, l.cost_usd, l.error,
                 l.metadata->>'ip' AS user_ip
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
@@ -664,11 +672,44 @@ async def admin_list_recent_requests(
             cache_write_tokens=row["cache_write_tokens"],
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
-            prompt=row["prompt"],
-            response=row["response"],
             error=row["error"],
         )
         for row in rows
     ]
 
     return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+
+
+@router.get(
+    "/recent-requests/{request_id}/content",
+    response_model=AdminRecentRequestContentResponse,
+)
+async def admin_get_recent_request_content(
+    request_id: str,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminRecentRequestContentResponse:
+    """Return prompt + response for a single api_logs row.
+
+    Used to lazy-load the expanded view in the admin Recent Requests panel so
+    the list endpoint doesn't have to ship those potentially large columns
+    for rows the admin never expands.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    async with db_logger.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT prompt, response FROM api_logs WHERE request_id = $1 LIMIT 1",
+            request_id,
+        )
+
+    if row is None:
+        raise HTTPException(404, "Request not found")
+
+    return AdminRecentRequestContentResponse(
+        prompt=row["prompt"],
+        response=row["response"],
+    )
