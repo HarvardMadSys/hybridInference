@@ -66,6 +66,15 @@ scenarios:
     max_tokens: 512
     repetitions: 1
 
+  - id: forced_tool_cline_nonstream
+    type: forced_tool_call_nonstream
+    tools_fixture: tools-cline-13.yaml
+    forced_tool_name: execute_command
+    user_prompt: "Execute a command to list all files in the project root."
+    required_capabilities: [chat, tools]
+    max_tokens: 512
+    repetitions: 1
+
   # ── Auto tool call (streaming) ───────────────────────────────────────
 
   - id: auto_tool_codex_stream
