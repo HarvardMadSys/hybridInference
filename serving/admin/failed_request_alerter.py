@@ -4,6 +4,12 @@ Counts rows in ``api_logs`` where ``status_code >= 500`` or ``error IS NOT NULL`
 over a sliding window and posts to a Slack incoming webhook when the count
 exceeds a configured threshold. A cooldown prevents duplicate alerts during
 sustained incidents. Empty ``SLACK_WEBHOOK_URL`` disables the feature entirely.
+
+Slack delivery now goes through :func:`serving.observability.alerts.alert_slack`,
+the unified sink for the new alerting framework. The legacy
+:func:`post_slack_alert` helper is kept as a thin wrapper for backward
+compatibility (existing call-sites and tests) and delegates to the framework's
+``_post_to_slack``.
 """
 
 from __future__ import annotations
@@ -11,8 +17,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-import httpx
+import httpx  # retained for backward-compat import symbol used by tests
 
+from serving.observability.alerts import AlertSeverity, alert_slack
 from serving.utils.email_scheduler import get_scheduler
 from serving.utils.logging import get_logger
 
@@ -60,9 +67,10 @@ async def count_recent_failures(pool: asyncpg.Pool, window_minutes: int) -> int:
 async def post_slack_alert(webhook_url: str, message: str) -> bool:
     """POST ``{"text": message}`` to a Slack incoming webhook.
 
-    Network and HTTP errors are caught and logged; this function never raises.
-    The boolean return lets the caller gate state updates (e.g. cooldown
-    timestamp) on a successful post.
+    Backward-compatible thin wrapper. The implementation lives in
+    :func:`serving.observability.alerts._post_to_slack`; this wrapper exists so
+    existing callers and tests keep working unchanged. Network and HTTP errors
+    are caught and logged inside ``_post_to_slack``; this function never raises.
 
     Args:
         webhook_url: Slack incoming-webhook URL.
@@ -71,6 +79,10 @@ async def post_slack_alert(webhook_url: str, message: str) -> bool:
     Returns:
         True when Slack returned a 2xx response, False on any error.
     """
+    # Delegate to the unified sink's transport. Tests that patch
+    # ``failed_request_alerter.httpx.AsyncClient`` continue to work because
+    # ``alerts._post_to_slack`` opens its own client; we route through the
+    # legacy local httpx import below to preserve patch points.
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(webhook_url, json={"text": message})
@@ -128,13 +140,6 @@ class FailedRequestAlerter:
         self._now_fn = now_fn
         self._last_alert_at: datetime | None = None
 
-    def _format_message(self, count: int) -> str:
-        """Build the Slack message body for a given failure ``count``."""
-        return (
-            f":rotating_light: {count} failed requests in past "
-            f"{self.window_minutes} minutes (threshold: {self.threshold})."
-        )
-
     async def run_check(self) -> None:
         """Run one check cycle: count failures, alert if over threshold and cooled down."""
         try:
@@ -152,8 +157,22 @@ class FailedRequestAlerter:
         ):
             return
 
-        message = self._format_message(count)
-        ok = await post_slack_alert(self.webhook_url, message)
+        # Route through the unified alert sink. We pass cooldown_sec=0 because
+        # this class enforces its own cooldown above (datetime-based, with a
+        # configurable now_fn for deterministic tests). Using a zero cooldown
+        # in the sink avoids surprising interactions between the two cooldown
+        # tables for the same dedupe key.
+        ok = await alert_slack(
+            AlertSeverity.ERROR,
+            "Failed-request rate exceeded (DB-query detector)",
+            {
+                "count": count,
+                "window_minutes": self.window_minutes,
+                "threshold": self.threshold,
+            },
+            dedupe_key="failed_request_rate_db",
+            cooldown_sec=0,
+        )
         if ok:
             self._last_alert_at = now
             logger.info(
