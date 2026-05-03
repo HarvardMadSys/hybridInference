@@ -50,20 +50,20 @@ export function FilterBar({ state, onChange, density, onDensityChange }: FilterB
         onChange={(e) => setSearchInput(e.target.value)}
         className="min-w-48 flex-1 rounded border border-gray-300 bg-white px-3 py-1 text-sm"
       />
-      <StatusFilter value={state.status} onChange={(status) => onChange({ ...state, status })} />
+      <StatusFilter value={state.status} onChange={(status) => onChange({ ...stateRef.current, status })} />
       <UsageFilter
         minCostToday={state.minCostToday}
         minCostMonth={state.minCostMonth}
         activeWithinHours={state.activeWithinHours}
-        onChange={(patch) => onChange({ ...state, ...patch })}
+        onChange={(patch) => onChange({ ...stateRef.current, ...patch })}
       />
       <ProviderFilter
         value={state.provider}
-        onChange={(provider) => onChange({ ...state, provider })}
+        onChange={(provider) => onChange({ ...stateRef.current, provider })}
       />
       <QuotaFilter
         value={state.quotaState}
-        onChange={(quotaState) => onChange({ ...state, quotaState })}
+        onChange={(quotaState) => onChange({ ...stateRef.current, quotaState })}
       />
       {!isDefault && (
         <button
