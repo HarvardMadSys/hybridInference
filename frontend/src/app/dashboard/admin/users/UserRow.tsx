@@ -45,7 +45,14 @@ export function UserRow({
 }: UserRowProps) {
   const statusMark = STATUS_GLYPH[user.status] ?? STATUS_GLYPH.active;
   const today = Number(user.usage_today_usd);
-  const prior = (history ?? []).slice(0, 7).map((p) => Number(p.cost_usd));
+  // Exclude today's data point: cost-history is returned ascending and includes
+  // today. The anomaly rule compares today vs the *prior* 7-day average, so we
+  // must drop the last point (today) before passing to isAnomalous.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const prior = (history ?? [])
+    .filter((p) => p.day < todayIso)
+    .slice(-7)
+    .map((p) => Number(p.cost_usd));
   const anomalous = isAnomalous(today, prior);
   const badge = anomalous ? '⚠' : null;
   const rowHeight = density === 'compact' ? 'h-9' : 'h-14';
