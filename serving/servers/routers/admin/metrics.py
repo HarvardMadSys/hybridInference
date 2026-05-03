@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -710,4 +711,57 @@ async def admin_get_recent_request_content(
     return AdminRecentRequestContentResponse(
         prompt=row["prompt"],
         response=row["response"],
+        reasoning_content=extract_reasoning_content(row["response"]),
     )
+
+
+def extract_reasoning_content(response_str: str | None) -> str | None:
+    """Extract reasoning_content from a stored OpenAI-style response JSON.
+
+    Returns the concatenated reasoning_content / reasoning string from
+    response.choices[*].message.reasoning_content (or .reasoning),
+    or response.messages[*].reasoning_content, joined by blank lines.
+    Returns None if nothing found or response is not parseable.
+    """
+    if not response_str:
+        return None
+    try:
+        data = json.loads(response_str)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    pieces: list[str] = []
+
+    def _add_from_message(msg: Any) -> None:
+        if not isinstance(msg, dict):
+            return
+        value = msg.get("reasoning_content")
+        if not (isinstance(value, str) and value.strip()):
+            value = msg.get("reasoning")
+        if isinstance(value, str) and value.strip():
+            pieces.append(value.strip())
+
+    choices = data.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if isinstance(choice, dict):
+                _add_from_message(choice.get("message"))
+
+    messages = data.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            _add_from_message(message)
+
+    content = data.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "thinking":
+                value = item.get("thinking")
+                if isinstance(value, str) and value.strip():
+                    pieces.append(value.strip())
+
+    if not pieces:
+        return None
+    return "\n\n".join(pieces)

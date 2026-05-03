@@ -375,6 +375,7 @@ export async function listRecentRequests(
 export interface AdminRecentRequestContentResponse {
   prompt: string | null;
   response: string | null;
+  reasoning_content: string | null;
 }
 
 export async function getRecentRequestContent(

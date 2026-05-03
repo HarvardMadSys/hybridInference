@@ -229,7 +229,7 @@ async def test_content_returns_prompt_and_response(admin_client_capture):
 
     resp = await client.get("/admin/recent-requests/req-abc/content")
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"prompt": "hello", "response": "world"}
+    assert resp.json() == {"prompt": "hello", "response": "world", "reasoning_content": None}
 
 
 @pytest.mark.asyncio

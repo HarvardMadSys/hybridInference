@@ -395,6 +395,7 @@ async def chat_completions(
             chunk_count = 0
             # Accumulate streamed content for DB logging
             final_text = ""
+            final_reasoning = ""
             finish_reason_for_db = "stop"
             # Properly handle tool_calls delta merging by index
             tool_calls_map: dict[int, dict[str, Any]] = {}
@@ -532,6 +533,12 @@ async def chat_completions(
                                             logger.debug(f"TTFT recorded: {ttft_ms}ms")
                                         final_text += content_piece
 
+                                    reasoning_piece = delta.get("reasoning_content")
+                                    if not (isinstance(reasoning_piece, str) and reasoning_piece):
+                                        reasoning_piece = delta.get("reasoning")
+                                    if isinstance(reasoning_piece, str) and reasoning_piece:
+                                        final_reasoning += reasoning_piece
+
                                     # Handle tool_calls delta merging
                                     tool_calls_delta = delta.get("tool_calls")
                                     if tool_calls_delta:
@@ -610,6 +617,12 @@ async def chat_completions(
                     )
 
                 # Reconstruct a complete response object for DB logging
+                message_for_db: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": final_text if final_text else None,
+                }
+                if final_reasoning:
+                    message_for_db["reasoning_content"] = final_reasoning
                 response_for_db: dict[str, Any] = {
                     "id": request_id,
                     "object": "chat.completion",
@@ -618,10 +631,7 @@ async def chat_completions(
                     "choices": [
                         {
                             "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": final_text if final_text else None,
-                            },
+                            "message": message_for_db,
                             "finish_reason": finish_reason_for_db,
                         }
                     ],

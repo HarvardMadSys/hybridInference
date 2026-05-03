@@ -97,6 +97,17 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
             <span className="mx-0.5 text-gray-300">/</span>
             <span className="text-gray-400">↓</span>
             {formatTokens(req.completion_tokens)}
+            {req.reasoning_tokens != null && req.reasoning_tokens > 0 && (
+              <>
+                <span className="mx-0.5 text-gray-300">/</span>
+                <span
+                  className="inline-flex items-center rounded bg-purple-50 px-1 text-[10px] font-medium text-purple-700"
+                  title={`${req.reasoning_tokens.toLocaleString()} reasoning tokens`}
+                >
+                  R {formatTokens(req.reasoning_tokens)}
+                </span>
+              </>
+            )}
           </div>
         </td>
         <td className="whitespace-nowrap px-3 py-3 text-sm text-gray-600">

@@ -1002,7 +1002,13 @@ export default function AdminPage() {
   const [reqContentCache, setReqContentCache] = useState<
     Map<
       string,
-      { prompt: string | null; response: string | null; loading: boolean; error?: string }
+      {
+        prompt: string | null;
+        response: string | null;
+        reasoning_content: string | null;
+        loading: boolean;
+        error?: string;
+      }
     >
   >(() => new Map());
   const [reqJumpPage, setReqJumpPage] = useState('');
@@ -1097,7 +1103,12 @@ export default function AdminPage() {
       setReqContentCache((prev) => {
         if (prev.has(next)) return prev;
         const updated = new Map(prev);
-        updated.set(next, { prompt: null, response: null, loading: true });
+        updated.set(next, {
+          prompt: null,
+          response: null,
+          reasoning_content: null,
+          loading: true,
+        });
         return updated;
       });
       getRecentRequestContent(next)
@@ -1107,6 +1118,7 @@ export default function AdminPage() {
             updated.set(next, {
               prompt: content.prompt,
               response: content.response,
+              reasoning_content: content.reasoning_content,
               loading: false,
             });
             return updated;
@@ -1118,6 +1130,7 @@ export default function AdminPage() {
             updated.set(next, {
               prompt: null,
               response: null,
+              reasoning_content: null,
               loading: false,
               error: getErrorMessage(e),
             });
@@ -2379,7 +2392,17 @@ export default function AdminPage() {
                               onClick={() => handleToggleRequestRow(req.request_id)}
                             >
                               <td className="whitespace-nowrap py-2.5 pl-4 pr-3 text-[13px]">
-                                <div className="font-medium text-gray-900">{req.model_id}</div>
+                                <div className="flex items-center gap-1.5 font-medium text-gray-900">
+                                  <span>{req.model_id}</span>
+                                  {req.reasoning_tokens != null && req.reasoning_tokens > 0 && (
+                                    <span
+                                      className="inline-flex items-center rounded-md bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 ring-1 ring-inset ring-purple-600/20"
+                                      title={`${req.reasoning_tokens.toLocaleString()} reasoning tokens`}
+                                    >
+                                      R {formatTokens(req.reasoning_tokens)}
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="text-[11px] text-gray-400">{req.provider}</div>
                               </td>
                               <td className="whitespace-nowrap px-3 py-2.5 text-[12px] font-mono text-gray-500">
@@ -2540,6 +2563,12 @@ export default function AdminPage() {
                                       }
                                       return (
                                         <>
+                                          {content.reasoning_content && (
+                                            <FoldedText
+                                              label="Reasoning"
+                                              value={content.reasoning_content}
+                                            />
+                                          )}
                                           <FoldedText label="Prompt" value={content.prompt} />
                                           <FoldedText label="Response" value={content.response} />
                                         </>
