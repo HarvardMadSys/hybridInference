@@ -82,7 +82,7 @@ async def admin_client(monkeypatch, mocked_db_logger):
     client = AsyncClient(transport=transport, base_url="http://test")
 
     mock_log_action = AsyncMock()
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.log_admin_action", mock_log_action)
+    monkeypatch.setattr("serving.servers.routers.admin.broadcast.log_admin_action", mock_log_action)
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
 
     try:
@@ -226,7 +226,7 @@ async def test_create_inserts_broadcast_and_snapshots_recipients(admin_client, m
     def _fake_schedule(broadcast_id, run_at):
         sched_calls.append((broadcast_id, run_at))
 
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.schedule_broadcast", _fake_schedule)
+    monkeypatch.setattr("serving.servers.routers.admin.broadcast.schedule_broadcast", _fake_schedule)
 
     resp = await client.post(
         "/admin/broadcast-email",
@@ -268,7 +268,7 @@ async def test_create_marks_failed_when_scheduler_raises(admin_client, monkeypat
     def _boom(_bid, _run_at):
         raise RuntimeError("Scheduler not started")
 
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.schedule_broadcast", _boom)
+    monkeypatch.setattr("serving.servers.routers.admin.broadcast.schedule_broadcast", _boom)
 
     resp = await client.post(
         "/admin/broadcast-email",
@@ -314,7 +314,7 @@ async def test_cancel_returns_409_when_not_scheduled(admin_client, monkeypatch):
     client, conn, _log = admin_client
     conn.fetchrow.return_value = {"status": "sent"}
 
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.cancel_broadcast_job", lambda _bid: None)
+    monkeypatch.setattr("serving.servers.routers.admin.broadcast.cancel_broadcast_job", lambda _bid: None)
 
     resp = await client.delete(
         "/admin/broadcast-email/some-id",
@@ -330,7 +330,7 @@ async def test_cancel_marks_cancelled_and_calls_scheduler(admin_client, monkeypa
 
     cancel_calls: list[str] = []
     monkeypatch.setattr(
-        "serving.servers.routers.admin._admin_legacy.cancel_broadcast_job",
+        "serving.servers.routers.admin.broadcast.cancel_broadcast_job",
         lambda bid: cancel_calls.append(bid),
     )
 
