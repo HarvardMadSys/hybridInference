@@ -18,7 +18,7 @@ interface FilterBarProps {
 export function FilterBar({ state, onChange, density, onDensityChange }: FilterBarProps) {
   const [searchInput, setSearchInput] = useState(state.search);
 
-  // Keep local input in sync if state.search is changed externally (e.g. by saved view).
+  // Sync searchInput when state.search changes externally (e.g. saved view applied)
   useEffect(() => {
     setSearchInput(state.search);
   }, [state.search]);
@@ -43,7 +43,10 @@ export function FilterBar({ state, onChange, density, onDensityChange }: FilterB
         onChange={(e) => setSearchInput(e.target.value)}
         className="min-w-48 flex-1 rounded border border-gray-300 bg-white px-3 py-1 text-sm"
       />
-      <StatusFilter value={state.status} onChange={(status) => onChange({ ...state, status })} />
+      <StatusFilter
+        value={state.status}
+        onChange={(status) => onChange({ ...state, status })}
+      />
       <UsageFilter
         minCostToday={state.minCostToday}
         minCostMonth={state.minCostMonth}
