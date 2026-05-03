@@ -37,6 +37,7 @@ import {
   exportRequests,
   getPerformanceMetrics,
   getProviderQuotas,
+  getRecentRequestContent,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { AnalyticsTab } from './AnalyticsTab';
@@ -998,6 +999,12 @@ export default function AdminPage() {
   const [reqModelFilter, setReqModelFilter] = useState('');
   const [reqErrorsOnly, setReqErrorsOnly] = useState(false);
   const [reqExpandedId, setReqExpandedId] = useState<string | null>(null);
+  const [reqContentCache, setReqContentCache] = useState<
+    Map<
+      string,
+      { prompt: string | null; response: string | null; loading: boolean; error?: string }
+    >
+  >(() => new Map());
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
@@ -1077,6 +1084,48 @@ export default function AdminPage() {
       setReqLoading(false);
     }
   }, [reqOffset, reqUserFilter, reqModelFilter, reqErrorsOnly]);
+
+  const handleToggleRequestRow = useCallback(
+    (requestId: string) => {
+      setReqExpandedId((current) => {
+        const next = current === requestId ? null : requestId;
+        if (next !== null) {
+          setReqContentCache((prev) => {
+            if (prev.has(next)) return prev;
+            const updated = new Map(prev);
+            updated.set(next, { prompt: null, response: null, loading: true });
+            return updated;
+          });
+          getRecentRequestContent(next)
+            .then((content) => {
+              setReqContentCache((prev) => {
+                const updated = new Map(prev);
+                updated.set(next, {
+                  prompt: content.prompt,
+                  response: content.response,
+                  loading: false,
+                });
+                return updated;
+              });
+            })
+            .catch((e) => {
+              setReqContentCache((prev) => {
+                const updated = new Map(prev);
+                updated.set(next, {
+                  prompt: null,
+                  response: null,
+                  loading: false,
+                  error: getErrorMessage(e),
+                });
+                return updated;
+              });
+            });
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   const loadRequestMetrics = useCallback(async () => {
     setReqMetricsLoading(true);
@@ -2326,7 +2375,7 @@ export default function AdminPage() {
                           <Fragment key={req.request_id}>
                             <tr
                               className="border-b border-gray-100 hover:bg-gray-50/60 cursor-pointer transition-colors"
-                              onClick={() => setReqExpandedId(isExpanded ? null : req.request_id)}
+                              onClick={() => handleToggleRequestRow(req.request_id)}
                             >
                               <td className="whitespace-nowrap py-2.5 pl-4 pr-3 text-[13px]">
                                 <div className="font-medium text-gray-900">{req.model_id}</div>
@@ -2472,8 +2521,29 @@ export default function AdminPage() {
                                         {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
                                       </span>
                                     </div>
-                                    <FoldedText label="Prompt" value={req.prompt} />
-                                    <FoldedText label="Response" value={req.response} />
+                                    {(() => {
+                                      const content = reqContentCache.get(req.request_id);
+                                      if (!content || content.loading) {
+                                        return (
+                                          <div className="col-span-full text-gray-400">
+                                            Loading prompt and response…
+                                          </div>
+                                        );
+                                      }
+                                      if (content.error) {
+                                        return (
+                                          <div className="col-span-full text-red-600">
+                                            Failed to load content: {content.error}
+                                          </div>
+                                        );
+                                      }
+                                      return (
+                                        <>
+                                          <FoldedText label="Prompt" value={content.prompt} />
+                                          <FoldedText label="Response" value={content.response} />
+                                        </>
+                                      );
+                                    })()}
                                     {req.error && (
                                       <div className="col-span-full mt-1">
                                         <span className="text-red-600">Error: {req.error}</span>

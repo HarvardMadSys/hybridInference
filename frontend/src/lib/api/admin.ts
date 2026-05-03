@@ -347,8 +347,6 @@ export interface AdminRecentRequestItem {
   cache_write_tokens?: number | null;
   total_tokens?: number | null;
   cost_usd?: number | null;
-  prompt?: string | null;
-  response?: string | null;
   error?: string | null;
 }
 
@@ -372,6 +370,21 @@ export async function listRecentRequests(
   if (errorsOnly) params.set('errors_only', 'true');
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
+}
+
+export interface AdminRecentRequestContentResponse {
+  prompt: string | null;
+  response: string | null;
+}
+
+export async function getRecentRequestContent(
+  requestId: string,
+): Promise<AdminRecentRequestContentResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/recent-requests/${encodeURIComponent(requestId)}/content`,
+  );
+  return jsonOrThrow<AdminRecentRequestContentResponse>(resp);
 }
 
 // ========================================
