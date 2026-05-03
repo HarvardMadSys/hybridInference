@@ -1,8 +1,7 @@
 """Anthropic Messages API northbound router.
 
 Serves both /v1/messages and /anthropic/v1/messages via two decorators on the
-same handler. Replaces the old anthropic_proxy.py (claude_sub-only) which is
-deleted in Task 16.
+same handler.
 
 This task (Task 12) covers the non-streaming path. Streaming dispatch lands
 in Task 13.

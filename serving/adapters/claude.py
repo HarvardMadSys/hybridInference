@@ -10,7 +10,8 @@ Key differences from standard Anthropic API:
 - Requires 'anthropic_version' parameter
 - Different endpoint paths (Google Vertex AI style)
 
-Format translation (OpenAI ↔ Claude Messages API) uses the ``claude_format`` module.
+Format translation (OpenAI ↔ Claude Messages API) is shared with the
+direct ``AnthropicAdapter`` via the ``claude_format`` module.
 """
 
 from __future__ import annotations
