@@ -653,6 +653,8 @@ class AdminProviderQuotasResponse(BaseModel):
 
 
 class RuntimeSettingItem(BaseModel):
+    """A single runtime setting with current value and metadata."""
+
     key: str
     value: Any
     value_type: str
@@ -661,10 +663,14 @@ class RuntimeSettingItem(BaseModel):
 
 
 class ListSettingsResponse(BaseModel):
+    """Response payload for listing runtime settings."""
+
     settings: list[RuntimeSettingItem]
 
 
 class UpdateSettingRequest(BaseModel):
+    """Request payload for updating a runtime setting."""
+
     value: Any
 
 

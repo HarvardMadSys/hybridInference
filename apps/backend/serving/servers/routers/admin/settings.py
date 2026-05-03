@@ -24,6 +24,7 @@ async def list_runtime_settings_endpoint(
     _admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ListSettingsResponse:
+    """List all runtime settings with current values and defaults."""
     if not op_store:
         raise HTTPException(500, "Database not configured")
     rt = RuntimeSettings(op_store)
@@ -50,6 +51,7 @@ async def update_runtime_setting_endpoint(
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> RuntimeSettingItem:
+    """Update a single runtime setting by key."""
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
