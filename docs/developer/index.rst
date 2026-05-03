@@ -10,17 +10,17 @@ see the `FreeInference docs <https://doc.freeinference.org/>`_.
    :maxdepth: 2
    :caption: Developer Guide:
 
-   developer/installation
-   developer/deployment
-   developer/architecture
-   developer/routing
-   developer/add-local-model
-   developer/adding-models
-   developer/configuration
-   developer/database
-   developer/openrouter
-   developer/freeinference
-   developer/claude-code-setup
-   developer/fasrc
-   developer/contributing
-   developer/staging
+   installation
+   deployment
+   architecture
+   routing
+   add-local-model
+   adding-models
+   configuration
+   database
+   openrouter
+   freeinference
+   claude-code-setup
+   fasrc
+   contributing
+   staging

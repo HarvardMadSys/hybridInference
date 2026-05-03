@@ -69,7 +69,7 @@ make test
 make test-cov
 
 # Run specific test file
-uv run pytest test/unit/routing/test_manager.py
+uv run pytest tests/unit/routing/test_manager.py
 ```
 
 ## Documentation

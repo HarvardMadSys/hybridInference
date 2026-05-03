@@ -174,7 +174,7 @@ docker exec -it hybridinference-postgres psql -U $DB_USER -d $DB_NAME \
 pytest -m "not external" -q
 
 # Focused server tests
-pytest test/servers/test_bootstrap.py -q
+pytest tests/servers/test_bootstrap.py -q
 ```
 
 ## Troubleshooting
