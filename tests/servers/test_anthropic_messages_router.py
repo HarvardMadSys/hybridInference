@@ -891,3 +891,206 @@ async def test_streaming_logged_response_reassembles_split_sse_frames(
     assert resp["id"] == "msg_split"
     assert resp["stop_reason"] == "end_turn"
     assert resp["content"] == [{"type": "text", "text": "hello world"}]
+
+
+# ---------------------------------------------------------------------------
+# Error logging: upstream status preservation and error= population
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_streaming_error_logs_non_empty_error_and_502(anthropic_test_client, monkeypatch):
+    """Streaming generator that raises a generic Exception must log error= and status_code=502."""
+
+    class _BrokenContent:
+        async def iter_any(self):
+            raise RuntimeError("upstream exploded")
+            yield b""  # make this an async generator
+
+    class _FakeResp:
+        status = 200
+        content = _BrokenContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    captured: dict = {}
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(amod, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    assert captured.get("status_code") == 502
+    assert captured.get("error") is not None
+    assert len(captured["error"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_client_response_error_429_logs_real_status(
+    anthropic_test_client, monkeypatch
+):
+    """Non-streaming adapter.messages() raising ClientResponseError(429) must log status_code=429."""
+    import aiohttp
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        raise aiohttp.ClientResponseError(
+            request_info=None,
+            history=None,
+            status=429,
+            message="rate limit exceeded",
+        )
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    captured: dict = {}
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(amod, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 429
+    assert r.json()["error"]["type"] == "rate_limit_error"
+
+    assert captured.get("status_code") == 429
+    assert captured.get("error") is not None
+    assert len(captured["error"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_generic_exception_logs_502(anthropic_test_client, monkeypatch):
+    """Non-streaming adapter.messages() raising a generic Exception must log status_code=502."""
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        raise ConnectionError("network gone")
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    captured: dict = {}
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(amod, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 502
+    assert r.json()["error"]["type"] == "api_error"
+
+    assert captured.get("status_code") == 502
+    assert captured.get("error") is not None
+    assert len(captured["error"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_streaming_client_response_error_logs_upstream_status(
+    anthropic_test_client, monkeypatch
+):
+    """Streaming generator raising ClientResponseError must log the real upstream status_code."""
+    import aiohttp
+
+    class _BrokenContent:
+        async def iter_any(self):
+            raise aiohttp.ClientResponseError(
+                request_info=None,
+                history=None,
+                status=503,
+                message="service overloaded",
+            )
+            yield b""  # make this an async generator
+
+    class _FakeResp:
+        status = 200
+        content = _BrokenContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    captured: dict = {}
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(amod, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    assert captured.get("status_code") == 503
+    assert captured.get("error") is not None
+    assert len(captured["error"]) > 0
