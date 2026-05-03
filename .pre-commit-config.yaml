@@ -47,6 +47,10 @@ repos:
 
   # Frontend hooks
   - repo: https://github.com/pre-commit/mirrors-eslint
+    # mirrors-eslint stops at v8.56.0; eslint 8.57.x and 9.x are not tagged.
+    # additional_dependencies below pins the ACTUAL eslint version used at
+    # hook execution (8.57.1 — required by @typescript-eslint 8.x peer dep).
+    # The repo rev only governs the hook script, which is version-agnostic.
     rev: v8.56.0
     hooks:
       - id: eslint
