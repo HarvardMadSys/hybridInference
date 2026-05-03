@@ -6,6 +6,17 @@ import type { CostHistoryPoint } from '../types';
 
 const FIVE_MIN = 5 * 60 * 1000;
 
+// Backend bulk endpoint caps at 200 user_ids per request.
+const CHUNK_SIZE = 200;
+
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
 export function useBulkCostHistory(userIds: string[], days = 7, enabled = true) {
   // Stable cache key: sort ids so order doesn't matter
   const key = [...userIds].sort().join(',');
@@ -13,8 +24,10 @@ export function useBulkCostHistory(userIds: string[], days = 7, enabled = true) 
     queryKey: ['admin', 'users', 'cost-history', 'bulk', key, days],
     queryFn: async () => {
       if (userIds.length === 0) return {};
-      const resp = await getBulkCostHistory(userIds, days);
-      return resp.histories;
+      // Chunk into groups of ≤200 to stay within backend limit, then merge.
+      const chunks = chunkArray(userIds, CHUNK_SIZE);
+      const results = await Promise.all(chunks.map((chunk) => getBulkCostHistory(chunk, days)));
+      return Object.assign({}, ...results.map((r) => r.histories));
     },
     enabled: enabled && userIds.length > 0,
     staleTime: FIVE_MIN,
