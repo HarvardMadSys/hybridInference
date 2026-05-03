@@ -386,6 +386,42 @@ async def initialize() -> AppServices:
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
 
+    # Alerting framework (replaces Prometheus scaffolding). Dark-launched in
+    # PR 1: defaults to disabled, no behavior change. Operators flip the
+    # ALERTS_ENABLED env var (or set SLACK_ALERTS_WEBHOOK_URL) to turn it on.
+    alert_engine = None
+    if settings.alerts_enabled:
+        try:
+            import logging as _stdlogging
+
+            from serving.observability.alert_config import load_alert_config
+            from serving.observability.alert_rules import AlertEngine
+            from serving.observability.log_handler import AlertingLogHandler
+
+            alert_handler = AlertingLogHandler(maxsize=10_000)
+            # Attach to the request-log logger so request-shaped rules see records.
+            _stdlogging.getLogger("serving.servers.middleware.request_log").addHandler(
+                alert_handler
+            )
+            # Also attach to root for state-change events (auth, concurrency, etc.).
+            _stdlogging.getLogger().addHandler(alert_handler)
+
+            alert_cfg = load_alert_config(settings.alerts_config_path)
+            alert_engine = AlertEngine(
+                handler=alert_handler,
+                config=alert_cfg,
+                scheduler=email_scheduler.get_scheduler(),
+                op_store=operational_store,
+                log_store=log_store,
+            )
+            await alert_engine.start()
+            logger.info("alert engine started")
+        except Exception as exc:
+            logger.error(f"Alert engine startup failed: {exc}")
+            alert_engine = None
+    else:
+        logger.info("alerts disabled (ALERTS_ENABLED=false)")
+
     return AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
@@ -395,6 +431,7 @@ async def initialize() -> AppServices:
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
         user_concurrency_limiter=user_concurrency_limiter,
+        alert_engine=alert_engine,
     )
 
 
@@ -404,6 +441,14 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    # Alert engine — stop drain task and remove scheduled jobs first so they
+    # don't fire while we're tearing down stores below.
+    if services.alert_engine is not None:
+        try:
+            await services.alert_engine.stop()
+        except Exception as exc:
+            logger.error(f"Alert engine shutdown failed: {exc}")
+
     # Broadcast email scheduler
     try:
         email_scheduler.stop_scheduler()
