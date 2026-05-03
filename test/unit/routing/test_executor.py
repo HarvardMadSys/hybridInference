@@ -395,6 +395,80 @@ async def test_stream_pin_no_fallback():
             pass
 
 
+class _YieldThenFailAdapter(BaseAdapter):
+    """Yields ``yield_count`` chunks then raises RuntimeError.
+
+    Used to exercise the no-fallback-after-yield guard in
+    stream_chat_completion: once the SSE stream has committed to a
+    provider, falling back would produce a corrupt response.
+    """
+
+    def __init__(self, config: ModelConfig, yield_count: int = 1) -> None:
+        super().__init__(config)
+        self._yield_count = yield_count
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        raise RuntimeError("not used in these tests")  # pragma: no cover
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        for _ in range(self._yield_count):
+            yield self.format_stream_chunk(model=self.config.id, content="partial")
+        raise RuntimeError("primary stream failed mid-flight")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_fallback_when_primary_fails_before_any_chunk():
+    """Primary raises before yielding → fallback runs and serves the response."""
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="primary"))
+    backup = _EchoAdapter(_cfg("m", provider="backup"))
+    exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
+
+    # Force primary selection.
+    exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
+
+    chunks = []
+    async for chunk in exe.stream_chat_completion(
+        "m", messages=[{"role": "user", "content": "hi"}]
+    ):
+        chunks.append(chunk)
+
+    # Backup successfully delivered chunks after primary failed at chunk 0.
+    assert len(chunks) > 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_no_fallback_after_chunks_yielded():
+    """Primary yields then fails → no fallback; exception propagates.
+
+    Falling back after partial output would corrupt the SSE stream
+    (duplicate role/system events, mid-message provider switch,
+    mismatched token-usage totals). The fix re-raises instead.
+    """
+    exe = RouteExecutor()
+    primary = _YieldThenFailAdapter(_cfg("m", provider="primary"), yield_count=1)
+    backup = _EchoAdapter(_cfg("m", provider="backup"))
+    exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
+
+    exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
+
+    chunks_seen: list[Any] = []
+    with pytest.raises(RuntimeError, match="primary stream failed mid-flight"):
+        async for chunk in exe.stream_chat_completion(
+            "m", messages=[{"role": "user", "content": "hi"}]
+        ):
+            chunks_seen.append(chunk)
+
+    # Exactly one chunk from primary, then the exception. Backup must NOT
+    # have produced any chunks — that would indicate a fallback corrupted
+    # the stream after partial output.
+    assert len(chunks_seen) == 1
+
+
 @pytest.mark.unit
 def test_admin_only_default_false():
     """RouteConfig defaults admin_only to False."""
