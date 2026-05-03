@@ -8,11 +8,11 @@ connection. The helper guards the dashboard's hot path so we verify:
 - A subsequent call within TTL returns the cached value without querying.
 - After the cached entry's timestamp ages past the TTL, the COUNT runs again.
 - Distinct ``(user_id, model_id)`` keys are cached independently.
+- The cache evicts oldest entries once the size cap is reached.
 """
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,12 +27,10 @@ from serving.servers.routers.user_routes import (
 
 @pytest.fixture(autouse=True)
 def _reset_recent_requests_count_cache():
-    """Clear the module-level cache + lock between tests."""
+    """Clear the module-level cache between tests."""
     _RECENT_REQUESTS_COUNT_CACHE.clear()
-    user_routes._RECENT_REQUESTS_COUNT_LOCK = asyncio.Lock()
     yield
     _RECENT_REQUESTS_COUNT_CACHE.clear()
-    user_routes._RECENT_REQUESTS_COUNT_LOCK = asyncio.Lock()
 
 
 def _make_conn(total: int = 7) -> AsyncMock:
@@ -143,3 +141,24 @@ async def test_count_query_omits_model_id_when_none():
     assert "user_id = $1" in sql
     assert "model_id" not in sql
     assert bind_params == ("user-1",)
+
+
+@pytest.mark.asyncio
+async def test_cache_evicts_oldest_entries_at_capacity(monkeypatch):
+    """Once the cache hits its size cap, the LRU entry is evicted."""
+    monkeypatch.setattr(user_routes, "_RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES", 2)
+    conn = _make_conn()
+    conn.fetchrow.side_effect = [{"total": i} for i in range(10)]
+
+    await _get_cached_user_request_count(conn, "user-1", None)
+    await _get_cached_user_request_count(conn, "user-2", None)
+    assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {("user-1", None), ("user-2", None)}
+
+    # Inserting a third distinct key evicts the least-recently-used entry.
+    await _get_cached_user_request_count(conn, "user-3", None)
+    assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {("user-2", None), ("user-3", None)}
+
+    # Reading user-2 promotes it; user-3 is now LRU.
+    await _get_cached_user_request_count(conn, "user-2", None)
+    await _get_cached_user_request_count(conn, "user-4", None)
+    assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {("user-2", None), ("user-4", None)}

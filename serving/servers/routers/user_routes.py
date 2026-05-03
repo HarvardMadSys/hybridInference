@@ -1,9 +1,9 @@
 """User dashboard routes for API key management and usage statistics."""
 
-import asyncio
 import json
 import os
 import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -60,13 +60,18 @@ logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
 QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
 
-# In-process TTL cache for the per-user ``api_logs`` row count powering
-# ``/user/recent-requests``. The dashboard polls every 60s and the COUNT(*)
-# scales with history size, so caching it per (user, model) keeps the hot
-# path to just the paginated SELECT. Mirrors serving/auth/signup_policy.py.
+# Bounded in-process TTL cache for the per-user ``api_logs`` row count
+# powering ``/user/recent-requests``. The dashboard polls every 60s and the
+# COUNT(*) scales with history size, so caching it per (user, model) keeps
+# the hot path to just the paginated SELECT.
+#
+# OrderedDict gives us LRU eviction once ``_MAX_ENTRIES`` is reached, which
+# bounds memory regardless of how many distinct users hit the endpoint. No
+# lock: cache misses for the same key may run a duplicate COUNT under
+# concurrent load, which is preferable to serializing all unrelated callers.
 _RECENT_REQUESTS_COUNT_TTL_SECONDS: float = 60.0
-_RECENT_REQUESTS_COUNT_CACHE: dict[tuple[str, str | None], tuple[float, int]] = {}
-_RECENT_REQUESTS_COUNT_LOCK = asyncio.Lock()
+_RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES: int = 4096
+_RECENT_REQUESTS_COUNT_CACHE: OrderedDict[tuple[str, str | None], tuple[float, int]] = OrderedDict()
 
 
 async def _get_cached_user_request_count(conn: Any, user_id: str, model_id: str | None) -> int:
@@ -79,33 +84,30 @@ async def _get_cached_user_request_count(conn: Any, user_id: str, model_id: str 
     now = time.monotonic()
     cached = _RECENT_REQUESTS_COUNT_CACHE.get(key)
     if cached is not None and (now - cached[0]) < _RECENT_REQUESTS_COUNT_TTL_SECONDS:
+        _RECENT_REQUESTS_COUNT_CACHE.move_to_end(key)
         return cached[1]
 
-    async with _RECENT_REQUESTS_COUNT_LOCK:
-        # Re-check after acquiring the lock to coalesce concurrent callers.
-        cached = _RECENT_REQUESTS_COUNT_CACHE.get(key)
-        now = time.monotonic()
-        if cached is not None and (now - cached[0]) < _RECENT_REQUESTS_COUNT_TTL_SECONDS:
-            return cached[1]
+    where_clauses = ["user_id = $1"]
+    params: list[Any] = [user_id]
+    if model_id:
+        params.append(model_id)
+        where_clauses.append(f"model_id = ${len(params)}")
+    where_sql = " AND ".join(where_clauses)
 
-        where_clauses = ["user_id = $1"]
-        params: list[Any] = [user_id]
-        if model_id:
-            params.append(model_id)
-            where_clauses.append(f"model_id = ${len(params)}")
-        where_sql = " AND ".join(where_clauses)
-
-        count_row = await conn.fetchrow(
-            f"""
-            SELECT COUNT(*) as total
-            FROM api_logs
-            WHERE {where_sql}
-            """,
-            *params,
-        )
-        total = int(count_row["total"] or 0) if count_row else 0
-        _RECENT_REQUESTS_COUNT_CACHE[key] = (time.monotonic(), total)
-        return total
+    count_row = await conn.fetchrow(
+        f"""
+        SELECT COUNT(*) as total
+        FROM api_logs
+        WHERE {where_sql}
+        """,
+        *params,
+    )
+    total = int(count_row["total"] or 0) if count_row else 0
+    _RECENT_REQUESTS_COUNT_CACHE[key] = (time.monotonic(), total)
+    _RECENT_REQUESTS_COUNT_CACHE.move_to_end(key)
+    while len(_RECENT_REQUESTS_COUNT_CACHE) > _RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES:
+        _RECENT_REQUESTS_COUNT_CACHE.popitem(last=False)
+    return total
 
 
 def _get_daily_quota_reset_at() -> datetime:
