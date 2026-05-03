@@ -1895,14 +1895,6 @@ export default function AdminPage() {
                                       </span>
                                     </div>
                                     <div>
-                                      <span className="text-gray-500">Reasoning:</span>{' '}
-                                      <span className="text-gray-700">
-                                        {req.reasoning_tokens != null
-                                          ? req.reasoning_tokens.toLocaleString()
-                                          : '—'}
-                                      </span>
-                                    </div>
-                                    <div>
                                       <span className="text-gray-500">Cached:</span>{' '}
                                       <span className="text-gray-700">
                                         {cachedTokens != null ? cachedTokens.toLocaleString() : '—'}

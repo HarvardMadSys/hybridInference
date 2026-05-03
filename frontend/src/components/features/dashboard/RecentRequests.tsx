@@ -128,10 +128,6 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 <span className="font-mono text-gray-700">{req.request_id.slice(0, 16)}…</span>
               </div>
               <div>
-                <span className="text-gray-500">Reasoning:</span>{' '}
-                <span className="text-gray-700">{formatTokens(req.reasoning_tokens)}</span>
-              </div>
-              <div>
                 <span className="text-gray-500">Total Tokens:</span>{' '}
                 <span className="text-gray-700">{formatTokens(req.total_tokens)}</span>
               </div>
