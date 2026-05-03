@@ -918,3 +918,167 @@ async def test_hard_delete_user_wipes_data(admin_client):
     assert log_idx < op_store_idx, (
         f"log_store_hard_delete_data must run before op_store_hard_delete, got {call_names}"
     )
+
+
+# ========================================================================
+# Phase 1: Cost-history + summary endpoints
+# ========================================================================
+
+
+@pytest.mark.asyncio
+async def test_get_user_cost_history_route(admin_client):
+    """GET /admin/users/{id}/cost-history returns daily points."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_cost_history = AsyncMock(
+        return_value=[
+            {"day": "2025-06-14", "cost_usd": Decimal("1.50"), "requests": 3},
+            {"day": "2025-06-15", "cost_usd": Decimal("2.00"), "requests": 5},
+        ]
+    )
+
+    resp = await client.get("/admin/users/u1/cost-history?days=7", headers=AUTH)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["user_id"] == "u1"
+    assert body["days"] == 7
+    assert len(body["points"]) == 2
+    assert body["points"][0]["day"] == "2025-06-14"
+    op_store.get_user_cost_history.assert_awaited_once_with("u1", days=7)
+
+
+@pytest.mark.asyncio
+async def test_get_user_cost_history_default_days(admin_client):
+    """Default days=7 if not specified."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_cost_history = AsyncMock(return_value=[])
+    resp = await client.get("/admin/users/u1/cost-history", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["days"] == 7
+
+
+@pytest.mark.asyncio
+async def test_get_user_cost_history_validates_days(admin_client):
+    """days outside 1..90 returns 422."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_cost_history = AsyncMock(return_value=[])
+    resp = await client.get("/admin/users/u1/cost-history?days=0", headers=AUTH)
+    assert resp.status_code == 422
+    resp = await client.get("/admin/users/u1/cost-history?days=91", headers=AUTH)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_bulk_cost_history_route(admin_client):
+    """GET /admin/users/cost-history?user_ids=a,b returns one block per user."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_bulk_user_cost_history = AsyncMock(
+        return_value={
+            "u1": [{"day": "2025-06-15", "cost_usd": Decimal("1.0"), "requests": 1}],
+            "u2": [],
+        }
+    )
+
+    resp = await client.get(
+        "/admin/users/cost-history?user_ids=u1,u2&days=7", headers=AUTH
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body["histories"].keys()) == {"u1", "u2"}
+    assert body["days"] == 7
+
+
+@pytest.mark.asyncio
+async def test_get_bulk_cost_history_empty_ids(admin_client):
+    """Empty user_ids returns empty histories without hitting the store."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_bulk_user_cost_history = AsyncMock(return_value={})
+    resp = await client.get("/admin/users/cost-history?user_ids=", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["histories"] == {}
+    op_store.get_bulk_user_cost_history.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_bulk_cost_history_too_many_ids(admin_client):
+    """More than 200 user_ids returns 422."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_bulk_user_cost_history = AsyncMock(return_value={})
+    ids = ",".join(f"u{i}" for i in range(201))
+    resp = await client.get(f"/admin/users/cost-history?user_ids={ids}", headers=AUTH)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_users_summary_route(admin_client):
+    """GET /admin/users/summary returns the four cards."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_users_summary = AsyncMock(
+        return_value={
+            "pending": {"count": 3, "top": []},
+            "top_spenders_today": {"count": 10, "top": []},
+            "anomalies": {"count": 1, "top": []},
+            "near_quota": {"count": 2, "top": []},
+        }
+    )
+
+    resp = await client.get("/admin/users/summary", headers=AUTH)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pending"]["count"] == 3
+    assert body["anomalies"]["count"] == 1
+    assert body["top_spenders_today"]["count"] == 10
+    assert body["near_quota"]["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_users_summary_with_top_users(admin_client):
+    """Summary card 'top' SummaryUserItem fields are serialized correctly."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_users_summary = AsyncMock(
+        return_value={
+            "pending": {"count": 0, "top": []},
+            "top_spenders_today": {
+                "count": 1,
+                "top": [
+                    {
+                        "id": "u1",
+                        "email": "alice@x.com",
+                        "user_name": "Alice",
+                        "role": "free",
+                        "today_cost_usd": Decimal("12.50"),
+                        "avg_prior_7d_usd": Decimal("1.00"),
+                        "quota_daily_usd": None,
+                        "multiplier": None,
+                    }
+                ],
+            },
+            "anomalies": {
+                "count": 1,
+                "top": [
+                    {
+                        "id": "u1",
+                        "email": "alice@x.com",
+                        "user_name": "Alice",
+                        "role": "free",
+                        "today_cost_usd": Decimal("12.50"),
+                        "avg_prior_7d_usd": Decimal("1.00"),
+                        "quota_daily_usd": None,
+                        "multiplier": 12.5,
+                    }
+                ],
+            },
+            "near_quota": {"count": 0, "top": []},
+        }
+    )
+
+    resp = await client.get("/admin/users/summary", headers=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    top = body["top_spenders_today"]["top"][0]
+    assert top["id"] == "u1"
+    assert top["email"] == "alice@x.com"
+    anomaly = body["anomalies"]["top"][0]
+    assert anomaly["multiplier"] == 12.5
