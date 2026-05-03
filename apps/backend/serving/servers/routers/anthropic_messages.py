@@ -213,6 +213,7 @@ def _schedule_log_store_task(
     prompt: list[dict[str, Any]] | str | None = None,
     response: dict[str, Any] | str | None = None,
     ttft_ms: int | None = None,
+    error: str | None = None,
 ) -> None:
     """Schedule a background log store task (fire-and-forget).
 
@@ -256,6 +257,7 @@ def _schedule_log_store_task(
                 metadata=metadata,
                 pricing=pricing,
                 ttft_ms=ttft_ms,
+                error=error,
             )
         except Exception:
             logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
@@ -510,6 +512,7 @@ async def anthropic_messages(
                 "cache_read_input_tokens": 0,
             }
             stream_failed = False
+            stream_error_message: str | None = None
             ttft_ms: int | None = None
             ttft_buffer = b""
             response_acc: dict | None = None
@@ -540,12 +543,13 @@ async def anthropic_messages(
                     yield chunk
             except Exception as exc:
                 stream_failed = True
+                stream_error_message = scrub_error_for_user(exc, request_id, 502)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
                 err = {
                     "type": "error",
                     "error": {
                         "type": "api_error",
-                        "message": scrub_error_for_user(exc, request_id, 502),
+                        "message": stream_error_message,
                     },
                 }
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
@@ -574,6 +578,7 @@ async def anthropic_messages(
                         prompt=messages_for_log,
                         response=_finalize_response_acc(response_acc),
                         ttft_ms=ttft_ms,
+                        error=stream_error_message if stream_failed else None,
                     )
 
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
@@ -581,10 +586,56 @@ async def anthropic_messages(
     try:
         resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
     except HTTPException as exc:
-        return _anthropic_error(exc.status_code, str(exc.detail))
+        error_message = str(exc.detail)
+        latency_ms = int((time.time() - start) * 1000)
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(canonical),
+            provider=normalize_provider_label(adapter.config.provider),
+            status_code=str(exc.status_code),
+        ).inc()
+        if log_store:
+            _schedule_log_store_task(
+                log_store,
+                request_id=request_id,
+                model_id=canonical,
+                provider=adapter.config.provider,
+                usage={},
+                latency_ms=latency_ms,
+                status_code=exc.status_code,
+                pricing=adapter.config.pricing if hasattr(adapter.config, "pricing") else {},
+                metadata=metadata,
+                params=params_for_log,
+                prompt=messages_for_log,
+                response=None,
+                error=error_message,
+            )
+        return _anthropic_error(exc.status_code, error_message)
     except Exception as exc:
+        error_message = scrub_error_for_user(exc, request_id, 502)
         logger.exception(f"[{request_id}] Adapter messages() failed")
-        return _anthropic_error(502, scrub_error_for_user(exc, request_id, 502))
+        latency_ms = int((time.time() - start) * 1000)
+        API_MODEL_REQUESTS.labels(
+            model=normalize_model_label(canonical),
+            provider=normalize_provider_label(adapter.config.provider),
+            status_code="502",
+        ).inc()
+        if log_store:
+            _schedule_log_store_task(
+                log_store,
+                request_id=request_id,
+                model_id=canonical,
+                provider=adapter.config.provider,
+                usage={},
+                latency_ms=latency_ms,
+                status_code=502,
+                pricing=adapter.config.pricing if hasattr(adapter.config, "pricing") else {},
+                metadata=metadata,
+                params=params_for_log,
+                prompt=messages_for_log,
+                response=None,
+                error=error_message,
+            )
+        return _anthropic_error(502, error_message)
 
     usage = (resp.get("usage") or {}) if isinstance(resp, dict) else {}
     usage_for_log = {
