@@ -59,9 +59,6 @@ log "Deploying ${target_sha} (current ${current_sha})."
 git reset --hard "$target_sha"
 git submodule update --init --recursive
 
-log "Syncing subscription credentials."
-make sync-subscriptions
-
 export BUILD_SHA="$target_sha"
 export BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 log "Build metadata: SHA=${BUILD_SHA} TIMESTAMP=${BUILD_TIMESTAMP}."
