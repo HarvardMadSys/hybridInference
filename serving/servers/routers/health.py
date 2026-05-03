@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from serving.config.settings import has_role
+from serving.observability.alerts import AlertSeverity, alert_slack
 from serving.observability.metrics import DATABASE_CONNECTED
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import get_log_store, get_operational_store, get_router, get_services
@@ -30,6 +31,7 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
 
     # Operational store
     op_status: dict[str, Any] = {"status": "unavailable", "backend": "none"}
+    op_error: str | None = None
     if op_store:
         result["database_configured"] = True
         # Resolve the underlying backend through CachedOperationalStore
@@ -40,21 +42,24 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
             op_status["backend"] = "postgres"
         try:
             op_status["status"] = "ok" if await op_store.health_check() else "error"
-        except Exception:
+        except Exception as exc:
             op_status["status"] = "error"
+            op_error = str(exc)
         if isinstance(op_store, CachedOperationalStore):
             op_status["cache"] = "in_memory"
     result["operational_store"] = op_status
 
     # Log store
     log_status: dict[str, Any] = {"status": "unavailable", "backend": "none"}
+    log_error: str | None = None
     if log_store:
         result["database_configured"] = True
         log_status["backend"] = "postgres" if isinstance(log_store, PostgresLogStore) else "unknown"
         try:
             log_status["status"] = "ok" if await log_store.health_check() else "error"
-        except Exception:
+        except Exception as exc:
             log_status["status"] = "error"
+            log_error = str(exc)
     result["log_store"] = log_status
 
     # Track both OR (any store up) and AND (all configured stores up).
@@ -76,6 +81,34 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
             s == "ok" for s in configured_statuses
         )
     DATABASE_CONNECTED.set(1 if result["healthy"] else 0)
+
+    # Fire DB disconnect alert when a configured store is unhealthy. dedupe_key
+    # ensures we only alert once per cooldown per store kind.
+    if op_store and op_status["status"] == "error":
+        await alert_slack(
+            AlertSeverity.CRITICAL,
+            "Database disconnected",
+            {
+                "db_kind": op_status.get("backend", "operational"),
+                "store": "operational_store",
+                "error": (op_error or "health_check returned False")[:500],
+            },
+            dedupe_key=f"db_disconnect:{op_status.get('backend', 'operational')}",
+            cooldown_sec=300,
+        )
+    if log_store and log_status["status"] == "error":
+        await alert_slack(
+            AlertSeverity.CRITICAL,
+            "Database disconnected",
+            {
+                "db_kind": log_status.get("backend", "log"),
+                "store": "log_store",
+                "error": (log_error or "health_check returned False")[:500],
+            },
+            dedupe_key=f"db_disconnect:{log_status.get('backend', 'log')}_log",
+            cooldown_sec=300,
+        )
+
     return result
 
 
