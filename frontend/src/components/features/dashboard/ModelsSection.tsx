@@ -28,7 +28,6 @@ export function isDashboardModelVisible(
   showInternalModels: boolean,
 ): boolean {
   const p = model.owned_by.toLowerCase();
-  if (p === 'codex_sub' || p === 'claude_sub') return false;
   if (!showInternalModels) {
     if (p.includes('openai')) return false;
     if (p.includes('anthropic')) return false;
