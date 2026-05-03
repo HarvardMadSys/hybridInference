@@ -1,59 +1,18 @@
-Prometheus Stack
-================
+Prometheus Stack (Removed)
+==========================
 
-> **Note:** Prometheus has been removed from the active deployment stack (see
-> `docs/source/developer/deployment.md`). The configuration files here are
-> preserved for potential re-introduction.
+> **Status: removed.** Prometheus is no longer part of the active deployment
+> stack and the team is moving to Slack-based alerting. The configuration
+> files in this directory are retained for git history only — they are not
+> wired into any running service. Do not treat the layout, quick-start, or
+> remote-target guidance that previously appeared here as current operational
+> guidance.
 
-This directory contains Prometheus scrape configuration, recording/alerting rules,
-and Alertmanager integration.
+For the replacement alerting design and migration plan, see:
 
-Layout
-- `prometheus/`
-  - `prometheus.yml`          Scrape configuration (defaults to `localhost:8000/metrics`).
-  - `rules/`                  Recording and alerting rules (SLO/cost/availability).
-- `../alertmanager/`
-  - `alertmanager.yml.example` Example Alertmanager routing (Slack).
+- `docs/superpowers/specs/2026-05-02-alert-management-cleanup-design.md`
+- `docs/source/developer/deployment.md` (Monitoring / Alerting section)
 
-Quick Start (local)
-1) Run Prometheus:
-   docker run --rm -p 9090:9090 \
-     -v $(pwd)/infrastructure/prometheus:/etc/prometheus \
-     -v $(pwd)/var/prometheus:/prometheus \
-     prom/prometheus:latest \
-     --config.file=/etc/prometheus/prometheus.yml
-
-2) Alerts and notifications (optional, recommended):
-   - Alertmanager setup: see `../alertmanager/README.md`.
-   - Rules under `prometheus/rules/` enabled by default:
-     - `service_availability.yml`: `ServiceDown`, `ServiceUnreachable`,
-       `DatabaseDisconnected`. Routed to Slack via the allowlist in
-       `../alertmanager/alertmanager.yml`.
-   - Previously-shipped `slo_burn_rate.yml` and `pipeline_health.yml`
-     rules were removed on 2026-05-02. See `prometheus/rules/README.md`
-     for context and how to re-enable.
-
-Remote service (free inference server)
-- Add your remote `/metrics` target into `scrape_configs`:
-  ```yaml
-  scrape_configs:
-    - job_name: remote-app
-      metrics_path: /metrics
-      static_configs:
-        - targets: ["your-server:8000"]
-  ```
-- Consider `external_labels` to tag `env` or `instance` for dashboard filtering and alert ownership.
-
-Tips
-- Tune `scrape_interval` based on load (e.g., 30s in production).
-- Control label cardinality: set `METRICS_MODEL_LABEL=family` to avoid model-dimension explosion.
-- Keep rules and dashboards as code to prevent UI drift.
-
-Data directory
-- If running the Prometheus binary directly (not in a container), explicitly set the data directory to `var/prometheus`.
-- Examples:
-  - Native binary:
-    - `prometheus --config.file=infrastructure/prometheus/prometheus.yml --storage.tsdb.path=var/prometheus`
-  - Docker (the quick-start command already mounts this to `/prometheus`):
-    - `-v $(pwd)/var/prometheus:/prometheus`
-- Keeping runtime data under `var/` makes cleanup/backup easier and avoids polluting the repository root.
+If you need to revive a metrics pipeline, treat the YAML files here as a
+starting reference and re-validate them against the current codebase before
+deploying.
