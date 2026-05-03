@@ -4,7 +4,7 @@ Free LLM inference for coding agents and AI-powered IDEs.
 
 ## Overview
 
-FreeInference provides free access to state-of-the-art language models specifically designed for coding agents like Cursor, Codex, Roo Code, and other AI-powered development tools.
+FreeInference provides free access to state-of-the-art language models specifically designed for coding agents like Cursor, Roo Code, and other AI-powered development tools.
 
 ## Documentation
 
@@ -14,7 +14,6 @@ FreeInference provides free access to state-of-the-art language models specifica
 ## Supported IDEs & Coding Agents
 
 - **[Cursor](https://cursor.sh/)** - AI-powered code editor
-- **[Codex](https://github.com/openai/codex)** - Terminal-based coding assistant
 - **[Roo Code](https://roocode.com)** - VS Code & JetBrains extension
 - **[Kilo Code](https://kilocode.ai)** - AI coding assistant
 - And any tool that supports OpenAI-compatible APIs
@@ -29,30 +28,6 @@ FreeInference provides free access to state-of-the-art language models specifica
 4. Click **Override OpenAI Base URL**
 5. Enter: `https://freeinference.org/v1`
 6. Enable the toggle and start coding!
-
-### Codex Setup
-
-1. Create `~/.codex/config.toml`:
-
-```toml
-model = "glm-4.7"
-model_provider = "free_inference"
-
-[model_providers.free_inference]
-name = "FreeInference"
-base_url = "https://freeinference.org/v1"
-wire_api = "chat"
-env_http_headers = { "X-Session-ID" = "CODEX_SESSION_ID", "Authorization" = "FREEINFERENCE_API_KEY" }
-```
-
-2. Add to `~/.zshrc` or `~/.bashrc`:
-
-```bash
-export CODEX_SESSION_ID="$(date +%Y%m%d-%H%M%S)-$(uuidgen)"
-export FREEINFERENCE_API_KEY="Bearer your-api-key-here"
-```
-
-3. Reload: `source ~/.zshrc`
 
 ### Roo Code / Kilo Code Setup
 

@@ -19,30 +19,6 @@ Get started with FreeInference in 5 minutes.
 
 [Detailed setup →](integrations.md)
 
-### Codex
-
-1. Create `~/.codex/config.toml`:
-   ```toml
-   model = "glm-4.7"
-   model_provider = "free_inference"
-
-   [model_providers.free_inference]
-   name = "FreeInference"
-   base_url = "https://freeinference.org/v1"
-   wire_api = "chat"
-   env_http_headers = { "X-Session-ID" = "CODEX_SESSION_ID", "Authorization" = "FREEINFERENCE_API_KEY" }
-   ```
-
-2. Add to `~/.zshrc`:
-   ```bash
-   export CODEX_SESSION_ID="$(date +%Y%m%d-%H%M%S)-$(uuidgen)"
-   export FREEINFERENCE_API_KEY="Bearer your-api-key-here"
-   ```
-
-3. Reload: `source ~/.zshrc`
-
-[Detailed setup →](integrations.md)
-
 ### Roo Code / Kilo Code
 
 1. Install extension in your IDE

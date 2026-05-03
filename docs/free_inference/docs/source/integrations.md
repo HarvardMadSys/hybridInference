@@ -4,58 +4,6 @@ Learn how to configure FreeInference with popular coding agents and IDEs.
 
 ---
 
-## Codex
-
-[Codex](https://github.com/openai/codex) is a powerful AI coding assistant.
-
-### Configuration Steps
-
-1. Create or edit the Codex configuration file at `~/.codex/config.toml`
-
-2. Add the following configuration:
-
-```toml
-# ~/.codex/config.toml
-
-model = "glm-4.7"
-
-model_provider = "free_inference"
-model_reasoning_effort = "high"
-
-[model_providers.free_inference]
-name = "FreeInference"
-base_url = "https://freeinference.org/v1"
-wire_api = "chat"
-env_http_headers = { "X-Session-ID" = "CODEX_SESSION_ID", "Authorization" = "FREEINFERENCE_API_KEY" }
-request_max_retries = 5
-```
-
-3. Set up environment variables in your shell configuration file (`~/.zshrc` or `~/.bashrc`):
-
-```bash
-# Add these lines to ~/.zshrc or ~/.bashrc
-
-# Generate unique session ID for each shell session
-export CODEX_SESSION_ID="$(date +%Y%m%d-%H%M%S)-$(uuidgen)"
-
-# Your FreeInference API key (note: include "Bearer " prefix)
-export FREEINFERENCE_API_KEY="Bearer your-api-key-here"
-```
-
-4. Reload your shell configuration:
-
-```bash
-# For zsh
-source ~/.zshrc
-
-# For bash
-source ~/.bashrc
-```
-
-5. Start using Codex with FreeInference!
-
----
-
 ## Cursor
 
 [Cursor](https://cursor.sh/) is an AI-powered code editor built on VS Code.
@@ -214,21 +162,6 @@ If you get "model not found" errors:
 - Check the [available models](models.md) list
 - Ensure the model name is exactly as listed (case-sensitive)
 - Try switching to a different model like `glm-5` or `glm-4.7`
-
-### Codex-Specific Issues
-
-**Environment variables not loaded:**
-- Make sure you've reloaded your shell configuration after editing `~/.zshrc` or `~/.bashrc`
-- Verify variables are set: `echo $FREEINFERENCE_API_KEY`
-- Open a new terminal window to ensure variables are loaded
-
-**Session ID issues:**
-- The session ID is auto-generated each time you start a new shell
-- If needed, you can manually set it: `export CODEX_SESSION_ID="custom-session-id"`
-
-**Config file not found:**
-- Ensure the directory exists: `mkdir -p ~/.codex`
-- Check file permissions: `ls -la ~/.codex/config.toml`
 
 ### Cursor-Specific Issues
 

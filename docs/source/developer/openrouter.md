@@ -15,7 +15,7 @@ hybridInference/
 │   ├── adapters/               # Provider adapters: openai_compat.py (vllm/sglang/
 │   │                           #   ollama/chutes/featherless/deepseek/zhipu/minimax),
 │   │                           #   openrouter.py, gemini.py, anthropic.py, claude.py,
-│   │                           #   claude_sub.py, codex_sub.py, plus shared profiles.py
+│   │                           #   plus shared profiles.py
 │   ├── storage/                # PostgreSQL or Cloudflare D1 stores (DB_BACKEND-driven)
 │   ├── observability/          # Structured request logging
 │   └── utils/                  # Logging, configuration helpers
@@ -29,7 +29,7 @@ hybridInference/
 ### Key Components
 - **FastAPI app (`serving.servers.app:create_app`)**: Hosts OpenRouter-compatible endpoints plus admin and metrics routes.
 - **Bootstrap (`serving.servers.bootstrap`)**: Loads environment, registers models, applies routing weights, and wires database logging.
-- **Adapters (`serving.adapters.*`)**: Translate requests to providers — `OpenAICompatAdapter` (vLLM, SGLang, Ollama, DeepSeek, Zhipu, MiniMax, Chutes, Featherless), `OpenRouterAdapter`, `GeminiAdapter`, `AnthropicAdapter`, `ClaudeAdapter`, plus subscription pools (`ClaudeSubscriptionAdapter`, `CodexSubscriptionAdapter`).
+- **Adapters (`serving.adapters.*`)**: Translate requests to providers — `OpenAICompatAdapter` (vLLM, SGLang, Ollama, DeepSeek, Zhipu, MiniMax, Chutes, Featherless), `OpenRouterAdapter`, `GeminiAdapter`, `AnthropicAdapter`, `ClaudeAdapter` (Vertex).
 - **Routing (`routing.*`)**: Supports fixed-ratio and future strategies for splitting traffic across adapters.
 - **Observability (`serving.observability`)**: Structured request logging.
 

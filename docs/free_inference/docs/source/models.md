@@ -156,19 +156,6 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 > **Note:** The following models require internal role access and are not available to general users.
 
-### GPT-5.4
-
-**Model ID:** `gpt-5.4`
-
-- Context length: 1,050,000 tokens
-- Max output: 128,000 tokens
-- Input modalities: text, image
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-
----
-
 ### Claude Sonnet 4.6
 
 **Model ID:** `claude-sonnet-4.6`
@@ -198,10 +185,5 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 To use different models, change the model name in your IDE configuration:
 
 **Cursor:** Select from the dropdown in settings
-
-**Codex:** Edit `~/.codex/config.toml`:
-```toml
-model = "glm-5"  # Change to any model ID
-```
 
 **Roo Code / Kilo Code:** Select from the dropdown in extension settings
