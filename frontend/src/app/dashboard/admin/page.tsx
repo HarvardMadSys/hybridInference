@@ -174,7 +174,7 @@ function hasMessages(v: unknown): v is Record<string, unknown> & { messages: Cha
 }
 
 function isChatMessageArray(v: unknown): v is ChatMessage[] {
-  return Array.isArray(v) && v.length > 0 && v.every(isChatMessage);
+  return Array.isArray(v) && v.every(isChatMessage);
 }
 
 type AnthropicMessageResponse = Record<string, unknown> & {
@@ -374,7 +374,7 @@ function JsonChatView({ data }: { data: unknown }) {
     const message: ChatMessage = { role: data.role, content: data.content };
     return (
       <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
-        <MetaList data={data} skip={['content']} />
+        <MetaList data={data} skip={['content', 'role', 'type']} />
         <div className="space-y-1.5">
           <MessageBlock message={message} />
         </div>
@@ -463,9 +463,8 @@ function computePreview(parsed: unknown, fallback: string): string {
     if (reasoning) return previewText(`[reasoning] ${reasoning}`);
   }
   if (isAnthropicMessageResponse(parsed)) {
-    const m: ChatMessage = { role: parsed.role, content: parsed.content };
-    const text = flattenContent(m.content);
-    if (text) return previewText(text);
+    const p = previewFromMessages([{ role: parsed.role, content: parsed.content }]);
+    if (p !== null) return p;
   }
   return previewText(fallback);
 }
