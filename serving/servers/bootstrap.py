@@ -39,62 +39,6 @@ logger = get_logger(__name__)
 _BACKGROUND_TASKS: set = set()
 
 
-def _apply_hard_offload(router: RouteExecutor, local_base_url: str) -> None:
-    """Apply hard OFFLOAD by filtering out local adapters from routes.
-
-    In hybrid mode, a model may have both local and remote adapters.
-    Hard OFFLOAD removes all local adapters, leaving only remote ones.
-    This is different from soft OFFLOAD which adjusts weights via RoutingManager.
-
-    Args:
-        router: The route executor to modify
-        local_base_url: The base URL identifying local services
-    """
-    normalized_local = local_base_url.rstrip("/").lower()
-    models_affected = 0
-    adapters_removed = 0
-
-    for model_id, route in list(router.routes.items()):
-        # Filter out local adapters from the route
-        original_count = len(route.adapters)
-        filtered_adapters = []
-
-        for adapter, weight in route.adapters:
-            base_url = getattr(adapter.config, "base_url", None)
-            if base_url and isinstance(base_url, str):
-                normalized_url = base_url.rstrip("/").lower()
-                if normalized_url == normalized_local:
-                    # Skip local adapter
-                    adapters_removed += 1
-                    logger.debug(
-                        f"OFFLOAD: Removing local adapter from {model_id} "
-                        f"(provider={adapter.config.provider}, base_url={base_url})"
-                    )
-                else:
-                    # Keep remote adapter
-                    filtered_adapters.append((adapter, weight))
-            else:
-                # Keep adapters without base_url (shouldn't happen but be safe)
-                filtered_adapters.append((adapter, weight))
-
-        if len(filtered_adapters) < original_count:
-            models_affected += 1
-
-        if filtered_adapters:
-            # Update route with only non-local adapters
-            route.adapters = filtered_adapters
-        else:
-            # Remove route entirely if no adapters left
-            router.routes.pop(model_id)
-            logger.info(f"OFFLOAD: Removed route {model_id} (no non-local adapters)")
-
-    if adapters_removed > 0:
-        logger.info(
-            f"Hard OFFLOAD applied: removed {adapters_removed} local adapters "
-            f"from {models_affected} models"
-        )
-
-
 def _init_db_logger() -> DatabaseLogger | None:
     """Initialize PostgreSQL database logger from environment configuration.
 
@@ -201,18 +145,6 @@ async def _init_router_and_models(
                 )
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
-
-    # Hard OFFLOAD: Filter out local adapters from multi-adapter routes
-    # This is different from soft OFFLOAD which adjusts weights in RoutingManager
-    offload_flag = os.getenv("OFFLOAD", "0").strip().lower()
-    offload_enabled = offload_flag in ("1", "true", "yes")
-
-    if offload_enabled:
-        local_base_url = os.getenv("LOCAL_BASE_URL", "")
-        if local_base_url:
-            _apply_hard_offload(router, local_base_url)
-        else:
-            logger.info("OFFLOAD=1 but LOCAL_BASE_URL not set; no adapters filtered")
 
     _warn_missing_subscription_files(router)
     return embedding_adapters, model_infos

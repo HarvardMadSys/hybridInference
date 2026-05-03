@@ -208,10 +208,6 @@ If `config/routing.yaml` is present, it can adjust route weights after models ar
 registered. Without `routing.yaml`, the gateway uses the weights in
 `config/models.yaml`.
 
-When `OFFLOAD=1`, startup removes local adapters whose `base_url` matches
-`LOCAL_BASE_URL`. Use this for remote-only incidents, and make sure any local
-route you want offloaded uses the same base URL value as `LOCAL_BASE_URL`.
-
 ## Troubleshooting
 
 ### Model Does Not Appear in `/v1/models`

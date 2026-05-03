@@ -203,7 +203,6 @@ def auth_test_env():
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
         "METRICS_ENABLED": "0",
-        "OFFLOAD": "0",
     }
 
     all_vars = {**_TEST_DB_VARS, **_AUTH_VARS, **_SERVICE_VARS}
@@ -258,7 +257,6 @@ def mock_env(monkeypatch):
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
         "LOCAL_BASE_URL": "http://localhost:8001",
-        "OFFLOAD": "0",
     }
     # Clear D1 env vars that may leak from .env
     for d1_var in ("D1_ACCOUNT_ID", "D1_DATABASE_ID", "D1_API_TOKEN"):
