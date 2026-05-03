@@ -108,6 +108,15 @@ async def verify_api_key(
             provider=normalize_provider_label("system"),
             status_code="401",
         ).inc()
+        logger.warning(
+            "auth_failure",
+            extra={
+                "event": "auth_failure",
+                "remote_ip": get_client_ip(request),
+                "key_prefix": None,
+                "reason": "missing_api_key",
+            },
+        )
         raise HTTPException(
             status_code=401,
             detail="Missing API key. Use 'Authorization: Bearer hyi-xxx' or 'X-API-Key: hyi-xxx'",
@@ -143,6 +152,15 @@ async def verify_api_key(
             provider=normalize_provider_label("system"),
             status_code="401",
         ).inc()
+        logger.warning(
+            "auth_failure",
+            extra={
+                "event": "auth_failure",
+                "remote_ip": get_client_ip(request),
+                "key_prefix": api_key[:6] if api_key else None,
+                "reason": "invalid_api_key",
+            },
+        )
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired API key",
