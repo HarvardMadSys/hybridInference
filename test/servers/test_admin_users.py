@@ -62,7 +62,7 @@ async def admin_client(monkeypatch, mock_stores):
     client = AsyncClient(transport=transport, base_url="http://test")
 
     mock_log_action = AsyncMock()
-    monkeypatch.setattr("serving.servers.routers.admin._admin_legacy.log_admin_action", mock_log_action)
+    monkeypatch.setattr("serving.servers.routers.admin.users.log_admin_action", mock_log_action)
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("API_KEY_SECRET", "unit-test-secret")
 

@@ -8,7 +8,7 @@ work via `from serving.servers.routers import admin`.
 
 from fastapi import APIRouter
 
-from serving.servers.routers.admin import api_keys, stats
+from serving.servers.routers.admin import api_keys, stats, users
 from serving.servers.routers.admin._admin_legacy import (
     _decode_throughput_tps,
     router as _legacy_router,
@@ -17,6 +17,7 @@ from serving.servers.routers.admin._admin_legacy import (
 router = APIRouter()
 router.include_router(api_keys.router)
 router.include_router(stats.router)
+router.include_router(users.router)
 router.include_router(_legacy_router)
 
 __all__ = ["_decode_throughput_tps", "router"]
