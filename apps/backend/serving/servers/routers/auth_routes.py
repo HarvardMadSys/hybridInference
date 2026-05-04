@@ -274,9 +274,37 @@ async def login(
 
     # Record on entry so probing varied passwords cannot bypass the limit.
     client_ip = get_client_ip(request)
+
+    async def _record(
+        outcome: str,
+        *,
+        failure_reason: str | None,
+        user_id: str | None,
+    ) -> None:
+        """Best-effort write to ``login_events``; never breaks login on failure."""
+        try:
+            await op_store.record_login_event(
+                email=body.email,
+                outcome=outcome,
+                failure_reason=failure_reason,
+                user_id=user_id,
+                ip=client_ip,
+                user_agent=request.headers.get("user-agent"),
+            )
+        except Exception:
+            logger.exception(
+                "login_event_write_failed",
+                extra={
+                    "event": "login_event_write_failed",
+                    "outcome": outcome,
+                    "failure_reason": failure_reason,
+                },
+            )
+
     allowed, reason = await check_and_record_login(body.email, client_ip)
     if not allowed:
         retry_after = "3600" if reason == "ip" else "900"
+        await _record("failure", failure_reason="rate_limited", user_id=None)
         raise HTTPException(
             status_code=429,
             detail="Too many login attempts. Please try again later.",
@@ -287,10 +315,12 @@ async def login(
     user_row = await op_store.get_user_by_email(body.email)
 
     if not user_row:
+        await _record("failure", failure_reason="user_not_found", user_id=None)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     # Verify password
     if not password_utils.verify_password(body.password, user_row["password_hash"]):
+        await _record("failure", failure_reason="invalid_password", user_id=user_row["id"])
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     # Check if email verification is required and if email is verified
@@ -303,6 +333,7 @@ async def login(
     except (RuntimeError, KeyError):
         pass
     if require_verification and not user_row["email_verified"]:
+        await _record("failure", failure_reason="email_unverified", user_id=user_row["id"])
         raise HTTPException(
             status_code=403,
             detail="Email not verified. Please check your email for the verification link.",
@@ -310,22 +341,29 @@ async def login(
 
     # Check account status
     if user_row["status"] == "pending_approval":
+        await _record(
+            "failure", failure_reason="account_pending_approval", user_id=user_row["id"]
+        )
         raise HTTPException(
             status_code=403,
             detail="Your registration is pending admin approval. You will receive an email once approved.",
         )
 
     if user_row["status"] == "rejected":
+        await _record("failure", failure_reason="account_rejected", user_id=user_row["id"])
         raise HTTPException(
             status_code=403,
             detail="Your registration was not approved. Please contact support for details.",
         )
 
     if user_row["status"] != "active":
+        await _record("failure", failure_reason="account_inactive", user_id=user_row["id"])
         raise HTTPException(
             status_code=403,
             detail=f"Account is {user_row['status']}. Please contact support.",
         )
+
+    await _record("success", failure_reason=None, user_id=user_row["id"])
 
     # Update last login timestamp
     await op_store.update_user_last_login(user_row["id"])
