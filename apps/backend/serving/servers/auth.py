@@ -1,5 +1,6 @@
 """API key authentication and quota enforcement."""
 
+import asyncio
 import hashlib
 import hmac
 import secrets
@@ -17,6 +18,7 @@ from serving.observability.metrics import (
     normalize_model_label,
     normalize_provider_label,
 )
+from serving.observability.rejection_log import log_rejection
 from serving.servers.deps import get_db_logger, get_log_store, get_operational_store
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -82,6 +84,14 @@ def constant_time_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a, b)
 
 
+def _services_from_request(request: Request):
+    """Return ``(log_store, runtime_settings)`` from app state, or ``(None, None)``."""
+    services = getattr(request.app.state, "services", None)
+    log_store = getattr(services, "log_store", None) if services else None
+    runtime_settings = getattr(services, "runtime_settings", None) if services else None
+    return log_store, runtime_settings
+
+
 async def verify_api_key(
     request: Request,
     authorization: str | None = Header(None),
@@ -126,6 +136,18 @@ async def verify_api_key(
                 "reason": "missing_api_key",
             },
         )
+        log_store_, rs_ = _services_from_request(request)
+        asyncio.create_task(
+            log_rejection(
+                log_store=log_store_,
+                runtime_settings=rs_,
+                request=request,
+                status_code=401,
+                error_code="auth_missing",
+                reason="missing_api_key",
+                user=None,
+            )
+        )
         raise HTTPException(
             status_code=401,
             detail="Missing API key. Use 'Authorization: Bearer hyi-xxx' or 'X-API-Key: hyi-xxx'",
@@ -169,6 +191,18 @@ async def verify_api_key(
                 "key_prefix": api_key[:6] if api_key else None,
                 "reason": "invalid_api_key",
             },
+        )
+        log_store_, rs_ = _services_from_request(request)
+        asyncio.create_task(
+            log_rejection(
+                log_store=log_store_,
+                runtime_settings=rs_,
+                request=request,
+                status_code=401,
+                error_code="auth_invalid",
+                reason=f"key_prefix={api_key[:6] if api_key else None}",
+                user=None,
+            )
         )
         raise HTTPException(
             status_code=401,
@@ -218,6 +252,24 @@ async def verify_api_key(
             provider=normalize_provider_label("system"),
             status_code="429",
         ).inc()
+        log_store_, rs_ = _services_from_request(request)
+        asyncio.create_task(
+            log_rejection(
+                log_store=log_store_,
+                runtime_settings=rs_,
+                request=request,
+                status_code=429,
+                error_code="quota_exceeded",
+                reason=(
+                    f"quota_usd={quota_daily_cost_usd:.4f} "
+                    f"spent_usd={cost_spent:.4f}"
+                ),
+                user={
+                    "user_id": user["user_id"],
+                    "role": user.get("role") or "free",
+                },
+            )
+        )
         raise HTTPException(
             status_code=429,
             detail={
