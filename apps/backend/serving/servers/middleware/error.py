@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from serving.exceptions import scrub_error_for_user
 from serving.schemas import ErrorDetail, ErrorResponse
 from serving.utils.errors import categorize_exception
 from serving.utils.logging import get_logger
@@ -54,6 +55,7 @@ def install_error_handlers(app: FastAPI) -> None:
             raise
         except Exception as exc:
             err_type = categorize_exception(exc)
+            request_id = getattr(request.state, "request_id", None)
             logger.error(
                 "unhandled_exception",
                 extra={
@@ -63,7 +65,8 @@ def install_error_handlers(app: FastAPI) -> None:
                 },
                 exc_info=exc,
             )
-            content = _build_error_response(str(exc), code=500, typ=err_type)
+            user_msg = scrub_error_for_user(exc, request_id, 500)
+            content = _build_error_response(user_msg, code=500, typ=err_type)
             return JSONResponse(status_code=500, content=content)
 
     @app.exception_handler(HTTPException)
@@ -74,6 +77,7 @@ def install_error_handlers(app: FastAPI) -> None:
                 status_code=exc.status_code, content=exc.detail, headers=exc.headers
             )
         err_type = categorize_exception(exc)
+        request_id = getattr(request.state, "request_id", None)
         logger.error(
             "http_error",
             extra={
@@ -84,12 +88,14 @@ def install_error_handlers(app: FastAPI) -> None:
             },
             exc_info=exc,
         )
-        content = _build_error_response(str(exc.detail), code=exc.status_code, typ=err_type)
+        user_msg = scrub_error_for_user(exc, request_id, exc.status_code)
+        content = _build_error_response(user_msg, code=exc.status_code, typ=err_type)
         return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
     @app.exception_handler(Exception)
     async def any_exc_handler(request: Request, exc: Exception) -> JSONResponse:
         err_type = categorize_exception(exc)
+        request_id = getattr(request.state, "request_id", None)
         logger.error(
             "unhandled_exception",
             extra={
@@ -99,5 +105,6 @@ def install_error_handlers(app: FastAPI) -> None:
             },
             exc_info=exc,
         )
-        content = _build_error_response(str(exc), code=500, typ=err_type)
+        user_msg = scrub_error_for_user(exc, request_id, 500)
+        content = _build_error_response(user_msg, code=500, typ=err_type)
         return JSONResponse(status_code=500, content=content)

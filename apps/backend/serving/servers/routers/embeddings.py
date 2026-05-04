@@ -53,9 +53,8 @@ async def create_embeddings(
         response = await adapter.embeddings(request.input, **params)
         return response
     except aiohttp.ClientResponseError as exc:
-        # Preserve upstream HTTP status codes (4xx, 5xx)
         logger.error(f"Embedding request failed for model={model}: {exc.status} {exc.message}")
-        raise HTTPException(exc.status, exc.message) from exc
+        raise HTTPException(502, "Embedding service error") from exc
     except Exception as exc:
         logger.error(f"Embedding request failed for model={model}: {exc}")
-        raise HTTPException(500, str(exc)) from exc
+        raise HTTPException(500, "Embedding service error") from exc
