@@ -84,6 +84,20 @@ async def update_runtime_setting_endpoint(
     if expected_type == "str" and not isinstance(value, str):
         raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a string value")
 
+    if expected_type in ("int", "float"):
+        lo = entry.get("min")
+        hi = entry.get("max")
+        if lo is not None and value < lo:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Setting '{key}' value {value} is below min ({lo})",
+            )
+        if hi is not None and value > hi:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Setting '{key}' value {value} is above max ({hi})",
+            )
+
     old_row = await op_store.get_setting(key)
     old_value: Any = None
     if old_row is not None:

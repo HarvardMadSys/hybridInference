@@ -133,3 +133,47 @@ async def test_list_requires_admin_auth(admin_client):
 
     response = await client.get("/admin/settings")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_update_int_setting_below_min_returns_400(monkeypatch, admin_client):
+    """A numeric setting with a `min` floor rejects out-of-range values."""
+    from serving.config import runtime_settings as rs_mod
+
+    # Inject a temporary int setting with min=1 for the duration of the test.
+    monkeypatch.setitem(
+        rs_mod.RUNTIME_SETTINGS_REGISTRY,
+        "_test_floored_int",
+        {"type": "int", "default": 5, "min": 1, "description": "Test-only floored int"},
+    )
+    client, _, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/_test_floored_int",
+        json={"value": 0},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 400
+    assert "min" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_update_int_setting_at_min_succeeds(monkeypatch, admin_client):
+    """The boundary value is accepted."""
+    from serving.config import runtime_settings as rs_mod
+
+    monkeypatch.setitem(
+        rs_mod.RUNTIME_SETTINGS_REGISTRY,
+        "_test_floored_int",
+        {"type": "int", "default": 5, "min": 1, "description": "Test-only floored int"},
+    )
+    client, op_store, _ = admin_client
+    op_store.get_setting.return_value = None
+
+    response = await client.patch(
+        "/admin/settings/_test_floored_int",
+        json={"value": 1},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 200
+    assert response.json()["value"] == 1
