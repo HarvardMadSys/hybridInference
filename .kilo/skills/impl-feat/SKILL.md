@@ -10,7 +10,7 @@ Implement new features or enhancements to the codebase with a structured workflo
 ## Scope
 
 - **Base branch:** always branch off `dev`.
-- **Branch naming:** `jason/claude/<feature-name>` (kebab-case, descriptive).
+- **Branch naming:** `<username>/claude/<feature-name>` (kebab-case, descriptive).
 - **Worktree:** always create a git worktree for the new branch — never work in the main worktree.
 
 ## Step 1 — Prepare
@@ -22,7 +22,7 @@ git fetch origin && git pull origin dev
 Create a worktree and branch:
 
 ```bash
-git worktree add ../hybridInference-<feature-name> -b jason/claude/<feature-name> origin/dev
+git worktree add ../hybridInference-<feature-name> -b <username>/claude/<feature-name> origin/dev
 ```
 
 All subsequent work happens inside the new worktree.
@@ -99,7 +99,7 @@ Note the issue number — reference it in the PR.
 ## Step 7 — Commit and push
 
 ```bash
-git add -A && git commit -m "<descriptive message>" && git push -u origin jason/claude/<feature-name>
+git add -A && git commit -m "<descriptive message>" && git push -u origin <username>/claude/<feature-name>
 ```
 
 Use descriptive commit messages. Don't attribute to Claude unless asked.
