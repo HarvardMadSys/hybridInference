@@ -39,16 +39,19 @@ class CompletionsLogger:
 
         Args:
             log_store: ``LogStore`` instance (Postgres / D1 / dual-write).
-                ``None``-tolerant: callers gate on ``log_store is not None``
-                before invoking ``schedule_log``; the logger does not
-                re-check.
-            model_router_registry: Optional ``ModelRouterRegistry`` used to
-                resolve adapter configs for default-max-tokens lookup. When
-                ``None``, ``build_db_params`` short-circuits and returns the
-                user-supplied ``params`` unchanged.
+                ``None``-tolerant: ``schedule_log`` no-ops when this is
+                ``None``, so callers do not need to pre-gate.
+            model_router_registry: Accepted for backward-compat with
+                bootstrap; currently unused. ``build_db_params`` resolves
+                adapter configs via the ``get_adapter_config_for_provider``
+                closure passed in by the handler scope rather than via this
+                registry.
         """
         self._log_store = log_store
-        self._registry = model_router_registry
+        # NOTE: ``model_router_registry`` is intentionally not stored — the
+        # field was unused and ``build_db_params`` takes the lookup as an
+        # argument. Constructor still accepts the kwarg for API stability.
+        del model_router_registry
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
     # -- DB log scheduling ---------------------------------------------------
