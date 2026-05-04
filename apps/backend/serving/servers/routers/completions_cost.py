@@ -1,12 +1,15 @@
-"""Pricing lookup with caching for the chat-completions handler.
+"""Pricing lookup with caching and asynchronous cost-counter increments.
 
-Replaces the duplicated ``get_pricing_for_provider`` closure and the four
-inline pricing-lookup blocks scattered across the streaming success /
-streaming error / non-streaming / non-streaming-cost paths in the prior
-monolithic completions.py. A single ``PricingLookup.for_routing`` call is
-cached by ``endpoint_id`` (fallback ``(provider, base_url)``) and produces
-the typed :class:`~serving.servers.routers.routing_info.Pricing` consumed
-by ``CostTracker`` (added in the next commit, same file).
+Replaces two duplicated concerns from the prior monolithic completions.py:
+
+- ``get_pricing_for_provider`` and the four inline pricing-lookup blocks
+  scattered across the streaming success / streaming error / non-streaming /
+  non-streaming-cost paths. Now a single ``PricingLookup.for_routing`` call
+  cached by ``endpoint_id`` (fallback ``(provider, base_url)``).
+- ``_schedule_cost_increment`` — moved into ``CostTracker.schedule_increment``
+  with a typed ``Pricing`` input and byte-for-byte cost-math parity vs.
+  ``serving.storage.utils.calculate_cost`` (covered by an explicit
+  parametric equivalence test).
 
 The handler keeps a single source of truth for the raw adapter pricing dict
 (needed by ``LogStore.log_request`` for the api_logs row) by way of
@@ -15,6 +18,7 @@ The handler keeps a single source of truth for the raw adapter pricing dict
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
@@ -31,6 +35,11 @@ class PricingLookup:
     extension if hot-reload ever lands.
     """
 
+    # Sentinel marking "we tried to look up this key and got nothing" so a
+    # repeated query for an unpriced endpoint doesn't re-walk the adapter
+    # list every request.
+    _MISS: Any = object()
+
     def __init__(self, *, router: Any) -> None:
         """Construct with the active route executor.
 
@@ -42,6 +51,7 @@ class PricingLookup:
         """
         self._router = router
         self._dict_cache: dict[tuple[str, str | None], dict[str, str] | None] = {}
+        self._typed_cache: dict[tuple[str, str | None], Pricing | None] = {}
 
     # -- public API ----------------------------------------------------------
 
@@ -178,3 +188,138 @@ def _pricing_from_dict(raw: dict[str, Any]) -> Pricing | None:
         cache_read_price=cache_read,
         cache_write_price=cache_write,
     )
+
+
+class CostTracker:
+    """Compute upstream cost from token usage and fire-and-forget the DB increment.
+
+    Replaces the module-level ``_schedule_cost_increment`` helper from
+    completions.py. The cost-math is centralized in ``_compute_cost`` and
+    is byte-for-byte equivalent to ``serving.storage.utils.calculate_cost``
+    given the same usage and the typed :class:`Pricing` parsed from the
+    same adapter dict.
+    """
+
+    def __init__(self, *, op_store: Any, pricing: PricingLookup) -> None:
+        """Construct with the operational store and pricing lookup.
+
+        Args:
+            op_store: Any object exposing
+                ``async increment_user_cost(user_id, cost_usd)``.
+                ``None``-tolerant: if there's no operational store
+                configured the increment is skipped silently.
+            pricing: The shared :class:`PricingLookup` instance. Used
+                only as a fallback when ``routing.pricing`` is ``None``.
+        """
+        self._op_store = op_store
+        self._pricing = pricing
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+
+    async def schedule_increment(
+        self,
+        *,
+        user_id: str,
+        routing: RoutingInfo,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+    ) -> RoutingInfo:
+        """Compute cost, schedule the DB increment, return enriched routing.
+
+        Returns a *new* :class:`RoutingInfo` (frozen dataclass) with
+        ``upstream_cost_usd`` populated when pricing is available; the
+        increment is dispatched as a background task so the response path
+        is never blocked. If pricing is unavailable, returns ``routing``
+        unchanged.
+
+        The increment is skipped when the computed cost is non-positive
+        (matches the prior ``_schedule_cost_increment`` semantics — auth
+        failures and 4xx error paths never reach this method, but freebie
+        models with zero pricing legitimately produce zero cost).
+        """
+        pricing = routing.pricing or self._pricing.for_routing(routing)
+        if pricing is None:
+            return routing
+
+        cost = self._compute_cost(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            pricing=pricing,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+
+        # Reflect cost back into routing regardless of whether we schedule
+        # the increment, so the log payload sees a consistent value.
+        import dataclasses as _dc
+
+        enriched = _dc.replace(routing, pricing=pricing, upstream_cost_usd=cost)
+
+        if cost is None or cost <= 0 or self._op_store is None:
+            return enriched
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug(f"No event loop; dropping cost increment for {user_id}")
+            return enriched
+
+        async def _increment() -> None:
+            try:
+                await self._op_store.increment_user_cost(user_id, cost)
+            except Exception as exc:
+                logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
+
+        task = loop.create_task(_increment())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return enriched
+
+    @staticmethod
+    def _compute_cost(
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        pricing: Pricing,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+    ) -> float | None:
+        """Mirror :func:`serving.storage.utils.calculate_cost` byte-for-byte.
+
+        Cache-read / cache-write tokens are subtracted from the billable
+        prompt total only when the adapter configures a non-zero cache
+        rate (otherwise they fall through to the regular prompt rate, the
+        same behavior as the dict-based path).
+        """
+        try:
+            prompt = float(prompt_tokens or 0)
+            completion = float(completion_tokens or 0)
+            reasoning = float(reasoning_tokens or 0)
+            cache_r = float(cache_read_tokens or 0)
+            cache_w = float(cache_write_tokens or 0)
+
+            prompt_p = float(pricing.prompt_price)
+            completion_p = float(pricing.completion_price)
+            cache_r_p = float(pricing.cache_read_price)
+            cache_w_p = float(pricing.cache_write_price)
+
+            billable_prompt = prompt
+            if cache_r_p > 0:
+                billable_prompt -= cache_r
+            if cache_w_p > 0:
+                billable_prompt -= cache_w
+            billable_prompt = max(billable_prompt, 0.0)
+
+            return (
+                (billable_prompt * prompt_p / 1_000_000)
+                + (completion * completion_p / 1_000_000)
+                + (reasoning * completion_p / 1_000_000)
+                + (cache_r * cache_r_p / 1_000_000)
+                + (cache_w * cache_w_p / 1_000_000)
+            )
+        except (ValueError, TypeError):
+            return None
