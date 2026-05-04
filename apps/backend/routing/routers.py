@@ -9,7 +9,6 @@ Provides:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import random
 import threading
@@ -23,18 +22,10 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 from serving.observability.alerts import AlertSeverity, alert_slack
-from serving.observability.metrics import (
-    API_FALLBACKS,
-    API_TTFT,
-    CIRCUIT_OPEN_TOTAL,
-    CIRCUIT_STATE,
-    PROVIDER_AVAILABILITY,
-    PROVIDER_LATENCY,
-    STREAMING_INTERRUPTION,
-    normalize_model_label,
-    normalize_provider_label,
-)
 from serving.utils import context as req_ctx
+from serving.utils.logging import get_logger
+
+log = get_logger(__name__)
 
 # Strong references to fire-and-forget Slack alert tasks. asyncio holds only
 # weak refs to scheduled tasks, so without this set the GC may cancel an alert
@@ -141,11 +132,6 @@ def _has_non_empty_content(chunk: Any) -> bool:
         return True
 
 
-def _safe_set_availability(provider: str, value: float) -> None:
-    with contextlib.suppress(Exception):
-        PROVIDER_AVAILABILITY.labels(provider=normalize_provider_label(provider)).set(value)
-
-
 def _reason_str(s: str) -> str:
     return s if s and len(s) < 64 else "error"
 
@@ -227,7 +213,6 @@ class _CircuitBreaker:
         self.consecutive_failures = 0
         self.last_opened: float | None = None
         self._lock = threading.Lock()
-        CIRCUIT_STATE.labels(provider=normalize_provider_label(provider)).set(0)
 
     def allow_request(self) -> bool:
         with self._lock:
@@ -239,7 +224,6 @@ class _CircuitBreaker:
                 if (time.perf_counter() - self.last_opened) >= self.cooldown_seconds:
                     # Move to half-open for a trial request.
                     self.state = _CircuitState.HALF_OPEN
-                    CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(0)
                     return True
                 return False
             # HALF_OPEN allows a single trial at a time; conservative approach: allow.
@@ -250,7 +234,6 @@ class _CircuitBreaker:
             self.consecutive_failures = 0
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
                 self.state = _CircuitState.CLOSED
-                CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(0)
 
     def on_failure(self, *, availability: float | None = None, reason: str = "error") -> None:
         with self._lock:
@@ -264,10 +247,6 @@ class _CircuitBreaker:
                 prev_state = self.state
                 self.state = _CircuitState.OPEN
                 self.last_opened = time.perf_counter()
-                CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(1)
-                CIRCUIT_OPEN_TOTAL.labels(
-                    provider=normalize_provider_label(self.provider), reason=reason
-                ).inc()
                 # Fire-and-forget Slack alert on CLOSED→OPEN or HALF_OPEN→OPEN.
                 if prev_state in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
                     try:
@@ -331,9 +310,7 @@ class BaseRouter:
         with self._lock:
             self._ensure_health(endpoint_id)
             self._health[endpoint_id].record(True)
-            avail = self._health[endpoint_id].availability
             self._circuits[endpoint_id].on_success()
-        _safe_set_availability(endpoint_id, avail)
 
     def _on_failure(self, endpoint_id: str, *, reason: str = "error") -> None:
         with self._lock:
@@ -341,7 +318,6 @@ class BaseRouter:
             self._health[endpoint_id].record(False)
             avail = self._health[endpoint_id].availability
             self._circuits[endpoint_id].on_failure(availability=avail, reason=_reason_str(reason))
-        _safe_set_availability(endpoint_id, avail)
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
         """Return a snapshot of provider availability and circuit state."""
@@ -380,13 +356,7 @@ class BaseRouter:
         endpoint_id = _get_endpoint_id(adapter)
         with req_ctx.push(model=model_id, provider=adapter.config.provider):
             self._ensure_health(endpoint_id)
-            started = time.perf_counter()
             resp = await adapter.chat_completion(messages, **params)
-            PROVIDER_LATENCY.labels(
-                provider=normalize_provider_label(endpoint_id),
-                model=normalize_model_label(model_id),
-                operation="chat_completion",
-            ).observe(time.perf_counter() - started)
             self._on_success(endpoint_id)
         return resp
 
@@ -410,10 +380,15 @@ class BaseRouter:
             async for chunk in adapter.stream_chat_completion(messages, **params):
                 if first and _has_non_empty_content(chunk):
                     first = False
-                    API_TTFT.labels(
-                        provider=normalize_provider_label(endpoint_id),
-                        model=normalize_model_label(model_id),
-                    ).observe(time.perf_counter() - started)
+                    log.info(
+                        "ttft",
+                        extra={
+                            "event": "ttft",
+                            "provider": endpoint_id,
+                            "model": model_id,
+                            "ttft_ms": int((time.perf_counter() - started) * 1000),
+                        },
+                    )
                     self._on_success(endpoint_id)
                 yield chunk
 
@@ -472,11 +447,15 @@ class BaseRouter:
                             "endpoint_id",
                             getattr(adapter.config, "endpoint_id", None),
                         )
-                        API_FALLBACKS.labels(
-                            from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                            to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
-                            reason=primary_error.__class__.__name__,
-                        ).inc()
+                        log.info(
+                            "fallback_used",
+                            extra={
+                                "event": "fallback_used",
+                                "from_provider": _get_endpoint_id(primary),
+                                "to_provider": _get_endpoint_id(adapter),
+                                "reason": primary_error.__class__.__name__,
+                            },
+                        )
                         return resp
                     except Exception:
                         self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
@@ -529,11 +508,15 @@ class BaseRouter:
                             adapter, model_id, messages, **params
                         ):
                             yield chunk
-                        API_FALLBACKS.labels(
-                            from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                            to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
-                            reason=primary_error.__class__.__name__,
-                        ).inc()
+                        log.info(
+                            "fallback_used",
+                            extra={
+                                "event": "fallback_used",
+                                "from_provider": _get_endpoint_id(primary),
+                                "to_provider": _get_endpoint_id(adapter),
+                                "reason": primary_error.__class__.__name__,
+                            },
+                        )
                         return
                     except Exception:
                         self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
@@ -710,13 +693,7 @@ class FixedRouter(BaseRouter):
             with req_ctx.push(model=model_id, provider=primary.config.provider):
                 endpoint_id = _get_endpoint_id(primary)
                 self._ensure_health(endpoint_id)
-                started = time.perf_counter()
                 resp = await primary.chat_completion(messages, **params)
-                PROVIDER_LATENCY.labels(
-                    provider=normalize_provider_label(endpoint_id),
-                    model=normalize_model_label(model_id),
-                    operation="chat_completion",
-                ).observe(time.perf_counter() - started)
                 self._on_success(endpoint_id)
             # Preserve adapter-set _routing if present;
             # only set default routing if the adapter didn't provide one.
@@ -743,13 +720,7 @@ class FixedRouter(BaseRouter):
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
                         endpoint_id = _get_endpoint_id(adapter)
                         self._ensure_health(endpoint_id)
-                        started = time.perf_counter()
                         resp = await adapter.chat_completion(messages, **params)
-                        PROVIDER_LATENCY.labels(
-                            provider=normalize_provider_label(endpoint_id),
-                            model=normalize_model_label(model_id),
-                            operation="chat_completion",
-                        ).observe(time.perf_counter() - started)
                         self._on_success(endpoint_id)
                     if "_routing" not in resp:
                         resp["_routing"] = {
@@ -758,11 +729,15 @@ class FixedRouter(BaseRouter):
                             "fallback": True,
                         }
                     resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(adapter))
-                    API_FALLBACKS.labels(
-                        from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                        to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
-                        reason=primary_error.__class__.__name__,
-                    ).inc()
+                    log.info(
+                        "fallback_used",
+                        extra={
+                            "event": "fallback_used",
+                            "from_provider": _get_endpoint_id(primary),
+                            "to_provider": _get_endpoint_id(adapter),
+                            "reason": primary_error.__class__.__name__,
+                        },
+                    )
                     return resp
                 except Exception:
                     self._on_failure(endpoint_id, reason="chat_exception")
@@ -809,10 +784,15 @@ class FixedRouter(BaseRouter):
                         # Observe TTFT only when the first non-empty content arrives.
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
-                        API_TTFT.labels(
-                            provider=normalize_provider_label(primary_endpoint_id),
-                            model=normalize_model_label(model_id),
-                        ).observe(time.perf_counter() - started)
+                        log.info(
+                            "ttft",
+                            extra={
+                                "event": "ttft",
+                                "provider": primary_endpoint_id,
+                                "model": model_id,
+                                "ttft_ms": int((time.perf_counter() - started) * 1000),
+                            },
+                        )
                         # Consider first non-empty token as a success signal for availability.
                         self._on_success(primary_endpoint_id)
                     yield chunk
@@ -820,11 +800,16 @@ class FixedRouter(BaseRouter):
             return
         except Exception as primary_error:
             # record streaming interruption for primary provider
-            STREAMING_INTERRUPTION.labels(
-                model=model_id,
-                provider=normalize_provider_label(_get_endpoint_id(primary)),
-                stage="adapter_stream",
-            ).inc()
+            log.info(
+                "streaming_interruption",
+                extra={
+                    "event": "streaming_interruption",
+                    "model": model_id,
+                    "provider": _get_endpoint_id(primary),
+                    "stage": "adapter_stream",
+                    "reason": primary_error.__class__.__name__,
+                },
+            )
             self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
@@ -849,24 +834,38 @@ class FixedRouter(BaseRouter):
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and _has_non_empty_content(chunk):
                                 first = False
-                                API_TTFT.labels(
-                                    provider=normalize_provider_label(adapter_endpoint_id),
-                                    model=normalize_model_label(model_id),
-                                ).observe(time.perf_counter() - started)
+                                log.info(
+                                    "ttft",
+                                    extra={
+                                        "event": "ttft",
+                                        "provider": adapter_endpoint_id,
+                                        "model": model_id,
+                                        "ttft_ms": int((time.perf_counter() - started) * 1000),
+                                    },
+                                )
                                 self._on_success(adapter_endpoint_id)
                             yield chunk
-                    API_FALLBACKS.labels(
-                        from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                        to_provider=normalize_provider_label(adapter_endpoint_id),
-                        reason=primary_error.__class__.__name__,
-                    ).inc()
+                    log.info(
+                        "fallback_used",
+                        extra={
+                            "event": "fallback_used",
+                            "from_provider": _get_endpoint_id(primary),
+                            "to_provider": adapter_endpoint_id,
+                            "reason": primary_error.__class__.__name__,
+                        },
+                    )
                     return
-                except Exception:
-                    STREAMING_INTERRUPTION.labels(
-                        model=model_id,
-                        provider=normalize_provider_label(adapter_endpoint_id),
-                        stage="adapter_stream",
-                    ).inc()
+                except Exception as fallback_error:
+                    log.info(
+                        "streaming_interruption",
+                        extra={
+                            "event": "streaming_interruption",
+                            "model": model_id,
+                            "provider": adapter_endpoint_id,
+                            "stage": "adapter_stream",
+                            "reason": fallback_error.__class__.__name__,
+                        },
+                    )
                     self._on_failure(adapter_endpoint_id, reason="stream_exception")
                     continue
             raise primary_error
