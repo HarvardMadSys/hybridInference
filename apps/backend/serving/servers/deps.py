@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
     from serving.observability.alert_rules import AlertEngine
+    from serving.servers.routers.completions_logging import CompletionsLogger
     from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
 
@@ -48,6 +49,7 @@ class AppServices:
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None
+    completions_logger: CompletionsLogger | None = None
 
 
 def get_services(request: Request) -> AppServices:
@@ -100,6 +102,26 @@ def get_model_router_registry(
 ) -> ModelRouterRegistry | None:
     """Dependency to obtain the ModelRouterRegistry (if configured)."""
     return services.model_router_registry
+
+
+def get_completions_logger(
+    services: AppServices = Depends(get_services),
+) -> CompletionsLogger:
+    """Dependency to obtain the ``CompletionsLogger``.
+
+    Lazily constructs a logger if bootstrap didn't initialize one (e.g., in
+    tests that build ``AppServices`` directly without going through
+    ``bootstrap.initialize``). Returning a ready-to-use instance keeps the
+    handler free of None checks.
+    """
+    if services.completions_logger is not None:
+        return services.completions_logger
+    from serving.servers.routers.completions_logging import CompletionsLogger as _CL
+
+    return _CL(
+        log_store=services.log_store,
+        model_router_registry=services.model_router_registry,
+    )
 
 
 def is_database_connected(db_logger: DatabaseLogger | None) -> bool:
