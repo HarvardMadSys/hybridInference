@@ -30,9 +30,11 @@ LimitsProvider = Callable[[], Awaitable[dict[str, int]]]
 
 
 def _build_fallback_limits() -> dict[str, int]:
-    """Derive fallback caps from the runtime-settings registry so the two
-    sources can't drift. Imported lazily inside the function so importing
-    this module never forces an early import of ``runtime_settings``."""
+    """Derive fallback caps from the runtime-settings registry.
+
+    The registry import is deferred to the function body so importing this
+    module never forces an early import of ``runtime_settings``.
+    """
     from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
     return {
