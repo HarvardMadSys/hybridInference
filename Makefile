@@ -1,5 +1,6 @@
 .PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
-       docker-volumes up down restart ps logs build
+       docker-volumes up down restart ps logs build \
+       migrate migrate-down migrate-new migrate-status
 
 # Default target
 .DEFAULT_GOAL := help
@@ -90,6 +91,8 @@ setup-dev:  ## Set up development environment
 	@# Sync development dependencies from pyproject.toml
 	uv sync --group dev
 	$(UV_RUN) pre-commit install
+	@# Apply Alembic migrations against the local DB if env vars are set.
+	@if [ -n "$$DB_NAME" ]; then $(MAKE) migrate; fi
 	@echo "$(GREEN)✓ Development environment ready$(RESET)"
 
 clean:  ## Clean build artifacts and cache
@@ -173,3 +176,18 @@ ifdef s
 else
 	$(COMPOSE) up -d --build
 endif
+
+# ─── Database migrations (Alembic) ───────────────────────────────────────────
+migrate:  ## Apply all outstanding Alembic migrations to the configured DB
+	$(UV_RUN) alembic upgrade head
+
+migrate-down:  ## Roll back the most recent migration (where reversible)
+	$(UV_RUN) alembic downgrade -1
+
+migrate-new:  ## Generate a new migration file (usage: make migrate-new NAME='add_foo_to_bar')
+	@if [ -z "$(NAME)" ]; then echo "Usage: make migrate-new NAME='add_foo_to_bar'"; exit 1; fi
+	$(UV_RUN) alembic revision -m "$(NAME)"
+
+migrate-status:  ## Show current revision + recent history
+	$(UV_RUN) alembic current
+	$(UV_RUN) alembic history --verbose | head -20
