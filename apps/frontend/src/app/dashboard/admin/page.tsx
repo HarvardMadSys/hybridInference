@@ -873,42 +873,47 @@ export default function AdminPage() {
     | 'broadcast'
     | 'providers'
     | 'analytics'
-    | 'performance'
     | 'token-usage'
     | 'settings'
   >('users');
 
+  // Providers sub-tab
+  const [providerSubTab, setProviderSubTab] = useState<'quota' | 'performance'>('quota');
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
-    const normalized = tab === 'provider-perf' ? 'performance' : tab;
-    if (
-      normalized === 'users' ||
-      normalized === 'audit' ||
-      normalized === 'requests' ||
-      normalized === 'broadcast' ||
-      normalized === 'providers' ||
-      normalized === 'analytics' ||
-      normalized === 'performance' ||
-      normalized === 'token-usage' ||
-      normalized === 'settings'
+    const sub = params.get('sub');
+    if (tab === 'performance' || tab === 'provider-perf') {
+      setActiveTab('providers');
+      setProviderSubTab('performance');
+      params.set('tab', 'providers');
+      params.set('sub', 'performance');
+      const next = `${window.location.pathname}?${params.toString()}`;
+      window.history.replaceState({}, '', next);
+    } else if (
+      tab === 'users' ||
+      tab === 'audit' ||
+      tab === 'requests' ||
+      tab === 'broadcast' ||
+      tab === 'providers' ||
+      tab === 'analytics' ||
+      tab === 'token-usage' ||
+      tab === 'settings'
     ) {
       setActiveTab(
-        normalized as
+        tab as
           | 'users'
           | 'audit'
           | 'requests'
           | 'broadcast'
           | 'providers'
           | 'analytics'
-          | 'performance'
           | 'token-usage'
           | 'settings',
       );
-      if (tab === 'provider-perf') {
-        params.set('tab', 'performance');
-        const next = `${window.location.pathname}?${params.toString()}`;
-        window.history.replaceState({}, '', next);
+      if (tab === 'providers' && sub === 'performance') {
+        setProviderSubTab('performance');
       }
     }
   }, []);
@@ -1136,8 +1141,9 @@ export default function AdminPage() {
   }, [loadRequests, loadRequestMetrics, activeTab]);
 
   useEffect(() => {
-    if (activeTab === 'performance') loadPerformanceMetrics();
-  }, [loadPerformanceMetrics, activeTab]);
+    if (activeTab === 'providers' && providerSubTab === 'performance')
+      loadPerformanceMetrics();
+  }, [loadPerformanceMetrics, activeTab, providerSubTab]);
 
   useEffect(() => {
     if (activeTab === 'providers') loadProviderQuotas();
@@ -1192,13 +1198,17 @@ export default function AdminPage() {
       | 'broadcast'
       | 'providers'
       | 'analytics'
-      | 'performance'
       | 'token-usage'
       | 'settings',
   ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
     params.set('tab', tab);
+    if (tab === 'providers') {
+      params.set('sub', providerSubTab);
+    } else {
+      params.delete('sub');
+    }
     const next = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', next);
   };
@@ -1217,12 +1227,12 @@ export default function AdminPage() {
       return;
     }
     if (activeTab === 'providers') {
-      loadProviderQuotas();
-      return;
-    }
-    if (activeTab === 'performance') {
-      loadPerformanceMetrics();
-      setPerfRefreshNonce((n) => n + 1);
+      if (providerSubTab === 'quota') {
+        loadProviderQuotas();
+      } else {
+        loadPerformanceMetrics();
+        setPerfRefreshNonce((n) => n + 1);
+      }
       return;
     }
     if (activeTab === 'analytics') {
@@ -1302,7 +1312,6 @@ export default function AdminPage() {
               'audit',
               'broadcast',
               'analytics',
-              'performance',
               'settings',
             ] as const
           ).map((tab) => (
@@ -1329,9 +1338,7 @@ export default function AdminPage() {
                           ? 'Broadcast Email'
                           : tab === 'analytics'
                             ? 'Analytics'
-                            : tab === 'performance'
-                              ? 'Performance'
-                              : 'Settings'}
+                            : 'Settings'}
             </button>
           ))}
         </div>
@@ -1526,19 +1533,82 @@ export default function AdminPage() {
         {/* ========== Providers Tab ========== */}
         {activeTab === 'providers' && (
           <div className="mt-6">
-            {providerQuotasLoading ? (
-              <div className="flex justify-center py-24">
-                <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-              </div>
-            ) : providerQuotas.length === 0 ? (
-              <div className="py-24 text-center">
-                <p className="text-[13px] text-gray-400">No provider data.</p>
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {providerQuotas.map((p) => (
-                  <ProviderCard key={p.name} provider={p} />
-                ))}
+            {/* Sub-tab toggle */}
+            <div className="mb-5 flex items-center gap-1">
+              {(['quota', 'performance'] as const).map((sub) => (
+                <button
+                  key={sub}
+                  onClick={() => {
+                    setProviderSubTab(sub);
+                    const params = new URLSearchParams(window.location.search);
+                    params.set('tab', 'providers');
+                    params.set('sub', sub);
+                    window.history.replaceState(
+                      {},
+                      '',
+                      `${window.location.pathname}?${params.toString()}`,
+                    );
+                  }}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
+                    providerSubTab === sub
+                      ? 'bg-gray-900 text-white'
+                      : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+                  }`}
+                >
+                  {sub === 'quota' ? 'Quota' : 'Performance'}
+                </button>
+              ))}
+            </div>
+
+            {/* Quota sub-tab */}
+            {providerSubTab === 'quota' &&
+              (providerQuotasLoading ? (
+                <div className="flex justify-center py-24">
+                  <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+                </div>
+              ) : providerQuotas.length === 0 ? (
+                <div className="py-24 text-center">
+                  <p className="text-[13px] text-gray-400">No provider data.</p>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {providerQuotas.map((p) => (
+                    <ProviderCard key={p.name} provider={p} />
+                  ))}
+                </div>
+              ))}
+
+            {/* Performance sub-tab */}
+            {providerSubTab === 'performance' && (
+              <div className="space-y-6">
+                <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-[14px] font-semibold text-gray-900">
+                        Performance metrics
+                      </h2>
+                      <p className="text-[11px] text-gray-400">
+                        Prompt/response length, time-to-first-token, and inter-token latency
+                        distributions.
+                      </p>
+                    </div>
+                    {perfMetricsLoading && (
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+                    )}
+                  </div>
+                  {perfMetrics.length > 0 ? (
+                    <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
+                      {perfMetrics.map((metric) => (
+                        <PerformanceMetricsCard key={metric.key} metric={metric} />
+                      ))}
+                    </div>
+                  ) : !perfMetricsLoading ? (
+                    <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+                      <p className="text-[13px] text-gray-400">No performance metrics available.</p>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             )}
           </div>
@@ -2032,37 +2102,6 @@ export default function AdminPage() {
         {activeTab === 'analytics' && <AnalyticsTab />}
         {activeTab === 'token-usage' && <TokenUsageTab />}
         {activeTab === 'settings' && <SettingsTab />}
-
-        {activeTab === 'performance' && (
-          <div className="mt-5 space-y-6">
-            <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <div>
-                  <h2 className="text-[14px] font-semibold text-gray-900">Performance metrics</h2>
-                  <p className="text-[11px] text-gray-400">
-                    Prompt/response length, time-to-first-token, and inter-token latency
-                    distributions.
-                  </p>
-                </div>
-                {perfMetricsLoading && (
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-                )}
-              </div>
-              {perfMetrics.length > 0 ? (
-                <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
-                  {perfMetrics.map((metric) => (
-                    <PerformanceMetricsCard key={metric.key} metric={metric} />
-                  ))}
-                </div>
-              ) : !perfMetricsLoading ? (
-                <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
-                  <p className="text-[13px] text-gray-400">No performance metrics available.</p>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        )}
 
         {/* ========== Broadcast Email Tab ========== */}
         {activeTab === 'broadcast' && (
