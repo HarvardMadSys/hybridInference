@@ -261,3 +261,20 @@ async def test_update_float_setting_rejects_bool(monkeypatch, admin_client):
     )
     assert response.status_code == 400
     assert "numeric" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_list_settings_includes_log_rejected_requests(admin_client):
+    """The new log_rejected_requests bool setting is exposed via /admin/settings."""
+    client, op_store, _ = admin_client
+    op_store.get_setting = AsyncMock(return_value=None)
+
+    response = await client.get(
+        "/admin/settings",
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 200
+    by_key = {item["key"]: item for item in response.json()["settings"]}
+    assert "log_rejected_requests" in by_key
+    assert by_key["log_rejected_requests"]["value_type"] == "bool"
+    assert by_key["log_rejected_requests"]["default_value"] is False

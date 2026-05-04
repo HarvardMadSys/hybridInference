@@ -43,6 +43,14 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "default": False,
         "description": "Log full request payloads at DEBUG level",
     },
+    "log_rejected_requests": {
+        "type": "bool",
+        "default": False,
+        "description": (
+            "Persist rejected inference requests (rate-limit, quota, auth, "
+            "model-not-found) to api_logs with metadata.rejection=true."
+        ),
+    },
     "user_concurrency_free": {
         "type": "int",
         "default": 3,
