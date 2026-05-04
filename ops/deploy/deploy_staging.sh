@@ -66,6 +66,9 @@ log "Build metadata: SHA=${BUILD_SHA} TIMESTAMP=${BUILD_TIMESTAMP}."
 log "Ensuring Postgres is reachable for migrations."
 "${COMPOSE[@]}" up -d postgres
 
+log "Building backend image so migrations run against the new revision."
+"${COMPOSE[@]}" build backend
+
 log "Running database migrations (alembic upgrade head)."
 if ! "${COMPOSE[@]}" run --rm backend uv run alembic upgrade head; then
   log "Migration failed; aborting deploy before container restart."
