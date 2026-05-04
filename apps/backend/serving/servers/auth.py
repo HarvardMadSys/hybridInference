@@ -176,6 +176,13 @@ async def verify_api_key(
         )
 
     require_verification = get_settings().signup_require_email_verification
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        require_verification = await rs.get_bool("signup_require_email_verification")
+    except (RuntimeError, KeyError):
+        pass
     if require_verification and user.get("email") and not user.get("email_verified"):
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
@@ -297,6 +304,13 @@ async def optional_verify_api_key(
         return None  # Key invalid or expired — treat as anonymous
 
     require_verification = get_settings().signup_require_email_verification
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        require_verification = await rs.get_bool("signup_require_email_verification")
+    except (RuntimeError, KeyError):
+        pass
     if require_verification and row["email"] and not row["email_verified"]:
         return None
 

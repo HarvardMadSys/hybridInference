@@ -424,10 +424,19 @@ async def initialize() -> AppServices:
     runtime_settings = None
     if operational_store:
         try:
-            from serving.config.runtime_settings import init_runtime_settings
+            from serving.config.runtime_settings import (
+                RUNTIME_SETTINGS_REGISTRY,
+                init_runtime_settings,
+            )
 
             runtime_settings = init_runtime_settings(operational_store)
             logger.info("Runtime settings initialized")
+
+            for _key in RUNTIME_SETTINGS_REGISTRY:
+                try:
+                    await runtime_settings.get_bool(_key)
+                except Exception as _exc:
+                    logger.warning(f"Runtime settings cache warmup failed for {_key!r}: {_exc}")
         except Exception as exc:
             logger.warning(f"Runtime settings initialization failed: {exc}")
 

@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException, Request
 
-from serving.servers.auth import decrypt_api_key, encrypt_api_key, hash_api_key, verify_api_key
+from serving.servers.auth import (
+    decrypt_api_key,
+    encrypt_api_key,
+    hash_api_key,
+    optional_verify_api_key,
+    verify_api_key,
+)
 
 
 @pytest.fixture
@@ -305,3 +311,184 @@ async def test_auth_updates_last_used_at(monkeypatch, mock_request, mock_op_stor
     )
 
     mock_op_store.update_key_last_used.assert_awaited_once_with(6)
+
+
+# ---------------------------------------------------------------------------
+# RuntimeSettings wiring: signup_require_email_verification
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _rt_store():
+    store = MagicMock()
+    store.get_setting = AsyncMock(return_value=None)
+    return store
+
+
+async def test_verify_api_key_respects_runtime_flag_disabled(
+    monkeypatch, mock_request, mock_op_store, mock_ls, _rt_store
+):
+    """verify_api_key passes an unverified user when the flag is off via RuntimeSettings."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1")
+    plaintext_key = "hyi-rt-flag-off"
+    _hashed_key(monkeypatch, plaintext_key)
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = {
+        "id": 10,
+        "user_id": "unverified-rt",
+        "user_name": "RT Test",
+        "quota_daily_cost_usd": 1000.0,
+        "role": "free",
+        "email": "rt@test.example.com",
+        "email_verified": False,
+    }
+    mock_op_store.get_user_cost_today.return_value = 0.0
+
+    import serving.config.runtime_settings as _mod
+    from serving.config.runtime_settings import RuntimeSettings
+
+    rt = RuntimeSettings(_rt_store, ttl=30.0)
+    rt._cache["signup_require_email_verification"] = (
+        __import__("time").monotonic(),
+        False,
+    )
+    old = _mod._runtime_settings
+    try:
+        _mod._runtime_settings = rt
+        result = await verify_api_key(
+            request=mock_request,
+            authorization=f"Bearer {plaintext_key}",
+            op_store=mock_op_store,
+            log_store=mock_ls,
+        )
+    finally:
+        _mod._runtime_settings = old
+
+    assert result["user_id"] == "unverified-rt"
+    assert result["authenticated"] is True
+
+
+async def test_verify_api_key_respects_runtime_flag_enabled(
+    monkeypatch, mock_request, mock_op_store, mock_ls, _rt_store
+):
+    """verify_api_key blocks an unverified user when the flag is on via RuntimeSettings."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.delenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", raising=False)
+    plaintext_key = "hyi-rt-flag-on"
+    _hashed_key(monkeypatch, plaintext_key)
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = {
+        "id": 11,
+        "user_id": "unverified-rt2",
+        "user_name": "RT Test2",
+        "quota_daily_cost_usd": 1000.0,
+        "role": "free",
+        "email": "rt2@test.example.com",
+        "email_verified": False,
+    }
+    mock_op_store.get_user_cost_today.return_value = 0.0
+
+    import serving.config.runtime_settings as _mod
+    from serving.config.runtime_settings import RuntimeSettings
+
+    rt = RuntimeSettings(_rt_store, ttl=30.0)
+    rt._cache["signup_require_email_verification"] = (
+        __import__("time").monotonic(),
+        True,
+    )
+    old = _mod._runtime_settings
+    try:
+        _mod._runtime_settings = rt
+        with pytest.raises(HTTPException) as exc:
+            await verify_api_key(
+                request=mock_request,
+                authorization=f"Bearer {plaintext_key}",
+                op_store=mock_op_store,
+                log_store=mock_ls,
+            )
+    finally:
+        _mod._runtime_settings = old
+
+    assert exc.value.status_code == 403
+
+
+async def test_optional_verify_api_key_respects_runtime_flag_disabled(
+    monkeypatch, mock_request, mock_op_store, _rt_store
+):
+    """optional_verify_api_key passes an unverified user when the flag is off via RuntimeSettings."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1")
+    plaintext_key = "hyi-opt-rt-off"
+    _hashed_key(monkeypatch, plaintext_key)
+
+    mock_op_store.get_auth_context_lightweight = AsyncMock(
+        return_value={
+            "user_id": "opt-unverified",
+            "role": "free",
+            "email": "opt@test.example.com",
+            "email_verified": False,
+        }
+    )
+
+    import serving.config.runtime_settings as _mod
+    from serving.config.runtime_settings import RuntimeSettings
+
+    rt = RuntimeSettings(_rt_store, ttl=30.0)
+    rt._cache["signup_require_email_verification"] = (
+        __import__("time").monotonic(),
+        False,
+    )
+    old = _mod._runtime_settings
+    try:
+        _mod._runtime_settings = rt
+        result = await optional_verify_api_key(
+            request=mock_request,
+            authorization=f"Bearer {plaintext_key}",
+            op_store=mock_op_store,
+        )
+    finally:
+        _mod._runtime_settings = old
+
+    assert result is not None
+    assert result["user_id"] == "opt-unverified"
+
+
+async def test_optional_verify_api_key_respects_runtime_flag_enabled(
+    monkeypatch, mock_request, mock_op_store, _rt_store
+):
+    """optional_verify_api_key returns None for unverified user when flag is on via RuntimeSettings."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.delenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", raising=False)
+    plaintext_key = "hyi-opt-rt-on"
+    _hashed_key(monkeypatch, plaintext_key)
+
+    mock_op_store.get_auth_context_lightweight = AsyncMock(
+        return_value={
+            "user_id": "opt-unverified2",
+            "role": "free",
+            "email": "opt2@test.example.com",
+            "email_verified": False,
+        }
+    )
+
+    import serving.config.runtime_settings as _mod
+    from serving.config.runtime_settings import RuntimeSettings
+
+    rt = RuntimeSettings(_rt_store, ttl=30.0)
+    rt._cache["signup_require_email_verification"] = (
+        __import__("time").monotonic(),
+        True,
+    )
+    old = _mod._runtime_settings
+    try:
+        _mod._runtime_settings = rt
+        result = await optional_verify_api_key(
+            request=mock_request,
+            authorization=f"Bearer {plaintext_key}",
+            op_store=mock_op_store,
+        )
+    finally:
+        _mod._runtime_settings = old
+
+    assert result is None
