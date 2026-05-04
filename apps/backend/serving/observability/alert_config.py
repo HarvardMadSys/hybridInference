@@ -50,6 +50,22 @@ class CountRule(BaseModel):
     cooldown_sec: int = 600
 
 
+class PendingDecisionsLeakConfig(BaseModel):
+    """Config for ``PendingDecisionsLeakRule``.
+
+    Fires when the number of ``routewise_decision_evicted`` events seen
+    over ``window_sec`` exceeds ``threshold_count``. Indicates that
+    ``RouteWiseRouter._pending_decisions`` is leaking entries (likely
+    because ``record_observation`` / ``chat_completion`` is not consuming
+    them on some code path).
+    """
+
+    enabled: bool = True
+    window_sec: int = 600
+    threshold_count: int = 20
+    cooldown_sec: int = 3600
+
+
 class LatencyRule(BaseModel):
     """Sliding-window latency rule with per-key overrides."""
 
@@ -70,6 +86,9 @@ class Rules(BaseModel):
     auth_failure_spike: CountRule = Field(default_factory=CountRule)
     concurrency_exhausted: CountRule = Field(
         default_factory=lambda: CountRule(window_sec=300, threshold_count=100, cooldown_sec=1800)
+    )
+    pending_decisions_leak: PendingDecisionsLeakConfig = Field(
+        default_factory=PendingDecisionsLeakConfig
     )
 
 

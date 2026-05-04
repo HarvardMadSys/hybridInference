@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         AlertConfig,
         CountRule,
         LatencyRule,
+        PendingDecisionsLeakConfig,
         ProviderHourlySpend,
         RateRule,
         UserOverrun,
@@ -314,6 +315,45 @@ class ConcurrencyExhaustedRule:
         )
 
 
+class PendingDecisionsLeakRule:
+    """Alert when RouteWise pending-decision evictions exceed a threshold.
+
+    Fires when more than ``threshold_count`` ``routewise_decision_evicted``
+    events arrive within ``window_sec``. A sustained crossing means
+    ``RouteWiseRouter._pending_decisions`` is leaking entries (likely
+    because some code path constructs a decision but never reaches the
+    consume site in ``chat_completion`` / ``stream_chat_completion``).
+    """
+
+    name = "pending_decisions_leak"
+
+    def __init__(self, cfg: PendingDecisionsLeakConfig) -> None:
+        self._cfg = cfg
+        self._window = _SlidingWindow(cfg.window_sec)
+
+    async def on_record(self, record: logging.LogRecord) -> None:
+        """Update the count window from a routewise_decision_evicted event."""
+        if not self._cfg.enabled:
+            return
+        if getattr(record, "event", None) != "routewise_decision_evicted":
+            return
+        now = time.time()
+        self._window.add(now, {})
+        items = self._window.items(now)
+        if len(items) <= self._cfg.threshold_count:
+            return
+        await alert_slack(
+            AlertSeverity.WARN,
+            "RouteWise pending-decisions leaking",
+            {
+                "evicted_count": len(items),
+                "window_sec": self._cfg.window_sec,
+            },
+            dedupe_key="pending_decisions_leak",
+            cooldown_sec=self._cfg.cooldown_sec,
+        )
+
+
 class UserCostOverrunJob:
     """Periodic job 8: per-user daily-cost threshold overrun."""
 
@@ -446,6 +486,7 @@ class AlertEngine:
         self._rules.append(P95LatencyRule(self._config.rules.p95_latency_per_provider))
         self._rules.append(AuthFailureSpikeRule(self._config.rules.auth_failure_spike))
         self._rules.append(ConcurrencyExhaustedRule(self._config.rules.concurrency_exhausted))
+        self._rules.append(PendingDecisionsLeakRule(self._config.rules.pending_decisions_leak))
 
     def _schedule_periodic_jobs(self) -> None:
         if self._scheduler is None:

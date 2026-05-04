@@ -28,6 +28,11 @@ rules:
     window_sec: 300
     threshold_count: 100
     cooldown_sec: 1800
+  pending_decisions_leak:
+    enabled: true
+    window_sec: 600       # 10 min
+    threshold_count: 20   # >20 evictions in 10 min indicates a real leak
+    cooldown_sec: 3600    # 1 h
 
 state_changes:
   circuit_open:
