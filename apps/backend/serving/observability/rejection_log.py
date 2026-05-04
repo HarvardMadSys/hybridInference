@@ -38,22 +38,34 @@ def _is_inference_path(path: str) -> bool:
 
 async def log_rejection(
     *,
-    log_store: BaseLogStore | None,
-    runtime_settings: RuntimeSettings | None,
     request: Request,
     status_code: int,
     error_code: str,
     reason: str,
     user: dict[str, Any] | None,
     model_id: str = "",
+    log_store: BaseLogStore | None = None,
+    runtime_settings: RuntimeSettings | None = None,
 ) -> None:
     """Persist a rejection row when the toggle is on.
 
-    Parameters mirror the rejection context: ``error_code`` is a short
-    machine-readable identifier (e.g. ``"concurrency_limit_exceeded"``);
-    ``reason`` is a brief human-readable detail; ``user`` is the verified
-    user dict or ``None`` for pre-auth rejections.
+    Resolves ``log_store`` and ``runtime_settings`` from
+    ``request.app.state.services`` when callers don't supply them, so call
+    sites only need to pass the rejection-specific context. Tests can inject
+    explicit instances via the keyword args.
+
+    ``error_code`` is a short machine-readable identifier (e.g.
+    ``"concurrency_limit_exceeded"``); ``reason`` is a brief human-readable
+    detail; ``user`` is the verified user dict or ``None`` for pre-auth
+    rejections.
     """
+    if log_store is None or runtime_settings is None:
+        services = getattr(getattr(request.app, "state", None), "services", None)
+        if log_store is None:
+            log_store = getattr(services, "log_store", None) if services else None
+        if runtime_settings is None:
+            runtime_settings = getattr(services, "runtime_settings", None) if services else None
+
     if log_store is None or runtime_settings is None:
         return
     if not _is_inference_path(request.url.path):
@@ -86,7 +98,7 @@ async def log_rejection(
             request_id=request_id,
             model_id=model_id,
             provider="",
-            prompt=None,
+            prompt="",
             response=None,
             usage=None,
             latency_ms=0,

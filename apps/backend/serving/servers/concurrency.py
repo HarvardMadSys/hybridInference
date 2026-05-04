@@ -220,13 +220,8 @@ async def enforce_user_concurrency(
                 "route": request.url.path,
             },
         )
-        services = getattr(request.app.state, "services", None)
-        log_store = getattr(services, "log_store", None) if services else None
-        runtime_settings = getattr(services, "runtime_settings", None) if services else None
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
-                log_store=log_store,
-                runtime_settings=runtime_settings,
                 request=request,
                 status_code=429,
                 error_code="concurrency_limit_exceeded",

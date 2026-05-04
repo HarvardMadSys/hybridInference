@@ -84,14 +84,6 @@ def constant_time_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a, b)
 
 
-def _services_from_request(request: Request):
-    """Return ``(log_store, runtime_settings)`` from app state, or ``(None, None)``."""
-    services = getattr(request.app.state, "services", None)
-    log_store = getattr(services, "log_store", None) if services else None
-    runtime_settings = getattr(services, "runtime_settings", None) if services else None
-    return log_store, runtime_settings
-
-
 async def verify_api_key(
     request: Request,
     authorization: str | None = Header(None),
@@ -136,11 +128,8 @@ async def verify_api_key(
                 "reason": "missing_api_key",
             },
         )
-        log_store_, rs_ = _services_from_request(request)
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
-                log_store=log_store_,
-                runtime_settings=rs_,
                 request=request,
                 status_code=401,
                 error_code="auth_missing",
@@ -192,11 +181,8 @@ async def verify_api_key(
                 "reason": "invalid_api_key",
             },
         )
-        log_store_, rs_ = _services_from_request(request)
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
-                log_store=log_store_,
-                runtime_settings=rs_,
                 request=request,
                 status_code=401,
                 error_code="auth_invalid",
@@ -252,11 +238,8 @@ async def verify_api_key(
             provider=normalize_provider_label("system"),
             status_code="429",
         ).inc()
-        log_store_, rs_ = _services_from_request(request)
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
-                log_store=log_store_,
-                runtime_settings=rs_,
                 request=request,
                 status_code=429,
                 error_code="quota_exceeded",

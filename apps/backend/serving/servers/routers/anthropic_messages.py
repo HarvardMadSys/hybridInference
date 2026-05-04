@@ -500,13 +500,8 @@ async def anthropic_messages(
     try:
         canonical, _route, adapter = _resolve(model_id, router_exec, user_ctx)
     except HTTPException as exc:
-        services = getattr(request.app.state, "services", None)
-        log_store_ = getattr(services, "log_store", None) if services else None
-        runtime_settings_ = getattr(services, "runtime_settings", None) if services else None
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
-                log_store=log_store_,
-                runtime_settings=runtime_settings_,
                 request=request,
                 status_code=exc.status_code,
                 error_code="model_not_found",

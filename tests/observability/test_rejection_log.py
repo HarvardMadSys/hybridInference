@@ -13,13 +13,21 @@ from serving.observability.rejection_log import (
 
 
 def _fake_request(path: str = "/v1/chat/completions") -> MagicMock:
-    """Minimal Request-shaped mock with the URL path the helper reads."""
+    """Minimal Request-shaped mock with the URL path the helper reads.
+
+    ``request.app.state.services`` is pinned to ``None`` so the helper's
+    auto-resolution falls through; tests that want services-backed
+    behaviour pass ``log_store`` / ``runtime_settings`` as explicit kwargs.
+    """
     req = MagicMock()
     req.url.path = path
     # Simulate the headers FastAPI requests expose; remote-IP helper reads them.
     req.headers = {"x-forwarded-for": "203.0.113.5"}
     req.client = MagicMock()
     req.client.host = "127.0.0.1"
+    # Pin services so MagicMock's auto-attribute creation doesn't shadow the
+    # explicit-kwargs path.
+    req.app.state.services = None
     return req
 
 
@@ -84,7 +92,7 @@ async def test_toggle_on_writes_row(fake_log_store, runtime_on):
     kwargs = fake_log_store.log_request.await_args.kwargs
     assert kwargs["model_id"] == "gpt-4"
     assert kwargs["provider"] == ""
-    assert kwargs["prompt"] is None
+    assert kwargs["prompt"] == ""
     assert kwargs["response"] is None
     assert kwargs["usage"] is None
     assert kwargs["latency_ms"] == 0
