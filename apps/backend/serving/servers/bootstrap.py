@@ -281,7 +281,6 @@ async def initialize() -> AppServices:
             routewise_router = RouteWiseRouter(
                 fixed_router=router,
                 config=rw_config,
-                experiment_mode=settings.experiment_mode,
             )
             model_router_registry = ModelRouterRegistry(default_router=router)
             for info in model_infos:

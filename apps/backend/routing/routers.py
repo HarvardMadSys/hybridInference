@@ -315,11 +315,10 @@ class BaseRouter:
     using the shared infrastructure methods.
     """
 
-    def __init__(self, experiment_mode: bool = False) -> None:
+    def __init__(self) -> None:
         self._health: dict[str, _ProviderHealth] = {}
         self._circuits: dict[str, _CircuitBreaker] = {}
         self._lock = threading.RLock()
-        self.experiment_mode = experiment_mode
 
     def _ensure_health(self, endpoint_id: str) -> None:
         with self._lock:
@@ -458,33 +457,30 @@ class BaseRouter:
                 return resp
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason=primary_error.__class__.__name__)
-                if not self.experiment_mode:
-                    fallback_adapters = self._get_fallback_adapters(model_id, primary)
-                    for adapter in fallback_adapters:
-                        last_attempted = adapter
-                        try:
-                            resp = await self._execute_adapter(
-                                adapter, model_id, messages, **params
-                            )
-                            if "_routing" not in resp:
-                                resp["_routing"] = {
-                                    "provider": adapter.config.provider,
-                                    "base_url": adapter.config.base_url,
-                                    "fallback": True,
-                                }
-                            resp["_routing"].setdefault(
-                                "endpoint_id",
-                                getattr(adapter.config, "endpoint_id", None),
-                            )
-                            API_FALLBACKS.labels(
-                                from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                                to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
-                                reason=primary_error.__class__.__name__,
-                            ).inc()
-                            return resp
-                        except Exception:
-                            self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
-                            continue
+                fallback_adapters = self._get_fallback_adapters(model_id, primary)
+                for adapter in fallback_adapters:
+                    last_attempted = adapter
+                    try:
+                        resp = await self._execute_adapter(adapter, model_id, messages, **params)
+                        if "_routing" not in resp:
+                            resp["_routing"] = {
+                                "provider": adapter.config.provider,
+                                "base_url": adapter.config.base_url,
+                                "fallback": True,
+                            }
+                        resp["_routing"].setdefault(
+                            "endpoint_id",
+                            getattr(adapter.config, "endpoint_id", None),
+                        )
+                        API_FALLBACKS.labels(
+                            from_provider=normalize_provider_label(_get_endpoint_id(primary)),
+                            to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
+                            reason=primary_error.__class__.__name__,
+                        ).inc()
+                        return resp
+                    except Exception:
+                        self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
+                        continue
                 raise primary_error
         except BaseException as e:
             if not hasattr(e, "_routing"):
@@ -525,24 +521,23 @@ class BaseRouter:
                 return
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
-                if not self.experiment_mode:
-                    fallback_adapters = self._get_fallback_adapters(model_id, primary)
-                    for adapter in fallback_adapters:
-                        last_attempted = adapter
-                        try:
-                            async for chunk in self._execute_stream_adapter(
-                                adapter, model_id, messages, **params
-                            ):
-                                yield chunk
-                            API_FALLBACKS.labels(
-                                from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                                to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
-                                reason=primary_error.__class__.__name__,
-                            ).inc()
-                            return
-                        except Exception:
-                            self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
-                            continue
+                fallback_adapters = self._get_fallback_adapters(model_id, primary)
+                for adapter in fallback_adapters:
+                    last_attempted = adapter
+                    try:
+                        async for chunk in self._execute_stream_adapter(
+                            adapter, model_id, messages, **params
+                        ):
+                            yield chunk
+                        API_FALLBACKS.labels(
+                            from_provider=normalize_provider_label(_get_endpoint_id(primary)),
+                            to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
+                            reason=primary_error.__class__.__name__,
+                        ).inc()
+                        return
+                    except Exception:
+                        self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
+                        continue
                 raise primary_error
         except BaseException as e:
             if not hasattr(e, "_routing"):

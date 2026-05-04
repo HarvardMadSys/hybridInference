@@ -70,8 +70,8 @@ class TestFallback:
 
     async def test_get_bool_returns_settings_attr_as_fallback(self, rt, mock_store):
         mock_store.get_setting.return_value = None
-        val = await rt.get_bool("enable_routewise")
-        assert val is False
+        val = await rt.get_bool("user_auth_enabled")
+        assert val is True
 
     async def test_unknown_key_raises(self, rt):
         with pytest.raises(KeyError):

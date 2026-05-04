@@ -127,8 +127,6 @@ class Settings(BaseSettings):
 
     # Enable RouteWise online routing subsystem (per-model opt-in via models.yaml)
     enable_routewise: bool = False
-    # Experiment mode: when True, disable fallback in BaseRouter for A/B testing
-    experiment_mode: bool = False
 
     # Slack alerting (optional). Empty SLACK_WEBHOOK_URL disables the feature
     # entirely — no scheduler job is registered and no errors are raised.

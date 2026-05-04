@@ -92,9 +92,8 @@ class RouteWiseRouter(BaseRouter):
         self,
         fixed_router: Any,
         config: RouteWiseConfig,
-        experiment_mode: bool = False,
     ) -> None:
-        super().__init__(experiment_mode=experiment_mode)
+        super().__init__()
         self.fixed_router = fixed_router
         self.config = config
 
