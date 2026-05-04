@@ -130,6 +130,51 @@ class TestBootstrapInitialization:
             # Routing manager should be initialized
             assert services.routing_manager is not None
 
+    @pytest.mark.asyncio
+    async def test_initialize_hard_fails_on_schema_mismatch(self, mock_env, monkeypatch):
+        """Regression for Copilot review on PR #404: a schema-version
+        mismatch must propagate out of ``initialize`` rather than being
+        retried/swallowed by the broad ``try/except Exception`` retry
+        loop, which previously caused boot to silently continue without
+        a database after 3 retries."""
+        from serving.servers.bootstrap import SchemaVersionMismatchError
+
+        monkeypatch.setenv("DB_ENABLED", "true")
+        monkeypatch.setenv("DB_HOST", "testhost")
+        monkeypatch.setenv("DB_NAME", "testdb")
+        monkeypatch.setenv("DB_USER", "testuser")
+        monkeypatch.setenv("DB_PASSWORD", "testpass")
+
+        with (
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger,
+            # Make the schema-version guard raise the dedicated mismatch
+            # exception. The bootstrap retry loop must NOT swallow it.
+            patch(
+                "serving.servers.bootstrap._verify_schema_version",
+                new=AsyncMock(
+                    side_effect=SchemaVersionMismatchError(
+                        "Schema version mismatch: code expects 'X', DB at 'Y'."
+                    )
+                ),
+            ),
+        ):
+            mock_logger = AsyncMock()
+            # Pool needs to be truthy so _verify_schema_version is invoked.
+            mock_logger.pool = MagicMock()
+            MockDBLogger.return_value = mock_logger
+
+            with pytest.raises(SchemaVersionMismatchError, match="Schema version mismatch"):
+                await bootstrap.initialize()
+
+            # Schema check is called once (NOT retried), even though it
+            # sits inside the broad try/except retry block.
+            mock_logger.initialize.assert_awaited_once()
+
 
 class TestBootstrapShutdown:
     """Test bootstrap shutdown functionality."""

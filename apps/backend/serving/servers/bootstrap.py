@@ -38,6 +38,17 @@ logger = get_logger(__name__)
 _BACKGROUND_TASKS: set = set()
 
 
+class SchemaVersionMismatchError(Exception):
+    """Raised when the DB's Alembic version doesn't match the code's pin.
+
+    A distinct class (rather than ``RuntimeError``) so that the broad
+    ``try/except Exception`` retry loop in :func:`initialize` can re-raise
+    this without retrying or swallowing it.  Migration drift is
+    deterministic — retrying it 3 times only delays the inevitable hard
+    failure and risks the operator missing it in logs.
+    """
+
+
 async def _verify_schema_version(pool, settings) -> None:
     """Refuse to boot when the DB's Alembic version doesn't match the code.
 
@@ -52,6 +63,13 @@ async def _verify_schema_version(pool, settings) -> None:
 
     Skips when the backend is not Postgres (the D1 backend stays on its
     static-SQL pattern; see ``apps/backend/serving/storage/d1_schema.sql``).
+
+    Raises:
+        SchemaVersionMismatchError: When the live DB's ``alembic_version``
+            row doesn't match ``EXPECTED_ALEMBIC_VERSION``, or when the
+            ``alembic_version`` table is missing entirely.  This is a
+            distinct class so :func:`initialize`'s retry loop does not
+            swallow it.
     """
     import asyncpg
 
@@ -65,14 +83,14 @@ async def _verify_schema_version(pool, settings) -> None:
         try:
             current = await conn.fetchval("SELECT version_num FROM alembic_version")
         except asyncpg.UndefinedTableError as exc:
-            raise RuntimeError(
+            raise SchemaVersionMismatchError(
                 "alembic_version table missing — run 'uv run alembic stamp "
                 f"{EXPECTED_ALEMBIC_VERSION}' (one-time cut-over) or 'uv run "
                 "alembic upgrade head' before starting the gateway."
             ) from exc
 
     if current != EXPECTED_ALEMBIC_VERSION:
-        raise RuntimeError(
+        raise SchemaVersionMismatchError(
             f"Schema version mismatch: code expects {EXPECTED_ALEMBIC_VERSION!r}, "
             f"DB at {current!r}. Run 'uv run alembic upgrade head' to fix."
         )
@@ -293,6 +311,13 @@ async def initialize() -> AppServices:
                                     f"{stop_exc}"
                                 )
                     break
+                except SchemaVersionMismatchError:
+                    # Schema mismatch is a deterministic, hard-fail condition
+                    # — retrying or continuing without a DB is exactly what
+                    # the migration-version guard exists to prevent.  Surface
+                    # it immediately so the operator sees the failure in the
+                    # boot logs and runs ``alembic upgrade head``.
+                    raise
                 except Exception as exc:
                     if attempt < max_retries - 1:
                         logger.warning(

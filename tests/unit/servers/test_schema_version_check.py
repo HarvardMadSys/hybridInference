@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
-from serving.servers.bootstrap import _verify_schema_version
+from serving.servers.bootstrap import SchemaVersionMismatchError, _verify_schema_version
 
 
 def _make_pool(conn: MagicMock) -> MagicMock:
@@ -53,7 +53,7 @@ async def test_raises_on_version_mismatch(monkeypatch):
     pool = _make_pool(conn)
     settings = MagicMock(db_backend="postgres")
 
-    with pytest.raises(RuntimeError, match="Schema version mismatch"):
+    with pytest.raises(SchemaVersionMismatchError, match="Schema version mismatch"):
         await _verify_schema_version(pool, settings)
 
 
@@ -64,8 +64,17 @@ async def test_raises_when_alembic_version_table_missing():
     pool = _make_pool(conn)
     settings = MagicMock(db_backend="postgres")
 
-    with pytest.raises(RuntimeError, match="alembic_version table missing"):
+    with pytest.raises(SchemaVersionMismatchError, match="alembic_version table missing"):
         await _verify_schema_version(pool, settings)
+
+
+async def test_schema_version_mismatch_error_is_not_subclass_of_runtime_error():
+    """Regression: SchemaVersionMismatchError must NOT be a RuntimeError so
+    that callers catching RuntimeError specifically don't accidentally
+    swallow it.  (It IS still an Exception, but the bootstrap retry loop
+    explicitly re-raises it via a separate except clause.)"""
+    assert not issubclass(SchemaVersionMismatchError, RuntimeError)
+    assert issubclass(SchemaVersionMismatchError, Exception)
 
 
 async def test_skips_when_backend_not_postgres():
