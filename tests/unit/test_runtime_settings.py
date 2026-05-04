@@ -184,3 +184,37 @@ class TestSingleton:
                 get_runtime_settings_instance()
         finally:
             mod._runtime_settings = old
+
+
+class TestCacheWarmup:
+    async def test_warmup_populates_all_registry_keys(self, mock_store):
+        """After warming up all keys, get_cached returns (True, ...) for every key."""
+        rt = RuntimeSettings(mock_store, ttl=30.0)
+        for key in RUNTIME_SETTINGS_REGISTRY:
+            await rt.get_bool(key)
+        for key in RUNTIME_SETTINGS_REGISTRY:
+            found, _ = rt.get_cached(key)
+            assert found, f"Cache miss for {key!r} after warmup"
+
+    async def test_warmup_bad_key_does_not_prevent_others(self, mock_store):
+        """A per-key exception during warmup leaves the other keys in cache."""
+        import contextlib
+
+        async def get_setting_side_effect(key):
+            if key == "signup_enabled":
+                raise RuntimeError("simulated DB error")
+            return None
+
+        mock_store.get_setting.side_effect = get_setting_side_effect
+
+        rt = RuntimeSettings(mock_store, ttl=30.0)
+        keys = list(RUNTIME_SETTINGS_REGISTRY)
+        for key in keys:
+            with contextlib.suppress(Exception):
+                await rt.get_bool(key)
+
+        for key in keys:
+            if key == "signup_enabled":
+                continue
+            found, _ = rt.get_cached(key)
+            assert found, f"Cache miss for {key!r} after partial warmup"
