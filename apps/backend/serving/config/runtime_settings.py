@@ -200,6 +200,8 @@ class RuntimeSettings:
                     "value_type": entry["type"],
                     "default_value": entry["default"],
                     "description": entry["description"],
+                    "min": entry.get("min"),
+                    "max": entry.get("max"),
                 }
             )
         return results

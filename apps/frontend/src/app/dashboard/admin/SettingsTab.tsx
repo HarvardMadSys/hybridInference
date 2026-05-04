@@ -12,6 +12,7 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
+import { validateNumericSettingInput } from './numericSettingValidation';
 import { validateSignupDomainInput } from './signupDomainValidation';
 
 function relTime(iso: string | null): string {
@@ -44,6 +45,9 @@ export function SettingsTab() {
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [featureFlags, setFeatureFlags] = useState<RuntimeSettingItem[]>([]);
+  const [numericSettings, setNumericSettings] = useState<RuntimeSettingItem[]>([]);
+  const [numericDrafts, setNumericDrafts] = useState<Record<string, string>>({});
+  const [savingKey, setSavingKey] = useState<string | null>(null);
   const [flagsLoading, setFlagsLoading] = useState(true);
   const [flagsError, setFlagsError] = useState<string | null>(null);
   const [togglingKey, setTogglingKey] = useState<string | null>(null);
@@ -67,6 +71,13 @@ export function SettingsTab() {
     try {
       const resp = await listRuntimeSettings();
       setFeatureFlags(resp.settings.filter((s) => s.value_type === 'bool'));
+      const numerics = resp.settings.filter(
+        (s) => s.value_type === 'int' || s.value_type === 'float',
+      );
+      setNumericSettings(numerics);
+      setNumericDrafts(
+        Object.fromEntries(numerics.map((s) => [s.key, String(s.value ?? '')])),
+      );
     } catch (e) {
       setFlagsError(getErrorMessage(e));
     } finally {
@@ -110,6 +121,30 @@ export function SettingsTab() {
       flashToast(`Failed to update ${flag.key}: ${getErrorMessage(e)}`);
     } finally {
       setTogglingKey(null);
+    }
+  };
+
+  const onSaveNumeric = async (setting: RuntimeSettingItem) => {
+    const draft = numericDrafts[setting.key] ?? '';
+    const validated = validateNumericSettingInput(draft, {
+      min: setting.min,
+      max: setting.max,
+      integer: setting.value_type === 'int',
+    });
+    if (!validated.ok) {
+      flashToast(`${setting.key}: ${validated.error}`);
+      return;
+    }
+    setSavingKey(setting.key);
+    try {
+      const updated = await updateRuntimeSetting(setting.key, validated.value);
+      flashToast(`${updated.key} set to ${updated.value}`);
+      setNumericSettings((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
+      setNumericDrafts((prev) => ({ ...prev, [updated.key]: String(updated.value ?? '') }));
+    } catch (e) {
+      flashToast(`Failed to update ${setting.key}: ${getErrorMessage(e)}`);
+    } finally {
+      setSavingKey(null);
     }
   };
 
@@ -219,6 +254,109 @@ export function SettingsTab() {
                       }`}
                     />
                   </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Numeric Settings */}
+      <div className="rounded-xl border border-gray-200 bg-white p-5">
+        <div className="mb-3">
+          <h2 className="text-[14px] font-semibold text-gray-900">Numeric Settings</h2>
+          <p className="mt-1 text-[12px] text-gray-500">
+            Adjust numeric runtime knobs (e.g. per-user concurrency caps). Changes take effect
+            immediately.
+          </p>
+        </div>
+
+        {flagsLoading ? (
+          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+        ) : numericSettings.length === 0 ? (
+          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
+            No numeric settings available.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {numericSettings.map((setting) => {
+              const isSaving = savingKey === setting.key;
+              const draft = numericDrafts[setting.key] ?? '';
+              const validated = validateNumericSettingInput(draft, {
+                min: setting.min,
+                max: setting.max,
+                integer: setting.value_type === 'int',
+              });
+              const isDirty = validated.ok && validated.value !== setting.value;
+              const isDefault = setting.value === setting.default_value;
+              const rangeHint = (() => {
+                const lo = setting.min;
+                const hi = setting.max;
+                if (lo != null && hi != null) return `${lo}–${hi}`;
+                if (lo != null) return `≥ ${lo}`;
+                if (hi != null) return `≤ ${hi}`;
+                return null;
+              })();
+              return (
+                <div
+                  key={setting.key}
+                  className="flex items-center justify-between gap-4 rounded-lg border border-gray-100 px-4 py-3"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-medium text-gray-900">
+                        {setting.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                      </span>
+                      {!isDefault && (
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                          Modified
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-gray-500">
+                      {setting.description}
+                      {rangeHint && (
+                        <span className="ml-1 text-gray-400">(range: {rangeHint})</span>
+                      )}
+                      <span className="ml-1 text-gray-400">
+                        Default: {String(setting.default_value)}
+                      </span>
+                    </p>
+                    {!validated.ok && draft !== '' && (
+                      <p className="mt-0.5 text-[11px] text-red-600" role="alert">
+                        {validated.error}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      step={setting.value_type === 'int' ? 1 : 'any'}
+                      min={setting.min ?? undefined}
+                      max={setting.max ?? undefined}
+                      value={draft}
+                      disabled={isSaving}
+                      onChange={(e) =>
+                        setNumericDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && isDirty && !isSaving) {
+                          e.preventDefault();
+                          onSaveNumeric(setting);
+                        }
+                      }}
+                      aria-label={`${setting.key} value`}
+                      className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onSaveNumeric(setting)}
+                      disabled={!isDirty || isSaving}
+                      className="rounded-md bg-gray-900 px-3 py-1 text-[12px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+                    >
+                      {isSaving ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
                 </div>
               );
             })}

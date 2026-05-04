@@ -843,6 +843,8 @@ export interface RuntimeSettingItem {
   value_type: string;
   default_value: unknown;
   description: string;
+  min?: number | null;
+  max?: number | null;
 }
 
 export interface ListSettingsResponse {
