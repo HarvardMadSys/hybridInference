@@ -54,7 +54,7 @@ async def create_embeddings(
         return response
     except aiohttp.ClientResponseError as exc:
         logger.error(f"Embedding request failed for model={model}: {exc.status} {exc.message}")
-        raise HTTPException(502, "Embedding service error") from exc
+        raise HTTPException(exc.status, "Embedding service error") from exc
     except Exception as exc:
         logger.error(f"Embedding request failed for model={model}: {exc}")
         raise HTTPException(500, "Embedding service error") from exc
