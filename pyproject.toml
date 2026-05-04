@@ -34,6 +34,7 @@ dependencies = [
     "httpx>=0.28.1",
     "cryptography>=47.0.0",
     "alembic>=1.18.4",
+    "psycopg2-binary>=2.9.12",
 ]
 
 [tool.setuptools]
