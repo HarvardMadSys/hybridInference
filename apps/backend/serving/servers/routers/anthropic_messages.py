@@ -503,7 +503,7 @@ async def anthropic_messages(
         services = getattr(request.app.state, "services", None)
         log_store_ = getattr(services, "log_store", None) if services else None
         runtime_settings_ = getattr(services, "runtime_settings", None) if services else None
-        asyncio.create_task(
+        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 log_store=log_store_,
                 runtime_settings=runtime_settings_,

@@ -137,7 +137,7 @@ async def verify_api_key(
             },
         )
         log_store_, rs_ = _services_from_request(request)
-        asyncio.create_task(
+        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 log_store=log_store_,
                 runtime_settings=rs_,
@@ -193,7 +193,7 @@ async def verify_api_key(
             },
         )
         log_store_, rs_ = _services_from_request(request)
-        asyncio.create_task(
+        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 log_store=log_store_,
                 runtime_settings=rs_,
@@ -253,17 +253,14 @@ async def verify_api_key(
             status_code="429",
         ).inc()
         log_store_, rs_ = _services_from_request(request)
-        asyncio.create_task(
+        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 log_store=log_store_,
                 runtime_settings=rs_,
                 request=request,
                 status_code=429,
                 error_code="quota_exceeded",
-                reason=(
-                    f"quota_usd={quota_daily_cost_usd:.4f} "
-                    f"spent_usd={cost_spent:.4f}"
-                ),
+                reason=(f"quota_usd={quota_daily_cost_usd:.4f} spent_usd={cost_spent:.4f}"),
                 user={
                     "user_id": user["user_id"],
                     "role": user.get("role") or "free",
