@@ -31,9 +31,9 @@ FORBIDDEN_SUBSTRINGS = ("anthropic", "openai", "openrouter", "claude", "https://
         (429, "Rate limit exceeded"),
         (400, "Invalid request"),
         (422, "Invalid request"),
-        (500, "Upstream service error"),
-        (502, "Upstream service error"),
-        (503, "Upstream service error"),
+        (500, "Internal server error"),
+        (502, "Internal server error"),
+        (503, "Internal server error"),
         (418, "Request failed"),
     ],
 )
@@ -70,7 +70,7 @@ def test_non_user_facing_subclass_is_scrubbed():
 
     msg = scrub_error_for_user(InternalUpstream("anthropic 500"), "req_i", 500)
     assert "anthropic" not in msg.lower()
-    assert msg.startswith("Upstream service error")
+    assert msg.startswith("Internal server error")
 
 
 def test_authentication_error_is_user_facing():
@@ -80,7 +80,7 @@ def test_authentication_error_is_user_facing():
 
 def test_none_exception_still_scrubs():
     msg = scrub_error_for_user(None, "req_n", 500)
-    assert msg.startswith("Upstream service error")
+    assert msg.startswith("Internal server error")
     assert "(request_id: req_n)" in msg
 
 

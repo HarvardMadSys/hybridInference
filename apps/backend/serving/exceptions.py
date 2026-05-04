@@ -159,7 +159,7 @@ def scrub_error_for_user(
     elif status_code in _GENERIC_MESSAGES_BY_STATUS:
         base = _GENERIC_MESSAGES_BY_STATUS[status_code]
     elif 500 <= status_code < 600:
-        base = "Upstream service error"
+        base = "Internal server error"
     else:
         base = "Request failed"
 
