@@ -1224,17 +1224,17 @@ class RouteWiseRouter(BaseRouter):
 
     async def stop(self) -> None:
         """Cancel the periodic ``_pending_decisions`` sweep task cleanly."""
+        import contextlib
+
         task = self._sweep_task
         self._sweep_task = None
         if task is None:
             return
         task.cancel()
-        try:
+        # Cancellation is the expected exit path; swallow other errors so
+        # shutdown can proceed even if the loop raised on its way out.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            # Cancellation is the expected exit path; swallow other errors so
-            # shutdown can proceed even if the loop raised on its way out.
-            pass
 
     async def _sweep_pending_decisions_loop(self) -> None:
         """Run the TTL sweep on a fixed interval until cancelled."""

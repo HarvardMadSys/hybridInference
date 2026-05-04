@@ -100,9 +100,7 @@ async def test_pending_decisions_no_eviction_within_ttl(
     assert evicted == 0
     assert "req-fresh" in router._pending_decisions
     matching = [
-        r
-        for r in caplog.records
-        if getattr(r, "event", None) == "routewise_decision_evicted"
+        r for r in caplog.records if getattr(r, "event", None) == "routewise_decision_evicted"
     ]
     assert matching == []
 

@@ -275,7 +275,7 @@ async def initialize() -> AppServices:
 
     # RouteWise router (optional, per-model opt-in via models.yaml routing_strategy)
     model_router_registry: ModelRouterRegistry | None = None
-    routewise_router_instance: Any = None
+    routewise_router_instance = None
     settings = get_settings()
     needs_routewise = settings.enable_routewise or any(
         info.strategy == "routewise" for info in model_infos
