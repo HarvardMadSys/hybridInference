@@ -82,7 +82,7 @@ def build_initial_routing_info(
     """Construct the pre-routing ``RoutingInfo`` from the chat request.
 
     The handler later enriches the returned instance via
-    :func:`dataclasses.replace` (or :meth:`RoutingInfo.with_adapter_routing`)
+    :func:`merge_adapter_routing` (which itself uses :func:`dataclasses.replace`)
     once the adapter response has surfaced its ``_routing`` metadata.
     """
     return RoutingInfo(

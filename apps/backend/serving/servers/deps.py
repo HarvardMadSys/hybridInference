@@ -124,14 +124,13 @@ def get_completions_logger(
     subsequent requests reuse it. Returning a ready-to-use instance keeps
     the handler free of None checks.
     """
-    if services.completions_logger is not None:
-        return services.completions_logger
-    from serving.servers.routers.completions_logging import CompletionsLogger as _CL
+    if services.completions_logger is None:
+        from serving.servers.routers.completions_logging import CompletionsLogger as _CL
 
-    services.completions_logger = _CL(
-        log_store=services.log_store,
-        model_router_registry=services.model_router_registry,
-    )
+        services.completions_logger = _CL(
+            log_store=services.log_store,
+            model_router_registry=services.model_router_registry,
+        )
     return services.completions_logger
 
 
