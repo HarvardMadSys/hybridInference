@@ -83,19 +83,32 @@ class FailedRequestRateRule:
         now = time.time()
         self._window.add(
             now,
-            {"status": int(status), "provider": getattr(record, "provider", None)},
+            {
+                "status": int(status),
+                "provider": getattr(record, "provider", None),
+                "path": getattr(record, "path", None),
+            },
         )
         items = self._window.items(now)
         if len(items) < self._cfg.min_samples:
             return
-        failed = sum(1 for it in items if it["status"] >= 400)
+        failed_items = [it for it in items if it["status"] >= 400]
+        failed = len(failed_items)
         pct = (failed / len(items)) * 100.0
         if pct < self._cfg.threshold_pct:
             return
-        prov_counts: collections.Counter[str] = collections.Counter(
-            it["provider"] for it in items if it["status"] >= 400 and it["provider"]
+        status_counts: collections.Counter[int] = collections.Counter(
+            it["status"] for it in failed_items
         )
-        top = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
+        path_counts: collections.Counter[str] = collections.Counter(
+            it["path"] for it in failed_items if it["path"]
+        )
+        prov_counts: collections.Counter[str] = collections.Counter(
+            it["provider"] for it in failed_items if it["provider"]
+        )
+        top_s = ", ".join(f"{s} ({c})" for s, c in status_counts.most_common(3))
+        top_paths = ", ".join(f"{p} ({c})" for p, c in path_counts.most_common(3))
+        top_p = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
         await alert_slack(
             AlertSeverity.ERROR,
             "Failed-request rate exceeded",
@@ -103,7 +116,9 @@ class FailedRequestRateRule:
                 "rate": (
                     f"{pct:.1f}% ({failed} of {len(items)} requests, last {self._cfg.window_sec}s)"
                 ),
-                "top_providers": top or "n/a",
+                "top_status_codes": top_s or "n/a",
+                "top_paths": top_paths or "n/a",
+                "top_providers": top_p or "n/a",
             },
             dedupe_key="failed_request_rate",
             cooldown_sec=self._cfg.cooldown_sec,
