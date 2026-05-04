@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
+    from routing.routewise.router import RouteWiseRouter
     from serving.observability.alert_rules import AlertEngine
     from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
@@ -45,6 +46,7 @@ class AppServices:
     log_store: LogStore | None = None
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
+    routewise_router: RouteWiseRouter | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None

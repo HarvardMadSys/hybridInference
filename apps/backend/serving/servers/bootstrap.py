@@ -275,6 +275,7 @@ async def initialize() -> AppServices:
 
     # RouteWise router (optional, per-model opt-in via models.yaml routing_strategy)
     model_router_registry: ModelRouterRegistry | None = None
+    routewise_router_instance: Any = None
     settings = get_settings()
     needs_routewise = settings.enable_routewise or any(
         info.strategy == "routewise" for info in model_infos
@@ -288,6 +289,7 @@ async def initialize() -> AppServices:
                 fixed_router=router,
                 config=rw_config,
             )
+            routewise_router_instance = routewise_router
             model_router_registry = ModelRouterRegistry(default_router=router)
             for info in model_infos:
                 if info.strategy == "routewise":
@@ -300,9 +302,17 @@ async def initialize() -> AppServices:
             # once canary rollout is ready for production.
             rw_models = [i.model_id for i in model_infos if i.strategy == "routewise"]
             logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
+            # Start the periodic _pending_decisions TTL sweep so leaked
+            # entries (request abort / timeout / code-path bug) get evicted
+            # and emit routewise_decision_evicted events.
+            try:
+                await routewise_router.start()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(f"RouteWiseRouter.start() failed: {exc}")
         except Exception as exc:
             logger.warning(f"RouteWise initialization failed: {exc}. Using fixed routing.")
             model_router_registry = None
+            routewise_router_instance = None
 
     # Build store abstractions
     operational_store = None
@@ -455,6 +465,7 @@ async def initialize() -> AppServices:
         log_store=log_store,
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
+        routewise_router=routewise_router_instance,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
@@ -514,6 +525,13 @@ async def shutdown(services: AppServices) -> None:
             await services.routing_manager.shutdown()
         except Exception as exc:
             logger.error(f"Routing manager shutdown failed: {exc}")
+
+    # RouteWise router (cancels the _pending_decisions TTL sweep task)
+    if services.routewise_router is not None:
+        try:
+            await services.routewise_router.stop()
+        except Exception as exc:
+            logger.error(f"RouteWise router shutdown failed: {exc}")
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):
