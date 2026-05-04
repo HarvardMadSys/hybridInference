@@ -38,16 +38,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "default": True,
         "description": "Require email verification for new signups",
     },
-    "enable_routewise": {
-        "type": "bool",
-        "default": False,
-        "description": "Enable RouteWise online routing subsystem",
-    },
-    "experiment_mode": {
-        "type": "bool",
-        "default": False,
-        "description": "Experiment mode: disable fallback for A/B testing",
-    },
     "log_full_payload": {
         "type": "bool",
         "default": False,

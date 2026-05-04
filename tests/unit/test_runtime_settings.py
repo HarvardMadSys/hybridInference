@@ -68,9 +68,13 @@ class TestFallback:
         val = await rt.get_bool("signup_enabled")
         assert val is False
 
-    async def test_get_bool_returns_settings_attr_as_fallback(self, rt, mock_store):
+    async def test_get_bool_returns_settings_attr_as_fallback(self, rt, mock_store, monkeypatch):
         mock_store.get_setting.return_value = None
-        val = await rt.get_bool("enable_routewise")
+        from serving.config import settings as settings_mod
+
+        original = settings_mod.get_settings()
+        monkeypatch.setattr(original, "user_auth_enabled", False)
+        val = await rt.get_bool("user_auth_enabled")
         assert val is False
 
     async def test_unknown_key_raises(self, rt):
