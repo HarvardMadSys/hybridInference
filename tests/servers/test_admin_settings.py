@@ -68,6 +68,11 @@ async def test_list_settings(admin_client):
     assert len(data["settings"]) > 0
     assert all("key" in s for s in data["settings"])
     assert all("value_type" in s for s in data["settings"])
+    by_key = {s["key"]: s for s in data["settings"]}
+    # int settings expose `min` so the admin UI can validate before submit;
+    # bool settings have no bounds.
+    assert by_key["user_concurrency_free"]["min"] == 1
+    assert by_key["signup_enabled"]["min"] is None
 
 
 @pytest.mark.asyncio

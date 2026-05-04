@@ -49,6 +49,8 @@ async def list_runtime_settings_endpoint(
                 value_type=i["value_type"],
                 default_value=i["default_value"],
                 description=i["description"],
+                min=i.get("min"),
+                max=i.get("max"),
             )
             for i in items
         ]
@@ -140,4 +142,6 @@ async def update_runtime_setting_endpoint(
         value_type=expected_type,
         default_value=entry["default"],
         description=entry["description"],
+        min=entry.get("min"),
+        max=entry.get("max"),
     )

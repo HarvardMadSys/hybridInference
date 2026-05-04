@@ -660,6 +660,8 @@ class RuntimeSettingItem(BaseModel):
     value_type: str
     default_value: Any
     description: str
+    min: float | None = None
+    max: float | None = None
 
 
 class ListSettingsResponse(BaseModel):
