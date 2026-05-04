@@ -61,9 +61,7 @@ class TestModelRouterRegistry:
         )
         with caplog.at_level(logging.INFO, logger="routing.model_router_registry"):
             reg.get_router("glm-4.7")
-        events = [
-            r for r in caplog.records if getattr(r, "event", None) == "router_initialized"
-        ]
+        events = [r for r in caplog.records if getattr(r, "event", None) == "router_initialized"]
         assert len(events) == 1
         rec = events[0]
         assert rec.model == "glm-4.7"

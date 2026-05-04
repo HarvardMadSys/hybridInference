@@ -61,7 +61,7 @@ def register_strategy(name: str):
     return deco
 
 
-def build_router(name: str, params: dict[str, Any] | None) -> "BaseRouter":
+def build_router(name: str, params: dict[str, Any] | None) -> BaseRouter:
     """Construct a router by strategy name + raw params dict from YAML.
 
     Args:
@@ -79,9 +79,7 @@ def build_router(name: str, params: dict[str, Any] | None) -> "BaseRouter":
             schema (``extra="forbid"`` on every Params model).
     """
     if name not in _STRATEGIES:
-        raise ValueError(
-            f"unknown router strategy {name!r}; known: {sorted(_STRATEGIES)}"
-        )
+        raise ValueError(f"unknown router strategy {name!r}; known: {sorted(_STRATEGIES)}")
     router_cls, params_cls = _STRATEGIES[name]
     validated = params_cls.model_validate(params or {})
     return router_cls(params=validated)
@@ -90,4 +88,4 @@ def build_router(name: str, params: dict[str, Any] | None) -> "BaseRouter":
 # Trigger registration of built-in strategies via import side effects.
 # Imports are at the bottom to avoid circular imports: the strategy modules
 # import from routing.routers / routing.routewise at their top.
-from routing.strategies import fixed, routewise  # noqa: E402, F401
+from routing.strategies import fixed, routewise  # noqa: F401

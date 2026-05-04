@@ -132,7 +132,7 @@ class RoutingConfig(BaseModel):  # type: ignore[no-any-unimported]
         return v
 
     @model_validator(mode="after")
-    def _migrate_legacy_fields(self) -> "RoutingConfig":
+    def _migrate_legacy_fields(self) -> RoutingConfig:
         """Migrate deprecated ``routing_strategy`` / ``routing_parameter`` aliases.
 
         - When ``routing_strategy`` is set and ``default_router`` was not
@@ -143,10 +143,7 @@ class RoutingConfig(BaseModel):  # type: ignore[no-any-unimported]
         legacy_strategy_present = self.routing_strategy is not None
         legacy_parameter_present = self.routing_parameter is not None
 
-        if (
-            legacy_strategy_present
-            and "default_router" not in self.model_fields_set
-        ):
+        if legacy_strategy_present and "default_router" not in self.model_fields_set:
             object.__setattr__(self, "default_router", self.routing_strategy)
 
         if legacy_strategy_present or legacy_parameter_present:

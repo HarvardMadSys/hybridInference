@@ -25,9 +25,7 @@ def test_legacy_routing_strategy_migrates_to_default_router():
 @pytest.mark.unit
 def test_explicit_default_router_wins_over_legacy():
     """When both fields are set, default_router takes precedence."""
-    cfg = RoutingConfig.model_validate(
-        {"routing_strategy": "routewise", "default_router": "fixed"}
-    )
+    cfg = RoutingConfig.model_validate({"routing_strategy": "routewise", "default_router": "fixed"})
     assert cfg.default_router == "fixed"
 
 
@@ -51,9 +49,7 @@ def test_no_warning_when_only_default_router_used(caplog):
 def test_legacy_routing_parameter_still_accepted(caplog):
     """Legacy 'routing_parameter' block round-trips with a deprecation."""
     with caplog.at_level(logging.WARNING, logger="routing.config"):
-        cfg = RoutingConfig.model_validate(
-            {"routing_parameter": {"local_fraction": 0.3}}
-        )
+        cfg = RoutingConfig.model_validate({"routing_parameter": {"local_fraction": 0.3}})
     assert cfg.routing_parameter is not None
     assert cfg.routing_parameter.local_fraction == 0.3
     msgs = [r.getMessage() for r in caplog.records]

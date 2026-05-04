@@ -308,9 +308,7 @@ async def initialize() -> AppServices:
             routing_cfg = load_routing_config(routing_cfg_path)
             default_router_name = routing_cfg.default_router
     except Exception as exc:
-        logger.warning(
-            f"Failed to read default_router from routing.yaml: {exc}; using 'fixed'."
-        )
+        logger.warning(f"Failed to read default_router from routing.yaml: {exc}; using 'fixed'.")
 
     # ENABLE_ROUTEWISE legacy: opts every model into routewise as the default.
     if settings.enable_routewise and default_router_name == "fixed":
