@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS login_events (
 CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_login_events_email ON login_events (email, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_login_events_created ON login_events (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_login_events_failures ON login_events (created_at DESC) WHERE outcome = 'failure';
 
 -- -------------------------------------------------------------------
 -- email_verification_tokens

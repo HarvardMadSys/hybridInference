@@ -965,11 +965,14 @@ class D1OperationalStore(OperationalStore):
     async def purge_login_events_older_than(self, days: int) -> int:
         """Delete rows older than ``days`` days. Returns the deleted count.
 
-        D1 lacks ``INTERVAL`` so we precompute the cutoff timestamp client-side.
+        D1 lacks ``INTERVAL`` so we precompute the cutoff timestamp
+        client-side. The format must match the on-row format produced by
+        ``strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`` — i.e. 3-digit fractional
+        seconds — otherwise the lexicographic comparison on the TEXT column
+        misbehaves at boundary timestamps.
         """
-        from datetime import datetime, timedelta, timezone
-
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{cutoff_dt.microsecond // 1000:03d}Z"
         result = await self._d1.execute(
             "DELETE FROM login_events WHERE created_at < ?",
             [cutoff],

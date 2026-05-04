@@ -24,12 +24,18 @@ async def store() -> PostgresOperationalStore:
     pool = await asyncpg.create_pool(os.environ["PG_TEST_DSN"], min_size=1, max_size=2)
     s = PostgresOperationalStore(pool)
     await s.initialize()
-    # Clean slate for the test run.
+    # Clean slate for this test run. Some tests (e.g., the hard-delete-user
+    # test) seed `users` rows with fixed IDs that would PK-conflict on rerun
+    # if not removed; clean those up too.
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM login_events")
+        await conn.execute("DELETE FROM users WHERE id IN ('doomed', 'kept')")
     try:
         yield s
     finally:
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM users WHERE id IN ('doomed', 'kept')")
+            await conn.execute("DELETE FROM login_events")
         await pool.close()
 
 

@@ -22,7 +22,7 @@ async def purge_login_events_endpoint(
     request: Request,
     older_than_days: int | None = Query(None, ge=1),
     user_id: str | None = Query(None, min_length=1),
-    admin_id: str = Depends(verify_admin_access),
+    _admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> dict[str, int]:
     """Purge ``login_events`` rows by age or by user."""

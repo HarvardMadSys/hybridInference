@@ -292,13 +292,14 @@ async def login(
                 user_agent=request.headers.get("user-agent"),
             )
         except Exception:
+            # Embed outcome/reason in the message itself: extra= fields are
+            # filtered to a fixed whitelist by ``JsonFormatter``, so passing
+            # them via ``extra`` would silently drop them when LOG_FORMAT=json.
+            # ``logger.exception`` automatically attaches the traceback.
             logger.exception(
-                "login_event_write_failed",
-                extra={
-                    "event": "login_event_write_failed",
-                    "outcome": outcome,
-                    "failure_reason": failure_reason,
-                },
+                "login_event_write_failed (outcome=%s reason=%s)",
+                outcome,
+                failure_reason or "-",
             )
 
     allowed, reason = await check_and_record_login(body.email, client_ip)

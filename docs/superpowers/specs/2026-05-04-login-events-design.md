@@ -7,8 +7,8 @@
 
 ## Context
 
-Today's `/login` endpoint
-([`apps/backend/serving/servers/routers/auth_routes.py:255`](../../../apps/backend/serving/servers/routers/auth_routes.py#L255))
+Today's login endpoint — public path **`POST /auth/login`** — defined as `@router.post("/login")` on the `/auth`-prefixed router in
+[`apps/backend/serving/servers/routers/auth_routes.py:255`](../../../apps/backend/serving/servers/routers/auth_routes.py#L255)
 persists three things on success:
 
 - `users.last_login_at` (a single column, **overwritten** each login).
@@ -23,7 +23,7 @@ right now?" or "how often does user X fail their login?".
 
 ## Goals
 
-- A persistent `login_events` table that records every `/login` outcome —
+- A persistent `login_events` table that records every `POST /auth/login` outcome —
   success and the seven failure paths — with enough fields to answer the
   audit questions above.
 - Always-on logging: no runtime toggle (a security audit log with gaps is
@@ -135,7 +135,7 @@ Implementations:
   D1 lacks `INTERVAL`, so the by-age purge passes a precomputed cutoff
   timestamp instead.
 
-### 3. Insertion sites in `/login`
+### 3. Insertion sites in `POST /auth/login`
 
 Inside
 [`apps/backend/serving/servers/routers/auth_routes.py:255`](../../../apps/backend/serving/servers/routers/auth_routes.py#L255),
