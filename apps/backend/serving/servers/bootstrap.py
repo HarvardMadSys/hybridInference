@@ -165,6 +165,12 @@ async def initialize() -> AppServices:
     load_dotenv()
     setup_logging()
 
+    if os.environ.get("EXPERIMENT_MODE"):
+        logger.warning(
+            "EXPERIMENT_MODE env var is set but no longer has any effect — "
+            "the flag was removed; fallback routing is now always on."
+        )
+
     router = RouteExecutor()
 
     # Database logger — only needed when DB_BACKEND is postgres (default).
