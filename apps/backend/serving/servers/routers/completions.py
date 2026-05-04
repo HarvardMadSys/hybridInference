@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from contextlib import suppress
 from typing import Any
 
@@ -210,7 +211,6 @@ async def chat_completions(
     messages = [m.model_dump() for m in payload.messages]
 
     # Debug-only: log inbound message roles to verify client behavior.
-    # Note: We intentionally avoid logging message contents to protect privacy.
     try:
         roles = [msg.get("role") for msg in messages]
         tool_count = sum(1 for msg in messages if msg.get("role") == "tool")
@@ -218,13 +218,52 @@ async def chat_completions(
             f"Inbound roles: model={model}, roles={roles}, tool_messages={tool_count}, total={len(messages)}"
         )
     except Exception:
-        # Swallow any logging issues to avoid impacting request handling.
         pass
+
+    request_id = f"req_{uuid.uuid4().hex}"
+    start_time = time.time()
+    is_authenticated = bool(user_ctx.get("authenticated"))
+    provider = "router"
+    session_id = request.headers.get("X-Session-ID")
+
+    metadata = {
+        "user_agent": request.headers.get("user-agent"),
+        "ip": get_client_ip(request),
+        "authorization": bool(authorization) or is_authenticated,
+        "authenticated": is_authenticated,
+        "user_id": user_ctx.get("user_id"),
+    }
+    if is_synthetic_probe:
+        metadata["synthetic_probe"] = True
+    if session_id:
+        metadata["session_id"] = session_id
+
+    early_params: dict[str, Any] = {"stream": bool(payload.stream)}
+    if session_id:
+        early_params["session_id"] = session_id
 
     # Check if model has routing configured
     if model not in router_exec.routes:
-        # Record 404 error for model not found
         record_model_request("404", "router")
+        if log_store and not is_synthetic_probe:
+            _schedule_db_log_task(
+                log_store,
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": "router",
+                    "prompt": messages,
+                    "response": None,
+                    "usage": None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": 404,
+                    "error": f"Model '{model}' not found",
+                    "params": early_params,
+                    "metadata": metadata,
+                    "pricing": None,
+                },
+            )
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Role-based model gate: insufficient role sees a 404 as if the model doesn't exist
@@ -237,10 +276,29 @@ async def chat_completions(
             extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
         record_model_request("404", "router")
+        if log_store and not is_synthetic_probe:
+            _schedule_db_log_task(
+                log_store,
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": "router",
+                    "prompt": messages,
+                    "response": None,
+                    "usage": None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": 404,
+                    "error": f"Model '{model}' not found",
+                    "params": early_params,
+                    "metadata": metadata,
+                    "pricing": None,
+                },
+            )
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Extract parameters
-    params: dict[str, Any] = {}
+    params: dict[str, Any] = {"stream": bool(payload.stream)}
     if payload.temperature is not None:
         params["temperature"] = payload.temperature
     if payload.top_p is not None:
@@ -269,46 +327,21 @@ async def chat_completions(
         params["tool_choice"] = payload.tool_choice
     if payload.response_format is not None:
         params["response_format"] = payload.response_format.model_dump(by_alias=True)
-    # Always record whether this request is streaming for DB analytics
-    params["stream"] = bool(payload.stream)
+    if session_id:
+        params["session_id"] = session_id
 
     # Stable user identifier used by cost tracking
     user_id: str = user_ctx.get("user_id") or "anonymous"
 
-    # Affinity key for multi-key API rotation — pinned to the specific
-    # hyi-xxx key in use (not user_id, since a user may have multiple keys).
     from serving.utils import context as req_ctx
 
     req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
 
-    # Generate request ID and metadata
-    request_id = f"req_{int(time.time() * 1000000)}"
-    start_time = time.time()
-    is_authenticated = bool(user_ctx.get("authenticated"))
-    # Initialize provider early to avoid UnboundLocalError in exception handlers
-    provider = "router"
-    # Extract a stable session identifier from a single, canonical header.
-    # Clients are expected to send X-Session-ID. Starlette headers are case-insensitive.
-    session_id = request.headers.get("X-Session-ID")
     # Provider pinning: allows the harness (or admin tooling) to force routing
     # to a specific backend.  Only honoured for admin users to prevent abuse.
     pin_provider = request.headers.get("X-Route-Pin")
     if pin_provider and not user_ctx.get("is_admin", False):
-        pin_provider = None  # silently ignore for non-admin
-
-    metadata = {
-        "user_agent": request.headers.get("user-agent"),
-        "ip": get_client_ip(request),
-        # Preserve legacy field but treat either auth header as authenticated
-        "authorization": bool(authorization) or is_authenticated,
-        "authenticated": is_authenticated,
-        "user_id": user_ctx.get("user_id"),
-    }
-    if is_synthetic_probe:
-        metadata["synthetic_probe"] = True
-    if session_id:
-        metadata["session_id"] = session_id
-        params["session_id"] = session_id
+        pin_provider = None
 
     # Helper function to get pricing for a specific provider
     def get_pricing_for_provider(
