@@ -882,7 +882,10 @@ async def test_keepalive_emitted_without_cancelling_upstream(monkeypatch, mock_l
         shortened = 0.01 if timeout is not None and timeout > 0.01 else timeout
         return await real_wait_for(awaitable, timeout=shortened)
 
-    monkeypatch.setattr(completions.asyncio, "wait_for", fast_wait_for)
+    # Keepalive lives in StreamSession (completions_stream); patch its asyncio.
+    from serving.servers.routers import completions_stream
+
+    monkeypatch.setattr(completions_stream.asyncio, "wait_for", fast_wait_for)
 
     transport = ASGITransport(app=app)
     async with (
