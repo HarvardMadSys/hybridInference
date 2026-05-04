@@ -7,13 +7,13 @@ import json
 import time
 import uuid
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from routing.executor import ProviderPinError
-from routing.routers import AllCircuitsOpenError, RoutingObservation
+from routing.routers import AllCircuitsOpenError
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
 from serving.observability.metrics import (
@@ -31,46 +31,28 @@ from serving.schemas import (
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
+    get_completions_logger,
     get_log_store,
     get_model_router_registry,
     get_operational_store,
     get_router,
 )
+from serving.servers.routers.routing_info import (
+    RoutingInfo,
+    _status_code_from_exception,
+    build_initial_routing_info,
+    merge_adapter_routing,
+)
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
 
+if TYPE_CHECKING:
+    from serving.servers.routers.completions_logging import CompletionsLogger
+
 logger = get_logger(__name__)
 router = APIRouter()
 _background_tasks: set = set()
-
-
-def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
-    """Schedule a background task to log request to database without blocking HTTP response.
-
-    Args:
-        log_store: LogStore instance
-        request_id: Request identifier for logging
-        log_data: Dictionary containing all log request parameters
-    """
-
-    async def log_to_db_background():
-        """Background task to log request to database."""
-        try:
-            await log_store.log_request(**log_data)
-            logger.debug(f"Background DB logging completed for request {request_id}")
-        except Exception as e:
-            # Log error but don't fail the request - it's already sent to client
-            logger.error(
-                f"Background DB logging failed for request {request_id}: {e}",
-                exc_info=True,
-            )
-
-    # Fire-and-forget background task for non-blocking DB logging
-    # We intentionally don't store the reference as we don't need to await it
-    _task = asyncio.create_task(log_to_db_background())
-    _background_tasks.add(_task)
-    _task.add_done_callback(_background_tasks.discard)
 
 
 def _schedule_cost_increment(
@@ -83,6 +65,8 @@ def _schedule_cost_increment(
 
     Only called for successful responses where cost > 0. Runs as a
     fire-and-forget background task to avoid blocking the response.
+
+    PR B (issue #2 of 6) replaces this with ``CostTracker.schedule_increment``.
     """
     from serving.storage.utils import calculate_cost
 
@@ -99,59 +83,6 @@ def _schedule_cost_increment(
     _task = asyncio.create_task(_increment())
     _background_tasks.add(_task)
     _task.add_done_callback(_background_tasks.discard)
-
-
-def _record_routing_observation(
-    active_router,
-    model_id: str,
-    routing_info: dict[str, Any] | None,
-    *,
-    ttft_ms: float | None,
-    total_latency_ms: float,
-    prompt_tokens: int,
-    completion_tokens: int,
-    success: bool,
-) -> None:
-    """Emit a RoutingObservation for online learning routers (RouteWise)."""
-    ri = routing_info or {}
-    # Prefer endpoint_id (RouteWise profile key) > base_url > provider as fallback.
-    endpoint_id = ri.get("endpoint_id") or ri.get("base_url") or ri.get("provider", "unknown")
-    rw = (routing_info or {}).get("routewise", {})
-    obs = RoutingObservation(
-        model_id=model_id,
-        endpoint_id=endpoint_id,
-        ttft_ms=ttft_ms,
-        total_latency_ms=total_latency_ms,
-        token_count=prompt_tokens + completion_tokens,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        success=success,
-        quota_committed=rw.get("quota_committed", 0.0),
-        selected_tier=rw.get("selected_tier"),
-        sc_committed=rw.get("sc_committed", False),
-        hedged=rw.get("hedged", False),
-        backup_won=rw.get("backup_won", False),
-        lp_status=rw.get("lp_status"),
-    )
-    active_router.record_observation(obs)
-
-
-def _build_db_params(
-    params: dict[str, Any],
-    provider: str,
-    base_url: str | None,
-    get_adapter_config_for_provider: Any,
-) -> dict[str, Any]:
-    _params = dict(params)
-    if _params.get("max_tokens") is None:
-        # ``get_adapter_config_for_provider`` returns ``None`` for unregistered
-        # providers (e.g., the synthetic "router" placeholder). ``getattr(None,
-        # "x", default)`` raises ``AttributeError`` rather than returning the
-        # default, so guard explicitly before reading the attribute.
-        config = get_adapter_config_for_provider(provider, base_url)
-        if config is not None:
-            _params["max_tokens"] = getattr(config, "max_output_length", None)
-    return _params
 
 
 @router.post(
@@ -175,6 +106,7 @@ async def chat_completions(
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
     model_router_registry=Depends(get_model_router_registry),
+    completions_logger: CompletionsLogger = Depends(get_completions_logger),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
@@ -246,8 +178,7 @@ async def chat_completions(
     if model not in router_exec.routes:
         record_model_request("404", "router")
         if log_store and not is_synthetic_probe:
-            _schedule_db_log_task(
-                log_store,
+            completions_logger.schedule_log(
                 request_id,
                 {
                     "request_id": request_id,
@@ -277,8 +208,7 @@ async def chat_completions(
         )
         record_model_request("404", "router")
         if log_store and not is_synthetic_probe:
-            _schedule_db_log_task(
-                log_store,
+            completions_logger.schedule_log(
                 request_id,
                 {
                     "request_id": request_id,
@@ -341,7 +271,14 @@ async def chat_completions(
     # to a specific backend.  Only honoured for admin users to prevent abuse.
     pin_provider = request.headers.get("X-Route-Pin")
     if pin_provider and not user_ctx.get("is_admin", False):
-        pin_provider = None
+        pin_provider = None  # silently ignore for non-admin
+
+    # Typed routing context. Enriched once the adapter response surfaces its
+    # ``_routing`` dict via ``merge_adapter_routing``. Frozen — every
+    # enrichment returns a new instance.
+    routing: RoutingInfo = build_initial_routing_info(
+        payload, request_id=request_id, pin_provider=pin_provider
+    )
 
     # Helper function to get pricing for a specific provider
     def get_pricing_for_provider(
@@ -424,7 +361,12 @@ async def chat_completions(
 
         async def stream_generator():
             usage_data = None
-            routing_info = None
+            # ``routing_info`` is the adapter's raw ``_routing`` dict — kept
+            # as a dict because the metadata-merge below relies on its
+            # exact key set. The typed ``stream_routing`` mirrors it for
+            # field-access; both are kept in sync.
+            routing_info: dict[str, Any] | None = None
+            stream_routing: RoutingInfo = routing
             chunk_count = 0
             # Accumulate streamed content for DB logging
             final_text = ""
@@ -530,6 +472,9 @@ async def chat_completions(
                                     )
                                 if result.routing_info:
                                     routing_info = result.routing_info
+                                    stream_routing = merge_adapter_routing(
+                                        stream_routing, routing_info
+                                    )
                                     logger.debug(
                                         f"Extracted routing from chunk {chunk_count}: {routing_info}"
                                     )
@@ -685,13 +630,11 @@ async def chat_completions(
                 provider = "router"
                 pricing = None
                 if routing_info:
-                    provider = routing_info.get("provider", "router")
-                    base_url = routing_info.get("base_url")
+                    provider = stream_routing.provider or "router"
+                    base_url = stream_routing.base_url
                     # Prefer embedded pricing (e.g. adapter-internal fallback)
                     # before looking up from registered routes
-                    pricing = routing_info.get("pricing") or get_pricing_for_provider(
-                        provider, base_url
-                    )
+                    pricing = stream_routing.pricing or get_pricing_for_provider(provider, base_url)
                     # Strip upstream_cost_usd from metadata JSONB; the dedicated column
                     # api_logs.upstream_cost_usd is the canonical store. Avoids leaking the
                     # internal cost into any future admin route that returns raw metadata.
@@ -706,8 +649,7 @@ async def chat_completions(
 
                 # Prepare data for background database logging (don't await here!)
                 if log_store and not is_synthetic_probe:
-                    _schedule_db_log_task(
-                        log_store,
+                    completions_logger.schedule_log(
                         request_id,
                         {
                             "request_id": request_id,
@@ -720,34 +662,34 @@ async def chat_completions(
                             else usage_data,
                             "latency_ms": int((time.time() - start_time) * 1000),
                             "status_code": 200,
-                            "params": _build_db_params(
+                            "params": completions_logger.build_db_params(
                                 params,
                                 provider,
-                                routing_info.get("base_url") if routing_info else None,
+                                stream_routing.base_url,
                                 get_adapter_config_for_provider,
                             ),
                             "metadata": metadata,
                             "ttft_ms": ttft_ms,
                             "pricing": pricing,
-                            "upstream_cost_usd": (routing_info or {}).get("upstream_cost_usd"),
+                            "upstream_cost_usd": stream_routing.upstream_cost_usd,
                         },
                     )
 
                 # Increment daily cost counter for billed requests
                 if not is_synthetic_probe and routing_info:
                     _usage = response_for_db.get("usage") if response_for_db else usage_data
-                    _s_pricing = routing_info.get("pricing") or get_pricing_for_provider(
-                        provider, routing_info.get("base_url")
+                    _s_pricing = stream_routing.pricing or get_pricing_for_provider(
+                        provider, stream_routing.base_url
                     )
                     _schedule_cost_increment(op_store, user_id, _usage, _s_pricing)
 
                 # Record routing observation for online learning (RouteWise)
                 if not is_synthetic_probe:
                     stream_usage = normalize_usage(usage_data) if usage_data else {}
-                    _record_routing_observation(
+                    completions_logger.record_routing_observation(
                         active_router,
                         model,
-                        routing_info,
+                        stream_routing,
                         ttft_ms=float(ttft_ms) if ttft_ms is not None else None,
                         total_latency_ms=(time.time() - start_time) * 1000,
                         prompt_tokens=int(stream_usage.get("prompt_tokens", 0) or 0),
@@ -758,11 +700,14 @@ async def chat_completions(
             except Exception as exc:
                 # Record failure observation for online learning (RouteWise)
                 if not is_synthetic_probe:
+                    # ``exception._routing`` is still a raw dict from the
+                    # routing layer; ``record_routing_observation`` accepts
+                    # both shapes so we don't need to coerce here.
                     exc_routing = getattr(exc, "_routing", None)
-                    _record_routing_observation(
+                    completions_logger.record_routing_observation(
                         active_router,
                         model,
-                        exc_routing or routing_info,
+                        exc_routing or stream_routing,
                         ttft_ms=float(ttft_ms) if ttft_ms is not None else None,
                         total_latency_ms=(time.time() - start_time) * 1000,
                         prompt_tokens=0,
@@ -778,8 +723,7 @@ async def chat_completions(
                 provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
                 if log_store and not is_synthetic_probe:
-                    _schedule_db_log_task(
-                        log_store,
+                    completions_logger.schedule_log(
                         request_id,
                         {
                             "request_id": request_id,
@@ -841,9 +785,10 @@ async def chat_completions(
             response = sanitize_result.response_json
             routing_info = sanitize_result.routing_info
             if routing_info:
-                provider = routing_info.get("provider", "router")
-                base_url = routing_info.get("base_url")
-                routing_pricing = routing_info.get("pricing")
+                routing = merge_adapter_routing(routing, routing_info)
+                provider = routing.provider or "router"
+                base_url = routing.base_url
+                routing_pricing = routing.pricing
                 # See comment above: strip upstream_cost_usd before merging into metadata JSONB.
                 metadata.update({k: v for k, v in routing_info.items() if k != "upstream_cost_usd"})  # type: ignore[arg-type]
         else:
@@ -862,8 +807,7 @@ async def chat_completions(
         if log_store and not is_synthetic_probe:
             # Prefer embedded pricing (e.g. adapter-internal fallback)
             pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
-            _schedule_db_log_task(
-                log_store,
+            completions_logger.schedule_log(
                 request_id,
                 {
                     "request_id": request_id,
@@ -876,7 +820,7 @@ async def chat_completions(
                     else None,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": 200,
-                    "params": _build_db_params(
+                    "params": completions_logger.build_db_params(
                         params,
                         provider,
                         base_url,
@@ -884,7 +828,7 @@ async def chat_completions(
                     ),
                     "metadata": metadata,
                     "pricing": pricing,
-                    "upstream_cost_usd": (routing_info or {}).get("upstream_cost_usd"),
+                    "upstream_cost_usd": routing.upstream_cost_usd,
                 },
             )
 
@@ -961,10 +905,10 @@ async def chat_completions(
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
             ns_usage = normalize_usage(raw_usage) or {}
-            _record_routing_observation(
+            completions_logger.record_routing_observation(
                 active_router,
                 model,
-                routing_info if isinstance(response, dict) else None,
+                routing if isinstance(response, dict) else None,
                 ttft_ms=None,
                 total_latency_ms=(time.time() - start_time) * 1000,
                 prompt_tokens=int(ns_usage.get("prompt_tokens", 0) or 0),
@@ -999,8 +943,10 @@ async def chat_completions(
     except Exception as exc:
         # Record failure observation for online learning (RouteWise)
         if not is_synthetic_probe:
+            # ``exc._routing`` is still a raw dict from the routing layer;
+            # ``record_routing_observation`` accepts both shapes.
             exc_routing = getattr(exc, "_routing", None)
-            _record_routing_observation(
+            completions_logger.record_routing_observation(
                 active_router,
                 model,
                 exc_routing,
@@ -1011,33 +957,11 @@ async def chat_completions(
                 success=False,
             )
 
-        # Best-effort extraction of status code from exception
-        # Different HTTP client libraries store status codes in different places:
-        # - OpenAI/Anthropic SDK: exc.status_code
-        # - httpx: exc.response.status_code
-        # - aiohttp: exc.status
-        # - requests: exc.response.status_code
-        exc_status_code = None
-
-        # Try direct status_code attribute (OpenAI, Anthropic SDKs)
-        if hasattr(exc, "status_code") and exc.status_code is not None:
-            exc_status_code = exc.status_code
-        # Try response.status_code (httpx, requests)
-        elif hasattr(exc, "response") and exc.response is not None:
-            if hasattr(exc.response, "status_code"):
-                exc_status_code = exc.response.status_code
-            elif hasattr(exc.response, "status"):
-                exc_status_code = exc.response.status
-        # Try direct status attribute (aiohttp)
-        elif hasattr(exc, "status") and exc.status is not None:
-            exc_status_code = exc.status
-        # Try code attribute (some custom exceptions)
-        elif hasattr(exc, "code") and exc.code is not None:
-            exc_status_code = exc.code
-
-        # Default to 500 if we couldn't extract status code
-        if exc_status_code is None:
-            exc_status_code = 500
+        # Best-effort extraction of status code from exception. The 6-attribute
+        # fallback chain (status_code → response.status_code → response.status →
+        # status → code → 500) lives in ``routing_info._status_code_from_exception``;
+        # see that function for the per-library mapping.
+        exc_status_code = _status_code_from_exception(exc)
 
         # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
@@ -1048,8 +972,7 @@ async def chat_completions(
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
         if log_store and not is_synthetic_probe:
-            _schedule_db_log_task(
-                log_store,
+            completions_logger.schedule_log(
                 request_id,
                 {
                     "request_id": request_id,
