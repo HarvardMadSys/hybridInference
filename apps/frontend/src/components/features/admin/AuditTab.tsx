@@ -220,9 +220,7 @@ export function AuditTab() {
                 <div
                   key={entry.id}
                   className={rowClass}
-                  style={
-                    entry.success ? { paddingLeft: 4, paddingRight: 4 } : { paddingRight: 4 }
-                  }
+                  style={entry.success ? { paddingLeft: 4, paddingRight: 4 } : { paddingRight: 4 }}
                 >
                   <div className="flex items-center gap-3">
                     {!entry.success && (
@@ -304,9 +302,7 @@ export function AuditTab() {
                 Prev
               </button>
               <button
-                onClick={() =>
-                  setQueryParams({ offset: String(auditOffset + AUDIT_PAGE_SIZE) })
-                }
+                onClick={() => setQueryParams({ offset: String(auditOffset + AUDIT_PAGE_SIZE) })}
                 disabled={auditOffset + AUDIT_PAGE_SIZE >= auditTotal}
                 className="rounded-md px-3 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 transition disabled:opacity-30"
               >

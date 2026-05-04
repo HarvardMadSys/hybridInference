@@ -113,9 +113,7 @@ export function BroadcastsTab() {
                   className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
                   placeholder="e.g. 2 hours"
                   value={bcTemplateVars['duration'] ?? ''}
-                  onChange={(e) =>
-                    setBcTemplateVars((v) => ({ ...v, duration: e.target.value }))
-                  }
+                  onChange={(e) => setBcTemplateVars((v) => ({ ...v, duration: e.target.value }))}
                 />
               </div>
             </div>
@@ -158,9 +156,7 @@ export function BroadcastsTab() {
                 className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
                 placeholder="e.g. $50/day"
                 value={bcTemplateVars['new_quota'] ?? ''}
-                onChange={(e) =>
-                  setBcTemplateVars((v) => ({ ...v, new_quota: e.target.value }))
-                }
+                onChange={(e) => setBcTemplateVars((v) => ({ ...v, new_quota: e.target.value }))}
               />
             </div>
           )}
@@ -224,9 +220,7 @@ export function BroadcastsTab() {
                     checked={bcTargetStatuses.includes(status)}
                     onChange={(e) =>
                       setBcTargetStatuses((prev) =>
-                        e.target.checked
-                          ? [...prev, status]
-                          : prev.filter((s) => s !== status),
+                        e.target.checked ? [...prev, status] : prev.filter((s) => s !== status),
                       )
                     }
                   />
@@ -337,9 +331,7 @@ export function BroadcastsTab() {
                 {bcPreview.recipient_count} recipient
                 {bcPreview.recipient_count !== 1 ? 's' : ''} match your filters
               </div>
-              <div className="text-[12px] text-blue-700">
-                Subject: {bcPreview.rendered_subject}
-              </div>
+              <div className="text-[12px] text-blue-700">Subject: {bcPreview.rendered_subject}</div>
             </div>
           )}
         </div>
