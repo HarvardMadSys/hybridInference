@@ -33,6 +33,7 @@ dependencies = [
     "uvloop>=0.19.0",
     "httpx>=0.28.1",
     "cryptography>=47.0.0",
+    "alembic>=1.18.4",
 ]
 
 [tool.setuptools]
