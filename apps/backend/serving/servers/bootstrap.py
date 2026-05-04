@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -273,36 +274,72 @@ async def initialize() -> AppServices:
     # Routing manager (optional)
     routing_manager = _apply_routing_manager(router)
 
-    # RouteWise router (optional, per-model opt-in via models.yaml routing_strategy)
-    model_router_registry: ModelRouterRegistry | None = None
+    # Per-model router registry — config-driven from models.yaml.
+    # Each model's `router:` field selects a strategy from the registry in
+    # routing.strategies; `router_params:` is validated by the strategy's
+    # Pydantic model.  Models that omit `router:` fall back to
+    # routing.yaml's `default_router`.
     settings = get_settings()
-    needs_routewise = settings.enable_routewise or any(
-        info.strategy == "routewise" for info in model_infos
-    )
-    if needs_routewise:
-        try:
-            from routing.routewise import RouteWiseRouter, load_routewise_config
+    models_config: dict[str, dict[str, Any]] = {}
+    for info in model_infos:
+        # Effective router: explicit `router:` wins; otherwise the legacy
+        # `routing_strategy:` (one-release shim) maps onto `router`.
+        effective_router = info.router or info.strategy
+        entry: dict[str, Any] = {}
+        if effective_router is not None:
+            entry["router"] = effective_router
+        if info.router_params is not None:
+            entry["router_params"] = info.router_params
+        # Aliases share the canonical model's config.
+        models_config[info.model_id] = entry
+        for alias in info.aliases:
+            models_config[alias] = entry
 
-            rw_config = load_routewise_config()
-            routewise_router = RouteWiseRouter(
-                fixed_router=router,
-                config=rw_config,
-            )
-            model_router_registry = ModelRouterRegistry(default_router=router)
-            for info in model_infos:
-                if info.strategy == "routewise":
-                    model_router_registry.register(info.model_id, routewise_router)
-                    for alias in info.aliases:
-                        model_router_registry.register(alias, routewise_router)
-            # TODO: Wire canary rollout from routewise.yaml canary section.
-            # Currently configure_canary() is never called; canary config is dead.
-            # rw_config has canary fields; call model_router_registry.configure_canary()
-            # once canary rollout is ready for production.
-            rw_models = [i.model_id for i in model_infos if i.strategy == "routewise"]
+    # Load routing.yaml to read `default_router`.  RoutingManager loads the
+    # same file internally for weight assignment but does not expose its
+    # parsed RoutingConfig; we re-load here cheaply (small YAML).
+    default_router_name = "fixed"
+    try:
+        from routing.config import load_routing_config
+
+        routing_env = os.getenv("ROUTING_CONFIG")
+        routing_cfg_path = Path(routing_env or "config/routing.yaml")
+        if routing_cfg_path.exists():
+            routing_cfg = load_routing_config(routing_cfg_path)
+            default_router_name = routing_cfg.default_router
+    except Exception as exc:
+        logger.warning(
+            f"Failed to read default_router from routing.yaml: {exc}; using 'fixed'."
+        )
+
+    # ENABLE_ROUTEWISE legacy: opts every model into routewise as the default.
+    if settings.enable_routewise and default_router_name == "fixed":
+        default_router_name = "routewise"
+
+    model_router_registry: ModelRouterRegistry | None = ModelRouterRegistry(
+        models_config=models_config,
+        default_router_name=default_router_name,
+    )
+    model_router_registry.bind_fixed_router(router)
+
+    # Eagerly construct routers for every known model so config errors
+    # (bad strategy name, bad router_params) surface at boot, not on the
+    # first request.
+    try:
+        for info in model_infos:
+            model_router_registry.get_router(info.model_id)
+            for alias in info.aliases:
+                model_router_registry.get_router(alias)
+        rw_models = [
+            i.model_id
+            for i in model_infos
+            if type(model_router_registry.get_router(i.model_id)).__name__ == "RouteWiseRouter"
+        ]
+        if rw_models:
             logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
-        except Exception as exc:
-            logger.warning(f"RouteWise initialization failed: {exc}. Using fixed routing.")
-            model_router_registry = None
+    except Exception as exc:
+        logger.warning(f"ModelRouterRegistry initialization failed: {exc}. Using fixed routing.")
+        model_router_registry = None
 
     # Build store abstractions
     operational_store = None

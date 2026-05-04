@@ -156,3 +156,40 @@ def test_register_from_models_yaml_invalid_processor_override_raises(tmp_path):
     exe = RouteExecutor()
     with pytest.raises(ValueError, match="Unknown processor override 'not_a_processor'"):
         registry.register_from_models_yaml(exe, Path(p))
+
+
+@pytest.mark.unit
+def test_register_from_models_yaml_propagates_router_fields(tmp_path):
+    """`router` and `router_params` from models.yaml flow into ModelRegistrationInfo."""
+    yaml = """
+models:
+  - id: model-with-router
+    name: M1
+    provider: openai_compat
+    base_url: http://example.com/v1
+    router: routewise
+    router_params:
+      daily_quota: 1000
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://example.com/v1
+  - id: model-without-router
+    name: M2
+    provider: openai_compat
+    base_url: http://example.com/v1
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://example.com/v1
+"""
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml)
+    exe = RouteExecutor()
+    _count, infos = registry.register_from_models_yaml(exe, Path(p))
+
+    by_id = {i.model_id: i for i in infos}
+    assert by_id["model-with-router"].router == "routewise"
+    assert by_id["model-with-router"].router_params == {"daily_quota": 1000}
+    assert by_id["model-without-router"].router is None
+    assert by_id["model-without-router"].router_params is None
