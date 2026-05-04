@@ -23,6 +23,7 @@ from serving.observability.metrics import (
     normalize_model_label,
     normalize_provider_label,
 )
+from serving.observability.tracked_tasks import tracked_task
 from serving.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -42,7 +43,6 @@ from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
 router = APIRouter()
-_background_tasks: set = set()
 
 
 def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
@@ -54,23 +54,21 @@ def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) 
         log_data: Dictionary containing all log request parameters
     """
 
-    async def log_to_db_background():
+    async def log_to_db_background() -> None:
         """Background task to log request to database."""
         try:
             await log_store.log_request(**log_data)
             logger.debug(f"Background DB logging completed for request {request_id}")
         except Exception as e:
-            # Log error but don't fail the request - it's already sent to client
+            # Log error context here (request_id) but re-raise so the
+            # tracked_task wrapper records this as a failure event.
             logger.error(
                 f"Background DB logging failed for request {request_id}: {e}",
                 exc_info=True,
             )
+            raise
 
-    # Fire-and-forget background task for non-blocking DB logging
-    # We intentionally don't store the reference as we don't need to await it
-    _task = asyncio.create_task(log_to_db_background())
-    _background_tasks.add(_task)
-    _task.add_done_callback(_background_tasks.discard)
+    tracked_task(log_to_db_background(), name="request_log")
 
 
 def _schedule_cost_increment(
@@ -90,15 +88,14 @@ def _schedule_cost_increment(
     if not cost or cost <= 0 or not op_store:
         return
 
-    async def _increment():
+    async def _increment() -> None:
         try:
             await op_store.increment_user_cost(user_id, cost)
         except Exception as exc:
             logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
+            raise  # let tracked_task record the failure
 
-    _task = asyncio.create_task(_increment())
-    _background_tasks.add(_task)
-    _task.add_done_callback(_background_tasks.discard)
+    tracked_task(_increment(), name="cost_increment")
 
 
 def _record_routing_observation(
