@@ -38,6 +38,46 @@ logger = get_logger(__name__)
 _BACKGROUND_TASKS: set = set()
 
 
+async def _verify_schema_version(pool, settings) -> None:
+    """Refuse to boot when the DB's Alembic version doesn't match the code.
+
+    Schema is owned by Alembic (see ``apps/backend/serving/storage/migrations``).
+    Each schema-change PR bumps
+    ``serving.storage._expected_alembic_version.EXPECTED_ALEMBIC_VERSION``
+    to the new head revision; the deploy pipeline runs
+    ``alembic upgrade head`` against the live DB before this guard executes.
+    A mismatch here means the operator forgot to run migrations, or the
+    code is older/newer than the DB — either way, refuse to start so the
+    inconsistency is visible immediately rather than silent.
+
+    Skips when the backend is not Postgres (the D1 backend stays on its
+    static-SQL pattern; see ``apps/backend/serving/storage/d1_schema.sql``).
+    """
+    import asyncpg
+
+    if settings.db_backend != "postgres":
+        return
+    from serving.storage._expected_alembic_version import (
+        EXPECTED_ALEMBIC_VERSION,
+    )
+
+    async with pool.acquire() as conn:
+        try:
+            current = await conn.fetchval("SELECT version_num FROM alembic_version")
+        except asyncpg.UndefinedTableError as exc:
+            raise RuntimeError(
+                "alembic_version table missing — run 'uv run alembic stamp "
+                f"{EXPECTED_ALEMBIC_VERSION}' (one-time cut-over) or 'uv run "
+                "alembic upgrade head' before starting the gateway."
+            ) from exc
+
+    if current != EXPECTED_ALEMBIC_VERSION:
+        raise RuntimeError(
+            f"Schema version mismatch: code expects {EXPECTED_ALEMBIC_VERSION!r}, "
+            f"DB at {current!r}. Run 'uv run alembic upgrade head' to fix."
+        )
+
+
 def _init_db_logger() -> DatabaseLogger | None:
     """Initialize PostgreSQL database logger from environment configuration.
 
@@ -185,6 +225,11 @@ async def initialize() -> AppServices:
             for attempt in range(max_retries):
                 try:
                     await db_logger.initialize()
+                    # Hard-fail if Alembic head doesn't match the code's pin.
+                    # Schema is owned by Alembic; deploy runs `alembic upgrade
+                    # head` before this guard runs.
+                    if db_logger.pool:
+                        await _verify_schema_version(db_logger.pool, settings)
                     logger.info("Database logger initialized successfully")
                     from serving.observability.metrics import DATABASE_CONNECTED
 
