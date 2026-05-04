@@ -4,15 +4,17 @@ Caps the number of simultaneous in-flight inference requests per user,
 keyed by ``user_id``. Backed by an in-process counter under the asyncio
 single-thread invariant — no Redis, no DB.
 
-A new ``_UserSlot`` is lazy-created on first acquire per user; its
-capacity is captured from the user's role at that moment and is sticky
-(role changes mid-process do not resize an existing slot — restart
-corrects).
+Limits are resolved per-call via a ``LimitsProvider`` async callable so
+operators can adjust caps at runtime through the admin settings API.
+Each existing ``_UserSlot`` lazily resizes on its owner's next acquire.
+The slot's *role label* remains sticky to its creation-time value so
+metrics stay coherent across role changes.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from serving.observability.metrics import (
@@ -23,6 +25,29 @@ from serving.observability.metrics import (
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+LimitsProvider = Callable[[], Awaitable[dict[str, int]]]
+
+# Conservative fallback when the provider raises (e.g., DB hiccup). Kept
+# in sync with the defaults declared in
+# ``serving/config/runtime_settings.py`` for the ``user_concurrency_*``
+# keys.
+_FALLBACK_LIMITS: dict[str, int] = {
+    "free": 3,
+    "pro": 3,
+    "internal": 10,
+    "admin": 10,
+}
+
+
+def static_limits_provider(limits: dict[str, int]) -> LimitsProvider:
+    """Wrap a plain dict in a ``LimitsProvider`` (test helper)."""
+    snapshot = dict(limits)
+
+    async def _provider() -> dict[str, int]:
+        return snapshot
+
+    return _provider
 
 
 @dataclass
@@ -50,58 +75,64 @@ class _UserSlot:
 
 
 class UserConcurrencyLimiter:
-    """Per-user in-flight request limiter."""
+    """Per-user in-flight request limiter with runtime-adjustable caps."""
 
-    def __init__(self, limits: dict[str, int]):
-        # e.g. {"free": 1, "pro": 3, "internal": 10, "admin": 10}
-        self._limits = limits
+    def __init__(self, limits_provider: LimitsProvider):
+        self._provider = limits_provider
         self._slots: dict[str, _UserSlot] = {}
         self._create_lock = asyncio.Lock()  # guards lazy slot creation
 
-    def limit_for(self, role: str, is_admin: bool) -> int:
-        """Return the capacity for a (role, is_admin) pair.
+    async def _read_limits(self) -> dict[str, int]:
+        """Resolve current limits, falling back to defaults on error."""
+        try:
+            return await self._provider()
+        except Exception:
+            logger.exception(
+                "user_concurrency: limits provider failed; falling back to defaults"
+            )
+            return dict(_FALLBACK_LIMITS)
 
-        ``is_admin=True`` always returns the admin cap, regardless of role.
-        Unknown roles fall back to the most restrictive (``free``) cap.
-        """
+    @staticmethod
+    def _limit_for(role: str, is_admin: bool, limits: dict[str, int]) -> int:
         if is_admin:
-            return self._limits["admin"]
-        return self._limits.get(role, self._limits["free"])
+            return limits.get("admin", _FALLBACK_LIMITS["admin"])
+        if role in limits:
+            return limits[role]
+        return limits.get("free", _FALLBACK_LIMITS["free"])
 
-    def role_label(self, role: str, is_admin: bool) -> str:
-        """The label used for metrics. Admin overrides the user's role."""
+    @staticmethod
+    def _role_label(role: str, is_admin: bool, limits: dict[str, int]) -> str:
         if is_admin:
             return "admin"
-        if role in self._limits:
+        if role in limits:
             return role
         return "free"
 
     async def try_acquire(self, user_id: str, role: str, is_admin: bool) -> tuple[bool, int, str]:
         """Non-blocking acquire.
 
-        Returns a ``(granted, capacity, role_label)`` tuple where *capacity*
-        and *role_label* reflect the slot's **sticky** values (captured at
-        creation time), not the caller's current role.  This ensures that
-        rejection responses always report the cap that is actually being
-        enforced, even if the user's role changed between requests.
-
-        Lazy-creates the per-user slot on first call. Capacity is captured
-        from the user's role at creation time and is sticky thereafter.
+        Returns ``(granted, capacity, role_label)`` where *capacity*
+        reflects the slot's **current** capacity after any lazy resize and
+        *role_label* is the slot's sticky label.
         """
+        limits = await self._read_limits()
+        target_capacity = self._limit_for(role, is_admin, limits)
+        target_label = self._role_label(role, is_admin, limits)
+
         slot = self._slots.get(user_id)
         if slot is None:
             async with self._create_lock:
                 slot = self._slots.get(user_id)
                 if slot is None:
-                    capacity = self.limit_for(role, is_admin)
-                    slot = _UserSlot(
-                        capacity=capacity,
-                        role=self.role_label(role, is_admin),
-                    )
+                    slot = _UserSlot(capacity=target_capacity, role=target_label)
                     self._slots[user_id] = slot
 
+        # Lazy resize: only `capacity` is dynamic; role label stays sticky.
+        if slot.capacity != target_capacity:
+            slot.capacity = target_capacity
+
         granted = slot.try_acquire()
-        label = slot.role  # captured at slot creation
+        label = slot.role
         if granted:
             USER_CONCURRENCY_ACQUIRES_TOTAL.labels(role=label, outcome="granted").inc()
             USER_CONCURRENCY_IN_FLIGHT.labels(role=label).inc()
@@ -123,7 +154,6 @@ class UserConcurrencyLimiter:
         slot = self._slots.get(user_id)
         if slot is None:
             return
-        # Only decrement the gauge if there was actually a slot held.
         had_one = slot.in_use > 0
         slot.release()
         if had_one:
