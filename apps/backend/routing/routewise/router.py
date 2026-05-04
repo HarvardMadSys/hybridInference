@@ -90,20 +90,46 @@ class RouteWiseRouter(BaseRouter):
 
     def __init__(
         self,
-        fixed_router: Any,
-        config: RouteWiseConfig,
+        fixed_router: Any = None,
+        config: RouteWiseConfig | None = None,
+        params: Any = None,
     ) -> None:
+        """Initialize RouteWiseRouter.
+
+        Two construction shapes are supported:
+
+        1. Direct (legacy): pass ``fixed_router`` + ``config`` (a
+           ``RouteWiseConfig`` dataclass).  Used by the existing bootstrap
+           path and tests.
+        2. Strategy-registry: pass ``params`` (a ``RouteWiseParams`` Pydantic
+           model from the strategy registry).  ``params`` is translated to
+           ``RouteWiseConfig`` via ``model_dump()``.  ``fixed_router`` is
+           bound later by ``ModelRouterRegistry`` via
+           :meth:`attach_fixed_router`.
+
+        Exactly one of ``config`` or ``params`` should be provided.  When
+        constructed via the registry without a ``fixed_router``, post-init
+        classification is deferred until ``attach_fixed_router`` runs.
+        """
         super().__init__()
+
+        if config is None and params is not None:
+            # Translate Pydantic params -> RouteWiseConfig dataclass.
+            from .config import RouteWiseConfig as _RWC
+
+            config = _RWC(**params.model_dump())
+        if config is None:
+            from .config import RouteWiseConfig as _RWC
+
+            config = _RWC()
         self.fixed_router = fixed_router
         self.config = config
 
         # Per-model adapter classification.
         self.classified: dict[str, list[tuple[Any, float, SubscriptionType]]] = {}
-        self._classify_all()
 
         # Reverse lookup: adapter id(obj) -> SubscriptionType.
         self._adapter_sub_type: dict[int, SubscriptionType] = {}
-        self._build_adapter_sub_type_map()
 
         # Online predictors and quota tracking.
         self.predictor = EMAOutputPredictor(
@@ -126,12 +152,6 @@ class RouteWiseRouter(BaseRouter):
         # Precomputed per-token prices for all S_A adapters, keyed by model.
         # Each entry: (adapter, price_prompt_per_token, price_completion_per_token).
         self._api_adapter_prices: dict[str, list[tuple[Any, float, float]]] = {}
-        self._precompute_api_prices()
-
-        # Validate that every model has at least one S_A baseline adapter.
-        # Without S_A, v_t (the API cost savings) is undefined and the
-        # fallthrough path has no safe adapter to return.
-        self._validate_api_baseline()
 
         # Layer 2: Latency-aware provider selection state.
         # Latency profiles are keyed by endpoint_id.  This dict is router-global,
@@ -152,6 +172,44 @@ class RouteWiseRouter(BaseRouter):
         self._api_endpoint_map: dict[str, tuple[Any, float, float]] = {}
         # Track in-flight LP solves to avoid duplicate concurrent solves.
         self._pending_lp_solves: set[str] = set()
+
+        # Run post-init classification when a fixed_router is available.
+        # When constructed via the registry without one, defer to
+        # attach_fixed_router (ModelRouterRegistry calls it immediately).
+        if self.fixed_router is not None:
+            self._classify_all()
+            self._build_adapter_sub_type_map()
+            self._precompute_api_prices()
+            self._validate_api_baseline()
+            self._init_latency_profiles()
+
+    def attach_fixed_router(self, fixed_router: Any) -> None:
+        """Bind a ``FixedRouter`` after construction.
+
+        Used by ``ModelRouterRegistry`` when a model is configured with
+        ``router: routewise`` in YAML — the registry constructs the router
+        via ``build_router("routewise", params)`` first, then attaches the
+        shared ``FixedRouter`` so classification and latency-profile init
+        can run.
+
+        Idempotent: a second call rewrites classification.  In normal use it
+        is called exactly once, immediately after ``build_router`` returns.
+        """
+        self.fixed_router = fixed_router
+        self.classified = {}
+        self._adapter_sub_type = {}
+        self._api_adapter_prices = {}
+        self._latency_profiles = {}
+        self._swrr_samplers = {}
+        self._last_lp_times = {}
+        self._last_lp_weights = {}
+        self._last_lp_statuses = {}
+        self._api_endpoint_map = {}
+        self._pending_lp_solves = set()
+        self._classify_all()
+        self._build_adapter_sub_type_map()
+        self._precompute_api_prices()
+        self._validate_api_baseline()
         self._init_latency_profiles()
 
     # ------------------------------------------------------------------
