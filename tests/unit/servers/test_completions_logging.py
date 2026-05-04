@@ -261,7 +261,9 @@ def test_record_routing_observation_no_routewise_dict(cl_logger):
 def test_build_db_params_passthrough_when_max_tokens_set(cl_logger):
     params = {"max_tokens": 1234, "temperature": 0.7}
     out = cl_logger.build_db_params(
-        params, provider="openai", base_url=None,
+        params,
+        provider="openai",
+        base_url=None,
         get_adapter_config_for_provider=MagicMock(),
     )
     assert out == params
@@ -278,7 +280,10 @@ def test_build_db_params_fills_default_max_tokens(cl_logger):
         return _Cfg()
 
     out = cl_logger.build_db_params(
-        params, provider="openai", base_url=None, get_adapter_config_for_provider=_get,
+        params,
+        provider="openai",
+        base_url=None,
+        get_adapter_config_for_provider=_get,
     )
     assert out["max_tokens"] == 4096
     assert out["temperature"] == 0.7
@@ -292,7 +297,10 @@ def test_build_db_params_unknown_provider_no_max_tokens(cl_logger):
         return None
 
     out = cl_logger.build_db_params(
-        params, provider="router", base_url=None, get_adapter_config_for_provider=_get,
+        params,
+        provider="router",
+        base_url=None,
+        get_adapter_config_for_provider=_get,
     )
     assert "max_tokens" not in out or out["max_tokens"] is None
     assert out["temperature"] == 0.7

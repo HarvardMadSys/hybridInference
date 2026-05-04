@@ -163,8 +163,7 @@ async def test_log_payload_success_keyset(monkeypatch):
     missing = EXPECTED_SUCCESS_LOG_KEYS - actual_keys
     extra = actual_keys - EXPECTED_SUCCESS_LOG_KEYS
     assert not missing, (
-        f"Missing log_request kwargs: {missing}. "
-        f"PRs B and C must preserve this keyset."
+        f"Missing log_request kwargs: {missing}. PRs B and C must preserve this keyset."
     )
     assert not extra, (
         f"Unexpected new log_request kwargs: {extra}. "
@@ -201,9 +200,5 @@ async def test_log_payload_error_keyset(monkeypatch):
     actual_keys = set(kwargs.keys())
     missing = EXPECTED_ERROR_LOG_KEYS - actual_keys
     extra = actual_keys - EXPECTED_ERROR_LOG_KEYS
-    assert not missing, (
-        f"Missing error-path log_request kwargs: {missing}."
-    )
-    assert not extra, (
-        f"Unexpected new error-path log_request kwargs: {extra}."
-    )
+    assert not missing, f"Missing error-path log_request kwargs: {missing}."
+    assert not extra, f"Unexpected new error-path log_request kwargs: {extra}."
