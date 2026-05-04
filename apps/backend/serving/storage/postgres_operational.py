@@ -592,6 +592,9 @@ class PostgresOperationalStore(OperationalStore):
             sessions_status = await conn.execute(
                 "DELETE FROM auth_sessions WHERE user_id = $1", user_id
             )
+            login_events_status = await conn.execute(
+                "DELETE FROM login_events WHERE user_id = $1", user_id
+            )
             verif_status = await conn.execute(
                 "DELETE FROM email_verification_tokens WHERE user_id = $1", user_id
             )
@@ -609,6 +612,7 @@ class PostgresOperationalStore(OperationalStore):
             counts = {
                 "api_keys": _row_count(keys_status),
                 "auth_sessions": _row_count(sessions_status),
+                "login_events": _row_count(login_events_status),
                 "email_verification_tokens": _row_count(verif_status),
                 "password_reset_tokens": _row_count(reset_status),
                 "user_daily_cost": _row_count(cost_status),

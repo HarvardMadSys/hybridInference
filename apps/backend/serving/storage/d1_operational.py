@@ -399,6 +399,7 @@ class D1OperationalStore(OperationalStore):
                     [user_id, user_id],
                 ),
                 ("DELETE FROM auth_sessions WHERE user_id = ?", [user_id]),
+                ("DELETE FROM login_events WHERE user_id = ?", [user_id]),
                 ("DELETE FROM email_verification_tokens WHERE user_id = ?", [user_id]),
                 ("DELETE FROM password_reset_tokens WHERE user_id = ?", [user_id]),
                 ("DELETE FROM user_daily_cost WHERE user_id = ?", [user_id]),

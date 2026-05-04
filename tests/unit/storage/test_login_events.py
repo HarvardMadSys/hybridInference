@@ -136,3 +136,61 @@ async def test_initialize_is_idempotent(store: PostgresOperationalStore):
     # Calling initialize twice must not raise.
     await store.initialize()
     await store.initialize()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_user_sweeps_login_events(store: PostgresOperationalStore):
+    """hard_delete_user removes the user's login_events rows + reports count."""
+    # Seed a target user + an unrelated user, each with login events.
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, user_name, password_hash, role, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            "doomed",
+            "d@x.com",
+            "Doomed",
+            "$2b$12$X",
+            "free",
+            "active",
+        )
+        await conn.execute(
+            "INSERT INTO users (id, email, user_name, password_hash, role, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            "kept",
+            "k@x.com",
+            "Kept",
+            "$2b$12$X",
+            "free",
+            "active",
+        )
+
+    for _ in range(3):
+        await store.record_login_event(
+            email="d@x.com",
+            outcome="success",
+            failure_reason=None,
+            user_id="doomed",
+            ip=None,
+            user_agent=None,
+        )
+    await store.record_login_event(
+        email="k@x.com",
+        outcome="success",
+        failure_reason=None,
+        user_id="kept",
+        ip=None,
+        user_agent=None,
+    )
+
+    counts = await store.hard_delete_user(
+        "doomed",
+        admin_ip="127.0.0.1",
+        admin_id="admin1",
+        reason="test",
+        email="d@x.com",
+    )
+    assert counts.get("login_events") == 3
+
+    async with store._pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id FROM login_events")
+    assert {r["user_id"] for r in rows} == {"kept"}
