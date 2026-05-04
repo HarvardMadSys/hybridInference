@@ -35,6 +35,7 @@ from serving.observability.metrics import (
     normalize_model_label,
     normalize_provider_label,
 )
+from serving.observability.rejection_log import log_rejection
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import get_log_store, get_router
@@ -499,6 +500,19 @@ async def anthropic_messages(
     try:
         canonical, _route, adapter = _resolve(model_id, router_exec, user_ctx)
     except HTTPException as exc:
+        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+            log_rejection(
+                request=request,
+                status_code=exc.status_code,
+                error_code="model_not_found",
+                reason=str(exc.detail),
+                user={
+                    "user_id": user_ctx.get("user_id"),
+                    "role": user_ctx.get("role"),
+                },
+                model_id=model_id,
+            )
+        )
         return _anthropic_error(exc.status_code, str(exc.detail))
 
     body["model"] = canonical
