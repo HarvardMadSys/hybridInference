@@ -482,6 +482,15 @@ async def initialize() -> AppServices:
         model_router_registry=model_router_registry,
     )
 
+    # PricingLookup + CostTracker — encapsulate the four pricing-lookup
+    # blocks and the ``_schedule_cost_increment`` helper that previously
+    # lived in completions.py. Both tolerate ``op_store=None``, so this is
+    # always safe to construct even when the operational store is offline.
+    from serving.servers.routers.completions_cost import CostTracker, PricingLookup
+
+    pricing_lookup = PricingLookup(router=router)
+    cost_tracker = CostTracker(op_store=operational_store, pricing=pricing_lookup)
+
     return AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
@@ -494,6 +503,8 @@ async def initialize() -> AppServices:
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
         completions_logger=completions_logger,
+        pricing_lookup=pricing_lookup,
+        cost_tracker=cost_tracker,
     )
 
 

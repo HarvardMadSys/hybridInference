@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
     from serving.observability.alert_rules import AlertEngine
+    from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
     from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
@@ -50,6 +51,8 @@ class AppServices:
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None
     completions_logger: CompletionsLogger | None = None
+    pricing_lookup: PricingLookup | None = None
+    cost_tracker: CostTracker | None = None
 
 
 def get_services(request: Request) -> AppServices:
@@ -122,6 +125,43 @@ def get_completions_logger(
             model_router_registry=services.model_router_registry,
         )
     return services.completions_logger
+
+
+def get_pricing_lookup(
+    services: AppServices = Depends(get_services),
+) -> PricingLookup:
+    """Dependency to obtain the shared ``PricingLookup``.
+
+    Lazily constructs an instance if bootstrap didn't initialize one (mirrors
+    the ``get_completions_logger`` pattern so tests that build
+    ``AppServices`` directly stay simple).
+    """
+    if services.pricing_lookup is not None:
+        return services.pricing_lookup
+    from serving.servers.routers.completions_cost import PricingLookup as _PL
+
+    return _PL(router=services.router)
+
+
+def get_cost_tracker(
+    services: AppServices = Depends(get_services),
+) -> CostTracker:
+    """Dependency to obtain the shared ``CostTracker``.
+
+    Lazily constructs an instance (with a freshly built ``PricingLookup``)
+    if bootstrap didn't initialize one. The tracker tolerates
+    ``op_store=None`` so the cost-math pathway still runs in tests that
+    don't wire up a database.
+    """
+    if services.cost_tracker is not None:
+        return services.cost_tracker
+    from serving.servers.routers.completions_cost import (
+        CostTracker as _CT,
+        PricingLookup as _PL,
+    )
+
+    pricing = services.pricing_lookup or _PL(router=services.router)
+    return _CT(op_store=services.operational_store, pricing=pricing)
 
 
 def is_database_connected(db_logger: DatabaseLogger | None) -> bool:
