@@ -29,7 +29,9 @@ models:
       - kind: zhipu
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
-        api_key: ${ZAI_API_KEY}
+        api_keys:
+          - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
         provider_model_id: "glm-4.7"
       # Ollama Cloud fallback
       - kind: ollama
