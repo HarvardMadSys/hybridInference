@@ -7,17 +7,37 @@ Uses AsyncMock stores to verify:
 - Primary failure propagates (shadow not called)
 - health_check returns primary health; shadow_healthy tracks shadow
 - Argument passthrough fidelity for writes with optional kwargs
+
+Shadow writes now run as fire-and-forget tracked_tasks. The
+``_drain_shadow_tasks`` helper awaits any pending tracked tasks before
+assertions so existing behavioural tests remain deterministic.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from unittest.mock import AsyncMock
 
 import pytest
 
+from serving.observability.tracked_tasks import _TRACKED_TASKS
 from serving.storage.base import LogStore, OperationalStore
 from serving.storage.dual_write import DualWriteLogStore, DualWriteOperationalStore
+
+
+async def _drain_shadow_tasks() -> None:
+    """Await any pending tracked_task shadow writes scheduled by dual_write."""
+    if _TRACKED_TASKS:
+        await asyncio.gather(*list(_TRACKED_TASKS), return_exceptions=True)
+
+
+@pytest.fixture(autouse=True)
+def _clear_tracked_tasks_between_tests():
+    """Ensure the module-level tracked-task set is empty for each test."""
+    _TRACKED_TASKS.clear()
+    yield
+    _TRACKED_TASKS.clear()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -162,6 +182,7 @@ class TestDualWriteOperationalWrites:
             email_verified=True,
             status="active",
         )
+        await _drain_shadow_tasks()
         primary.create_user.assert_awaited_once()
         shadow.create_user.assert_awaited_once()
 
@@ -178,6 +199,7 @@ class TestDualWriteOperationalWrites:
             email="a@b.com",
             password_hash="hash",
         )
+        await _drain_shadow_tasks()
         primary.create_user.assert_awaited_once()
         assert not store.shadow_healthy
 
@@ -200,6 +222,7 @@ class TestDualWriteOperationalWrites:
         store = DualWriteOperationalStore(primary, shadow)
 
         result = await store.regenerate_key("u1", new_key_hash="hash", new_key_prefix="new_pfx")
+        await _drain_shadow_tasks()
         assert result == "old_pfx"
         shadow.regenerate_key.assert_awaited_once()
 
@@ -221,6 +244,7 @@ class TestDualWriteOperationalArgPassthrough:
             reason="compliance",
             email="user@test.com",
         )
+        await _drain_shadow_tasks()
         # Verify shadow received the same kwargs
         shadow.delete_user.assert_awaited_once_with(
             "u1",
@@ -249,6 +273,7 @@ class TestDualWriteOperationalArgPassthrough:
             metadata='{"foo": 1}',
             account_id="acc1",
         )
+        await _drain_shadow_tasks()
         shadow.create_key.assert_awaited_once_with(
             key_hash="h",
             key_prefix="pfx",
@@ -276,6 +301,7 @@ class TestDualWriteOperationalArgPassthrough:
             details={"reason": "spam"},
             success=False,
         )
+        await _drain_shadow_tasks()
         shadow.log_admin_action.assert_awaited_once_with(
             admin_ip="1.2.3.4",
             action="delete_user",
@@ -414,6 +440,7 @@ class TestDualWriteLogWrites:
             latency_ms=100,
             status_code=200,
         )
+        await _drain_shadow_tasks()
         primary.log_request.assert_awaited_once()
         shadow.log_request.assert_awaited_once()
 
@@ -434,6 +461,7 @@ class TestDualWriteLogWrites:
             latency_ms=100,
             status_code=200,
         )
+        await _drain_shadow_tasks()
         primary.log_request.assert_awaited_once()
         assert not store.shadow_healthy
 
@@ -485,6 +513,7 @@ class TestDualWriteLogArgPassthrough:
             store_full_content=True,
             pricing={"model": "0.01"},
         )
+        await _drain_shadow_tasks()
         shadow.log_request.assert_awaited_once_with(
             request_id="r1",
             model_id="m1",

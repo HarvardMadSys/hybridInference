@@ -9,6 +9,7 @@ No network, no D1 credentials, no PostgreSQL — pure in-process SQLite.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,7 +17,22 @@ from typing import Any
 
 import pytest
 
+from serving.observability.tracked_tasks import _TRACKED_TASKS
 from serving.storage.dual_write import DualWriteLogStore, DualWriteOperationalStore
+
+
+async def _drain_shadow_tasks() -> None:
+    """Await any pending tracked_task shadow writes scheduled by dual_write."""
+    if _TRACKED_TASKS:
+        await asyncio.gather(*list(_TRACKED_TASKS), return_exceptions=True)
+
+
+@pytest.fixture(autouse=True)
+def _clear_tracked_tasks_between_tests():
+    """Ensure the module-level tracked-task set is empty for each test."""
+    _TRACKED_TASKS.clear()
+    yield
+    _TRACKED_TASKS.clear()
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[3]
@@ -172,6 +188,7 @@ class TestDualWriteUserSync:
             password_hash="hash123",
             user_name="Test User",
         )
+        await _drain_shadow_tasks()
 
         p_user = await primary.get_user_by_id("u1")
         s_user = await shadow.get_user_by_id("u1")
@@ -194,6 +211,7 @@ class TestDualWriteUserSync:
             password_hash="hash",
         )
         await dual.update_user_fields("u2", user_name="Updated Name", role="admin")
+        await _drain_shadow_tasks()
 
         p_user = await primary.get_user_by_id("u2")
         s_user = await shadow.get_user_by_id("u2")
@@ -219,6 +237,7 @@ class TestDualWriteUserSync:
             admin_id="admin1",
             reason="test cleanup",
         )
+        await _drain_shadow_tasks()
 
         p_user = await primary.get_user_by_id("u3")
         s_user = await shadow.get_user_by_id("u3")
@@ -247,6 +266,7 @@ class TestDualWriteKeySync:
             quota_daily_cost_usd=500.0,
             notes="test key",
         )
+        await _drain_shadow_tasks()
 
         p_key = await primary.get_key_detail("ku1")
         s_key = await shadow.get_key_detail("ku1")
@@ -272,6 +292,7 @@ class TestDualWriteKeySync:
             user_id="ku2",
         )
         await dual.revoke_key("ku2")
+        await _drain_shadow_tasks()
 
         p_key = await primary.get_key_detail("ku2")
         s_key = await shadow.get_key_detail("ku2")
@@ -303,6 +324,7 @@ class TestDualWriteSessionSync:
             sid="sid1",
             expires_at=expires,
         )
+        await _drain_shadow_tasks()
 
         p_sess = await primary.get_session_by_token_hash("rth1")
         s_sess = await shadow.get_session_by_token_hash("rth1")
@@ -310,6 +332,7 @@ class TestDualWriteSessionSync:
         assert s_sess is not None, "Session missing from shadow"
 
         await dual.revoke_session("sess1")
+        await _drain_shadow_tasks()
 
         p_sess = await primary.get_session_by_token_hash("rth1")
         s_sess = await shadow.get_session_by_token_hash("rth1")
@@ -327,6 +350,7 @@ class TestDualWriteCostSync:
 
         await dual.increment_user_cost("cu1", 1.50, day="2025-01-15")
         await dual.increment_user_cost("cu1", 2.25, day="2025-01-15")
+        await _drain_shadow_tasks()
 
         p_cost = await primary.get_user_cost_period("cu1", "today")
         s_cost = await shadow.get_user_cost_period("cu1", "today")
@@ -350,6 +374,7 @@ class TestDualWriteAuditSync:
             details={"reason": "integration test"},
             success=True,
         )
+        await _drain_shadow_tasks()
 
         p_count, p_rows = await primary.list_audit_log(action="test_action")
         s_count, s_rows = await shadow.list_audit_log(action="test_action")
@@ -409,6 +434,7 @@ class TestDualWriteShadowFailure:
             email="r@test.com",
             password_hash="hash",
         )
+        await _drain_shadow_tasks()
 
         p_user = await primary_store.get_user_by_id("resilient")
         assert p_user is not None
@@ -442,6 +468,7 @@ class TestDualWriteLogSync:
             status_code=200,
             metadata={"user_id": "log_u1"},
         )
+        await _drain_shadow_tasks()
 
         # Flush both stores' buffers
         if hasattr(primary, "flush"):

@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from serving.observability.tracked_tasks import tracked_task
+
 from .base import LogStore, OperationalStore, Row
 
 if TYPE_CHECKING:
@@ -59,21 +61,33 @@ class DualWriteOperationalStore(OperationalStore):
     # -- shadow helper -------------------------------------------------------
 
     async def _do_shadow(self, method_name: str, coro, /, **ctx_ids: Any) -> None:
-        """Await *coro* (a shadow method call).  On failure, log and swallow."""
-        try:
-            await coro
-            if not self._shadow_healthy:
-                self._shadow_healthy = True
-                logger.info("Shadow operational store recovered: %s", method_name)
-        except Exception:
-            self._shadow_healthy = False
-            ctx = _shadow_ctx(**ctx_ids)
-            logger.warning(
-                "Shadow operational write failed: method=%s %s",
-                method_name,
-                ctx,
-                exc_info=True,
-            )
+        """Schedule *coro* (a shadow method call) via tracked_task.
+
+        Shadow writes run as fire-and-forget so the primary write's latency
+        is not coupled to the shadow's. The tracked_task wrapper emits a
+        success or failure event consumed by TrackedTaskFailureRateRule.
+        Health bookkeeping (self._shadow_healthy, recovery log) runs inside
+        the wrapped coroutine so it observes the actual outcome.
+        """
+
+        async def _shadow_runner() -> None:
+            try:
+                await coro
+                if not self._shadow_healthy:
+                    self._shadow_healthy = True
+                    logger.info("Shadow operational store recovered: %s", method_name)
+            except Exception:
+                self._shadow_healthy = False
+                ctx = _shadow_ctx(**ctx_ids)
+                logger.warning(
+                    "Shadow operational write failed: method=%s %s",
+                    method_name,
+                    ctx,
+                    exc_info=True,
+                )
+                raise  # let tracked_task record the failure
+
+        tracked_task(_shadow_runner(), name="dual_write_shadow")
 
     # -- public property -----------------------------------------------------
 
@@ -781,21 +795,34 @@ class DualWriteLogStore(LogStore):
         self._shadow_healthy: bool = True
 
     async def _do_shadow(self, method_name: str, coro, /, **ctx_ids: Any) -> None:
-        """Await *coro* (a shadow method call).  On failure, log and swallow."""
-        try:
-            await coro
-            if not self._shadow_healthy:
-                self._shadow_healthy = True
-                logger.info("Shadow log store recovered: %s", method_name)
-        except Exception:
-            self._shadow_healthy = False
-            ctx = _shadow_ctx(**ctx_ids)
-            logger.warning(
-                "Shadow log write failed: method=%s %s",
-                method_name,
-                ctx,
-                exc_info=True,
-            )
+        """Schedule *coro* (a shadow log write) via tracked_task.
+
+        Shadow log writes run as fire-and-forget so the primary write's
+        latency is not coupled to the shadow's. The tracked_task wrapper
+        emits a success or failure event consumed by
+        TrackedTaskFailureRateRule. Health bookkeeping (self._shadow_healthy,
+        recovery log) runs inside the wrapped coroutine so it observes
+        the actual outcome.
+        """
+
+        async def _shadow_runner() -> None:
+            try:
+                await coro
+                if not self._shadow_healthy:
+                    self._shadow_healthy = True
+                    logger.info("Shadow log store recovered: %s", method_name)
+            except Exception:
+                self._shadow_healthy = False
+                ctx = _shadow_ctx(**ctx_ids)
+                logger.warning(
+                    "Shadow log write failed: method=%s %s",
+                    method_name,
+                    ctx,
+                    exc_info=True,
+                )
+                raise  # let tracked_task record the failure
+
+        tracked_task(_shadow_runner(), name="dual_write_shadow")
 
     @property
     def shadow_healthy(self) -> bool:
