@@ -322,22 +322,25 @@ async def initialize() -> AppServices:
 
     # Eagerly construct routers for every known model so config errors
     # (bad strategy name, bad router_params) surface at boot, not on the
-    # first request.
-    try:
-        for info in model_infos:
+    # first request. Fail-fast per-model: a bad config for one model must
+    # not silently disable the registry for all models.
+    for info in model_infos:
+        try:
             model_router_registry.get_router(info.model_id)
             for alias in info.aliases:
                 model_router_registry.get_router(alias)
-        rw_models = [
-            i.model_id
-            for i in model_infos
-            if type(model_router_registry.get_router(i.model_id)).__name__ == "RouteWiseRouter"
-        ]
-        if rw_models:
-            logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
-    except Exception as exc:
-        logger.warning(f"ModelRouterRegistry initialization failed: {exc}. Using fixed routing.")
-        model_router_registry = None
+        except Exception as exc:
+            logger.error(
+                f"ModelRouterRegistry initialization failed for model '{info.model_id}': {exc}"
+            )
+            raise
+    rw_models = [
+        i.model_id
+        for i in model_infos
+        if type(model_router_registry.get_router(i.model_id)).__name__ == "RouteWiseRouter"
+    ]
+    if rw_models:
+        logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
 
     # Build store abstractions
     operational_store = None
