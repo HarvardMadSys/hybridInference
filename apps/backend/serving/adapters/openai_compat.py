@@ -224,7 +224,7 @@ class OpenAICompatAdapter(BaseAdapter):
             try:
                 api_key, lease = self._key_pool.acquire(affinity_key)
             except KeyPoolExhausted as exhausted:
-                logger.info(
+                logger.warning(
                     "key_pool_exhausted",
                     extra={
                         "event": "key_pool_exhausted",
@@ -236,7 +236,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     raise last_429_error from exhausted
                 raise
 
-            logger.info(
+            logger.debug(
                 "key_pool_request",
                 extra={
                     "event": "key_pool_request",
@@ -254,7 +254,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     timeout=aiohttp.ClientTimeout(total=120),
                 )
                 self._key_pool.release(lease, status_code=200, retry_after=None)
-                logger.info(
+                logger.debug(
                     "key_pool_active_affinities",
                     extra={
                         "event": "key_pool_active_affinities",
@@ -268,7 +268,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     retry_after = e.headers.get("Retry-After") if e.headers else None
                     self._key_pool.release(lease, status_code=429, retry_after=retry_after)
                     reason = "retry_after" if retry_after else "default_2min"
-                    logger.info(
+                    logger.warning(
                         "key_pool_cooldown",
                         extra={
                             "event": "key_pool_cooldown",
@@ -284,7 +284,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 raise
 
         # Loop exhausted naturally (every key returned 429 in this single call)
-        logger.info(
+        logger.warning(
             "key_pool_exhausted",
             extra={
                 "event": "key_pool_exhausted",
@@ -337,7 +337,7 @@ class OpenAICompatAdapter(BaseAdapter):
             try:
                 api_key, lease = self._key_pool.acquire(affinity_key)
             except KeyPoolExhausted as exhausted:
-                logger.info(
+                logger.warning(
                     "key_pool_exhausted",
                     extra={
                         "event": "key_pool_exhausted",
@@ -349,7 +349,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     raise last_429 from exhausted
                 raise
 
-            logger.info(
+            logger.debug(
                 "key_pool_request",
                 extra={
                     "event": "key_pool_request",
@@ -368,7 +368,7 @@ class OpenAICompatAdapter(BaseAdapter):
             except StopAsyncIteration:
                 # Empty stream — treat as success
                 self._key_pool.release(lease, status_code=200, retry_after=None)
-                logger.info(
+                logger.debug(
                     "key_pool_active_affinities",
                     extra={
                         "event": "key_pool_active_affinities",
@@ -382,7 +382,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     retry_after = e.headers.get("Retry-After") if e.headers else None
                     self._key_pool.release(lease, status_code=429, retry_after=retry_after)
                     reason = "retry_after" if retry_after else "default_2min"
-                    logger.info(
+                    logger.warning(
                         "key_pool_cooldown",
                         extra={
                             "event": "key_pool_cooldown",
@@ -403,7 +403,7 @@ class OpenAICompatAdapter(BaseAdapter):
             return
 
         # Loop exhausted — every key returned 429
-        logger.info(
+        logger.warning(
             "key_pool_exhausted",
             extra={
                 "event": "key_pool_exhausted",
@@ -698,7 +698,7 @@ class OpenAICompatAdapter(BaseAdapter):
         finally:
             if active_lease is not None and self._key_pool is not None:
                 self._key_pool.release(active_lease, status_code=200, retry_after=None)
-                logger.info(
+                logger.debug(
                     "key_pool_active_affinities",
                     extra={
                         "event": "key_pool_active_affinities",
