@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time
 import uuid
@@ -32,9 +33,10 @@ from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
     get_completions_logger,
+    get_cost_tracker,
     get_log_store,
     get_model_router_registry,
-    get_operational_store,
+    get_pricing_lookup,
     get_router,
 )
 from serving.servers.routers.routing_info import (
@@ -48,41 +50,11 @@ from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
+    from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
 
 logger = get_logger(__name__)
 router = APIRouter()
-_background_tasks: set = set()
-
-
-def _schedule_cost_increment(
-    op_store: Any,
-    user_id: str,
-    usage: dict[str, int] | None,
-    pricing: dict[str, str] | None,
-) -> None:
-    """Increment the user's daily cost counter for billed requests.
-
-    Only called for successful responses where cost > 0. Runs as a
-    fire-and-forget background task to avoid blocking the response.
-
-    PR B (issue #2 of 6) replaces this with ``CostTracker.schedule_increment``.
-    """
-    from serving.storage.utils import calculate_cost
-
-    cost = calculate_cost(usage, pricing)
-    if not cost or cost <= 0 or not op_store:
-        return
-
-    async def _increment():
-        try:
-            await op_store.increment_user_cost(user_id, cost)
-        except Exception as exc:
-            logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
-
-    _task = asyncio.create_task(_increment())
-    _background_tasks.add(_task)
-    _task.add_done_callback(_background_tasks.discard)
 
 
 @router.post(
@@ -104,9 +76,10 @@ async def chat_completions(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     log_store=Depends(get_log_store),
-    op_store=Depends(get_operational_store),
     model_router_registry=Depends(get_model_router_registry),
     completions_logger: CompletionsLogger = Depends(get_completions_logger),
+    pricing_lookup: PricingLookup = Depends(get_pricing_lookup),
+    cost_tracker: CostTracker = Depends(get_cost_tracker),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
@@ -279,32 +252,6 @@ async def chat_completions(
     routing: RoutingInfo = build_initial_routing_info(
         payload, request_id=request_id, pin_provider=pin_provider
     )
-
-    # Helper function to get pricing for a specific provider
-    def get_pricing_for_provider(
-        provider_name: str, base_url: str | None = None
-    ) -> dict[str, str] | None:
-        """Find pricing from the actual adapter used (by provider + base_url)."""
-        if model not in router_exec.routes:
-            return None
-        route_config = router_exec.routes[model]
-
-        # Match adapter by provider and optionally base_url
-        for adapter, _ in route_config.adapters:
-            if not hasattr(adapter, "config"):
-                continue
-            if adapter.config.provider == provider_name:
-                # If base_url provided, match it too (for same provider, different endpoints)
-                if (
-                    base_url
-                    and hasattr(adapter.config, "base_url")
-                    and adapter.config.base_url != base_url
-                ):
-                    continue
-                # Found matching adapter
-                if hasattr(adapter.config, "pricing"):
-                    return adapter.config.pricing
-        return None
 
     def get_adapter_config_for_provider(provider_name: str, base_url: str | None = None) -> Any:
         """Return the adapter config object for the provider/base_url used."""
@@ -631,10 +578,12 @@ async def chat_completions(
                 pricing = None
                 if routing_info:
                     provider = stream_routing.provider or "router"
-                    base_url = stream_routing.base_url
-                    # Prefer embedded pricing (e.g. adapter-internal fallback)
-                    # before looking up from registered routes
-                    pricing = stream_routing.pricing or get_pricing_for_provider(provider, base_url)
+                    # PricingLookup.raw_dict_for_routing prefers adapter-emitted
+                    # ``extra["pricing"]`` (set by merge_adapter_routing) before
+                    # walking the registered routes — same precedence the prior
+                    # ``stream_routing.pricing or get_pricing_for_provider(...)``
+                    # had when the field was a dict.
+                    pricing = pricing_lookup.raw_dict_for_routing(stream_routing)
                     # Strip upstream_cost_usd from metadata JSONB; the dedicated column
                     # api_logs.upstream_cost_usd is the canonical store. Avoids leaking the
                     # internal cost into any future admin route that returns raw metadata.
@@ -644,7 +593,11 @@ async def chat_completions(
                 elif provider_from_ctx:
                     # Fallback: use provider extracted from request context during streaming
                     provider = provider_from_ctx
-                    pricing = get_pricing_for_provider(provider, None)
+                    # Synthesize a minimal RoutingInfo for the lookup so the
+                    # registry walk by (provider, base_url) still works.
+                    pricing = pricing_lookup.raw_dict_for_routing(
+                        dataclasses.replace(stream_routing, provider=provider)
+                    )
                     logger.debug(f"Using provider from context for DB logging: {provider}")
 
                 # Prepare data for background database logging (don't await here!)
@@ -675,13 +628,21 @@ async def chat_completions(
                         },
                     )
 
-                # Increment daily cost counter for billed requests
+                # Increment daily cost counter for billed requests via the
+                # CostTracker (same fire-and-forget semantics as before; the
+                # tracker also populates stream_routing.upstream_cost_usd
+                # so subsequent log-payload assembly sees the new value).
                 if not is_synthetic_probe and routing_info:
-                    _usage = response_for_db.get("usage") if response_for_db else usage_data
-                    _s_pricing = stream_routing.pricing or get_pricing_for_provider(
-                        provider, stream_routing.base_url
+                    _usage = (response_for_db.get("usage") if response_for_db else usage_data) or {}
+                    stream_routing = await cost_tracker.schedule_increment(
+                        user_id=user_id,
+                        routing=stream_routing,
+                        prompt_tokens=int(_usage.get("prompt_tokens", 0) or 0),
+                        completion_tokens=int(_usage.get("completion_tokens", 0) or 0),
+                        cache_read_tokens=int(_usage.get("cache_read_tokens", 0) or 0),
+                        cache_write_tokens=int(_usage.get("cache_write_tokens", 0) or 0),
+                        reasoning_tokens=int(_usage.get("reasoning_tokens", 0) or 0),
                     )
-                    _schedule_cost_increment(op_store, user_id, _usage, _s_pricing)
 
                 # Record routing observation for online learning (RouteWise)
                 if not is_synthetic_probe:
@@ -779,7 +740,6 @@ async def chat_completions(
         # policy (strict / passthrough), mirroring the streaming path contract.
         provider = "router"
         base_url = None
-        routing_pricing = None
         if isinstance(response, dict):
             sanitize_result = sanitize_response(response, serializer_mode)
             response = sanitize_result.response_json
@@ -788,7 +748,6 @@ async def chat_completions(
                 routing = merge_adapter_routing(routing, routing_info)
                 provider = routing.provider or "router"
                 base_url = routing.base_url
-                routing_pricing = routing.pricing
                 # See comment above: strip upstream_cost_usd before merging into metadata JSONB.
                 metadata.update({k: v for k, v in routing_info.items() if k != "upstream_cost_usd"})  # type: ignore[arg-type]
         else:
@@ -802,11 +761,31 @@ async def chat_completions(
                     f"Using provider from context for non-streaming DB logging: {provider}"
                 )
 
+        # Increment daily cost counter for billed requests (non-streaming).
+        # Done before the log payload assembly so the row sees the
+        # cost-tracker-populated ``upstream_cost_usd`` on ``routing``.
+        if not is_synthetic_probe:
+            _ns_usage = (
+                normalize_usage(response.get("usage")) if isinstance(response, dict) else None
+            ) or {}
+            routing = await cost_tracker.schedule_increment(
+                user_id=user_id,
+                routing=routing,
+                prompt_tokens=int(_ns_usage.get("prompt_tokens", 0) or 0),
+                completion_tokens=int(_ns_usage.get("completion_tokens", 0) or 0),
+                cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
+                cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
+                reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
+            )
+
         # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
         if log_store and not is_synthetic_probe:
-            # Prefer embedded pricing (e.g. adapter-internal fallback)
-            pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
+            # raw_dict_for_routing prefers adapter-emitted ``extra["pricing"]``
+            # then falls back to a registry walk — same precedence the prior
+            # ``routing_pricing or get_pricing_for_provider(...)`` had when
+            # ``routing.pricing`` was a dict.
+            pricing = pricing_lookup.raw_dict_for_routing(routing)
             completions_logger.schedule_log(
                 request_id,
                 {
@@ -831,14 +810,6 @@ async def chat_completions(
                     "upstream_cost_usd": routing.upstream_cost_usd,
                 },
             )
-
-        # Increment daily cost counter for billed requests (non-streaming)
-        if not is_synthetic_probe:
-            _ns_usage = (
-                normalize_usage(response.get("usage")) if isinstance(response, dict) else None
-            )
-            _ns_pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
-            _schedule_cost_increment(op_store, user_id, _ns_usage, _ns_pricing)
 
         # Emit token counters when usage is available, with anomaly checks
         # Normalize usage to extract reasoning_tokens from nested locations

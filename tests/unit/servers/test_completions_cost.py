@@ -12,14 +12,14 @@ from serving.servers.routers.completions_cost import CostTracker, PricingLookup
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
 from serving.storage.utils import calculate_cost
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_adapter(provider: str, base_url: str, pricing: dict[str, str] | None,
-                  endpoint_id: str | None = None) -> Any:
+def _make_adapter(
+    provider: str, base_url: str, pricing: dict[str, str] | None, endpoint_id: str | None = None
+) -> Any:
     """Build a minimal mock adapter with .config matching real adapters."""
     config = MagicMock()
     config.provider = provider
@@ -302,7 +302,7 @@ async def test_cost_tracker_uses_typed_routing_pricing_first(op_store, empty_loo
 
 @pytest.mark.asyncio
 async def test_cost_tracker_zero_cost_does_not_schedule_increment(op_store, empty_lookup):
-    """When tokens × price == 0, nothing is incremented (matches today)."""
+    """When tokens * price == 0, nothing is incremented (matches today)."""
     tracker = CostTracker(op_store=op_store, pricing=empty_lookup)
     pricing = Pricing(prompt_price=0.5, completion_price=1.5)
     routing = RoutingInfo(request_id="rid", model="gpt-4", pricing=pricing)

@@ -152,11 +152,7 @@ class PricingLookup:
                 continue
             if getattr(config, "provider", None) != provider:
                 continue
-            if (
-                base_url
-                and getattr(config, "base_url", None)
-                and config.base_url != base_url
-            ):
+            if base_url and getattr(config, "base_url", None) and config.base_url != base_url:
                 continue
             pricing = getattr(config, "pricing", None)
             if isinstance(pricing, dict) and pricing:
