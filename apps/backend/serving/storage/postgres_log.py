@@ -43,92 +43,13 @@ class PostgresLogStore(LogStore):
     # -- lifecycle -----------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Create api_logs and api_stats_hourly tables with indexes."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS api_logs (
-                    id BIGSERIAL PRIMARY KEY,
-                    timestamp TIMESTAMPTZ DEFAULT NOW(),
-                    request_id TEXT NOT NULL UNIQUE,
-                    model_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    temperature FLOAT,
-                    top_p FLOAT,
-                    max_tokens INTEGER,
-                    seed INTEGER,
-                    stream BOOLEAN,
-                    ttft_ms INTEGER,
-                    latency_ms INTEGER,
-                    prompt_tokens INTEGER,
-                    completion_tokens INTEGER,
-                    reasoning_tokens INTEGER,
-                    total_tokens INTEGER,
-                    prompt TEXT,
-                    response TEXT,
-                    prompt_hash TEXT,
-                    response_hash TEXT,
-                    status_code INTEGER,
-                    error TEXT,
-                    user_id TEXT,
-                    session_id TEXT,
-                    metadata JSONB,
-                    tools JSONB,
-                    cache_read_tokens INTEGER,
-                    cache_write_tokens INTEGER,
-                    cost_usd DECIMAL(12, 8),
-                    upstream_cost_usd DECIMAL(12, 8)
-                )
-            """)
+        """No-op: schema is owned by Alembic.
 
-            # Indexes
-            for ddl in [
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_timestamp ON api_logs(timestamp DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_model ON api_logs(model_id, timestamp DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_provider ON api_logs(provider, timestamp DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_request_id ON api_logs(request_id)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_user ON api_logs(user_id, timestamp DESC) WHERE user_id IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_session ON api_logs(session_id, timestamp DESC) WHERE session_id IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_model_activity ON api_logs(timestamp DESC, model_id, provider) WHERE user_id IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_error ON api_logs(timestamp DESC) WHERE error IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_prompt_hash ON api_logs(prompt_hash) WHERE prompt_hash IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_response_hash ON api_logs(response_hash) WHERE response_hash IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost ON api_logs(user_id, timestamp, cost_usd)",
-            ]:
-                await conn.execute(ddl)
-
-            # Migrations for existing databases
-            for col_ddl in [
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS reasoning_tokens INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS stream BOOLEAN",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS ttft_ms INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS prompt_hash TEXT",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS response_hash TEXT",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS upstream_cost_usd DECIMAL(12, 8)",
-            ]:
-                await conn.execute(col_ddl)
-
-            # Aggregated stats table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS api_stats_hourly (
-                    hour TIMESTAMPTZ NOT NULL,
-                    model_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    request_count INTEGER DEFAULT 0,
-                    success_count INTEGER DEFAULT 0,
-                    error_count INTEGER DEFAULT 0,
-                    total_prompt_tokens BIGINT DEFAULT 0,
-                    total_completion_tokens BIGINT DEFAULT 0,
-                    total_tokens BIGINT DEFAULT 0,
-                    avg_latency_ms FLOAT,
-                    p50_latency_ms INTEGER,
-                    p95_latency_ms INTEGER,
-                    p99_latency_ms INTEGER,
-                    PRIMARY KEY (hour, model_id, provider)
-                )
-            """)
+        See ``apps/backend/serving/storage/migrations`` for the migration
+        chain. The deploy pipeline runs ``alembic upgrade head`` before
+        the gateway starts; ``serving.servers.bootstrap._verify_schema_version``
+        hard-fails boot if the version doesn't match.
+        """
 
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""

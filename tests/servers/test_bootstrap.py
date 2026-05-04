@@ -54,6 +54,12 @@ class TestBootstrapInitialization:
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger,
             patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
+            # Schema-version guard would otherwise hit the mock pool and
+            # explode; covered by tests/unit/servers/test_schema_version_check.py.
+            patch(
+                "serving.servers.bootstrap._verify_schema_version",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             mock_logger = AsyncMock()
             MockDBLogger.return_value = mock_logger
