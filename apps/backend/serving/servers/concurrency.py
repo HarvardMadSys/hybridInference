@@ -87,9 +87,7 @@ class UserConcurrencyLimiter:
         try:
             return await self._provider()
         except Exception:
-            logger.exception(
-                "user_concurrency: limits provider failed; falling back to defaults"
-            )
+            logger.exception("user_concurrency: limits provider failed; falling back to defaults")
             return dict(_FALLBACK_LIMITS)
 
     @staticmethod
