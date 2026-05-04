@@ -75,9 +75,7 @@ export function SettingsTab() {
         (s) => s.value_type === 'int' || s.value_type === 'float',
       );
       setNumericSettings(numerics);
-      setNumericDrafts(
-        Object.fromEntries(numerics.map((s) => [s.key, String(s.value ?? '')])),
-      );
+      setNumericDrafts(Object.fromEntries(numerics.map((s) => [s.key, String(s.value ?? '')])));
     } catch (e) {
       setFlagsError(getErrorMessage(e));
     } finally {

@@ -1,6 +1,4 @@
-export type ValidatedNumeric =
-  | { ok: true; value: number }
-  | { ok: false; error: string };
+export type ValidatedNumeric = { ok: true; value: number } | { ok: false; error: string };
 
 export function validateNumericSettingInput(
   raw: string,
