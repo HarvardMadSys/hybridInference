@@ -186,9 +186,6 @@ async def initialize() -> AppServices:
                 try:
                     await db_logger.initialize()
                     logger.info("Database logger initialized successfully")
-                    from serving.observability.metrics import DATABASE_CONNECTED
-
-                    DATABASE_CONNECTED.set(1)
                     # Start broadcast email scheduler. Tear it down if rehydration
                     # fails to avoid a half-initialized scheduler running in background.
                     if db_logger.pool:
@@ -261,9 +258,6 @@ async def initialize() -> AppServices:
                             f"{exc}. Service will start without database logging."
                         )
                         db_logger = None
-                        from serving.observability.metrics import DATABASE_CONNECTED
-
-                        DATABASE_CONNECTED.set(0)
     else:
         logger.info("DB_BACKEND=d1 — skipping PostgreSQL initialization")
 
