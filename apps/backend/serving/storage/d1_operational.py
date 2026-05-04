@@ -399,6 +399,7 @@ class D1OperationalStore(OperationalStore):
                     [user_id, user_id],
                 ),
                 ("DELETE FROM auth_sessions WHERE user_id = ?", [user_id]),
+                ("DELETE FROM login_events WHERE user_id = ?", [user_id]),
                 ("DELETE FROM email_verification_tokens WHERE user_id = ?", [user_id]),
                 ("DELETE FROM password_reset_tokens WHERE user_id = ?", [user_id]),
                 ("DELETE FROM user_daily_cost WHERE user_id = ?", [user_id]),
@@ -940,6 +941,51 @@ class D1OperationalStore(OperationalStore):
             "UPDATE auth_sessions SET revoked = 1 WHERE id = ?",
             [session_id],
         )
+
+    # -- login events --------------------------------------------------------
+
+    async def record_login_event(
+        self,
+        *,
+        email: str,
+        outcome: str,
+        failure_reason: str | None,
+        user_id: str | None,
+        ip: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Insert one ``login_events`` row."""
+        await self._d1.execute(
+            "INSERT INTO login_events "
+            "(user_id, email, outcome, failure_reason, ip, user_agent) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [user_id, email, outcome, failure_reason, ip, user_agent],
+        )
+
+    async def purge_login_events_older_than(self, days: int) -> int:
+        """Delete rows older than ``days`` days. Returns the deleted count.
+
+        D1 lacks ``INTERVAL`` so we precompute the cutoff timestamp
+        client-side. The format must match the on-row format produced by
+        ``strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`` — i.e. 3-digit fractional
+        seconds — otherwise the lexicographic comparison on the TEXT column
+        misbehaves at boundary timestamps.
+        """
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{cutoff_dt.microsecond // 1000:03d}Z"
+        result = await self._d1.execute(
+            "DELETE FROM login_events WHERE created_at < ?",
+            [cutoff],
+        )
+        return int(getattr(result, "changes", 0) or 0)
+
+    async def purge_login_events_for_user(self, user_id: str) -> int:
+        """Delete all rows for ``user_id``. Returns the deleted count."""
+        result = await self._d1.execute(
+            "DELETE FROM login_events WHERE user_id = ?",
+            [user_id],
+        )
+        return int(getattr(result, "changes", 0) or 0)
 
     async def delete_user_sessions(self, user_id: str) -> None:
         """Delete all sessions for a user."""

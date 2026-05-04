@@ -255,6 +255,38 @@ class PostgresOperationalStore(OperationalStore):
         )
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti ON auth_sessions(jti)")
 
+        # --- login_events ---
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_events (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                user_id TEXT,
+                email TEXT NOT NULL,
+                outcome TEXT NOT NULL
+                    CHECK (outcome IN ('success', 'failure')),
+                failure_reason TEXT,
+                ip TEXT,
+                user_agent TEXT
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_events_user "
+            "ON login_events (user_id, created_at DESC) WHERE user_id IS NOT NULL"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_events_email "
+            "ON login_events (email, created_at DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_events_created ON login_events (created_at DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_events_failures "
+            "ON login_events (created_at DESC) WHERE outcome = 'failure'"
+        )
+
         # --- email_verification_tokens ---
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS email_verification_tokens (
@@ -559,6 +591,9 @@ class PostgresOperationalStore(OperationalStore):
             sessions_status = await conn.execute(
                 "DELETE FROM auth_sessions WHERE user_id = $1", user_id
             )
+            login_events_status = await conn.execute(
+                "DELETE FROM login_events WHERE user_id = $1", user_id
+            )
             verif_status = await conn.execute(
                 "DELETE FROM email_verification_tokens WHERE user_id = $1", user_id
             )
@@ -576,6 +611,7 @@ class PostgresOperationalStore(OperationalStore):
             counts = {
                 "api_keys": _row_count(keys_status),
                 "auth_sessions": _row_count(sessions_status),
+                "login_events": _row_count(login_events_status),
                 "email_verification_tokens": _row_count(verif_status),
                 "password_reset_tokens": _row_count(reset_status),
                 "user_daily_cost": _row_count(cost_status),
@@ -1287,6 +1323,56 @@ class PostgresOperationalStore(OperationalStore):
         """Delete all sessions for a user."""
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", user_id)
+
+    # -- login events --------------------------------------------------------
+
+    async def record_login_event(
+        self,
+        *,
+        email: str,
+        outcome: str,
+        failure_reason: str | None,
+        user_id: str | None,
+        ip: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Insert one ``login_events`` row."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO login_events
+                    (user_id, email, outcome, failure_reason, ip, user_agent)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                user_id,
+                email,
+                outcome,
+                failure_reason,
+                ip,
+                user_agent,
+            )
+
+    async def purge_login_events_older_than(self, days: int) -> int:
+        """Delete rows older than ``days`` days. Returns the deleted count."""
+        async with self._pool.acquire() as conn:
+            status = await conn.execute(
+                "DELETE FROM login_events "
+                "WHERE created_at < NOW() - ($1::int || ' days')::interval",
+                days,
+            )
+        try:
+            return int(status.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
+
+    async def purge_login_events_for_user(self, user_id: str) -> int:
+        """Delete all rows for ``user_id``. Returns the deleted count."""
+        async with self._pool.acquire() as conn:
+            status = await conn.execute("DELETE FROM login_events WHERE user_id = $1", user_id)
+        try:
+            return int(status.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
 
     # -- email verification tokens -------------------------------------------
 
