@@ -44,7 +44,10 @@ class ModelRouterRegistry:
         self._default = default_router_name
         self._cache: dict[str, BaseRouter] = {}
         # The shared FixedRouter is bound after construction (see
-        # bind_fixed_router); RouteWise needs it for classification.
+        # bind_fixed_router); RouteWise needs it for classification, and
+        # the "fixed" strategy returns this exact instance so models with
+        # ``router: fixed`` dispatch through the populated routes dict
+        # rather than a fresh empty FixedRouter.
         self._shared_fixed: BaseRouter | None = None
 
     def bind_fixed_router(self, fixed_router: BaseRouter) -> None:
@@ -55,8 +58,14 @@ class ModelRouterRegistry:
         registry constructs the strategy first, then calls
         ``attach_fixed_router(self._shared_fixed)`` on it if available.
 
+        For the ``fixed`` strategy itself, ``get_router`` returns this exact
+        bound instance instead of constructing a fresh empty FixedRouter,
+        so that models routed via "fixed" hit the routes registered on the
+        shared instance (e.g. by ``register_from_models_yaml``).
+
         Must be called before the first ``get_router(...)`` call for any
-        model whose strategy late-binds to the FixedRouter.
+        model that resolves to the "fixed" strategy or whose strategy
+        late-binds to the FixedRouter.
         """
         self._shared_fixed = fixed_router
 
@@ -77,12 +86,27 @@ class ModelRouterRegistry:
                 "param_keys": sorted(params.keys()),
             },
         )
-        router = build_router(name, params)
-        # Late-bind FixedRouter for RouteWise (and any future late-bound
-        # strategy that exposes attach_fixed_router).
-        attach = getattr(router, "attach_fixed_router", None)
-        if attach is not None and self._shared_fixed is not None:
-            attach(self._shared_fixed)
+        # For the "fixed" strategy, return the bound shared FixedRouter
+        # instance — it is the one populated with per-model routes via
+        # register_from_models_yaml.  Constructing a fresh FixedRouter via
+        # build_router would give us an empty routes dict and every
+        # request would fail with "No route configured for model".
+        # router_params on per-model "fixed" entries are accepted for
+        # forward compatibility (e.g. local_fraction) but do not split off
+        # a separate router instance today; the shared FixedRouter ignores
+        # them.  Still run build_router("fixed", params) for validation
+        # side effects so a bad router_params block surfaces at boot, then
+        # discard the throwaway router.
+        if name == "fixed" and self._shared_fixed is not None:
+            build_router(name, params)  # validate params; result discarded
+            router: BaseRouter = self._shared_fixed
+        else:
+            router = build_router(name, params)
+            # Late-bind FixedRouter for RouteWise (and any future late-bound
+            # strategy that exposes attach_fixed_router).
+            attach = getattr(router, "attach_fixed_router", None)
+            if attach is not None and self._shared_fixed is not None:
+                attach(self._shared_fixed)
         self._cache[model_id] = router
         return router
 

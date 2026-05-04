@@ -91,6 +91,16 @@ models:
     assert isinstance(r_default, FixedRouter)
     assert isinstance(r_fixed, FixedRouter)
     assert isinstance(r_rw, RouteWiseRouter)
+    # Both fixed-strategy routers must be the SAME instance as the shared
+    # FixedRouter populated by register_from_models_yaml.  Otherwise the
+    # registry hands back a fresh empty FixedRouter and requests fail with
+    # "No route configured for model" at dispatch time.
+    assert r_default is fixed
+    assert r_fixed is fixed
+    # Routes for both fixed-strategy models are registered on the shared
+    # instance returned by the registry.
+    assert "m-default" in r_default.routes
+    assert "m-fixed" in r_fixed.routes
     # RouteWise picked up the override.
     assert r_rw.config.daily_quota == 100
     # Cache identity preserved.
