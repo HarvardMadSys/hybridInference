@@ -101,5 +101,5 @@ async def test_error_middleware_integration_http_exception_and_generic():
         r2 = await client.get("/raise-any")
         assert r2.status_code == 500
         body2 = r2.json()
-        assert body2["error"]["message"].lower().find("boom") >= 0
+        assert body2["error"]["message"].lower().find("internal server error") >= 0
         assert body2["error"]["code"] == 500

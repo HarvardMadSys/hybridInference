@@ -90,11 +90,9 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
             headers=dict(exc.headers or {}),
         )
 
-    from serving.exceptions import scrub_error_for_user
     from serving.utils.errors import categorize_exception
 
     err_type = categorize_exception(exc)
-    request_id = getattr(request.state, "request_id", None)
     logger.error(
         "http_error",
         extra={
@@ -108,14 +106,13 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
 
     path = request.url.path
     if any(path.startswith(p) for p in _ANTHROPIC_PATHS):
-        user_msg = scrub_error_for_user(exc, request_id, exc.status_code)
         return JSONResponse(
             status_code=exc.status_code,
             content={
                 "type": "error",
                 "error": {
                     "type": _ERROR_TYPE_BY_STATUS.get(exc.status_code, "api_error"),
-                    "message": user_msg,
+                    "message": str(exc.detail),
                 },
             },
             headers=dict(exc.headers or {}),
@@ -123,8 +120,7 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     # Non-Anthropic paths: produce the same OpenRouter shape as install_error_handlers.
     from serving.servers.middleware.error import _build_error_response
 
-    user_msg = scrub_error_for_user(exc, request_id, exc.status_code)
-    content = _build_error_response(user_msg, code=exc.status_code, typ=err_type)
+    content = _build_error_response(str(exc.detail), code=exc.status_code, typ=err_type)
     return JSONResponse(
         status_code=exc.status_code, content=content, headers=dict(exc.headers or {})
     )

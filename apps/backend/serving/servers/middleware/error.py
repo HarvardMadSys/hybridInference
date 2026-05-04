@@ -77,7 +77,6 @@ def install_error_handlers(app: FastAPI) -> None:
                 status_code=exc.status_code, content=exc.detail, headers=exc.headers
             )
         err_type = categorize_exception(exc)
-        request_id = getattr(request.state, "request_id", None)
         logger.error(
             "http_error",
             extra={
@@ -88,8 +87,7 @@ def install_error_handlers(app: FastAPI) -> None:
             },
             exc_info=exc,
         )
-        user_msg = scrub_error_for_user(exc, request_id, exc.status_code)
-        content = _build_error_response(user_msg, code=exc.status_code, typ=err_type)
+        content = _build_error_response(str(exc.detail), code=exc.status_code, typ=err_type)
         return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
     @app.exception_handler(Exception)
