@@ -1141,13 +1141,12 @@ export default function AdminPage() {
   }, [loadRequests, loadRequestMetrics, activeTab]);
 
   useEffect(() => {
-    if (activeTab === 'providers' && providerSubTab === 'performance')
-      loadPerformanceMetrics();
+    if (activeTab === 'providers' && providerSubTab === 'performance') loadPerformanceMetrics();
   }, [loadPerformanceMetrics, activeTab, providerSubTab]);
 
   useEffect(() => {
-    if (activeTab === 'providers') loadProviderQuotas();
-  }, [loadProviderQuotas, activeTab]);
+    if (activeTab === 'providers' && providerSubTab === 'quota') loadProviderQuotas();
+  }, [loadProviderQuotas, activeTab, providerSubTab]);
 
   useEffect(() => {
     if (!toast) return;
