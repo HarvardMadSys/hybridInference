@@ -1,4 +1,7 @@
-routing_strategy: fixed
+default_router: fixed
+# DEPRECATED: `routing_parameter:` is a one-release shim consumed by
+# RoutingManager for weight assignment; it will be removed once RoutingManager
+# moves to per-model `router_params:` in models.yaml.
 routing_parameter:
   local_fraction: 1
 timeout: 2
