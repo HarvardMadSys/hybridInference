@@ -155,6 +155,15 @@ jobs:
           uv venv
           uv sync --group dev
 
+      - name: Apply Alembic migrations to test database
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5433
+          DB_NAME: freeinference_test_db
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+        run: uv run alembic upgrade head
+
       - name: Run tests (PR, no coverage)
         if: github.event_name == 'pull_request'
         env:
