@@ -74,10 +74,8 @@ Fix any issues found.
 ## Step 5 — Format and verify
 
 ```bash
-ruff format .
+make format
 ```
-
-Run the project's lint and typecheck commands if available (check CLAUDE.md, Makefile, or pyproject.toml for the correct commands).
 
 ## Step 6 — Create a GitHub issue
 
@@ -147,9 +145,9 @@ git worktree remove ../hybridInference-<feature-name>
 
 - **Never commit to `main` or `dev`.** Always use a feature branch.
 - **Never force-push.** If rebase is needed, leave a comment and stop.
-- **Always run `ruff format`** before every commit/push.
+- **Always run `make format`** before every commit/push.
 - **Minimal changes only.** Don't refactor or touch unrelated code.
 - **Always create an issue first.** Reference it in the PR body.
 - **Work in a worktree.** Never modify the main working directory's branch.
 - **Validate before acting.** Don't blindly accept review comments — verify against the code.
-- **Test against staging.** Verify the feature on https://staging.freeinference.org if applicable (account: admin@admin.com:admin).
+- **Test against staging.** Verify the feature on https://staging.freeinference.org if applicable (use the staging test account — check the project's internal docs for credentials).
