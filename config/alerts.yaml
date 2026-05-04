@@ -3,7 +3,7 @@ rules:
     enabled: true
     window_sec: 300
     threshold_pct: 5.0
-    min_samples: 2
+    min_samples: 20
     cooldown_sec: 900
   fivexx_rate:
     enabled: true
