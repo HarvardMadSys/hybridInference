@@ -179,9 +179,19 @@ export function PerformanceTab() {
               Prompt/response length, time-to-first-token, and inter-token latency distributions.
             </p>
           </div>
-          {perfMetricsLoading && (
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-          )}
+          <div className="flex items-center gap-2">
+            {perfMetricsLoading && (
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+            )}
+            <button
+              type="button"
+              onClick={() => loadPerformanceMetrics()}
+              disabled={perfMetricsLoading}
+              className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
         {perfMetrics.length > 0 ? (
           <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">

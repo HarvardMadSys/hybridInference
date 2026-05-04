@@ -664,9 +664,22 @@ export function RequestsTab() {
               Traffic trends across short and long lookback windows.
             </p>
           </div>
-          {reqMetricsLoading && (
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-          )}
+          <div className="flex items-center gap-2">
+            {(reqMetricsLoading || reqLoading) && (
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                loadRequestMetrics();
+                loadRequests();
+              }}
+              disabled={reqMetricsLoading || reqLoading}
+              className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
         {reqMetrics.length > 0 ? (
           <div className="grid gap-3 sm:grid-cols-2">

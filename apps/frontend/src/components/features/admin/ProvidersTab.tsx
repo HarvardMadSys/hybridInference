@@ -115,7 +115,20 @@ export function ProvidersTab() {
 
   return (
     <div className="mt-6">
-      {providerQuotasLoading ? (
+      <div className="mb-3 flex items-center justify-end gap-2">
+        {providerQuotasLoading && (
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+        )}
+        <button
+          type="button"
+          onClick={() => loadProviderQuotas()}
+          disabled={providerQuotasLoading}
+          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+        >
+          Refresh
+        </button>
+      </div>
+      {providerQuotasLoading && providerQuotas.length === 0 ? (
         <div className="flex justify-center py-24">
           <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
         </div>
