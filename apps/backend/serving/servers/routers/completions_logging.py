@@ -27,12 +27,11 @@ logger = get_logger(__name__)
 
 
 class CompletionsLogger:
-    """Encapsulate the side-effecting plumbing the chat-completions handler
-    fires-and-forgets after each request: DB log writes and RouteWise
-    observation forwarding.
+    """Encapsulate fire-and-forget side effects from the chat-completions handler.
 
-    The instance owns a private set of background tasks so the asyncio
-    garbage collector cannot cancel them mid-flight.
+    Owns DB log writes and RouteWise observation forwarding. The instance keeps
+    a private set of background tasks so the asyncio garbage collector cannot
+    cancel them mid-flight.
     """
 
     def __init__(self, *, log_store: Any, model_router_registry: Any | None = None) -> None:
