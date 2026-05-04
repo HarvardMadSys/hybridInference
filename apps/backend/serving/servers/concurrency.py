@@ -22,6 +22,7 @@ from serving.observability.metrics import (
     USER_CONCURRENCY_IN_FLIGHT,
     USER_CONCURRENCY_REJECTED_TOTAL,
 )
+from serving.observability.rejection_log import log_rejection
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -218,6 +219,20 @@ async def enforce_user_concurrency(
                 "limit": limit,
                 "route": request.url.path,
             },
+        )
+        services = getattr(request.app.state, "services", None)
+        log_store = getattr(services, "log_store", None) if services else None
+        runtime_settings = getattr(services, "runtime_settings", None) if services else None
+        asyncio.create_task(
+            log_rejection(
+                log_store=log_store,
+                runtime_settings=runtime_settings,
+                request=request,
+                status_code=429,
+                error_code="concurrency_limit_exceeded",
+                reason=f"limit={limit} role={role_label}",
+                user=user,
+            )
         )
         raise HTTPException(
             status_code=429,
