@@ -280,8 +280,7 @@ class PostgresOperationalStore(OperationalStore):
             "ON login_events (email, created_at DESC)"
         )
         await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_login_events_created "
-            "ON login_events (created_at DESC)"
+            "CREATE INDEX IF NOT EXISTS idx_login_events_created ON login_events (created_at DESC)"
         )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_login_events_failures "
@@ -1369,9 +1368,7 @@ class PostgresOperationalStore(OperationalStore):
     async def purge_login_events_for_user(self, user_id: str) -> int:
         """Delete all rows for ``user_id``. Returns the deleted count."""
         async with self._pool.acquire() as conn:
-            status = await conn.execute(
-                "DELETE FROM login_events WHERE user_id = $1", user_id
-            )
+            status = await conn.execute("DELETE FROM login_events WHERE user_id = $1", user_id)
         try:
             return int(status.rsplit(" ", 1)[-1])
         except (ValueError, IndexError):

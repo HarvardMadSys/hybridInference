@@ -341,9 +341,7 @@ async def login(
 
     # Check account status
     if user_row["status"] == "pending_approval":
-        await _record(
-            "failure", failure_reason="account_pending_approval", user_id=user_row["id"]
-        )
+        await _record("failure", failure_reason="account_pending_approval", user_id=user_row["id"])
         raise HTTPException(
             status_code=403,
             detail="Your registration is pending admin approval. You will receive an email once approved.",

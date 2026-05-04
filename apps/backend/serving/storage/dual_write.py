@@ -229,14 +229,14 @@ class DualWriteOperationalStore(OperationalStore):
         user_agent: str | None,
     ) -> None:
         """Write to primary, then shadow."""
-        kwargs = dict(
-            email=email,
-            outcome=outcome,
-            failure_reason=failure_reason,
-            user_id=user_id,
-            ip=ip,
-            user_agent=user_agent,
-        )
+        kwargs = {
+            "email": email,
+            "outcome": outcome,
+            "failure_reason": failure_reason,
+            "user_id": user_id,
+            "ip": ip,
+            "user_agent": user_agent,
+        }
         await self._primary.record_login_event(**kwargs)
         await self._do_shadow(
             "record_login_event",
