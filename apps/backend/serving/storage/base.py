@@ -401,6 +401,40 @@ class OperationalStore(ABC):
     async def delete_user_sessions(self, user_id: str) -> None:
         """Delete all sessions for a user (used during user deletion)."""
 
+    # -- login events (audit) ------------------------------------------------
+
+    @abstractmethod
+    async def record_login_event(
+        self,
+        *,
+        email: str,
+        outcome: str,
+        failure_reason: str | None,
+        user_id: str | None,
+        ip: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Insert one row into ``login_events``.
+
+        Best-effort for callers — callers may catch + log on exception so
+        audit failures don't break login. ``outcome`` must be one of
+        ``'success'`` | ``'failure'``.
+        """
+
+    @abstractmethod
+    async def purge_login_events_older_than(self, days: int) -> int:
+        """Delete ``login_events`` rows older than ``days``.
+
+        Returns the deleted row count.
+        """
+
+    @abstractmethod
+    async def purge_login_events_for_user(self, user_id: str) -> int:
+        """Delete all ``login_events`` rows for ``user_id``.
+
+        Returns the deleted row count.
+        """
+
     # -- email verification tokens -------------------------------------------
 
     @abstractmethod

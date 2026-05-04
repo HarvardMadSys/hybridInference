@@ -218,6 +218,51 @@ class DualWriteOperationalStore(OperationalStore):
             user_id=user_id,
         )
 
+    async def record_login_event(
+        self,
+        *,
+        email: str,
+        outcome: str,
+        failure_reason: str | None,
+        user_id: str | None,
+        ip: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Write to primary, then shadow."""
+        kwargs = dict(
+            email=email,
+            outcome=outcome,
+            failure_reason=failure_reason,
+            user_id=user_id,
+            ip=ip,
+            user_agent=user_agent,
+        )
+        await self._primary.record_login_event(**kwargs)
+        await self._do_shadow(
+            "record_login_event",
+            self._shadow.record_login_event(**kwargs),
+            user_id=user_id,
+        )
+
+    async def purge_login_events_older_than(self, days: int) -> int:
+        """Run on primary; mirror on shadow. Returns primary's count."""
+        deleted = await self._primary.purge_login_events_older_than(days)
+        await self._do_shadow(
+            "purge_login_events_older_than",
+            self._shadow.purge_login_events_older_than(days),
+        )
+        return deleted
+
+    async def purge_login_events_for_user(self, user_id: str) -> int:
+        """Run on primary; mirror on shadow. Returns primary's count."""
+        deleted = await self._primary.purge_login_events_for_user(user_id)
+        await self._do_shadow(
+            "purge_login_events_for_user",
+            self._shadow.purge_login_events_for_user(user_id),
+            user_id=user_id,
+        )
+        return deleted
+
     async def delete_user(
         self,
         user_id: str,

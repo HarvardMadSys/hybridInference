@@ -85,6 +85,24 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_token ON auth_sessions(refresh_toke
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti ON auth_sessions(jti);
 
 -- -------------------------------------------------------------------
+-- login_events (audit trail of every /login outcome)
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS login_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    user_id         TEXT,
+    email           TEXT NOT NULL,
+    outcome         TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+    failure_reason  TEXT,
+    ip              TEXT,
+    user_agent      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_login_events_email ON login_events (email, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_login_events_created ON login_events (created_at DESC);
+
+-- -------------------------------------------------------------------
 -- email_verification_tokens
 -- -------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS email_verification_tokens (

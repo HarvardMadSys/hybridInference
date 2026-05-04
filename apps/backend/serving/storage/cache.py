@@ -469,6 +469,36 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_user_sessions(user_id)
 
+    # -- login events (pass-through) -----------------------------------------
+
+    async def record_login_event(
+        self,
+        *,
+        email: str,
+        outcome: str,
+        failure_reason: str | None,
+        user_id: str | None,
+        ip: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.record_login_event(
+            email=email,
+            outcome=outcome,
+            failure_reason=failure_reason,
+            user_id=user_id,
+            ip=ip,
+            user_agent=user_agent,
+        )
+
+    async def purge_login_events_older_than(self, days: int) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.purge_login_events_older_than(days)
+
+    async def purge_login_events_for_user(self, user_id: str) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.purge_login_events_for_user(user_id)
+
     # -- tokens (pass-through) -----------------------------------------------
 
     async def create_verification_token(
