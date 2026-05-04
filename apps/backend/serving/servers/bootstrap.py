@@ -452,12 +452,13 @@ async def initialize() -> AppServices:
         rt = runtime_settings  # capture for closure
 
         async def _read_concurrency_limits() -> dict[str, int]:
-            return {
-                "free": await rt.get_int("user_concurrency_free"),
-                "pro": await rt.get_int("user_concurrency_pro"),
-                "internal": await rt.get_int("user_concurrency_internal"),
-                "admin": await rt.get_int("user_concurrency_admin"),
-            }
+            free, pro, internal, admin = await asyncio.gather(
+                rt.get_int("user_concurrency_free"),
+                rt.get_int("user_concurrency_pro"),
+                rt.get_int("user_concurrency_internal"),
+                rt.get_int("user_concurrency_admin"),
+            )
+            return {"free": free, "pro": pro, "internal": internal, "admin": admin}
 
         user_concurrency_limiter = UserConcurrencyLimiter(_read_concurrency_limits)
         logger.info("User concurrency limiter initialized (runtime-tunable)")

@@ -171,15 +171,15 @@ async def test_capacity_is_sticky_after_creation():
 
 
 @pytest.mark.asyncio
-async def test_try_acquire_rejection_reports_sticky_cap_not_current_role():
-    """Regression: when a user's role changes between requests and the slot
-    is saturated, the 429 response must report the slot's *current* cap
-    after lazy resize (the new role's cap), and the *sticky* role label
-    captured at slot creation.
+async def test_try_acquire_rejection_reports_role_label_and_current_cap():
+    """A rejected acquire reports the slot's *current* capacity (after any
+    lazy resize) and the slot's *sticky* role label.
 
     Sequence:
       1. Slot created for "user-sticky" with role="free"  → capacity=1.
-      2. Slot is saturated (in_use == 1) and a third acquire is rejected.
+      2. Slot is saturated (in_use == 1).
+      3. A second acquire under role="free" is rejected, with cap=1 and the
+         sticky label "free".
     """
     lim = _limiter()
     user_id = "user-sticky"

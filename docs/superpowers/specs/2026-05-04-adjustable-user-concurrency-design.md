@@ -1,14 +1,21 @@
 # Adjustable Per-User Concurrency Limits
 
 **Date:** 2026-05-04
-**Status:** Approved (design)
+**Status:** Implemented (PR #423)
 **Author:** Juncheng Yang (with Claude)
+
+> **Note:** This spec captures the design *as approved before implementation*.
+> The "Context" snippet below describes the pre-change codebase. As of PR #423
+> the static `USER_CONCURRENCY_LIMITS` dict has been **removed** from
+> `serving/config/settings.py`; the authoritative defaults now live in
+> `RUNTIME_SETTINGS_REGISTRY` (`user_concurrency_*` keys), and the limiter's
+> error fallback derives from those registry defaults.
 
 ## Context
 
-Per-user concurrency caps are configured in
+Per-user concurrency caps were configured in
 [`apps/backend/serving/config/settings.py`](../../../apps/backend/serving/config/settings.py)
-as a static module-level dict:
+as a static module-level dict (this constant has been removed by PR #423):
 
 ```python
 USER_CONCURRENCY_LIMITS: dict[str, int] = {
@@ -19,10 +26,10 @@ USER_CONCURRENCY_LIMITS: dict[str, int] = {
 }
 ```
 
-The dict is consumed once at boot by
+The dict was consumed once at boot by
 [`UserConcurrencyLimiter`](../../../apps/backend/serving/servers/concurrency.py)
-in `bootstrap.py:388`. Capacity is captured per-user at first acquire and is
-sticky for the lifetime of the process. Changing any cap therefore requires
+in `bootstrap.py:388`. Capacity was captured per-user at first acquire and was
+sticky for the lifetime of the process. Changing any cap therefore required
 a code edit and a redeploy.
 
 We want to:
@@ -70,10 +77,14 @@ unaffected by these new fields.
 
 ### 2. Default change
 
-Bump `USER_CONCURRENCY_LIMITS["free"]` from `1` to `3` in
-[`apps/backend/serving/config/settings.py`](../../../apps/backend/serving/config/settings.py).
-This dict is now used only as a fallback / last-resort default; the
-authoritative source is `RuntimeSettings`.
+The default `free` cap rises from `1` to `3` via the new
+`user_concurrency_free` registry entry's `default: 3`. The static
+`USER_CONCURRENCY_LIMITS` dict in
+[`apps/backend/serving/config/settings.py`](../../../apps/backend/serving/config/settings.py)
+is removed; the authoritative source is `RUNTIME_SETTINGS_REGISTRY`, and the
+limiter's error-time fallback (`_FALLBACK_LIMITS` in
+`serving/servers/concurrency.py`) is derived from those registry defaults at
+import time so the two sources cannot drift.
 
 ### 3. Validation in PATCH endpoint
 

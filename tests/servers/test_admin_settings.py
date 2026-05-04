@@ -224,3 +224,40 @@ async def test_update_user_concurrency_admin_at_min_succeeds(admin_client):
     )
     assert response.status_code == 200
     assert response.json()["value"] == 1
+
+
+@pytest.mark.asyncio
+async def test_update_int_setting_rejects_bool(admin_client):
+    """JSON booleans must not be accepted for int settings (bool is a subclass
+    of int in Python; without the explicit guard we'd persist ``"True"`` and
+    later fail to coerce it back to int)."""
+    client, _, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/user_concurrency_free",
+        json={"value": True},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 400
+    assert "integer" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_update_float_setting_rejects_bool(monkeypatch, admin_client):
+    """Same guard applies to float settings."""
+    from serving.config import runtime_settings as rs_mod
+
+    monkeypatch.setitem(
+        rs_mod.RUNTIME_SETTINGS_REGISTRY,
+        "_test_float_setting",
+        {"type": "float", "default": 1.0, "description": "Test-only float"},
+    )
+    client, _, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/_test_float_setting",
+        json={"value": False},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 400
+    assert "numeric" in response.json()["detail"].lower()

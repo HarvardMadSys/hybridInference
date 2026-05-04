@@ -28,16 +28,23 @@ logger = get_logger(__name__)
 
 LimitsProvider = Callable[[], Awaitable[dict[str, int]]]
 
-# Conservative fallback when the provider raises (e.g., DB hiccup). Kept
-# in sync with the defaults declared in
-# ``serving/config/runtime_settings.py`` for the ``user_concurrency_*``
-# keys.
-_FALLBACK_LIMITS: dict[str, int] = {
-    "free": 3,
-    "pro": 3,
-    "internal": 10,
-    "admin": 10,
-}
+
+def _build_fallback_limits() -> dict[str, int]:
+    """Derive fallback caps from the runtime-settings registry so the two
+    sources can't drift. Imported lazily inside the function so importing
+    this module never forces an early import of ``runtime_settings``."""
+    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+
+    return {
+        role: int(RUNTIME_SETTINGS_REGISTRY[f"user_concurrency_{role}"]["default"])
+        for role in ("free", "pro", "internal", "admin")
+    }
+
+
+# Conservative fallback when the provider raises (e.g., DB hiccup). Computed
+# once at import time from the registry defaults so the two sources cannot
+# drift over time.
+_FALLBACK_LIMITS: dict[str, int] = _build_fallback_limits()
 
 
 def static_limits_provider(limits: dict[str, int]) -> LimitsProvider:

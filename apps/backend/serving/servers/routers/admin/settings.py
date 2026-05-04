@@ -77,9 +77,14 @@ async def update_runtime_setting_endpoint(
     value = payload.value
     if expected_type == "bool" and not isinstance(value, bool):
         raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a boolean value")
-    if expected_type == "int" and not isinstance(value, int):
+    # ``bool`` is a subclass of ``int`` in Python; without the explicit check, a
+    # JSON ``true`` would be accepted as an int/float and persisted as ``"True"``,
+    # which then fails coercion on read (``int("True")`` raises).
+    if expected_type == "int" and (not isinstance(value, int) or isinstance(value, bool)):
         raise HTTPException(status_code=400, detail=f"Setting '{key}' expects an integer value")
-    if expected_type == "float" and not isinstance(value, (int, float)):
+    if expected_type == "float" and (
+        not isinstance(value, (int, float)) or isinstance(value, bool)
+    ):
         raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a numeric value")
     if expected_type == "str" and not isinstance(value, str):
         raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a string value")
