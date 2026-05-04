@@ -418,6 +418,17 @@ async def initialize() -> AppServices:
             "(runtime_settings unavailable)"
         )
 
+    # CompletionsLogger — encapsulates DB-log scheduling and RouteWise
+    # observation forwarding for /v1/chat/completions. Always constructed
+    # (it tolerates ``log_store=None``); the handler depends on a live
+    # instance via ``deps.get_completions_logger``.
+    from serving.servers.routers.completions_logging import CompletionsLogger
+
+    completions_logger = CompletionsLogger(
+        log_store=log_store,
+        model_router_registry=model_router_registry,
+    )
+
     return AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
@@ -430,6 +441,7 @@ async def initialize() -> AppServices:
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
+        completions_logger=completions_logger,
     )
 
 
