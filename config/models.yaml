@@ -37,19 +37,22 @@ models:
       - kind: ollama
         weight: 1.0
         base_url: ${OLLAMA_BASE_URL}
-        api_key: ${OLLAMA_API_KEY}
+        api_keys:
+          - ${OLLAMA_API_KEY}
         provider_model_id: "glm-4.7"
       # Chutes fallback
       - kind: chutes
         weight: 0.01
         base_url: ${CHUTES_BASE_URL}
-        api_key: ${CHUTES_API_KEY}
+        api_keys:
+          - ${CHUTES_API_KEY}
         provider_model_id: "zai-org/GLM-4.7-FP8"
       # Featherless fallback
       - kind: featherless
         weight: 0
         base_url: ${FEATHERLESS_BASE_URL}
-        api_key: ${FEATHERLESS_API_KEY}
+        api_keys:
+          - ${FEATHERLESS_API_KEY}
         provider_model_id: "zai-org/GLM-4.7"
 
   # - id: glm-4.7-flash
@@ -84,13 +87,15 @@ models:
   #     - kind: zhipu
   #       weight: 0
   #       base_url: https://api.z.ai/api/coding/paas/v4/
-  #       api_key: ${ZAI_API_KEY}
+  #       api_keys:
+  #         - ${ZAI_API_KEY}
   #       provider_model_id: "glm-4.7-flash"
   #     # Featherless fallback
   #     - kind: featherless
   #       weight: 0
   #       base_url: ${FEATHERLESS_BASE_URL}
-  #       api_key: ${FEATHERLESS_API_KEY}
+  #       api_keys:
+  #         - ${FEATHERLESS_API_KEY}
   #       provider_model_id: "zai-org/GLM-4.7-Flash"
   #       pricing:
   #         prompt: "0"
@@ -120,25 +125,29 @@ models:
       - kind: zhipu
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
-        api_key: ${ZAI_API_KEY}
+        api_keys:
+          - ${ZAI_API_KEY}
         provider_model_id: "glm-5"
       # Ollama Cloud fallback
       - kind: ollama
         weight: 1.0
         base_url: ${OLLAMA_BASE_URL}
-        api_key: ${OLLAMA_API_KEY}
+        api_keys:
+          - ${OLLAMA_API_KEY}
         provider_model_id: "glm-5"
       # Chutes fallback
       - kind: chutes
         weight: 0.01
         base_url: ${CHUTES_BASE_URL}
-        api_key: ${CHUTES_API_KEY}
+        api_keys:
+          - ${CHUTES_API_KEY}
         provider_model_id: "zai-org/GLM-5-TEE"
       # Featherless fallback
       - kind: featherless
         weight: 0
         base_url: ${FEATHERLESS_BASE_URL}
-        api_key: ${FEATHERLESS_API_KEY}
+        api_keys:
+          - ${FEATHERLESS_API_KEY}
         provider_model_id: "zai-org/GLM-5"
 
   - id: glm-5.1
@@ -165,7 +174,8 @@ models:
       - kind: zhipu
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
-        api_key: ${ZAI_API_KEY}
+        api_keys:
+          - ${ZAI_API_KEY}
         provider_model_id: "glm-5.1"
 
   - id: glm-5-turbo
@@ -192,7 +202,8 @@ models:
       - kind: zhipu
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
-        api_key: ${ZAI_API_KEY}
+        api_keys:
+          - ${ZAI_API_KEY}
         provider_model_id: "glm-5-turbo"
 
   # ===== External Provider =====
@@ -211,7 +222,8 @@ models:
   #     - kind: chutes
   #       weight: 1.0
   #       base_url: ${CHUTES_BASE_URL}
-  #       api_key: ${CHUTES_API_KEY}
+  #       api_keys:
+  #         - ${CHUTES_API_KEY}
   #       provider_model_id: "deepseek-ai/DeepSeek-R1-0528"
   #       pricing:
   #         prompt: "0"
@@ -232,7 +244,8 @@ models:
   #     - kind: featherless
   #       weight: 1.0
   #       base_url: ${FEATHERLESS_BASE_URL}
-  #       api_key: ${FEATHERLESS_API_KEY}
+  #       api_keys:
+  #         - ${FEATHERLESS_API_KEY}
   #       provider_model_id: "zai-org/GLM-4.6"
   #       pricing:
   #         prompt: "0"
@@ -269,7 +282,8 @@ models:
   #     - kind: featherless
   #       weight: 0
   #       base_url: ${FEATHERLESS_BASE_URL}
-  #       api_key: ${FEATHERLESS_API_KEY}
+  #       api_keys:
+  #         - ${FEATHERLESS_API_KEY}
   #       provider_model_id: "Qwen/Qwen3.5-27B"
   #       pricing:
   #         prompt: "0"
@@ -352,13 +366,15 @@ models:
       - kind: minimax
         weight: 1.0
         base_url: ${MINIMAX_BASE_URL}
-        api_key: ${MINIMAX_API_KEY}
+        api_keys:
+          - ${MINIMAX_API_KEY}
         provider_model_id: "MiniMax-M2.7"
       # Ollama Cloud fallback
       - kind: ollama
         weight: 1.0
         base_url: ${OLLAMA_BASE_URL}
-        api_key: ${OLLAMA_API_KEY}
+        api_keys:
+          - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.7"
 
   # ===== Embedding Models =====
@@ -406,25 +422,29 @@ models:
       - kind: minimax
         weight: 1.0
         base_url: ${MINIMAX_BASE_URL}
-        api_key: ${MINIMAX_API_KEY}
+        api_keys:
+          - ${MINIMAX_API_KEY}
         provider_model_id: "MiniMax-M2.5"
       # Ollama Cloud fallback
       - kind: ollama
         weight: 1.0
         base_url: ${OLLAMA_BASE_URL}
-        api_key: ${OLLAMA_API_KEY}
+        api_keys:
+          - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.5"
       # Chutes fallback
       - kind: chutes
         weight: 0.01
         base_url: ${CHUTES_BASE_URL}
-        api_key: ${CHUTES_API_KEY}
+        api_keys:
+          - ${CHUTES_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
       # Featherless fallback
       - kind: featherless
         weight: 0
         base_url: ${FEATHERLESS_BASE_URL}
-        api_key: ${FEATHERLESS_API_KEY}
+        api_keys:
+          - ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
 
   # ── Anthropic direct (kind: anthropic) ─────────────────────
@@ -455,7 +475,8 @@ models:
       - kind: anthropic
         weight: 1.0
         base_url: ${CLI_PROXY_BASE_URL}
-        api_key: ${CLI_PROXY_API_KEY}
+        api_keys:
+          - ${CLI_PROXY_API_KEY}
         provider_model_id: "claude-sonnet-4-6"
   #
   - id: claude-opus-4.6
@@ -483,7 +504,8 @@ models:
       - kind: anthropic
         weight: 1.0
         base_url: ${CLI_PROXY_BASE_URL}
-        api_key: ${CLI_PROXY_API_KEY}
+        api_keys:
+          - ${CLI_PROXY_API_KEY}
         provider_model_id: "claude-opus-4-6"
   #
   - id: claude-opus-4.7
@@ -511,7 +533,8 @@ models:
       - kind: anthropic
         weight: 1.0
         base_url: ${CLI_PROXY_BASE_URL}
-        api_key: ${CLI_PROXY_API_KEY}
+        api_keys:
+          - ${CLI_PROXY_API_KEY}
         provider_model_id: "claude-opus-4-7"
   # ── OpenRouter examples ────────────────────────────────────
   # Bare `kind: openrouter` lets OpenRouter pick the upstream provider
@@ -542,14 +565,16 @@ models:
   #     - kind: openrouter[deepinfra]
   #       weight: 1.0
   #       base_url: https://openrouter.ai/api/v1
-  #       api_key: ${OPENROUTER_API_KEY}
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
   #       provider_model_id: meta-llama/llama-3.3-70b-instruct
   #     # Bare openrouter — let OpenRouter pick. Different endpoint_id
   #     # from the pinned leg so circuit-breaker stats stay separate.
   #     - kind: openrouter
   #       weight: 0
   #       base_url: https://openrouter.ai/api/v1
-  #       api_key: ${OPENROUTER_API_KEY}
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
   #       provider_model_id: meta-llama/llama-3.3-70b-instruct
 
 
@@ -564,7 +589,8 @@ models:
   #   provider: gemini
   #   provider_model_id: "gemini-2.5-flash"
   #   base_url: https://generativelanguage.googleapis.com/v1beta
-  #   api_key: ${GEMINI_API_KEY}
+  #   api_keys:
+  #     - ${GEMINI_API_KEY}
   #   quantization: "bf16"
   #   input_modalities: ["text", "image"]
   #   output_modalities: ["text"]
@@ -584,6 +610,7 @@ models:
   #     - kind: gemini
   #       weight: 1.0
   #       base_url: https://generativelanguage.googleapis.com/v1beta
-  #       api_key: ${GEMINI_API_KEY}
+  #       api_keys:
+  #         - ${GEMINI_API_KEY}
   #       provider_model_id: "gemini-2.5-flash"
 
