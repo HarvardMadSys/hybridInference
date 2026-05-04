@@ -54,6 +54,15 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+# TTL for entries in RouteWiseRouter._pending_decisions. If
+# ``record_observation`` (or chat_completion / stream_chat_completion) doesn't
+# consume an entry within this window — typically because the request was
+# aborted, timed out, or hit a code-path bug — the periodic sweep evicts it
+# and emits a ``routewise_decision_evicted`` log event.
+PENDING_DECISIONS_TTL_SECONDS: float = 300.0
+PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
+
+
 class SubscriptionType(Enum):
     """Subscription tier for an adapter endpoint.
 
@@ -122,6 +131,14 @@ class RouteWiseRouter(BaseRouter):
         # Populated in _select_adapter(), consumed in chat_completion() /
         # stream_chat_completion().  Same pattern as NimbusRouter.
         self._pending_decisions: dict[str, dict[str, Any]] = {}
+        # Async lock held only during the periodic TTL sweep to safeguard
+        # iteration. Hot-path mutations (_select_adapter, record_observation)
+        # rely on CPython's per-op dict atomicity and asyncio's single-threaded
+        # event loop; acquiring the lock on every observation would serialize
+        # the routing hot path with no real benefit.
+        self._pending_decisions_lock: asyncio.Lock = asyncio.Lock()
+        # Periodic TTL-cleanup task; populated by start(), cancelled by stop().
+        self._sweep_task: asyncio.Task[None] | None = None
 
         # Precomputed per-token prices for all S_A adapters, keyed by model.
         # Each entry: (adapter, price_prompt_per_token, price_completion_per_token).
@@ -854,6 +871,8 @@ class RouteWiseRouter(BaseRouter):
                 "quota_remaining": self.quota_mgr.remaining,
                 "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
                 "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
+                # Wall-clock timestamp for TTL eviction (see _sweep_pending_decisions_once).
+                "timestamp": time.time(),
             }
 
         # -- Pre-decision gauges ------------------------------------------
@@ -1185,3 +1204,81 @@ class RouteWiseRouter(BaseRouter):
 
         if done_chunk:
             yield done_chunk
+
+    # ------------------------------------------------------------------
+    # Lifecycle: TTL sweep for _pending_decisions
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Start the periodic ``_pending_decisions`` TTL sweep task.
+
+        Idempotent — calling it again while the sweep task is already running
+        is a no-op so AppServices restart paths don't double-schedule.
+        """
+        if self._sweep_task is not None and not self._sweep_task.done():
+            return
+        self._sweep_task = asyncio.create_task(
+            self._sweep_pending_decisions_loop(),
+            name="RouteWiseRouter.sweep_pending_decisions",
+        )
+
+    async def stop(self) -> None:
+        """Cancel the periodic ``_pending_decisions`` sweep task cleanly."""
+        task = self._sweep_task
+        self._sweep_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            # Cancellation is the expected exit path; swallow other errors so
+            # shutdown can proceed even if the loop raised on its way out.
+            pass
+
+    async def _sweep_pending_decisions_loop(self) -> None:
+        """Run the TTL sweep on a fixed interval until cancelled."""
+        try:
+            while True:
+                await asyncio.sleep(PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS)
+                try:
+                    await self._sweep_pending_decisions_once()
+                except Exception:
+                    logger.exception("RouteWise pending-decisions sweep failed")
+        except asyncio.CancelledError:
+            return
+
+    async def _sweep_pending_decisions_once(self) -> int:
+        """Evict stale ``_pending_decisions`` entries; return count evicted.
+
+        Holds ``self._pending_decisions_lock`` for the duration of the sweep
+        so we don't observe a partial view if an async caller ever mutates
+        the dict from inside the lock as well. Entries whose ``timestamp``
+        is older than :data:`PENDING_DECISIONS_TTL_SECONDS` are removed and
+        a ``routewise_decision_evicted`` log event is emitted for each.
+        """
+        now = time.time()
+        cutoff = now - PENDING_DECISIONS_TTL_SECONDS
+        evicted = 0
+        async with self._pending_decisions_lock:
+            stale: list[tuple[str, float]] = []
+            for request_id, decision in self._pending_decisions.items():
+                ts = decision.get("timestamp")
+                if not isinstance(ts, (int, float)):
+                    # Defensive: skip entries with no usable timestamp rather
+                    # than evicting them (can't compute an age).
+                    continue
+                if ts < cutoff:
+                    stale.append((request_id, float(ts)))
+            for request_id, ts in stale:
+                self._pending_decisions.pop(request_id, None)
+                evicted += 1
+                logger.info(
+                    "routewise_decision_evicted",
+                    extra={
+                        "event": "routewise_decision_evicted",
+                        "request_id": request_id,
+                        "age_sec": int(now - ts),
+                    },
+                )
+        return evicted
