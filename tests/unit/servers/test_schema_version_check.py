@@ -60,9 +60,7 @@ async def test_raises_on_version_mismatch(monkeypatch):
 async def test_raises_when_alembic_version_table_missing():
     """Missing ``alembic_version`` table → operator hasn't run stamp/upgrade."""
     conn = MagicMock()
-    conn.fetchval = AsyncMock(
-        side_effect=asyncpg.UndefinedTableError("relation does not exist")
-    )
+    conn.fetchval = AsyncMock(side_effect=asyncpg.UndefinedTableError("relation does not exist"))
     pool = _make_pool(conn)
     settings = MagicMock(db_backend="postgres")
 

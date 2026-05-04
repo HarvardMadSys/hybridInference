@@ -71,8 +71,7 @@ async def fresh_db():
     if "_test_" not in (db_name or ""):
         await conn.close()
         pytest.fail(
-            f"SAFETY: refusing to drop schema in database '{db_name}'; "
-            "name must contain '_test_'."
+            f"SAFETY: refusing to drop schema in database '{db_name}'; name must contain '_test_'."
         )
     # Wipe everything so we test a fresh-from-empty migration apply.
     await conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
@@ -112,9 +111,7 @@ async def test_baseline_upgrade_creates_all_tables(fresh_db):
 
     conn = await _connect()
     try:
-        rows = await conn.fetch(
-            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-        )
+        rows = await conn.fetch("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
     finally:
         await conn.close()
     actual = {row["tablename"] for row in rows}

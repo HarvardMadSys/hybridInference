@@ -23,9 +23,12 @@ once.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from alembic import op
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # revision identifiers, used by Alembic.
 revision: str = "0001_baseline"
@@ -73,22 +76,14 @@ def upgrade() -> None:
             upstream_cost_usd DECIMAL(12, 8)
         )
     """)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_api_logs_timestamp ON api_logs(timestamp DESC)")
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_logs_timestamp "
-        "ON api_logs(timestamp DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_api_logs_model ON api_logs(model_id, timestamp DESC)"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_logs_model "
-        "ON api_logs(model_id, timestamp DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_api_logs_provider ON api_logs(provider, timestamp DESC)"
     )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_logs_provider "
-        "ON api_logs(provider, timestamp DESC)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_logs_request_id "
-        "ON api_logs(request_id)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_api_logs_request_id ON api_logs(request_id)")
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_api_logs_user "
         "ON api_logs(user_id, timestamp DESC) "
@@ -171,17 +166,13 @@ def upgrade() -> None:
     """)
     op.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)")
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_users_created_at "
-        "ON users(created_at DESC)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC)")
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_users_pending_approval "
         "ON users(created_at DESC) WHERE status = 'pending_approval'"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_users_last_login_at "
-        "ON users(last_login_at DESC NULLS LAST)"
+        "CREATE INDEX IF NOT EXISTS idx_users_last_login_at ON users(last_login_at DESC NULLS LAST)"
     )
 
     # ------------------------------------------------------------------
@@ -207,22 +198,15 @@ def upgrade() -> None:
         )
     """)
     op.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status, expires_at)")
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_keys_status "
-        "ON api_keys(status, expires_at)"
-    )
-    op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix_unique "
-        "ON api_keys(key_prefix)"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix_unique ON api_keys(key_prefix)"
     )
     op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique "
         "ON api_keys(user_id) WHERE status = 'active'"
     )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_keys_account "
-        "ON api_keys(account_id)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id)")
     op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique "
         "ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL"
@@ -247,17 +231,13 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user "
-        "ON auth_sessions(user_id, expires_at)"
+        "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, expires_at)"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_auth_sessions_token "
         "ON auth_sessions(refresh_token_hash) WHERE NOT revoked"
     )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti "
-        "ON auth_sessions(jti)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti ON auth_sessions(jti)")
 
     # ------------------------------------------------------------------
     # email_verification_tokens
@@ -293,12 +273,10 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_password_reset_user "
-        "ON password_reset_tokens(user_id)"
+        "CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id)"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_password_reset_expires "
-        "ON password_reset_tokens(expires_at)"
+        "CREATE INDEX IF NOT EXISTS idx_password_reset_expires ON password_reset_tokens(expires_at)"
     )
 
     # ------------------------------------------------------------------
@@ -316,8 +294,7 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_admin_audit_timestamp "
-        "ON admin_audit_log(timestamp DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_admin_audit_timestamp ON admin_audit_log(timestamp DESC)"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_admin_audit_user "
@@ -341,10 +318,7 @@ def upgrade() -> None:
             PRIMARY KEY (user_id, day)
         )
     """)
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day "
-        "ON user_daily_cost(day)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day)")
 
     # ------------------------------------------------------------------
     # signup_allowed_domains — admin-editable allowlist
@@ -457,10 +431,7 @@ def upgrade() -> None:
             PRIMARY KEY (provider, model_id, hour_bucket)
         )
     """)
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_phs_hour "
-        "ON provider_hourly_stats(hour_bucket DESC)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_phs_hour ON provider_hourly_stats(hour_bucket DESC)")
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_phs_provider_hour "
         "ON provider_hourly_stats(provider, hour_bucket DESC)"
