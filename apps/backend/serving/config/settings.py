@@ -207,14 +207,6 @@ ROLE_RANK: dict[str, int] = {"free": 0, "pro": 1, "internal": 2, "admin": 3}
 
 VALID_ROLES = frozenset(ROLE_RANK)
 
-# Per-user concurrency caps by role. Used by serving/servers/concurrency.py.
-USER_CONCURRENCY_LIMITS: dict[str, int] = {
-    "free": 1,
-    "pro": 3,
-    "internal": 10,
-    "admin": 10,
-}
-
 
 def has_role(user_role: str, required: str) -> bool:
     """Check if user_role meets or exceeds the required role level.

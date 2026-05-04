@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
-from serving.config.settings import USER_CONCURRENCY_LIMITS, get_settings
+from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
@@ -384,10 +384,6 @@ async def initialize() -> AppServices:
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
 
-    # Per-user concurrency limiter (always on; in-process)
-    user_concurrency_limiter = UserConcurrencyLimiter(USER_CONCURRENCY_LIMITS)
-    logger.info("User concurrency limiter initialized: %s", USER_CONCURRENCY_LIMITS)
-
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
 
@@ -446,6 +442,33 @@ async def initialize() -> AppServices:
                     )
         except Exception as exc:
             logger.warning(f"Runtime settings initialization failed: {exc}")
+
+    # Per-user concurrency limiter — reads live caps from RuntimeSettings so
+    # operators can tune them at runtime. Falls back to registry defaults
+    # when runtime_settings is unavailable (e.g., DB not configured).
+    from serving.servers.concurrency import static_limits_provider
+
+    if runtime_settings is not None:
+        rt = runtime_settings  # capture for closure
+
+        async def _read_concurrency_limits() -> dict[str, int]:
+            return {
+                "free": await rt.get_int("user_concurrency_free"),
+                "pro": await rt.get_int("user_concurrency_pro"),
+                "internal": await rt.get_int("user_concurrency_internal"),
+                "admin": await rt.get_int("user_concurrency_admin"),
+            }
+
+        user_concurrency_limiter = UserConcurrencyLimiter(_read_concurrency_limits)
+        logger.info("User concurrency limiter initialized (runtime-tunable)")
+    else:
+        user_concurrency_limiter = UserConcurrencyLimiter(
+            static_limits_provider({"free": 3, "pro": 3, "internal": 10, "admin": 10})
+        )
+        logger.warning(
+            "User concurrency limiter initialized with static defaults "
+            "(runtime_settings unavailable)"
+        )
 
     return AppServices(
         router=router,
