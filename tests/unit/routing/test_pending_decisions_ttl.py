@@ -106,6 +106,50 @@ async def test_pending_decisions_no_eviction_within_ttl(
 
 
 @pytest.mark.unit
+async def test_pending_decisions_race_pop_returns_none_no_eviction_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Race: request completion pops a stale entry between iteration and pop.
+
+    The sweep collects ``stale`` while holding the lock, but the
+    request-completion paths in ``chat_completion`` /
+    ``stream_chat_completion`` call ``pop`` *without* the lock. So an entry
+    we picked as stale may be gone by the time the sweep tries to pop it.
+    In that case the sweep must NOT count the entry as evicted and must NOT
+    emit ``routewise_decision_evicted`` (the request consumed it normally).
+    """
+    router = _make_router()
+    now = time.time()
+    stale_ts = now - PENDING_DECISIONS_TTL_SECONDS - 100.0
+
+    # Simulate the race: use a dict subclass whose ``pop`` always returns
+    # ``None`` for our key, mimicking a concurrent ``record_observation``
+    # that already consumed the entry between the iterate-step and the
+    # pop-step inside the sweep.
+    pop_calls: list[str] = []
+
+    class RacyDict(dict):
+        def pop(self, key, default=None):  # type: ignore[override]
+            pop_calls.append(key)
+            return default  # entry already gone — concurrent consumer won
+
+    racy = RacyDict()
+    racy["req-old"] = {"timestamp": stale_ts}
+    router._pending_decisions = racy
+
+    with caplog.at_level(logging.INFO, logger="routing.routewise.router"):
+        evicted = await router._sweep_pending_decisions_once()
+
+    # The sweep tried to pop ``req-old``, but it was already gone — race lost.
+    assert pop_calls == ["req-old"]
+    assert evicted == 0
+    matching = [
+        r for r in caplog.records if getattr(r, "event", None) == "routewise_decision_evicted"
+    ]
+    assert matching == []
+
+
+@pytest.mark.unit
 async def test_pending_decisions_skips_entries_without_timestamp(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

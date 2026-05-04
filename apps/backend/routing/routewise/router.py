@@ -1271,7 +1271,15 @@ class RouteWiseRouter(BaseRouter):
                 if ts < cutoff:
                     stale.append((request_id, float(ts)))
             for request_id, ts in stale:
-                self._pending_decisions.pop(request_id, None)
+                # Only count + log an actual eviction. ``record_observation``
+                # paths (chat_completion / stream_chat_completion) pop without
+                # holding ``_pending_decisions_lock``, so an entry we picked up
+                # in ``stale`` may have already been consumed by a completing
+                # request between the iteration above and this pop. Treat that
+                # race as "not evicted" rather than emitting a misleading
+                # ``routewise_decision_evicted`` event.
+                if self._pending_decisions.pop(request_id, None) is None:
+                    continue
                 evicted += 1
                 logger.info(
                     "routewise_decision_evicted",
