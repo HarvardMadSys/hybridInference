@@ -177,3 +177,50 @@ async def test_update_int_setting_at_min_succeeds(monkeypatch, admin_client):
     )
     assert response.status_code == 200
     assert response.json()["value"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_settings_includes_user_concurrency_keys(admin_client):
+    """All four user_concurrency_<role> keys are exposed via /admin/settings."""
+    client, op_store, _ = admin_client
+    op_store.get_setting = AsyncMock(return_value=None)
+
+    response = await client.get(
+        "/admin/settings",
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 200
+    keys = {item["key"] for item in response.json()["settings"]}
+    assert {
+        "user_concurrency_free",
+        "user_concurrency_pro",
+        "user_concurrency_internal",
+        "user_concurrency_admin",
+    }.issubset(keys)
+
+
+@pytest.mark.asyncio
+async def test_update_user_concurrency_admin_below_min_returns_400(admin_client):
+    """Admin floor of 1 prevents self-lockout."""
+    client, _, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/user_concurrency_admin",
+        json={"value": 0},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_user_concurrency_admin_at_min_succeeds(admin_client):
+    client, op_store, _ = admin_client
+    op_store.get_setting.return_value = None
+
+    response = await client.patch(
+        "/admin/settings/user_concurrency_admin",
+        json={"value": 1},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 200
+    assert response.json()["value"] == 1

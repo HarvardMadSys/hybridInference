@@ -43,6 +43,30 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "default": False,
         "description": "Log full request payloads at DEBUG level",
     },
+    "user_concurrency_free": {
+        "type": "int",
+        "default": 3,
+        "min": 1,
+        "description": "Per-user concurrency cap for free-tier users",
+    },
+    "user_concurrency_pro": {
+        "type": "int",
+        "default": 3,
+        "min": 1,
+        "description": "Per-user concurrency cap for pro-tier users",
+    },
+    "user_concurrency_internal": {
+        "type": "int",
+        "default": 10,
+        "min": 1,
+        "description": "Per-user concurrency cap for internal users",
+    },
+    "user_concurrency_admin": {
+        "type": "int",
+        "default": 10,
+        "min": 1,
+        "description": "Per-user concurrency cap for admin users",
+    },
 }
 
 _SENTINEL = object()
