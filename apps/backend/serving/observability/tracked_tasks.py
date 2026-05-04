@@ -14,9 +14,13 @@ permitted only for tasks whose completion is otherwise observable
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
-from typing import Awaitable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +40,8 @@ def tracked_task(coro: Awaitable[None], *, name: str) -> asyncio.Task[None]:
         start = time.monotonic()
         try:
             await coro
-            try:
+            with contextlib.suppress(Exception):
+                # Never let logging itself escape.
                 log.info(
                     "tracked_task_completed",
                     extra={
@@ -46,10 +51,9 @@ def tracked_task(coro: Awaitable[None], *, name: str) -> asyncio.Task[None]:
                         "duration_ms": int((time.monotonic() - start) * 1000),
                     },
                 )
-            except Exception:
-                pass  # never let logging itself escape
         except Exception as e:
-            try:
+            with contextlib.suppress(Exception):
+                # Never let logging itself escape.
                 log.warning(
                     "tracked_task_completed",
                     extra={
@@ -62,8 +66,6 @@ def tracked_task(coro: Awaitable[None], *, name: str) -> asyncio.Task[None]:
                     },
                     exc_info=False,
                 )
-            except Exception:
-                pass
 
     task = asyncio.ensure_future(_runner())
     _TRACKED_TASKS.add(task)

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
-import pytest
+if TYPE_CHECKING:
+    import pytest
 
 
 def _mock_op_store():

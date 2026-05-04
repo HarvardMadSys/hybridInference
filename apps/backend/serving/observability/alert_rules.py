@@ -495,9 +495,7 @@ class AlertEngine:
         self._rules.append(P95LatencyRule(self._config.rules.p95_latency_per_provider))
         self._rules.append(AuthFailureSpikeRule(self._config.rules.auth_failure_spike))
         self._rules.append(ConcurrencyExhaustedRule(self._config.rules.concurrency_exhausted))
-        self._rules.append(
-            TrackedTaskFailureRateRule(self._config.rules.tracked_task_failure_rate)
-        )
+        self._rules.append(TrackedTaskFailureRateRule(self._config.rules.tracked_task_failure_rate))
 
     def _schedule_periodic_jobs(self) -> None:
         if self._scheduler is None:

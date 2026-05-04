@@ -34,6 +34,7 @@ def _clear_tracked_tasks_between_tests():
     yield
     _TRACKED_TASKS.clear()
 
+
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[3]
     / "apps"

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
+if TYPE_CHECKING:
+    import pytest
 
 
 async def test_schedule_db_log_emits_tracked_task_completed(
