@@ -71,13 +71,22 @@ Check for:
 
 Fix any issues found.
 
-## Step 5 — Format and verify
+## Step 5 — Format, lint, and test
 
 ```bash
 make format
+make check
 ```
 
-## Step 6 — Create a GitHub issue
+If the feature includes frontend changes, also run:
+
+```bash
+make check-all
+```
+
+All tests must pass before proceeding. If any test fails, fix the code — never skip or mark tests as expected failures to work around issues.
+
+## Step 7 — Create a GitHub issue
 
 Create an issue first (required before PR):
 
@@ -96,7 +105,7 @@ EOF
 
 Note the issue number — reference it in the PR.
 
-## Step 7 — Commit and push
+## Step 8 — Commit and push
 
 ```bash
 git add -A && git commit -m "<descriptive message>" && git push -u origin <username>/claude/<feature-name>
@@ -104,7 +113,7 @@ git add -A && git commit -m "<descriptive message>" && git push -u origin <usern
 
 Use descriptive commit messages. Don't attribute to Claude unless asked.
 
-## Step 8 — Create PR
+## Step 9 — Create PR
 
 ```bash
 gh pr create \
@@ -121,7 +130,7 @@ EOF
 
 Provide the PR link to the user.
 
-## Step 9 — Babysit PR
+## Step 10 — Babysit PR
 
 After creating the PR, poll every 2 minutes to:
 1. **Fix CI failures** — fetch logs, diagnose, apply minimal fix, push.
@@ -132,7 +141,7 @@ Use the `check-pr` skill for detailed validation criteria and CI fix procedures.
 
 Maximum babysit time: 30 minutes. If issues persist, report status and stop.
 
-## Step 10 — Merge and cleanup (after user approval)
+## Step 11 — Merge and cleanup (after user approval)
 
 Only merge after the user approves:
 
@@ -145,7 +154,7 @@ git worktree remove ../hybridInference-<feature-name>
 
 - **Never commit to `main` or `dev`.** Always use a feature branch.
 - **Never force-push.** If rebase is needed, leave a comment and stop.
-- **Always run `make format`** before every commit/push.
+- **Always run `make format` and `make check`** before every commit/push.
 - **Minimal changes only.** Don't refactor or touch unrelated code.
 - **Always create an issue first.** Reference it in the PR body.
 - **Work in a worktree.** Never modify the main working directory's branch.
