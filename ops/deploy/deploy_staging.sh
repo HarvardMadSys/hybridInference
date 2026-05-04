@@ -63,6 +63,15 @@ export BUILD_SHA="$target_sha"
 export BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 log "Build metadata: SHA=${BUILD_SHA} TIMESTAMP=${BUILD_TIMESTAMP}."
 
+log "Ensuring Postgres is reachable for migrations."
+"${COMPOSE[@]}" up -d postgres
+
+log "Running database migrations (alembic upgrade head)."
+if ! "${COMPOSE[@]}" run --rm backend uv run alembic upgrade head; then
+  log "Migration failed; aborting deploy before container restart."
+  exit 1
+fi
+
 log "Rebuilding and restarting Docker Compose services."
 make build
 
