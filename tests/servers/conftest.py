@@ -606,7 +606,7 @@ def temp_routing_yaml(tmp_path):
     """Create a temporary routing.yaml for testing."""
     routing_yaml = tmp_path / "test_routing.yaml"
     content = """
-routing_strategy: fixed
+default_router: fixed
 routing_parameter:
   local_fraction: 0.7
 timeout: 2

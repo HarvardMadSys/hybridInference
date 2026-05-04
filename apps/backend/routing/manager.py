@@ -85,10 +85,19 @@ class RoutingManager:
         Returns the number of models whose routes were updated.
         """
         assert self.conf is not None
-        if self.conf.routing_strategy != "fixed":
+        # default_router is the new field; routing_strategy is the legacy
+        # alias kept for one release.  Either being "fixed" enables apply().
+        effective_strategy = self.conf.default_router or self.conf.routing_strategy
+        if effective_strategy != "fixed":
             # For now only fixed supported; ignore otherwise
             return 0
-        strat = FixedRatioStrategy(local_fraction=self.conf.routing_parameter.local_fraction)
+        # local_fraction comes from the legacy routing_parameter block when
+        # present; otherwise fall back to the default (0.5).
+        if self.conf.routing_parameter is not None:
+            local_fraction = self.conf.routing_parameter.local_fraction
+        else:
+            local_fraction = 0.5
+        strat = FixedRatioStrategy(local_fraction=local_fraction)
         groups = self._group_adapters()
         updated = 0
         for model_id, route_cfg in list(self.router.routes.items()):
@@ -124,7 +133,7 @@ class RoutingManager:
             return {"loaded": False}
         return {
             "loaded": True,
-            "strategy": conf.routing_strategy,
+            "strategy": conf.default_router or conf.routing_strategy,
             "health_check_interval": conf.health_check,
             "timeout": conf.timeout,
             "deployments": {
