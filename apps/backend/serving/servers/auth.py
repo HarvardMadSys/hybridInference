@@ -181,8 +181,11 @@ async def verify_api_key(
 
         rs = get_runtime_settings_instance()
         require_verification = await rs.get_bool("signup_require_email_verification")
-    except (RuntimeError, KeyError):
-        pass
+    except Exception as exc:
+        logger.warning(
+            "RuntimeSettings lookup for signup_require_email_verification failed; "
+            f"falling back to env: {exc}"
+        )
     if require_verification and user.get("email") and not user.get("email_verified"):
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
@@ -309,8 +312,11 @@ async def optional_verify_api_key(
 
         rs = get_runtime_settings_instance()
         require_verification = await rs.get_bool("signup_require_email_verification")
-    except (RuntimeError, KeyError):
-        pass
+    except Exception as exc:
+        logger.warning(
+            "RuntimeSettings lookup for signup_require_email_verification failed; "
+            f"falling back to env: {exc}"
+        )
     if require_verification and row["email"] and not row["email_verified"]:
         return None
 

@@ -435,8 +435,10 @@ async def initialize() -> AppServices:
             for _key in RUNTIME_SETTINGS_REGISTRY:
                 try:
                     await runtime_settings.get_bool(_key)
-                except Exception as _exc:
-                    logger.warning(f"Runtime settings cache warmup failed for {_key!r}: {_exc}")
+                except Exception:
+                    logger.warning(
+                        f"Runtime settings cache warmup failed for {_key!r}", exc_info=True
+                    )
         except Exception as exc:
             logger.warning(f"Runtime settings initialization failed: {exc}")
 
