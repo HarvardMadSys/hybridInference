@@ -31,6 +31,7 @@ def _fake_record(
     provider: str = "openai",
     model: str = "gpt-4",
     duration_ms: int = 100,
+    path: str | None = None,
 ) -> logging.LogRecord:
     rec = logging.LogRecord(
         name="serving.servers.middleware.request_log",
@@ -45,6 +46,7 @@ def _fake_record(
     rec.provider = provider
     rec.model = model
     rec.duration_ms = duration_ms
+    rec.path = path
     return rec
 
 
@@ -104,11 +106,17 @@ async def test_failed_request_rate_fires_on_threshold(monkeypatch):
         await engine.start()
         try:
             for _ in range(10):
-                handler.queue.put_nowait(_fake_record(200))
+                handler.queue.put_nowait(_fake_record(200, path="/v1/messages"))
             for _ in range(2):
-                handler.queue.put_nowait(_fake_record(500))
+                handler.queue.put_nowait(
+                    _fake_record(500, provider="anthropic", path="/v1/messages")
+                )
             await _drain_until(handler, mock_alert)
             assert mock_alert.await_count >= 1
+            ctx = mock_alert.await_args.args[2]
+            assert ctx["top_status_codes"] == "500 (2)"
+            assert ctx["top_paths"] == "/v1/messages (2)"
+            assert ctx["top_providers"] == "anthropic (2)"
         finally:
             await engine.stop()
 
