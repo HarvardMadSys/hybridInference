@@ -90,7 +90,7 @@ async def log_rejection(
         "route": request.url.path,
         "role": user.get("role") if user else None,
         "user_id": user.get("user_id") if user else None,
-        "remote_ip": get_client_ip(request),
+        "ip": get_client_ip(request),
     }
 
     try:
