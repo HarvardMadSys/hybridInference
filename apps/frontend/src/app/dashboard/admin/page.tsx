@@ -5,8 +5,6 @@ import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import {
-  AdminMetricDistribution,
-  AdminPerformanceMetricsWindow,
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
   AuditLogEntry,
@@ -23,7 +21,6 @@ import {
   getBroadcastDetail,
   cancelBroadcast,
   exportRequests,
-  getPerformanceMetrics,
   getProviderQuotas,
   getRecentRequestContent,
 } from '@/lib/api/admin';
@@ -834,7 +831,7 @@ export default function AdminPage() {
     | 'broadcast'
     | 'providers'
     | 'analytics'
-    | 'token-usage'
+    | 'usage'
     | 'settings'
   >('users');
 
@@ -859,7 +856,7 @@ export default function AdminPage() {
       tab === 'broadcast' ||
       tab === 'providers' ||
       tab === 'analytics' ||
-      tab === 'token-usage' ||
+      tab === 'usage' ||
       tab === 'settings'
     ) {
       setActiveTab(
@@ -870,7 +867,7 @@ export default function AdminPage() {
           | 'broadcast'
           | 'providers'
           | 'analytics'
-          | 'token-usage'
+          | 'usage'
           | 'settings',
       );
       if (tab === 'providers' && sub === 'performance') {
@@ -944,8 +941,6 @@ export default function AdminPage() {
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
-  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
-  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
   const [perfRefreshNonce, setPerfRefreshNonce] = useState(0);
   const reqJumpInputId = useId();
   const REQ_PAGE_SIZE = 50;
@@ -1064,19 +1059,6 @@ export default function AdminPage() {
     }
   }, []);
 
-  const loadPerformanceMetrics = useCallback(async () => {
-    setPerfMetricsLoading(true);
-    setError(null);
-    try {
-      const d = await getPerformanceMetrics();
-      setPerfMetrics(d.windows);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setPerfMetricsLoading(false);
-    }
-  }, []);
-
   const loadProviderQuotas = useCallback(async () => {
     setProviderQuotasLoading(true);
     setError(null);
@@ -1163,7 +1145,7 @@ export default function AdminPage() {
       | 'broadcast'
       | 'providers'
       | 'analytics'
-      | 'token-usage'
+      | 'usage'
       | 'settings',
   ) => {
     setActiveTab(tab);
@@ -1195,7 +1177,6 @@ export default function AdminPage() {
       if (providerSubTab === 'quota') {
         loadProviderQuotas();
       } else {
-        loadPerformanceMetrics();
         setPerfRefreshNonce((n) => n + 1);
       }
       return;
@@ -1203,7 +1184,8 @@ export default function AdminPage() {
     if (activeTab === 'analytics') {
       return;
     }
-    if (activeTab === 'token-usage') {
+    if (activeTab === 'usage') {
+      setPerfRefreshNonce((n) => n + 1);
       return;
     }
     if (activeTab === 'settings') {
@@ -1240,12 +1222,11 @@ export default function AdminPage() {
           <button
             onClick={refreshActiveTab}
             disabled={
-              usersLoading ||
-              auditLoading ||
-              reqLoading ||
-              reqMetricsLoading ||
-              perfMetricsLoading ||
-              providerQuotasLoading
+            usersLoading ||
+            auditLoading ||
+            reqLoading ||
+            reqMetricsLoading ||
+            providerQuotasLoading
             }
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
           >
@@ -1253,7 +1234,6 @@ export default function AdminPage() {
             auditLoading ||
             reqLoading ||
             reqMetricsLoading ||
-            perfMetricsLoading ||
             providerQuotasLoading
               ? 'Loading...'
               : 'Refresh'}
@@ -1273,7 +1253,7 @@ export default function AdminPage() {
               'users',
               'requests',
               'providers',
-              'token-usage',
+              'usage',
               'audit',
               'broadcast',
               'analytics',
@@ -1295,8 +1275,8 @@ export default function AdminPage() {
                   ? 'Recent Requests'
                   : tab === 'providers'
                     ? 'Providers'
-                    : tab === 'token-usage'
-                      ? 'Token Usage'
+                    : tab === 'usage'
+                      ? 'Usage'
                       : tab === 'audit'
                         ? 'Audit Log'
                         : tab === 'broadcast'
@@ -1545,36 +1525,7 @@ export default function AdminPage() {
 
             {/* Performance sub-tab */}
             {providerSubTab === 'performance' && (
-              <div className="space-y-6">
-                <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
-                <div>
-                  <div className="mb-2 flex items-center justify-between">
-                    <div>
-                      <h2 className="text-[14px] font-semibold text-gray-900">
-                        Performance metrics
-                      </h2>
-                      <p className="text-[11px] text-gray-400">
-                        Prompt/response length, time-to-first-token, and inter-token latency
-                        distributions.
-                      </p>
-                    </div>
-                    {perfMetricsLoading && (
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-                    )}
-                  </div>
-                  {perfMetrics.length > 0 ? (
-                    <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
-                      {perfMetrics.map((metric) => (
-                        <PerformanceMetricsCard key={metric.key} metric={metric} />
-                      ))}
-                    </div>
-                  ) : !perfMetricsLoading ? (
-                    <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
-                      <p className="text-[13px] text-gray-400">No performance metrics available.</p>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+              <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
             )}
           </div>
         )}
@@ -2108,7 +2059,7 @@ export default function AdminPage() {
           </div>
         )}
         {activeTab === 'analytics' && <AnalyticsTab />}
-        {activeTab === 'token-usage' && <TokenUsageTab />}
+        {activeTab === 'usage' && <TokenUsageTab perfRefreshNonce={perfRefreshNonce} />}
         {activeTab === 'settings' && <SettingsTab />}
 
         {/* ========== Broadcast Email Tab ========== */}
