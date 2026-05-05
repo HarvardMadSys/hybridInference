@@ -5,8 +5,6 @@ import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import {
-  AdminMetricDistribution,
-  AdminPerformanceMetricsWindow,
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
   AuditLogEntry,
@@ -23,7 +21,6 @@ import {
   getBroadcastDetail,
   cancelBroadcast,
   exportRequests,
-  getPerformanceMetrics,
   getProviderQuotas,
   getRecentRequestContent,
 } from '@/lib/api/admin';
@@ -560,65 +557,6 @@ function formatThroughput(n: number): string {
   return `${n.toFixed(1)} tok/s`;
 }
 
-function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
-  const rows: Array<{
-    title: string;
-    dist: AdminMetricDistribution;
-    kind: 'tokens' | 'ms' | 'tps';
-  }> = [
-    { title: 'Prompt tokens', dist: metric.prompt_tokens, kind: 'tokens' },
-    { title: 'Response tokens', dist: metric.completion_tokens, kind: 'tokens' },
-    { title: 'TTFT', dist: metric.ttft_ms, kind: 'ms' },
-    { title: 'Throughput', dist: metric.throughput_tps, kind: 'tps' },
-  ];
-  const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms' | 'tps'): string => {
-    if (v == null) return '—';
-    return kind === 'ms'
-      ? formatLatency(v)
-      : kind === 'tps'
-        ? formatThroughput(v)
-        : formatTokens(v);
-  };
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
-      <div className="flex items-center justify-between">
-        <div className="text-[12px] font-semibold text-gray-900">{metric.label}</div>
-        <div className="text-[10px] text-gray-400">{metric.window_minutes}m window</div>
-      </div>
-      <table className="mt-2 w-full">
-        <thead>
-          <tr className="text-[10px] uppercase tracking-wider text-gray-400 font-medium">
-            <th className="py-1 text-left">Metric</th>
-            <th className="py-1 text-right">n</th>
-            <th className="py-1 text-right">p50</th>
-            <th className="py-1 text-right">p95</th>
-            <th className="py-1 text-right">p99</th>
-          </tr>
-        </thead>
-        <tbody className="[&>tr+tr>td]:border-t [&>tr+tr>td]:border-gray-100">
-          {rows.map((row) => (
-            <tr key={row.title}>
-              <td className="py-1.5 text-[11px] text-gray-600">{row.title}</td>
-              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                {row.dist.count.toLocaleString()}
-              </td>
-              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                {formatValue(row.dist.p50, row.kind)}
-              </td>
-              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                {formatValue(row.dist.p95, row.kind)}
-              </td>
-              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                {formatValue(row.dist.p99, row.kind)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function pct(used: number | null, limit: number | null): number | null {
   if (used == null || limit == null || limit <= 0) return null;
   return Math.min(100, (used / limit) * 100);
@@ -813,7 +751,7 @@ export default function AdminPage() {
     | 'broadcast'
     | 'providers'
     | 'analytics'
-    | 'token-usage'
+    | 'usage'
     | 'settings'
   >('users');
 
@@ -838,7 +776,7 @@ export default function AdminPage() {
       tab === 'broadcast' ||
       tab === 'providers' ||
       tab === 'analytics' ||
-      tab === 'token-usage' ||
+      tab === 'usage' ||
       tab === 'settings'
     ) {
       setActiveTab(
@@ -849,7 +787,7 @@ export default function AdminPage() {
           | 'broadcast'
           | 'providers'
           | 'analytics'
-          | 'token-usage'
+          | 'usage'
           | 'settings',
       );
       if (tab === 'providers' && sub === 'performance') {
@@ -923,8 +861,6 @@ export default function AdminPage() {
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
-  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
-  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
   const [perfRefreshNonce, setPerfRefreshNonce] = useState(0);
   const reqJumpInputId = useId();
   const REQ_PAGE_SIZE = 50;
@@ -1043,19 +979,6 @@ export default function AdminPage() {
     }
   }, []);
 
-  const loadPerformanceMetrics = useCallback(async () => {
-    setPerfMetricsLoading(true);
-    setError(null);
-    try {
-      const d = await getPerformanceMetrics();
-      setPerfMetrics(d.windows);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setPerfMetricsLoading(false);
-    }
-  }, []);
-
   const loadProviderQuotas = useCallback(async () => {
     setProviderQuotasLoading(true);
     setError(null);
@@ -1079,10 +1002,6 @@ export default function AdminPage() {
       loadRequestMetrics();
     }
   }, [loadRequests, loadRequestMetrics, activeTab]);
-
-  useEffect(() => {
-    if (activeTab === 'providers' && providerSubTab === 'performance') loadPerformanceMetrics();
-  }, [loadPerformanceMetrics, activeTab, providerSubTab]);
 
   useEffect(() => {
     if (activeTab === 'providers' && providerSubTab === 'quota') loadProviderQuotas();
@@ -1137,7 +1056,7 @@ export default function AdminPage() {
       | 'broadcast'
       | 'providers'
       | 'analytics'
-      | 'token-usage'
+      | 'usage'
       | 'settings',
   ) => {
     setActiveTab(tab);
@@ -1169,7 +1088,6 @@ export default function AdminPage() {
       if (providerSubTab === 'quota') {
         loadProviderQuotas();
       } else {
-        loadPerformanceMetrics();
         setPerfRefreshNonce((n) => n + 1);
       }
       return;
@@ -1177,7 +1095,8 @@ export default function AdminPage() {
     if (activeTab === 'analytics') {
       return;
     }
-    if (activeTab === 'token-usage') {
+    if (activeTab === 'usage') {
+      setPerfRefreshNonce((n) => n + 1);
       return;
     }
     if (activeTab === 'settings') {
@@ -1214,12 +1133,11 @@ export default function AdminPage() {
           <button
             onClick={refreshActiveTab}
             disabled={
-              usersLoading ||
-              auditLoading ||
-              reqLoading ||
-              reqMetricsLoading ||
-              perfMetricsLoading ||
-              providerQuotasLoading
+            usersLoading ||
+            auditLoading ||
+            reqLoading ||
+            reqMetricsLoading ||
+            providerQuotasLoading
             }
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
           >
@@ -1227,7 +1145,6 @@ export default function AdminPage() {
             auditLoading ||
             reqLoading ||
             reqMetricsLoading ||
-            perfMetricsLoading ||
             providerQuotasLoading
               ? 'Loading...'
               : 'Refresh'}
@@ -1247,7 +1164,7 @@ export default function AdminPage() {
               'users',
               'requests',
               'providers',
-              'token-usage',
+              'usage',
               'audit',
               'broadcast',
               'analytics',
@@ -1269,8 +1186,8 @@ export default function AdminPage() {
                   ? 'Recent Requests'
                   : tab === 'providers'
                     ? 'Providers'
-                    : tab === 'token-usage'
-                      ? 'Token Usage'
+                    : tab === 'usage'
+                      ? 'Usage'
                       : tab === 'audit'
                         ? 'Audit Log'
                         : tab === 'broadcast'
@@ -1519,36 +1436,7 @@ export default function AdminPage() {
 
             {/* Performance sub-tab */}
             {providerSubTab === 'performance' && (
-              <div className="space-y-6">
-                <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
-                <div>
-                  <div className="mb-2 flex items-center justify-between">
-                    <div>
-                      <h2 className="text-[14px] font-semibold text-gray-900">
-                        Performance metrics
-                      </h2>
-                      <p className="text-[11px] text-gray-400">
-                        Prompt/response length, time-to-first-token, and inter-token latency
-                        distributions.
-                      </p>
-                    </div>
-                    {perfMetricsLoading && (
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-                    )}
-                  </div>
-                  {perfMetrics.length > 0 ? (
-                    <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
-                      {perfMetrics.map((metric) => (
-                        <PerformanceMetricsCard key={metric.key} metric={metric} />
-                      ))}
-                    </div>
-                  ) : !perfMetricsLoading ? (
-                    <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
-                      <p className="text-[13px] text-gray-400">No performance metrics available.</p>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+              <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
             )}
           </div>
         )}
@@ -2039,7 +1927,7 @@ export default function AdminPage() {
           </div>
         )}
         {activeTab === 'analytics' && <AnalyticsTab />}
-        {activeTab === 'token-usage' && <TokenUsageTab />}
+        {activeTab === 'usage' && <TokenUsageTab perfRefreshNonce={perfRefreshNonce} />}
         {activeTab === 'settings' && <SettingsTab />}
 
         {/* ========== Broadcast Email Tab ========== */}
