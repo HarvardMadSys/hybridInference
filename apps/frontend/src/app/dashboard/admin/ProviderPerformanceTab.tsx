@@ -127,13 +127,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   );
 }
 
-function ModelPerformanceSection({
-  modelId,
-  rows,
-}: {
-  modelId: string;
-  rows: ProviderStatsRow[];
-}) {
+function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: ProviderStatsRow[] }) {
   const chartData = useMemo(
     () =>
       rows.map((r) => ({
@@ -369,11 +363,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
       )}
 
       {providerModels.map((modelId) => (
-        <ModelPerformanceSection
-          key={modelId}
-          modelId={modelId}
-          rows={modelRows[modelId] ?? []}
-        />
+        <ModelPerformanceSection key={modelId} modelId={modelId} rows={modelRows[modelId] ?? []} />
       ))}
 
       <div>
