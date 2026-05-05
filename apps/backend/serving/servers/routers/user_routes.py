@@ -195,9 +195,11 @@ async def get_default_daily_quota_for_role(
     from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
     key = f"user_daily_quota_{role}"
-    if runtime_settings is not None and key in RUNTIME_SETTINGS_REGISTRY:
-        val = await runtime_settings.get_float(key)
-        return Decimal(str(val))
+    if runtime_settings is not None:
+        if key in RUNTIME_SETTINGS_REGISTRY:
+            val = await runtime_settings.get_float(key)
+            return Decimal(str(val))
+        logger.warning("No quota runtime setting for role %r — falling back to env var", role)
     quota_str = os.getenv("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "100.00")
     return Decimal(quota_str)
 
