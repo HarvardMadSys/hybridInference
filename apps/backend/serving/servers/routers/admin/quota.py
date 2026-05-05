@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 from decimal import Decimal
 from typing import Literal
 
@@ -16,8 +15,10 @@ from serving.config.runtime_settings import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_operational_store, verify_admin_access
+from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
+logger = get_logger(__name__)
 router = APIRouter(prefix="/admin")
 
 Role = Literal["free", "pro", "internal", "admin"]
@@ -82,12 +83,19 @@ async def apply_role_quota(
     rt = _require_rt(rt)
     quota = await _quota_for_role(rt, payload.role)
     updated = await op_store.apply_role_quota(payload.role, quota)
-    with contextlib.suppress(Exception):
+    try:
         await log_admin_action(
             op_store,
             get_client_ip(request),
             "quota.role_apply",
             None,
             {"role": payload.role, "quota": float(quota), "keys_updated": updated},
+        )
+    except Exception:
+        logger.warning(
+            "audit log failed for quota.role_apply role=%s keys_updated=%d",
+            payload.role,
+            updated,
+            exc_info=True,
         )
     return RoleQuotaApplyResult(role=payload.role, quota=quota, keys_updated=updated)
