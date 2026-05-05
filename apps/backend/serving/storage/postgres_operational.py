@@ -2048,3 +2048,40 @@ class PostgresOperationalStore(OperationalStore):
                 user_ids,
             )
         return {r["user_id"]: float(r["cost"]) for r in rows}
+
+    # -- role quota ----------------------------------------------------------
+
+    async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
+        """Return ``(key_count, user_count)`` of active api_keys whose owner has this role."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(*)::int AS keys,
+                       COUNT(DISTINCT k.user_id)::int AS users
+                FROM api_keys k
+                JOIN users u ON u.id = k.user_id
+                WHERE k.status = 'active' AND u.role = $1
+                """,
+                role,
+            )
+        if row is None:
+            return 0, 0
+        return int(row["keys"]), int(row["users"])
+
+    async def apply_role_quota(self, role: str, quota: Decimal) -> int:
+        """Bulk-update ``quota_daily_cost_usd`` for all active keys whose owner has *role*.
+
+        Returns the number of rows updated.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            tag = await conn.execute(
+                """
+                    UPDATE api_keys
+                    SET quota_daily_cost_usd = $1
+                    WHERE status = 'active'
+                      AND user_id IN (SELECT id FROM users WHERE role = $2)
+                    """,
+                quota,
+                role,
+            )
+        return _parse_command_tag_count(tag)
