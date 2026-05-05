@@ -6,7 +6,10 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from serving.config.runtime_settings import RuntimeSettings
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -178,6 +181,27 @@ def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutSt
 
 def get_default_daily_quota() -> Decimal:
     """Get default daily quota for new users from environment."""
+    quota_str = os.getenv("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "100.00")
+    return Decimal(quota_str)
+
+
+async def get_default_daily_quota_for_role(
+    role: str,
+    runtime_settings: "RuntimeSettings | None",
+) -> Decimal:
+    """Return the default daily USD quota seeded onto a new API key.
+
+    Reads the ``user_daily_quota_<role>`` runtime setting if present.
+    Falls back to ``SIGNUP_DEFAULT_DAILY_QUOTA_USD`` env var (default 100.00)
+    if the role is unknown or runtime settings are unavailable (e.g. early
+    bootstrap).
+    """
+    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+
+    key = f"user_daily_quota_{role}"
+    if runtime_settings is not None and key in RUNTIME_SETTINGS_REGISTRY:
+        val = await runtime_settings.get_float(key)
+        return Decimal(str(val))
     quota_str = os.getenv("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "100.00")
     return Decimal(quota_str)
 
