@@ -1243,10 +1243,7 @@ class D1OperationalStore(OperationalStore):
             """,
             params,
         )
-        return [
-            (row["user_id"], row["role"], float(row["daily_cost"]))
-            for row in result.rows
-        ]
+        return [(row["user_id"], row["role"], float(row["daily_cost"])) for row in result.rows]
 
     async def get_batch_usage(
         self,

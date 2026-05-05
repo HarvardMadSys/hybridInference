@@ -681,7 +681,9 @@ class TestCostCounters:
         await store.create_user(user_id="free-low", email="free-low@test.com", password_hash="h")
         await store.create_user(user_id="free-high", email="free-high@test.com", password_hash="h")
         await store.create_user(user_id="pro-high", email="pro-high@test.com", password_hash="h")
-        await store.create_user(user_id="admin-high", email="admin-high@test.com", password_hash="h")
+        await store.create_user(
+            user_id="admin-high", email="admin-high@test.com", password_hash="h"
+        )
         await store.update_user_fields("pro-high", role="pro")
         await store.update_user_fields("admin-high", role="admin")
         await store.increment_user_cost("free-low", 0.50, day=today)
