@@ -31,6 +31,17 @@ if TYPE_CHECKING:
 from serving.servers.auth import verify_api_key
 
 
+@pytest.fixture(autouse=True)
+def disable_auth_for_completions_tests(monkeypatch):
+    """Disable auth for routing-focused completions tests."""
+    from serving.config.settings import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setattr("serving.servers.auth.is_user_auth_enabled", lambda: False)
+    yield
+    get_settings.cache_clear()
+
+
 class DummyAdapter(BaseAdapter):
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         content = params.get("content", "Test response")

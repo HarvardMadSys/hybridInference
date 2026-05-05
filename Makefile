@@ -51,11 +51,6 @@ test-db:  ## Run tests that require PostgreSQL (set TEST_DB_* env vars)
 	$(UV_RUN) pytest -vv -m "dbtest"
 	@echo "$(GREEN)OK Database tests passed$(RESET)"
 
-test-d1:  ## Run live Cloudflare D1 integration tests (requires D1_ACCOUNT_ID, D1_DATABASE_ID, D1_API_TOKEN in .env)
-	@echo "$(YELLOW)Running D1 integration tests...$(RESET)"
-	$(UV_RUN) pytest -vv -m "d1"
-	@echo "$(GREEN)OK D1 tests passed$(RESET)"
-
 test-all:  ## Run all tests except external (includes db-dependent)
 	@echo "$(YELLOW)Running all tests (not external)...$(RESET)"
 	$(UV_RUN) pytest -q -m "not external"
