@@ -21,6 +21,21 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
+function isAccessTokenExpired(token: string | null): boolean {
+  if (!token) return true;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return true;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    const exp = payload?.exp;
+    if (typeof exp !== 'number') return true;
+    // 30s skew to avoid races with server clock
+    return exp * 1000 < Date.now() + 30_000;
+  } catch {
+    return true;
+  }
+}
+
 async function refreshAccessToken(apiBase: string): Promise<boolean> {
   // If refresh is already in progress, wait for it to prevent race conditions
   if (refreshPromise) {
@@ -56,8 +71,13 @@ export async function fetchWithAuth(
   input: string,
   init: RequestInit = {},
 ): Promise<Response> {
+  let token = getAccessToken();
+  if (isAccessTokenExpired(token)) {
+    await refreshAccessToken(apiBase);
+    token = getAccessToken();
+  }
+
   const headers = new Headers(init.headers || {});
-  const token = getAccessToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
   const resp = await fetch(`${apiBase}${input}`, {
