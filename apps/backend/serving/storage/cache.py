@@ -303,6 +303,21 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete_pattern("auth_light:*")
         return old_prefix
 
+    # -- role quotas (invalidate auth caches on bulk write) ------------------
+
+    async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
+        """Delegate to wrapped store."""
+        return await self._store.count_active_keys_for_role(role)
+
+    async def apply_role_quota(self, role: str, quota: Decimal) -> int:
+        """Delegate then invalidate auth caches (quota_daily_cost_usd changed for all role rows)."""
+        n = await self._store.apply_role_quota(role, quota)
+        # Bulk write touches quota_daily_cost_usd on all keys for a role; clear
+        # all per-key auth cache entries to prevent stale quota lookups.
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
+        return n
+
     # -- pure pass-through (no caching, no invalidation) ---------------------
 
     async def get_user_by_email(self, email: str) -> Row | None:
