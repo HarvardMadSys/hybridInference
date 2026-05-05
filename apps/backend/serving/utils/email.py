@@ -368,7 +368,9 @@ def send_new_registration_admin_email(
     display_name = user_name or "(not provided)"
     use_case_text = (use_case or "").strip() or "(not provided)"
     # HTML-escape the user-supplied use case and preserve line breaks.
-    use_case_html = html_lib.escape(use_case_text).replace("\n", "<br>")
+    use_case_html = (
+        html_lib.escape(use_case_text).replace("\r\n", "\n").replace("\n", "<br>")
+    )
 
     subject = f"[FreeInference] New registration pending approval: {user_email}"
 

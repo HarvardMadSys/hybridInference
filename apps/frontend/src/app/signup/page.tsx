@@ -207,7 +207,7 @@ export default function SignupPage() {
               <span className="mt-1.5 block text-xs text-red-600">{errors.useCase.message}</span>
             ) : (
               <span className="mt-1.5 block text-xs text-gray-500">
-                Required for non-Harvard signups so admins can review.
+                Helps admins review non-Harvard signups faster.
               </span>
             )}
           </label>
