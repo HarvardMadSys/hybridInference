@@ -97,15 +97,19 @@ class FailedRequestRateRule:
         items = self._window.items(now)
         if len(items) < self._cfg.min_samples:
             return
+        failed = sum(
+            1
+            for it in items
+            if it["status"] >= 400 and it["status"] not in _FAILED_REQUEST_IGNORED_STATUSES
+        )
+        pct = (failed / len(items)) * 100.0
+        if pct < self._cfg.threshold_pct:
+            return
         failed_items = [
             it
             for it in items
             if it["status"] >= 400 and it["status"] not in _FAILED_REQUEST_IGNORED_STATUSES
         ]
-        failed = len(failed_items)
-        pct = (failed / len(items)) * 100.0
-        if pct < self._cfg.threshold_pct:
-            return
         status_counts: collections.Counter[int] = collections.Counter(
             it["status"] for it in failed_items
         )
