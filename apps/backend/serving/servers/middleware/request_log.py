@@ -9,7 +9,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from serving.utils import context as req_ctx
 from serving.utils.logging import _QUIET_PATHS, get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip_info
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -49,10 +49,12 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
         # Note: ``request.client.host`` will be the proxy's IP (e.g., NGINX). The
         # original client should be available via ``X-Forwarded-For`` when the
         # proxy sets it.
-        remote_ip = get_client_ip(request)
-        xff = request.headers.get("x-forwarded-for")
+        ip_info = get_client_ip_info(request)
+        remote_ip = ip_info.client_ip
         user_agent = request.headers.get("user-agent")
         host = request.headers.get("host")
+        origin = request.headers.get("origin")
+        referer = request.headers.get("referer")
         request_id = ctx.get("request_id")
         # Extract canonical session_id for logs (same as DB metadata).
         canonical_session_id = request.headers.get("X-Session-ID")
@@ -65,20 +67,27 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
             "model": ctx.get("model"),
             "provider": ctx.get("provider"),
             "remote_ip": remote_ip,
-            "x_forwarded_for": xff,
+            "peer_ip": ip_info.peer_ip,
+            "ip_source": ip_info.source,
+            "x_forwarded_for": ip_info.x_forwarded_for,
+            "x_real_ip": ip_info.x_real_ip,
             "user_agent": user_agent,
             "host": host,
+            "origin": origin,
+            "referer": referer,
             "request_id": request_id,
             "session_id": canonical_session_id,
         }
         is_quiet_path = request.url.path in _QUIET_PATHS
         is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
 
+        is_auth_challenge = status_code == 401
+
         if exc_to_raise:
             log_extra["error"] = str(exc_to_raise)
             log_extra["error_type"] = type(exc_to_raise).__name__
             logger.error("http_request", extra=log_extra)
-        elif is_quiet_path or is_synthetic_probe:
+        elif is_quiet_path or is_synthetic_probe or is_auth_challenge:
             logger.debug("http_request", extra=log_extra)
         else:
             logger.info("http_request", extra=log_extra)

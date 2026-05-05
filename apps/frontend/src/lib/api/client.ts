@@ -5,6 +5,15 @@ import { APIError } from '@/lib/utils/errors';
 let accessToken: string | null = null;
 let refreshPromise: Promise<boolean> | null = null;
 
+export const AUTH_EXPIRED_EVENT = 'freeinference:auth-expired';
+
+function notifyAuthExpired(): void {
+  setAccessToken(null);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
+}
+
 export function setAccessToken(token: string | null): void {
   accessToken = token;
   if (token) {
@@ -21,6 +30,21 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
+function isAccessTokenExpired(token: string | null): boolean {
+  if (!token) return true;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return true;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    const exp = payload?.exp;
+    if (typeof exp !== 'number') return true;
+    // 30s skew to avoid races with server clock
+    return exp * 1000 < Date.now() + 30_000;
+  } catch {
+    return true;
+  }
+}
+
 async function refreshAccessToken(apiBase: string): Promise<boolean> {
   // If refresh is already in progress, wait for it to prevent race conditions
   if (refreshPromise) {
@@ -34,12 +58,15 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
         credentials: 'include',
       });
       if (!resp.ok) {
-        setAccessToken(null);
+        notifyAuthExpired();
         return false;
       }
       const data = await resp.json();
       const token = data?.access_token as string | undefined;
-      if (!token) return false;
+      if (!token) {
+        notifyAuthExpired();
+        return false;
+      }
       setAccessToken(token);
       return true;
     } finally {
@@ -56,8 +83,13 @@ export async function fetchWithAuth(
   input: string,
   init: RequestInit = {},
 ): Promise<Response> {
+  let token = getAccessToken();
+  if (isAccessTokenExpired(token)) {
+    await refreshAccessToken(apiBase);
+    token = getAccessToken();
+  }
+
   const headers = new Headers(init.headers || {});
-  const token = getAccessToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
   const resp = await fetch(`${apiBase}${input}`, {
@@ -69,7 +101,10 @@ export async function fetchWithAuth(
   if (resp.status !== 401) return resp;
 
   const refreshed = await refreshAccessToken(apiBase);
-  if (!refreshed) return resp;
+  if (!refreshed) {
+    notifyAuthExpired();
+    return resp;
+  }
 
   const headersRetry = new Headers(init.headers || {});
   const newToken = getAccessToken();

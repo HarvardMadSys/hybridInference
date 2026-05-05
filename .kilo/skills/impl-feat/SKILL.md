@@ -97,25 +97,8 @@ Fix any issues found.
 
 ## Step 5 — Format, lint, and test
 
-For backend-only changes:
-
-```bash
-make format
-make check
 ```
-
-For changes that also touch the frontend:
-
-```bash
-make format
-make check-all
-```
-
-If only frontend was changed:
-
-```bash
-make frontend-install
-make frontend-check
+uv run ruff check --fix --unsafe-fixes
 ```
 
 All tests must pass before proceeding. If any test fails, fix the code — never skip or mark tests as expected failures to work around issues.

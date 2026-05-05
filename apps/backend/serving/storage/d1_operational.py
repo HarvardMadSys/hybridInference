@@ -1210,6 +1210,41 @@ class D1OperationalStore(OperationalStore):
             return float(result.rows[0]["total"])
         return 0.0
 
+    async def query_users_over_daily_threshold(
+        self,
+        thresholds: dict[str, float],
+    ) -> list[tuple[str, str, float]]:
+        """Return users whose today's cost exceeds the per-role threshold."""
+        if not thresholds:
+            return []
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        values_sql = ", ".join(["(?, ?)"] * len(thresholds))
+        params: list[Any] = []
+        for role, threshold in thresholds.items():
+            params.extend([role, float(threshold)])
+        params.append(today)
+
+        result = await self._d1.query(
+            f"""
+            WITH thresholds(role, threshold) AS (
+                VALUES {values_sql}
+            )
+            SELECT u.id AS user_id, u.role AS role,
+                   COALESCE(udc.cost_usd, 0) AS daily_cost
+            FROM users u
+            JOIN thresholds t ON t.role = u.role
+            LEFT JOIN user_daily_cost udc
+              ON udc.user_id = u.id
+             AND udc.day = ?
+            WHERE COALESCE(udc.cost_usd, 0) > t.threshold
+            ORDER BY daily_cost DESC
+            LIMIT 100
+            """,
+            params,
+        )
+        return [(row["user_id"], row["role"], float(row["daily_cost"])) for row in result.rows]
+
     async def get_batch_usage(
         self,
         user_ids: list[str],

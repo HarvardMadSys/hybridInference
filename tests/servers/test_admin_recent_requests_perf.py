@@ -121,6 +121,9 @@ async def test_list_default_days_is_seven(admin_client_capture):
     assert "l.prompt " not in select_query
     assert "l.response," not in select_query
     assert "l.response " not in select_query
+    assert "l.metadata->>'ip' AS user_ip" in select_query
+    assert "l.metadata->>'peer_ip' AS peer_ip" in select_query
+    assert "l.metadata->>'user_agent' AS user_agent" in select_query
 
 
 @pytest.mark.asyncio
@@ -188,6 +191,12 @@ async def test_list_response_omits_prompt_and_response(admin_client_capture):
                     "cost_usd": None,
                     "error": None,
                     "user_ip": None,
+                    "peer_ip": "172.19.0.8",
+                    "ip_source": "x-forwarded-for",
+                    "x_forwarded_for": "203.0.113.8",
+                    "user_agent": "pytest-client",
+                    "session_id": "sess-1",
+                    "request_surface": "openai_chat_completions",
                     # Deliberately seed prompt/response into the row to prove
                     # the response model strips them; if a future regression
                     # reintroduces them on AdminRecentRequestItem, this test

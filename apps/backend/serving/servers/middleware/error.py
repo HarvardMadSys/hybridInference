@@ -77,7 +77,8 @@ def install_error_handlers(app: FastAPI) -> None:
                 status_code=exc.status_code, content=exc.detail, headers=exc.headers
             )
         err_type = categorize_exception(exc)
-        logger.error(
+        log_fn = logger.error if exc.status_code >= 500 else logger.warning
+        log_fn(
             "http_error",
             extra={
                 "error_type": err_type,
@@ -85,7 +86,7 @@ def install_error_handlers(app: FastAPI) -> None:
                 "path": request.url.path,
                 "method": request.method,
             },
-            exc_info=exc,
+            exc_info=exc if exc.status_code >= 500 else None,
         )
         content = _build_error_response(str(exc.detail), code=exc.status_code, typ=err_type)
         return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)

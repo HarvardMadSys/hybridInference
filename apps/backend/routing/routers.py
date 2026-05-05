@@ -30,6 +30,7 @@ from serving.observability.metrics import (
     CIRCUIT_STATE,
     PROVIDER_AVAILABILITY,
     PROVIDER_LATENCY,
+    ROUTING_AFFINITY,
     STREAMING_INTERRUPTION,
     normalize_model_label,
     normalize_provider_label,
@@ -93,9 +94,22 @@ class RoutingObservation:
     lp_status: str | None = None
 
 
+@dataclass
+class _Affinity:
+    """Per-user provider pin for one model. TTL is monotonic time."""
+
+    endpoint_id: str
+    expires_at: float
+
+
 # ============================================================================
 # Helpers
 # ============================================================================
+
+
+AFFINITY_TTL_SECONDS: float = 300.0
+AFFINITY_SWEEP_THRESHOLD: int = 1000
+AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 
 
 def _get_endpoint_id(adapter: BaseAdapter) -> str:
@@ -319,6 +333,7 @@ class BaseRouter:
         self._health: dict[str, _ProviderHealth] = {}
         self._circuits: dict[str, _CircuitBreaker] = {}
         self._lock = threading.RLock()
+        self._affinity: dict[tuple[str, str], _Affinity] = {}
 
     def _ensure_health(self, endpoint_id: str) -> None:
         with self._lock:
@@ -342,6 +357,31 @@ class BaseRouter:
             avail = self._health[endpoint_id].availability
             self._circuits[endpoint_id].on_failure(availability=avail, reason=_reason_str(reason))
         _safe_set_availability(endpoint_id, avail)
+
+    def _drop_affinity(self, model_id: str) -> None:
+        """Drop affinity entry for the current request's affinity_key + model.
+
+        No-op if affinity_key is missing from req_ctx or no entry exists.
+        Emits a `dropped_error` metric event when an entry is removed.
+        """
+        affinity_key = req_ctx.get().get("affinity_key")
+        if not affinity_key:
+            return
+        with self._lock:
+            removed = self._affinity.pop((affinity_key, model_id), None)
+        if removed is not None:
+            ROUTING_AFFINITY.labels(
+                event="dropped_error",
+                model=normalize_model_label(model_id),
+            ).inc()
+
+    def _maybe_sweep_affinity_locked(self, now: float) -> None:
+        """Drop expired affinity entries. Caller must hold self._lock."""
+        if len(self._affinity) <= AFFINITY_SWEEP_THRESHOLD:
+            return
+        expired = [k for k, a in self._affinity.items() if a.expires_at < now]
+        for k in expired:
+            del self._affinity[k]
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
         """Return a snapshot of provider availability and circuit state."""
@@ -616,16 +656,14 @@ class FixedRouter(BaseRouter):
         for alias in aliases or []:
             self.routes[alias] = route_cfg  # shared reference, not a copy
 
-    def _select_adapter(  # type: ignore[override]  # intentionally different signature
+    def _select_adapter(  # type: ignore[override]
         self, model_id: str, *, pin_provider: str | None = None
     ) -> BaseAdapter | None:
-        """Select an adapter using weighted random selection.
+        """Select an adapter using weighted random selection with optional affinity.
 
         Args:
             model_id: Model identifier.
-            pin_provider: Optional provider/endpoint_id to pin to.  When set,
-                only the adapter whose ``config.provider`` or ``endpoint_id``
-                matches this value will be returned (no weighted selection).
+            pin_provider: Optional provider/endpoint_id to pin to. Overrides affinity.
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -634,9 +672,6 @@ class FixedRouter(BaseRouter):
         if not route or not route.adapters:
             return None
 
-        # Provider pinning: deterministically select the matching adapter.
-        # Skip weight=0 adapters (disabled routes) to stay consistent with
-        # the playground UI and normal weighted selection.
         if pin_provider:
             for adapter, weight in route.adapters:
                 if weight <= 0:
@@ -646,8 +681,6 @@ class FixedRouter(BaseRouter):
                     return adapter
             return None
 
-        # Build a snapshot of (adapter, weight, circuit) under a short lock, then
-        # decide allow_request() outside the lock to minimize contention.
         with self._lock:
             snapshot: list[tuple[BaseAdapter, float, _CircuitBreaker]] = []
             for adapter, weight in route.adapters:
@@ -657,10 +690,6 @@ class FixedRouter(BaseRouter):
                     cb = self._circuits[endpoint_id] = _CircuitBreaker(endpoint_id)
                 snapshot.append((adapter, weight, cb))
 
-        # Filter weight > 0 to honor the "disabled route" convention; otherwise
-        # the cumulative-weight walk's terminal `return pool[-1][0]` could land
-        # on a weight=0 adapter when every positive-weight adapter is excluded
-        # by an open circuit.
         allowed: list[tuple[BaseAdapter, float]] = [
             (adapter, weight)
             for (adapter, weight, cb) in snapshot
@@ -673,8 +702,29 @@ class FixedRouter(BaseRouter):
                 f"All provider circuits are open for model {model_id}: {provider_names}"
             )
 
-        # Skip the list-comp + division on the hot path when weights already
-        # sum to 1.0 (no circuit-breaker exclusions, no RoutingManager merge).
+        affinity_key: str | None = None
+        model_label = normalize_model_label(model_id)
+        if AFFINITY_ENABLED:
+            affinity_key = req_ctx.get().get("affinity_key") or None
+
+        if affinity_key:
+            now = time.monotonic()
+            with self._lock:
+                entry = self._affinity.get((affinity_key, model_id))
+                if entry is not None and entry.expires_at > now:
+                    for adapter, _w in allowed:
+                        if _get_endpoint_id(adapter) == entry.endpoint_id:
+                            entry.expires_at = now + AFFINITY_TTL_SECONDS
+                            ROUTING_AFFINITY.labels(event="hit", model=model_label).inc()
+                            return adapter
+                    del self._affinity[(affinity_key, model_id)]
+                    ROUTING_AFFINITY.labels(event="dropped_unavailable", model=model_label).inc()
+                elif entry is not None:
+                    del self._affinity[(affinity_key, model_id)]
+                    ROUTING_AFFINITY.labels(event="expired", model=model_label).inc()
+                else:
+                    ROUTING_AFFINITY.labels(event="miss", model=model_label).inc()
+
         total_allowed = sum(w for _, w in allowed)
         pool = (
             [(a, w / total_allowed) for a, w in allowed]
@@ -684,11 +734,26 @@ class FixedRouter(BaseRouter):
 
         rand = random.random()
         cumulative = 0.0
+        chosen: BaseAdapter | None = None
         for adapter, weight in pool:
             cumulative += weight
             if rand <= cumulative:
-                return adapter
-        return pool[-1][0]
+                chosen = adapter
+                break
+        if chosen is None:
+            chosen = pool[-1][0]
+
+        if affinity_key:
+            now = time.monotonic()
+            with self._lock:
+                self._affinity[(affinity_key, model_id)] = _Affinity(
+                    endpoint_id=_get_endpoint_id(chosen),
+                    expires_at=now + AFFINITY_TTL_SECONDS,
+                )
+                self._maybe_sweep_affinity_locked(now)
+            ROUTING_AFFINITY.labels(event="created", model=model_label).inc()
+
+        return chosen
 
     async def chat_completion(
         self,
@@ -748,6 +813,7 @@ class FixedRouter(BaseRouter):
             # provider, so a silent switch would produce misleading results.
             if pin_provider:
                 raise primary_error
+            self._drop_affinity(model_id)
             route = self.routes[model_id]
             for adapter, weight in route.adapters:
                 if adapter == primary or weight <= 0:
@@ -842,6 +908,7 @@ class FixedRouter(BaseRouter):
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
                 raise primary_error
+            self._drop_affinity(model_id)
             # Once any chunk has been yielded to the client the SSE stream
             # has committed to a single provider. Falling back here would
             # produce a corrupt response: duplicate role/system events from

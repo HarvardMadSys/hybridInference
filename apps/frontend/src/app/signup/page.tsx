@@ -189,9 +189,7 @@ export default function SignupPage() {
           />
 
           <label className="block">
-            <span className="text-sm font-medium text-gray-700">
-              Use case <span className="font-normal text-gray-500">(optional for Harvard)</span>
-            </span>
+            <span className="text-sm font-medium text-gray-700">Use case</span>
             <textarea
               rows={4}
               maxLength={2000}

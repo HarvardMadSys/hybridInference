@@ -37,12 +37,23 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip_info
 from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
 router = APIRouter()
 _background_tasks: set = set()
+
+
+def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
+    """Compute the per-request affinity key used by FixedRouter.
+
+    Authenticated users are keyed by their auth_key_hash; anonymous traffic
+    by their client IP. The "ip:" prefix prevents collisions with hash values.
+    """
+    if auth_key_hash:
+        return auth_key_hash
+    return f"ip:{client_ip}"
 
 
 def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
@@ -225,13 +236,19 @@ async def chat_completions(
     is_authenticated = bool(user_ctx.get("authenticated"))
     provider = "router"
     session_id = request.headers.get("X-Session-ID")
+    ip_info = get_client_ip_info(request)
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
-        "ip": get_client_ip(request),
+        "ip": ip_info.client_ip,
+        "peer_ip": ip_info.peer_ip,
+        "ip_source": ip_info.source,
+        "x_forwarded_for": ip_info.x_forwarded_for,
+        "x_real_ip": ip_info.x_real_ip,
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
+        "surface": "openai_chat_completions",
     }
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
@@ -335,7 +352,14 @@ async def chat_completions(
 
     from serving.utils import context as req_ctx
 
-    req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
+    auth_key_hash = user_ctx.get("auth_key_hash")
+    affinity_key = derive_affinity_key(auth_key_hash, ip_info.client_ip)
+    req_ctx.update(
+        {
+            "auth_key_hash": auth_key_hash or "_anon",
+            "affinity_key": affinity_key,
+        }
+    )
 
     # Provider pinning: allows the harness (or admin tooling) to force routing
     # to a specific backend.  Only honoured for admin users to prevent abuse.

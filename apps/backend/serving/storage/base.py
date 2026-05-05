@@ -564,6 +564,17 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def query_users_over_daily_threshold(
+        self,
+        thresholds: dict[str, float],
+    ) -> list[tuple[str, str, float]]:
+        """Return users whose UTC daily cost is above their role threshold.
+
+        Returns ``(user_id, role, daily_cost)`` tuples ordered by highest
+        daily cost first. Reads from the ``user_daily_cost`` counter table.
+        """
+
+    @abstractmethod
     async def get_batch_usage(
         self,
         user_ids: list[str],
