@@ -1,5 +1,6 @@
 """Email sending utilities for user verification and password reset."""
 
+import html as html_lib
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -349,6 +350,7 @@ def send_new_registration_admin_email(
     user_email: str,
     user_name: str | None,
     user_id: str,
+    use_case: str | None = None,
 ) -> bool:
     """Notify admin of a new user registration pending approval.
 
@@ -357,12 +359,16 @@ def send_new_registration_admin_email(
         user_email: New user's email.
         user_name: New user's display name (if provided).
         user_id: New user's ID.
+        use_case: Free-text use case the user supplied at signup.
 
     Returns:
         True if email sent successfully, False otherwise.
     """
     admin_url = f"{settings.frontend_url}/dashboard/admin"
     display_name = user_name or "(not provided)"
+    use_case_text = (use_case or "").strip() or "(not provided)"
+    # HTML-escape the user-supplied use case and preserve line breaks.
+    use_case_html = html_lib.escape(use_case_text).replace("\r\n", "\n").replace("\n", "<br>")
 
     subject = f"[FreeInference] New registration pending approval: {user_email}"
 
@@ -384,6 +390,10 @@ def send_new_registration_admin_email(
                 <tr>
                     <td style="padding: 6px 16px 6px 0; font-weight: bold;">User ID:</td>
                     <td style="padding: 6px 0; font-family: monospace; font-size: 13px;">{user_id}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px 16px 6px 0; font-weight: bold; vertical-align: top;">Use case:</td>
+                    <td style="padding: 6px 0;">{use_case_html}</td>
                 </tr>
             </table>
             <p style="margin: 30px 0;">
@@ -407,6 +417,7 @@ A new user has registered and is waiting for approval:
 Email: {user_email}
 Name: {display_name}
 User ID: {user_id}
+Use case: {use_case_text}
 
 Review at: {admin_url}
     """

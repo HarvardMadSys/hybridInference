@@ -218,6 +218,7 @@ async def signup(
                 user_email=body.email,
                 user_name=body.user_name,
                 user_id=user_id,
+                use_case=body.use_case,
             )
 
     logger.info(f"New user registered: {user_id} ({body.email}) [status={initial_status}]")
@@ -231,6 +232,7 @@ async def signup(
             "user_name": body.user_name,
             "status": initial_status,
             "requires_approval": require_approval,
+            "use_case": body.use_case or None,
         },
     )
 
