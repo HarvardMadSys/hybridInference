@@ -9,6 +9,10 @@ import {
   removeSignupAllowedDomain,
   RuntimeSettingItem,
   updateRuntimeSetting,
+  applyRoleQuota,
+  previewRoleQuotaApply,
+  Role,
+  RoleQuotaPreview,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -51,6 +55,11 @@ export function SettingsTab() {
   const [flagsLoading, setFlagsLoading] = useState(true);
   const [flagsError, setFlagsError] = useState<string | null>(null);
   const [togglingKey, setTogglingKey] = useState<string | null>(null);
+
+  const QUOTA_KEY_PREFIX = 'user_daily_quota_';
+  const [quotaConfirm, setQuotaConfirm] = useState<RoleQuotaPreview | null>(null);
+  const [quotaLoadingRole, setQuotaLoadingRole] = useState<Role | null>(null);
+  const [quotaApplyingRole, setQuotaApplyingRole] = useState<Role | null>(null);
 
   const loadDomains = useCallback(async () => {
     setLoading(true);
@@ -182,6 +191,33 @@ export function SettingsTab() {
     } finally {
       setRemoving(null);
       setConfirm(null);
+    }
+  };
+
+  const onClickApply = async (role: Role) => {
+    setQuotaLoadingRole(role);
+    try {
+      const preview = await previewRoleQuotaApply(role);
+      setQuotaConfirm(preview);
+    } catch (e) {
+      flashToast(`Preview failed: ${getErrorMessage(e)}`);
+    } finally {
+      setQuotaLoadingRole(null);
+    }
+  };
+
+  const onConfirmApply = async () => {
+    if (!quotaConfirm) return;
+    const role = quotaConfirm.role;
+    setQuotaApplyingRole(role);
+    try {
+      const res = await applyRoleQuota(role);
+      flashToast(`Updated ${res.keys_updated} keys for role ${role} to $${res.quota}`);
+      setQuotaConfirm(null);
+    } catch (e) {
+      flashToast(`Apply failed: ${getErrorMessage(e)}`);
+    } finally {
+      setQuotaApplyingRole(null);
     }
   };
 
@@ -354,6 +390,20 @@ export function SettingsTab() {
                     >
                       {isSaving ? 'Saving...' : 'Save'}
                     </button>
+                    {setting.key.startsWith(QUOTA_KEY_PREFIX) && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)
+                        }
+                        disabled={quotaLoadingRole !== null || quotaApplyingRole !== null}
+                        className="rounded-md border border-gray-300 bg-white px-3 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                      >
+                        {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
+                          ? 'Loading...'
+                          : 'Apply to existing users'}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -479,6 +529,49 @@ export function SettingsTab() {
           </div>
         )}
       </div>
+
+      {/* Quota apply confirm dialog */}
+      {quotaConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => quotaApplyingRole === null && setQuotaConfirm(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl bg-white p-5 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-[15px] font-semibold text-gray-900">
+              Apply quota to role <code>{quotaConfirm.role}</code>
+            </h3>
+            <p className="mt-2 text-[13px] text-gray-600">
+              This sets <code>quota_daily_cost_usd = ${quotaConfirm.quota.toString()}</code>{' '}
+              on <strong>{quotaConfirm.keys_affected}</strong> active API keys belonging to{' '}
+              <strong>{quotaConfirm.users_affected}</strong> users with role{' '}
+              <code>{quotaConfirm.role}</code>. Custom per-key overrides will be lost.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setQuotaConfirm(null)}
+                disabled={quotaApplyingRole !== null}
+                className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onConfirmApply}
+                disabled={quotaApplyingRole !== null}
+                className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+              >
+                {quotaApplyingRole !== null ? 'Applying...' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirm dialog */}
       {confirm && (
