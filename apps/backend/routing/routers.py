@@ -657,8 +657,14 @@ class FixedRouter(BaseRouter):
                     cb = self._circuits[endpoint_id] = _CircuitBreaker(endpoint_id)
                 snapshot.append((adapter, weight, cb))
 
+        # Filter weight > 0 to honor the "disabled route" convention; otherwise
+        # the cumulative-weight walk's terminal `return pool[-1][0]` could land
+        # on a weight=0 adapter when every positive-weight adapter is excluded
+        # by an open circuit.
         allowed: list[tuple[BaseAdapter, float]] = [
-            (adapter, weight) for (adapter, weight, cb) in snapshot if cb.allow_request()
+            (adapter, weight)
+            for (adapter, weight, cb) in snapshot
+            if weight > 0 and cb.allow_request()
         ]
 
         if not allowed:
@@ -667,8 +673,14 @@ class FixedRouter(BaseRouter):
                 f"All provider circuits are open for model {model_id}: {provider_names}"
             )
 
+        # Skip the list-comp + division on the hot path when weights already
+        # sum to 1.0 (no circuit-breaker exclusions, no RoutingManager merge).
         total_allowed = sum(w for _, w in allowed)
-        pool = [(a, w / total_allowed) for a, w in allowed] if total_allowed > 0 else allowed
+        pool = (
+            [(a, w / total_allowed) for a, w in allowed]
+            if abs(total_allowed - 1.0) > 1e-9
+            else allowed
+        )
 
         rand = random.random()
         cumulative = 0.0

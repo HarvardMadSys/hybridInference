@@ -113,10 +113,12 @@ class RoutingManager:
                 # strategy-assigned weights (which already sum to 1.0 over their
                 # subset) with the carried-over old weights of uncovered adapters
                 # produces a >1.0 total. FixedRouter's weighted-random walk
-                # short-circuits on the first adapter when its cumulative weight
-                # already exceeds the random draw's [0,1) range, starving every
-                # later adapter (e.g. glm-5 only listing z.ai in routing.yaml
-                # gave zhipu weight 1.0 and zeroed ollama/chutes/featherless).
+                # then short-circuits on whichever adapter's cumulative weight
+                # first reaches the [0,1) random draw's upper bound, starving
+                # every later adapter (e.g. glm-5 only listing z.ai in
+                # routing.yaml gave zhipu weight 1.0 — its cumulative hit 1.0
+                # on iteration one, so ollama/chutes/featherless kept their
+                # carried-over weights but were never reached).
                 total = sum(w for _, w in new_adapters)
                 if total > 0:
                     new_adapters = [(a, w / total) for a, w in new_adapters]
