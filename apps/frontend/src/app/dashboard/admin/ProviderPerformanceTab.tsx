@@ -16,7 +16,6 @@ import {
 } from 'recharts';
 import {
   AdminTtftScatterModel,
-  ProviderStatsResponse,
   ProviderStatsRow,
   getProviderStats,
   getTtftScatter,
@@ -44,15 +43,7 @@ function fmtHour(iso: string): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00`;
 }
 
-function modelsForProvider(
-  pairs: { provider: string; model_id: string }[],
-  prov: string,
-): string[] {
-  return Array.from(new Set(pairs.filter((p) => p.provider === prov).map((p) => p.model_id)));
-}
-
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
-  // Defensive: drop any non-positive prompt_tokens (log scale would barf).
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
   const cached = safePoints.filter((p) => p.cache_hit);
   const uncached = safePoints.filter((p) => !p.cache_hit);
@@ -136,12 +127,86 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   );
 }
 
+function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: ProviderStatsRow[] }) {
+  const chartData = useMemo(
+    () =>
+      rows.map((r) => ({
+        t: fmtHour(r.hour_bucket),
+        ttft_p50: r.ttft_p50_ms ?? null,
+        ttft_p95: r.ttft_p95_ms ?? null,
+        ttft_p99: r.ttft_p99_ms ?? null,
+        thru_avg: r.throughput_avg_tps ?? null,
+        thru_p50: r.throughput_p50_tps ?? null,
+        thru_p95: r.throughput_p95_tps ?? null,
+      })),
+    [rows],
+  );
+
+  const totals = useMemo(() => {
+    const requests = rows.reduce((acc, r) => acc + r.request_count, 0);
+    const errors = rows.reduce((acc, r) => acc + r.error_count, 0);
+    const tokens = rows.reduce((acc, r) => acc + r.total_completion_tokens, 0);
+    const errorRate = requests === 0 ? 0 : errors / requests;
+    return { requests, errors, errorRate, tokens };
+  }, [rows]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <h3 className="text-[14px] font-semibold text-gray-900">{modelId}</h3>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <Kpi label="Requests" value={totals.requests.toLocaleString()} />
+        <Kpi label="Error rate" value={`${(totals.errorRate * 100).toFixed(2)}%`} />
+        <Kpi label="Completion tokens" value={totals.tokens.toLocaleString()} />
+      </div>
+
+      <div className="rounded-xl border p-4">
+        <p className="text-sm font-semibold mb-2">TTFT (ms)</p>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="t" minTickGap={32} />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line type="monotone" dataKey="ttft_p50" stroke="#3b82f6" dot={false} name="p50" />
+              <Line type="monotone" dataKey="ttft_p95" stroke="#f59e0b" dot={false} name="p95" />
+              <Line type="monotone" dataKey="ttft_p99" stroke="#ef4444" dot={false} name="p99" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="rounded-xl border p-4">
+        <p className="text-sm font-semibold mb-2">Throughput (tokens/sec)</p>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="t" minTickGap={32} />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line type="monotone" dataKey="thru_avg" stroke="#10b981" dot={false} name="avg" />
+              <Line type="monotone" dataKey="thru_p50" stroke="#3b82f6" dot={false} name="p50" />
+              <Line type="monotone" dataKey="thru_p95" stroke="#8b5cf6" dot={false} name="p95" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number } = {}) {
-  const [data, setData] = useState<ProviderStatsResponse | null>(null);
   const [allProviders, setAllProviders] = useState<string[]>([]);
   const [allPairs, setAllPairs] = useState<{ provider: string; model_id: string }[]>([]);
   const [provider, setProvider] = useState<string>('');
-  const [model, setModel] = useState<string>('');
   const [range, setRange] = useState<RangeKey>('7d');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,6 +214,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
   const [ttftScatter, setTtftScatter] = useState<AdminTtftScatterModel[]>([]);
   const [ttftScatterLoading, setTtftScatterLoading] = useState(false);
   const [ttftScatterError, setTtftScatterError] = useState<string | null>(null);
+  const [modelRows, setModelRows] = useState<Record<string, ProviderStatsRow[]>>({});
 
   const loadTtftScatter = useCallback(async () => {
     setTtftScatterLoading(true);
@@ -167,23 +233,33 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     void loadTtftScatter();
   }, [loadTtftScatter, refreshKey]);
 
-  const filteredModels = useMemo(() => modelsForProvider(allPairs, provider), [allPairs, provider]);
+  const providerModels = useMemo(
+    () =>
+      Array.from(new Set(allPairs.filter((p) => p.provider === provider).map((p) => p.model_id))),
+    [allPairs, provider],
+  );
 
-  const loadData = useCallback(async (prov: string, mod: string, rangeKey: RangeKey) => {
-    if (!prov || !mod) return;
+  const loadData = useCallback(async (prov: string, rangeKey: RangeKey) => {
+    if (!prov) return;
     setLoading(true);
     setError(null);
+    setModelRows({});
     try {
       const window_ = rangeWindow(rangeKey);
       const resp = await getProviderStats({
         provider: prov,
-        model_id: mod,
+        model_id: '__all__',
         from: window_.from,
         to: window_.to,
       });
-      setData(resp);
       setAllProviders(resp.providers);
       setAllPairs(resp.pairs);
+      const grouped: Record<string, ProviderStatsRow[]> = {};
+      for (const row of resp.rows) {
+        const key = row.model_id;
+        (grouped[key] ??= []).push(row);
+      }
+      setModelRows(grouped);
     } catch (exc) {
       setError(getErrorMessage(exc));
     } finally {
@@ -208,9 +284,8 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         if (cancelled) return;
         setAllProviders(resp.providers);
         setAllPairs(resp.pairs);
-        if (resp.pairs.length > 0) {
-          setProvider(resp.pairs[0].provider);
-          setModel(resp.pairs[0].model_id);
+        if (resp.providers.length > 0) {
+          setProvider(resp.providers[0]);
         }
       } catch (exc) {
         if (!cancelled) setError(getErrorMessage(exc));
@@ -225,43 +300,23 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
 
   useEffect(() => {
     if (initializing) return;
-    if (!provider || !model) return;
-    void loadData(provider, model, range);
-  }, [provider, model, range, loadData, initializing, refreshKey]);
+    if (!provider) return;
+    void loadData(provider, range);
+  }, [provider, range, loadData, initializing, refreshKey]);
 
-  const chartData = useMemo(
-    () =>
-      (data?.rows ?? []).map((r: ProviderStatsRow) => ({
-        t: fmtHour(r.hour_bucket),
-        ttft_p50: r.ttft_p50_ms ?? null,
-        ttft_p95: r.ttft_p95_ms ?? null,
-        ttft_p99: r.ttft_p99_ms ?? null,
-        thru_avg: r.throughput_avg_tps ?? null,
-        thru_p50: r.throughput_p50_tps ?? null,
-        thru_p95: r.throughput_p95_tps ?? null,
-      })),
-    [data],
+  const scatterForProvider = useMemo(
+    () => ttftScatter.filter((m) => m.provider === provider),
+    [ttftScatter, provider],
   );
 
-  const totals = useMemo(() => {
-    const rows = data?.rows ?? [];
-    const requests = rows.reduce((acc, r) => acc + r.request_count, 0);
-    const errors = rows.reduce((acc, r) => acc + r.error_count, 0);
-    const tokens = rows.reduce((acc, r) => acc + r.total_completion_tokens, 0);
+  const overallTotals = useMemo(() => {
+    const allRows = Object.values(modelRows).flat();
+    const requests = allRows.reduce((acc, r) => acc + r.request_count, 0);
+    const errors = allRows.reduce((acc, r) => acc + r.error_count, 0);
+    const tokens = allRows.reduce((acc, r) => acc + r.total_completion_tokens, 0);
     const errorRate = requests === 0 ? 0 : errors / requests;
     return { requests, errors, errorRate, tokens };
-  }, [data]);
-
-  const handleProviderChange = useCallback(
-    (newProvider: string) => {
-      setProvider(newProvider);
-      const models = modelsForProvider(allPairs, newProvider);
-      if (models.length > 0 && !models.includes(model)) {
-        setModel(models[0]);
-      }
-    },
-    [allPairs, model],
-  );
+  }, [modelRows]);
 
   return (
     <div className="space-y-6">
@@ -271,25 +326,11 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
           <select
             className="border rounded px-2 py-1"
             value={provider}
-            onChange={(e) => handleProviderChange(e.target.value)}
+            onChange={(e) => setProvider(e.target.value)}
           >
             {allProviders.map((p) => (
               <option key={p} value={p}>
                 {p}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-sm">
-          <span className="block text-gray-500 mb-1">Model</span>
-          <select
-            className="border rounded px-2 py-1"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          >
-            {filteredModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
               </option>
             ))}
           </select>
@@ -313,47 +354,17 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
       {error ? <div className="text-red-600 text-sm">{error}</div> : null}
       {loading || initializing ? <div className="text-gray-500 text-sm">Loading…</div> : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Kpi label="Requests" value={totals.requests.toLocaleString()} />
-        <Kpi label="Error rate" value={`${(totals.errorRate * 100).toFixed(2)}%`} />
-        <Kpi label="Completion tokens" value={totals.tokens.toLocaleString()} />
-      </div>
-
-      <div className="rounded-xl border p-4">
-        <p className="text-sm font-semibold mb-2">TTFT (ms)</p>
-        <div className="h-72">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="t" minTickGap={32} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="ttft_p50" stroke="#3b82f6" dot={false} name="p50" />
-              <Line type="monotone" dataKey="ttft_p95" stroke="#f59e0b" dot={false} name="p95" />
-              <Line type="monotone" dataKey="ttft_p99" stroke="#ef4444" dot={false} name="p99" />
-            </LineChart>
-          </ResponsiveContainer>
+      {!initializing && !loading && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Kpi label="Total requests" value={overallTotals.requests.toLocaleString()} />
+          <Kpi label="Error rate" value={`${(overallTotals.errorRate * 100).toFixed(2)}%`} />
+          <Kpi label="Completion tokens" value={overallTotals.tokens.toLocaleString()} />
         </div>
-      </div>
+      )}
 
-      <div className="rounded-xl border p-4">
-        <p className="text-sm font-semibold mb-2">Throughput (tokens/sec)</p>
-        <div className="h-72">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="t" minTickGap={32} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="thru_avg" stroke="#10b981" dot={false} name="avg" />
-              <Line type="monotone" dataKey="thru_p50" stroke="#3b82f6" dot={false} name="p50" />
-              <Line type="monotone" dataKey="thru_p95" stroke="#8b5cf6" dot={false} name="p95" />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
+      {providerModels.map((modelId) => (
+        <ModelPerformanceSection key={modelId} modelId={modelId} rows={modelRows[modelId] ?? []} />
+      ))}
 
       <div>
         <div className="mb-3 flex items-center justify-between">
@@ -376,9 +387,9 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
               Failed to load scatter data: {ttftScatterError}
             </p>
           </div>
-        ) : ttftScatter.length > 0 ? (
+        ) : scatterForProvider.length > 0 ? (
           <div className="grid gap-3 lg:grid-cols-2">
-            {ttftScatter.map((m) => (
+            {scatterForProvider.map((m) => (
               <TtftScatterCard key={`${m.model_id}::${m.provider}`} model={m} />
             ))}
           </div>
