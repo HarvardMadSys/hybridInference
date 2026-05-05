@@ -757,7 +757,14 @@ export default function AdminPage() {
 
   // Top-level tab
   const [activeTab, setActiveTab] = useState<
-    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'usage' | 'settings'
+    | 'users'
+    | 'audit'
+    | 'requests'
+    | 'broadcast'
+    | 'providers'
+    | 'analytics'
+    | 'usage'
+    | 'settings'
   >('users');
 
   // Providers sub-tab
@@ -1142,11 +1149,11 @@ export default function AdminPage() {
           <button
             onClick={refreshActiveTab}
             disabled={
-              usersLoading ||
-              auditLoading ||
-              reqLoading ||
-              reqMetricsLoading ||
-              providerQuotasLoading
+            usersLoading ||
+            auditLoading ||
+            reqLoading ||
+            reqMetricsLoading ||
+            providerQuotasLoading
             }
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
           >
