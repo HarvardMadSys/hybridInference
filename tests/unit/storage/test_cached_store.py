@@ -30,6 +30,7 @@ def inner_store() -> MagicMock:
     store.get_auth_context_lightweight = AsyncMock(
         return_value={"user_id": "u1", "email": "a@b.com", "role": "admin"}
     )
+    store.query_users_over_daily_threshold = AsyncMock(return_value=[("u1", "free", 1.5)])
     store.update_user_fields = AsyncMock()
     store.update_user_last_login = AsyncMock()
     store.delete_user = AsyncMock()
@@ -123,6 +124,14 @@ class TestCacheHits:
         await cached.health_check()
 
         inner_store.health_check.assert_awaited_once()
+
+    async def test_query_users_over_daily_threshold_passes_through(self, cached, inner_store):
+        thresholds = {"free": 1.0}
+
+        result = await cached.query_users_over_daily_threshold(thresholds)
+
+        assert result == [("u1", "free", 1.5)]
+        inner_store.query_users_over_daily_threshold.assert_awaited_once_with(thresholds)
 
 
 # ------------------------------------------------------------------
