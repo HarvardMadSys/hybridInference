@@ -873,3 +873,39 @@ export async function updateRuntimeSetting(
   });
   return jsonOrThrow<RuntimeSettingItem>(resp);
 }
+
+// ========================================
+// Per-Role Daily Quota
+// ========================================
+
+export type Role = 'free' | 'pro' | 'internal' | 'admin';
+
+export interface RoleQuotaPreview {
+  role: Role;
+  quota: number;
+  keys_affected: number;
+  users_affected: number;
+}
+
+export interface RoleQuotaApplyResult {
+  role: Role;
+  quota: number;
+  keys_updated: number;
+}
+
+export async function previewRoleQuotaApply(role: Role): Promise<RoleQuotaPreview> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/quota/role-apply-preview?role=${encodeURIComponent(role)}`,
+  );
+  return jsonOrThrow<RoleQuotaPreview>(resp);
+}
+
+export async function applyRoleQuota(role: Role): Promise<RoleQuotaApplyResult> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/quota/role-apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role }),
+  });
+  return jsonOrThrow<RoleQuotaApplyResult>(resp);
+}
