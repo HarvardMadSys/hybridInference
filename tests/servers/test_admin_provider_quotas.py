@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +10,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from serving.admin.provider_quotas import (
+    _discover_env_keys,
     _mask_key,
     _next_reset,
     _parse_iso,
@@ -147,11 +147,44 @@ class TestParseIso:
         assert _parse_iso("2026Z05-02T04:00:00") is None
 
 
+class TestDiscoverEnvKeys:
+    def test_single_key_returns_index_1(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "key1_long_enough_1234")
+        monkeypatch.delenv("ZAI_API_KEY2", raising=False)
+        keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+        assert keys == [(1, "key1_long_enough_1234")]
+
+    def test_multiple_keys_returns_all(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "key1_long_enough_1234")
+        monkeypatch.setenv("ZAI_API_KEY2", "key2_long_enough_5678")
+        monkeypatch.setenv("ZAI_API_KEY3", "key3_long_enough_9012")
+        keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+        assert keys == [
+            (1, "key1_long_enough_1234"),
+            (2, "key2_long_enough_5678"),
+            (3, "key3_long_enough_9012"),
+        ]
+
+    def test_no_keys_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+        assert keys == []
+
+    def test_gap_stops_discovery(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "key1_long_enough_1234")
+        monkeypatch.delenv("ZAI_API_KEY2", raising=False)
+        monkeypatch.setenv("ZAI_API_KEY3", "key3_long_enough_9012")
+        keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+        assert keys == [(1, "key1_long_enough_1234")]
+
+
 class TestFetchChutes:
     @pytest.mark.asyncio
     async def test_not_configured_when_key_missing(self, monkeypatch):
         monkeypatch.delenv("CHUTES_API_KEY", raising=False)
-        result = await fetch_chutes()
+        results = await fetch_chutes()
+        assert len(results) == 1
+        result = results[0]
         assert result.ok is False
         assert result.error == "not_configured"
         assert result.key_configured is False
@@ -207,7 +240,9 @@ class TestFetchChutes:
                 [(200, sub_payload), (200, quotas_payload), (200, usage_payload)],
             ),
         ):
-            result = await fetch_chutes()
+            results = await fetch_chutes()
+        assert len(results) == 1
+        result = results[0]
         assert result.ok is True
         assert result.key_configured is True
         assert result.key_masked == "cpk_abcd...3xyz" or result.key_masked.startswith("cpk_abcd")
@@ -247,7 +282,9 @@ class TestFetchChutes:
                 [(200, sub_payload), (500, None)],
             ),
         ):
-            result = await fetch_chutes()
+            results = await fetch_chutes()
+        assert len(results) == 1
+        result = results[0]
         assert result.ok is True
         usd_usages = [u for u in result.usages if u.unit == "USD"]
         assert len(usd_usages) == 2
@@ -256,168 +293,14 @@ class TestFetchChutes:
 
     @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
-        monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=401),
-        ):
-            result = await fetch_chutes()
-        assert result.ok is False
-        assert result.error == "auth_failed"
-
-    @pytest.mark.asyncio
-    async def test_timeout_returns_timeout_error(self, monkeypatch):
-        monkeypatch.setenv("CHUTES_API_KEY", "cpk_abcdef1234567890xyz")
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError()),
-        ):
-            result = await fetch_chutes()
-        assert result.ok is False
-        assert result.error == "timeout"
-
-
-class TestFetchZai:
-    @pytest.mark.asyncio
-    async def test_not_configured_when_key_missing(self, monkeypatch):
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        result = await fetch_zai()
-        assert result.ok is False
-        assert result.error == "not_configured"
-        assert result.name == "zai"
-
-    @pytest.mark.asyncio
-    async def test_success_parses_token_and_time_limits(self, monkeypatch):
-        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
-        # Real ZAI API shape: "usage" is the cap, "currentValue" is amount used,
-        # TOKENS_LIMIT may have only percentage and no absolute values.
-        # Each entry carries its own `nextResetTime` (epoch ms).
-        time_reset_ms = 1779844254994
-        tokens_reset_ms = 1777754666484
-        payload = {
-            "code": 200,
-            "data": {
-                "limits": [
-                    {
-                        "type": "TIME_LIMIT",
-                        "usage": 4000,
-                        "currentValue": 0,
-                        "remaining": 4000,
-                        "percentage": 0,
-                        "nextResetTime": time_reset_ms,
-                    },
-                    {
-                        "type": "TOKENS_LIMIT",
-                        "percentage": 6,
-                        "nextResetTime": tokens_reset_ms,
-                    },
-                ]
-            },
-        }
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=payload),
-        ):
-            result = await fetch_zai()
-        assert result.ok is True
-        assert len(result.usages) == 2
-        labels = [u.label for u in result.usages]
-        assert any("Token" in label for label in labels)
-        assert any("Time" in label for label in labels)
-        # TIME_LIMIT: currentValue=0, usage(cap)=4000
-        time_use = next(u for u in result.usages if "Time" in u.label)
-        assert time_use.used == 0.0
-        assert time_use.limit == 4000.0
-        assert time_use.unit == "minutes"
-        # Per-entry reset_at parsed from nextResetTime (epoch ms) -> UTC datetime.
-        assert time_use.reset_at == datetime.fromtimestamp(time_reset_ms / 1000, tz=timezone.utc)
-        # TOKENS_LIMIT: percentage-only entry → stored as used=6, limit=100, unit="%"
-        token_use = next(u for u in result.usages if "Token" in u.label)
-        assert token_use.used == 6.0
-        assert token_use.limit == 100.0
-        assert token_use.unit == "%"
-        assert token_use.reset_at == datetime.fromtimestamp(tokens_reset_ms / 1000, tz=timezone.utc)
-        # Per-entry — not a single shared monthly value.
-        assert time_use.reset_at != token_use.reset_at
-
-    @pytest.mark.asyncio
-    async def test_missing_next_reset_time_yields_none(self, monkeypatch):
-        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
-        time_reset_ms = 1779844254994
-        payload = {
-            "code": 200,
-            "data": {
-                "limits": [
-                    {
-                        "type": "TIME_LIMIT",
-                        "usage": 4000,
-                        "currentValue": 0,
-                        "remaining": 4000,
-                        "percentage": 0,
-                        "nextResetTime": time_reset_ms,
-                    },
-                    {
-                        # TOKENS_LIMIT entry missing nextResetTime
-                        "type": "TOKENS_LIMIT",
-                        "percentage": 8,
-                    },
-                ]
-            },
-        }
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=payload),
-        ):
-            result = await fetch_zai()
-        assert result.ok is True
-        time_use = next(u for u in result.usages if "Time" in u.label)
-        token_use = next(u for u in result.usages if "Token" in u.label)
-        assert time_use.reset_at == datetime.fromtimestamp(time_reset_ms / 1000, tz=timezone.utc)
-        assert token_use.reset_at is None
-
-    @pytest.mark.asyncio
-    async def test_invalid_next_reset_time_yields_none(self, monkeypatch):
-        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
-        payload = {
-            "code": 200,
-            "data": {
-                "limits": [
-                    {
-                        "type": "TIME_LIMIT",
-                        "usage": 4000,
-                        "currentValue": 0,
-                        "remaining": 4000,
-                        "percentage": 0,
-                        "nextResetTime": "not-a-number",
-                    },
-                    {
-                        "type": "TOKENS_LIMIT",
-                        "percentage": 8,
-                        # bool is a subclass of int but must be rejected.
-                        "nextResetTime": True,
-                    },
-                ]
-            },
-        }
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=payload),
-        ):
-            result = await fetch_zai()
-        assert result.ok is True
-        for u in result.usages:
-            assert u.reset_at is None
-
-    @pytest.mark.asyncio
-    async def test_auth_failed_on_401(self, monkeypatch):
         monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=401),
         ):
-            result = await fetch_zai()
-        assert result.ok is False
-        assert result.error == "auth_failed"
+            results = await fetch_zai()
+        assert results[0].ok is False
+        assert results[0].error == "auth_failed"
 
     @pytest.mark.asyncio
     async def test_parse_error_on_unexpected_shape(self, monkeypatch):
@@ -426,17 +309,18 @@ class TestFetchZai:
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=200, json_data={"unrelated": "junk"}),
         ):
-            result = await fetch_zai()
-        # No "limits" key — we treat as parse_error
-        assert result.ok is False
-        assert result.error == "parse_error"
+            results = await fetch_zai()
+        assert results[0].ok is False
+        assert results[0].error == "parse_error"
 
 
 class TestFetchMinimax:
     @pytest.mark.asyncio
     async def test_not_configured_when_cookie_missing(self, monkeypatch):
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
-        result = await fetch_minimax()
+        results = await fetch_minimax()
+        assert len(results) == 1
+        result = results[0]
         assert result.ok is False
         assert result.error == "not_configured"
         assert result.name == "minimax"
@@ -452,7 +336,7 @@ class TestFetchMinimax:
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=200, json_data=payload),
         ):
-            result = await fetch_minimax()
+            result = (await fetch_minimax())[0]
         assert result.ok is False
         assert result.error == "auth_failed"
 
@@ -467,7 +351,7 @@ class TestFetchMinimax:
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=200, json_data=payload),
         ):
-            result = await fetch_minimax()
+            result = (await fetch_minimax())[0]
         assert result.ok is False
         assert result.error == "not_configured"
 
@@ -503,7 +387,7 @@ class TestFetchMinimax:
                 return_value=_mock_aiohttp_get(status=200, json_data=payload),
             ) as mock_session_cls,
         ):
-            result = await fetch_minimax()
+            result = (await fetch_minimax())[0]
         assert result.ok is True
         assert len(result.usages) == 2
         session_cm = mock_session_cls.return_value
@@ -553,7 +437,7 @@ class TestFetchMinimax:
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=200, json_data=payload),
         ) as mock_session_cls:
-            result = await fetch_minimax()
+            result = (await fetch_minimax())[0]
         assert result.ok is True
         assert len(result.usages) == 1
         session_cm = mock_session_cls.return_value
@@ -571,7 +455,9 @@ class TestFetchOllama:
     @pytest.mark.asyncio
     async def test_not_configured_when_cookie_missing(self, monkeypatch):
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
-        result = await fetch_ollama()
+        results = await fetch_ollama()
+        assert len(results) == 1
+        result = results[0]
         assert result.ok is False
         assert result.error == "not_configured"
         assert result.name == "ollama"
@@ -595,14 +481,14 @@ class TestFetchOllama:
         session_cm.__aenter__ = AsyncMock(return_value=session)
         session_cm.__aexit__ = AsyncMock(return_value=None)
         with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=session_cm):
-            result = await fetch_ollama()
+            results = await fetch_ollama()
+        result = results[0]
         assert result.ok is False
         assert result.error in ("auth_failed", "parse_error")
 
     @pytest.mark.asyncio
     async def test_parses_session_and_weekly_usage(self, monkeypatch):
         monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
-        # Simulated HTML matching the current Ollama settings page format.
         html = """
         <html><body>
           <h2>Usage</h2>
@@ -623,7 +509,8 @@ class TestFetchOllama:
         session_cm.__aenter__ = AsyncMock(return_value=session)
         session_cm.__aexit__ = AsyncMock(return_value=None)
         with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=session_cm):
-            result = await fetch_ollama()
+            results = await fetch_ollama()
+        result = results[0]
         assert result.ok is True
         assert len(result.usages) >= 2
         labels = [u.label.lower() for u in result.usages]

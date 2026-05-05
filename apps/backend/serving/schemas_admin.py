@@ -640,6 +640,10 @@ class ProviderQuotaResult(BaseModel):
 
     name: str = Field(..., description="Lowercase identifier: chutes | zai | minimax | ollama")
     display_name: str = Field(..., description="Human-readable name")
+    key_index: int | None = Field(
+        None,
+        description="1-based key index when provider has multiple keys; None for single-key providers",
+    )
     key_configured: bool = Field(..., description="True if credentials are present in env")
     key_masked: str | None = Field(None, description="Masked key/cookie (None if not configured)")
     fetched_at: datetime | None = Field(None, description="When the quota was fetched (UTC)")

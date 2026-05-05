@@ -581,10 +581,13 @@ function formatNum(v: number | null): string {
   return v.toFixed(2);
 }
 
-function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
-  const stripeColor = provider.ok
+function ProviderCard({ group }: { group: ProviderQuotaResult[] }) {
+  const first = group[0];
+  const providerName = first.display_name.replace(/ #\d+$/, '');
+  const isMultiKey = group.length > 1 || first.key_index !== null;
+  const stripeColor = group.some((p) => p.ok)
     ? 'bg-emerald-500'
-    : provider.error === 'not_configured'
+    : first.error === 'not_configured'
       ? 'bg-gray-300'
       : 'bg-red-400';
 
@@ -592,65 +595,87 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
     <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
       <div className={`h-1 ${stripeColor}`} />
       <div className="p-4">
-        <div className="flex items-baseline justify-between gap-3">
-          <h3 className="text-[15px] font-semibold text-gray-900">{provider.display_name}</h3>
-          <span
-            className={`tabular-nums text-[11px] ${provider.key_configured ? 'text-gray-500' : 'text-gray-400'}`}
-          >
-            {provider.key_masked ?? 'Not configured'}
-          </span>
-        </div>
+        <h3 className="text-[15px] font-semibold text-gray-900">{providerName}</h3>
 
-        {provider.ok ? (
-          provider.usages.length === 0 ? (
-            <p className="mt-3 text-[12px] text-gray-400">No usage data returned.</p>
-          ) : (
-            <div className="mt-3 space-y-3">
-              {provider.usages.map((u, i) => {
-                const p = pct(u.used, u.limit);
-                return (
-                  <div key={i}>
-                    <div className="flex items-baseline justify-between text-[12px]">
-                      <span className="text-gray-600">{u.label}</span>
-                      <span className="tabular-nums text-gray-700">
-                        {formatNum(u.used)}
-                        {u.limit != null && ` / ${formatNum(u.limit)}`} {u.unit}
-                        {p != null && <span className="ml-1 text-gray-400">({p.toFixed(0)}%)</span>}
-                      </span>
-                    </div>
-                    {p != null && (
-                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
-                        <div
-                          className={`h-full ${
-                            p >= 90 ? 'bg-red-400' : p >= 70 ? 'bg-amber-400' : 'bg-gray-900'
-                          }`}
-                          style={{ width: `${p}%` }}
-                        />
+        {group.map((provider) => (
+          <div key={provider.key_index ?? 'single'} className={isMultiKey ? 'mt-3' : ''}>
+            {isMultiKey && (
+              <div className="mb-1 flex items-baseline justify-between">
+                <span className="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600">
+                  #{provider.key_index}
+                </span>
+                <span className="tabular-nums text-[11px] text-gray-500">
+                  {provider.key_masked ?? 'Not configured'}
+                </span>
+              </div>
+            )}
+            {!isMultiKey && (
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <span />
+                <span
+                  className={`tabular-nums text-[11px] ${provider.key_configured ? 'text-gray-500' : 'text-gray-400'}`}
+                >
+                  {provider.key_masked ?? 'Not configured'}
+                </span>
+              </div>
+            )}
+
+            {provider.ok ? (
+              provider.usages.length === 0 ? (
+                <p className="text-[12px] text-gray-400">No usage data returned.</p>
+              ) : (
+                <div className={isMultiKey ? 'mt-1.5 space-y-2' : 'mt-3 space-y-3'}>
+                  {provider.usages.map((u, i) => {
+                    const p = pct(u.used, u.limit);
+                    return (
+                      <div key={i}>
+                        <div className="flex items-baseline justify-between text-[12px]">
+                          <span className="text-gray-600">{u.label}</span>
+                          <span className="tabular-nums text-gray-700">
+                            {formatNum(u.used)}
+                            {u.limit != null && ` / ${formatNum(u.limit)}`} {u.unit}
+                            {p != null && (
+                              <span className="ml-1 text-gray-400">({p.toFixed(0)}%)</span>
+                            )}
+                          </span>
+                        </div>
+                        {p != null && (
+                          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
+                            <div
+                              className={`h-full ${
+                                p >= 90 ? 'bg-red-400' : p >= 70 ? 'bg-amber-400' : 'bg-gray-900'
+                              }`}
+                              style={{ width: `${p}%` }}
+                            />
+                          </div>
+                        )}
+                        {u.reset_at && (
+                          <p className="mt-1 text-[11px] text-gray-400">
+                            Resets at{' '}
+                            {new Date(u.reset_at).toLocaleString('en-US', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit',
+                              timeZoneName: 'short',
+                            })}
+                          </p>
+                        )}
                       </div>
-                    )}
-                    {u.reset_at && (
-                      <p className="mt-1 text-[11px] text-gray-400">
-                        Resets at{' '}
-                        {new Date(u.reset_at).toLocaleString('en-US', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: 'numeric',
-                          minute: '2-digit',
-                          timeZoneName: 'short',
-                        })}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )
-        ) : (
-          <p className="mt-3 text-[12px] text-gray-400">
-            Quota unavailable — <span className="text-gray-500">{provider.error}</span>
-          </p>
-        )}
+                    );
+                  })}
+                </div>
+              )
+            ) : (
+              <p
+                className={isMultiKey ? 'mt-1 text-[12px] text-gray-400' : 'mt-3 text-[12px] text-gray-400'}
+              >
+                Quota unavailable — <span className="text-gray-500">{provider.error}</span>
+              </p>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -1437,10 +1462,18 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {providerQuotas.map((p) => (
-                    <ProviderCard key={p.name} provider={p} />
-                  ))}
-                </div>
+                  {Array.from(
+                    providerQuotas
+                      .reduce((acc, p) => {
+                        const group = acc.get(p.name) || [];
+                        group.push(p);
+                        acc.set(p.name, group);
+                        return acc;
+                      }, new Map<string, ProviderQuotaResult[]>()),
+                  ).map(([name, group]) => (
+                    <ProviderCard key={name} group={group} />
+                   ))}
+                 </div>
               ))}
 
             {/* Performance sub-tab */}
