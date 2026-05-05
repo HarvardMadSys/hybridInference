@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
+import dotenv
 
 
 def _load_env(env_path: str | None = None) -> None:
@@ -16,27 +17,12 @@ def _load_env(env_path: str | None = None) -> None:
         env_path,
         os.environ.get("ENV_FILE"),
         "/srv/hybridInference/.env",
-        Path(__file__).resolve().parents[2] / ".env",
+        str(Path(__file__).resolve().parents[2] / ".env"),
     ]
     for p in candidates:
         if p and Path(p).is_file():
-            with open(p) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, _, val = line.partition("=")
-                    key = key.strip()
-                    val = val.strip()
-                    if key.startswith("DB_") and key not in os.environ:
-                        os.environ[key] = val
+            dotenv.load_dotenv(p, override=False)
             return
-
-
-async def _fetch_all_logs(pool: asyncpg.Pool) -> list[dict[str, Any]]:
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM api_logs ORDER BY id")
-    return [dict(r) for r in rows]
 
 
 def _convert(obj: Any) -> Any:
@@ -47,12 +33,14 @@ def _convert(obj: Any) -> Any:
     return str(obj)
 
 
-def _export_jsonl(rows: list[dict[str, Any]], output_path: str) -> int:
+async def _export_jsonl(pool: asyncpg.Pool, output_path: str) -> int:
     count = 0
     with open(output_path, "w") as f:
-        for row in rows:
-            f.write(json.dumps(row, default=_convert) + "\n")
-            count += 1
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                async for row in conn.cursor("SELECT * FROM api_logs ORDER BY id"):
+                    f.write(json.dumps(dict(row), default=_convert) + "\n")
+                    count += 1
     return count
 
 
@@ -66,21 +54,17 @@ async def main(output_path: str = "api_logs_export.jsonl") -> None:
     )
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
     try:
-        rows = await _fetch_all_logs(pool)
-        if not rows:
+        count = await _export_jsonl(pool, output_path)
+        if count == 0:
             print("No rows found in api_logs.")
             return
-
-        count = _export_jsonl(rows, output_path)
         print(f"Exported {count} rows to {output_path}")
     finally:
         await pool.close()
 
 
 def cli() -> None:
-    parser = argparse.ArgumentParser(
-        description="Export all api_logs rows to a JSONL file"
-    )
+    parser = argparse.ArgumentParser(description="Export all api_logs rows to a JSONL file")
     parser.add_argument(
         "-o",
         "--output",
