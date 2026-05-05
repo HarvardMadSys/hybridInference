@@ -94,7 +94,8 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     from serving.utils.errors import categorize_exception
 
     err_type = categorize_exception(exc)
-    logger.error(
+    log_fn = logger.error if exc.status_code >= 500 else logger.warning
+    log_fn(
         "http_error",
         extra={
             "error_type": err_type,
@@ -102,7 +103,7 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
             "path": request.url.path,
             "method": request.method,
         },
-        exc_info=exc,
+        exc_info=exc if exc.status_code >= 500 else None,
     )
 
     path = request.url.path
