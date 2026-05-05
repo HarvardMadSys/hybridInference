@@ -30,6 +30,7 @@ from serving.observability.metrics import (
     CIRCUIT_STATE,
     PROVIDER_AVAILABILITY,
     PROVIDER_LATENCY,
+    ROUTING_AFFINITY,
     STREAMING_INTERRUPTION,
     normalize_model_label,
     normalize_provider_label,
@@ -93,9 +94,22 @@ class RoutingObservation:
     lp_status: str | None = None
 
 
+@dataclass
+class _Affinity:
+    """Per-user provider pin for one model. TTL is monotonic time."""
+
+    endpoint_id: str
+    expires_at: float
+
+
 # ============================================================================
 # Helpers
 # ============================================================================
+
+
+AFFINITY_TTL_SECONDS: float = 300.0
+AFFINITY_SWEEP_THRESHOLD: int = 1000
+AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 
 
 def _get_endpoint_id(adapter: BaseAdapter) -> str:
@@ -319,6 +333,7 @@ class BaseRouter:
         self._health: dict[str, _ProviderHealth] = {}
         self._circuits: dict[str, _CircuitBreaker] = {}
         self._lock = threading.RLock()
+        self._affinity: dict[tuple[str, str], _Affinity] = {}
 
     def _ensure_health(self, endpoint_id: str) -> None:
         with self._lock:
@@ -342,6 +357,31 @@ class BaseRouter:
             avail = self._health[endpoint_id].availability
             self._circuits[endpoint_id].on_failure(availability=avail, reason=_reason_str(reason))
         _safe_set_availability(endpoint_id, avail)
+
+    def _drop_affinity(self, model_id: str) -> None:
+        """Drop affinity entry for the current request's affinity_key + model.
+
+        No-op if affinity_key is missing from req_ctx or no entry exists.
+        Emits a `dropped_error` metric event when an entry is removed.
+        """
+        affinity_key = req_ctx.get().get("affinity_key")
+        if not affinity_key:
+            return
+        with self._lock:
+            removed = self._affinity.pop((affinity_key, model_id), None)
+        if removed is not None:
+            ROUTING_AFFINITY.labels(
+                event="dropped_error",
+                model=normalize_model_label(model_id),
+            ).inc()
+
+    def _maybe_sweep_affinity_locked(self, now: float) -> None:
+        """Drop expired affinity entries. Caller must hold self._lock."""
+        if len(self._affinity) <= AFFINITY_SWEEP_THRESHOLD:
+            return
+        expired = [k for k, a in self._affinity.items() if a.expires_at < now]
+        for k in expired:
+            del self._affinity[k]
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
         """Return a snapshot of provider availability and circuit state."""
