@@ -95,73 +95,147 @@ async def test_stream_post_sse_wraps_lines(monkeypatch):
     assert json.loads(lines[0][6:]) == {"x": 1}
 
 
+class _FakeResp:
+    """Minimal aiohttp ClientResponse stand-in for stream_post tests."""
+
+    def __init__(self, chunks: list[bytes]):
+        self._chunks = chunks
+        self.content = self
+        self.headers = {"Content-Type": "text/event-stream"}
+        self.status = 200
+
+    async def iter_chunked(self, _n: int):
+        for c in self._chunks:
+            yield c
+
+
+class _FakeCM:
+    """Fake ``session.post(...)`` context manager.
+
+    Behavior is parameterized per-call by the ``script`` callable, which the
+    fake session advances each time ``post()`` is called. On ``__aenter__``,
+    the script either raises ``ServerDisconnectedError`` (to model a stale
+    pooled socket) or returns a ``_FakeResp``.
+    """
+
+    def __init__(self, behavior):
+        # behavior is "disconnect" or a list[bytes] of body chunks.
+        self._behavior = behavior
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self):
+        self.entered = True
+        if self._behavior == "disconnect":
+            raise aiohttp.ServerDisconnectedError()
+        return _FakeResp(self._behavior)
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.exited = True
+        return False
+
+
+def _fake_session_with_script(script: list):
+    """Build a fake session whose ``post()`` consumes ``script`` in order."""
+    cms: list[_FakeCM] = []
+
+    class _S:
+        def post(self, *_a, **_k):
+            cm = _FakeCM(script.pop(0))
+            cms.append(cm)
+            return cm
+
+    async def _ensure(_self):
+        return _S()
+
+    return _ensure, cms
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_stream_post_retries_once_on_stale_keepalive(monkeypatch):
-    """Stale pooled connection: first attempt raises ServerDisconnectedError
-    before yielding anything; transparent retry succeeds."""
+    """First post() returns a CM whose __aenter__ raises (stale pooled
+    socket); retry on a fresh CM succeeds and the consumer gets a clean
+    stream with no duplicates."""
     client = AsyncHTTPClient.shared()
-    attempts = {"n": 0}
-
-    async def fake_once(self, url, *, json=None, headers=None, timeout=None, mode="sse"):
-        attempts["n"] += 1
-        if attempts["n"] == 1:
-            raise aiohttp.ServerDisconnectedError()
-        for line in ('data: {"x":1}', "data: [DONE]"):
-            yield line
-
-    monkeypatch.setattr(AsyncHTTPClient, "_stream_post_once", fake_once)
+    body = [b'data: {"x":1}\n\n', b"data: [DONE]\n\n"]
+    ensure, cms = _fake_session_with_script(["disconnect", body])
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", ensure)
 
     lines: list[str] = []
     async for line in client.stream_post("http://example/sse", json={}, mode="sse"):
         lines.append(line)
 
-    assert attempts["n"] == 2
+    assert len(cms) == 2
+    assert cms[0].entered is True  # __aexit__ is not called when __aenter__ raises
+    assert cms[1].entered is True and cms[1].exited is True
     assert lines == ['data: {"x":1}', "data: [DONE]"]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_stream_post_does_not_retry_after_first_chunk(monkeypatch):
-    """Mid-stream disconnect must not retry: caller has already received data."""
+async def test_stream_post_does_not_retry_after_aenter_succeeds(monkeypatch):
+    """Once __aenter__ returns, the upstream has begun responding. A failure
+    while reading the body must NOT trigger a retry, even if no chunk has
+    yet been yielded to the caller (e.g. SSE comments/keepalives that the
+    parser silently consumes)."""
     client = AsyncHTTPClient.shared()
-    attempts = {"n": 0}
 
-    async def fake_once(self, url, *, json=None, headers=None, timeout=None, mode="sse"):
-        attempts["n"] += 1
-        yield 'data: {"x":1}'
-        raise aiohttp.ServerDisconnectedError()
+    class _BadResp(_FakeResp):
+        async def iter_chunked(self, _n: int):
+            # SSE comment line — parser consumes it without emitting anything.
+            yield b": keepalive\n\n"
+            raise aiohttp.ServerDisconnectedError()
 
-    monkeypatch.setattr(AsyncHTTPClient, "_stream_post_once", fake_once)
+    class _CM:
+        def __init__(self):
+            self.entered = False
+            self.exited = False
+
+        async def __aenter__(self):
+            self.entered = True
+            return _BadResp([])
+
+        async def __aexit__(self, exc_type, exc, tb):
+            self.exited = True
+            return False
+
+    cms: list[_CM] = []
+
+    class _S:
+        def post(self, *_a, **_k):
+            cm = _CM()
+            cms.append(cm)
+            return cm
+
+    async def ensure(_self):
+        return _S()
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", ensure)
 
     received: list[str] = []
     with pytest.raises(aiohttp.ServerDisconnectedError):
         async for line in client.stream_post("http://example/sse", json={}, mode="sse"):
             received.append(line)
 
-    assert attempts["n"] == 1
-    assert received == ['data: {"x":1}']
+    assert len(cms) == 1  # exactly one connect attempt — no retry
+    assert cms[0].entered is True and cms[0].exited is True
+    assert received == []  # parser consumed the comment, nothing reached caller
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_stream_post_gives_up_after_two_consecutive_disconnects(monkeypatch):
-    """If both attempts fail before yielding, the second error propagates."""
+    """If both connect attempts hit a stale socket, the second error propagates."""
     client = AsyncHTTPClient.shared()
-    attempts = {"n": 0}
-
-    async def fake_once(self, url, *, json=None, headers=None, timeout=None, mode="sse"):
-        attempts["n"] += 1
-        raise aiohttp.ServerDisconnectedError()
-        yield  # pragma: no cover  # make this an async generator
-
-    monkeypatch.setattr(AsyncHTTPClient, "_stream_post_once", fake_once)
+    ensure, cms = _fake_session_with_script(["disconnect", "disconnect"])
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", ensure)
 
     with pytest.raises(aiohttp.ServerDisconnectedError):
         async for _ in client.stream_post("http://example/sse", json={}, mode="sse"):
             pass
 
-    assert attempts["n"] == 2
+    assert len(cms) == 2
 
 
 @pytest.mark.unit
