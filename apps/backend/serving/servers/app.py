@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..config.settings import settings
 from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap
-from .middleware.error import install_error_handlers
+from .middleware.error import FallbackErrorMiddleware, install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
@@ -82,6 +82,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(TimeoutMiddleware)
     app.add_middleware(RequestLogMiddleware)
+    app.add_middleware(FallbackErrorMiddleware)
 
     # Error handlers
     install_error_handlers(app)
