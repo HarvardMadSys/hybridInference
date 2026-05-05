@@ -80,7 +80,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
       >
         <td className="py-3 pl-4 pr-3 text-sm">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-gray-900 whitespace-nowrap">{req.model_id}</span>
+            <span className="block max-w-44 truncate font-medium text-gray-900">{req.model_id}</span>
             {req.stream && (
               <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20">
                 stream
@@ -222,10 +222,10 @@ export function RecentRequests(): JSX.Element {
       {!isLoading && data && data.requests.length > 0 && (
         <>
           <div className="-mx-6 overflow-x-auto">
-            <table className="min-w-full">
+            <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-200">
-                  <th className="py-2.5 pl-10 pr-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                  <th className="py-2.5 pl-2 pr-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                     Model
                   </th>
                   <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
@@ -237,7 +237,7 @@ export function RecentRequests(): JSX.Element {
                   <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                     Cost
                   </th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-500 pr-10">
+                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
                     Time
                   </th>
                 </tr>
