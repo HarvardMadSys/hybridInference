@@ -10,7 +10,7 @@ import json
 
 # Import internals from the migration script
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from ops.cloudflare.d1_migrate import (
     _BOOLEAN_COLUMNS,
+    _DATE_COLUMNS,
     _DECIMAL_COLUMNS,
     _JSONB_COLUMNS,
     _TABLES,
@@ -78,6 +79,10 @@ class TestTransformValue:
         assert isinstance(result, float)
         assert result == pytest.approx(100.505)
 
+    @pytest.mark.parametrize("col", sorted(_DATE_COLUMNS))
+    def test_date_to_iso(self, col):
+        assert _transform_value(col, date(2026, 5, 5)) == "2026-05-05"
+
     def test_text_passthrough(self):
         assert _transform_value("email", "alice@test.com") == "alice@test.com"
         assert _transform_value("user_name", "Alice") == "Alice"
@@ -130,6 +135,12 @@ class TestBuildInsertSQL:
             sql = _build_insert_sql(table_def)
             assert f"INSERT OR IGNORE INTO {table_def['name']}" in sql
             assert sql.count("?") == len(table_def["columns"])
+
+    def test_api_keys_insert_matches_current_d1_schema(self):
+        api_keys_def = next(t for t in _TABLES if t["name"] == "api_keys")
+
+        assert "tier" not in api_keys_def["columns"]
+        assert "tier" not in _build_insert_sql(api_keys_def)
 
 
 # ------------------------------------------------------------------
