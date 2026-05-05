@@ -2,7 +2,7 @@ routing_strategy: fixed
 routing_parameter:
   local_fraction: 1
 timeout: 2
-health_check: 30
+health_check: 300
 logging:
   output: output.log
 local_deployment:
