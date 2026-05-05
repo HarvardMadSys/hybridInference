@@ -29,8 +29,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# Add import roots for running this script directly from a checkout.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_PROJECT_ROOT))
+sys.path.insert(0, str(_PROJECT_ROOT / "apps" / "backend"))
 
 from dotenv import load_dotenv
 
