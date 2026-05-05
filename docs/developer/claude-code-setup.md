@@ -36,6 +36,8 @@ On Windows the file is at `%USERPROFILE%\.claude\settings.json`.
 
 ## Available Models
 
+> **Note:** These models require internal role access and are not available to general users.
+
 | Model | Description |
 |-------|-------------|
 | `claude-sonnet-4.6` | Default model in Claude Code |
