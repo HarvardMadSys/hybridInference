@@ -25,10 +25,14 @@ Role = Literal["free", "pro", "internal", "admin"]
 
 
 class RoleQuotaApplyRequest(BaseModel):
+    """Request body for POST /admin/quota/role-apply."""
+
     role: Role
 
 
 class RoleQuotaPreview(BaseModel):
+    """Preview of how many keys/users a role-quota apply would touch."""
+
     role: Role
     quota: Decimal
     keys_affected: int
@@ -36,6 +40,8 @@ class RoleQuotaPreview(BaseModel):
 
 
 class RoleQuotaApplyResult(BaseModel):
+    """Result of a role-quota bulk apply."""
+
     role: Role
     quota: Decimal
     keys_updated: int
@@ -62,6 +68,7 @@ async def preview_role_apply(
     op_store=Depends(get_operational_store),
     rt: RuntimeSettings | None = Depends(get_runtime_settings),
 ) -> RoleQuotaPreview:
+    """Return how many active keys/users would be touched by an apply for this role."""
     if not op_store:
         raise HTTPException(500, "Database not configured")
     rt = _require_rt(rt)
@@ -78,6 +85,7 @@ async def apply_role_quota(
     op_store=Depends(get_operational_store),
     rt: RuntimeSettings | None = Depends(get_runtime_settings),
 ) -> RoleQuotaApplyResult:
+    """Overwrite quota_daily_cost_usd on every active key for this role."""
     if not op_store:
         raise HTTPException(500, "Database not configured")
     rt = _require_rt(rt)

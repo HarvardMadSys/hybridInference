@@ -63,6 +63,9 @@ class Settings(BaseSettings):
 
     # Signup
     signup_enabled: bool = True
+    # Deprecated: only used as fallback when no user_daily_quota_<role>
+    # runtime setting is registered. Per-role quotas (user_daily_quota_free,
+    # _pro, _internal, _admin) are the source of truth at signup.
     signup_default_daily_quota_usd: float = 100.00
     signup_require_email_verification: bool = True
 

@@ -687,10 +687,10 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def apply_role_quota(self, role: str, quota: Decimal) -> int:
-        """Set ``quota_daily_cost_usd`` to ``quota`` on every active api_key
-        whose owner has this role. Returns the number of rows updated.
+        """Set ``quota_daily_cost_usd`` on every active api_key for this role.
 
-        Atomic: a failure rolls back. Overwrites any per-key custom override.
+        Returns the number of rows updated. Atomic: a failure rolls back.
+        Overwrites any per-key custom override.
         """
 
 
