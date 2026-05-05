@@ -568,15 +568,6 @@ function formatTokens(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
-function formatThroughput(n: number): string {
-  if (n >= 1000) {
-    const k = n / 1000;
-    return `${k.toFixed(n % 1000 === 0 ? 0 : 1)}k tok/s`;
-  }
-  if (n >= 100) return `${Math.round(n)} tok/s`;
-  return `${n.toFixed(1)} tok/s`;
-}
-
 function pct(used: number | null, limit: number | null): number | null {
   if (used == null || limit == null || limit <= 0) return null;
   return Math.min(100, (used / limit) * 100);
@@ -1025,11 +1016,6 @@ export default function AdminPage() {
       loadRequestMetrics();
     }
   }, [loadRequests, loadRequestMetrics, activeTab, isAdmin]);
-
-  useEffect(() => {
-    if (!isAdmin) return;
-    if (activeTab === 'providers' && providerSubTab === 'performance') loadPerformanceMetrics();
-  }, [loadPerformanceMetrics, activeTab, providerSubTab, isAdmin]);
 
   useEffect(() => {
     if (!isAdmin) return;
