@@ -77,10 +77,10 @@ def extract_cache_tokens(
 
     Different providers return cache token info in different locations:
     - usage["cache_read_input_tokens"] (Anthropic Claude)
-    - usage["cache_read_tokens"] (direct/normalized)
     - usage["cached_tokens"] (SGLang, vLLM)
-    - usage["prompt_tokens_details"]["cached_tokens"] (OpenAI / Azure)
+    - usage["cache_read_tokens"] (direct/normalized)
     - usage["prompt_cache_hit_tokens"] (DeepSeek)
+    - usage["prompt_tokens_details"]["cached_tokens"] (OpenAI / Azure)
     - usage["cache_creation_input_tokens"] (Anthropic Claude write)
     - usage["cache_write_tokens"] (direct/normalized)
 
@@ -96,7 +96,7 @@ def extract_cache_tokens(
     # --- cache read tokens ---
     cache_read: int | None = None
 
-    # Direct fields (Anthropic style, then SGLang/vLLM, then generic).
+    # Direct fields (Anthropic style, then SGLang/vLLM, then generic, then DeepSeek).
     # val >= 0 so that an explicit 0 ("cache supported but no hit") is recorded
     # rather than falling through to the next field or returning None.
     for field in (
