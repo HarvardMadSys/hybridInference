@@ -538,6 +538,12 @@ class AdminRecentRequestItem(BaseModel):
     user_name: str | None = None
     user_email: str | None = None
     user_ip: str | None = None
+    peer_ip: str | None = None
+    ip_source: str | None = None
+    x_forwarded_for: str | None = None
+    user_agent: str | None = None
+    session_id: str | None = None
+    request_surface: str | None = None
     model_id: str
     provider: str
     timestamp: datetime

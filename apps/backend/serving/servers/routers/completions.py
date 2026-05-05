@@ -37,7 +37,7 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip_info
 from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
@@ -225,13 +225,19 @@ async def chat_completions(
     is_authenticated = bool(user_ctx.get("authenticated"))
     provider = "router"
     session_id = request.headers.get("X-Session-ID")
+    ip_info = get_client_ip_info(request)
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
-        "ip": get_client_ip(request),
+        "ip": ip_info.client_ip,
+        "peer_ip": ip_info.peer_ip,
+        "ip_source": ip_info.source,
+        "x_forwarded_for": ip_info.x_forwarded_for,
+        "x_real_ip": ip_info.x_real_ip,
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
+        "surface": "openai_chat_completions",
     }
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True

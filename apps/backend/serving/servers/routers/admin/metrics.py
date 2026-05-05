@@ -632,7 +632,13 @@ async def admin_list_recent_requests(
                 l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
                 l.cache_read_tokens, l.cache_write_tokens,
                 l.total_tokens, l.cost_usd, l.error,
-                l.metadata->>'ip' AS user_ip
+                l.metadata->>'ip' AS user_ip,
+                l.metadata->>'peer_ip' AS peer_ip,
+                l.metadata->>'ip_source' AS ip_source,
+                l.metadata->>'x_forwarded_for' AS x_forwarded_for,
+                l.metadata->>'user_agent' AS user_agent,
+                l.metadata->>'session_id' AS session_id,
+                l.metadata->>'surface' AS request_surface
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
             {where_sql}
@@ -651,6 +657,12 @@ async def admin_list_recent_requests(
             user_name=row["user_name"],
             user_email=row["user_email"],
             user_ip=row["user_ip"],
+            peer_ip=row["peer_ip"],
+            ip_source=row["ip_source"],
+            x_forwarded_for=row["x_forwarded_for"],
+            user_agent=row["user_agent"],
+            session_id=row["session_id"],
+            request_surface=row["request_surface"],
             model_id=row["model_id"],
             provider=row["provider"],
             timestamp=row["timestamp"],

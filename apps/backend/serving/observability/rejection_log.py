@@ -2,9 +2,10 @@
 
 Writes a row to ``api_logs`` (via :class:`BaseLogStore.log_request`) for
 inference-path requests rejected at the gate — concurrency limit, quota,
-auth failure, model-not-found. Gated by the ``log_rejected_requests``
-runtime setting (default off). Never raises: a logging failure must not
-alter the rejection HTTP response.
+model-not-found. 401 auth challenges are intentionally excluded because
+normal clients produce them during token refresh/auth probing. Gated by the
+``log_rejected_requests`` runtime setting (default off). Never raises: a
+logging failure must not alter the rejection HTTP response.
 """
 
 from __future__ import annotations
@@ -69,6 +70,8 @@ async def log_rejection(
     if log_store is None or runtime_settings is None:
         return
     if not _is_inference_path(request.url.path):
+        return
+    if status_code == 401:
         return
 
     try:

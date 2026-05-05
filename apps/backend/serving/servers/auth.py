@@ -21,7 +21,7 @@ from serving.observability.metrics import (
 from serving.observability.rejection_log import log_rejection
 from serving.servers.deps import get_db_logger, get_log_store, get_operational_store
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip, get_client_ip_info
 
 logger = get_logger(__name__)
 QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
@@ -114,6 +114,7 @@ async def verify_api_key(
         api_key = x_api_key
 
     if not api_key:
+        ip_info = get_client_ip_info(request)
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
             provider=normalize_provider_label("system"),
@@ -123,7 +124,9 @@ async def verify_api_key(
             "auth_failure",
             extra={
                 "event": "auth_failure",
-                "remote_ip": get_client_ip(request),
+                "remote_ip": ip_info.client_ip,
+                "peer_ip": ip_info.peer_ip,
+                "ip_source": ip_info.source,
                 "key_prefix": None,
                 "reason": "missing_api_key",
             },
@@ -167,6 +170,7 @@ async def verify_api_key(
         raise
 
     if not user:
+        ip_info = get_client_ip_info(request)
         API_MODEL_REQUESTS.labels(
             model=normalize_model_label("unknown"),
             provider=normalize_provider_label("system"),
@@ -176,7 +180,9 @@ async def verify_api_key(
             "auth_failure",
             extra={
                 "event": "auth_failure",
-                "remote_ip": get_client_ip(request),
+                "remote_ip": ip_info.client_ip,
+                "peer_ip": ip_info.peer_ip,
+                "ip_source": ip_info.source,
                 "key_prefix": api_key[:6] if api_key else None,
                 "reason": "invalid_api_key",
             },

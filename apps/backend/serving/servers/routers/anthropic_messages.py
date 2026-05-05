@@ -40,7 +40,7 @@ from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import get_log_store, get_router
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip_info
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -531,9 +531,14 @@ async def anthropic_messages(
                 f"[{request_id}] Dropped Anthropic-only fields for OpenAI backend: {dropped}"
             )
 
+    ip_info = get_client_ip_info(request)
     metadata = {
         "user_agent": request.headers.get("user-agent"),
-        "ip": get_client_ip(request),
+        "ip": ip_info.client_ip,
+        "peer_ip": ip_info.peer_ip,
+        "ip_source": ip_info.source,
+        "x_forwarded_for": ip_info.x_forwarded_for,
+        "x_real_ip": ip_info.x_real_ip,
         "authenticated": bool(user_ctx.get("authenticated")),
         "user_id": user_ctx.get("user_id"),
         "surface": "anthropic_messages",

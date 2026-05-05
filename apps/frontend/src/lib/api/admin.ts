@@ -397,6 +397,12 @@ export interface AdminRecentRequestItem {
   user_name?: string | null;
   user_email?: string | null;
   user_ip?: string | null;
+  peer_ip?: string | null;
+  ip_source?: string | null;
+  x_forwarded_for?: string | null;
+  user_agent?: string | null;
+  session_id?: string | null;
+  request_surface?: string | null;
   model_id: string;
   provider: string;
   timestamp: string;

@@ -52,6 +52,26 @@ function previewText(value: string, maxChars: number = 280): string {
   return `${value.slice(0, maxChars)}...`;
 }
 
+function compactRequestSurface(surface?: string | null): string {
+  if (surface === 'anthropic_messages') return 'Anthropic';
+  if (surface === 'openai_chat_completions') return 'OpenAI';
+  return surface || 'API';
+}
+
+function compactUserAgent(userAgent?: string | null): string {
+  if (!userAgent) return '—';
+  const lower = userAgent.toLowerCase();
+  if (lower.includes('cursor')) return 'Cursor';
+  if (lower.includes('claude-code')) return 'Claude Code';
+  if (lower.includes('anthropic')) return 'Anthropic SDK';
+  if (lower.includes('openai')) return 'OpenAI SDK';
+  if (lower.includes('python')) return 'Python';
+  if (lower.includes('node') || lower.includes('undici')) return 'Node';
+  if (lower.includes('curl')) return 'curl';
+  if (lower.includes('mozilla')) return 'Browser';
+  return userAgent.split(/[ /]/, 1)[0] || userAgent;
+}
+
 function applyOffsetJump(
   rawPage: string,
   total: number,
@@ -1739,6 +1759,9 @@ export default function AdminPage() {
                           IP
                         </th>
                         <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
+                          Source
+                        </th>
+                        <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                           Status
                         </th>
                         <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
@@ -1770,6 +1793,8 @@ export default function AdminPage() {
                         const cachedTokens = hasCacheTokens
                           ? (req.cache_read_tokens ?? 0) + (req.cache_write_tokens ?? 0)
                           : null;
+                        const sourceLabel = compactUserAgent(req.user_agent);
+                        const surfaceLabel = compactRequestSurface(req.request_surface);
                         return (
                           <Fragment key={req.request_id}>
                             <tr
@@ -1823,6 +1848,16 @@ export default function AdminPage() {
                               </td>
                               <td className="whitespace-nowrap px-3 py-2.5 text-[12px] font-mono text-gray-500">
                                 {req.user_ip ?? <span className="text-gray-300">—</span>}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px] text-gray-500">
+                                <div className="max-w-[180px]" title={req.user_agent || undefined}>
+                                  <div className="truncate font-medium text-gray-700">
+                                    {sourceLabel}
+                                  </div>
+                                  <div className="truncate text-[11px] text-gray-400">
+                                    {surfaceLabel}
+                                  </div>
+                                </div>
                               </td>
                               <td className="whitespace-nowrap px-3 py-2.5 text-[12px]">
                                 {req.status_code != null ? (
@@ -1879,7 +1914,7 @@ export default function AdminPage() {
                             </tr>
                             {isExpanded && (
                               <tr className="border-b border-gray-100 bg-gray-50/40">
-                                <td colSpan={9} className="px-4 py-3">
+                                <td colSpan={10} className="px-4 py-3">
                                   <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[11px] sm:grid-cols-4">
                                     <div>
                                       <span className="text-gray-500">Request ID:</span>{' '}
@@ -1909,6 +1944,34 @@ export default function AdminPage() {
                                       <span className="text-gray-500">User IP:</span>{' '}
                                       <span className="text-gray-700 font-mono">
                                         {req.user_ip ?? '—'}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">Peer IP:</span>{' '}
+                                      <span className="text-gray-700 font-mono">
+                                        {req.peer_ip ?? '—'}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">IP source:</span>{' '}
+                                      <span className="text-gray-700">{req.ip_source ?? '—'}</span>
+                                    </div>
+                                    <div className="col-span-full">
+                                      <span className="text-gray-500">X-Forwarded-For:</span>{' '}
+                                      <span className="break-words font-mono text-gray-700">
+                                        {req.x_forwarded_for ?? '—'}
+                                      </span>
+                                    </div>
+                                    <div className="col-span-full">
+                                      <span className="text-gray-500">User agent:</span>{' '}
+                                      <span className="break-words text-gray-700">
+                                        {req.user_agent ?? '—'}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-500">Session:</span>{' '}
+                                      <span className="text-gray-700 font-mono">
+                                        {req.session_id ?? '—'}
                                       </span>
                                     </div>
                                     <div>
