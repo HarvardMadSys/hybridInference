@@ -14,22 +14,28 @@ from serving.servers.middleware.request_id import RequestIdMiddleware
 from serving.servers.middleware.request_log import RequestLogMiddleware
 from serving.servers.middleware.timeout import TimeoutMiddleware
 
+_CHUNK_COUNT = 5
+
 
 def _build_app() -> FastAPI:
     app = FastAPI()
-    app.add_middleware(FallbackErrorMiddleware)
-    app.add_middleware(RequestIdMiddleware)
     app.add_middleware(TimeoutMiddleware)
     app.add_middleware(RequestLogMiddleware)
+    app.add_middleware(FallbackErrorMiddleware)
+    app.add_middleware(RequestIdMiddleware)
 
     @app.get("/stream")
     async def stream():
         async def generate():
-            for i in range(5):
+            for i in range(_CHUNK_COUNT):
                 yield f"data: chunk-{i}\n\n"
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.01)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
+
+    @app.get("/non-stream")
+    async def non_stream():
+        return {"ok": True}
 
     return app
 
@@ -46,7 +52,7 @@ async def test_streaming_chunks_arrive_incrementally():
                 if line.startswith("data: chunk-"):
                     chunks.append(line)
 
-    assert len(chunks) == 5
+    assert len(chunks) == _CHUNK_COUNT
     for i, chunk in enumerate(chunks):
         assert chunk == f"data: chunk-{i}"
 
@@ -63,3 +69,25 @@ async def test_streaming_response_has_request_id_header():
             assert len(request_id) == 24
             async for _ in response.aiter_lines():
                 pass
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_response_has_request_id_header():
+    app = _build_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/non-stream")
+        assert response.status_code == 200
+        assert "x-request-id" in response.headers
+
+
+@pytest.mark.asyncio
+async def test_request_id_is_unique_per_request():
+    app = _build_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r1 = await client.get("/non-stream")
+        r2 = await client.get("/non-stream")
+        id1 = r1.headers["x-request-id"]
+        id2 = r2.headers["x-request-id"]
+        assert id1 != id2

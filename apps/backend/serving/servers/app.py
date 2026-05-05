@@ -79,10 +79,10 @@ def create_app() -> FastAPI:
     )
 
     # Request ID, timeout, and request log middlewares
-    app.add_middleware(RequestIdMiddleware)
     app.add_middleware(TimeoutMiddleware)
     app.add_middleware(RequestLogMiddleware)
     app.add_middleware(FallbackErrorMiddleware)
+    app.add_middleware(RequestIdMiddleware)
 
     # Error handlers
     install_error_handlers(app)
