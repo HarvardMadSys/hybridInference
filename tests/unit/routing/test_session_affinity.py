@@ -341,3 +341,33 @@ def test_stream_chat_completion_drops_affinity_on_primary_error():
     with pytest.raises(RuntimeError):
         asyncio.run(_consume())
     assert ("u1", "m") not in r._affinity
+
+
+@pytest.mark.unit
+def test_concurrent_acquires_yield_one_entry():
+    import threading
+
+    r = FixedRouter()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    b = _EchoAdapter(_cfg("m", provider="B"))
+    r.register_route("m", [(a, 0.5), (b, 0.5)])
+
+    chosen: list[BaseAdapter] = []
+    barrier = threading.Barrier(20)
+
+    def _worker() -> None:
+        req_ctx.set({"affinity_key": "u_race"})
+        barrier.wait()
+        sel = r._select_adapter("m")
+        if sel is not None:
+            chosen.append(sel)
+
+    threads = [threading.Thread(target=_worker) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Exactly one entry survives; all picks are valid adapters.
+    assert ("u_race", "m") in r._affinity
+    assert all(c in {a, b} for c in chosen)
