@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AdminMetricDistribution,
+  AdminPerformanceMetricsWindow,
   ProviderTokenUsageResponse,
   ProviderTokenUsageRow,
   TokenUsageRange,
   getProviderTokenUsage,
+  getPerformanceMetrics,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -66,7 +69,7 @@ function groupByProvider(
   return out;
 }
 
-export function TokenUsageTab() {
+export function TokenUsageTab({ perfRefreshNonce }: { perfRefreshNonce?: number }) {
   const [range, setRange] = useState<TokenUsageRange>('24h');
   const [data, setData] = useState<ProviderTokenUsageResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -87,7 +90,7 @@ export function TokenUsageTab() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, perfRefreshNonce]);
 
   const groups = useMemo(() => groupByProvider(data?.rows ?? []), [data]);
 
@@ -145,6 +148,8 @@ export function TokenUsageTab() {
           )}
         </>
       ) : null}
+
+      <PerformanceMetricsSection refreshKey={perfRefreshNonce} />
     </div>
   );
 }
@@ -188,6 +193,115 @@ function ProviderTable({ provider, rows }: { provider: string; rows: ProviderTok
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+const FORMAT_FUNCTIONS: Record<string, (v: number) => string> = {
+  tokens: (v: number) =>
+    v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : v.toLocaleString(),
+  ms: (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}s` : `${v}ms`),
+  tps: (v: number) =>
+    v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k tok/s` : `${v.toFixed(1)} tok/s`,
+};
+
+function formatValue(v: number | null | undefined, kind: string): string {
+  if (v == null) return '—';
+  const fn = FORMAT_FUNCTIONS[kind] ?? FORMAT_FUNCTIONS.ms;
+  return fn(v);
+}
+
+function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
+  const rows: Array<{ title: string; dist: AdminMetricDistribution; kind: string }> = [
+    { title: 'Prompt tokens', dist: metric.prompt_tokens, kind: 'tokens' },
+    { title: 'Response tokens', dist: metric.completion_tokens, kind: 'tokens' },
+    { title: 'TTFT', dist: metric.ttft_ms, kind: 'ms' },
+    { title: 'Throughput', dist: metric.throughput_tps, kind: 'tps' },
+  ];
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div className="text-[12px] font-semibold text-gray-900">{metric.label}</div>
+        <div className="text-[10px] text-gray-400">{metric.window_minutes}m window</div>
+      </div>
+      <table className="mt-2 w-full">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wider text-gray-400 font-medium">
+            <th className="py-1 text-left">Metric</th>
+            <th className="py-1 text-right">n</th>
+            <th className="py-1 text-right">p50</th>
+            <th className="py-1 text-right">p95</th>
+            <th className="py-1 text-right">p99</th>
+          </tr>
+        </thead>
+        <tbody className="[&>tr+tr>td]:border-t [&>tr+tr>td]:border-gray-100">
+          {rows.map((row) => (
+            <tr key={row.title}>
+              <td className="py-1.5 text-[11px] text-gray-600">{row.title}</td>
+              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                {row.dist.count.toLocaleString()}
+              </td>
+              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                {formatValue(row.dist.p50, row.kind)}
+              </td>
+              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                {formatValue(row.dist.p95, row.kind)}
+              </td>
+              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                {formatValue(row.dist.p99, row.kind)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
+  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
+  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
+
+  const loadPerformanceMetrics = useCallback(async () => {
+    setPerfMetricsLoading(true);
+    try {
+      const d = await getPerformanceMetrics();
+      setPerfMetrics(d.windows);
+    } catch {
+      // ignore
+    } finally {
+      setPerfMetricsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPerformanceMetrics();
+  }, [loadPerformanceMetrics, refreshKey]);
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <div>
+          <h2 className="text-[14px] font-semibold text-gray-900">Performance metrics</h2>
+          <p className="text-[11px] text-gray-400">
+            Prompt/response length, time-to-first-token, and inter-token latency distributions.
+          </p>
+        </div>
+        {perfMetricsLoading && (
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+        )}
+      </div>
+      {perfMetrics.length > 0 ? (
+        <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
+          {perfMetrics.map((metric) => (
+            <PerformanceMetricsCard key={metric.key} metric={metric} />
+          ))}
+        </div>
+      ) : !perfMetricsLoading ? (
+        <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+          <p className="text-[13px] text-gray-400">No performance metrics available.</p>
+        </div>
+      ) : null}
     </div>
   );
 }
