@@ -138,14 +138,14 @@ models:
         provider_model_id: "glm-5"
       # Chutes fallback
       - kind: chutes
-        weight: 0.01
+        weight: 1.0
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "zai-org/GLM-5-TEE"
       # Featherless fallback
       - kind: featherless
-        weight: 1.000
+        weight: 1.0
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}
