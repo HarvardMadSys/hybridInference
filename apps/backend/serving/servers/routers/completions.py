@@ -248,6 +248,7 @@ async def chat_completions(
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
+        "surface": "openai_chat_completions",
     }
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True

@@ -24,8 +24,6 @@ Usage:
 Requirements:
     - PostgreSQL must be running and accessible (DB_* env vars)
     - D1 credentials must be set (D1_ACCOUNT_ID, D1_DATABASE_ID, D1_API_TOKEN)
-    - D1 schema must already be initialized (run with DB_BACKEND=d1 first,
-      or manually execute d1_schema.sql)
 """
 
 from __future__ import annotations
@@ -35,13 +33,15 @@ import asyncio
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# Add import roots for running this script directly from a checkout.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_PROJECT_ROOT))
+sys.path.insert(0, str(_PROJECT_ROOT / "apps" / "backend"))
 
 from dotenv import load_dotenv
 
@@ -89,7 +89,6 @@ _TABLES: list[dict[str, Any]] = [
             "created_at",
             "expires_at",
             "last_used_at",
-            "tier",
             "notes",
             "metadata",
             "account_id",
@@ -157,11 +156,13 @@ _TIMESTAMP_COLUMNS = frozenset(
         "reviewed_at",
         "used_at",
         "timestamp",
+        "last_request_at",
     }
 )
 _BOOLEAN_COLUMNS = frozenset({"email_verified", "revoked", "success"})
 _JSONB_COLUMNS = frozenset({"preferences", "metadata", "details"})
-_DECIMAL_COLUMNS = frozenset({"quota_daily_cost_usd", "quota_monthly_cost_usd"})
+_DECIMAL_COLUMNS = frozenset({"quota_daily_cost_usd", "quota_monthly_cost_usd", "cost_usd"})
+_DATE_COLUMNS = frozenset({"day"})
 
 # Checkpoint file for resumable migration
 _CHECKPOINT_FILE = Path("data/d1_migration_checkpoint.json")
@@ -198,6 +199,11 @@ def _transform_value(col: str, val: Any) -> Any:
         if isinstance(val, Decimal):
             return float(val)
         return val
+
+    if col in _DATE_COLUMNS:
+        if isinstance(val, date):
+            return val.isoformat()
+        return str(val)
 
     return val
 
@@ -399,6 +405,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     from serving.config.settings import get_settings
     from serving.storage.d1_client import D1Client
+    from serving.storage.d1_operational import D1OperationalStore
 
     get_settings.cache_clear()
     settings = get_settings()
@@ -440,6 +447,11 @@ async def _run(args: argparse.Namespace) -> int:
         await d1.close()
         await pool.close()
         return 1
+
+    if not args.dry_run:
+        print("Initializing Cloudflare D1 schema...")
+        store = D1OperationalStore(d1)
+        await store.initialize()
 
     print(
         f"Connected. Mode: {'dry-run' if args.dry_run else 'live'}, batch size: {args.batch_size}"

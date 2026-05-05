@@ -704,6 +704,13 @@ class DualWriteOperationalStore(OperationalStore):
         """Delegate to primary."""
         return await self._primary.get_user_cost_period(user_id, period)
 
+    async def query_users_over_daily_threshold(
+        self,
+        thresholds: dict[str, float],
+    ) -> list[tuple[str, str, float]]:
+        """Delegate to primary."""
+        return await self._primary.query_users_over_daily_threshold(thresholds)
+
     async def get_batch_usage(
         self, user_ids: list[str], period: Literal["today", "month"]
     ) -> dict[str, float]:

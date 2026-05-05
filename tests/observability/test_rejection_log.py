@@ -152,7 +152,8 @@ async def test_non_inference_path_is_noop(fake_log_store, runtime_on):
 
 
 @pytest.mark.asyncio
-async def test_unauthenticated_user_writes_null(fake_log_store, runtime_on):
+async def test_unauthenticated_user_is_not_persisted(fake_log_store, runtime_on):
+    """401 auth challenges are not written to api_logs."""
     await log_rejection(
         log_store=fake_log_store,
         runtime_settings=runtime_on,
@@ -162,11 +163,8 @@ async def test_unauthenticated_user_writes_null(fake_log_store, runtime_on):
         reason="no header",
         user=None,
     )
-    fake_log_store.log_request.assert_awaited_once()
-    kwargs = fake_log_store.log_request.await_args.kwargs
-    md = kwargs["metadata"]
-    assert md["user_id"] is None
-    assert md["role"] is None
+    fake_log_store.log_request.assert_not_called()
+    runtime_on.get_bool.assert_not_called()
 
 
 @pytest.mark.asyncio

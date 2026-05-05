@@ -653,6 +653,13 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_user_cost_period(user_id, period)
 
+    async def query_users_over_daily_threshold(
+        self,
+        thresholds: dict[str, float],
+    ) -> list[tuple[str, str, float]]:
+        """Delegate to wrapped store."""
+        return await self._store.query_users_over_daily_threshold(thresholds)
+
     async def get_batch_usage(
         self, user_ids: list[str], period: Literal["today", "month"]
     ) -> dict[str, float]:

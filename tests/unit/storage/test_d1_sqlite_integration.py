@@ -675,6 +675,29 @@ class TestCostCounters:
         )
         assert r.rows[0]["total"] == pytest.approx(30.0)
 
+    async def test_query_users_over_daily_threshold(self, store):
+        """Daily-threshold query joins users to today's cost counters."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        await store.create_user(user_id="free-low", email="free-low@test.com", password_hash="h")
+        await store.create_user(user_id="free-high", email="free-high@test.com", password_hash="h")
+        await store.create_user(user_id="pro-high", email="pro-high@test.com", password_hash="h")
+        await store.create_user(
+            user_id="admin-high", email="admin-high@test.com", password_hash="h"
+        )
+        await store.update_user_fields("pro-high", role="pro")
+        await store.update_user_fields("admin-high", role="admin")
+        await store.increment_user_cost("free-low", 0.50, day=today)
+        await store.increment_user_cost("free-high", 2.00, day=today)
+        await store.increment_user_cost("pro-high", 20.00, day=today)
+        await store.increment_user_cost("admin-high", 200.00, day=today)
+
+        rows = await store.query_users_over_daily_threshold({"free": 1.0, "pro": 10.0})
+
+        assert rows == [("pro-high", "pro", 20.0), ("free-high", "free", 2.0)]
+
+    async def test_query_users_over_daily_threshold_empty_thresholds(self, store):
+        assert await store.query_users_over_daily_threshold({}) == []
+
     async def test_get_batch_usage_empty(self, store):
         result = await store.get_batch_usage([], period="today")
         assert result == {}
