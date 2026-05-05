@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { login as loginApi, logout as logoutApi } from '@/lib/api/auth';
+import { AUTH_EXPIRED_EVENT } from '@/lib/api/client';
 import { getMe } from '@/lib/api/user';
 
 interface User {
@@ -70,6 +71,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.error('Failed to refresh user:', error);
     });
   }, [refreshUser]);
+
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setState({ isAuthenticated: false, loading: false, user: null });
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  }, []);
 
   const login = useCallback(
     async (email: string, password: string) => {

@@ -804,6 +804,7 @@ function RawJsonDetails({ data }: { data: unknown }) {
 
 export default function AdminPage() {
   const { state } = useAuth();
+  const isAdmin = state.user?.is_admin === true;
 
   // Top-level tab
   const [activeTab, setActiveTab] = useState<
@@ -1070,23 +1071,27 @@ export default function AdminPage() {
   }, []);
 
   useEffect(() => {
+    if (!isAdmin) return;
     if (activeTab === 'audit') loadAudit();
-  }, [loadAudit, activeTab]);
+  }, [loadAudit, activeTab, isAdmin]);
 
   useEffect(() => {
+    if (!isAdmin) return;
     if (activeTab === 'requests') {
       loadRequests();
       loadRequestMetrics();
     }
-  }, [loadRequests, loadRequestMetrics, activeTab]);
+  }, [loadRequests, loadRequestMetrics, activeTab, isAdmin]);
 
   useEffect(() => {
+    if (!isAdmin) return;
     if (activeTab === 'providers' && providerSubTab === 'performance') loadPerformanceMetrics();
-  }, [loadPerformanceMetrics, activeTab, providerSubTab]);
+  }, [loadPerformanceMetrics, activeTab, providerSubTab, isAdmin]);
 
   useEffect(() => {
+    if (!isAdmin) return;
     if (activeTab === 'providers' && providerSubTab === 'quota') loadProviderQuotas();
-  }, [loadProviderQuotas, activeTab, providerSubTab]);
+  }, [loadProviderQuotas, activeTab, providerSubTab, isAdmin]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1107,10 +1112,11 @@ export default function AdminPage() {
   }, []);
 
   useEffect(() => {
+    if (!isAdmin) return;
     if (activeTab === 'broadcast') loadBroadcasts();
-  }, [loadBroadcasts, activeTab]);
+  }, [loadBroadcasts, activeTab, isAdmin]);
 
-  if (!state.user?.is_admin) {
+  if (!isAdmin) {
     return (
       <ProtectedRoute>
         <div className="flex min-h-[50vh] flex-col items-center justify-center text-center">
