@@ -676,6 +676,23 @@ class OperationalStore(ABC):
     async def list_settings(self) -> list[Row]:
         """Return all site_settings rows."""
 
+    # -- role quota ----------------------------------------------------------
+
+    @abstractmethod
+    async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
+        """Return ``(key_count, user_count)`` of active api_keys whose owner has this role.
+
+        Used by the admin "apply role quota" preview.
+        """
+
+    @abstractmethod
+    async def apply_role_quota(self, role: str, quota: Decimal) -> int:
+        """Set ``quota_daily_cost_usd`` to ``quota`` on every active api_key
+        whose owner has this role. Returns the number of rows updated.
+
+        Atomic: a failure rolls back. Overwrites any per-key custom override.
+        """
+
 
 # ---------------------------------------------------------------------------
 # LogStore — api_logs, api_stats_hourly
