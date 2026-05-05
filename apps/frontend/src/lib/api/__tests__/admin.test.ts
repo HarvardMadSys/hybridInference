@@ -45,10 +45,10 @@ describe('role quota client', () => {
 
   it('applyRoleQuota POSTs with role body', async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ role: 'pro', quota: 250, keys_updated: 5 }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
+      new Response(JSON.stringify({ role: 'pro', quota: 250, keys_updated: 5 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
     );
     const out = await applyRoleQuota('pro');
     expect(out).toEqual({ role: 'pro', quota: 250, keys_updated: 5 });

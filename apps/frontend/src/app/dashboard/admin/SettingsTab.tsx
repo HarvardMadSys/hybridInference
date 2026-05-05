@@ -546,8 +546,8 @@ export function SettingsTab() {
               Apply quota to role <code>{quotaConfirm.role}</code>
             </h3>
             <p className="mt-2 text-[13px] text-gray-600">
-              This sets <code>quota_daily_cost_usd = ${quotaConfirm.quota.toString()}</code>{' '}
-              on <strong>{quotaConfirm.keys_affected}</strong> active API keys belonging to{' '}
+              This sets <code>quota_daily_cost_usd = ${quotaConfirm.quota.toString()}</code> on{' '}
+              <strong>{quotaConfirm.keys_affected}</strong> active API keys belonging to{' '}
               <strong>{quotaConfirm.users_affected}</strong> users with role{' '}
               <code>{quotaConfirm.role}</code>. Custom per-key overrides will be lost.
             </p>
