@@ -667,7 +667,8 @@ class FixedRouter(BaseRouter):
                 f"All provider circuits are open for model {model_id}: {provider_names}"
             )
 
-        pool = allowed
+        total_allowed = sum(w for _, w in allowed)
+        pool = [(a, w / total_allowed) for a, w in allowed] if total_allowed > 0 else allowed
 
         rand = random.random()
         cumulative = 0.0

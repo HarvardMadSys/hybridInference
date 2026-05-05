@@ -127,6 +127,7 @@ models:
         base_url: ${ZAI_BASE_URL}
         api_keys:
           - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
         provider_model_id: "glm-5"
       # Ollama Cloud fallback
       - kind: ollama
@@ -144,7 +145,7 @@ models:
         provider_model_id: "zai-org/GLM-5-TEE"
       # Featherless fallback
       - kind: featherless
-        weight: 0
+        weight: 1.000
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}

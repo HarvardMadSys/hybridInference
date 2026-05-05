@@ -516,3 +516,39 @@ def test_admin_only_propagated():
     assert exe.routes["m-alias"].admin_only is True
     # Shared reference
     assert exe.routes["m"] is exe.routes["m-alias"]
+
+
+@pytest.mark.unit
+def test_weights_renormalized_when_circuit_breaker_excludes_adapter():
+    """Regression: filtered adapters must not distort remaining weight distribution.
+
+    When a circuit breaker excludes an adapter from the pool, the remaining
+    weights must be renormalized so that ``random.random()`` (uniform [0,1))
+    maps proportionally to the surviving adapters.  Without renormalization,
+    the last adapter in the pool absorbed all overflow probability mass,
+    getting disproportionately more traffic than its weight warranted.
+    """
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    b = _EchoAdapter(_cfg("m", provider="B"))
+    c = _EchoAdapter(_cfg("m", provider="C"))
+    exe.register_route("m", [(a, 1.0), (b, 1.0), (c, 1.0)])
+
+    for _ in range(3):
+        exe._on_failure("B", reason="test_failure")
+    status = exe.get_provider_status()
+    assert status["B"]["circuit_state"] == "open"
+
+    random.seed(42)
+    n = 10000
+    picks = {"A": 0, "C": 0}
+    for _ in range(n):
+        chosen = exe._select_adapter("m")
+        assert chosen is not None
+        assert chosen.config.provider != "B"
+        picks[chosen.config.provider] += 1
+
+    frac_a = picks["A"] / n
+    frac_c = picks["C"] / n
+    assert 0.47 <= frac_a <= 0.53, f"A fraction {frac_a} outside tolerance"
+    assert 0.47 <= frac_c <= 0.53, f"C fraction {frac_c} outside tolerance"
