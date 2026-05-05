@@ -40,6 +40,7 @@ On Windows the file is at `%USERPROFILE%\.claude\settings.json`.
 |-------|-------------|
 | `claude-sonnet-4.6` | Default model in Claude Code |
 | `claude-opus-4.6` | Most capable |
+| `claude-opus-4.7` | Latest Opus (1M context) |
 
 ## Usage
 
