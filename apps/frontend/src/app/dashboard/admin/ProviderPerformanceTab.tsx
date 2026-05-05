@@ -16,7 +16,6 @@ import {
 } from 'recharts';
 import {
   AdminTtftScatterModel,
-  ProviderStatsResponse,
   ProviderStatsRow,
   getProviderStats,
   getTtftScatter,
@@ -250,6 +249,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     if (!prov) return;
     setLoading(true);
     setError(null);
+    setModelRows({});
     try {
       const window_ = rangeWindow(rangeKey);
       const resp = await getProviderStats({
