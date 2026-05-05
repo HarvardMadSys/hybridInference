@@ -371,3 +371,53 @@ def test_concurrent_acquires_yield_one_entry():
     # Exactly one entry survives; all picks are valid adapters.
     assert ("u_race", "m") in r._affinity
     assert all(c in {a, b} for c in chosen)
+
+
+@pytest.mark.unit
+def test_pin_provider_failure_preserves_affinity_chat():
+    """A failed pin_provider request must not drop the user's existing affinity."""
+    import asyncio
+
+    r = FixedRouter()
+    bad = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
+    good = _EchoAdapter(_cfg("m", provider="GOOD", base_url="http://GOOD"))
+    r.register_route("m", [(bad, 0.5), (good, 0.5)])
+
+    req_ctx.set({"affinity_key": "u1"})
+    r._affinity[("u1", "m")] = _Affinity(
+        endpoint_id=_get_endpoint_id_for(good),
+        expires_at=time.monotonic() + 60,
+    )
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(r.chat_completion("m", [], pin_provider="BAD"))
+
+    assert ("u1", "m") in r._affinity
+    assert r._affinity[("u1", "m")].endpoint_id == _get_endpoint_id_for(good)
+
+
+@pytest.mark.unit
+def test_pin_provider_failure_preserves_affinity_stream():
+    """A failed pin_provider stream must not drop the user's existing affinity."""
+    import asyncio
+
+    r = FixedRouter()
+    bad = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
+    good = _EchoAdapter(_cfg("m", provider="GOOD", base_url="http://GOOD"))
+    r.register_route("m", [(bad, 0.5), (good, 0.5)])
+
+    req_ctx.set({"affinity_key": "u1"})
+    r._affinity[("u1", "m")] = _Affinity(
+        endpoint_id=_get_endpoint_id_for(good),
+        expires_at=time.monotonic() + 60,
+    )
+
+    async def _consume():
+        async for _ in r.stream_chat_completion("m", [], pin_provider="BAD"):
+            pass
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(_consume())
+
+    assert ("u1", "m") in r._affinity
+    assert r._affinity[("u1", "m")].endpoint_id == _get_endpoint_id_for(good)
