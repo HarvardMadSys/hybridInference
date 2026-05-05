@@ -297,6 +297,7 @@ class TestFetchChutes:
         request_usages = [u for u in result.usages if u.unit == "requests"]
         assert request_usages == []
 
+
 class TestFetchZai:
     @pytest.mark.asyncio
     async def test_not_configured_when_key_missing(self, monkeypatch):
