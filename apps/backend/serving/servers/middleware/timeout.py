@@ -39,6 +39,7 @@ class TimeoutMiddleware:
         self._timeout_s = timeout_s if timeout_s is not None else _parse_timeout_env()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Enforce per-request timeout and return 504 on expiry."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return

@@ -38,6 +38,7 @@ class FallbackErrorMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Catch unhandled exceptions and return structured JSON 500 responses."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return

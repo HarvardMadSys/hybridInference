@@ -24,6 +24,7 @@ class RequestLogMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Emit a structured log after each HTTP request completes."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
