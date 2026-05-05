@@ -308,6 +308,33 @@ models:
         provider_model_id: "minimax-m2.7"
 
 
+  - id: kimi-k2.6
+    name: Kimi K2.6
+    provider: chutes
+    quantization: "int4"
+    input_modalities: ["text", "image"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    aliases: ["Kimi-K2.6"]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: chutes
+        weight: 1.0
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "moonshotai/Kimi-K2.6-TEE"
+
   # ===== External Provider =====
   # - id: deepseek-r1
   #   name: DeepSeek R1 (via Chutes)
