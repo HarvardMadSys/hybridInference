@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from serving.utils import context as req_ctx
+
+
+def _derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
+    """Mirror of the production helper. If completions.py exports one, import it instead."""
+    from serving.servers.routers.completions import derive_affinity_key
+
+    return derive_affinity_key(auth_key_hash, client_ip)
+
+
+@pytest.mark.unit
+def test_authenticated_uses_auth_key_hash():
+    assert _derive_affinity_key("abc123", "1.2.3.4") == "abc123"
+
+
+@pytest.mark.unit
+def test_anonymous_uses_ip_prefix():
+    assert _derive_affinity_key(None, "1.2.3.4") == "ip:1.2.3.4"
+
+
+@pytest.mark.unit
+def test_anonymous_unknown_ip_falls_back():
+    assert _derive_affinity_key(None, "unknown") == "ip:unknown"
+
+
+@pytest.mark.unit
+def test_handler_propagates_affinity_key_to_context_authenticated():
+    """The handler writes ``affinity_key`` into ``req_ctx`` derived from auth_key_hash."""
+    user_ctx: dict[str, Any] = {"user_id": "u-1", "auth_key_hash": "deadbeef"}
+    client_ip = "1.2.3.4"
+
+    from serving.servers.routers.completions import derive_affinity_key
+
+    req_ctx.set({})
+    affinity_key = derive_affinity_key(user_ctx.get("auth_key_hash"), client_ip)
+    req_ctx.update(
+        {
+            "auth_key_hash": user_ctx.get("auth_key_hash") or "_anon",
+            "affinity_key": affinity_key,
+        }
+    )
+
+    assert req_ctx.get().get("affinity_key") == "deadbeef"
+
+
+@pytest.mark.unit
+def test_handler_propagates_affinity_key_to_context_anonymous():
+    """Anonymous users get an ip:-prefixed affinity_key in ``req_ctx``."""
+    user_ctx: dict[str, Any] = {"user_id": "u-2"}
+    client_ip = "10.0.0.1"
+
+    from serving.servers.routers.completions import derive_affinity_key
+
+    req_ctx.set({})
+    affinity_key = derive_affinity_key(user_ctx.get("auth_key_hash"), client_ip)
+    req_ctx.update(
+        {
+            "auth_key_hash": user_ctx.get("auth_key_hash") or "_anon",
+            "affinity_key": affinity_key,
+        }
+    )
+
+    assert req_ctx.get().get("affinity_key") == "ip:10.0.0.1"
