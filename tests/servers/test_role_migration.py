@@ -146,18 +146,14 @@ class TestRoleMigration:
         # Promote a row to 'pro' to simulate post-migration state.
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE users SET role = 'pro' "
-                "WHERE email = 'free-user@test.example.com'"
+                "UPDATE users SET role = 'pro' WHERE email = 'free-user@test.example.com'"
             )
 
         # Restart should re-run migration cleanly without rejecting the pro row.
         await migration_db._create_tables()
 
         async with pool.acquire() as conn:
-            roles = {
-                r["role"]
-                for r in await conn.fetch("SELECT DISTINCT role FROM users")
-            }
+            roles = {r["role"] for r in await conn.fetch("SELECT DISTINCT role FROM users")}
         assert "pro" in roles
 
     @pytest.mark.asyncio
