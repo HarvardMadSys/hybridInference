@@ -34,6 +34,11 @@ log = logging.getLogger(__name__)
 
 _REQUEST_LOG_LOGGER = "serving.servers.middleware.request_log"
 
+# 401 is normal SPA token-refresh churn (the auth_failure_spike rule covers
+# real auth attacks separately); excluding it from the failed-request rate
+# stops admin/refresh sequences from tripping the alert.
+_FAILED_REQUEST_IGNORED_STATUSES = frozenset({401})
+
 
 class _Rule(Protocol):
     name: str
@@ -92,11 +97,15 @@ class FailedRequestRateRule:
         items = self._window.items(now)
         if len(items) < self._cfg.min_samples:
             return
-        failed = sum(1 for it in items if it["status"] >= 400)
+        failed_items = [
+            it
+            for it in items
+            if it["status"] >= 400 and it["status"] not in _FAILED_REQUEST_IGNORED_STATUSES
+        ]
+        failed = len(failed_items)
         pct = (failed / len(items)) * 100.0
         if pct < self._cfg.threshold_pct:
             return
-        failed_items = [it for it in items if it["status"] >= 400]
         status_counts: collections.Counter[int] = collections.Counter(
             it["status"] for it in failed_items
         )
