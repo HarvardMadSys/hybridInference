@@ -297,6 +297,130 @@ class TestFetchChutes:
         request_usages = [u for u in result.usages if u.unit == "requests"]
         assert request_usages == []
 
+class TestFetchZai:
+    @pytest.mark.asyncio
+    async def test_not_configured_when_key_missing(self, monkeypatch):
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        results = await fetch_zai()
+        assert len(results) == 1
+        result = results[0]
+        assert result.ok is False
+        assert result.error == "not_configured"
+        assert result.name == "zai"
+
+    @pytest.mark.asyncio
+    async def test_success_parses_token_and_time_limits(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
+        time_reset_ms = 1779844254994
+        tokens_reset_ms = 1777754666484
+        payload = {
+            "code": 200,
+            "data": {
+                "limits": [
+                    {
+                        "type": "TIME_LIMIT",
+                        "usage": 4000,
+                        "currentValue": 0,
+                        "remaining": 4000,
+                        "percentage": 0,
+                        "nextResetTime": time_reset_ms,
+                    },
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "percentage": 6,
+                        "nextResetTime": tokens_reset_ms,
+                    },
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_zai()
+        result = results[0]
+        assert result.ok is True
+        assert len(result.usages) == 2
+        labels = [u.label for u in result.usages]
+        assert any("Token" in label for label in labels)
+        assert any("Time" in label for label in labels)
+        time_use = next(u for u in result.usages if "Time" in u.label)
+        assert time_use.used == 0.0
+        assert time_use.limit == 4000.0
+        assert time_use.unit == "minutes"
+        assert time_use.reset_at == datetime.fromtimestamp(time_reset_ms / 1000, tz=timezone.utc)
+        token_use = next(u for u in result.usages if "Token" in u.label)
+        assert token_use.used == 6.0
+        assert token_use.limit == 100.0
+        assert token_use.unit == "%"
+        assert token_use.reset_at == datetime.fromtimestamp(tokens_reset_ms / 1000, tz=timezone.utc)
+        assert time_use.reset_at != token_use.reset_at
+
+    @pytest.mark.asyncio
+    async def test_missing_next_reset_time_yields_none(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
+        time_reset_ms = 1779844254994
+        payload = {
+            "code": 200,
+            "data": {
+                "limits": [
+                    {
+                        "type": "TIME_LIMIT",
+                        "usage": 4000,
+                        "currentValue": 0,
+                        "remaining": 4000,
+                        "percentage": 0,
+                        "nextResetTime": time_reset_ms,
+                    },
+                    {"type": "TOKENS_LIMIT", "percentage": 8},
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_zai()
+        result = results[0]
+        assert result.ok is True
+        time_use = next(u for u in result.usages if "Time" in u.label)
+        token_use = next(u for u in result.usages if "Token" in u.label)
+        assert time_use.reset_at == datetime.fromtimestamp(time_reset_ms / 1000, tz=timezone.utc)
+        assert token_use.reset_at is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_next_reset_time_yields_none(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
+        payload = {
+            "code": 200,
+            "data": {
+                "limits": [
+                    {
+                        "type": "TIME_LIMIT",
+                        "usage": 4000,
+                        "currentValue": 0,
+                        "remaining": 4000,
+                        "percentage": 0,
+                        "nextResetTime": "not-a-number",
+                    },
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "percentage": 8,
+                        "nextResetTime": True,
+                    },
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_zai()
+        result = results[0]
+        assert result.ok is True
+        for u in result.usages:
+            assert u.reset_at is None
+
     @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
         monkeypatch.setenv("ZAI_API_KEY", "zai_abc1234567890xyz9")
