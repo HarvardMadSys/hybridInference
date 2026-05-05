@@ -41,23 +41,65 @@ def _mask_key(key: str) -> str:
     return "***configured***"
 
 
+_MAX_KEYS = 20
+
+
 def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, str]]:
     """Discover all configured API keys via numbered env var suffixes.
 
     Returns list of ``(index, value)``.  ``index=1`` for *base_var*,
-    ``index=N`` for ``{numbered_prefix}{N}``.  Stops at the first missing
+    ``index=N`` for ``{numbered_prefix}{N}``.  Numbered suffixes are
+    only scanned when the base var is set.  Stops at the first missing
     numbered var.
     """
     keys: list[tuple[int, str]] = []
     val = os.getenv(base_var, "")
-    if val:
-        keys.append((1, val))
-    for i in range(2, 20):
+    if not val:
+        return keys
+    keys.append((1, val))
+    for i in range(2, _MAX_KEYS):
         val = os.getenv(f"{numbered_prefix}{i}", "")
         if not val:
             break
         keys.append((i, val))
     return keys
+
+
+def _process_multi_key_results(
+    name: str,
+    display_name: str,
+    keys: list[tuple[int, str]],
+    results: list[ProviderQuotaResult | BaseException],
+) -> list[ProviderQuotaResult]:
+    """Process parallel fetch results into a list of ProviderQuotaResult."""
+    out: list[ProviderQuotaResult] = []
+    multi = len(keys) > 1
+    for (idx, _key), result in zip(keys, results, strict=True):
+        if isinstance(result, ProviderQuotaResult):
+            out.append(
+                result.model_copy(
+                    update={
+                        "key_index": idx if multi else None,
+                        "display_name": f"{display_name} #{idx}" if multi else display_name,
+                    }
+                )
+            )
+        else:
+            logger.error("fetch_%s: key #%d raised", name, idx, exc_info=result)
+            out.append(
+                ProviderQuotaResult(
+                    name=name,
+                    display_name=f"{display_name} #{idx}" if multi else display_name,
+                    key_index=idx if multi else None,
+                    key_configured=True,
+                    key_masked=_mask_key(_key),
+                    fetched_at=_now(),
+                    ok=False,
+                    error="unexpected",
+                    usages=[],
+                )
+            )
+    return out
 
 
 def _now() -> datetime:
@@ -197,33 +239,7 @@ async def fetch_chutes() -> list[ProviderQuotaResult]:
         return_exceptions=True,
     )
 
-    out: list[ProviderQuotaResult] = []
-    multi = len(keys) > 1
-    for (idx, _key), result in zip(keys, results, strict=True):
-        if isinstance(result, ProviderQuotaResult):
-            r = result.model_copy(
-                update={
-                    "key_index": idx if multi else None,
-                    "display_name": f"Chutes #{idx}" if multi else "Chutes",
-                }
-            )
-            out.append(r)
-        else:
-            logger.error("fetch_chutes: key #%d raised", idx, exc_info=result)
-            out.append(
-                ProviderQuotaResult(
-                    name="chutes",
-                    display_name=f"Chutes #{idx}" if multi else "Chutes",
-                    key_index=idx if multi else None,
-                    key_configured=True,
-                    key_masked=_mask_key(_key),
-                    fetched_at=_now(),
-                    ok=False,
-                    error="unexpected",
-                    usages=[],
-                )
-            )
-    return out
+    return _process_multi_key_results("chutes", "Chutes", keys, results)
 
 
 async def _fetch_chutes_request_counts(
@@ -460,33 +476,7 @@ async def fetch_zai() -> list[ProviderQuotaResult]:
         return_exceptions=True,
     )
 
-    out: list[ProviderQuotaResult] = []
-    multi = len(keys) > 1
-    for (idx, _key), result in zip(keys, results, strict=True):
-        if isinstance(result, ProviderQuotaResult):
-            r = result.model_copy(
-                update={
-                    "key_index": idx if multi else None,
-                    "display_name": f"ZAI #{idx}" if multi else "ZAI",
-                }
-            )
-            out.append(r)
-        else:
-            logger.error("fetch_zai: key #%d raised", idx, exc_info=result)
-            out.append(
-                ProviderQuotaResult(
-                    name="zai",
-                    display_name=f"ZAI #{idx}" if multi else "ZAI",
-                    key_index=idx if multi else None,
-                    key_configured=True,
-                    key_masked=_mask_key(_key),
-                    fetched_at=_now(),
-                    ok=False,
-                    error="unexpected",
-                    usages=[],
-                )
-            )
-    return out
+    return _process_multi_key_results("zai", "ZAI", keys, results)
 
 
 async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
@@ -617,33 +607,7 @@ async def fetch_minimax() -> list[ProviderQuotaResult]:
         return_exceptions=True,
     )
 
-    out: list[ProviderQuotaResult] = []
-    multi = len(keys) > 1
-    for (idx, _key), result in zip(keys, results, strict=True):
-        if isinstance(result, ProviderQuotaResult):
-            r = result.model_copy(
-                update={
-                    "key_index": idx if multi else None,
-                    "display_name": f"MiniMax #{idx}" if multi else "MiniMax",
-                }
-            )
-            out.append(r)
-        else:
-            logger.error("fetch_minimax: key #%d raised", idx, exc_info=result)
-            out.append(
-                ProviderQuotaResult(
-                    name="minimax",
-                    display_name=f"MiniMax #{idx}" if multi else "MiniMax",
-                    key_index=idx if multi else None,
-                    key_configured=True,
-                    key_masked=_mask_key(_key),
-                    fetched_at=_now(),
-                    ok=False,
-                    error="unexpected",
-                    usages=[],
-                )
-            )
-    return out
+    return _process_multi_key_results("minimax", "MiniMax", keys, results)
 
 
 _USAGE_PATTERN = re.compile(
@@ -720,33 +684,7 @@ async def fetch_ollama() -> list[ProviderQuotaResult]:
         return_exceptions=True,
     )
 
-    out: list[ProviderQuotaResult] = []
-    multi = len(keys) > 1
-    for (idx, _key), result in zip(keys, results, strict=True):
-        if isinstance(result, ProviderQuotaResult):
-            r = result.model_copy(
-                update={
-                    "key_index": idx if multi else None,
-                    "display_name": f"Ollama Cloud #{idx}" if multi else "Ollama Cloud",
-                }
-            )
-            out.append(r)
-        else:
-            logger.error("fetch_ollama: key #%d raised", idx, exc_info=result)
-            out.append(
-                ProviderQuotaResult(
-                    name="ollama",
-                    display_name=f"Ollama Cloud #{idx}" if multi else "Ollama Cloud",
-                    key_index=idx if multi else None,
-                    key_configured=True,
-                    key_masked=_mask_key(_key),
-                    fetched_at=_now(),
-                    ok=False,
-                    error="unexpected",
-                    usages=[],
-                )
-            )
-    return out
+    return _process_multi_key_results("ollama", "Ollama Cloud", keys, results)
 
 
 def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:

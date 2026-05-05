@@ -177,6 +177,12 @@ class TestDiscoverEnvKeys:
         keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
         assert keys == [(1, "key1_long_enough_1234")]
 
+    def test_numbered_only_without_base_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.setenv("ZAI_API_KEY2", "key2_long_enough_5678")
+        keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+        assert keys == []
+
 
 class TestFetchChutes:
     @pytest.mark.asyncio

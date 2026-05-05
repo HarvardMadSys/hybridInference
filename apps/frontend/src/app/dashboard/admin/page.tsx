@@ -1472,8 +1472,8 @@ export default function AdminPage() {
                       }, new Map<string, ProviderQuotaResult[]>()),
                   ).map(([name, group]) => (
                     <ProviderCard key={name} group={group} />
-                   ))}
-                 </div>
+                  ))}
+                </div>
               ))}
 
             {/* Performance sub-tab */}
