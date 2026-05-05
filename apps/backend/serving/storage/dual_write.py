@@ -792,6 +792,22 @@ class DualWriteOperationalStore(OperationalStore):
         """Delegate to primary."""
         return await self._primary.is_signup_domain_allowed(email)
 
+    # -- role quotas ---------------------------------------------------------
+
+    async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
+        """Delegate to primary (read-only)."""
+        return await self._primary.count_active_keys_for_role(role)
+
+    async def apply_role_quota(self, role: str, quota: Decimal) -> int:
+        """Write to primary, then shadow.  Returns primary's updated row count."""
+        n = await self._primary.apply_role_quota(role, quota)
+        await self._do_shadow(
+            "apply_role_quota",
+            self._shadow.apply_role_quota(role, quota),
+            role=role,
+        )
+        return n
+
     # -- site settings --------------------------------------------------------
 
     async def get_setting(self, key: str) -> Row | None:
