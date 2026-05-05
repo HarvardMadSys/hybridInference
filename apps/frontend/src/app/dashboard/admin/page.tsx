@@ -669,7 +669,9 @@ function ProviderCard({ group }: { group: ProviderQuotaResult[] }) {
               )
             ) : (
               <p
-                className={isMultiKey ? 'mt-1 text-[12px] text-gray-400' : 'mt-3 text-[12px] text-gray-400'}
+                className={
+                  isMultiKey ? 'mt-1 text-[12px] text-gray-400' : 'mt-3 text-[12px] text-gray-400'
+                }
               >
                 Quota unavailable — <span className="text-gray-500">{provider.error}</span>
               </p>
@@ -1463,13 +1465,12 @@ export default function AdminPage() {
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2">
                   {Array.from(
-                    providerQuotas
-                      .reduce((acc, p) => {
-                        const group = acc.get(p.name) || [];
-                        group.push(p);
-                        acc.set(p.name, group);
-                        return acc;
-                      }, new Map<string, ProviderQuotaResult[]>()),
+                    providerQuotas.reduce((acc, p) => {
+                      const group = acc.get(p.name) || [];
+                      group.push(p);
+                      acc.set(p.name, group);
+                      return acc;
+                    }, new Map<string, ProviderQuotaResult[]>()),
                   ).map(([name, group]) => (
                     <ProviderCard key={name} group={group} />
                   ))}
