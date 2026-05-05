@@ -45,6 +45,17 @@ router = APIRouter()
 _background_tasks: set = set()
 
 
+def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
+    """Compute the per-request affinity key used by FixedRouter.
+
+    Authenticated users are keyed by their auth_key_hash; anonymous traffic
+    by their client IP. The "ip:" prefix prevents collisions with hash values.
+    """
+    if auth_key_hash:
+        return auth_key_hash
+    return f"ip:{client_ip}"
+
+
 def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
     """Schedule a background task to log request to database without blocking HTTP response.
 
@@ -335,7 +346,14 @@ async def chat_completions(
 
     from serving.utils import context as req_ctx
 
-    req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
+    auth_key_hash = user_ctx.get("auth_key_hash")
+    affinity_key = derive_affinity_key(auth_key_hash, get_client_ip(request))
+    req_ctx.update(
+        {
+            "auth_key_hash": auth_key_hash or "_anon",
+            "affinity_key": affinity_key,
+        }
+    )
 
     # Provider pinning: allows the harness (or admin tooling) to force routing
     # to a specific backend.  Only honoured for admin users to prevent abuse.
