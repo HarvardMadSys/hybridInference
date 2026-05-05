@@ -757,14 +757,7 @@ export default function AdminPage() {
 
   // Top-level tab
   const [activeTab, setActiveTab] = useState<
-    | 'users'
-    | 'audit'
-    | 'requests'
-    | 'broadcast'
-    | 'providers'
-    | 'analytics'
-    | 'usage'
-    | 'settings'
+    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'usage' | 'settings'
   >('users');
 
   // Providers sub-tab

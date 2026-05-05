@@ -198,9 +198,11 @@ function ProviderTable({ provider, rows }: { provider: string; rows: ProviderTok
 }
 
 const FORMAT_FUNCTIONS: Record<string, (v: number) => string> = {
-  tokens: (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : v.toLocaleString()),
+  tokens: (v: number) =>
+    v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : v.toLocaleString(),
   ms: (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}s` : `${v}ms`),
-  tps: (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k tok/s` : `${v.toFixed(1)} tok/s`),
+  tps: (v: number) =>
+    v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k tok/s` : `${v.toFixed(1)} tok/s`,
 };
 
 function formatValue(v: number | null | undefined, kind: string): string {
@@ -280,9 +282,7 @@ function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
     <div>
       <div className="mb-2 flex items-center justify-between">
         <div>
-          <h2 className="text-[14px] font-semibold text-gray-900">
-            Performance metrics
-          </h2>
+          <h2 className="text-[14px] font-semibold text-gray-900">Performance metrics</h2>
           <p className="text-[11px] text-gray-400">
             Prompt/response length, time-to-first-token, and inter-token latency distributions.
           </p>
