@@ -98,7 +98,9 @@ Fix any issues found.
 ## Step 5 — Format, lint, and test
 
 ```
-uv run ruff check --fix --unsafe-fixes
+make lint
+make format
+make test
 ```
 
 All tests must pass before proceeding. If any test fails, fix the code — never skip or mark tests as expected failures to work around issues.
