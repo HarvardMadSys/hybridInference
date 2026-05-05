@@ -809,6 +809,7 @@ class FixedRouter(BaseRouter):
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
             self._on_failure(_get_endpoint_id(primary), reason="chat_exception")
+            self._drop_affinity(model_id)
             # Pin mode: never fallback — the caller explicitly requested this
             # provider, so a silent switch would produce misleading results.
             if pin_provider:
@@ -904,6 +905,7 @@ class FixedRouter(BaseRouter):
                 stage="adapter_stream",
             ).inc()
             self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+            self._drop_affinity(model_id)
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
                 raise primary_error

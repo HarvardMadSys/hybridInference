@@ -267,3 +267,77 @@ def test_disabled_via_env(monkeypatch):
     req_ctx.set({"affinity_key": "u1"})
     r._select_adapter("m")
     assert r._affinity == {}
+
+
+def _get_endpoint_id_for(adapter):
+    """Mirror routers._get_endpoint_id without exposing the helper as public."""
+    return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
+
+
+@pytest.mark.unit
+def test_chat_completion_drops_affinity_on_primary_error():
+    """Affinity entry is gone before fallback runs (regardless of fallback success)."""
+    import asyncio
+
+    r = FixedRouter()
+    bad = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
+    good = _EchoAdapter(_cfg("m", provider="GOOD", base_url="http://GOOD"))
+    r.register_route("m", [(bad, 0.99), (good, 0.01)])
+
+    req_ctx.set({"affinity_key": "u1"})
+    # Pin to BAD so _select_adapter returns it deterministically via affinity.
+    r._affinity[("u1", "m")] = _Affinity(
+        endpoint_id=_get_endpoint_id_for(bad),
+        expires_at=time.monotonic() + 60,
+    )
+
+    # Fallback (good) succeeds; entry must have been dropped before fallback ran.
+    # If it had not been dropped, the post-success path would never write a new
+    # entry (writes happen in _select_adapter, not in the fallback branch),
+    # so we'd see the stale BAD-pinned entry survive.
+    resp = asyncio.run(r.chat_completion("m", []))
+    assert resp is not None
+    assert ("u1", "m") not in r._affinity
+
+
+@pytest.mark.unit
+def test_chat_completion_drops_affinity_when_all_fail():
+    """Affinity dropped even when no fallback is available."""
+    import asyncio
+
+    r = FixedRouter()
+    bad = _FailAdapter(_cfg("m", provider="BAD"))
+    r.register_route("m", [(bad, 1.0)])
+
+    req_ctx.set({"affinity_key": "u1"})
+    r._affinity[("u1", "m")] = _Affinity(
+        endpoint_id=_get_endpoint_id_for(bad),
+        expires_at=time.monotonic() + 60,
+    )
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(r.chat_completion("m", []))
+    assert ("u1", "m") not in r._affinity
+
+
+@pytest.mark.unit
+def test_stream_chat_completion_drops_affinity_on_primary_error():
+    import asyncio
+
+    r = FixedRouter()
+    bad = _FailAdapter(_cfg("m", provider="BAD"))
+    r.register_route("m", [(bad, 1.0)])
+
+    req_ctx.set({"affinity_key": "u1"})
+    r._affinity[("u1", "m")] = _Affinity(
+        endpoint_id=_get_endpoint_id_for(bad),
+        expires_at=time.monotonic() + 60,
+    )
+
+    async def _consume():
+        async for _ in r.stream_chat_completion("m", []):
+            pass
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(_consume())
+    assert ("u1", "m") not in r._affinity
