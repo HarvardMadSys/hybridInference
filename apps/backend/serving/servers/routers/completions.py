@@ -607,15 +607,16 @@ async def chat_completions(
                 # ordering (schedule_increment -> schedule_log).
                 if not is_synthetic_probe and routing_info:
                     _usage = (response_for_db.get("usage") if response_for_db else usage_data) or {}
-                    stream_routing = await cost_tracker.schedule_increment(
-                        user_id=user_id,
-                        routing=stream_routing,
-                        prompt_tokens=int(_usage.get("prompt_tokens", 0) or 0),
-                        completion_tokens=int(_usage.get("completion_tokens", 0) or 0),
-                        cache_read_tokens=int(_usage.get("cache_read_tokens", 0) or 0),
-                        cache_write_tokens=int(_usage.get("cache_write_tokens", 0) or 0),
-                        reasoning_tokens=int(_usage.get("reasoning_tokens", 0) or 0),
-                    )
+                    if _usage:
+                        stream_routing = await cost_tracker.schedule_increment(
+                            user_id=user_id,
+                            routing=stream_routing,
+                            prompt_tokens=int(_usage.get("prompt_tokens", 0) or 0),
+                            completion_tokens=int(_usage.get("completion_tokens", 0) or 0),
+                            cache_read_tokens=int(_usage.get("cache_read_tokens", 0) or 0),
+                            cache_write_tokens=int(_usage.get("cache_write_tokens", 0) or 0),
+                            reasoning_tokens=int(_usage.get("reasoning_tokens", 0) or 0),
+                        )
 
                 # Prepare data for background database logging (don't await here!)
                 if log_store and not is_synthetic_probe:
@@ -769,15 +770,16 @@ async def chat_completions(
             _ns_usage = (
                 normalize_usage(response.get("usage")) if isinstance(response, dict) else None
             ) or {}
-            routing = await cost_tracker.schedule_increment(
-                user_id=user_id,
-                routing=routing,
-                prompt_tokens=int(_ns_usage.get("prompt_tokens", 0) or 0),
-                completion_tokens=int(_ns_usage.get("completion_tokens", 0) or 0),
-                cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
-                cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
-                reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
-            )
+            if _ns_usage:
+                routing = await cost_tracker.schedule_increment(
+                    user_id=user_id,
+                    routing=routing,
+                    prompt_tokens=int(_ns_usage.get("prompt_tokens", 0) or 0),
+                    completion_tokens=int(_ns_usage.get("completion_tokens", 0) or 0),
+                    cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
+                    cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
+                    reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
+                )
 
         # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
