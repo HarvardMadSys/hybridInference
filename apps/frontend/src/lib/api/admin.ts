@@ -678,6 +678,7 @@ export interface ProviderQuotaUsage {
 export interface ProviderQuotaResult {
   name: string;
   display_name: string;
+  key_index: number | null;
   key_configured: boolean;
   key_masked: string | null;
   fetched_at: string | null;
