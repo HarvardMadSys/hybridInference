@@ -124,6 +124,13 @@ class AsyncHTTPClient:
     ) -> AsyncIterator[str]:
         """Stream a POST request line-by-line.
 
+        Performs at most one transparent retry when the underlying TCP socket
+        was a stale pooled keep-alive connection that the upstream had already
+        half-closed. aiohttp signals that case with ``ServerDisconnectedError``
+        before any response bytes are delivered. Retry only fires when no
+        chunk has been yielded to the caller yet, so the consumer never sees
+        duplicated data.
+
         Args:
             url: Target URL.
             json: JSON payload.
@@ -138,6 +145,40 @@ class AsyncHTTPClient:
         Raises:
             aiohttp.ClientResponseError: If the response status is not 2xx.
         """
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            chunks_yielded = 0
+            try:
+                async for chunk in self._stream_post_once(
+                    url, json=json, headers=headers, timeout=timeout, mode=mode
+                ):
+                    chunks_yielded += 1
+                    yield chunk
+                return
+            except aiohttp.ServerDisconnectedError:
+                if chunks_yielded > 0 or attempt == max_attempts - 1:
+                    raise
+                ctx = req_ctx.get()
+                API_RETRIES.labels(
+                    provider=str(ctx.get("provider", "unknown")),
+                    reason="ServerDisconnectedError",
+                ).inc()
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Stale keep-alive socket on stream_post %s; retrying once", url
+                )
+
+    async def _stream_post_once(
+        self,
+        url: str,
+        *,
+        json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: aiohttp.ClientTimeout | None = None,
+        mode: str = "sse",
+    ) -> AsyncIterator[str]:
+        """Single-attempt streaming POST. See ``stream_post`` for retry policy."""
         session = await self._ensure_session()
         # Streaming responses can run for minutes (LLM generation + queue time).
         # Let the upstream manage its own lifecycle via [DONE] sentinel.

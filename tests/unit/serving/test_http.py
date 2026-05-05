@@ -97,6 +97,75 @@ async def test_stream_post_sse_wraps_lines(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_stream_post_retries_once_on_stale_keepalive(monkeypatch):
+    """Stale pooled connection: first attempt raises ServerDisconnectedError
+    before yielding anything; transparent retry succeeds."""
+    client = AsyncHTTPClient.shared()
+    attempts = {"n": 0}
+
+    async def fake_once(self, url, *, json=None, headers=None, timeout=None, mode="sse"):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise aiohttp.ServerDisconnectedError()
+        for line in ('data: {"x":1}', "data: [DONE]"):
+            yield line
+
+    monkeypatch.setattr(AsyncHTTPClient, "_stream_post_once", fake_once)
+
+    lines: list[str] = []
+    async for line in client.stream_post("http://example/sse", json={}, mode="sse"):
+        lines.append(line)
+
+    assert attempts["n"] == 2
+    assert lines == ['data: {"x":1}', "data: [DONE]"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_post_does_not_retry_after_first_chunk(monkeypatch):
+    """Mid-stream disconnect must not retry: caller has already received data."""
+    client = AsyncHTTPClient.shared()
+    attempts = {"n": 0}
+
+    async def fake_once(self, url, *, json=None, headers=None, timeout=None, mode="sse"):
+        attempts["n"] += 1
+        yield 'data: {"x":1}'
+        raise aiohttp.ServerDisconnectedError()
+
+    monkeypatch.setattr(AsyncHTTPClient, "_stream_post_once", fake_once)
+
+    received: list[str] = []
+    with pytest.raises(aiohttp.ServerDisconnectedError):
+        async for line in client.stream_post("http://example/sse", json={}, mode="sse"):
+            received.append(line)
+
+    assert attempts["n"] == 1
+    assert received == ['data: {"x":1}']
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_post_gives_up_after_two_consecutive_disconnects(monkeypatch):
+    """If both attempts fail before yielding, the second error propagates."""
+    client = AsyncHTTPClient.shared()
+    attempts = {"n": 0}
+
+    async def fake_once(self, url, *, json=None, headers=None, timeout=None, mode="sse"):
+        attempts["n"] += 1
+        raise aiohttp.ServerDisconnectedError()
+        yield  # pragma: no cover  # make this an async generator
+
+    monkeypatch.setattr(AsyncHTTPClient, "_stream_post_once", fake_once)
+
+    with pytest.raises(aiohttp.ServerDisconnectedError):
+        async for _ in client.stream_post("http://example/sse", json={}, mode="sse"):
+            pass
+
+    assert attempts["n"] == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_stream_post_ndjson(monkeypatch):
     client = AsyncHTTPClient.shared()
 

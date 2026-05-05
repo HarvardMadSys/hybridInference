@@ -44,9 +44,13 @@ if "aiohttp" not in sys.modules:  # pragma: no cover - import-time shim
             self.headers = headers
             super().__init__(message)
 
+    class _ServerDisconnectedError(Exception):
+        """Stub for aiohttp.ServerDisconnectedError."""
+
     sys.modules["aiohttp"] = SimpleNamespace(
         ClientError=Exception,
         ClientResponseError=_ClientResponseError,
+        ServerDisconnectedError=_ServerDisconnectedError,
         ClientTimeout=lambda total=None: None,
         ClientSession=_DummySession,
         TCPConnector=lambda **k: None,
