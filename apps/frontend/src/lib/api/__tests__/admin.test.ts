@@ -4,7 +4,8 @@ import { setAccessToken } from '../client';
 
 const fetchMock = vi.fn();
 
-// Build a JWT-shaped token that won't expire for a very long time
+// Build a JWT-shaped token that won't expire during this test run (1h is more
+// than enough — vitest aborts long before that).
 function makeFakeToken(): string {
   const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 }));

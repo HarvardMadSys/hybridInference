@@ -5,7 +5,7 @@
 
 ## Problem
 
-Today, the daily USD spend quota for any new user's API key is seeded from a single env var `SIGNUP_DEFAULT_DAILY_QUOTA_USD` (read in [`get_default_daily_quota()`](../../apps/backend/serving/servers/routers/user_routes.py#L179)). Every role (`free`, `pro`, `internal`, `admin`) gets the same starting quota. There is no admin UI to change it. To raise the quota for `internal` users, an operator must edit env vars and restart the gateway.
+Today, the daily USD spend quota for any new user's API key is seeded from a single env var `SIGNUP_DEFAULT_DAILY_QUOTA_USD` (originally read in a sync `get_default_daily_quota()` helper, now replaced by [`get_default_daily_quota_for_role()`](../../apps/backend/serving/servers/routers/user_routes.py) — see Implementation §1). Every role (`free`, `pro`, `internal`, `admin`) gets the same starting quota. There is no admin UI to change it. To raise the quota for `internal` users, an operator must edit env vars and restart the gateway.
 
 We want admins to set a different default daily quota per role and to bulk-apply that quota to existing users' active API keys.
 
@@ -18,7 +18,6 @@ We want admins to set a different default daily quota per role and to bulk-apply
 
 ## Non-Goals
 
-- No audit log of bulk apply operations.
 - No undo / snapshot.
 - No partial apply (e.g. only NULL keys). Bulk apply always overwrites.
 - No per-user preview list. Just a count.

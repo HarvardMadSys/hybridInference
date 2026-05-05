@@ -25,12 +25,40 @@ async def postgres_op_store():
     """
     import asyncpg
 
-    test_db_name = os.getenv("TEST_DB_NAME", "freeinference_test_db")
+    # Resolve a per-xdist-worker database name so parallel CI workers don't
+    # share a single test DB and race on the bulk DELETEs in setup/teardown.
+    base_db_name = os.getenv("TEST_DB_NAME", "freeinference_test_db")
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
+    test_db_name = base_db_name if worker_id == "master" else f"{base_db_name}_{worker_id}"
     if _ALLOWED_TEST_DB_PATTERN not in (test_db_name or ""):
         pytest.fail(
             f"SAFETY: TEST_DB_NAME='{test_db_name}' does not contain "
             f"'{_ALLOWED_TEST_DB_PATTERN}'. Refusing to run against a non-test database."
         )
+
+    if worker_id != "master":
+        # Provision the worker-specific DB if it doesn't exist yet. Idempotent.
+        try:
+            admin_conn = await asyncpg.connect(
+                host=os.getenv("TEST_DB_HOST", "localhost"),
+                port=int(os.getenv("TEST_DB_PORT", "5432")),
+                user=os.getenv("TEST_DB_USER", "postgres"),
+                password=os.getenv("TEST_DB_PASSWORD", "postgres"),
+                database="postgres",
+                timeout=5,
+            )
+            try:
+                exists = await admin_conn.fetchval(
+                    "SELECT 1 FROM pg_database WHERE datname = $1", test_db_name
+                )
+                if not exists:
+                    await admin_conn.execute(f'CREATE DATABASE "{test_db_name}"')
+            finally:
+                await admin_conn.close()
+        except Exception:
+            # If postgres isn't reachable here, the create_pool call below
+            # will fail and we'll skip the test cleanly.
+            pass
 
     db_config = {
         "host": os.getenv("TEST_DB_HOST", "localhost"),
