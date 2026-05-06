@@ -385,6 +385,8 @@ class TestListUsersNewFilters:
             ],
             # month's costs lookup (post-fetch enrichment)
             [],
+            # alltime costs lookup (post-fetch enrichment)
+            [],
         ]
 
         total, rows, _ = await store.list_users(min_cost_today=Decimal("10"))
