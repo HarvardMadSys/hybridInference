@@ -70,6 +70,10 @@ DEEPSEEK_API_KEY=your-deepseek-api-key
 GEMINI_API_KEY=your-gemini-api-key
 DB_HOST=localhost
 DB_NAME=freeinference_db
+DB_USER=postgres
+DB_PASSWORD=postgres
+JWT_SECRET_KEY=replace-me
+API_KEY_SECRET=replace-me
 ```
 
 ### Run Locally
