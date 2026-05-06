@@ -27,4 +27,5 @@ remote_deployment:
       - glm-5.1
   - endpoint: https://api.deepseek.com
     models:
+      - deepseek-v4-flash
       - deepseek-v4-pro
