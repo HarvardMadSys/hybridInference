@@ -425,6 +425,7 @@ The `kind` field in each route entry selects the backend adapter. All kinds mark
 | `deepseek` | OpenAI-compat | DeepSeek API (applies DeepSeek usage profile) |
 | `zai` | OpenAI-compat | Z.AI API (uses non-`/v1` chat path) |
 | `minimax` | OpenAI-compat | MiniMax API (applies MiniMax usage profile) |
+| `cliproxy` | OpenAI-compat | CLI proxy endpoint for OpenAI-compatible models |
 | `openrouter` | Custom | OpenRouter aggregator. Use the bracket form `openrouter[<slug>]` (e.g. `openrouter[deepinfra]`) to pin a sub-provider. |
 | `gemini` | Custom | Google Gemini API (message format translation) |
 | `claude` | Custom | Anthropic Claude API (direct API key, not subscription) |

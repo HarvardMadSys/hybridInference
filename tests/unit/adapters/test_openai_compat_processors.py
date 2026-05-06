@@ -378,6 +378,44 @@ async def test_zai_profile_uses_chat_path_and_forwards_supported_extra_params():
     assert call_kwargs["json"]["tool_stream"] is True
 
 
+@pytest.mark.asyncio
+async def test_reasoning_effort_forwarded_when_supported():
+    response = {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 1234567890,
+        "model": "gpt-5.5",
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+    }
+    config = ModelConfig(
+        id="gpt-5.5",
+        name="GPT-5.5",
+        provider="cliproxy",
+        base_url="http://cliproxy.local/v1",
+        provider_model_id="gpt-5.5",
+        supported_params=["max_tokens", "reasoning_effort"],
+    )
+    adapter = OpenAICompatAdapter(config)
+    mock_post = AsyncMock(return_value=response)
+    adapter.http = MagicMock()
+    adapter.http.json_post_with_retry = mock_post
+
+    await adapter.chat_completion(
+        [{"role": "user", "content": "hi"}],
+        reasoning_effort="high",
+    )
+
+    call_kwargs = mock_post.call_args.kwargs
+    assert call_kwargs["url"] == "http://cliproxy.local/v1/chat/completions"
+    assert call_kwargs["json"]["reasoning_effort"] == "high"
+
+
 # --- get_processor factory tests ---
 
 
