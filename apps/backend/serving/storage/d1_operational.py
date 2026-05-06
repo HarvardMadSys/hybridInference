@@ -19,7 +19,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
-from serving.storage.base import OperationalStore, Row
+from serving.storage.base import OperationalStore, ProviderKeyRow, Row
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -1648,3 +1648,94 @@ class D1OperationalStore(OperationalStore):
             "SELECT key, value, value_type, updated_at, updated_by FROM site_settings ORDER BY key"
         )
         return result.rows
+
+    # -- provider api keys ---------------------------------------------------
+
+    async def add_provider_key(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        label: str | None,
+        created_by: str | None,
+        key_id: str | None = None,
+    ) -> str:
+        """Insert a new provider API key row. Returns the row uuid."""
+        import uuid
+
+        if key_id is None:
+            key_id = str(uuid.uuid4())
+        prefix = _mask_provider_key(api_key)
+        await self._d1.execute(
+            "INSERT INTO provider_api_keys "
+            "(id, provider, api_key, key_prefix, label, status, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
+            [key_id, provider, api_key, prefix, label, created_by, _now_iso()],
+        )
+        return key_id
+
+    async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
+        """Return masked active provider key rows, newest first."""
+        if provider is None:
+            result = await self._d1.query(
+                "SELECT id, provider, key_prefix, label, status, created_at "
+                "FROM provider_api_keys WHERE status = 'active' "
+                "ORDER BY created_at DESC"
+            )
+        else:
+            result = await self._d1.query(
+                "SELECT id, provider, key_prefix, label, status, created_at "
+                "FROM provider_api_keys WHERE status = 'active' AND provider = ? "
+                "ORDER BY created_at DESC",
+                [provider],
+            )
+        out: list[ProviderKeyRow] = []
+        for raw in result.rows:
+            r = _parse_row_timestamps(raw) or {}
+            out.append(
+                ProviderKeyRow(
+                    id=r["id"],
+                    provider=r["provider"],
+                    key_prefix=r["key_prefix"],
+                    label=r.get("label"),
+                    status=r["status"],
+                    created_at=r["created_at"],
+                )
+            )
+        return out
+
+    async def list_provider_keys_full(self, provider: str) -> list[str]:
+        """Return raw active API keys for *provider* (boot-time use only)."""
+        result = await self._d1.query(
+            "SELECT api_key FROM provider_api_keys "
+            "WHERE provider = ? AND status = 'active' "
+            "ORDER BY created_at ASC",
+            [provider],
+        )
+        return [r["api_key"] for r in result.rows]
+
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        """Return ``(provider, raw_key)`` for *key_id*, or None if absent."""
+        result = await self._d1.query(
+            "SELECT provider, api_key FROM provider_api_keys WHERE id = ?",
+            [key_id],
+        )
+        if not result.rows:
+            return None
+        row = result.rows[0]
+        return (row["provider"], row["api_key"])
+
+    async def delete_provider_key(self, key_id: str) -> bool:
+        """Hard-delete the provider key row. Returns True when a row was removed."""
+        result = await self._d1.execute(
+            "DELETE FROM provider_api_keys WHERE id = ?",
+            [key_id],
+        )
+        return int(getattr(result, "changes", 0) or 0) > 0
+
+
+def _mask_provider_key(api_key: str) -> str:
+    """Mask an upstream provider API key for display."""
+    if len(api_key) >= 16:
+        return f"{api_key[:8]}...{api_key[-4:]}"
+    return "***configured***"

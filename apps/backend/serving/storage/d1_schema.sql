@@ -213,3 +213,22 @@ CREATE TABLE IF NOT EXISTS site_settings (
     updated_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_by  TEXT
 );
+
+-- -------------------------------------------------------------------
+-- provider_api_keys (admin-managed upstream provider credentials,
+-- augments env-var-sourced keys at boot)
+-- -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS provider_api_keys (
+    id          TEXT PRIMARY KEY,
+    provider    TEXT NOT NULL,
+    api_key     TEXT NOT NULL,
+    key_prefix  TEXT NOT NULL,
+    label       TEXT,
+    status      TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active', 'disabled')),
+    created_by  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_status
+    ON provider_api_keys(provider, status);

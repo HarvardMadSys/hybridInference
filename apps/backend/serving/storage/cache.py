@@ -17,7 +17,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from .base import OperationalStore, Row
+from .base import OperationalStore, ProviderKeyRow, Row
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -694,3 +694,39 @@ class CachedOperationalStore(OperationalStore):
     async def get_users_summary(self, **kwargs: Any) -> Row:
         """Delegate to wrapped store (no caching — admin dashboard endpoint)."""
         return await self._store.get_users_summary(**kwargs)
+
+    # -- provider api keys (pass-through) ------------------------------------
+
+    async def add_provider_key(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        label: str | None,
+        created_by: str | None,
+        key_id: str | None = None,
+    ) -> str:
+        """Delegate to wrapped store."""
+        return await self._store.add_provider_key(
+            provider=provider,
+            api_key=api_key,
+            label=label,
+            created_by=created_by,
+            key_id=key_id,
+        )
+
+    async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_keys(provider)
+
+    async def list_provider_keys_full(self, provider: str) -> list[str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_keys_full(provider)
+
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_provider_key_full(key_id)
+
+    async def delete_provider_key(self, key_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_provider_key(key_id)

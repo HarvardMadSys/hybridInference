@@ -11,7 +11,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any, Literal
 
-from serving.storage.base import OperationalStore, Row
+from serving.storage.base import OperationalStore, ProviderKeyRow, Row
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -414,6 +414,27 @@ class PostgresOperationalStore(OperationalStore):
                 updated_by TEXT
             )
         """)
+
+        # --- provider_api_keys ---
+        # Runtime-managed upstream provider credentials added by admins
+        # through the dashboard. Augments env-var-sourced keys at boot.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_api_keys (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                key_prefix TEXT NOT NULL,
+                label TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'disabled')),
+                created_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_status "
+            "ON provider_api_keys(provider, status)"
+        )
 
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
@@ -2085,3 +2106,104 @@ class PostgresOperationalStore(OperationalStore):
                 role,
             )
         return _parse_command_tag_count(tag)
+
+    # -- provider api keys ---------------------------------------------------
+
+    async def add_provider_key(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        label: str | None,
+        created_by: str | None,
+        key_id: str | None = None,
+    ) -> str:
+        """Insert a new provider API key row. Returns the row uuid."""
+        import uuid
+
+        if key_id is None:
+            key_id = str(uuid.uuid4())
+        prefix = _mask_provider_key(api_key)
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO provider_api_keys "
+                "(id, provider, api_key, key_prefix, label, created_by) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                key_id,
+                provider,
+                api_key,
+                prefix,
+                label,
+                created_by,
+            )
+        return key_id
+
+    async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
+        """Return masked active provider key rows, newest first."""
+        async with self._pool.acquire() as conn:
+            if provider is None:
+                rows = await conn.fetch(
+                    "SELECT id, provider, key_prefix, label, status, created_at "
+                    "FROM provider_api_keys WHERE status = 'active' "
+                    "ORDER BY created_at DESC"
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT id, provider, key_prefix, label, status, created_at "
+                    "FROM provider_api_keys WHERE status = 'active' AND provider = $1 "
+                    "ORDER BY created_at DESC",
+                    provider,
+                )
+        return [
+            ProviderKeyRow(
+                id=r["id"],
+                provider=r["provider"],
+                key_prefix=r["key_prefix"],
+                label=r["label"],
+                status=r["status"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+
+    async def list_provider_keys_full(self, provider: str) -> list[str]:
+        """Return raw active API keys for *provider* (boot-time use only)."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT api_key FROM provider_api_keys "
+                "WHERE provider = $1 AND status = 'active' "
+                "ORDER BY created_at ASC",
+                provider,
+            )
+        return [r["api_key"] for r in rows]
+
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        """Return ``(provider, raw_key)`` for *key_id*, or None if absent."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT provider, api_key FROM provider_api_keys WHERE id = $1",
+                key_id,
+            )
+        if row is None:
+            return None
+        return (row["provider"], row["api_key"])
+
+    async def delete_provider_key(self, key_id: str) -> bool:
+        """Hard-delete the provider key row. Returns True when a row was removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM provider_api_keys WHERE id = $1",
+                key_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+
+def _mask_provider_key(api_key: str) -> str:
+    """Mask an upstream provider API key for display.
+
+    Returns first 8 + "..." + last 4 when the key is long enough; otherwise
+    a generic placeholder so short secrets are never leaked.
+    """
+    if len(api_key) >= 16:
+        return f"{api_key[:8]}...{api_key[-4:]}"
+    return "***configured***"

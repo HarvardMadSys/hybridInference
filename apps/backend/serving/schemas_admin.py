@@ -925,3 +925,56 @@ class AddSignupAllowedDomainRequest(BaseModel):  # type: ignore[no-any-unimporte
     """Request body for ``POST /admin/signup-domains``."""
 
     domain: str = Field(..., min_length=1, max_length=255)
+
+
+# ---------------------------------------------------------------------------
+# Provider API keys (admin-managed runtime credentials)
+# ---------------------------------------------------------------------------
+
+
+class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]
+    """Single masked provider API key row in the admin list view."""
+
+    id: str | None = Field(
+        None,
+        description="Row id (None for env-var-sourced entries)",
+    )
+    provider: str
+    key_prefix: str
+    label: str | None = None
+    source: Literal["env", "db"]
+    status: str = "active"
+    created_at: datetime | None = None
+
+
+class ListProviderApiKeysResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``GET /admin/provider-keys``."""
+
+    provider: str | None = None
+    keys: list[ProviderApiKeyItem]
+
+
+class AddProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for ``POST /admin/provider-keys``."""
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    api_key: str = Field(..., min_length=1, max_length=4096)
+    label: str | None = Field(None, max_length=255)
+
+
+class AddProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys``."""
+
+    key: ProviderApiKeyItem
+    pools_updated: int = Field(
+        ...,
+        description="Number of in-process key pools the new key was injected into",
+    )
+
+
+class DeleteProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``DELETE /admin/provider-keys/{id}``."""
+
+    id: str
+    provider: str
+    pools_updated: int
