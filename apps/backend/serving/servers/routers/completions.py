@@ -553,7 +553,14 @@ async def chat_completions(
                                         f"Extracted usage from chunk {chunk_count}: {usage_data}"
                                     )
                                 if result.routing_info:
-                                    routing_info = result.routing_info
+                                    # Merge so the synthetic routing chunk emitted at the
+                                    # start (provider/base_url/endpoint_id) isn't overwritten
+                                    # by a later metadata-only chunk (e.g., RouteWise's
+                                    # decision_info chunk emitted just before [DONE]).
+                                    if routing_info is None:
+                                        routing_info = dict(result.routing_info)
+                                    else:
+                                        routing_info.update(result.routing_info)
                                     logger.debug(
                                         f"Extracted routing from chunk {chunk_count}: {routing_info}"
                                     )

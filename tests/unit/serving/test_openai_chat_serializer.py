@@ -143,6 +143,49 @@ def test_sanitize_reasoning_with_tool_calls_stripped():
 
 
 @pytest.mark.unit
+def test_sanitize_suppresses_synthetic_routing_only_chunk():
+    """Synthetic routing chunk (no choices, no usage) is not forwarded.
+
+    FixedRouter.stream_chat_completion emits a metadata-only chunk at the
+    start of every stream so completions.py can recover the upstream
+    provider/base_url/endpoint_id. That chunk must be consumed internally,
+    never reach the SSE client.
+    """
+    chunk = {
+        "choices": [],
+        "_routing": {"provider": "anthropic", "base_url": "https://api.anthropic.com"},
+    }
+    result = sanitize_chunk(dict(chunk), SerializerMode.REASONING_PASSTHROUGH)
+    assert result.should_forward is False
+    assert result.chunk_json is None
+    assert result.routing_info == {
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+    }
+
+    # Same in strict mode.
+    result_strict = sanitize_chunk(dict(chunk), SerializerMode.STRICT_OPENAI)
+    assert result_strict.should_forward is False
+    assert result_strict.chunk_json is None
+
+
+@pytest.mark.unit
+def test_sanitize_keeps_empty_choices_chunk_when_usage_present():
+    """An empty-choices chunk that carries usage is still forwarded.
+
+    Some providers emit a final chunk with empty choices but populated
+    usage. Suppressing it would lose the usage payload to clients.
+    """
+    chunk = {
+        "choices": [],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+    result = sanitize_chunk(dict(chunk), SerializerMode.REASONING_PASSTHROUGH)
+    assert result.should_forward is True
+    assert result.usage_data == {"prompt_tokens": 10, "completion_tokens": 5}
+
+
+@pytest.mark.unit
 def test_sanitize_response_strict_removes_reasoning_content():
     """Strict mode: non-stream response should not expose reasoning_content."""
     response = {
