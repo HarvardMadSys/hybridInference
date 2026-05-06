@@ -9,21 +9,21 @@
 
 ## Setup
 
-| Config | Model | Precision | Framework | Image |
-|---|---|---|---|---|
-| **Qwen / SGLang** | `Qwen/Qwen3.6-35B-A3B-FP8` | FP8 | SGLang | `lmsysorg/sglang:latest` |
-| **Qwen / vLLM** | `Qwen/Qwen3.6-35B-A3B-FP8` | FP8 | vLLM v0.20.1 | `vllm/vllm-openai:v0.20.1-ubuntu2404` |
-| **GLM / vLLM** | `zai-org/GLM-4.7-Flash` | BF16 | vLLM v0.20.1 | `scitrera/dgx-spark-vllm:0.14.0-t5`† |
+| Config | Model | Precision | Architecture | Framework | Image | Max ctx |
+|---|---|---|---|---|---|---|
+| **Qwen / SGLang** | `Qwen/Qwen3.6-35B-A3B-FP8` | FP8 | MoE (3.6B active / 35B total) | SGLang | `lmsysorg/sglang:latest` | 262,144 |
+| **Qwen / vLLM** | `Qwen/Qwen3.6-35B-A3B-FP8` | FP8 | MoE (3.6B active / 35B total) | vLLM v0.20.1 | `vllm/vllm-openai:v0.20.1-ubuntu2404` | 8,192 |
+| **GLM / vLLM** | `zai-org/GLM-4.7-Flash` | BF16 | MoE (`glm4_moe_lite`) | vLLM v0.20.1 | `scitrera/dgx-spark-vllm:0.14.0-t5`† | 8,192 |
 
-† Standard vLLM images (v0.18.0, v0.13.0) do not support the `glm4_moe_lite` architecture. The scitrera image bundles Transformers 5.0.0.dev0 which includes GLM-4.7 support. vLLM v0.20.1 (Transformers 5.7.0) was used for the Qwen run because `qwen3_5_moe` is supported from that version onwards.
+† Standard vLLM images (v0.18.0, v0.13.0) do not support `glm4_moe_lite` (GLM-4.7-Flash) or `qwen3_5_moe` (Qwen3.6-35B). The scitrera image bundles Transformers 5.0.0.dev0 which adds GLM-4.7 support; vLLM v0.20.1 (Transformers 5.7.0) adds `qwen3_5_moe` support.
 
-**Methodology.** Prefill latency is isolated by sending `max_tokens=1` requests against the same prompt. Decode throughput is computed as `(output_tokens − 1) / (total_latency − prefill_latency)` using the full-generation response. Both phases are measured separately and averaged over 3 runs.
+**Methodology.** Prefill latency is isolated by sending `max_tokens=1` requests against the same prompt. Decode throughput is computed as `(output_tokens − 1) / (total_latency − prefill_latency)` using the full-generation response. Both phases are measured separately and averaged over 3 runs. All GPU memory utilization set to 80%.
 
 ---
 
 ## 1. Decode Throughput
 
-![Decode throughput vs prompt length](fig1_decode_throughput.png)
+![Decode throughput vs prompt length](figures/fig1_decode_throughput.png)
 
 Decode throughput is the dominant cost for any response longer than a few tokens. All measurements are averaged across output lengths 64–512.
 
@@ -42,7 +42,7 @@ Decode throughput is the dominant cost for any response longer than a few tokens
 - **GLM-4.7-Flash on vLLM is ~2× slower in decode (~25 tok/s)** throughout. This is likely attributable to: (a) BF16 vs FP8 — BF16 doubles memory bandwidth demand per token; (b) the default MoE kernel config (vLLM logged `Using default MoE config — performance might be sub-optimal`); (c) GLM-4.7-Flash being a larger active-parameter model per decode step than Qwen3.6's MoE routing suggests.
 - Decode throughput decreases slightly with longer inputs (~2% across the 30× input range tested) due to the growing KV cache inflating attention cost per decode step.
 
-![Decode throughput vs output length (in≈886)](fig4_decode_vs_output.png)
+![Decode throughput vs output length (in≈886)](figures/fig4_decode_vs_output.png)
 
 Decode throughput is stable across output lengths 64–512, confirming it is not affected by response length.
 
@@ -50,7 +50,7 @@ Decode throughput is stable across output lengths 64–512, confirming it is not
 
 ## 2. Prefill Throughput
 
-![Prefill throughput vs prompt length](fig2_prefill_throughput.png)
+![Prefill throughput vs prompt length](figures/fig2_prefill_throughput.png)
 
 | Prompt tokens | Qwen / SGLang | Qwen / vLLM | GLM / vLLM |
 |---|---|---|---|
@@ -68,7 +68,7 @@ Decode throughput is stable across output lengths 64–512, confirming it is not
 
 ## 3. Prefill Latency
 
-![Prefill latency vs prompt length](fig3_prefill_latency.png)
+![Prefill latency vs prompt length](figures/fig3_prefill_latency.png)
 
 | Prompt tokens | Qwen / SGLang | Qwen / vLLM | GLM / vLLM |
 |---|---|---|---|
@@ -84,7 +84,7 @@ GLM-4.7-Flash's prefill latency grows sublinearly: from 122 ms at 115 tokens to 
 
 ## 4. End-to-End Latency
 
-![End-to-end latency at in≈886 tokens](fig5_e2e_latency.png)
+![End-to-end latency at in≈886 tokens](figures/fig5_e2e_latency.png)
 
 For the representative workload of **~886 prompt tokens**:
 
@@ -101,7 +101,7 @@ Qwen3.6-35B on vLLM is the fastest end-to-end configuration for all output lengt
 
 ## 5. SGLang vs vLLM for Qwen3.6-35B
 
-![SGLang vs vLLM comparison](fig6_sglang_vs_vllm.png)
+![SGLang vs vLLM comparison](figures/fig6_sglang_vs_vllm.png)
 
 The two frameworks are closely matched on this model:
 
@@ -136,21 +136,41 @@ The differences are small enough that framework choice for Qwen3.6-35B on GB10 s
 
 ---
 
+---
+
+## Caveats
+
+- **Concurrency=1 only.** These are single-request, single-sequence measurements. At higher concurrency, SGLang and vLLM scheduling policies (continuous batching, chunked prefill) would change the relative throughput significantly.
+- **vLLM MoE config warning.** The vLLM container logs `Using default MoE config. Performance might be sub-optimal` for GLM-4.7-Flash. A tuned expert-placement config could improve its decode throughput.
+- **SGLang DeepGEMM warning.** SGLang logs `scale_fmt of checkpoint is not ue8m0, might cause accuracy degradation`. This is a Blackwell-specific FP8 format mismatch; performance is unaffected but numerical precision may differ slightly from a native FP8 deployment.
+- **Max context length difference.** SGLang was launched with 262K context for Qwen; vLLM was capped at 8K for both models. KV cache allocation differs, which may affect memory pressure at longer contexts.
+- **Framework versions are not matched.** SGLang and vLLM are at different maturity levels for GB10/Blackwell support. Observed differences partly reflect framework optimization, not only model architecture.
+
+---
+
 ## Figures
 
 | File | Description |
 |---|---|
-| `fig1_decode_throughput.png` | Decode throughput vs prompt length (all 3 configs) |
-| `fig2_prefill_throughput.png` | Prefill throughput vs prompt length |
-| `fig3_prefill_latency.png` | Prefill latency vs prompt length |
-| `fig4_decode_vs_output.png` | Decode throughput vs output length (in≈886) |
-| `fig5_e2e_latency.png` | End-to-end latency by output length (in≈886) |
-| `fig6_sglang_vs_vllm.png` | SGLang vs vLLM head-to-head for Qwen3.6-35B |
+| `figures/fig1_decode_throughput.png` | Decode throughput vs prompt length (all 3 configs) |
+| `figures/fig2_prefill_throughput.png` | Prefill throughput vs prompt length |
+| `figures/fig3_prefill_latency.png` | Prefill latency vs prompt length |
+| `figures/fig4_decode_vs_output.png` | Decode throughput vs output length (in≈886) |
+| `figures/fig5_e2e_latency.png` | End-to-end latency by output length (in≈886) |
+| `figures/fig6_sglang_vs_vllm.png` | SGLang vs vLLM head-to-head for Qwen3.6-35B |
 
 ## Raw Data
 
 | File | Description |
 |---|---|
-| `results_qwen_sglang.json` | Qwen3.6-35B on SGLang (20 configs) |
-| `results_qwen_vllm.json` | Qwen3.6-35B on vLLM v0.20.1 (20 configs) |
-| `results_glm_vllm.json` | GLM-4.7-Flash on vLLM (20 configs) |
+| `results/results_qwen_sglang.json` | Qwen3.6-35B on SGLang (20 configs) |
+| `results/results_qwen_vllm.json` | Qwen3.6-35B on vLLM v0.20.1 (20 configs) |
+| `results/results_glm_vllm.json` | GLM-4.7-Flash on vLLM (20 configs) |
+
+## Scripts
+
+| File | Description |
+|---|---|
+| `scripts/prefill_decode_bench.py` | Benchmark runner (non-streaming, isolates prefill/decode) |
+| `scripts/launch_servers.sh` | Docker launch helpers for SGLang and vLLM |
+| `scripts/plot_figures.py` | Generates all 6 figures from results JSON |
