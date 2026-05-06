@@ -1,6 +1,6 @@
 'use client';
 
-const OPTIONS = ['', 'anthropic', 'minimax', 'ollama', 'zai'];
+const OPTIONS = ['', 'anthropic', 'chutes', 'deepseek', 'featherless', 'minimax', 'ollama', 'openrouter', 'zai'];
 
 const LABELS: Record<string, string> = {
   zai: 'ZAI',

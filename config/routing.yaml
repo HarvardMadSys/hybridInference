@@ -25,3 +25,6 @@ remote_deployment:
       - glm-5
       - glm-5-turbo
       - glm-5.1
+  - endpoint: https://api.deepseek.com
+    models:
+      - deepseek-v4-pro
