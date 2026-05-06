@@ -136,6 +136,70 @@ def test_make_adapter_minimax_uses_openai_compat_with_profile():
 
 
 @pytest.mark.unit
+def test_make_adapter_cliproxy_uses_openai_compat():
+    """kind: cliproxy routes through OpenAICompatAdapter with a cliproxy provider label."""
+    adapter = registry._make_adapter(
+        "cliproxy",
+        {
+            "id": "gpt-5.5",
+            "name": "GPT-5.5",
+            "provider": "cliproxy",
+            "base_url": "http://cliproxy.local/v1",
+            "api_key": "test-key",
+            "provider_model_id": "gpt-5.5",
+        },
+    )
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    assert isinstance(adapter, OpenAICompatAdapter)
+    assert adapter.config.provider == "cliproxy"
+    assert adapter.config.provider_model_id == "gpt-5.5"
+
+
+@pytest.mark.unit
+def test_register_from_models_yaml_cliproxy_gpt55(tmp_path, monkeypatch):
+    yaml_text = (
+        "models:\n"
+        "  - id: gpt-5.5\n"
+        "    name: GPT-5.5\n"
+        "    provider: cliproxy\n"
+        "    required_role: internal\n"
+        "    provider_model_id: gpt-5.5\n"
+        "    context_length: 1050000\n"
+        "    max_output_length: 128000\n"
+        "    supports_tools: true\n"
+        "    supports_structured_output: true\n"
+        "    supported_params: [max_tokens, stream, tools, tool_choice, reasoning_effort]\n"
+        "    input_modalities: [text, image]\n"
+        "    output_modalities: [text]\n"
+        "    route:\n"
+        "      - kind: cliproxy\n"
+        "        weight: 1.0\n"
+        "        base_url: ${CLI_PROXY_BASE_URL}\n"
+        "        api_key: ${CLI_PROXY_API_KEY}\n"
+        "        provider_model_id: gpt-5.5\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
+    monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
+
+    exe = RouteExecutor()
+    count, _infos = registry.register_from_models_yaml(exe, Path(p))
+
+    assert count == 1
+    route = exe.routes["gpt-5.5"]
+    assert route.required_role == "internal"
+    adapter = route.adapters[0][0]
+    assert adapter.config.provider == "cliproxy"
+    assert adapter.config.base_url == "http://cliproxy.local/v1"
+    assert adapter.config.api_key == "sk-test"
+    assert adapter.config.context_length == 1050000
+    assert adapter.config.max_output_length == 128000
+    assert "reasoning_effort" in adapter.config.supported_params
+
+
+@pytest.mark.unit
 def test_register_from_models_yaml_invalid_processor_override_raises(tmp_path):
     yaml_text = (
         "models:\n"
