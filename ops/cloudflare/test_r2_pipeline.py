@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from serving.storage.d1_client import D1Client
 
 MODELS = ["glm-4.5", "qwen3-32b", "llama-4-scout", "deepseek-r1", "mistral-medium"]
-PROVIDERS = ["zhipu", "featherless", "chutes", "ollama"]
+PROVIDERS = ["zai", "featherless", "chutes", "ollama"]
 OUTCOMES = ["success", "success", "success", "success", "error", "timeout"]  # 67% success
 
 YESTERDAY = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")

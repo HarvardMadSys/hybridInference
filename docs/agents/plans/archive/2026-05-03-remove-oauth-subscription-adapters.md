@@ -1172,7 +1172,7 @@ In `docs/developer/developer/configuration.md`:
 (a) Edit line 80, removing `, claude_sub, codex_sub` from the supported-kinds list. The line should become:
 
 ```markdown
-- `provider`: Determines adapter type. Supported kinds (dispatched in `serving/servers/registry.py:_make_adapter`): `openai_compat`, `vllm`, `sglang`, `ollama`, `chutes`, `featherless`, `deepseek`, `zhipu`, `minimax`, `openrouter` (also `openrouter[<slug>]` to pin a sub-provider), `gemini`, `claude`, `anthropic`. See [adding-models.md](adding-models.md) for the full reference table.
+- `provider`: Determines adapter type. Supported kinds (dispatched in `serving/servers/registry.py:_make_adapter`): `openai_compat`, `vllm`, `sglang`, `ollama`, `chutes`, `featherless`, `deepseek`, `zai`, `minimax`, `openrouter` (also `openrouter[<slug>]` to pin a sub-provider), `gemini`, `claude`, `anthropic`. See [adding-models.md](adding-models.md) for the full reference table.
 ```
 
 (b) Delete the entire `### 5.4 Codex Subscription` subsection (lines ~298–317), from the `### 5.4 Codex Subscription` heading through the line `Codex currently exposes only the OpenAI-compatible northbound surface (\`POST /v1/chat/completions\`); there is no separate Codex-native public route yet.` and the blank line after. The "## 6. FAQ" section should follow.

@@ -334,8 +334,8 @@ async def test_deepseek_profile_omits_non_json_object_response_format():
 
 
 @pytest.mark.asyncio
-async def test_zhipu_profile_uses_chat_path_and_forwards_supported_extra_params():
-    """Zhipu-compatible routes can override the chat path and pass through GLM params."""
+async def test_zai_profile_uses_chat_path_and_forwards_supported_extra_params():
+    """ZAI-compatible routes can override the chat path and pass through GLM params."""
     response = {
         "choices": [
             {
@@ -348,10 +348,10 @@ async def test_zhipu_profile_uses_chat_path_and_forwards_supported_extra_params(
     config = ModelConfig(
         id="glm-5",
         name="GLM-5",
-        provider="zhipu",
+        provider="zai",
         base_url="https://api.z.ai/api/coding/paas/v4",
         provider_model_id="glm-5",
-        provider_profile="zhipu",
+        provider_profile="zai",
         chat_path="/chat/completions",
         supported_params=[
             "temperature",

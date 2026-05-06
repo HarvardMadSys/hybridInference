@@ -2275,12 +2275,12 @@ git commit -m "feat(routers): Anthropic-format /v1/models detection + /anthropic
 - Create: `test/servers/test_anthropic_messages_router.py`
 - Modify: `test/servers/conftest.py` — add `anthropic_test_app` / `anthropic_test_client` fixtures
 
-The existing `test_client` fixture in `test/servers/conftest.py` is async (`httpx.AsyncClient`) and uses `mock_router` with only a `MagicMock` adapter. We need a separate fixture that registers **real** `AnthropicAdapter` (`kind: anthropic`) and `OpenAICompatAdapter` (`kind: zhipu`) instances so dispatch actually exercises the new code paths.
+The existing `test_client` fixture in `test/servers/conftest.py` is async (`httpx.AsyncClient`) and uses `mock_router` with only a `MagicMock` adapter. We need a separate fixture that registers **real** `AnthropicAdapter` (`kind: anthropic`) and `OpenAICompatAdapter` (`kind: zai`) instances so dispatch actually exercises the new code paths.
 
 Constants used in tests below:
 - `NATIVE_MODEL = "claude-opus-4.7"` — registered as `kind: anthropic`, base URL `https://api.anthropic.com`.
-- `OPENAI_MODEL = "glm-4.7"` — registered as `kind: zhipu`, base URL `https://example-zhipu.test`.
-- `ZHIPU_UPSTREAM_URL = "https://example-zhipu.test/chat/completions"` — concrete upstream URL the zhipu adapter will hit (Zhipu adapter uses `chat_path: /chat/completions`).
+- `OPENAI_MODEL = "glm-4.7"` — registered as `kind: zai`, base URL `https://example-zai.test`.
+- `ZAI_UPSTREAM_URL = "https://example-zai.test/chat/completions"` — concrete upstream URL the zai adapter will hit (Zhipu adapter uses `chat_path: /chat/completions`).
 
 - [ ] **Step 1: Add fixtures to `test/servers/conftest.py`.**
 
@@ -2294,7 +2294,7 @@ ANTHROPIC_TEST_API_KEY = "hyi-anthropic-compat-test"
 
 @pytest_asyncio.fixture
 async def anthropic_compat_router():
-    """RouteExecutor with one anthropic-kind and one zhipu-kind real adapter."""
+    """RouteExecutor with one anthropic-kind and one zai-kind real adapter."""
     from routing.executor import RouteExecutor
     from serving.adapters import AnthropicAdapter, OpenAICompatAdapter
     from serving.adapters.base import ModelConfig
@@ -2312,11 +2312,11 @@ async def anthropic_compat_router():
         pricing={"prompt": "5.0", "completion": "25.0", "image": "0", "request": "0",
                  "input_cache_reads": "0.5", "input_cache_writes": "6.25"},
     )
-    zhipu_cfg = ModelConfig(
+    zai_cfg = ModelConfig(
         id="glm-4.7", name="GLM-4.7",
-        provider="zhipu",
-        base_url="https://example-zhipu.test",
-        api_key="zhipu-test",
+        provider="zai",
+        base_url="https://example-zai.test",
+        api_key="zai-test",
         chat_path="/chat/completions",
         max_output_length=1024, supports_tools=True,
         supported_params=["temperature", "max_tokens", "stop", "stream", "tools", "tool_choice"],
@@ -2324,7 +2324,7 @@ async def anthropic_compat_router():
                  "input_cache_reads": "0.11", "input_cache_writes": "0"},
     )
     re.register_route("claude-opus-4.7", [(AnthropicAdapter(anthropic_cfg), 1.0)])
-    re.register_route("glm-4.7", [(OpenAICompatAdapter(zhipu_cfg), 1.0)])
+    re.register_route("glm-4.7", [(OpenAICompatAdapter(zai_cfg), 1.0)])
     return re
 
 
@@ -2409,7 +2409,7 @@ from test.servers.conftest import ANTHROPIC_TEST_API_KEY
 NATIVE_MODEL = "claude-opus-4.7"
 OPENAI_MODEL = "glm-4.7"
 ANTHROPIC_UPSTREAM = "https://api.anthropic.com/v1/messages"
-ZHIPU_UPSTREAM = "https://example-zhipu.test/chat/completions"
+ZAI_UPSTREAM = "https://example-zai.test/chat/completions"
 
 
 def _auth():
@@ -2454,7 +2454,7 @@ async def test_anthropic_v1_messages_alias_reaches_same_handler(anthropic_test_c
 
 @pytest.mark.asyncio
 async def test_openai_backend_translated(anthropic_test_client):
-    """Anthropic-format request to glm-4.7 (zhipu) -> translation."""
+    """Anthropic-format request to glm-4.7 (zai) -> translation."""
     openai_resp = {
         "id": "chatcmpl-1", "object": "chat.completion",
         "model": OPENAI_MODEL,
@@ -2465,7 +2465,7 @@ async def test_openai_backend_translated(anthropic_test_client):
     body = {"model": OPENAI_MODEL, "max_tokens": 50,
             "messages": [{"role": "user", "content": "hi"}]}
     with aioresponses() as m:
-        m.post(ZHIPU_UPSTREAM, payload=openai_resp)
+        m.post(ZAI_UPSTREAM, payload=openai_resp)
         r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
         assert r.status_code == 200
         out = r.json()
@@ -2875,7 +2875,7 @@ async def test_v1_messages_translated_streaming(anthropic_test_client):
     body = {"model": OPENAI_MODEL, "max_tokens": 50, "stream": True,
             "messages": [{"role": "user", "content": "hi"}]}
     with aioresponses() as m:
-        m.post(ZHIPU_UPSTREAM, body=openai_sse, content_type="text/event-stream")
+        m.post(ZAI_UPSTREAM, body=openai_sse, content_type="text/event-stream")
         async with anthropic_test_client.stream(
             "POST", "/v1/messages", json=body, headers=_auth()
         ) as r:
@@ -3013,7 +3013,7 @@ async def test_cache_control_dropped_for_openai_backend(anthropic_test_client, c
         "thinking": {"type": "enabled", "budget_tokens": 1024},
     }
     with aioresponses() as m:
-        m.post(ZHIPU_UPSTREAM, payload=openai_resp)
+        m.post(ZAI_UPSTREAM, payload=openai_resp)
         with caplog.at_level("WARNING"):
             r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
         assert r.status_code == 200
