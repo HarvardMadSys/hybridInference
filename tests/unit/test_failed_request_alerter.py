@@ -121,12 +121,14 @@ async def test_alerter_fires_includes_breakdown():
     """Breakdown fields (status_codes, providers, models, sample_error) are included in context."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=25)
-    pool.fetchrow = AsyncMock(return_value={
-        "status_codes": "500, 503",
-        "providers": "openai",
-        "models": "gpt-4o",
-        "sample_error": "upstream timeout",
-    })
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "status_codes": "500, 503",
+            "providers": "openai",
+            "models": "gpt-4o",
+            "sample_error": "upstream timeout",
+        }
+    )
     alerter = _make_alerter(pool, threshold=20, window=5)
 
     with patch(
