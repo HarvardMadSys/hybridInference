@@ -21,8 +21,8 @@ matplotlib.rcParams.update(
     }
 )
 
-OUT = Path(__file__).parent
-DATA = Path(__file__).parent.parent.parent.parent / "ops" / "perf"
+OUT = Path(__file__).parent.parent / "figures"
+DATA = Path(__file__).parent.parent / "results"
 
 COLORS = {
     "qwen_sglang": "#2563eb",

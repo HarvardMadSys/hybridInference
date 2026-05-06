@@ -151,6 +151,6 @@ The differences are small enough that framework choice for Qwen3.6-35B on GB10 s
 
 | File | Description |
 |---|---|
-| `../../ops/perf/results_qwen_sglang.json` | Qwen3.6-35B on SGLang (20 configs) |
-| `../../ops/perf/results_qwen_vllm.json` | Qwen3.6-35B on vLLM v0.20.1 (20 configs) |
-| `../../ops/perf/results_glm_vllm.json` | GLM-4.7-Flash on vLLM (20 configs) |
+| `results_qwen_sglang.json` | Qwen3.6-35B on SGLang (20 configs) |
+| `results_qwen_vllm.json` | Qwen3.6-35B on vLLM v0.20.1 (20 configs) |
+| `results_glm_vllm.json` | GLM-4.7-Flash on vLLM (20 configs) |

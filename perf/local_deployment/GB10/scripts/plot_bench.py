@@ -307,6 +307,6 @@ def plot_figures(
 
 
 if __name__ == "__main__":
-    qwen = load_results("ops/perf/results_qwen_sglang.json")
-    glm = load_results("ops/perf/results_glm_vllm.json")
-    plot_figures(qwen, glm)
+    qwen = load_results(Path(__file__).parent.parent / "results" / "results_qwen_sglang.json")
+    glm = load_results(Path(__file__).parent.parent / "results" / "results_glm_vllm.json")
+    plot_figures(qwen, glm, output_dir=Path(__file__).parent.parent / "figures")
