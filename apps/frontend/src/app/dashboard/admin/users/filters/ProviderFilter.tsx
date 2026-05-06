@@ -1,6 +1,10 @@
 'use client';
 
-const OPTIONS = ['', 'anthropic', 'minimax', 'ollama', 'zhipu'];
+const OPTIONS = ['', 'anthropic', 'minimax', 'ollama', 'zai'];
+
+const LABELS: Record<string, string> = {
+  zai: 'ZAI',
+};
 
 interface Props {
   value: string | null;
@@ -16,7 +20,7 @@ export function ProviderFilter({ value, onChange }: Props) {
     >
       {OPTIONS.map((p) => (
         <option key={p} value={p}>
-          {p === '' ? 'Any provider' : p}
+          {p === '' ? 'Any provider' : (LABELS[p] ?? p)}
         </option>
       ))}
     </select>
