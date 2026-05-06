@@ -572,7 +572,6 @@ models:
     input_modalities: [text, image]
     output_modalities: [text]
     quantization: "none"
-    # OpenAI API https://developers.openai.com/api/docs/models/gpt-5.5
     pricing:
       prompt: "5.00"
       completion: "30.00"
