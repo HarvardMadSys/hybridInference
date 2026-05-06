@@ -1,9 +1,24 @@
 'use client';
 
-const OPTIONS = ['', 'anthropic', 'minimax', 'ollama', 'zai'];
+const OPTIONS = [
+  '',
+  'anthropic',
+  'chutes',
+  'deepseek',
+  'featherless',
+  'minimax',
+  'ollama',
+  'openrouter',
+  'zai',
+];
 
 const LABELS: Record<string, string> = {
-  zai: 'ZAI',
+  zai: 'Z.AI',
+  deepseek: 'DeepSeek',
+  chutes: 'Chutes',
+  featherless: 'Featherless',
+  openrouter: 'OpenRouter',
+  minimax: 'Minimax',
 };
 
 interface Props {
