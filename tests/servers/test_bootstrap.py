@@ -216,11 +216,11 @@ class TestBootstrapHelpers:
 models:
   - id: remote-model
     name: Remote Only Model
-    provider: zhipu
+    provider: zai
     context_length: 8192
     max_output_length: 4096
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: https://api.example.com
         api_key: test-key

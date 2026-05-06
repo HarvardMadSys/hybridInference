@@ -1,4 +1,4 @@
-"""Test Zhipu AI GLM models API directly (external)."""
+"""Test ZAI GLM models API directly (external)."""
 
 import os
 
@@ -9,7 +9,7 @@ from openai import OpenAI
 pytestmark = pytest.mark.external
 
 
-def _get_zhipu_client():
+def _get_zai_client():
     load_dotenv()
     api_key = os.environ.get("ZAI_API_KEY")
     if not api_key:
@@ -18,9 +18,9 @@ def _get_zhipu_client():
 
 
 @pytest.mark.parametrize("model", ["glm-4.7", "glm-4.7-flash", "glm-5"])
-def test_zhipu_basic(model: str):
+def test_zai_basic(model: str):
     """Basic call against active GLM models; requires network and ZAI_API_KEY."""
-    client = _get_zhipu_client()
+    client = _get_zai_client()
     completion = client.chat.completions.create(
         model=model,
         messages=[

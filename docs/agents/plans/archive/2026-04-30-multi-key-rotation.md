@@ -796,10 +796,10 @@ def test_api_keys_list_is_loaded(tmp_path, monkeypatch):
         models:
           - id: glm-test
             name: glm-test
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_keys:
@@ -828,10 +828,10 @@ def test_api_key_and_api_keys_both_set_raises(tmp_path, monkeypatch):
         models:
           - id: bad
             name: bad
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_key: ${ZAI_API_KEY_OTHER}
@@ -855,10 +855,10 @@ def test_blank_api_keys_are_dropped_with_warning(tmp_path, monkeypatch, caplog):
         models:
           - id: glm-test
             name: glm-test
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_keys:
@@ -883,10 +883,10 @@ def test_all_api_keys_blank_raises(tmp_path, monkeypatch):
         models:
           - id: glm-test
             name: glm-test
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_keys:
@@ -910,10 +910,10 @@ def test_single_api_key_form_still_works(tmp_path, monkeypatch):
         models:
           - id: glm-test
             name: glm-test
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_key: ${ZAI_API_KEY}
@@ -1660,7 +1660,7 @@ def _make_config(api_keys: list[str]) -> ModelConfig:
     return ModelConfig(
         id="test-model",
         name="test-model",
-        provider="zhipu",
+        provider="zai",
         base_url="https://api.example.com",
         api_keys=api_keys,
         provider_model_id="test-model",
@@ -1727,7 +1727,7 @@ async def test_single_api_key_legacy_path_unchanged():
     config = ModelConfig(
         id="test-model",
         name="test-model",
-        provider="zhipu",
+        provider="zai",
         base_url="https://api.example.com",
         api_key="single-key",
         provider_model_id="test-model",

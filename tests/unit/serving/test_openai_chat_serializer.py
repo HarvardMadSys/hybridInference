@@ -60,11 +60,11 @@ def test_sanitize_always_strips_routing():
     chunk = {
         "id": "c1",
         "choices": [{"delta": {"content": "hi"}}],
-        "_routing": {"provider": "zhipu", "base_url": "https://api.z.ai"},
+        "_routing": {"provider": "zai", "base_url": "https://api.z.ai"},
     }
     result = sanitize_chunk(dict(chunk), SerializerMode.STRICT_OPENAI)
     assert "_routing" not in (result.chunk_json or {})
-    assert result.routing_info == {"provider": "zhipu", "base_url": "https://api.z.ai"}
+    assert result.routing_info == {"provider": "zai", "base_url": "https://api.z.ai"}
     assert result.should_forward is True
 
 
@@ -199,14 +199,14 @@ def test_sanitize_response_strict_removes_reasoning_content():
                 }
             }
         ],
-        "_routing": {"provider": "zhipu"},
+        "_routing": {"provider": "zai"},
     }
     result = sanitize_response(dict(response), SerializerMode.STRICT_OPENAI)
     message = result.response_json["choices"][0]["message"]
     assert "reasoning_content" not in message
     assert message["content"] == "answer"
     assert "_routing" not in result.response_json
-    assert result.routing_info == {"provider": "zhipu"}
+    assert result.routing_info == {"provider": "zai"}
 
 
 @pytest.mark.unit

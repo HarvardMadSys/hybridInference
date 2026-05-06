@@ -7,7 +7,7 @@
 models:
   - id: glm-4.7
     name: GLM-4.7
-    provider: zhipu
+    provider: zai
     quantization: "fp8"
     context_length: 200000
     max_output_length: 128000
@@ -26,7 +26,7 @@ models:
       input_cache_reads: "0.11"
       input_cache_writes: "0"
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
         api_keys:
@@ -57,7 +57,7 @@ models:
 
   # - id: glm-4.7-flash
   #   name: GLM-4.7-Flash
-  #   provider: zhipu
+  #   provider: zai
   #   quantization: "q8"
   #   context_length: 200000
   #   max_output_length: 128000
@@ -84,7 +84,7 @@ models:
   #         prompt: "0"
   #         completion: "0"
   #     # Remote Zhipu API (disabled, set weight > 0 to re-enable)
-  #     - kind: zhipu
+  #     - kind: zai
   #       weight: 0
   #       base_url: https://api.z.ai/api/coding/paas/v4/
   #       api_keys:
@@ -103,7 +103,7 @@ models:
 
   - id: glm-5
     name: GLM-5
-    provider: zhipu
+    provider: zai
     quantization: "fp8"
     context_length: 200000
     max_output_length: 128000
@@ -122,7 +122,7 @@ models:
       input_cache_reads: "0.2"
       input_cache_writes: "0"
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
         api_keys:
@@ -153,7 +153,7 @@ models:
 
   - id: glm-5.1
     name: GLM-5.1
-    provider: zhipu
+    provider: zai
     quantization: "fp8"
     context_length: 200000
     max_output_length: 128000
@@ -172,7 +172,7 @@ models:
       input_cache_reads: "0.26"
       input_cache_writes: "0"
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
         api_keys:
@@ -181,7 +181,7 @@ models:
 
   - id: glm-5-turbo
     name: GLM-5 Turbo
-    provider: zhipu
+    provider: zai
     quantization: "fp8"
     context_length: 200000
     max_output_length: 128000
@@ -200,7 +200,7 @@ models:
       input_cache_reads: "0.24"
       input_cache_writes: "0"
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
         api_keys:

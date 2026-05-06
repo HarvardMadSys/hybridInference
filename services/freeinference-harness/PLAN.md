@@ -46,7 +46,7 @@ Purpose:
 Requirements:
 
 - Each target must use a provider-pinned model ID such as
-  `glm-5-zhipu-only`.
+  `glm-5-zai-only`.
 - Each pinned target should come from a dedicated harness deployment config or
   a separate gateway environment.
 - Avoid adding long-lived test-only targets to the primary production
@@ -103,8 +103,8 @@ Preferred implementation:
 Initial pinned targets:
 
 - `glm-4.7-flash-local-only`
-- `glm-4.7-zhipu-only`
-- `glm-5-zhipu-only`
+- `glm-4.7-zai-only`
+- `glm-5-zai-only`
 - `glm-5-ollama-only`
 - `minimax-m2.5-minimax-only`
 - `minimax-m2.5-ollama-only`

@@ -1080,12 +1080,12 @@ async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")  # all callers are admin
 
     router = RouteExecutor()
-    zhipu = DummyAdapter(_mk_cfg("test-model"))
-    zhipu.config = ModelConfig(
+    zai = DummyAdapter(_mk_cfg("test-model"))
+    zai.config = ModelConfig(
         id="test-model",
         name="test-model",
-        provider="zhipu",
-        base_url="http://zhipu",
+        provider="zai",
+        base_url="http://zai",
         context_length=8192,
         max_output_length=4096,
     )
@@ -1107,7 +1107,7 @@ async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
         context_length=8192,
         max_output_length=4096,
     )
-    router.register_route("test-model", [(zhipu, 0.8), (ollama, 0.2), (disabled, 0.0)])
+    router.register_route("test-model", [(zai, 0.8), (ollama, 0.2), (disabled, 0.0)])
 
     app = FastAPI()
     app.state.services = AppServices(
