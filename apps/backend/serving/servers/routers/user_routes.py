@@ -630,22 +630,21 @@ async def get_usage(
             ),
         )
 
-    daily_limit = float(key_row.get("quota_daily_cost_usd") or 0)
+    quota_daily_cost_usd = key_row.get("quota_daily_cost_usd")
+    daily_limit = 1000.0 if quota_daily_cost_usd is None else float(quota_daily_cost_usd)
     monthly_limit = None
     quota_reset_at = _get_daily_quota_reset_at()
 
-    # Fetch usage from log store
+    # Fetch usage from log store (for period breakdown) and op store (for today's quota counter)
     _zero = {"cost_usd": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
     try:
         if log_store:
             all_usage = await log_store.get_user_usage_detail(current_user["user_id"])
             period_key = {"today": "today", "week": "week", "month": "month"}.get(period, "alltime")
             period_data = all_usage.get(period_key, _zero)
-            spent_today = all_usage.get("today", _zero).get("cost_usd", 0.0)
             spent_month = all_usage.get("month", _zero).get("cost_usd", 0.0)
         else:
             period_data = _zero
-            spent_today = 0.0
             spent_month = 0.0
     except Exception as exc:
         logger.warning(
@@ -654,8 +653,18 @@ async def get_usage(
             exc,
         )
         period_data = _zero
-        spent_today = 0.0
         spent_month = 0.0
+
+    # Read today's spend from the op store counter — same source used by quota enforcement
+    try:
+        spent_today = await op_store.get_user_cost_today(current_user["user_id"])
+    except Exception as exc:
+        logger.warning(
+            "Failed to query daily cost counter for user_id=%s: %s",
+            current_user["user_id"],
+            exc,
+        )
+        spent_today = 0.0
 
     remaining_today = max(0, daily_limit - spent_today)
 
