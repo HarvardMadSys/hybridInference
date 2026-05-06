@@ -999,7 +999,7 @@ class PostgresOperationalStore(OperationalStore):
             if user_ids and not needs_alltime:
                 alltime_rows = await conn.fetch(
                     "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
-                    "FROM api_logs "
+                    "FROM user_daily_cost "
                     "WHERE user_id = ANY($1::text[]) "
                     "GROUP BY user_id",
                     user_ids,

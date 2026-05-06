@@ -402,9 +402,9 @@ class TestListUsersNewFilters:
         assert "date_trunc('day'" in joined
         assert "SUM(cost_usd)" in joined
 
-    async def test_alltime_usage_enriched_from_api_logs_without_cost_sort(self, store, pg_conn):
+    async def test_alltime_usage_enriched_from_daily_cost_without_cost_sort(self, store, pg_conn):
         # Regression: default sorting does not include the all-time CTE, but
-        # the admin dashboard still needs historical usage from api_logs.
+        # the admin dashboard still needs historical usage from daily counters.
         pg_conn.fetchrow.return_value = {"total": 1}
         pg_conn.fetch.side_effect = [
             [{"status": "active", "cnt": 1}],  # status counts
@@ -434,5 +434,4 @@ class TestListUsersNewFilters:
 
         assert rows[0]["usage_alltime"] == Decimal("12.34")
         alltime_sql = pg_conn.fetch.call_args_list[-1].args[0]
-        assert "FROM api_logs" in alltime_sql
-        assert "FROM user_daily_cost" not in alltime_sql
+        assert "FROM user_daily_cost" in alltime_sql
