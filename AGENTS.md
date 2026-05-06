@@ -83,9 +83,6 @@ Pre-commit hooks are installed by `make setup-dev`.
 
 ## 6. Project-specific knowledge
 
-The densest section — things that aren't obvious from reading code but you'll
-need repeatedly.
-
 ### 6.1 Architecture in one diagram
 
 ```text
@@ -142,8 +139,6 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 ### 6.5 Common gotchas
 
 - Don't commit to `main` or `dev` directly — always branch + PR.
-- Don't edit `apps/backend/routing/executor.py` (compat shim) — edit
-  `routers.py`.
 - SSE streaming lives in `apps/backend/serving/servers/`. Middleware order
   matters; new middleware that buffers responses will break streaming.
 - Storage layer supports both Postgres and Cloudflare D1 — check
@@ -164,17 +159,5 @@ not duplicate their content.
 | Address PR review / fix CI | [.kilo/skills/check-pr/SKILL.md](.kilo/skills/check-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
-| Touch routing logic | [docs/developer/routing.md](docs/developer/routing.md) |
-| Touch configuration | [docs/developer/configuration.md](docs/developer/configuration.md) |
-| Database / storage changes | [docs/developer/database.md](docs/developer/database.md) |
-| Deployment / staging / prod | [docs/developer/deployment.md](docs/developer/deployment.md), [docs/developer/staging.md](docs/developer/staging.md) |
-| OpenRouter / FreeInference internals | [docs/developer/openrouter.md](docs/developer/openrouter.md), [docs/developer/freeinference.md](docs/developer/freeinference.md) |
-| Past designs / specs | [docs/agents/specs/](docs/agents/specs/) |
-| Past plans | [docs/agents/plans/](docs/agents/plans/) |
 
-## 8. Where to look next
 
-- Public docs: https://doc.freeinference.org/
-- Internal/developer docs: https://internaldoc.freeinference.org/
-- Full developer guide index: [docs/developer/index.rst](docs/developer/index.rst)
-- Code review records: [docs/reviews/](docs/reviews/)
