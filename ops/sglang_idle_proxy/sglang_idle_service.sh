@@ -72,14 +72,15 @@ case "$cmd" in
         host="${host// /}"
         [[ -z "$host" ]] && continue
         echo "Opening reverse tunnel: ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
-        ssh -f -N \
+        ssh -N \
           -R "${REMOTE_BIND}:${REMOTE_PORT}:localhost:${LISTEN_PORT}" \
           -o ServerAliveInterval=30 \
           -o ServerAliveCountMax=3 \
           -o ExitOnForwardFailure=yes \
-          "$host"
-        TUNNEL_PID=$(ps aux | grep "ssh -f -N.*-R ${REMOTE_BIND}:${REMOTE_PORT}:localhost:${LISTEN_PORT}" | grep -v grep | awk '{print $2}' | head -1)
-        if [[ -n "$TUNNEL_PID" ]]; then
+          "$host" &
+        TUNNEL_PID=$!
+        sleep 1
+        if kill -0 "$TUNNEL_PID" 2>/dev/null; then
           TUNNEL_PIDS+=("$TUNNEL_PID")
           echo "Tunnel established (PID ${TUNNEL_PID}).  ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
         else
