@@ -996,13 +996,25 @@ class PostgresOperationalStore(OperationalStore):
             else:
                 month_map = {}
 
+            if user_ids and not needs_alltime:
+                alltime_rows = await conn.fetch(
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    "FROM api_logs "
+                    "WHERE user_id = ANY($1::text[]) "
+                    "GROUP BY user_id",
+                    user_ids,
+                )
+                alltime_map = {r["user_id"]: r["cost"] for r in alltime_rows}
+            else:
+                alltime_map = {}
+
         # Assemble result rows with usage columns.
         result_rows: list[Row] = []
         for row in rows:
             r = dict(row)
             r["usage_today"] = r.get("usage_today") or today_map.get(r["id"], 0)
             r["usage_month"] = r.get("usage_month") or month_map.get(r["id"], 0)
-            r.setdefault("usage_alltime", 0)
+            r["usage_alltime"] = r.get("usage_alltime") or alltime_map.get(r["id"], 0)
             result_rows.append(r)
 
         return total, result_rows, status_counts
