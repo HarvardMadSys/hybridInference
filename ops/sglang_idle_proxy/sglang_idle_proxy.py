@@ -153,9 +153,17 @@ def _pick_free_gpu(exclude: set[str] | None = None) -> str:
             free_usage = usage
             free_idx = idx
     if free_usage < 1.0:
-        log.info("Auto-picked GPU %s (%.0f%% mem used — under 20%% threshold).", free_idx, free_usage * 100)
+        log.info(
+            "Auto-picked GPU %s (%.0f%% mem used — under 20%% threshold).",
+            free_idx,
+            free_usage * 100,
+        )
         return free_idx
-    log.warning("No GPU under 20%% memory utilization — falling back to least-used GPU %s (%.0f%% mem used).", best_idx, best_usage * 100)
+    log.warning(
+        "No GPU under 20%% memory utilization — falling back to least-used GPU %s (%.0f%% mem used).",
+        best_idx,
+        best_usage * 100,
+    )
     return best_idx
 
 
@@ -235,7 +243,11 @@ class BackendManager:
         for mgr in _backends.values():
             if mgr is not self and mgr.state == "ready":
                 used_gpus.add(str(mgr.config.get("gpu_index", "")))
-        log.info("[%s] Auto-selecting GPU (excluding %s)", self.model_name, sorted(used_gpus) if used_gpus else "none")
+        log.info(
+            "[%s] Auto-selecting GPU (excluding %s)",
+            self.model_name,
+            sorted(used_gpus) if used_gpus else "none",
+        )
         return _pick_free_gpu(exclude=used_gpus)
 
     def _start_container(self) -> None:
@@ -334,7 +346,9 @@ for _name, _cfg in MODELS_CONFIG_DATA.items():
     _backends[_name] = BackendManager(_name, _cfg)
 
 
-def _get_backend(body: bytes, request_path: str = "", request_method: str = "") -> BackendManager | None:
+def _get_backend(
+    body: bytes, request_path: str = "", request_method: str = ""
+) -> BackendManager | None:
     """Pick the right backend from the ``model`` field in the request body."""
     try:
         model = _json.loads(body).get("model", "")
