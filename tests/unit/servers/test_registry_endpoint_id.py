@@ -37,8 +37,9 @@ def test_local_without_port_fallback() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_zhipu_api() -> None:
-    assert _make_provider_id("glm-4.6", "zhipu", "https://api.z.ai/v4/") == "glm-4.6:zhipu-api"
+def test_zai_api() -> None:
+
+    assert _make_provider_id("glm-4.6", "zai", "https://api.z.ai/v4/") == "glm-4.6:zai-api"
 
 
 def test_chutes_api() -> None:

@@ -65,7 +65,7 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
     # Reasoning effort: "low", "medium", "high"
     reasoning_effort: str | None = None
 
-    # Reasoning / thinking control (Zhipu GLM-4.7/GLM-5, MiniMax M2.5)
+    # Reasoning / thinking control (ZAI GLM-4.7/GLM-5, MiniMax M2.5)
     thinking: dict[str, Any] | None = None
 
     # Tools / structured output

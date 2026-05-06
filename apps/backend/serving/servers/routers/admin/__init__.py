@@ -15,7 +15,9 @@ from serving.servers.routers.admin import (
     export,
     login_events,
     metrics,
+    provider_keys,
     providers,
+    quota,
     settings,
     signup_domains,
     stats,
@@ -30,7 +32,9 @@ router.include_router(broadcast.router)
 router.include_router(export.router)
 router.include_router(login_events.router)
 router.include_router(metrics.router)
+router.include_router(provider_keys.router)
 router.include_router(providers.router)
+router.include_router(quota.router)
 router.include_router(settings.router)
 router.include_router(signup_domains.router)
 router.include_router(stats.router)

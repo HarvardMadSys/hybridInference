@@ -42,6 +42,19 @@ FAILED_REQUEST_COUNT_SQL = (
     "AND (status_code >= 500 OR error IS NOT NULL)"
 )
 
+# Returns top status codes, providers, models, and a sample error message for
+# the same failure window. $1 = window_minutes (int).
+FAILED_REQUEST_BREAKDOWN_SQL = """
+SELECT
+    string_agg(DISTINCT status_code::text, ', ' ORDER BY status_code::text) FILTER (WHERE status_code IS NOT NULL) AS status_codes,
+    string_agg(DISTINCT provider, ', ' ORDER BY provider) FILTER (WHERE provider IS NOT NULL) AS providers,
+    string_agg(DISTINCT model_id, ', ' ORDER BY model_id) FILTER (WHERE model_id IS NOT NULL) AS models,
+    (array_agg(error ORDER BY timestamp DESC) FILTER (WHERE error IS NOT NULL))[1] AS sample_error
+FROM api_logs
+WHERE timestamp > NOW() - make_interval(mins => $1)
+AND (status_code >= 500 OR error IS NOT NULL)
+"""
+
 
 async def count_recent_failures(pool: asyncpg.Pool, window_minutes: int) -> int:
     """Return the count of failed requests in the past ``window_minutes`` minutes.
@@ -62,6 +75,30 @@ async def count_recent_failures(pool: asyncpg.Pool, window_minutes: int) -> int:
         raise ValueError(f"window_minutes must be > 0, got {window_minutes}")
     result = await pool.fetchval(FAILED_REQUEST_COUNT_SQL, window_minutes)
     return int(result or 0)
+
+
+async def fetch_failure_breakdown(pool: asyncpg.Pool, window_minutes: int) -> dict:
+    """Return a breakdown dict with status codes, providers, models, and a sample error.
+
+    Returns an empty dict on any query error so callers can degrade gracefully.
+    """
+    try:
+        row = await pool.fetchrow(FAILED_REQUEST_BREAKDOWN_SQL, window_minutes)
+        if row is None:
+            return {}
+        result = {}
+        if row["status_codes"]:
+            result["status_codes"] = row["status_codes"]
+        if row["providers"]:
+            result["providers"] = row["providers"]
+        if row["models"]:
+            result["models"] = row["models"]
+        if row["sample_error"]:
+            result["sample_error"] = row["sample_error"][:200]
+        return result
+    except Exception:
+        logger.exception("failed_request_alerter: breakdown query failed")
+        return {}
 
 
 async def post_slack_alert(webhook_url: str, message: str) -> bool:
@@ -152,19 +189,23 @@ class FailedRequestAlerter:
         ):
             return
 
+        breakdown = await fetch_failure_breakdown(self.pool, self.window_minutes)
+
         # Route through the unified alert sink. We pass cooldown_sec=0 because
         # this class enforces its own cooldown above (datetime-based, with a
         # configurable now_fn for deterministic tests). Using a zero cooldown
         # in the sink avoids surprising interactions between the two cooldown
         # tables for the same dedupe key.
+        context: dict = {
+            "count": count,
+            "window_minutes": self.window_minutes,
+            "threshold": self.threshold,
+        }
+        context.update(breakdown)
         ok = await alert_slack(
             AlertSeverity.ERROR,
             "Failed-request rate exceeded (DB-query detector)",
-            {
-                "count": count,
-                "window_minutes": self.window_minutes,
-                "threshold": self.threshold,
-            },
+            context,
             dedupe_key="failed_request_rate_db",
             cooldown_sec=0,
         )

@@ -38,7 +38,7 @@ async def test_alert_slack_posts_when_webhook_set(monkeypatch):
         url, message = args
         assert url == "https://hooks.slack.com/x"
         assert "test title" in message
-        assert "foo" in message and "bar" in message
+        assert "Foo" in message and "bar" in message
 
 
 async def test_alert_slack_dedupes_within_cooldown(monkeypatch):

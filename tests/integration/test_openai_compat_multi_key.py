@@ -27,7 +27,7 @@ def _make_config(api_keys: list[str]) -> ModelConfig:
     return ModelConfig(
         id="test-model",
         name="test-model",
-        provider="zhipu",
+        provider="zai",
         base_url="https://api.example.com",
         api_keys=api_keys,
         provider_model_id="test-model",
@@ -102,7 +102,7 @@ async def test_single_api_key_legacy_path_unchanged():
     config = ModelConfig(
         id="test-model",
         name="test-model",
-        provider="zhipu",
+        provider="zai",
         base_url="https://api.example.com",
         api_key="single-key",
         provider_model_id="test-model",

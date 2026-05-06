@@ -15,7 +15,7 @@ from serving.servers.registry import _make_adapter, parse_openrouter_kind
         ("openrouter[deepinfra]", ("openrouter", "deepinfra")),
         ("openrouter[fireworks]", ("openrouter", "fireworks")),
         ("openrouter[together-ai]", ("openrouter", "together-ai")),
-        ("zhipu", ("zhipu", None)),  # non-openrouter passes through
+        ("zai", ("zai", None)),  # non-openrouter passes through
         ("openai_compat", ("openai_compat", None)),
     ],
 )

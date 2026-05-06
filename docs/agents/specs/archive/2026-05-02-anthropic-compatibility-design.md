@@ -451,7 +451,7 @@ Logged once per request:
 - Request translation: text-only, multi-turn, system string, system array, images (data URL + http URL), tools, tool_use → tool_result round-trip, cache_control drop, thinking drop, tool_choice variants, stop_sequences rename, metadata.user_id → user.
 - Response translation: text only, tool_calls only, mixed text+tool_use, finish_reason mapping table, cached_tokens.
 - Streaming: text-only, tool-call only, mixed, empty stream, mid-stream error, fragmented JSON deltas, multi-tool-call stream, usage extraction.
-- Golden vectors: 5–10 captured real OpenAI responses (e.g., from zhipu/glm) → assert byte-equivalent Anthropic SSE output.
+- Golden vectors: 5–10 captured real OpenAI responses (e.g., from zai/glm) → assert byte-equivalent Anthropic SSE output.
 
 ### Unit tests — adapter (`test/unit/adapters/test_anthropic_adapter.py`)
 
@@ -465,7 +465,7 @@ Logged once per request:
 
 End-to-end with FastAPI TestClient:
 - Anthropic-north → native model (mocked Anthropic upstream) → identity bytes returned.
-- Anthropic-north → OpenAI model (mocked zhipu upstream) → translated.
+- Anthropic-north → OpenAI model (mocked zai upstream) → translated.
 - Streaming + non-streaming.
 - Alias resolution: `claude-3-5-sonnet-latest` → `claude-sonnet-4.6`.
 - 404 unknown model.

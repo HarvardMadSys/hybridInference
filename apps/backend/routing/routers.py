@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import random
 import threading
@@ -118,6 +119,32 @@ def _get_endpoint_id(adapter: BaseAdapter) -> str:
     Uses endpoint_id if set, otherwise falls back to provider.
     """
     return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
+
+
+def _routing_chunk(adapter: BaseAdapter, *, fallback: bool = False) -> str:
+    """Build a synthetic SSE chunk carrying ``_routing`` metadata for streaming.
+
+    Mirrors the ``resp["_routing"]`` injection used by ``chat_completion`` so
+    the ``completions`` router can recover the actual upstream provider,
+    base_url, and endpoint_id during streaming. Without this, the request
+    context's ``provider`` (set inside ``_execute_stream_adapter``) is
+    invisible to the parent coroutine when the adapter stream is consumed
+    via an ``asyncio.create_task`` reader, and api_logs end up with
+    ``provider="router"`` and ``cost_usd=NULL``.
+
+    The chunk is emitted before any adapter chunks so the completions router
+    sees routing info on the very first iteration. ``sanitize_chunk`` pops
+    ``_routing`` before forwarding to the client, so users never see this
+    field on the wire.
+    """
+    routing: dict[str, Any] = {
+        "provider": adapter.config.provider,
+        "base_url": adapter.config.base_url,
+        "endpoint_id": getattr(adapter.config, "endpoint_id", None),
+    }
+    if fallback:
+        routing["fallback"] = True
+    return f"data: {json.dumps({'choices': [], '_routing': routing})}\n\n"
 
 
 def _has_non_empty_content(chunk: Any) -> bool:
@@ -554,6 +581,7 @@ class BaseRouter:
         last_attempted = primary
         try:
             try:
+                yield _routing_chunk(primary)
                 async for chunk in self._execute_stream_adapter(
                     primary, model_id, messages, **params
                 ):
@@ -565,6 +593,7 @@ class BaseRouter:
                 for adapter in fallback_adapters:
                     last_attempted = adapter
                     try:
+                        yield _routing_chunk(adapter, fallback=True)
                         async for chunk in self._execute_stream_adapter(
                             adapter, model_id, messages, **params
                         ):
@@ -880,6 +909,13 @@ class FixedRouter(BaseRouter):
         chunks_yielded = False
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
+                # Emit synthetic _routing chunk so completions.py can recover
+                # the upstream provider/base_url/endpoint_id for DB logging.
+                # Without this, req_ctx.push() inside this block is invisible
+                # to the parent coroutine when the stream is consumed via an
+                # asyncio.create_task reader, and api_logs ends up with
+                # provider="router" and cost_usd=NULL.
+                yield _routing_chunk(primary)
                 first = True
                 started = time.perf_counter()
                 primary_endpoint_id = _get_endpoint_id(primary)
@@ -923,6 +959,7 @@ class FixedRouter(BaseRouter):
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
+                        yield _routing_chunk(adapter, fallback=True)
                         first = True
                         started = time.perf_counter()
                         adapter_endpoint_id = _get_endpoint_id(adapter)

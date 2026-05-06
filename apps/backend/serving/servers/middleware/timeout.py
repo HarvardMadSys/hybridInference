@@ -1,31 +1,20 @@
 """Request timeout middleware.
 
-Enforces a per-request asyncio timeout, returning 504 Gateway Timeout when
-exceeded. ``REQUEST_TIMEOUT_SECONDS`` (default 120s) is read once when the
-middleware is instantiated; changing the env at runtime requires a restart.
-
-We return a JSONResponse directly rather than raising HTTPException because
-exceptions raised from a ``BaseHTTPMiddleware`` bubble outside FastAPI's
-exception handlers (which wrap the router, not the middleware stack) and
-would otherwise be converted to a generic 500 by Starlette's outermost
-ServerErrorMiddleware.
+Enforces a per-request timeout, returning 504 Gateway Timeout when exceeded.
+``REQUEST_TIMEOUT_SECONDS`` (default 120s) is read once when the middleware is
+instantiated; changing the env at runtime requires a restart.
 """
 
 from __future__ import annotations
 
-import asyncio
+import json
 import os
 from typing import TYPE_CHECKING
 
-from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+import anyio
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from fastapi import Request, Response
-    from starlette.types import ASGIApp
-
+    from starlette.types import ASGIApp, Receive, Scope, Send
 
 _DEFAULT_TIMEOUT_S = 120.0
 
@@ -42,26 +31,54 @@ def _parse_timeout_env() -> float:
     return value if value > 0 else _DEFAULT_TIMEOUT_S
 
 
-class TimeoutMiddleware(BaseHTTPMiddleware):
+class TimeoutMiddleware:
     """Cancel requests that exceed ``REQUEST_TIMEOUT_SECONDS`` and return 504."""
 
     def __init__(self, app: ASGIApp, timeout_s: float | None = None) -> None:
-        super().__init__(app)
+        self.app = app
         self._timeout_s = timeout_s if timeout_s is not None else _parse_timeout_env()
 
-    async def dispatch(self, request: Request, call_next: Callable):  # type: ignore[override]
-        """Run ``call_next`` under an asyncio timeout; return 504 on expiry."""
-        try:
-            response: Response = await asyncio.wait_for(call_next(request), timeout=self._timeout_s)
-        except asyncio.TimeoutError:
-            return JSONResponse(
-                status_code=504,
-                content={
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Enforce per-request timeout and return 504 on expiry."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+
+        async def send_wrapper(message: dict) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        with anyio.move_on_after(self._timeout_s):
+            await self.app(scope, receive, send_wrapper)
+            return
+
+        if not response_started:
+            body = json.dumps(
+                {
                     "error": {
                         "type": "timeout",
                         "message": "Gateway Timeout",
                         "code": 504,
                     }
-                },
+                }
+            ).encode()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 504,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                    ],
+                }
             )
-        return response
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                }
+            )

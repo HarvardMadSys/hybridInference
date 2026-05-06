@@ -116,7 +116,7 @@ class RoutingManager:
                 # then short-circuits on whichever adapter's cumulative weight
                 # first reaches the [0,1) random draw's upper bound, starving
                 # every later adapter (e.g. glm-5 only listing z.ai in
-                # routing.yaml gave zhipu weight 1.0 — its cumulative hit 1.0
+                # routing.yaml gave zai weight 1.0 — its cumulative hit 1.0
                 # on iteration one, so ollama/chutes/featherless kept their
                 # carried-over weights but were never reached).
                 total = sum(w for _, w in new_adapters)

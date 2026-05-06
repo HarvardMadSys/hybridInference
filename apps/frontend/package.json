@@ -2,6 +2,9 @@
   "name": "hybridinference-frontend",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build",
@@ -28,6 +31,8 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^20.10.6",
     "@types/react": "^18.2.46",
     "@types/react-dom": "^18.2.18",
@@ -37,6 +42,7 @@
     "eslint": "^8.56.0",
     "eslint-config-next": "^15.5.15",
     "eslint-config-prettier": "^9.1.0",
+    "jsdom": "^29.1.1",
     "postcss": "^8.4.32",
     "prettier": "^3.1.1",
     "tailwindcss": "^3.4.0",

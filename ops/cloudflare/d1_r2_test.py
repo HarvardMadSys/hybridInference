@@ -30,7 +30,7 @@ from serving.storage.d1_client import D1Client
 # ---------------------------------------------------------------------------
 TEST_PREFIX = "r2t_"
 MODELS = ["glm-4.5", "qwen3-32b", "llama-4-scout", "deepseek-r1", "mistral-medium"]
-PROVIDERS = ["zhipu", "featherless", "chutes", "ollama"]
+PROVIDERS = ["zai", "featherless", "chutes", "ollama"]
 
 
 # ---------------------------------------------------------------------------

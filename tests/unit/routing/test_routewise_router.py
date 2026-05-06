@@ -35,6 +35,9 @@ def _make_model_config(
     cfg.provider = provider
     cfg.subscription_type = subscription_type
     cfg.endpoint_id = endpoint_id or f"{model_id}:{provider}"
+    # Concrete (JSON-serializable) base_url so the synthetic _routing chunk
+    # emitted by FixedRouter.stream_chat_completion can be json.dumps()'d.
+    cfg.base_url = f"https://{provider}.example/v1"
     cfg.pricing = {"prompt": prompt_price, "completion": completion_price}
     return cfg
 

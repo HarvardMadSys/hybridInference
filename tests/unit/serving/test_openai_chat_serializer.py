@@ -60,11 +60,11 @@ def test_sanitize_always_strips_routing():
     chunk = {
         "id": "c1",
         "choices": [{"delta": {"content": "hi"}}],
-        "_routing": {"provider": "zhipu", "base_url": "https://api.z.ai"},
+        "_routing": {"provider": "zai", "base_url": "https://api.z.ai"},
     }
     result = sanitize_chunk(dict(chunk), SerializerMode.STRICT_OPENAI)
     assert "_routing" not in (result.chunk_json or {})
-    assert result.routing_info == {"provider": "zhipu", "base_url": "https://api.z.ai"}
+    assert result.routing_info == {"provider": "zai", "base_url": "https://api.z.ai"}
     assert result.should_forward is True
 
 
@@ -143,6 +143,49 @@ def test_sanitize_reasoning_with_tool_calls_stripped():
 
 
 @pytest.mark.unit
+def test_sanitize_suppresses_synthetic_routing_only_chunk():
+    """Synthetic routing chunk (no choices, no usage) is not forwarded.
+
+    FixedRouter.stream_chat_completion emits a metadata-only chunk at the
+    start of every stream so completions.py can recover the upstream
+    provider/base_url/endpoint_id. That chunk must be consumed internally,
+    never reach the SSE client.
+    """
+    chunk = {
+        "choices": [],
+        "_routing": {"provider": "anthropic", "base_url": "https://api.anthropic.com"},
+    }
+    result = sanitize_chunk(dict(chunk), SerializerMode.REASONING_PASSTHROUGH)
+    assert result.should_forward is False
+    assert result.chunk_json is None
+    assert result.routing_info == {
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+    }
+
+    # Same in strict mode.
+    result_strict = sanitize_chunk(dict(chunk), SerializerMode.STRICT_OPENAI)
+    assert result_strict.should_forward is False
+    assert result_strict.chunk_json is None
+
+
+@pytest.mark.unit
+def test_sanitize_keeps_empty_choices_chunk_when_usage_present():
+    """An empty-choices chunk that carries usage is still forwarded.
+
+    Some providers emit a final chunk with empty choices but populated
+    usage. Suppressing it would lose the usage payload to clients.
+    """
+    chunk = {
+        "choices": [],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+    result = sanitize_chunk(dict(chunk), SerializerMode.REASONING_PASSTHROUGH)
+    assert result.should_forward is True
+    assert result.usage_data == {"prompt_tokens": 10, "completion_tokens": 5}
+
+
+@pytest.mark.unit
 def test_sanitize_response_strict_removes_reasoning_content():
     """Strict mode: non-stream response should not expose reasoning_content."""
     response = {
@@ -156,14 +199,14 @@ def test_sanitize_response_strict_removes_reasoning_content():
                 }
             }
         ],
-        "_routing": {"provider": "zhipu"},
+        "_routing": {"provider": "zai"},
     }
     result = sanitize_response(dict(response), SerializerMode.STRICT_OPENAI)
     message = result.response_json["choices"][0]["message"]
     assert "reasoning_content" not in message
     assert message["content"] == "answer"
     assert "_routing" not in result.response_json
-    assert result.routing_info == {"provider": "zhipu"}
+    assert result.routing_info == {"provider": "zai"}
 
 
 @pytest.mark.unit

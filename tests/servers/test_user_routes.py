@@ -455,7 +455,7 @@ class TestLLMProberLayout:
         layout = {
             "direct_models": ["glm-4.7", "glm-5", "qwen3-coder-30b"],
             "direct_providers": {
-                "glm-4.7": ["glm-4.7::ollama::ollama-com", "glm-4.7::zhipu::api-z-ai"],
+                "glm-4.7": ["glm-4.7::ollama::ollama-com", "glm-4.7::zai::api-z-ai"],
                 "minimax-m2.7": ["a", "b", "c"],
             },
             "e2e_models": ["glm-4.7-flash", "minimax-m2.7"],

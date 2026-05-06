@@ -274,14 +274,14 @@ if kind in (
     "ollama",
     "openai_compat",
     "deepseek",
-    "zhipu",
+    "zai",
     "minimax",
     "your_provider",  # <-- add it here
 ):
     return OpenAICompatAdapter(model_cfg)
 ```
 
-This is how `deepseek`, `zhipu`, and `minimax` are integrated today: a per-provider profile in `serving/adapters/profiles.py` carries any usage-metric or path quirks, and `OpenAICompatAdapter` does the rest.
+This is how `deepseek`, `zai`, and `minimax` are integrated today: a per-provider profile in `serving/adapters/profiles.py` carries any usage-metric or path quirks, and `OpenAICompatAdapter` does the rest.
 
 **B) Genuinely custom protocols.** If the provider speaks a non-OpenAI wire format (e.g., Gemini's `generateContent`, the Anthropic Messages API, OpenRouter's provider-pinning header), add a dedicated adapter class and a dispatch branch:
 
@@ -423,7 +423,7 @@ The `kind` field in each route entry selects the backend adapter. All kinds mark
 | `chutes` | OpenAI-compat | Chutes.ai hosted inference |
 | `featherless` | OpenAI-compat | Featherless.ai hosted inference |
 | `deepseek` | OpenAI-compat | DeepSeek API (applies DeepSeek usage profile) |
-| `zhipu` | OpenAI-compat | Zhipu / Z.AI API (uses non-`/v1` chat path) |
+| `zai` | OpenAI-compat | Z.AI API (uses non-`/v1` chat path) |
 | `minimax` | OpenAI-compat | MiniMax API (applies MiniMax usage profile) |
 | `openrouter` | Custom | OpenRouter aggregator. Use the bracket form `openrouter[<slug>]` (e.g. `openrouter[deepinfra]`) to pin a sub-provider. |
 | `gemini` | Custom | Google Gemini API (message format translation) |

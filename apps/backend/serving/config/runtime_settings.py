@@ -75,6 +75,38 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "min": 1,
         "description": "Per-user concurrency cap for admin users",
     },
+    "user_daily_quota_free": {
+        "type": "float",
+        "default": 100.00,
+        "min": 0.0,
+        "description": (
+            "Default daily USD spend quota seeded onto a free-tier user's active API key at signup."
+        ),
+    },
+    "user_daily_quota_pro": {
+        "type": "float",
+        "default": 100.00,
+        "min": 0.0,
+        "description": (
+            "Default daily USD spend quota seeded onto a pro-tier user's active API key at signup."
+        ),
+    },
+    "user_daily_quota_internal": {
+        "type": "float",
+        "default": 1000.00,
+        "min": 0.0,
+        "description": (
+            "Default daily USD spend quota seeded onto an internal user's active API key at signup."
+        ),
+    },
+    "user_daily_quota_admin": {
+        "type": "float",
+        "default": 1000.00,
+        "min": 0.0,
+        "description": (
+            "Default daily USD spend quota seeded onto an admin user's active API key at signup."
+        ),
+    },
 }
 
 _SENTINEL = object()

@@ -7,7 +7,7 @@ import pytest
 NATIVE_MODEL = "claude-opus-4.7"
 OPENAI_MODEL = "glm-4.7"
 ANTHROPIC_UPSTREAM = "https://api.anthropic.com/v1/messages"
-ZHIPU_UPSTREAM = "https://example-zhipu.test/chat/completions"
+ZAI_UPSTREAM = "https://example-zai.test/chat/completions"
 
 
 def _auth():
@@ -76,7 +76,7 @@ async def test_anthropic_v1_messages_alias_reaches_same_handler(anthropic_test_c
 
 @pytest.mark.asyncio
 async def test_openai_backend_translated(anthropic_test_client, monkeypatch):
-    """Anthropic-format -> glm-4.7 (zhipu) -> translation."""
+    """Anthropic-format -> glm-4.7 (zai) -> translation."""
     openai_resp = {
         "id": "chatcmpl-1",
         "object": "chat.completion",

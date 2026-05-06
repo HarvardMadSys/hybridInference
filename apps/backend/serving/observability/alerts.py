@@ -52,13 +52,16 @@ _EMOJI = {
 
 
 def _format_message(severity: AlertSeverity, title: str, context: dict[str, Any]) -> str:
-    ts = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     lines = [
-        f"{_EMOJI[severity]} [{severity.value}] {title}",
-        f"At: {ts}  Host: {_HOST}",
+        f"{_EMOJI[severity]} *{title}*",
+        f"_{ts} · {_HOST}_",
     ]
-    for k, v in context.items():
-        lines.append(f"{k}: {v}")
+    if context:
+        lines.append("")
+        for k, v in context.items():
+            label = k.replace("_", " ").title()
+            lines.append(f"• *{label}:* {v}")
     return "\n".join(lines)
 
 

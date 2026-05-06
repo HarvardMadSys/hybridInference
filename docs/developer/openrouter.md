@@ -13,7 +13,7 @@ hybridInference/
 │   │   ├── bootstrap.py        # Service bootstrap: models, routing, DB
 │   │   └── routers/            # API routers (health, models, completions, admin, ...)
 │   ├── adapters/               # Provider adapters: openai_compat.py (vllm/sglang/
-│   │                           #   ollama/chutes/featherless/deepseek/zhipu/minimax),
+│   │                           #   ollama/chutes/featherless/deepseek/zai/minimax),
 │   │                           #   openrouter.py, gemini.py, anthropic.py, claude.py,
 │   │                           #   plus shared profiles.py
 │   ├── storage/                # PostgreSQL or Cloudflare D1 stores (DB_BACKEND-driven)

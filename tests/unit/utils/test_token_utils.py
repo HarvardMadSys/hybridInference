@@ -35,6 +35,11 @@ class TestExtractCacheTokens:
         usage = {"prompt_cache_hit_tokens": 100}
         assert extract_cache_tokens(usage) == (100, None)
 
+    def test_sglang_cached_tokens(self):
+        """SGLang returns cached_tokens as a direct field."""
+        usage = {"cached_tokens": 913}
+        assert extract_cache_tokens(usage) == (913, None)
+
     def test_zero_cache_read_is_recorded(self):
         """An explicit 0 means 'supported but no hit' — should not be None."""
         usage = {"cache_read_input_tokens": 0}
@@ -44,6 +49,11 @@ class TestExtractCacheTokens:
         """When multiple read fields exist, first match wins."""
         usage = {"cache_read_input_tokens": 10, "cache_read_tokens": 20}
         assert extract_cache_tokens(usage) == (10, None)
+
+    def test_sglang_field_priority_over_openai_nested(self):
+        """SGLang cached_tokens should be found before nested prompt_tokens_details."""
+        usage = {"cached_tokens": 913, "prompt_tokens_details": {"cached_tokens": 100}}
+        assert extract_cache_tokens(usage) == (913, None)
 
     # --- cache read: nested (OpenAI / Azure) ---
 
@@ -144,6 +154,16 @@ class TestNormalizeUsageCacheTokens:
         }
         result = normalize_usage(usage)
         assert result["cache_read_tokens"] == 60
+
+    def test_sglang_format(self):
+        """SGLang returns cached_tokens as a direct field."""
+        usage = {
+            "prompt_tokens": 914,
+            "completion_tokens": 1,
+            "cached_tokens": 913,
+        }
+        result = normalize_usage(usage)
+        assert result["cache_read_tokens"] == 913
 
     def test_no_cache_fields_leaves_them_absent(self):
         usage = {"prompt_tokens": 100, "completion_tokens": 50}

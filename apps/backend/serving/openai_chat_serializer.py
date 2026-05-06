@@ -59,8 +59,11 @@ def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:
     """Sanitize a parsed chunk for the public API.
 
     - Always strips _routing (internal metadata, never sent to client).
-    - In strict mode: drops reasoning-only chunks, removes reasoning_content from
-      mixed chunks.
+    - Drops chunks that were pure routing-metadata (no choices, no usage)
+      so the synthetic ``_routing`` chunk emitted by FixedRouter never
+      reaches the client.
+    - In strict mode: drops reasoning-only chunks, removes reasoning_content
+      from mixed chunks.
     - In passthrough mode: preserves reasoning_content as-is.
 
     Returns metadata so completions.py can keep usage/routing/tool-call
@@ -68,6 +71,18 @@ def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:
     """
     usage_data = chunk_json.get("usage")
     routing_info = chunk_json.pop("_routing", None)
+
+    # Suppress synthetic routing-only chunks (no choices, no usage). These are
+    # emitted by FixedRouter.stream_chat_completion and RouteWiseRouter so
+    # completions.py can recover the upstream provider/pricing for DB logging,
+    # but they carry no client-visible payload.
+    if routing_info is not None and not chunk_json.get("choices") and usage_data is None:
+        return SanitizeResult(
+            chunk_json=None,
+            should_forward=False,
+            usage_data=usage_data,
+            routing_info=routing_info,
+        )
 
     if mode == SerializerMode.REASONING_PASSTHROUGH:
         return SanitizeResult(
