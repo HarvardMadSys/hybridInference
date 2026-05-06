@@ -492,10 +492,89 @@ async def test_stream_no_fallback_after_chunks_yielded():
         ):
             chunks_seen.append(chunk)
 
-    # Exactly one chunk from primary, then the exception. Backup must NOT
-    # have produced any chunks — that would indicate a fallback corrupted
-    # the stream after partial output.
-    assert len(chunks_seen) == 1
+    # One synthetic _routing chunk + one chunk from primary, then the exception.
+    # Backup must NOT have produced any chunks — that would indicate a fallback
+    # corrupted the stream after partial output.
+    assert len(chunks_seen) == 2
+    # First chunk is the synthetic routing metadata for the primary adapter.
+    assert '"_routing"' in chunks_seen[0]
+    assert '"provider": "primary"' in chunks_seen[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_emits_routing_chunk_with_provider_and_base_url():
+    """Regression: streaming must yield a synthetic _routing chunk first.
+
+    Without this chunk, completions.py falls back to provider="router" and
+    pricing=None for streaming requests, because req_ctx.push() inside
+    _execute_stream_adapter happens in the background reader task and is
+    invisible to the parent coroutine. api_logs would record cost_usd=NULL
+    for every streaming request (notably Claude / Anthropic models).
+    """
+    import json as _json
+
+    exe = RouteExecutor()
+    primary = _EchoAdapter(_cfg("m", provider="anthropic"))
+    primary.config.base_url = "https://api.anthropic.com"
+    primary.config.endpoint_id = "m:anthropic-api"
+    exe.register_route("m", [(primary, 1.0)])
+    exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
+
+    chunks: list[Any] = []
+    async for chunk in exe.stream_chat_completion(
+        "m", messages=[{"role": "user", "content": "hi"}]
+    ):
+        chunks.append(chunk)
+
+    # First chunk is the synthetic routing metadata.
+    assert chunks, "stream produced no chunks"
+    first = chunks[0]
+    assert isinstance(first, str) and first.startswith("data: ")
+    payload = _json.loads(first[len("data: ") :].strip())
+    assert payload["choices"] == []
+    routing = payload["_routing"]
+    assert routing["provider"] == "anthropic"
+    assert routing["base_url"] == "https://api.anthropic.com"
+    assert routing["endpoint_id"] == "m:anthropic-api"
+    assert "fallback" not in routing
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_emits_routing_chunk_for_fallback_adapter():
+    """Fallback adapter also gets a _routing chunk (with fallback=True)."""
+    import json as _json
+
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="primary"))
+    backup = _EchoAdapter(_cfg("m", provider="backup"))
+    backup.config.base_url = "https://backup.example"
+    exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
+    exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
+
+    chunks: list[Any] = []
+    async for chunk in exe.stream_chat_completion(
+        "m", messages=[{"role": "user", "content": "hi"}]
+    ):
+        chunks.append(chunk)
+
+    # Two routing chunks (primary + backup) plus the backup's content chunk.
+    routing_payloads = []
+    for chunk in chunks:
+        if isinstance(chunk, str) and chunk.startswith("data: "):
+            try:
+                p = _json.loads(chunk[len("data: ") :].strip())
+            except (ValueError, _json.JSONDecodeError):
+                continue
+            if "_routing" in p:
+                routing_payloads.append(p["_routing"])
+
+    assert len(routing_payloads) == 2
+    assert routing_payloads[0]["provider"] == "primary"
+    assert routing_payloads[0].get("fallback") is not True
+    assert routing_payloads[1]["provider"] == "backup"
+    assert routing_payloads[1].get("fallback") is True
 
 
 @pytest.mark.unit
