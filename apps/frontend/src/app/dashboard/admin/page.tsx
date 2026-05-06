@@ -1489,9 +1489,7 @@ export default function AdminPage() {
             )}
 
             {/* Keys sub-tab */}
-            {providerSubTab === 'keys' && (
-              <ProviderKeysTab refreshKey={providerKeysRefreshNonce} />
-            )}
+            {providerSubTab === 'keys' && <ProviderKeysTab refreshKey={providerKeysRefreshNonce} />}
           </div>
         )}
 

@@ -943,9 +943,7 @@ export interface DeleteProviderApiKeyResponse {
   pools_updated: number;
 }
 
-export async function listProviderKeys(
-  provider?: string,
-): Promise<ListProviderApiKeysResponse> {
+export async function listProviderKeys(provider?: string): Promise<ListProviderApiKeysResponse> {
   const params = new URLSearchParams();
   if (provider) params.set('provider', provider);
   const qs = params.toString();

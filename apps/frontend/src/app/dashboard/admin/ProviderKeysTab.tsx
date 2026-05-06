@@ -208,7 +208,10 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
         <h3 className="text-[14px] font-semibold text-gray-900">Add a new key</h3>
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
-            <label className="text-[12px] font-medium text-gray-500" htmlFor="provider-keys-form-provider">
+            <label
+              className="text-[12px] font-medium text-gray-500"
+              htmlFor="provider-keys-form-provider"
+            >
               Provider
             </label>
             <select
@@ -226,7 +229,10 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
             </select>
           </div>
           <div>
-            <label className="text-[12px] font-medium text-gray-500" htmlFor="provider-keys-form-label">
+            <label
+              className="text-[12px] font-medium text-gray-500"
+              htmlFor="provider-keys-form-label"
+            >
               Label (optional)
             </label>
             <input
