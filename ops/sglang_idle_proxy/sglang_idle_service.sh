@@ -22,11 +22,20 @@
 # Multiple hosts (pipe-separated):
 #   SSH_HOST="r1.example.com|r2.example.com" REMOTE_PORT=8001 ./sglang_idle_proxy/sglang_idle_service.sh start
 # This opens two tunnels: r1.example.com:8001 → localhost and r2.example.com:8001 → localhost.
+#
+# Remote bind address (default 0.0.0.0 — bind all interfaces on remote so Docker
+# containers on the remote can reach the forwarded port via host.docker.internal).
+# Requires sshd_config "GatewayPorts clientspecified" (or "yes") on the remote.
+# Override to "localhost" to restore default loopback-only behavior, or pin to a
+# specific bridge IP, e.g. REMOTE_BIND=172.17.0.1.
+#   REMOTE_BIND=172.17.0.1 SSH_HOST=router.example.com REMOTE_PORT=8001 \
+#       ./sglang_idle_proxy/sglang_idle_service.sh start
 
 set -euo pipefail
 
 LISTEN_PORT="${LISTEN_PORT:-8001}"
 REMOTE_PORT="${REMOTE_PORT:-}"
+REMOTE_BIND="${REMOTE_BIND:-0.0.0.0}"
 SSH_HOST="${SSH_HOST:-}"
 PID_FILE="/tmp/sglang_idle_proxy_${LISTEN_PORT}.pid"
 TUNNEL_PID_FILE="/tmp/sglang_idle_proxy_tunnel_${LISTEN_PORT}.pid"
@@ -62,17 +71,17 @@ case "$cmd" in
       for host in "${HOSTS[@]}"; do
         host="${host// /}"
         [[ -z "$host" ]] && continue
-        echo "Opening reverse tunnel: ${host}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
+        echo "Opening reverse tunnel: ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
         ssh -f -N \
-          -R "${REMOTE_PORT}:localhost:${LISTEN_PORT}" \
+          -R "${REMOTE_BIND}:${REMOTE_PORT}:localhost:${LISTEN_PORT}" \
           -o ServerAliveInterval=30 \
           -o ServerAliveCountMax=3 \
           -o ExitOnForwardFailure=yes \
           "$host"
-        TUNNEL_PID=$(ps aux | grep "ssh -f -N.*-R ${REMOTE_PORT}:localhost:${LISTEN_PORT}" | grep -v grep | awk '{print $2}' | head -1)
+        TUNNEL_PID=$(ps aux | grep "ssh -f -N.*-R ${REMOTE_BIND}:${REMOTE_PORT}:localhost:${LISTEN_PORT}" | grep -v grep | awk '{print $2}' | head -1)
         if [[ -n "$TUNNEL_PID" ]]; then
           TUNNEL_PIDS+=("$TUNNEL_PID")
-          echo "Tunnel established (PID ${TUNNEL_PID}).  ${host}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
+          echo "Tunnel established (PID ${TUNNEL_PID}).  ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
         else
           echo "WARNING: tunnel to ${host} may have failed. Check SSH access." >&2
           TUNNEL_EXIT=1
@@ -144,12 +153,12 @@ case "$cmd" in
         if [[ $idx -lt ${#TUNNEL_PIDS[@]} ]]; then
           tpid="${TUNNEL_PIDS[$idx]}"
           if kill -0 "$tpid" 2>/dev/null; then
-            echo "Tunnel running (PID ${tpid}).  ${host}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
+            echo "Tunnel running (PID ${tpid}).  ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
           else
-            echo "Tunnel NOT running (stale PID ${tpid}) for ${host}:${REMOTE_PORT} → localhost:${LISTEN_PORT}."
+            echo "Tunnel NOT running (stale PID ${tpid}) for ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT}."
           fi
         else
-          echo "Tunnel NOT running (expected ${host}:${REMOTE_PORT} → localhost:${LISTEN_PORT})."
+          echo "Tunnel NOT running (expected ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT})."
         fi
         ((idx++))
       done

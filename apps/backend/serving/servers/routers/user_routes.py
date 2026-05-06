@@ -6,7 +6,12 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from serving.config.runtime_settings import get_runtime_settings_instance
+
+if TYPE_CHECKING:
+    from serving.config.runtime_settings import RuntimeSettings
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -176,8 +181,25 @@ def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutSt
         return LLMProberLayoutState()
 
 
-def get_default_daily_quota() -> Decimal:
-    """Get default daily quota for new users from environment."""
+async def get_default_daily_quota_for_role(
+    role: str,
+    runtime_settings: "RuntimeSettings | None",
+) -> Decimal:
+    """Return the default daily USD quota seeded onto a new API key.
+
+    Reads the ``user_daily_quota_<role>`` runtime setting if present.
+    Falls back to ``SIGNUP_DEFAULT_DAILY_QUOTA_USD`` env var (default 100.00)
+    if the role is unknown or runtime settings are unavailable (e.g. early
+    bootstrap).
+    """
+    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+
+    key = f"user_daily_quota_{role}"
+    if runtime_settings is not None:
+        if key in RUNTIME_SETTINGS_REGISTRY:
+            val = await runtime_settings.get_float(key)
+            return Decimal(str(val))
+        logger.warning("No quota runtime setting for role %r — falling back to env var", role)
     quota_str = os.getenv("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "100.00")
     return Decimal(quota_str)
 
@@ -306,8 +328,6 @@ async def create_api_key(
     # Check if email is verified
     require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
     try:
-        from serving.config.runtime_settings import get_runtime_settings_instance
-
         rs = get_runtime_settings_instance()
         require_verification = await rs.get_bool("signup_require_email_verification")
     except (RuntimeError, KeyError):
@@ -324,7 +344,11 @@ async def create_api_key(
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
     key_prefix = api_key[:12]
-    default_quota = get_default_daily_quota()
+    try:
+        rt = get_runtime_settings_instance()
+    except RuntimeError:
+        rt = None
+    default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
 
     await op_store.create_key(
         key_hash=key_hash,
@@ -529,7 +553,11 @@ async def regenerate_api_key(
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
     key_prefix = api_key[:12]
-    default_quota = get_default_daily_quota()
+    try:
+        rt = get_runtime_settings_instance()
+    except RuntimeError:
+        rt = None
+    default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
 
     # Revoke old key via store, then create new one
     await op_store.revoke_key(current_user["user_id"])

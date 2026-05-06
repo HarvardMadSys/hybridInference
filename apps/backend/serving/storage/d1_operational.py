@@ -891,6 +891,33 @@ class D1OperationalStore(OperationalStore):
         )
         return _parse_row_timestamps(result.rows[0]) if result.rows else None
 
+    async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
+        """Return (key_count, user_count) for active keys belonging to *role* users."""
+        sql = (
+            "SELECT COUNT(*) AS keys, COUNT(DISTINCT k.user_id) AS users "
+            "FROM api_keys k JOIN users u ON u.id = k.user_id "
+            "WHERE k.status = 'active' AND u.role = ?"
+        )
+        result = await self._d1.query(sql, [role])
+        rows = result.rows
+        if not rows:
+            return 0, 0
+        row = rows[0]
+        return int(row.get("keys") or 0), int(row.get("users") or 0)
+
+    async def apply_role_quota(self, role: str, quota: Decimal) -> int:
+        """Set quota_daily_cost_usd on all active keys for *role* users.
+
+        Returns the number of rows updated.
+        """
+        sql = (
+            "UPDATE api_keys SET quota_daily_cost_usd = ? "
+            "WHERE status = 'active' "
+            "AND user_id IN (SELECT id FROM users WHERE role = ?)"
+        )
+        result = await self._d1.execute(sql, [float(quota), role])
+        return int(getattr(result, "changes", 0) or 0)
+
     # -- auth sessions -------------------------------------------------------
 
     async def create_session(

@@ -70,6 +70,7 @@ _OP_WRITES = {
     "add_signup_allowed_domain",
     "remove_signup_allowed_domain",
     "set_setting",
+    "apply_role_quota",
 }
 
 _OP_READS = _get_abstract_methods(OperationalStore) - _OP_WRITES - _LIFECYCLE
