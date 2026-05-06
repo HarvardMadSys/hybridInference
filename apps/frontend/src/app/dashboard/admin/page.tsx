@@ -26,6 +26,7 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { AnalyticsTab } from './AnalyticsTab';
+import { ProviderKeysTab } from './ProviderKeysTab';
 import { ProviderPerformanceTab } from './ProviderPerformanceTab';
 import { SettingsTab } from './SettingsTab';
 import { TokenUsageTab } from './TokenUsageTab';
@@ -788,7 +789,8 @@ export default function AdminPage() {
   >('users');
 
   // Providers sub-tab
-  const [providerSubTab, setProviderSubTab] = useState<'quota' | 'performance'>('quota');
+  const [providerSubTab, setProviderSubTab] = useState<'quota' | 'performance' | 'keys'>('quota');
+  const [providerKeysRefreshNonce, setProviderKeysRefreshNonce] = useState(0);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -824,6 +826,8 @@ export default function AdminPage() {
       );
       if (tab === 'providers' && sub === 'performance') {
         setProviderSubTab('performance');
+      } else if (tab === 'providers' && sub === 'keys') {
+        setProviderSubTab('keys');
       }
     }
   }, []);
@@ -1123,8 +1127,10 @@ export default function AdminPage() {
     if (activeTab === 'providers') {
       if (providerSubTab === 'quota') {
         loadProviderQuotas();
-      } else {
+      } else if (providerSubTab === 'performance') {
         setPerfRefreshNonce((n) => n + 1);
+      } else {
+        setProviderKeysRefreshNonce((n) => n + 1);
       }
       return;
     }
@@ -1427,7 +1433,7 @@ export default function AdminPage() {
           <div className="mt-6">
             {/* Sub-tab toggle */}
             <div className="mb-5 flex items-center gap-1">
-              {(['quota', 'performance'] as const).map((sub) => (
+              {(['quota', 'performance', 'keys'] as const).map((sub) => (
                 <button
                   key={sub}
                   onClick={() => {
@@ -1447,7 +1453,7 @@ export default function AdminPage() {
                       : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
                   }`}
                 >
-                  {sub === 'quota' ? 'Quota' : 'Performance'}
+                  {sub === 'quota' ? 'Quota' : sub === 'performance' ? 'Performance' : 'Keys'}
                 </button>
               ))}
             </div>
@@ -1480,6 +1486,11 @@ export default function AdminPage() {
             {/* Performance sub-tab */}
             {providerSubTab === 'performance' && (
               <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
+            )}
+
+            {/* Keys sub-tab */}
+            {providerSubTab === 'keys' && (
+              <ProviderKeysTab refreshKey={providerKeysRefreshNonce} />
             )}
           </div>
         )}

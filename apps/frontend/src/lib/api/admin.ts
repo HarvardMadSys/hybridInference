@@ -910,3 +910,70 @@ export async function applyRoleQuota(role: Role): Promise<RoleQuotaApplyResult> 
   });
   return jsonOrThrow<RoleQuotaApplyResult>(resp);
 }
+
+// ========================================
+// Provider API Keys (admin-managed runtime credentials)
+// ========================================
+
+export type ProviderKeySource = 'env' | 'db';
+
+export interface ProviderApiKeyItem {
+  id: string | null;
+  provider: string;
+  key_prefix: string;
+  label: string | null;
+  source: ProviderKeySource;
+  status: string;
+  created_at: string | null;
+}
+
+export interface ListProviderApiKeysResponse {
+  provider: string | null;
+  keys: ProviderApiKeyItem[];
+}
+
+export interface AddProviderApiKeyResponse {
+  key: ProviderApiKeyItem;
+  pools_updated: number;
+}
+
+export interface DeleteProviderApiKeyResponse {
+  id: string;
+  provider: string;
+  pools_updated: number;
+}
+
+export async function listProviderKeys(
+  provider?: string,
+): Promise<ListProviderApiKeysResponse> {
+  const params = new URLSearchParams();
+  if (provider) params.set('provider', provider);
+  const qs = params.toString();
+  const path = qs ? `/admin/provider-keys?${qs}` : '/admin/provider-keys';
+  const resp = await fetchWithAuth(API_BASE, path);
+  return jsonOrThrow<ListProviderApiKeysResponse>(resp);
+}
+
+export async function addProviderKey(
+  provider: string,
+  apiKey: string,
+  label?: string,
+): Promise<AddProviderApiKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider,
+      api_key: apiKey,
+      ...(label ? { label } : {}),
+    }),
+  });
+  return jsonOrThrow<AddProviderApiKeyResponse>(resp);
+}
+
+export async function deleteProviderKey(id: string): Promise<DeleteProviderApiKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/provider-keys/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  return jsonOrThrow<DeleteProviderApiKeyResponse>(resp);
+}

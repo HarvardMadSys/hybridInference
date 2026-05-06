@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from .base import LogStore, OperationalStore, Row
+from .base import LogStore, OperationalStore, ProviderKeyRow, Row
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -828,6 +828,50 @@ class DualWriteOperationalStore(OperationalStore):
     async def list_settings(self) -> list[Row]:
         """Delegate to primary."""
         return await self._primary.list_settings()
+
+    # -- provider api keys ---------------------------------------------------
+
+    async def add_provider_key(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        label: str | None,
+        created_by: str | None,
+    ) -> str:
+        """Insert on primary and shadow-write to secondary."""
+        key_id = await self._primary.add_provider_key(
+            provider=provider, api_key=api_key, label=label, created_by=created_by
+        )
+        await self._do_shadow(
+            "add_provider_key",
+            self._shadow.add_provider_key(
+                provider=provider,
+                api_key=api_key,
+                label=label,
+                created_by=created_by,
+            ),
+            provider=provider,
+        )
+        return key_id
+
+    async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
+        """Delegate to primary."""
+        return await self._primary.list_provider_keys(provider)
+
+    async def list_provider_keys_full(self, provider: str) -> list[str]:
+        """Delegate to primary."""
+        return await self._primary.list_provider_keys_full(provider)
+
+    async def delete_provider_key(self, key_id: str) -> bool:
+        """Delete on primary and shadow-write the delete to secondary."""
+        ok = await self._primary.delete_provider_key(key_id)
+        await self._do_shadow(
+            "delete_provider_key",
+            self._shadow.delete_provider_key(key_id),
+            key_id=key_id,
+        )
+        return ok
 
 
 # ---------------------------------------------------------------------------

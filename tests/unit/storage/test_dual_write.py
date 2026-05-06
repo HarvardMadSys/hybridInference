@@ -71,6 +71,8 @@ _OP_WRITES = {
     "remove_signup_allowed_domain",
     "set_setting",
     "apply_role_quota",
+    "add_provider_key",
+    "delete_provider_key",
 }
 
 _OP_READS = _get_abstract_methods(OperationalStore) - _OP_WRITES - _LIFECYCLE

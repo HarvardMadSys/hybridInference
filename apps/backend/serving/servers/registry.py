@@ -364,6 +364,17 @@ def register_from_models_yaml(
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
 
+            # Register adapter for runtime key-pool management. We always
+            # mark the provider as known (whitelist) and only attach the
+            # adapter when it carries a key pool — otherwise admin actions
+            # would silently no-op against single-key adapters.
+            from serving.adapters import dynamic_keys
+
+            provider_key = adapter_cfg.get("provider") or kind
+            dynamic_keys.register_known_provider(provider_key)
+            if getattr(adapter, "_key_pool", None) is not None:
+                dynamic_keys.register_adapter_for_provider(provider_key, adapter)
+
         # Determine model type: "embedding" models bypass RouteExecutor
         model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"
 
