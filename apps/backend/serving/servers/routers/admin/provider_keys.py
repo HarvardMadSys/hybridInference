@@ -179,26 +179,18 @@ async def delete_provider_key(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    rows = await op_store.list_provider_keys()
-    target = next((r for r in rows if r.id == key_id), None)
+    target = await op_store.get_provider_key_full(key_id)
     if target is None:
         raise HTTPException(404, f"Provider key {key_id!r} not found")
-
-    raw_keys = await op_store.list_provider_keys_full(target.provider)
-    db_keys_now = set(raw_keys)
+    provider, raw_key = target
 
     deleted = await op_store.delete_provider_key(key_id)
     if not deleted:
         raise HTTPException(404, f"Provider key {key_id!r} not found")
 
-    # The raw value of the deleted key is the one that was in db_keys_now
-    # but is no longer in the post-delete fetch. Re-read to find which one
-    # disappeared so we can pull it from the live pools.
-    after = set(await op_store.list_provider_keys_full(target.provider))
-    removed_raw_keys = db_keys_now - after
-    pools_updated = 0
-    for raw in removed_raw_keys:
-        pools_updated += dynamic_keys.remove_key_from_provider(target.provider, raw)
+    # ``remove_key_from_provider`` no-ops on env-configured keys with the
+    # same raw value, so we always pass the raw key without checking.
+    pools_updated = dynamic_keys.remove_key_from_provider(provider, raw_key)
 
     await log_admin_action(
         op_store,
@@ -207,14 +199,14 @@ async def delete_provider_key(
         None,
         {
             "id": key_id,
-            "provider": target.provider,
-            "key_prefix": target.key_prefix,
+            "provider": provider,
+            "key_prefix": _mask(raw_key),
             "pools_updated": pools_updated,
         },
     )
 
     return DeleteProviderApiKeyResponse(
         id=key_id,
-        provider=target.provider,
+        provider=provider,
         pools_updated=pools_updated,
     )

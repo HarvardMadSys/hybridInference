@@ -60,7 +60,8 @@ class KeyPool:
 
     def size(self) -> int:
         """Return the number of active (non-removed) keys in the pool."""
-        return sum(1 for s in self._keys if not s.removed)
+        with self._lock:
+            return sum(1 for s in self._keys if not s.removed)
 
     def snapshot_keys(self) -> list[str]:
         """Return a snapshot of every active key currently in the pool."""

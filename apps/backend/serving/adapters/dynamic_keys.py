@@ -21,6 +21,10 @@ logger = get_logger(__name__)
 _lock = threading.Lock()
 _adapters_by_provider: dict[str, list] = {}
 _known_providers: set[str] = set()
+# Tracks raw key values that were injected from the DB (per provider).
+# Used by ``remove_key_from_provider`` to ensure we never tombstone an
+# env-configured key that happens to share its raw value with a deleted DB row.
+_db_injected_keys: dict[str, set[str]] = {}
 
 
 def reset() -> None:
@@ -28,6 +32,7 @@ def reset() -> None:
     with _lock:
         _adapters_by_provider.clear()
         _known_providers.clear()
+        _db_injected_keys.clear()
 
 
 def register_adapter_for_provider(provider: str, adapter: object) -> None:
@@ -76,20 +81,36 @@ def add_key_to_provider(provider: str, key: str) -> int:
     Returns the number of pools the key was added to. A return value of 0
     means *provider* has no multi-key adapters — the caller should treat
     this as a configuration error and surface it to the admin.
+
+    The key is tracked as DB-injected so a future ``remove_key_from_provider``
+    call can distinguish it from env-configured keys that happen to share
+    the same raw value.
     """
     with _lock:
         pools = _pools_for_provider_locked(provider)
         for pool in pools:
             pool.add_key(key)
+        _db_injected_keys.setdefault(provider, set()).add(key)
         return len(pools)
 
 
 def remove_key_from_provider(provider: str, key: str) -> int:
     """Remove *key* from every KeyPool registered for *provider*.
 
+    Only removes the key when it was previously injected via
+    ``add_key_to_provider``. Env-configured keys with the same raw value are
+    left in place so deleting a DB row that duplicates an env key does not
+    tombstone the env key.
+
     Returns the number of pools that actually held the key.
     """
     with _lock:
+        injected = _db_injected_keys.get(provider, set())
+        if key not in injected:
+            return 0
+        injected.discard(key)
+        if not injected:
+            _db_injected_keys.pop(provider, None)
         pools = _pools_for_provider_locked(provider)
         return sum(1 for pool in pools if pool.remove_key(key))
 

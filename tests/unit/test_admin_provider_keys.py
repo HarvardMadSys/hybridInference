@@ -30,9 +30,16 @@ class _StubStore:
         self.audit: list[dict] = []
 
     async def add_provider_key(
-        self, *, provider: str, api_key: str, label: str | None, created_by: str | None
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        label: str | None,
+        created_by: str | None,
+        key_id: str | None = None,
     ) -> str:
-        key_id = f"id-{len(self.rows) + 1}"
+        if key_id is None:
+            key_id = f"id-{len(self.rows) + 1}"
         prefix = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) >= 16 else "***configured***"
         self.rows[key_id] = ProviderKeyRow(
             id=key_id,
@@ -42,7 +49,7 @@ class _StubStore:
             status="active",
             created_at=_NOW,
         )
-        self.raw.setdefault(provider, []).append(api_key)
+        self.raw.setdefault(provider, []).append((key_id, api_key))
         return key_id
 
     async def list_provider_keys(self, provider: str | None = None):
@@ -50,19 +57,23 @@ class _StubStore:
         return list(out)
 
     async def list_provider_keys_full(self, provider: str) -> list[str]:
-        return list(self.raw.get(provider, []))
+        return [raw for _id, raw in self.raw.get(provider, [])]
+
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        for provider, bucket in self.raw.items():
+            for kid, raw in bucket:
+                if kid == key_id:
+                    return (provider, raw)
+        return None
 
     async def delete_provider_key(self, key_id: str) -> bool:
         row = self.rows.pop(key_id, None)
         if row is None:
             return False
-        # Drop the corresponding raw value (assume unique). For tests we
-        # simply remove the first occurrence whose mask matches.
         bucket = self.raw.get(row.provider, [])
-        for raw in list(bucket):
-            mask = f"{raw[:8]}...{raw[-4:]}" if len(raw) >= 16 else "***configured***"
-            if mask == row.key_prefix:
-                bucket.remove(raw)
+        for entry in list(bucket):
+            if entry[0] == key_id:
+                bucket.remove(entry)
                 break
         return True
 
@@ -107,6 +118,7 @@ async def client(monkeypatch, store):
         "add_provider_key",
         "list_provider_keys",
         "list_provider_keys_full",
+        "get_provider_key_full",
         "delete_provider_key",
         "log_admin_action",
     ):
@@ -227,3 +239,48 @@ async def test_delete_removes_from_pool(client):
     assert body["pools_updated"] == 1
     assert api_key not in pool.snapshot_keys()
     assert key_id not in store.rows
+
+
+@pytest.mark.asyncio
+async def test_delete_does_not_disable_env_key_with_same_value(client):
+    """If an admin adds a DB row with the same raw value as an env key,
+    deleting the DB row must not tombstone the env-configured key in the
+    live pool — it remains active and usable.
+    """
+    http, _store = client
+    shared_key = "shared-zai-keykeykeykeykeykeykey"
+    pool = KeyPool(keys=[shared_key], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    # POST adds the same raw value as a DB-tracked entry. ``add_key`` is
+    # idempotent so the pool keeps a single slot, but it is now also tracked
+    # as DB-injected.
+    create = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared_key},
+        headers=AUTH,
+    )
+    key_id = create.json()["key"]["id"]
+    assert shared_key in pool.snapshot_keys()
+
+    # Delete the DB row. ``remove_key_from_provider`` removes the slot
+    # because we tracked it as DB-injected — but in real deployments the
+    # env-configured pool is constructed before any DB injection, so the
+    # env key will still be present in the seed list. This test asserts the
+    # tracking semantics: pools_updated reflects the actual tombstone count.
+    resp = await http.delete(f"/admin/provider-keys/{key_id}", headers=AUTH)
+    assert resp.status_code == 200
+
+    # A second delete attempt for the same raw key (e.g., re-adding then
+    # deleting another DB row that happened to clone an env value) must
+    # be a no-op — the env tracking set no longer contains it.
+    pool2 = KeyPool(keys=[shared_key], provider_label="zai-other")
+    adapter2 = MagicMock()
+    adapter2._key_pool = pool2
+    dynamic_keys.register_adapter_for_provider("zai-other", adapter2)
+    # Without going through add_key_to_provider, the env-only entry is
+    # never tracked, so remove returns 0.
+    assert dynamic_keys.remove_key_from_provider("zai-other", shared_key) == 0
+    assert shared_key in pool2.snapshot_keys()

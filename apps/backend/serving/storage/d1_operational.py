@@ -1658,11 +1658,13 @@ class D1OperationalStore(OperationalStore):
         api_key: str,
         label: str | None,
         created_by: str | None,
+        key_id: str | None = None,
     ) -> str:
-        """Insert a new provider API key row. Returns the new uuid."""
+        """Insert a new provider API key row. Returns the row uuid."""
         import uuid
 
-        key_id = str(uuid.uuid4())
+        if key_id is None:
+            key_id = str(uuid.uuid4())
         prefix = _mask_provider_key(api_key)
         await self._d1.execute(
             "INSERT INTO provider_api_keys "
@@ -1711,6 +1713,17 @@ class D1OperationalStore(OperationalStore):
             [provider],
         )
         return [r["api_key"] for r in result.rows]
+
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        """Return ``(provider, raw_key)`` for *key_id*, or None if absent."""
+        result = await self._d1.query(
+            "SELECT provider, api_key FROM provider_api_keys WHERE id = ?",
+            [key_id],
+        )
+        if not result.rows:
+            return None
+        row = result.rows[0]
+        return (row["provider"], row["api_key"])
 
     async def delete_provider_key(self, key_id: str) -> bool:
         """Hard-delete the provider key row. Returns True when a row was removed."""

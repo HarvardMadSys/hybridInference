@@ -716,10 +716,21 @@ class OperationalStore(ABC):
         api_key: str,
         label: str | None,
         created_by: str | None,
+        key_id: str | None = None,
     ) -> str:
         """Insert a new upstream provider API key row.
 
-        Returns the new row id (uuid).
+        When ``key_id`` is supplied the caller-provided UUID is used instead
+        of generating a new one — needed by ``DualWriteOperationalStore`` to
+        keep primary and shadow row ids aligned. Returns the row id.
+        """
+
+    @abstractmethod
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        """Return ``(provider, raw_key)`` for the row, or None if absent.
+
+        Used by the admin delete endpoint to identify the raw key that was
+        just removed without scanning every key for the provider.
         """
 
     @abstractmethod
