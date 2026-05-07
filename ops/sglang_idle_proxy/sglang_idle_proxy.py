@@ -87,9 +87,7 @@ HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "600"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
 # Accept LOCAL_API_KEY as the canonical local upstream key, with FREEINFERENCE_API_KEY
 # as a compatibility fallback.
-LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "")
-if not LOCAL_API_KEY:
-    LOCAL_API_KEY = os.environ.get("FREEINFERENCE_API_KEY", "")
+LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "freeinference_api")
 LOCAL_API_KEY = LOCAL_API_KEY.strip()
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
