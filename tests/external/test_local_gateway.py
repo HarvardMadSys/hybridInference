@@ -15,7 +15,7 @@ Test Coverage:
 
 Configuration (via environment variables):
     - GATEWAY_BASE_URL: Gateway URL (default: http://localhost:80)
-    - LOCAL_DEPLOYMENT_URL: Local model server URL (default: http://localhost:8001)
+    - LOCAL_DEPLOYMENT_URL: Versioned local model server URL (default: http://localhost:8001/v1)
     - GATEWAY_API_KEY: API key for authentication (optional)
     - USER_AUTH_ENABLED: Enable auth testing (0=disabled, 1=enabled)
     - GATEWAY_TIMEOUT: Request timeout in seconds (default: 30)
@@ -27,7 +27,7 @@ Example Usage:
     # Step 2: Start gateway with test configuration
     MODELS_CONFIG=test/fixtures/test_models.yaml \
     ROUTING_CONFIG=test/fixtures/test_routing.yaml \
-    LOCAL_DEPLOYMENT_URL=http://localhost:8001 \
+    LOCAL_DEPLOYMENT_URL=http://localhost:8001/v1 \
     DB_ENABLED=false \
     uv run uvicorn serving.servers.app:app --port 10081
 
