@@ -253,6 +253,47 @@ async def test_p95_latency_per_provider_fires(monkeypatch):
             await engine.stop()
 
 
+async def test_p95_latency_uses_unknown_when_provider_missing(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.rules.p95_latency_per_provider.window_sec = 60
+    cfg.rules.p95_latency_per_provider.threshold_ms = 25000
+    cfg.rules.p95_latency_per_provider.min_samples = 30
+    cfg.rules.p95_latency_per_provider.cooldown_sec = 1
+    cfg.rules.failed_request_rate.enabled = False
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.auth_failure_spike.enabled = False
+    cfg.rules.concurrency_exhausted.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            for ms in range(1000, 31000, 1000):
+                handler.queue.put_nowait(_fake_record(200, provider=None, duration_ms=ms))
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count >= 1
+            args, _ = mock_alert.call_args
+            assert "unknown" in args[1]
+        finally:
+            await engine.stop()
+
+
 async def test_p95_latency_per_provider_override(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     from serving.observability.alerts import reset_dedupe_state

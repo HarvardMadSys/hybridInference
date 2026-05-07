@@ -19,7 +19,7 @@ from serving.adapters.profiles import (
     ("profile", "delta"),
     [
         (ProviderProfile.DEFAULT, {"name": "get_weather", "arguments": ""}),
-        (ProviderProfile.ZHIPU, {"arguments": '{"cit'}),
+        (ProviderProfile.ZAI, {"arguments": '{"cit'}),
         (ProviderProfile.DEEPSEEK, {"name": "fn", "arguments": "{}"}),
         (ProviderProfile.DEFAULT, {}),
     ],
@@ -35,7 +35,7 @@ def test_function_call_delta_returns_none(profile, delta) -> None:
 
 
 def test_normalize_usage_default_nested_only_zai_minimax_shape() -> None:
-    """ZAI/Zhipu and MiniMax return reasoning/cached tokens only in nested details."""
+    """ZAI and MiniMax return reasoning/cached tokens only in nested details."""
     usage_data = {
         "prompt_tokens": 100,
         "completion_tokens": 50,

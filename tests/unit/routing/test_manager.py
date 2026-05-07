@@ -71,8 +71,8 @@ def test_apply_renormalizes_when_routing_yaml_covers_subset(tmp_path: Path):
     """Regression: routing.yaml listing only some adapter endpoints must not
     inflate the covered adapter past 1.0, which would starve uncovered routes.
 
-    Reproduces the GLM-5 bug: when only the zhipu endpoint was listed under
-    remote_deployment, FixedRatioStrategy assigned zhipu weight=1.0 while
+    Reproduces the GLM-5 bug: when only the zai endpoint was listed under
+    remote_deployment, FixedRatioStrategy assigned zai weight=1.0 while
     ollama/chutes/featherless retained their pre-normalized weights ~0.33.
     Without renormalization the weight sum exceeded 1.0 and FixedRouter's
     cumulative-weight walk always returned the first adapter.

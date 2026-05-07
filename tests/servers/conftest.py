@@ -580,14 +580,14 @@ models:
 
   - id: test-model-2
     name: Test Model 2
-    provider: zhipu
+    provider: zai
     base_url: http://remote.test
     api_key: test-key
     context_length: 16384
     max_output_length: 8192
     aliases: ["test-alias-2"]
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: http://remote.test
         api_key: test-key
@@ -635,7 +635,7 @@ ANTHROPIC_TEST_API_KEY = "hyi-anthropic-compat-test"
 
 @pytest_asyncio.fixture
 async def anthropic_compat_router():
-    """RouteExecutor with one anthropic-kind and one zhipu-kind real adapter."""
+    """RouteExecutor with one anthropic-kind and one zai-kind real adapter."""
     from routing.executor import RouteExecutor
     from serving.adapters import AnthropicAdapter, OpenAICompatAdapter
     from serving.adapters.base import ModelConfig
@@ -661,12 +661,12 @@ async def anthropic_compat_router():
             "input_cache_writes": "6.25",
         },
     )
-    zhipu_cfg = ModelConfig(
+    zai_cfg = ModelConfig(
         id="glm-4.7",
         name="GLM-4.7",
-        provider="zhipu",
-        base_url="https://example-zhipu.test",
-        api_key="zhipu-test",
+        provider="zai",
+        base_url="https://example-zai.test",
+        api_key="zai-test",
         chat_path="/chat/completions",
         max_output_length=1024,
         supports_tools=True,
@@ -681,7 +681,7 @@ async def anthropic_compat_router():
         },
     )
     re.register_route("claude-opus-4.7", [(AnthropicAdapter(anthropic_cfg), 1.0)])
-    re.register_route("glm-4.7", [(OpenAICompatAdapter(zhipu_cfg), 1.0)])
+    re.register_route("glm-4.7", [(OpenAICompatAdapter(zai_cfg), 1.0)])
     return re
 
 

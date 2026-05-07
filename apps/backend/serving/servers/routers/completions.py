@@ -553,7 +553,13 @@ async def chat_completions(
                                         f"Extracted usage from chunk {chunk_count}: {usage_data}"
                                     )
                                 if result.routing_info:
-                                    routing_info = result.routing_info
+                                    if routing_info is None:
+                                        routing_info = dict(result.routing_info)
+                                    else:
+                                        routing_info.update(result.routing_info)
+                                    _ri_provider = routing_info.get("provider")
+                                    if _ri_provider:
+                                        req_ctx.update({"provider": _ri_provider})
                                     logger.debug(
                                         f"Extracted routing from chunk {chunk_count}: {routing_info}"
                                     )
@@ -868,8 +874,9 @@ async def chat_completions(
                 provider = routing_info.get("provider", "router")
                 base_url = routing_info.get("base_url")
                 routing_pricing = routing_info.get("pricing")
-                # See comment above: strip upstream_cost_usd before merging into metadata JSONB.
                 metadata.update({k: v for k, v in routing_info.items() if k != "upstream_cost_usd"})  # type: ignore[arg-type]
+                if provider != "router":
+                    req_ctx.update({"provider": provider})
         else:
             # Fallback: get provider from request context when response is not a dict
             from serving.utils import context as req_ctx

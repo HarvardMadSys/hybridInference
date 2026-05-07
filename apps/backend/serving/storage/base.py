@@ -10,11 +10,24 @@ No implementation details or SQL in this file — just the contracts.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
+
+
+@dataclass
+class ProviderKeyRow:
+    """Masked row for a runtime-managed upstream provider API key."""
+
+    id: str
+    provider: str
+    key_prefix: str
+    label: str | None
+    status: str
+    created_at: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +705,48 @@ class OperationalStore(ABC):
         Returns the number of rows updated. Atomic: a failure rolls back.
         Overwrites any per-key custom override.
         """
+
+    # -- provider api keys ---------------------------------------------------
+
+    @abstractmethod
+    async def add_provider_key(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        label: str | None,
+        created_by: str | None,
+        key_id: str | None = None,
+    ) -> str:
+        """Insert a new upstream provider API key row.
+
+        When ``key_id`` is supplied the caller-provided UUID is used instead
+        of generating a new one. Returns the row id.
+        """
+
+    @abstractmethod
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        """Return ``(provider, raw_key)`` for the row, or None if absent.
+
+        Used by the admin delete endpoint to identify the raw key that was
+        just removed without scanning every key for the provider.
+        """
+
+    @abstractmethod
+    async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
+        """Return masked rows for active provider keys.
+
+        Filters by ``provider`` when supplied. Raw secret material is never
+        returned — see ``list_provider_keys_full`` for the boot-time loader.
+        """
+
+    @abstractmethod
+    async def list_provider_keys_full(self, provider: str) -> list[str]:
+        """Return raw active API keys for ``provider`` (boot-time only)."""
+
+    @abstractmethod
+    async def delete_provider_key(self, key_id: str) -> bool:
+        """Hard-delete the provider key row. Returns True if a row was removed."""
 
 
 # ---------------------------------------------------------------------------
