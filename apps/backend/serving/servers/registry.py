@@ -160,6 +160,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         cfg = {**cfg, "provider_profile": "zai", "chat_path": "/chat/completions"}
     elif kind == "minimax":
         cfg = {**cfg, "provider_profile": "minimax"}
+    elif kind == "sglang":
+        cfg = {**cfg, "include_usage_in_stream": True}
 
     model_cfg = ModelConfig(**cfg)
 
