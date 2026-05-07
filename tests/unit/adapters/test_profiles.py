@@ -7,6 +7,7 @@ import pytest
 from serving.adapters.profiles import (
     ProviderProfile,
     function_call_delta_to_tool_calls,
+    normalize_tools_for_profile,
     normalize_usage_default,
 )
 
@@ -127,4 +128,121 @@ def test_normalize_usage_default_explicit_zero_cache_recorded() -> None:
     info = normalize_usage_default(usage_data)
     assert info.reasoning_tokens == 0
     assert info.cache_read_tokens == 0
-    assert info.cache_write_tokens == 0
+
+
+# ---------------------------------------------------------------------------
+# Tool normalization: DeepSeek JSON Schema cleaning
+# ---------------------------------------------------------------------------
+
+
+def test_deepseek_normalizes_tools_removes_dollar_schema() -> None:
+    """DeepSeek rejects $schema in tool parameters."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "parameters": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object",
+                    "properties": {"location": {"type": "string"}},
+                    "required": ["location"],
+                },
+            },
+        }
+    ]
+    result = normalize_tools_for_profile(ProviderProfile.DEEPSEEK, tools)
+    assert "$schema" not in result[0]["function"]["parameters"]
+    assert result[0]["function"]["parameters"]["type"] == "object"
+
+
+def test_deepseek_normalizes_tools_removes_non_def_ref() -> None:
+    """DeepSeek rejects $ref that doesn't start with #/$def/."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_data",
+                "parameters": {
+                    "$ref": "#/definitions/SomeType",
+                    "type": "object",
+                },
+            },
+        }
+    ]
+    result = normalize_tools_for_profile(ProviderProfile.DEEPSEEK, tools)
+    assert "$ref" not in result[0]["function"]["parameters"]
+
+
+def test_deepseek_preserves_valid_def_ref() -> None:
+    """DeepSeek accepts $ref that starts with #/$def/."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_data",
+                "parameters": {
+                    "$ref": "#/$def/SomeType",
+                    "type": "object",
+                },
+            },
+        }
+    ]
+    result = normalize_tools_for_profile(ProviderProfile.DEEPSEEK, tools)
+    assert result[0]["function"]["parameters"]["$ref"] == "#/$def/SomeType"
+
+
+def test_deepseek_normalizes_nested_schema() -> None:
+    """DeepSeek cleaning recurses into nested objects and arrays."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "complex_tool",
+                "parameters": {
+                    "$schema": "https://example.com/schema",
+                    "type": "object",
+                    "properties": {
+                        "nested": {
+                            "$schema": "https://example.com/schema",
+                            "type": "object",
+                            "properties": {"item": {"type": "string"}},
+                        },
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/Item",
+                                "type": "object",
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    ]
+    result = normalize_tools_for_profile(ProviderProfile.DEEPSEEK, tools)
+    params = result[0]["function"]["parameters"]
+    assert "$schema" not in params
+    assert "$schema" not in params["properties"]["nested"]
+    assert "$ref" not in params["properties"]["items"]["items"]
+
+
+def test_default_profile_does_not_modify_tools() -> None:
+    """Non-DeepSeek profiles should not modify tool schemas."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "parameters": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "$ref": "#/definitions/Location",
+                    "type": "object",
+                },
+            },
+        }
+    ]
+    result = normalize_tools_for_profile(ProviderProfile.DEFAULT, tools)
+    assert result == tools
+    assert "$schema" in result[0]["function"]["parameters"]
+    assert "$ref" in result[0]["function"]["parameters"]

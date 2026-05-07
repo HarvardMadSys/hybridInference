@@ -69,10 +69,50 @@ def default_chat_path(profile: ProviderProfile) -> str | None:
     return None
 
 
+def _deepseek_clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Remove DeepSeek-incompatible JSON Schema fields.
+
+    DeepSeek rejects:
+    - $schema property (JSON Schema version identifier)
+    - $ref pointing to non-standard references (must be #/$def/... or omitted)
+    """
+    cleaned = {}
+    for key, value in schema.items():
+        # Skip $schema entirely
+        if key == "$schema":
+            continue
+        # Skip $ref if it's not a proper JSON Schema reference
+        if key == "$ref" and isinstance(value, str) and not value.startswith("#/$def/"):
+            continue
+        # Recursively clean nested objects
+        if isinstance(value, dict):
+            value = _deepseek_clean_schema(value)
+        elif isinstance(value, list):
+            value = [_deepseek_clean_schema(item) if isinstance(item, dict) else item for item in value]
+        cleaned[key] = value
+    return cleaned
+
+
 def normalize_tools_for_profile(
     profile: ProviderProfile, tools: list[dict[str, Any]] | None
 ) -> list[dict[str, Any]] | None:
     """Return provider-specific normalized tool definitions."""
+    if not tools:
+        return tools
+
+    if profile == ProviderProfile.DEEPSEEK:
+        # Clean JSON Schema for DeepSeek compatibility
+        cleaned = []
+        for tool in tools:
+            cleaned_tool = dict(tool)
+            if "function" in cleaned_tool:
+                fn = dict(cleaned_tool["function"])
+                if "parameters" in fn:
+                    fn["parameters"] = _deepseek_clean_schema(fn["parameters"])
+                cleaned_tool["function"] = fn
+            cleaned.append(cleaned_tool)
+        return cleaned
+
     return tools
 
 
