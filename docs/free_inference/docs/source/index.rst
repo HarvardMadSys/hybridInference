@@ -48,7 +48,7 @@ Getting Started
 
 2. **Choose your IDE:**
 
-   - :doc:`Integrations <integrations>` - Kilo Code setup with recommended models
+   - :doc:`Kilo Code <integrations>` - Kilo Code setup with recommended models
    - :doc:`Cursor <integrations>` - AI-powered code editor
 
 3. **Configure and start coding!**

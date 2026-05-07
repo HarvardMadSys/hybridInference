@@ -26,9 +26,9 @@ Choose your coding agent below and follow the steps. If you want the fastest age
    - `glm-5-turbo` for faster edits and shorter loops
    - `minimax-m2.5` for long-context or image-aware work
 7. Save the settings
-8. Start a new Kilo session and send a short prompt to verify the connection
+8. Start a new Kilo Code session and send a short prompt to verify the connection
 
-> **Tip:** If the model list does not refresh immediately, reopen the Kilo panel or paste the model id manually.
+> **Tip:** If the model list does not refresh immediately, reopen the Kilo panel or paste the model ID manually.
 
 ### Cursor
 

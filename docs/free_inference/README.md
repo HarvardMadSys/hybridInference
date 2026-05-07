@@ -33,7 +33,7 @@ FreeInference provides free access to state-of-the-art language models for codin
    - `glm-5.1` for general coding work
    - `glm-5-turbo` for faster iterations
    - `minimax-m2.5` for very long context or image input
-7. Save settings and start a new Kilo session
+7. Save settings and start a new Kilo Code session
 
 ### Cursor Setup
 

@@ -233,12 +233,12 @@ GitHub Copilot does not support custom OpenAI-compatible endpoints. However, you
 
 7. Save the settings.
 
-8. Start a new Kilo session and send a simple prompt such as `Summarize this repository` to confirm the connection works.
+8. Start a new Kilo Code session and send a simple prompt such as `Summarize this repository` to confirm the connection works.
 
 ### Notes
 
 - Use the exact base URL `https://freeinference.org/v1` with no extra path segments.
-- If the model picker is empty, reopen the Kilo panel or paste the model id manually.
+- If the model picker is empty, reopen the Kilo panel or paste the model ID manually.
 - If you want repository indexing, see the `Codebase Indexing` section below for the Kilo-specific embedding setup.
 
 ---
@@ -506,7 +506,7 @@ If you get "model not found" errors:
 
 **Model list empty or stale:**
 - Reopen the Kilo Code or Roo Code panel
-- Paste a known model id such as `glm-5.1` manually
+- Paste a known model ID such as `glm-5.1` manually
 - Confirm the base URL is exactly `https://freeinference.org/v1`
 
 ---
