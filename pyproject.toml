@@ -44,8 +44,6 @@ include = [
   "serving.*",
   "routing",
   "routing.*",
-  "benchmark",
-  "benchmark.*",
   "utils",
   "utils.*",
 ]
