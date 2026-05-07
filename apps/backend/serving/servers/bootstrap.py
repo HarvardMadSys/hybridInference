@@ -73,6 +73,9 @@ async def _verify_schema_version(pool, settings) -> None:
     """
     import asyncpg
 
+    if settings.db_backend != "postgres":
+        return
+
     from serving.storage._expected_alembic_version import (
         EXPECTED_ALEMBIC_VERSION,
     )
