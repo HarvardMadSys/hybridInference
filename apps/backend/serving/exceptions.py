@@ -148,11 +148,7 @@ def scrub_error_for_user(
     exception is a `UserFacingError` subclass (whose message is, by author
     contract, free of provider info). Callers are responsible for persisting
     the full `str(exc)` to `api_logs.error` keyed by the same `request_id` in
-    log stores that persist errors (Postgres, sqlite). The D1 buffered store
-    has a slim schema that intentionally omits the `error` column, so in
-    D1-only deployments the request_id surfaced to the user is not
-    debuggable from D1 alone — operators must either run with Postgres /
-    dual-write enabled or extend the D1 schema.
+    log stores that persist errors.
     """
     if isinstance(exc, UserFacingError):
         base = str(exc)

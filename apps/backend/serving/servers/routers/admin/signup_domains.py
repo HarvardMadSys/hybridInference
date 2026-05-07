@@ -140,10 +140,7 @@ async def add_signup_allowed_domain_endpoint(
     # Translate dup-key violations to 409. We rely solely on asyncpg's typed
     # UniqueViolationError so unrelated DB errors (FK violations, syntax
     # errors that happen to mention the word "constraint", etc.) surface
-    # as 500 instead of being silently masked as duplicates. D1 backends
-    # that surface duplicates via untyped exceptions will propagate as 500;
-    # store implementations that want 409 semantics on D1 should raise a
-    # typed exception we recognize here.
+    # as 500 instead of being silently masked as duplicates.
     try:
         row = await op_store.add_signup_allowed_domain(
             domain=domain,

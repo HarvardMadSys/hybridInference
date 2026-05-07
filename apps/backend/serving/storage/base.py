@@ -1,8 +1,8 @@
 """Abstract base classes for the storage layer.
 
-Two separate store contracts reflecting the hybrid architecture:
-- OperationalStore: users, api_keys, auth_sessions, tokens, audit (may live in D1)
-- LogStore: api_logs, api_stats_hourly (always PostgreSQL)
+Two separate store contracts reflecting the gateway architecture:
+- OperationalStore: users, api_keys, auth_sessions, tokens, audit
+- LogStore: api_logs, api_stats_hourly
 
 No implementation details or SQL in this file — just the contracts.
 """
@@ -247,7 +247,7 @@ class OperationalStore(ABC):
           active key quota; ``"near"``/``"over"`` compare today's spend
           against quota.
         - ``provider``: keep only users who hit ``provider`` in api_logs in
-          the last 30 days. D1 deployments may treat this as a no-op.
+          the last 30 days.
         - ``active_within_hours``: ``last_login_at`` within the window.
         - ``anomaly``: when ``True``, keep only users whose today's spend is
           anomalously high vs. their prior 7-day average. Uses the same rule
@@ -721,8 +721,7 @@ class OperationalStore(ABC):
         """Insert a new upstream provider API key row.
 
         When ``key_id`` is supplied the caller-provided UUID is used instead
-        of generating a new one — needed by ``DualWriteOperationalStore`` to
-        keep primary and shadow row ids aligned. Returns the row id.
+        of generating a new one. Returns the row id.
         """
 
     @abstractmethod
@@ -760,7 +759,6 @@ class LogStore(ABC):
 
     Implementations:
     - ``PostgresLogStore``: full rows in PostgreSQL (prompt/response content).
-    - ``D1LogStore``: slim rows in Cloudflare D1 (no content, buffered writes).
     """
 
     # -- lifecycle -----------------------------------------------------------

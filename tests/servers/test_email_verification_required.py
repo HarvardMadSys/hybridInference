@@ -3,7 +3,6 @@
 This test ensures that users with unverified emails cannot login,
 fixing the security vulnerability where unverified users could access the system.
 
-Supports both PostgreSQL and Cloudflare D1 backends.
 Run with: make test-db
 """
 

@@ -1,8 +1,6 @@
 """Unit tests for new user-summary / cost-history store methods.
 
-These tests mock the asyncpg pool/connection — no real DB calls. The d1
-variant has analogous tests in test_d1_operational.py; this file is the
-postgres equivalent for the new methods added in Tasks 2-4.
+These tests mock the asyncpg pool/connection — no real DB calls.
 """
 
 from __future__ import annotations

@@ -1,8 +1,7 @@
 """Pure utility functions for the storage layer.
 
-These functions have no database dependencies (no asyncpg, no D1) and can be
-imported safely regardless of which backend is active. They were extracted
-from ``database.py`` so that D1-only deployments do not need asyncpg installed.
+These functions have no database dependencies and can be imported safely
+without constructing storage clients.
 """
 
 from __future__ import annotations

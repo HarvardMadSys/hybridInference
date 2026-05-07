@@ -1,6 +1,5 @@
 """Integration tests for user routes.
 
-Supports both PostgreSQL and Cloudflare D1 backends.
 Run with: make test-db
 """
 
@@ -334,7 +333,7 @@ class TestUsageStatistics:
                 pricing={"prompt": "0.0001", "completion": "0.0001"},
             )
 
-        # Flush buffered writes if D1
+        # Flush buffered writes when the log store supports it.
         if hasattr(log_store, "flush"):
             await log_store.flush()
 
