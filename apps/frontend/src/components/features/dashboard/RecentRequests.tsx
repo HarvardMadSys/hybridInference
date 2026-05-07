@@ -55,6 +55,23 @@ function formatCost(cost: number | null | undefined): string {
   return `$${cost.toFixed(2)}`;
 }
 
+function formatLatency(latencyMs: number | null | undefined): string {
+  if (latencyMs == null) return '—';
+  if (latencyMs >= 1000) return `${(latencyMs / 1000).toFixed(1)}s`;
+  return `${Math.round(latencyMs).toLocaleString()}ms`;
+}
+
+function DetailStat({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div className="rounded-xl bg-white/90 px-3 py-3 shadow-sm ring-1 ring-inset ring-gray-200">
+      <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-gray-500">
+        {label}
+      </div>
+      <div className="mt-1 break-words text-sm font-semibold text-gray-900">{value}</div>
+    </div>
+  );
+}
+
 function RequestRow({ req }: { req: RecentRequestItem }) {
   const [expanded, setExpanded] = useState(false);
   const cacheRead = req.cache_read_tokens ?? 0;
@@ -124,28 +141,45 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
       {expanded && (
         <tr className="border-b border-gray-100 bg-gray-50/40">
           <td colSpan={5} className="px-4 py-3">
-            <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs sm:grid-cols-3">
-              <div>
-                <span className="text-gray-500">Request ID:</span>{' '}
-                <span className="font-mono text-gray-700">{req.request_id.slice(0, 16)}…</span>
-              </div>
-              <div>
-                <span className="text-gray-500">Total Tokens:</span>{' '}
-                <span className="text-gray-700">{formatTokens(req.total_tokens)}</span>
-              </div>
-              <div>
-                <span className="text-gray-500">Cached Tokens:</span>{' '}
-                <span className="text-gray-700">{formatTokens(cachedTokens)}</span>
-              </div>
-              {throughputTps != null && (
-                <div>
-                  <span className="text-gray-500">Throughput:</span>{' '}
-                  <span className="text-gray-700">{throughputTps.toFixed(1)} tok/s</span>
+            <div className="rounded-2xl bg-gradient-to-br from-slate-50 via-white to-gray-50 p-4 shadow-sm ring-1 ring-inset ring-gray-200">
+              <div className="flex flex-col gap-3 border-b border-gray-200/80 pb-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-gray-500">
+                    Request Details
+                  </div>
+                  <div className="mt-2 break-all font-mono text-sm text-gray-700">
+                    {req.request_id}
+                  </div>
                 </div>
-              )}
+                <div className="inline-flex w-fit items-center rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 shadow-sm ring-1 ring-inset ring-gray-200">
+                  {req.provider}
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <DetailStat label="Latency" value={formatLatency(req.latency_ms)} />
+                <DetailStat label="TTFT" value={formatLatency(req.ttft_ms)} />
+                <DetailStat label="Total Tokens" value={formatTokens(req.total_tokens)} />
+                <DetailStat label="Cached Tokens" value={formatTokens(cachedTokens)} />
+                <DetailStat
+                  label="Streaming"
+                  value={req.stream != null ? (req.stream ? 'Enabled' : 'Disabled') : '—'}
+                />
+                <DetailStat
+                  label="Prompt / Output"
+                  value={`${formatTokens(req.prompt_tokens)} / ${formatTokens(req.completion_tokens)}`}
+                />
+                {throughputTps != null && (
+                  <DetailStat label="Throughput" value={`${throughputTps.toFixed(1)} tok/s`} />
+                )}
+              </div>
+
               {req.error && (
-                <div className="col-span-full mt-1">
-                  <span className="text-red-600">Error: {req.error}</span>
+                <div className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-inset ring-red-200">
+                  <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-red-500">
+                    Request Error
+                  </div>
+                  <div className="mt-1 break-words">{req.error}</div>
                 </div>
               )}
             </div>
