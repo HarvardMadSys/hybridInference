@@ -734,6 +734,8 @@ const AUDIT_CATEGORY_CLASS: Record<AuditCategory, string> = {
   other: 'bg-gray-100 text-gray-700',
 };
 
+const AUDIT_DETAIL_PREVIEW_COUNT = 2;
+
 function formatRelative(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   const s = Math.floor(ms / 1000);
@@ -763,18 +765,46 @@ function formatAuditDetailValue(v: unknown): { display: string; full: string } {
   return { display, full };
 }
 
-function RawJsonDetails({ data }: { data: unknown }) {
-  const [open, setOpen] = useState(false);
+function summarizeAuditDetails(details: Record<string, unknown>): {
+  text: string;
+  remaining: number;
+} {
+  const entries = Object.entries(details);
+  if (entries.length === 0) return { text: '', remaining: 0 };
+  const shown = entries.slice(0, AUDIT_DETAIL_PREVIEW_COUNT).map(([key, value]) => {
+    const { display } = formatAuditDetailValue(value);
+    return `${key}=${display}`;
+  });
+  return {
+    text: shown.join(' • '),
+    remaining: Math.max(0, entries.length - AUDIT_DETAIL_PREVIEW_COUNT),
+  };
+}
+
+function AuditDetailsSummary({ details }: { details: Record<string, unknown> }) {
+  const { text, remaining } = summarizeAuditDetails(details);
+  if (!text) return null;
   return (
-    <details onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
-      <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 mt-1">
+    <div className="mt-1 text-[11px] text-gray-500">
+      <span className="mr-1">{text}</span>
+      {remaining > 0 && <span className="text-gray-400">(+{remaining} more)</span>}
+    </div>
+  );
+}
+
+function AuditDetailsFull({ details }: { details: Record<string, unknown> }) {
+  const entries = Object.entries(details);
+  if (entries.length === 0) return null;
+  return (
+    <details className="mt-1">
+      <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600">
         Raw JSON
       </summary>
-      {open && (
-        <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
-          {JSON.stringify(data, null, 2)}
+      <div className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 border border-gray-100">
+        <pre className="text-[11px] text-gray-600 overflow-x-auto">
+          {JSON.stringify(details, null, 2)}
         </pre>
-      )}
+      </div>
     </details>
   );
 }
@@ -1326,10 +1356,12 @@ export default function AdminPage() {
                     const absoluteTs = new Date(entry.timestamp).toLocaleString();
                     const tid = entry.target_user_id;
                     const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
-                    const detailEntries =
-                      entry.details && typeof entry.details === 'object'
-                        ? Object.entries(entry.details)
-                        : [];
+                    const details =
+                      entry.details &&
+                      typeof entry.details === 'object' &&
+                      !Array.isArray(entry.details)
+                        ? (entry.details as Record<string, unknown>)
+                        : null;
                     return (
                       <div
                         key={entry.id}
@@ -1372,26 +1404,8 @@ export default function AdminPage() {
                             {formatRelative(entry.timestamp)}
                           </time>
                         </div>
-                        {detailEntries.length > 0 && (
-                          <>
-                            <div className="flex flex-wrap gap-1.5 mt-1.5">
-                              {detailEntries.map(([k, v]) => {
-                                const { display, full } = formatAuditDetailValue(v);
-                                return (
-                                  <span
-                                    key={k}
-                                    title={full}
-                                    className="inline-flex items-center gap-1 rounded bg-gray-50 border border-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700"
-                                  >
-                                    <span className="text-gray-400">{k}:</span>
-                                    <span>{display}</span>
-                                  </span>
-                                );
-                              })}
-                            </div>
-                            <RawJsonDetails data={entry.details} />
-                          </>
-                        )}
+                        {details && <AuditDetailsSummary details={details} />}
+                        {details && <AuditDetailsFull details={details} />}
                         <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
                       </div>
                     );
