@@ -1241,21 +1241,21 @@ def test_register_from_models_yaml_propagates_router_fields(tmp_path):
 models:
   - id: model-with-router
     name: M1
-    provider: zhipu
+    provider: zai
     router: routewise
     router_params:
       daily_quota: 1000
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: http://example.com
         api_key: x
         provider_model_id: m1
   - id: model-without-router
     name: M2
-    provider: zhipu
+    provider: zai
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: http://example.com
         api_key: x
@@ -1607,33 +1607,33 @@ def test_models_yaml_drives_router_dispatch(tmp_path):
 models:
   - id: m-default
     name: M-default
-    provider: zhipu
+    provider: zai
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: http://example.com
         api_key: k
         provider_model_id: m-default
   - id: m-fixed
     name: M-fixed
-    provider: zhipu
+    provider: zai
     router: fixed
     router_params:
       local_fraction: 0.7
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: http://example.com
         api_key: k
         provider_model_id: m-fixed
   - id: m-routewise
     name: M-routewise
-    provider: zhipu
+    provider: zai
     router: routewise
     router_params:
       daily_quota: 100
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: http://example.com
         api_key: k

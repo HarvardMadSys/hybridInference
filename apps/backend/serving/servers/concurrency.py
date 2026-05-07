@@ -17,6 +17,12 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from serving.observability.metrics import (
+    USER_CONCURRENCY_ACQUIRES_TOTAL,
+    USER_CONCURRENCY_IN_FLIGHT,
+    USER_CONCURRENCY_REJECTED_TOTAL,
+)
+from serving.observability.rejection_log import log_rejection
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -64,7 +70,7 @@ class _UserSlot:
     """
 
     capacity: int
-    role: str  # role label captured at slot creation; used for log events
+    role: str  # role label captured at slot creation; used for metrics
     in_use: int = 0
 
     def try_acquire(self) -> bool:
@@ -104,7 +110,6 @@ class UserConcurrencyLimiter:
 
     @staticmethod
     def _role_label(role: str, is_admin: bool, limits: dict[str, int]) -> str:
-        """The label used for log events. Admin overrides the user's role."""
         if is_admin:
             return "admin"
         if role in limits:
@@ -135,8 +140,13 @@ class UserConcurrencyLimiter:
             slot.capacity = target_capacity
 
         granted = slot.try_acquire()
-        label = slot.role  # captured at slot creation
-        if not granted:
+        label = slot.role
+        if granted:
+            USER_CONCURRENCY_ACQUIRES_TOTAL.labels(role=label, outcome="granted").inc()
+            USER_CONCURRENCY_IN_FLIGHT.labels(role=label).inc()
+        else:
+            USER_CONCURRENCY_ACQUIRES_TOTAL.labels(role=label, outcome="rejected").inc()
+            USER_CONCURRENCY_REJECTED_TOTAL.labels(role=label).inc()
             logger.warning(
                 "concurrency_rejected",
                 extra={
@@ -152,7 +162,10 @@ class UserConcurrencyLimiter:
         slot = self._slots.get(user_id)
         if slot is None:
             return
+        had_one = slot.in_use > 0
         slot.release()
+        if had_one:
+            USER_CONCURRENCY_IN_FLIGHT.labels(role=slot.role).dec()
 
     def role_for(self, user_id: str) -> str | None:
         """Return the role label captured at slot creation, or None."""
@@ -161,7 +174,7 @@ class UserConcurrencyLimiter:
 
 
 # Dependency lives at the bottom of the module so it can reference the
-# limiter class defined above.
+# limiter class and metrics defined above.
 
 from typing import TYPE_CHECKING, Any
 
@@ -206,6 +219,15 @@ async def enforce_user_concurrency(
                 "limit": limit,
                 "route": request.url.path,
             },
+        )
+        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+            log_rejection(
+                request=request,
+                status_code=429,
+                error_code="concurrency_limit_exceeded",
+                reason=f"limit={limit} role={role_label}",
+                user=user,
+            )
         )
         raise HTTPException(
             status_code=429,

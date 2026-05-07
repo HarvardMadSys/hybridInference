@@ -253,14 +253,10 @@ def mock_env(monkeypatch):
     """Mock environment variables for testing."""
     test_env = {
         "DB_ENABLED": "false",  # Disable DB in tests by default
-        "DB_BACKEND": "postgres",  # Ensure tests default to postgres, not D1 from .env
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
         "LOCAL_BASE_URL": "http://localhost:8001",
     }
-    # Clear D1 env vars that may leak from .env
-    for d1_var in ("D1_ACCOUNT_ID", "D1_DATABASE_ID", "D1_API_TOKEN"):
-        monkeypatch.delenv(d1_var, raising=False)
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
     # Clear cached settings so bootstrap reads the test env
@@ -506,8 +502,7 @@ async def auth_app_db_logger_fixture(auth_app):
 async def require_db(auth_app):
     """Skip tests that require database if not available.
 
-    Returns the operational store from the app services, which works with
-    both PostgreSQL and D1 backends.
+    Returns the operational store from the app services.
 
     Usage:
         async def test_user_creation(auth_client, require_db):
@@ -585,14 +580,14 @@ models:
 
   - id: test-model-2
     name: Test Model 2
-    provider: zhipu
+    provider: zai
     base_url: http://remote.test
     api_key: test-key
     context_length: 16384
     max_output_length: 8192
     aliases: ["test-alias-2"]
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: http://remote.test
         api_key: test-key
@@ -640,7 +635,7 @@ ANTHROPIC_TEST_API_KEY = "hyi-anthropic-compat-test"
 
 @pytest_asyncio.fixture
 async def anthropic_compat_router():
-    """RouteExecutor with one anthropic-kind and one zhipu-kind real adapter."""
+    """RouteExecutor with one anthropic-kind and one zai-kind real adapter."""
     from routing.executor import RouteExecutor
     from serving.adapters import AnthropicAdapter, OpenAICompatAdapter
     from serving.adapters.base import ModelConfig
@@ -666,12 +661,12 @@ async def anthropic_compat_router():
             "input_cache_writes": "6.25",
         },
     )
-    zhipu_cfg = ModelConfig(
+    zai_cfg = ModelConfig(
         id="glm-4.7",
         name="GLM-4.7",
-        provider="zhipu",
-        base_url="https://example-zhipu.test",
-        api_key="zhipu-test",
+        provider="zai",
+        base_url="https://example-zai.test",
+        api_key="zai-test",
         chat_path="/chat/completions",
         max_output_length=1024,
         supports_tools=True,
@@ -686,7 +681,7 @@ async def anthropic_compat_router():
         },
     )
     re.register_route("claude-opus-4.7", [(AnthropicAdapter(anthropic_cfg), 1.0)])
-    re.register_route("glm-4.7", [(OpenAICompatAdapter(zhipu_cfg), 1.0)])
+    re.register_route("glm-4.7", [(OpenAICompatAdapter(zai_cfg), 1.0)])
     return re
 
 

@@ -255,3 +255,46 @@ async def test_fail_open_when_limiter_is_none():
         for _ in range(5):
             r = await client.get("/probe")
             assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_concurrency_429_calls_log_rejection(monkeypatch):
+    """When a request is rejected with 429, log_rejection is fired off."""
+    from unittest.mock import AsyncMock
+
+    log_calls: list[dict] = []
+
+    async def fake_log_rejection(**kwargs):
+        log_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "serving.servers.concurrency.log_rejection",
+        fake_log_rejection,
+    )
+
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_app(user, limiter)
+
+    # Stash fake services on app.state so the wired call can find them.
+    app.state.services = type("S", (), {})()
+    app.state.services.log_store = AsyncMock()
+    app.state.services.runtime_settings = AsyncMock()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Saturate the user's slot first.
+        granted, _, _ = await limiter.try_acquire(user["user_id"], "free", False)
+        assert granted
+
+        resp = await client.get("/probe")
+        assert resp.status_code == 429
+        # Yield to the event loop so the fire-and-forget create_task runs.
+        await asyncio.sleep(0)
+
+    # Helper should have been invoked exactly once with concurrency error code.
+    assert len(log_calls) == 1
+    call = log_calls[0]
+    assert call["status_code"] == 429
+    assert call["error_code"] == "concurrency_limit_exceeded"
+    assert call["user"]["user_id"] == "u1"

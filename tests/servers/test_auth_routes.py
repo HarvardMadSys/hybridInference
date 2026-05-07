@@ -1,6 +1,5 @@
 """Integration tests for authentication routes.
 
-Supports both PostgreSQL and Cloudflare D1 backends.
 Run with: make test-db
 """
 

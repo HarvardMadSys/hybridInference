@@ -22,7 +22,6 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
         ``{"operational_store": {...}, "log_store": {...}, "healthy": bool}``
     """
     from serving.storage.cache import CachedOperationalStore
-    from serving.storage.d1_operational import D1OperationalStore
     from serving.storage.postgres_log import PostgresLogStore
     from serving.storage.postgres_operational import PostgresOperationalStore
 
@@ -35,9 +34,7 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
         result["database_configured"] = True
         # Resolve the underlying backend through CachedOperationalStore
         inner = getattr(op_store, "_store", op_store)
-        if isinstance(inner, D1OperationalStore):
-            op_status["backend"] = "d1"
-        elif isinstance(inner, PostgresOperationalStore):
+        if isinstance(inner, PostgresOperationalStore):
             op_status["backend"] = "postgres"
         try:
             op_status["status"] = "ok" if await op_store.health_check() else "error"
