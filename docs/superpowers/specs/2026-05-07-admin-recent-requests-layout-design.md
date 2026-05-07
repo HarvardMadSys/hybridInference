@@ -31,7 +31,7 @@ No backend or API contract changes are required. The list still uses `listRecent
 
 ## Files
 
-Modify `apps/frontend/src/app/dashboard/admin/page.tsx` only for the implementation. The existing API type definitions in `apps/frontend/src/lib/api/admin.ts` remain unchanged because the frontend still receives the same fields, even though some network fields are no longer rendered.
+Modify production UI code under `apps/frontend/src/app/dashboard/admin/`, including `page.tsx` and the extracted detail panel component. Add a focused test under `apps/frontend/src/app/dashboard/admin/__tests__/`. The existing API type definitions in `apps/frontend/src/lib/api/admin.ts` remain unchanged because the frontend still receives the same fields, even though some network fields are no longer rendered.
 
 ## Testing
 

@@ -4,7 +4,7 @@ import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import type { AdminRecentRequestItem } from '@/lib/api/admin';
-import { AdminRecentRequestDetailPanel } from '../page';
+import { AdminRecentRequestDetailPanel } from '../AdminRecentRequestDetailPanel';
 
 function makeAdminRequest(overrides: Partial<AdminRecentRequestItem> = {}): AdminRecentRequestItem {
   return {
@@ -54,7 +54,7 @@ describe('AdminRecentRequestDetailPanel', () => {
     );
 
     expect(screen.getByText('req_1234567890abcdefghijklmnopFULLID')).toBeInTheDocument();
-    expect(screen.queryByText('req_1234567890abcdefghijkl...')).not.toBeInTheDocument();
+    expect(screen.queryByText('req_1234567890abcdefghij…')).not.toBeInTheDocument();
 
     const performanceLine = screen.getByLabelText('Request performance and token details');
     expect(within(performanceLine).getByText('Latency')).toBeInTheDocument();
