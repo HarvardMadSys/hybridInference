@@ -275,7 +275,7 @@ async def test_auth_quota_null_uses_default_1000(monkeypatch, mock_request, mock
 @pytest.mark.asyncio
 async def test_auth_missing_secret_raises_error(monkeypatch, mock_request, mock_op_store, mock_ls):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
-    monkeypatch.delenv("API_KEY_SECRET", raising=False)
+    monkeypatch.setenv("API_KEY_SECRET", "")
     plaintext_key = "hyi-no-secret"
 
     with pytest.raises(ValueError):
