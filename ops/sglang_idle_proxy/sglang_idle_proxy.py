@@ -392,10 +392,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         auth = self.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            auth = auth[7:]
-        else:
-            auth = self.headers.get("X-API-Key", "")
+        auth = auth[7:] if auth.startswith("Bearer ") else self.headers.get("X-API-Key", "")
 
         if auth != FREEINFERENCE_API_KEY:
             self.send_response(401)
