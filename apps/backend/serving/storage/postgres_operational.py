@@ -967,8 +967,8 @@ class PostgresOperationalStore(OperationalStore):
                 return total, [], status_counts
 
             # Post-fetch: batch-query usage dimensions not in CTEs so the
-            # response always carries today/month costs for the page.
-            user_ids = [row["id"] for row in rows if row["key_prefix"]]
+            # response always carries usage costs for the page.
+            user_ids = [row["id"] for row in rows]
 
             if user_ids and not needs_today:
                 today_rows = await conn.fetch(
