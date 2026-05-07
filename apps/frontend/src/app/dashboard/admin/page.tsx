@@ -1854,28 +1854,43 @@ export default function AdminPage() {
                                         {req.user_ip ?? '—'}
                                       </span>
                                     </div>
-                                    <div>
-                                      <span className="text-gray-500">Peer IP:</span>{' '}
-                                      <span className="text-gray-700 font-mono">
-                                        {req.peer_ip ?? '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">IP source:</span>{' '}
-                                      <span className="text-gray-700">{req.ip_source ?? '—'}</span>
-                                    </div>
-                                    <div className="col-span-full">
-                                      <span className="text-gray-500">X-Forwarded-For:</span>{' '}
-                                      <span className="break-words font-mono text-gray-700">
-                                        {req.x_forwarded_for ?? '—'}
-                                      </span>
-                                    </div>
                                     <div className="col-span-full">
                                       <span className="text-gray-500">User agent:</span>{' '}
                                       <span className="break-words text-gray-700">
                                         {req.user_agent ?? '—'}
                                       </span>
                                     </div>
+                                    <details className="col-span-full group mt-1">
+                                      <summary className="list-none cursor-pointer text-gray-500 hover:text-gray-700 flex items-center gap-2">
+                                        <span className="text-xs">Network details</span>
+                                        <span className="text-[10px] text-gray-400 group-open:hidden">
+                                          (show)
+                                        </span>
+                                        <span className="text-[10px] text-gray-400 hidden group-open:inline">
+                                          (hide)
+                                        </span>
+                                      </summary>
+                                      <div className="mt-2 grid grid-cols-2 gap-x-8 gap-y-1 sm:grid-cols-4">
+                                        <div>
+                                          <span className="text-gray-500">Peer IP:</span>{' '}
+                                          <span className="text-gray-700 font-mono">
+                                            {req.peer_ip ?? '—'}
+                                          </span>
+                                        </div>
+                                        <div>
+                                          <span className="text-gray-500">IP source:</span>{' '}
+                                          <span className="text-gray-700">
+                                            {req.ip_source ?? '—'}
+                                          </span>
+                                        </div>
+                                        <div className="col-span-full">
+                                          <span className="text-gray-500">X-Forwarded-For:</span>{' '}
+                                          <span className="break-words font-mono text-gray-700">
+                                            {req.x_forwarded_for ?? '—'}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </details>
                                     <div>
                                       <span className="text-gray-500">Session:</span>{' '}
                                       <span className="text-gray-700 font-mono">
