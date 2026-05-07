@@ -197,6 +197,8 @@ def register_from_models_yaml(
     router: RouteExecutor,
     path: Path,
     embedding_adapters: dict[str, Any] | None = None,
+    *,
+    continue_on_missing_env: bool = False,
 ) -> tuple[int, list[ModelRegistrationInfo]]:
     """Register models and routes from a YAML configuration file.
 
@@ -230,200 +232,210 @@ def register_from_models_yaml(
     count = 0
     model_infos: list[ModelRegistrationInfo] = []
     for m in models:
-        # Environment expansion for base_url/api_key in both top-level and route entries
-        def expand_env(val: str | None) -> str | None:
-            if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
-                return os.getenv(val[2:-1])
-            return val
+        try:
+            # Environment expansion for base_url/api_key in both top-level and route entries
+            def expand_env(val: str | None) -> str | None:
+                if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
+                    return os.getenv(val[2:-1])
+                return val
 
-        # Build primary config
-        top_cfg = {
-            k: m.get(k)
-            for k in (
-                "id",
-                "name",
-                "type",
-                "model_type",
-                "provider",
-                "base_url",
-                "api_key",
-                "aliases",
-                "provider_model_id",
-                "quantization",
-                "input_modalities",
-                "output_modalities",
-                "context_length",
-                "max_output_length",
-                "supports_tools",
-                "supports_structured_output",
-                "supported_params",
-                "pricing",
-            )
-        }
-        if top_cfg.get("base_url"):
-            top_cfg["base_url"] = expand_env(top_cfg["base_url"])  # type: ignore
-        if top_cfg.get("api_key"):
-            top_cfg["api_key"] = expand_env(top_cfg["api_key"])  # type: ignore
-        if top_cfg.get("provider_model_id"):
-            top_cfg["provider_model_id"] = expand_env(top_cfg["provider_model_id"])  # type: ignore
-
-        # If no explicit route list, use a single route targeting the primary config
-        routes = m.get("route") or [
-            {
-                "kind": top_cfg.get("provider"),
-                "weight": 1.0,
-                **{k: top_cfg.get(k) for k in ("base_url", "api_key")},
+            # Build primary config
+            top_cfg = {
+                k: m.get(k)
+                for k in (
+                    "id",
+                    "name",
+                    "type",
+                    "model_type",
+                    "provider",
+                    "base_url",
+                    "api_key",
+                    "aliases",
+                    "provider_model_id",
+                    "quantization",
+                    "input_modalities",
+                    "output_modalities",
+                    "context_length",
+                    "max_output_length",
+                    "supports_tools",
+                    "supports_structured_output",
+                    "supported_params",
+                    "pricing",
+                )
             }
-        ]
+            if top_cfg.get("base_url"):
+                top_cfg["base_url"] = expand_env(top_cfg["base_url"])  # type: ignore
+            if top_cfg.get("api_key"):
+                top_cfg["api_key"] = expand_env(top_cfg["api_key"])  # type: ignore
+            if top_cfg.get("provider_model_id"):
+                top_cfg["provider_model_id"] = expand_env(top_cfg["provider_model_id"])  # type: ignore
 
-        adapters_with_weights = []
-        for r in routes:
-            kind = r.get("kind") or top_cfg.get("provider")
-            base_url = expand_env(r.get("base_url") or top_cfg.get("base_url"))
-            weight = float(r.get("weight", 1.0))
+            # If no explicit route list, use a single route targeting the primary config
+            routes = m.get("route") or [
+                {
+                    "kind": top_cfg.get("provider"),
+                    "weight": 1.0,
+                    **{k: top_cfg.get(k) for k in ("base_url", "api_key")},
+                }
+            ]
 
-            raw_api_keys = r.get("api_keys")
-            raw_api_key = r.get("api_key") or top_cfg.get("api_key")
+            adapters_with_weights = []
+            for r in routes:
+                kind = r.get("kind") or top_cfg.get("provider")
+                base_url = expand_env(r.get("base_url") or top_cfg.get("base_url"))
+                weight = float(r.get("weight", 1.0))
 
-            if raw_api_keys is not None and r.get("api_key") is not None:
-                raise ValueError(
-                    f"Route for model {top_cfg.get('id')!r} sets both "
-                    f"api_key and api_keys; pick one."
-                )
+                raw_api_keys = r.get("api_keys")
+                raw_api_key = r.get("api_key") or top_cfg.get("api_key")
 
-            api_key: str | None = None
-            api_keys: list[str] | None = None
-            if raw_api_keys is not None:
-                if not isinstance(raw_api_keys, list):
-                    raise ValueError(f"api_keys for {top_cfg.get('id')!r} must be a list")
-                expanded = [expand_env(k) for k in raw_api_keys]
-                kept: list[str] = []
-                for raw, val in zip(raw_api_keys, expanded, strict=True):
-                    if val is None or val == "":
-                        logger.warning(
-                            "Dropping blank api_keys entry for model %s "
-                            "(template: %s) - env var unset or empty",
-                            top_cfg.get("id"),
-                            raw,
-                        )
-                        continue
-                    if not isinstance(val, str):
-                        raise ValueError(
-                            f"api_keys entry for {top_cfg.get('id')!r} resolved to "
-                            f"non-string value {val!r} (template: {raw!r})"
-                        )
-                    normalized = val.strip()
-                    if not normalized:
-                        logger.warning(
-                            "Dropping whitespace-only api_keys entry for model %s (template: %s)",
-                            top_cfg.get("id"),
-                            raw,
-                        )
-                        continue
-                    kept.append(normalized)
-                if not kept:
+                if raw_api_keys is not None and r.get("api_key") is not None:
                     raise ValueError(
-                        f"api_keys for {top_cfg.get('id')!r} resolved to "
-                        f"empty list after env expansion"
+                        f"Route for model {top_cfg.get('id')!r} sets both "
+                        f"api_key and api_keys; pick one."
                     )
-                api_keys = kept
+
+                api_key: str | None = None
+                api_keys: list[str] | None = None
+                if raw_api_keys is not None:
+                    if not isinstance(raw_api_keys, list):
+                        raise ValueError(f"api_keys for {top_cfg.get('id')!r} must be a list")
+                    expanded = [expand_env(k) for k in raw_api_keys]
+                    kept: list[str] = []
+                    for raw, val in zip(raw_api_keys, expanded, strict=True):
+                        if val is None or val == "":
+                            logger.warning(
+                                "Dropping blank api_keys entry for model %s "
+                                "(template: %s) - env var unset or empty",
+                                top_cfg.get("id"),
+                                raw,
+                            )
+                            continue
+                        if not isinstance(val, str):
+                            raise ValueError(
+                                f"api_keys entry for {top_cfg.get('id')!r} resolved to "
+                                f"non-string value {val!r} (template: {raw!r})"
+                            )
+                        normalized = val.strip()
+                        if not normalized:
+                            logger.warning(
+                                "Dropping whitespace-only api_keys entry for model %s "
+                                "(template: %s)",
+                                top_cfg.get("id"),
+                                raw,
+                            )
+                            continue
+                        kept.append(normalized)
+                    if not kept:
+                        raise ValueError(
+                            f"api_keys for {top_cfg.get('id')!r} resolved to "
+                            f"empty list after env expansion"
+                        )
+                    api_keys = kept
+                else:
+                    api_key = expand_env(raw_api_key)
+
+                # Adapter config inherits from top-level model config
+                adapter_cfg = dict(top_cfg)
+                # "type" is routing-only metadata, not a ModelConfig field
+                adapter_cfg.pop("type", None)
+                adapter_cfg["base_url"] = base_url
+                adapter_cfg["api_key"] = api_key
+                adapter_cfg["api_keys"] = api_keys
+                # Normalize bracket-form openrouter kind to base "openrouter" for the
+                # provider field. The bracketed form survives in `endpoint_id`
+                # (via _make_provider_id called below) and `openrouter_pinned_provider`
+                # (set inside _make_adapter), so per-pin circuit-breaker isolation is
+                # preserved while analytics columns (api_logs.provider, Prometheus
+                # labels) see a single "openrouter" cohort.
+                provider_for_cfg, _ = parse_openrouter_kind(kind)
+                adapter_cfg["provider"] = provider_for_cfg
+                # Generate unique endpoint_id for availability tracking and circuit breaker
+                adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)
+
+                route_provider_model_id = r.get("provider_model_id")
+                if route_provider_model_id is not None:
+                    adapter_cfg["provider_model_id"] = expand_env(route_provider_model_id)
+
+                # Route-level pricing override (key for cost-aware routing in Phase 2)
+                if "pricing" in r:
+                    adapter_cfg["pricing"] = r["pricing"]
+
+                # Route-level processor override (bypasses model-ID auto-detection)
+                if "processor" in r:
+                    adapter_cfg["processor"] = r["processor"]
+
+                # RouteWise subscription classification
+                if "subscription_type" in r:
+                    adapter_cfg["subscription_type"] = r["subscription_type"]
+
+                adapter = _make_adapter(kind, adapter_cfg)
+                adapters_with_weights.append((adapter, weight))
+
+                # Register adapter for runtime key-pool management. We always
+                # mark the provider as known (whitelist) and only attach the
+                # adapter when it carries a key pool — otherwise admin actions
+                # would silently no-op against single-key adapters.
+                from serving.adapters import dynamic_keys
+
+                provider_key = adapter_cfg.get("provider") or kind
+                dynamic_keys.register_known_provider(provider_key)
+                if getattr(adapter, "_key_pool", None) is not None:
+                    dynamic_keys.register_adapter_for_provider(provider_key, adapter)
+
+            # Determine model type: "embedding" models bypass RouteExecutor
+            model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"
+
+            model_id = str(top_cfg["id"])  # type: ignore
+            aliases = (top_cfg.get("aliases") or []) or []
+
+            if model_type == "embedding" and embedding_adapters is not None:
+                # Embedding models use a simple adapter dict (no weighted routing)
+                if adapters_with_weights:
+                    adapter = adapters_with_weights[0][0]
+                    embedding_adapters[model_id] = adapter
+                    for alias in aliases:
+                        embedding_adapters[alias] = adapter
+                count += 1 + len(aliases)
             else:
-                api_key = expand_env(raw_api_key)
+                # Chat models go through the full RouteExecutor
+                admin_only = bool(m.get("admin_only", False))
+                required_role = str(m.get("required_role", "free"))
+                # Validate required_role to prevent fail-open on typos
+                from serving.config.settings import VALID_ROLES
 
-            # Adapter config inherits from top-level model config
-            adapter_cfg = dict(top_cfg)
-            # "type" is routing-only metadata, not a ModelConfig field
-            adapter_cfg.pop("type", None)
-            adapter_cfg["base_url"] = base_url
-            adapter_cfg["api_key"] = api_key
-            adapter_cfg["api_keys"] = api_keys
-            # Normalize bracket-form openrouter kind to base "openrouter" for the
-            # provider field. The bracketed form survives in `endpoint_id`
-            # (via _make_provider_id called below) and `openrouter_pinned_provider`
-            # (set inside _make_adapter), so per-pin circuit-breaker isolation is
-            # preserved while analytics columns (api_logs.provider, Prometheus
-            # labels) see a single "openrouter" cohort.
-            provider_for_cfg, _ = parse_openrouter_kind(kind)
-            adapter_cfg["provider"] = provider_for_cfg
-            # Generate unique endpoint_id for availability tracking and circuit breaker
-            adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)
+                if required_role not in VALID_ROLES:
+                    import logging as _logging
 
-            route_provider_model_id = r.get("provider_model_id")
-            if route_provider_model_id is not None:
-                adapter_cfg["provider_model_id"] = expand_env(route_provider_model_id)
-
-            # Route-level pricing override (key for cost-aware routing in Phase 2)
-            if "pricing" in r:
-                adapter_cfg["pricing"] = r["pricing"]
-
-            # Route-level processor override (bypasses model-ID auto-detection)
-            if "processor" in r:
-                adapter_cfg["processor"] = r["processor"]
-
-            # RouteWise subscription classification
-            if "subscription_type" in r:
-                adapter_cfg["subscription_type"] = r["subscription_type"]
-
-            adapter = _make_adapter(kind, adapter_cfg)
-            adapters_with_weights.append((adapter, weight))
-
-            # Register adapter for runtime key-pool management. We always
-            # mark the provider as known (whitelist) and only attach the
-            # adapter when it carries a key pool — otherwise admin actions
-            # would silently no-op against single-key adapters.
-            from serving.adapters import dynamic_keys
-
-            provider_key = adapter_cfg.get("provider") or kind
-            dynamic_keys.register_known_provider(provider_key)
-            if getattr(adapter, "_key_pool", None) is not None:
-                dynamic_keys.register_adapter_for_provider(provider_key, adapter)
-
-        # Determine model type: "embedding" models bypass RouteExecutor
-        model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"
-
-        model_id = str(top_cfg["id"])  # type: ignore
-        aliases = (top_cfg.get("aliases") or []) or []
-
-        if model_type == "embedding" and embedding_adapters is not None:
-            # Embedding models use a simple adapter dict (no weighted routing)
-            if adapters_with_weights:
-                adapter = adapters_with_weights[0][0]
-                embedding_adapters[model_id] = adapter
-                for alias in aliases:
-                    embedding_adapters[alias] = adapter
-            count += 1 + len(aliases)
-        else:
-            # Chat models go through the full RouteExecutor
-            admin_only = bool(m.get("admin_only", False))
-            required_role = str(m.get("required_role", "free"))
-            # Validate required_role to prevent fail-open on typos
-            from serving.config.settings import VALID_ROLES
-
-            if required_role not in VALID_ROLES:
-                import logging as _logging
-
-                _logging.getLogger(__name__).warning(
-                    "Model %s has invalid required_role '%s', defaulting to 'admin'",
+                    _logging.getLogger(__name__).warning(
+                        "Model %s has invalid required_role '%s', defaulting to 'admin'",
+                        model_id,
+                        required_role,
+                    )
+                    required_role = "admin"
+                router.register_route(
                     model_id,
-                    required_role,
+                    adapters_with_weights,
+                    aliases=aliases,
+                    admin_only=admin_only,
+                    required_role=required_role,
                 )
-                required_role = "admin"
-            router.register_route(
-                model_id,
-                adapters_with_weights,
-                aliases=aliases,
-                admin_only=admin_only,
-                required_role=required_role,
-            )
-            count += 1 + len(aliases)
+                count += 1 + len(aliases)
 
-        # Collect per-model metadata for bootstrap (RouteWise strategy resolution)
-        model_infos.append(
-            ModelRegistrationInfo(
-                model_id=model_id,
-                strategy=m.get("routing_strategy"),
-                aliases=aliases,
+            # Collect per-model metadata for bootstrap (RouteWise strategy resolution)
+            model_infos.append(
+                ModelRegistrationInfo(
+                    model_id=model_id,
+                    strategy=m.get("routing_strategy"),
+                    aliases=aliases,
+                )
             )
-        )
+        except ValueError as exc:
+            if (
+                not continue_on_missing_env
+                or "resolved to empty list after env expansion" not in str(exc)
+            ):
+                raise
+            logger.exception("Skipping model %r from %s: %s", m.get("id"), path, exc)
+            continue
 
     return count, model_infos

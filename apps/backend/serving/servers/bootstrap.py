@@ -104,7 +104,10 @@ async def _init_router_and_models(
             logger.warning(f"Models config not found: {models_path}")
         elif models_path.exists():
             registered, model_infos = register_from_models_yaml(
-                router, models_path, embedding_adapters=embedding_adapters
+                router,
+                models_path,
+                embedding_adapters=embedding_adapters,
+                continue_on_missing_env=True,
             )
             if registered:
                 logger.info(f"Registered {registered} routes from {models_path}")
