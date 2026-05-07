@@ -180,10 +180,15 @@ class AsyncHTTPClient:
                 if attempt == max_attempts - 1:
                     raise
                 ctx = req_ctx.get()
-                API_RETRIES.labels(
-                    provider=str(ctx.get("provider", "unknown")),
-                    reason="ServerDisconnectedError",
-                ).inc()
+                logger.info(
+                    "http_retry",
+                    extra={
+                        "event": "http_retry",
+                        "provider": str(ctx.get("provider", "unknown")),
+                        "reason": "ServerDisconnectedError",
+                        "attempt": attempt + 1,
+                    },
+                )
                 logger.warning("Stale keep-alive socket on stream_post %s; retrying once", url)
 
         assert resp is not None and cm is not None
