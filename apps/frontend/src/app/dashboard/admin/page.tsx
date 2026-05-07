@@ -1854,22 +1854,6 @@ export default function AdminPage() {
                                         {req.user_ip ?? '—'}
                                       </span>
                                     </div>
-                                    <div>
-                                      <span className="text-gray-500">Peer IP:</span>{' '}
-                                      <span className="text-gray-700 font-mono">
-                                        {req.peer_ip ?? '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">IP source:</span>{' '}
-                                      <span className="text-gray-700">{req.ip_source ?? '—'}</span>
-                                    </div>
-                                    <div className="col-span-full">
-                                      <span className="text-gray-500">X-Forwarded-For:</span>{' '}
-                                      <span className="break-words font-mono text-gray-700">
-                                        {req.x_forwarded_for ?? '—'}
-                                      </span>
-                                    </div>
                                     <div className="col-span-full">
                                       <span className="text-gray-500">User agent:</span>{' '}
                                       <span className="break-words text-gray-700">
