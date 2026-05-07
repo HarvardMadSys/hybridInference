@@ -29,15 +29,25 @@ export function Header() {
           Harvard SEAS
         </a>
       </div>
-      {state.isAuthenticated && (
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
-        >
-          Log out
-        </button>
-      )}
+      <div className="flex items-center gap-2">
+        {state.isAuthenticated && (
+          <>
+            <Link
+              href="/dashboard"
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
+            >
+              Dashboard
+            </Link>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
+            >
+              Log out
+            </button>
+          </>
+        )}
+      </div>
     </header>
   );
 }

@@ -1,21 +1,29 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import HomePage from './page';
 
+const replace = vi.fn();
+let authState = {
+  loading: false,
+  isAuthenticated: false,
+  user: null as { id: string; email: string; role: string; user_name?: string | null } | null,
+};
+
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: vi.fn() }),
+  useRouter: () => ({ replace }),
 }));
 
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({
-    state: {
-      loading: false,
-      isAuthenticated: false,
-    },
+    state: authState,
   }),
+}));
+
+vi.mock('@/components/providers/AuthProvider', () => ({
+  hasRole: (userRole: string | undefined, required: string) => userRole === required,
 }));
 
 vi.mock('@/components/landing', () => ({
@@ -25,7 +33,24 @@ vi.mock('@/components/landing', () => ({
   HowItWorks: () => <section aria-label="how it works" />,
 }));
 
+vi.mock('@/components/features/dashboard/DashboardView', () => ({
+  DashboardView: () => <section aria-label="dashboard view">Dashboard</section>,
+}));
+
 describe('HomePage', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    replace.mockClear();
+    authState = {
+      loading: false,
+      isAuthenticated: false,
+      user: null,
+    };
+  });
+
   it('shows the no-guarantee notice before the prompt logging notice', () => {
     const { container } = render(<HomePage />);
 
@@ -38,5 +63,25 @@ describe('HomePage', () => {
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(container).toHaveTextContent(/provided without guarantee/i);
+  });
+
+  it('shows dashboard content on the homepage for authenticated users without redirecting', async () => {
+    authState = {
+      loading: false,
+      isAuthenticated: true,
+      user: {
+        id: 'user-1',
+        email: 'user@example.com',
+        role: 'free',
+        user_name: 'Test User',
+      },
+    };
+
+    render(<HomePage />);
+
+    expect(await screen.findByLabelText(/dashboard view/i)).toBeInTheDocument();
+    expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
+    expect(screen.getByText(/all prompts and responses are logged/i)).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
   });
 });
