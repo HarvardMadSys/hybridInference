@@ -591,7 +591,7 @@ models:
 
   - id: gpt-5.4
     name: GPT-5.4
-    provider: chatgpt
+    provider: openai
     required_role: internal
     provider_model_id: "gpt-5.4"
     context_length: 1050000
@@ -610,7 +610,7 @@ models:
       input_cache_reads: "0.50"
       input_cache_writes: "0.00"
     route:
-      - kind: cliproxy
+      - kind: openai_compat
         weight: 1.0
         base_url: ${CLI_PROXY_BASE_URL}
         api_key: ${CLI_PROXY_API_KEY}
@@ -618,7 +618,7 @@ models:
 
   - id: gpt-5.4-mini
     name: GPT-5.4-mini
-    provider: chatgpt
+    provider: openai
     required_role: internal
     provider_model_id: "gpt-5.4-mini"
     context_length: 1050000
@@ -637,7 +637,7 @@ models:
       input_cache_reads: "0.25"
       input_cache_writes: "0.00"
     route:
-      - kind: cliproxy
+      - kind: openai_compat
         weight: 1.0
         base_url: ${CLI_PROXY_BASE_URL}
         api_key: ${CLI_PROXY_API_KEY}
@@ -645,7 +645,7 @@ models:
 
   - id: gpt-5.3-spark
     name: GPT-5.3-Codex-Spark
-    provider: chatgpt
+    provider: openai
     required_role: internal
     provider_model_id: "gpt-5.3-spark"
     context_length: 1050000
@@ -664,7 +664,7 @@ models:
       input_cache_reads: "5.00"
       input_cache_writes: "0.00"
     route:
-      - kind: cliproxy
+      - kind: openai_compat
         weight: 1.0
         base_url: ${CLI_PROXY_BASE_URL}
         api_key: ${CLI_PROXY_API_KEY}
@@ -672,7 +672,7 @@ models:
 
   - id: gpt-5.5
     name: GPT-5.5
-    provider: chatgpt
+    provider: openai
     required_role: internal
     provider_model_id: "gpt-5.5"
     context_length: 1050000
@@ -691,7 +691,7 @@ models:
       input_cache_reads: "5.00"
       input_cache_writes: "0.00"
     route:
-      - kind: cliproxy
+      - kind: openai_compat
         weight: 1.0
         base_url: ${CLI_PROXY_BASE_URL}
         api_key: ${CLI_PROXY_API_KEY}
