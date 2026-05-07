@@ -477,15 +477,6 @@ function formatTokens(n?: number | null): string {
   return Math.round(n).toLocaleString();
 }
 
-function DetailPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5">
-      <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">{label}</div>
-      <div className="mt-0.5 break-words font-mono text-[12px] text-gray-700">{value}</div>
-    </div>
-  );
-}
-
 export function AdminRecentRequestDetailPanel({
   req,
   content,
@@ -493,68 +484,55 @@ export function AdminRecentRequestDetailPanel({
   req: AdminRecentRequestItem;
   content?: AdminRecentRequestContentState;
 }) {
-  const hasCacheTokens = req.cache_read_tokens != null || req.cache_write_tokens != null;
-  const cachedTokens = hasCacheTokens
-    ? (req.cache_read_tokens ?? 0) + (req.cache_write_tokens ?? 0)
-    : null;
-
+  const status = req.status_code != null ? String(req.status_code) : '—';
+  const stream = req.stream != null ? (req.stream ? 'Yes' : 'No') : '—';
+  const decode =
+    req.decode_throughput_tps != null ? `${req.decode_throughput_tps.toFixed(1)} tok/s` : '—';
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <div className="flex flex-col gap-2 border-b border-gray-100 pb-3">
-        <div className="flex flex-wrap items-start gap-x-4 gap-y-2 text-[12px]">
-          <div className="min-w-0 flex-1">
-            <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
-              Request ID
-            </div>
-            <div className="mt-0.5 break-all font-mono text-[12px] text-gray-800">
-              {req.request_id}
-            </div>
+        <div className="min-w-0">
+          <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
+            Request ID
           </div>
-          <DetailPill label="Model" value={req.model_id} />
-          <DetailPill label="Provider" value={req.provider} />
-          <DetailPill
-            label="Status"
-            value={req.status_code != null ? String(req.status_code) : '—'}
-          />
-          <DetailPill
-            label="Time"
-            value={`${relTime(req.timestamp)} (${new Date(req.timestamp).toLocaleString()})`}
-          />
+          <div className="mt-0.5 break-all font-mono text-[12px] text-gray-800">
+            {req.request_id}
+          </div>
         </div>
 
-        <div
-          aria-label="Request performance and token details"
-          className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"
-        >
-          <DetailPill label="Latency" value={formatLatency(req.latency_ms)} />
-          <DetailPill label="TTFT" value={formatLatency(req.ttft_ms)} />
-          <DetailPill
-            label="Decode"
-            value={
-              req.decode_throughput_tps != null
-                ? `${req.decode_throughput_tps.toFixed(1)} tok/s`
-                : '—'
-            }
-          />
-          <DetailPill
-            label="Stream"
-            value={req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
-          />
-          <DetailPill label="Prompt Tokens" value={formatTokens(req.prompt_tokens)} />
-          <DetailPill label="Completion Tokens" value={formatTokens(req.completion_tokens)} />
-          <DetailPill label="Reasoning Tokens" value={formatTokens(req.reasoning_tokens)} />
-          <DetailPill label="Cached Tokens" value={formatTokens(cachedTokens)} />
-          <DetailPill label="Total Tokens" value={formatTokens(req.total_tokens)} />
-          <DetailPill label="Cost" value={formatCost(req.cost_usd)} />
+        <div className="border-t border-gray-100 pt-2 text-[12px] text-gray-700">
+          <span className="font-medium text-gray-500">Identity:</span>{' '}
+          <span className="font-mono break-words">
+            model {req.model_id} / prov {req.provider} / status {status} / time{' '}
+            {relTime(req.timestamp)} / stream {stream} / cost {formatCost(req.cost_usd)}
+          </span>
         </div>
-      </div>
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <DetailPill label="User" value={req.user_name || '—'} />
-        <DetailPill label="Email" value={req.user_email || '—'} />
-        <DetailPill label="User ID" value={req.user_id || '—'} />
-        <DetailPill label="Session" value={req.session_id || '—'} />
-        <DetailPill label="User IP" value={req.user_ip || '—'} />
+        <div className="border-t border-gray-100 pt-2 text-[12px] text-gray-700">
+          <span className="font-medium text-gray-500">Performance:</span>{' '}
+          <span className="font-mono break-words">
+            lat {formatLatency(req.latency_ms)} / ttft {formatLatency(req.ttft_ms)} / decode{' '}
+            {decode}
+          </span>
+        </div>
+
+        <div className="border-t border-gray-100 pt-2 text-[12px] text-gray-700">
+          <span className="font-medium text-gray-500">Tokens:</span>{' '}
+          <span className="font-mono break-words">
+            in/out {formatTokens(req.prompt_tokens)} / {formatTokens(req.completion_tokens)} |{' '}
+            reason/total {formatTokens(req.reasoning_tokens)} / {formatTokens(req.total_tokens)} |
+            cache r/w {formatTokens(req.cache_read_tokens)} / {formatTokens(req.cache_write_tokens)}
+          </span>
+        </div>
+
+        <div className="border-t border-gray-100 pt-2 text-[12px] text-gray-700">
+          <span className="font-medium text-gray-500">User/session:</span>{' '}
+          <span className="font-mono break-words">
+            user {req.user_name || '—'} / email {req.user_email || '—'} / uid {req.user_id || '—'} /
+            sess {req.session_id || '—'}
+            {req.user_ip ? ` / ip ${req.user_ip}` : ''}
+          </span>
+        </div>
       </div>
 
       <div className="mt-2 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5">
