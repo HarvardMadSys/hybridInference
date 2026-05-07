@@ -54,7 +54,7 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
 
     Examples:
         - glm-4.6 + sglang + http://localhost:12003       -> "glm-4.6:local-12003"
-        - glm-4.6 + zhipu + https://api.z.ai/v4/          -> "glm-4.6:zhipu-api"
+        - glm-4.6 + zai + https://api.z.ai/v4/          -> "glm-4.6:zai-api"
         - qwen3-coder + sglang + http://localhost:8003     -> "qwen3-coder:local-8003"
         - glm-4.7 + compat + http://host.docker.internal:8004 -> "glm-4.7:local-8004"
         - qwen3-coder + chutes + https://llm.chutes.ai    -> "qwen3-coder:chutes-api"
@@ -62,7 +62,7 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
 
     Args:
         model_id: The model identifier (e.g., "glm-4.6", "qwen3-coder").
-        kind: Adapter kind (e.g., "sglang", "zhipu", "chutes").
+        kind: Adapter kind (e.g., "sglang", "zai", "chutes").
         base_url: The base URL of the endpoint.
 
     Returns:
@@ -128,9 +128,9 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
-        kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zhipu"``,
-              ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``, ``"openrouter"``,
-              ``"openrouter[<slug>]"``).
+        kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zai"``,
+              ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"cliproxy"``,
+              ``"openai_compat"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -155,11 +155,13 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
     if kind == "deepseek":
         cfg = {**cfg, "provider_profile": "deepseek"}
-    # Zhipu routes through OpenAICompatAdapter with a non-/v1 chat path.
-    elif kind == "zhipu":
-        cfg = {**cfg, "provider_profile": "zhipu", "chat_path": "/chat/completions"}
+    # ZAI routes through OpenAICompatAdapter with a non-/v1 chat path.
+    elif kind == "zai":
+        cfg = {**cfg, "provider_profile": "zai", "chat_path": "/chat/completions"}
     elif kind == "minimax":
         cfg = {**cfg, "provider_profile": "minimax"}
+    elif kind == "sglang":
+        cfg = {**cfg, "include_usage_in_stream": True}
 
     model_cfg = ModelConfig(**cfg)
 
@@ -170,9 +172,10 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "chutes",
         "featherless",
         "ollama",
+        "cliproxy",
         "openai_compat",
         "deepseek",
-        "zhipu",
+        "zai",
         "minimax",
     ):
         return OpenAICompatAdapter(model_cfg)
@@ -207,7 +210,7 @@ def register_from_models_yaml(
             supported_params: [temperature, top_p, top_k, min_p, max_tokens, stop, seed]
             aliases: ["test-model-instruct"]
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: ${LLAMA_BASE_URL}
                 api_key: ${LLAMA_API_KEY}
@@ -363,6 +366,17 @@ def register_from_models_yaml(
 
             adapter = _make_adapter(kind, adapter_cfg)
             adapters_with_weights.append((adapter, weight))
+
+            # Register adapter for runtime key-pool management. We always
+            # mark the provider as known (whitelist) and only attach the
+            # adapter when it carries a key pool — otherwise admin actions
+            # would silently no-op against single-key adapters.
+            from serving.adapters import dynamic_keys
+
+            provider_key = adapter_cfg.get("provider") or kind
+            dynamic_keys.register_known_provider(provider_key)
+            if getattr(adapter, "_key_pool", None) is not None:
+                dynamic_keys.register_adapter_for_provider(provider_key, adapter)
 
         # Determine model type: "embedding" models bypass RouteExecutor
         model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"

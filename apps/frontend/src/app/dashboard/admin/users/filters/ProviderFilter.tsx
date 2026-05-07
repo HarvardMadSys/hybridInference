@@ -1,6 +1,25 @@
 'use client';
 
-const OPTIONS = ['', 'anthropic', 'minimax', 'ollama', 'zhipu'];
+const OPTIONS = [
+  '',
+  'anthropic',
+  'chutes',
+  'deepseek',
+  'featherless',
+  'minimax',
+  'ollama',
+  'openrouter',
+  'zai',
+];
+
+const LABELS: Record<string, string> = {
+  zai: 'Z.AI',
+  deepseek: 'DeepSeek',
+  chutes: 'Chutes',
+  featherless: 'Featherless',
+  openrouter: 'OpenRouter',
+  minimax: 'Minimax',
+};
 
 interface Props {
   value: string | null;
@@ -16,7 +35,7 @@ export function ProviderFilter({ value, onChange }: Props) {
     >
       {OPTIONS.map((p) => (
         <option key={p} value={p}>
-          {p === '' ? 'Any provider' : p}
+          {p === '' ? 'Any provider' : (LABELS[p] ?? p)}
         </option>
       ))}
     </select>

@@ -68,6 +68,11 @@ async def test_list_settings(admin_client):
     assert len(data["settings"]) > 0
     assert all("key" in s for s in data["settings"])
     assert all("value_type" in s for s in data["settings"])
+    by_key = {s["key"]: s for s in data["settings"]}
+    # int settings expose `min` so the admin UI can validate before submit;
+    # bool settings have no bounds.
+    assert by_key["user_concurrency_free"]["min"] == 1
+    assert by_key["signup_enabled"]["min"] is None
 
 
 @pytest.mark.asyncio
@@ -133,3 +138,148 @@ async def test_list_requires_admin_auth(admin_client):
 
     response = await client.get("/admin/settings")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_update_int_setting_below_min_returns_400(monkeypatch, admin_client):
+    """A numeric setting with a `min` floor rejects out-of-range values."""
+    from serving.config import runtime_settings as rs_mod
+
+    # Inject a temporary int setting with min=1 for the duration of the test.
+    monkeypatch.setitem(
+        rs_mod.RUNTIME_SETTINGS_REGISTRY,
+        "_test_floored_int",
+        {"type": "int", "default": 5, "min": 1, "description": "Test-only floored int"},
+    )
+    client, _, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/_test_floored_int",
+        json={"value": 0},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 400
+    assert "min" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_update_int_setting_at_min_succeeds(monkeypatch, admin_client):
+    """The boundary value is accepted."""
+    from serving.config import runtime_settings as rs_mod
+
+    monkeypatch.setitem(
+        rs_mod.RUNTIME_SETTINGS_REGISTRY,
+        "_test_floored_int",
+        {"type": "int", "default": 5, "min": 1, "description": "Test-only floored int"},
+    )
+    client, op_store, _ = admin_client
+    op_store.get_setting.return_value = None
+
+    response = await client.patch(
+        "/admin/settings/_test_floored_int",
+        json={"value": 1},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 200
+    assert response.json()["value"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_settings_includes_user_concurrency_keys(admin_client):
+    """All four user_concurrency_<role> keys are exposed via /admin/settings."""
+    client, op_store, _ = admin_client
+    op_store.get_setting = AsyncMock(return_value=None)
+
+    response = await client.get(
+        "/admin/settings",
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 200
+    keys = {item["key"] for item in response.json()["settings"]}
+    assert {
+        "user_concurrency_free",
+        "user_concurrency_pro",
+        "user_concurrency_internal",
+        "user_concurrency_admin",
+    }.issubset(keys)
+
+
+@pytest.mark.asyncio
+async def test_update_user_concurrency_admin_below_min_returns_400(admin_client):
+    """Admin floor of 1 prevents self-lockout."""
+    client, _, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/user_concurrency_admin",
+        json={"value": 0},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_user_concurrency_admin_at_min_succeeds(admin_client):
+    client, op_store, _ = admin_client
+    op_store.get_setting.return_value = None
+
+    response = await client.patch(
+        "/admin/settings/user_concurrency_admin",
+        json={"value": 1},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 200
+    assert response.json()["value"] == 1
+
+
+@pytest.mark.asyncio
+async def test_update_int_setting_rejects_bool(admin_client):
+    """JSON booleans must not be accepted for int settings (bool is a subclass
+    of int in Python; without the explicit guard we'd persist ``"True"`` and
+    later fail to coerce it back to int)."""
+    client, _, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/user_concurrency_free",
+        json={"value": True},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 400
+    assert "integer" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_update_float_setting_rejects_bool(monkeypatch, admin_client):
+    """Same guard applies to float settings."""
+    from serving.config import runtime_settings as rs_mod
+
+    monkeypatch.setitem(
+        rs_mod.RUNTIME_SETTINGS_REGISTRY,
+        "_test_float_setting",
+        {"type": "float", "default": 1.0, "description": "Test-only float"},
+    )
+    client, _, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/_test_float_setting",
+        json={"value": False},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 400
+    assert "numeric" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_list_settings_includes_log_rejected_requests(admin_client):
+    """The new log_rejected_requests bool setting is exposed via /admin/settings."""
+    client, op_store, _ = admin_client
+    op_store.get_setting = AsyncMock(return_value=None)
+
+    response = await client.get(
+        "/admin/settings",
+        headers={"Authorization": "Bearer test-admin"},
+    )
+    assert response.status_code == 200
+    by_key = {item["key"]: item for item in response.json()["settings"]}
+    assert "log_rejected_requests" in by_key
+    assert by_key["log_rejected_requests"]["value_type"] == "bool"
+    assert by_key["log_rejected_requests"]["default_value"] is False

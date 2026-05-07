@@ -9,6 +9,59 @@ from typing import Any
 
 from . import context as req_ctx
 
+_STRUCTURED_LOG_KEYS = (
+    "event",
+    "method",
+    "path",
+    "status_code",
+    "duration_ms",
+    "remote_ip",
+    "peer_ip",
+    "ip_source",
+    "x_forwarded_for",
+    "x_real_ip",
+    "user_agent",
+    "host",
+    "origin",
+    "referer",
+    "request_id",
+    "model",
+    "provider",
+    "session_id",
+    "user_id",
+    "key_prefix",
+    "reason",
+    "rewritten_path",
+    "body_bytes",
+    "upstream_status",
+    "latency_ms",
+    "error",
+    "error_type",
+)
+
+
+def _format_extra_value(value: Any) -> str:
+    """Format a structured extra value for plain logs."""
+    if isinstance(value, str):
+        return json.dumps(value)
+    return json.dumps(value, default=str)
+
+
+class PlainFormatter(logging.Formatter):
+    """Plain formatter that still prints selected ``extra=`` fields."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Append structured fields to the normal log line."""
+        base = super().format(record)
+        extras = [
+            f"{key}={_format_extra_value(record.__dict__[key])}"
+            for key in _STRUCTURED_LOG_KEYS
+            if key in record.__dict__ and record.__dict__[key] is not None
+        ]
+        if not extras:
+            return base
+        return f"{base} {' '.join(extras)}"
+
 
 class JsonFormatter(logging.Formatter):
     """Format log records as JSON including request context metadata."""
@@ -40,31 +93,7 @@ class JsonFormatter(logging.Formatter):
         # Note: logging attaches items from ``extra`` into ``record.__dict__``.
         # Keys with hyphens (e.g., "x-session-id") are not valid attributes,
         # so ``hasattr`` will not work. We therefore read from ``__dict__``.
-        for key in (
-            "method",
-            "path",
-            "status_code",
-            "duration_ms",
-            "remote_ip",
-            "x_forwarded_for",
-            "user_agent",
-            "host",
-            "request_id",
-            "model",
-            "provider",
-            # Canonical session identifier matching database metadata
-            "session_id",
-            # Debug headers snapshot (full request headers when in DEBUG mode)
-            "headers",
-            # Qdrant proxy fields
-            "rewritten_path",
-            "body_bytes",
-            "upstream_status",
-            "latency_ms",
-            "user_id",
-            "error",
-            "age_sec",
-        ):
+        for key in (*_STRUCTURED_LOG_KEYS, "headers", "age_sec"):
             if key in record.__dict__:
                 payload[key] = record.__dict__[key]
 
@@ -121,7 +150,7 @@ def setup_logging() -> None:
     formatter: logging.Formatter = (
         JsonFormatter()
         if _env_is_json()
-        else logging.Formatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        else PlainFormatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
 
     # If handlers already exist (e.g., logging initialized before dotenv), update them.
@@ -154,6 +183,7 @@ def get_logger(name: str | None = None) -> logging.Logger:
 
 __all__ = [
     "JsonFormatter",
+    "PlainFormatter",
     "attach_quiet_access_filter",
     "get_logger",
     "setup_logging",

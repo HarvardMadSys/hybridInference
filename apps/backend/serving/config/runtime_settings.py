@@ -43,6 +43,70 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "default": False,
         "description": "Log full request payloads at DEBUG level",
     },
+    "log_rejected_requests": {
+        "type": "bool",
+        "default": False,
+        "description": (
+            "Persist rejected inference requests (rate-limit, quota, auth, "
+            "model-not-found) to api_logs with metadata.rejection=true."
+        ),
+    },
+    "user_concurrency_free": {
+        "type": "int",
+        "default": 3,
+        "min": 1,
+        "description": "Per-user concurrency cap for free-tier users",
+    },
+    "user_concurrency_pro": {
+        "type": "int",
+        "default": 3,
+        "min": 1,
+        "description": "Per-user concurrency cap for pro-tier users",
+    },
+    "user_concurrency_internal": {
+        "type": "int",
+        "default": 10,
+        "min": 1,
+        "description": "Per-user concurrency cap for internal users",
+    },
+    "user_concurrency_admin": {
+        "type": "int",
+        "default": 10,
+        "min": 1,
+        "description": "Per-user concurrency cap for admin users",
+    },
+    "user_daily_quota_free": {
+        "type": "float",
+        "default": 100.00,
+        "min": 0.0,
+        "description": (
+            "Default daily USD spend quota seeded onto a free-tier user's active API key at signup."
+        ),
+    },
+    "user_daily_quota_pro": {
+        "type": "float",
+        "default": 100.00,
+        "min": 0.0,
+        "description": (
+            "Default daily USD spend quota seeded onto a pro-tier user's active API key at signup."
+        ),
+    },
+    "user_daily_quota_internal": {
+        "type": "float",
+        "default": 1000.00,
+        "min": 0.0,
+        "description": (
+            "Default daily USD spend quota seeded onto an internal user's active API key at signup."
+        ),
+    },
+    "user_daily_quota_admin": {
+        "type": "float",
+        "default": 1000.00,
+        "min": 0.0,
+        "description": (
+            "Default daily USD spend quota seeded onto an admin user's active API key at signup."
+        ),
+    },
 }
 
 _SENTINEL = object()
@@ -168,6 +232,8 @@ class RuntimeSettings:
                     "value_type": entry["type"],
                     "default_value": entry["default"],
                     "description": entry["description"],
+                    "min": entry.get("min"),
+                    "max": entry.get("max"),
                 }
             )
         return results

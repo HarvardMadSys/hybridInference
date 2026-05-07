@@ -9,6 +9,8 @@ of each maintaining their own sessions.
 from __future__ import annotations
 
 import asyncio
+import logging
+import sys
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -19,6 +21,8 @@ from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncHTTPClient:
@@ -124,6 +128,16 @@ class AsyncHTTPClient:
     ) -> AsyncIterator[str]:
         """Stream a POST request line-by-line.
 
+        Performs at most one transparent retry when the underlying TCP socket
+        was a stale pooled keep-alive connection that the upstream had already
+        half-closed. aiohttp raises ``ServerDisconnectedError`` from
+        ``session.post(...).__aenter__()`` in that case — i.e. while sending
+        the request and reading status/headers, before any response body byte
+        has been read. The retry is scoped to that connect phase only; once
+        ``__aenter__`` returns, body iteration runs once with no retry, so
+        the upstream never sees a duplicate request after it has begun
+        responding.
+
         Args:
             url: Target URL.
             json: JSON payload.
@@ -143,123 +157,163 @@ class AsyncHTTPClient:
         # Let the upstream manage its own lifecycle via [DONE] sentinel.
         if timeout is None:
             timeout = aiohttp.ClientTimeout(total=None)
-        async with session.post(url, json=json, headers=headers, timeout=timeout) as resp:
-            # Check status and read error body if present before raising
-            if resp.status >= 400:
-                error_body = ""
-                from contextlib import suppress
 
-                with suppress(Exception):
-                    error_body = await resp.text()
+        # Phase 1: open connection. Retry once on a stale pooled keep-alive
+        # socket. Anything else (DNS, refused, TLS, mid-stream payload error)
+        # propagates so the router can decide what to do.
+        max_attempts = 2
+        cm: Any = None
+        resp: Any = None
+        for attempt in range(max_attempts):
+            cm = session.post(url, json=json, headers=headers, timeout=timeout)
+            try:
+                resp = await cm.__aenter__()
+                break
+            except aiohttp.ServerDisconnectedError:
+                if attempt == max_attempts - 1:
+                    raise
+                ctx = req_ctx.get()
+                API_RETRIES.labels(
+                    provider=str(ctx.get("provider", "unknown")),
+                    reason="ServerDisconnectedError",
+                ).inc()
+                logger.warning("Stale keep-alive socket on stream_post %s; retrying once", url)
 
-                # Create a more informative error
-                error = aiohttp.ClientResponseError(
-                    request_info=resp.request_info,
-                    history=resp.history,
-                    status=resp.status,
-                    message=resp.reason or "Unknown error",
-                    headers=resp.headers,
-                )
-                # Attach error body for logging
-                if error_body:
-                    error.error_body = error_body  # type: ignore[attr-defined]
-                raise error
+        assert resp is not None and cm is not None
 
-            # Detect content type for streaming mode if requested
-            content_type = str(resp.headers.get("Content-Type", "")).lower()
-            detected_mode = mode
-            if mode == "auto":
-                if "text/event-stream" in content_type:
-                    detected_mode = "sse"
-                elif (
-                    "application/x-ndjson" in content_type
-                    or "ndjson" in content_type
-                    or "application/json" in content_type
-                ):
-                    # Many upstreams return a single JSON object for stream endpoints.
-                    # Treat it as NDJSON and flush the tail at end.
-                    detected_mode = "ndjson"
-                else:
-                    # Default to SSE when unsure
-                    detected_mode = "sse"
+        # Phase 2: stream body. Manual __aexit__ because __aenter__ ran inside
+        # the retry loop above. Surface any in-flight exception to __aexit__
+        # so aiohttp can abort the connection rather than release it back to
+        # the pool.
+        exc_type: type[BaseException] | None = None
+        exc_val: BaseException | None = None
+        exc_tb: Any = None
+        try:
+            async for chunk in self._iterate_response_body(resp, mode, url):
+                yield chunk
+        except BaseException:
+            exc_type, exc_val, exc_tb = sys.exc_info()
+            raise
+        finally:
+            await cm.__aexit__(exc_type, exc_val, exc_tb)
 
-            if detected_mode == "sse":
-                # Debug logging for SSE streams
-                import logging
+    async def _iterate_response_body(self, resp: Any, mode: str, url: str) -> AsyncIterator[str]:
+        """Yield SSE / NDJSON / raw lines from an already-connected response.
 
-                logger = logging.getLogger(__name__)
-                logger.debug(
-                    f"Connected to {url}, status={resp.status}, type={content_type or 'unknown'}"
-                )
-                logger.debug(f"Response headers: {dict(resp.headers)}")
+        No retry: any failure here means the upstream has begun responding,
+        so resending the request would risk duplicate generation side effects
+        and double billing.
+        """
+        # Check status and read error body if present before raising
+        if resp.status >= 400:
+            error_body = ""
+            from contextlib import suppress
 
-                parser = SSEParser()
-                chunk_count = 0
-                message_count = 0
-                async for raw in resp.content.iter_chunked(4096):
-                    chunk_count += 1
-                    if chunk_count <= 5 or chunk_count % 10 == 0:
-                        logger.debug(f"Chunk {chunk_count}: received {len(raw)} bytes")
-                        # Show first few bytes to debug encoding issues
-                        preview = raw[:200].decode("utf-8", errors="replace")
-                        logger.debug(f"Chunk {chunk_count} preview: {preview}")
+            with suppress(Exception):
+                error_body = await resp.text()
 
-                    messages = list(parser.feed(raw))
-                    if messages and chunk_count <= 5:
-                        logger.debug(
-                            f"Chunk {chunk_count} parser produced {len(messages)} messages"
-                        )
+            # Create a more informative error
+            error = aiohttp.ClientResponseError(
+                request_info=resp.request_info,
+                history=resp.history,
+                status=resp.status,
+                message=resp.reason or "Unknown error",
+                headers=resp.headers,
+            )
+            # Attach error body for logging
+            if error_body:
+                error.error_body = error_body  # type: ignore[attr-defined]
+            raise error
 
-                    for msg in messages:
-                        if not msg.data:
-                            logger.debug("Empty message data, skipping")
-                            continue
-
-                        message_count += 1
-                        if message_count <= 10 or message_count % 10 == 0:
-                            logger.debug(f"Message {message_count} SSE data: {msg.data[:200]}")
-
-                        # Preserve legacy adapter expectations (no trailing newlines)
-                        if msg.data.strip() == "[DONE]":
-                            logger.debug(
-                                f"Received [DONE], total chunks: {chunk_count}, total messages: {message_count}"
-                            )
-                            yield "data: [DONE]"
-                            return
-
-                        output = f"data: {msg.data}"
-                        if message_count <= 5:
-                            logger.debug(f"Yielding message {message_count}: {output[:200]}")
-                        yield output
-
-                logger.info(f"Stream complete: chunks={chunk_count}, messages={message_count}")
-            elif detected_mode == "ndjson":
-                # Incremental UTF-8 decode + line buffering
-                import codecs
-
-                decoder = codecs.getincrementaldecoder("utf-8")()
-                buffer = ""
-                async for raw in resp.content.iter_chunked(4096):
-                    try:
-                        text = decoder.decode(raw, final=False)
-                    except UnicodeDecodeError:
-                        # Wait for next chunk to complete sequence
-                        text = ""
-                    if text:
-                        buffer += text
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            if line:
-                                yield line
-                # Flush tail
-                tail = buffer.strip()
-                if tail:
-                    yield tail
+        # Detect content type for streaming mode if requested
+        content_type = str(resp.headers.get("Content-Type", "")).lower()
+        detected_mode = mode
+        if mode == "auto":
+            if "text/event-stream" in content_type:
+                detected_mode = "sse"
+            elif (
+                "application/x-ndjson" in content_type
+                or "ndjson" in content_type
+                or "application/json" in content_type
+            ):
+                # Many upstreams return a single JSON object for stream endpoints.
+                # Treat it as NDJSON and flush the tail at end.
+                detected_mode = "ndjson"
             else:
-                # Fallback to raw decoding (legacy behavior)
-                async for raw in resp.content:
-                    yield raw.decode("utf-8").strip()
+                # Default to SSE when unsure
+                detected_mode = "sse"
+
+        if detected_mode == "sse":
+            logger.debug(
+                f"Connected to {url}, status={resp.status}, type={content_type or 'unknown'}"
+            )
+            logger.debug(f"Response headers: {dict(resp.headers)}")
+
+            parser = SSEParser()
+            chunk_count = 0
+            message_count = 0
+            async for raw in resp.content.iter_chunked(4096):
+                chunk_count += 1
+                if chunk_count <= 5 or chunk_count % 10 == 0:
+                    logger.debug(f"Chunk {chunk_count}: received {len(raw)} bytes")
+                    # Show first few bytes to debug encoding issues
+                    preview = raw[:200].decode("utf-8", errors="replace")
+                    logger.debug(f"Chunk {chunk_count} preview: {preview}")
+
+                messages = list(parser.feed(raw))
+                if messages and chunk_count <= 5:
+                    logger.debug(f"Chunk {chunk_count} parser produced {len(messages)} messages")
+
+                for msg in messages:
+                    if not msg.data:
+                        logger.debug("Empty message data, skipping")
+                        continue
+
+                    message_count += 1
+                    if message_count <= 10 or message_count % 10 == 0:
+                        logger.debug(f"Message {message_count} SSE data: {msg.data[:200]}")
+
+                    # Preserve legacy adapter expectations (no trailing newlines)
+                    if msg.data.strip() == "[DONE]":
+                        logger.debug(
+                            f"Received [DONE], total chunks: {chunk_count}, total messages: {message_count}"
+                        )
+                        yield "data: [DONE]"
+                        return
+
+                    output = f"data: {msg.data}"
+                    if message_count <= 5:
+                        logger.debug(f"Yielding message {message_count}: {output[:200]}")
+                    yield output
+
+            logger.info(f"Stream complete: chunks={chunk_count}, messages={message_count}")
+        elif detected_mode == "ndjson":
+            # Incremental UTF-8 decode + line buffering
+            import codecs
+
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            buffer = ""
+            async for raw in resp.content.iter_chunked(4096):
+                try:
+                    text = decoder.decode(raw, final=False)
+                except UnicodeDecodeError:
+                    # Wait for next chunk to complete sequence
+                    text = ""
+                if text:
+                    buffer += text
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if line:
+                            yield line
+            # Flush tail
+            tail = buffer.strip()
+            if tail:
+                yield tail
+        else:
+            # Fallback to raw decoding (legacy behavior)
+            async for raw in resp.content:
+                yield raw.decode("utf-8").strip()
 
     async def request(
         self,

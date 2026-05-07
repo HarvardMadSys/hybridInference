@@ -31,6 +31,7 @@ def _fake_record(
     provider: str = "openai",
     model: str = "gpt-4",
     duration_ms: int = 100,
+    path: str | None = None,
 ) -> logging.LogRecord:
     rec = logging.LogRecord(
         name="serving.servers.middleware.request_log",
@@ -45,6 +46,7 @@ def _fake_record(
     rec.provider = provider
     rec.model = model
     rec.duration_ms = duration_ms
+    rec.path = path
     return rec
 
 
@@ -104,11 +106,61 @@ async def test_failed_request_rate_fires_on_threshold(monkeypatch):
         await engine.start()
         try:
             for _ in range(10):
-                handler.queue.put_nowait(_fake_record(200))
+                handler.queue.put_nowait(_fake_record(200, path="/v1/messages"))
             for _ in range(2):
-                handler.queue.put_nowait(_fake_record(500))
+                handler.queue.put_nowait(
+                    _fake_record(500, provider="anthropic", path="/v1/messages")
+                )
             await _drain_until(handler, mock_alert)
             assert mock_alert.await_count >= 1
+            ctx = mock_alert.await_args.args[2]
+            assert ctx["top_status_codes"] == "500 (2)"
+            assert ctx["top_paths"] == "/v1/messages (2)"
+            assert ctx["top_providers"] == "anthropic (2)"
+        finally:
+            await engine.stop()
+
+
+async def test_failed_request_rate_ignores_401(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.rules.failed_request_rate.window_sec = 60
+    cfg.rules.failed_request_rate.threshold_pct = 5.0
+    cfg.rules.failed_request_rate.min_samples = 10
+    cfg.rules.failed_request_rate.cooldown_sec = 1
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+    cfg.rules.auth_failure_spike.enabled = False
+    cfg.rules.concurrency_exhausted.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            # 19 OK + 3 401s = 13.6% would fire on the old >=400 predicate;
+            # 401 is now ignored so no alert.
+            for _ in range(19):
+                handler.queue.put_nowait(_fake_record(200, path="/v1/messages"))
+            for _ in range(3):
+                handler.queue.put_nowait(_fake_record(401, path="/admin/recent-requests"))
+            for _ in range(20):
+                await asyncio.sleep(0.01)
+            assert mock_alert.await_count == 0
         finally:
             await engine.stop()
 
@@ -197,6 +249,45 @@ async def test_p95_latency_per_provider_fires(monkeypatch):
             args, _ = mock_alert.call_args
             # title contains the provider name
             assert "openai" in args[1]
+        finally:
+            await engine.stop()
+
+
+async def test_p95_latency_skips_records_without_provider(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.rules.p95_latency_per_provider.window_sec = 60
+    cfg.rules.p95_latency_per_provider.threshold_ms = 25000
+    cfg.rules.p95_latency_per_provider.min_samples = 30
+    cfg.rules.p95_latency_per_provider.cooldown_sec = 1
+    cfg.rules.failed_request_rate.enabled = False
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.auth_failure_spike.enabled = False
+    cfg.rules.concurrency_exhausted.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            for ms in range(1000, 32000, 1000):
+                handler.queue.put_nowait(_fake_record(200, provider=None, duration_ms=ms))
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count == 0
         finally:
             await engine.stop()
 

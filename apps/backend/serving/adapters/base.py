@@ -40,6 +40,7 @@ class UsageInfo:
         # Include cache tokens if present (for transparency)
         if self.cache_read_tokens > 0:
             result["cache_read_tokens"] = self.cache_read_tokens
+            result["cached_tokens"] = self.cache_read_tokens
         if self.cache_write_tokens > 0:
             result["cache_write_tokens"] = self.cache_write_tokens
         return result

@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
-from serving.config.settings import USER_CONCURRENCY_LIMITS, get_settings
+from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
@@ -173,99 +173,93 @@ async def initialize() -> AppServices:
 
     router = RouteExecutor()
 
-    # Database logger — only needed when DB_BACKEND is postgres (default).
-    # When DB_BACKEND=d1, all data goes to Cloudflare D1; skip Postgres entirely.
     settings = get_settings()
-    db_logger = None
-    if settings.db_backend != "d1":
-        db_logger = _init_db_logger()
-        if db_logger:
-            max_retries = 3
-            retry_delay = 2  # seconds
-            for attempt in range(max_retries):
-                try:
-                    await db_logger.initialize()
-                    logger.info("Database logger initialized successfully")
-                    from serving.observability.metrics import DATABASE_CONNECTED
+    db_logger = _init_db_logger()
+    if db_logger:
+        max_retries = 3
+        retry_delay = 2  # seconds
+        for attempt in range(max_retries):
+            try:
+                await db_logger.initialize()
+                logger.info("Database logger initialized successfully")
+                from serving.observability.metrics import DATABASE_CONNECTED
 
-                    DATABASE_CONNECTED.set(1)
-                    # Start broadcast email scheduler. Tear it down if rehydration
-                    # fails to avoid a half-initialized scheduler running in background.
-                    if db_logger.pool:
-                        try:
-                            email_scheduler.start_scheduler(db_logger.pool)
-                            await email_scheduler.rehydrate_scheduled_broadcasts()
-                            # Provider-stats hourly rollup
-                            from serving.admin.provider_stats_rollup import (
-                                backfill_if_empty,
-                                backfill_token_columns,
-                                register_rollup_job,
+                DATABASE_CONNECTED.set(1)
+                # Start broadcast email scheduler. Tear it down if rehydration
+                # fails to avoid a half-initialized scheduler running in background.
+                if db_logger.pool:
+                    try:
+                        email_scheduler.start_scheduler(db_logger.pool)
+                        await email_scheduler.rehydrate_scheduled_broadcasts()
+                        # Provider-stats hourly rollup
+                        from serving.admin.provider_stats_rollup import (
+                            backfill_if_empty,
+                            backfill_token_columns,
+                            register_rollup_job,
+                        )
+
+                        sched = email_scheduler.get_scheduler()
+                        if sched is not None:
+                            register_rollup_job(sched, db_logger.pool)
+
+                            # Failed-request Slack alerter (no-op if
+                            # SLACK_WEBHOOK_URL is unset).
+                            from serving.admin.failed_request_alerter import (
+                                register_alerter_job,
                             )
 
-                            sched = email_scheduler.get_scheduler()
-                            if sched is not None:
-                                register_rollup_job(sched, db_logger.pool)
+                            register_alerter_job(db_logger.pool, settings)
+                        elif settings.slack_webhook_url.strip():
+                            logger.warning(
+                                "Slack alerter not registered: APScheduler did not start"
+                            )
 
-                                # Failed-request Slack alerter (no-op if
-                                # SLACK_WEBHOOK_URL is unset).
-                                from serving.admin.failed_request_alerter import (
-                                    register_alerter_job,
-                                )
+                            # Run backfill in the background so a slow 30-day
+                            # aggregation on a large api_logs table cannot
+                            # block server startup or trip readiness checks.
+                            async def _run_backfill(pool=db_logger.pool):
+                                try:
+                                    await backfill_if_empty(pool, days=30)
+                                except Exception as bf_exc:
+                                    logger.warning(
+                                        f"provider-stats backfill failed (non-fatal): {bf_exc}"
+                                    )
+                                try:
+                                    await backfill_token_columns(pool, days=30)
+                                except Exception as bf_exc:
+                                    logger.warning(
+                                        f"provider-stats token backfill failed (non-fatal): {bf_exc}"
+                                    )
 
-                                register_alerter_job(db_logger.pool, settings)
-                            elif settings.slack_webhook_url.strip():
-                                logger.warning(
-                                    "Slack alerter not registered: APScheduler did not start"
-                                )
+                            _bf_task = asyncio.create_task(_run_backfill())
+                            _BACKGROUND_TASKS.add(_bf_task)
+                            _bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+                    except Exception as sched_exc:
+                        logger.error(f"Email scheduler startup failed: {sched_exc}")
+                        try:
+                            email_scheduler.stop_scheduler()
+                        except Exception as stop_exc:
+                            logger.error(
+                                f"Email scheduler teardown after startup failure also failed: "
+                                f"{stop_exc}"
+                            )
+                break
+            except Exception as exc:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Database initialization failed (attempt {attempt + 1}/{max_retries}): "
+                        f"{exc}. Retrying in {retry_delay}s..."
+                    )
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(
+                        f"Database logger failed to initialize after {max_retries} attempts: "
+                        f"{exc}. Service will start without database logging."
+                    )
+                    db_logger = None
+                    from serving.observability.metrics import DATABASE_CONNECTED
 
-                                # Run backfill in the background so a slow 30-day
-                                # aggregation on a large api_logs table cannot
-                                # block server startup or trip readiness checks.
-                                async def _run_backfill(pool=db_logger.pool):
-                                    try:
-                                        await backfill_if_empty(pool, days=30)
-                                    except Exception as bf_exc:
-                                        logger.warning(
-                                            f"provider-stats backfill failed (non-fatal): {bf_exc}"
-                                        )
-                                    try:
-                                        await backfill_token_columns(pool, days=30)
-                                    except Exception as bf_exc:
-                                        logger.warning(
-                                            f"provider-stats token backfill failed (non-fatal): {bf_exc}"
-                                        )
-
-                                _bf_task = asyncio.create_task(_run_backfill())
-                                _BACKGROUND_TASKS.add(_bf_task)
-                                _bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
-                        except Exception as sched_exc:
-                            logger.error(f"Email scheduler startup failed: {sched_exc}")
-                            try:
-                                email_scheduler.stop_scheduler()
-                            except Exception as stop_exc:
-                                logger.error(
-                                    f"Email scheduler teardown after startup failure also failed: "
-                                    f"{stop_exc}"
-                                )
-                    break
-                except Exception as exc:
-                    if attempt < max_retries - 1:
-                        logger.warning(
-                            f"Database initialization failed (attempt {attempt + 1}/{max_retries}): "
-                            f"{exc}. Retrying in {retry_delay}s..."
-                        )
-                        await asyncio.sleep(retry_delay)
-                    else:
-                        logger.error(
-                            f"Database logger failed to initialize after {max_retries} attempts: "
-                            f"{exc}. Service will start without database logging."
-                        )
-                        db_logger = None
-                        from serving.observability.metrics import DATABASE_CONNECTED
-
-                        DATABASE_CONNECTED.set(0)
-    else:
-        logger.info("DB_BACKEND=d1 — skipping PostgreSQL initialization")
+                    DATABASE_CONNECTED.set(0)
 
     # Models into router
     embedding_adapters, model_infos = await _init_router_and_models(router)
@@ -311,71 +305,7 @@ async def initialize() -> AppServices:
     operational_store = None
     log_store = None
 
-    if settings.db_backend == "d1":
-        # D1 for both operational tables and logs — no Postgres needed
-        from serving.storage.d1_client import D1Client
-        from serving.storage.d1_log import D1LogStore
-        from serving.storage.d1_operational import D1OperationalStore
-
-        if not all([settings.d1_account_id, settings.d1_database_id, settings.d1_api_token]):
-            logger.error(
-                "DB_BACKEND=d1 but D1 credentials are missing. "
-                "Set D1_ACCOUNT_ID, D1_DATABASE_ID, and D1_API_TOKEN."
-            )
-        else:
-            d1_client = D1Client(
-                account_id=settings.d1_account_id,
-                database_id=settings.d1_database_id,
-                api_token=settings.d1_api_token,
-            )
-            # Raw D1 stores
-            d1_op_store = D1OperationalStore(d1_client)
-            await d1_op_store.initialize()
-
-            d1_log_store = D1LogStore(d1_client)
-            await d1_log_store.initialize()
-
-            # Dual-write: shadow-write to PostgreSQL when enabled
-            if settings.db_dual_write:
-                from serving.storage.dual_write import (
-                    DualWriteLogStore,
-                    DualWriteOperationalStore,
-                )
-
-                db_logger = _init_db_logger()
-                if db_logger:
-                    try:
-                        await db_logger.initialize()
-                        pg_op = PostgresOperationalStore(db_logger.pool)
-                        pg_log = PostgresLogStore(
-                            db_logger.pool,
-                            store_full_prompts=settings.db_store_full_content,
-                            use_chunked_hash=True,
-                        )
-                        d1_op_store = DualWriteOperationalStore(d1_op_store, pg_op)
-                        d1_log_store = DualWriteLogStore(d1_log_store, pg_log)
-                        logger.info("Dual-write enabled: D1 primary + PostgreSQL shadow")
-                    except Exception as exc:
-                        logger.warning(
-                            "DB_DUAL_WRITE=1 but PostgreSQL failed to initialize: %s "
-                            "— running D1-only without shadow",
-                            exc,
-                        )
-                        db_logger = None
-                else:
-                    logger.warning(
-                        "DB_DUAL_WRITE=1 but PostgreSQL unavailable — "
-                        "running D1-only without shadow"
-                    )
-
-            # Cache wraps the (possibly dual-write) operational store
-            operational_store = CachedOperationalStore(d1_op_store, InMemoryCache())
-            log_store = d1_log_store
-            logger.info("Operational store initialized (D1 + in-memory cache)")
-            logger.info("Log store initialized (D1 with buffered writes)")
-
-    elif db_logger and db_logger.pool:
-        # Default: both stores backed by Postgres
+    if db_logger and db_logger.pool:
         pg_operational = PostgresOperationalStore(db_logger.pool)
         await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
@@ -386,10 +316,6 @@ async def initialize() -> AppServices:
         )
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
-
-    # Per-user concurrency limiter (always on; in-process)
-    user_concurrency_limiter = UserConcurrencyLimiter(USER_CONCURRENCY_LIMITS)
-    logger.info("User concurrency limiter initialized: %s", USER_CONCURRENCY_LIMITS)
 
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
@@ -428,6 +354,17 @@ async def initialize() -> AppServices:
     else:
         logger.info("alerts disabled (ALERTS_ENABLED=false)")
 
+    # Seed dynamic provider keys from the operational store into the
+    # adapter key pools registered during model loading. Best-effort —
+    # a failure here should not prevent the server from starting.
+    if operational_store is not None:
+        try:
+            from serving.adapters.dynamic_keys import apply_db_keys_at_boot
+
+            await apply_db_keys_at_boot(operational_store)
+        except Exception as exc:
+            logger.warning(f"Failed to apply DB-backed provider keys at boot: {exc}")
+
     # Runtime settings (DB-backed feature flags with TTL cache)
     runtime_settings = None
     if operational_store:
@@ -449,6 +386,34 @@ async def initialize() -> AppServices:
                     )
         except Exception as exc:
             logger.warning(f"Runtime settings initialization failed: {exc}")
+
+    # Per-user concurrency limiter — reads live caps from RuntimeSettings so
+    # operators can tune them at runtime. Falls back to registry defaults
+    # when runtime_settings is unavailable (e.g., DB not configured).
+    from serving.servers.concurrency import static_limits_provider
+
+    if runtime_settings is not None:
+        rt = runtime_settings  # capture for closure
+
+        async def _read_concurrency_limits() -> dict[str, int]:
+            free, pro, internal, admin = await asyncio.gather(
+                rt.get_int("user_concurrency_free"),
+                rt.get_int("user_concurrency_pro"),
+                rt.get_int("user_concurrency_internal"),
+                rt.get_int("user_concurrency_admin"),
+            )
+            return {"free": free, "pro": pro, "internal": internal, "admin": admin}
+
+        user_concurrency_limiter = UserConcurrencyLimiter(_read_concurrency_limits)
+        logger.info("User concurrency limiter initialized (runtime-tunable)")
+    else:
+        user_concurrency_limiter = UserConcurrencyLimiter(
+            static_limits_provider({"free": 3, "pro": 3, "internal": 10, "admin": 10})
+        )
+        logger.warning(
+            "User concurrency limiter initialized with static defaults "
+            "(runtime_settings unavailable)"
+        )
 
     # Start the periodic RouteWise pending-decision sweep only after the rest
     # of bootstrap has succeeded, so a later startup failure cannot leave the
@@ -500,14 +465,14 @@ async def shutdown(services: AppServices) -> None:
     except Exception as exc:
         logger.error(f"Email scheduler shutdown failed: {exc}")
 
-    # Log store (flushes D1 buffer on shutdown)
+    # Log store
     if services.log_store:
         try:
             await services.log_store.cleanup()
         except Exception as exc:
             logger.error(f"Log store cleanup failed: {exc}")
 
-    # Operational store (closes D1 HTTP client when backend=d1)
+    # Operational store
     if services.operational_store:
         try:
             await services.operational_store.cleanup()

@@ -33,7 +33,10 @@ if "aiohttp" not in sys.modules:  # pragma: no cover - import-time shim
 
         # Methods used by tests are patched, so we keep placeholders only.
 
-    class _ClientResponseError(Exception):
+    class _ClientError(Exception):
+        """Stub for aiohttp.ClientError (root of aiohttp client errors)."""
+
+    class _ClientResponseError(_ClientError):
         """Stub for aiohttp.ClientResponseError."""
 
         def __init__(self, request_info=None, history=(), status=0, message="", headers=None):
@@ -44,9 +47,17 @@ if "aiohttp" not in sys.modules:  # pragma: no cover - import-time shim
             self.headers = headers
             super().__init__(message)
 
+    class _ServerDisconnectedError(_ClientError):
+        """Stub for aiohttp.ServerDisconnectedError.
+
+        Mirrors the real hierarchy: ServerDisconnectedError is a ClientError
+        subclass in aiohttp, so ``except aiohttp.ClientError`` paths catch it.
+        """
+
     sys.modules["aiohttp"] = SimpleNamespace(
-        ClientError=Exception,
+        ClientError=_ClientError,
         ClientResponseError=_ClientResponseError,
+        ServerDisconnectedError=_ServerDisconnectedError,
         ClientTimeout=lambda total=None: None,
         ClientSession=_DummySession,
         TCPConnector=lambda **k: None,

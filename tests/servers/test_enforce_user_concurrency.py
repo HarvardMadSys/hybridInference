@@ -19,6 +19,7 @@ from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import (
     UserConcurrencyLimiter,
     enforce_user_concurrency,
+    static_limits_provider,
 )
 from serving.servers.deps import get_user_concurrency_limiter
 
@@ -68,7 +69,7 @@ def _make_app(user: dict[str, Any], limiter: UserConcurrencyLimiter | None) -> F
 @pytest.mark.asyncio
 async def test_grant_then_reject_for_free_user():
     user = {"user_id": "u1", "role": "free", "is_admin": False}
-    limiter = UserConcurrencyLimiter(LIMITS)
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
     app = _make_app(user, limiter)
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -98,7 +99,7 @@ async def test_grant_then_reject_for_free_user():
 @pytest.mark.asyncio
 async def test_release_after_handler_returns_unblocks_next_request():
     user = {"user_id": "u1", "role": "free", "is_admin": False}
-    limiter = UserConcurrencyLimiter(LIMITS)
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
     app = _make_app(user, limiter)
     app.unary_event.set()  # type: ignore[attr-defined]  # do not block handler
 
@@ -125,7 +126,7 @@ async def test_streaming_response_holds_slot_until_drained():
     we fire a competing request.
     """
     user = {"user_id": "u1", "role": "free", "is_admin": False}
-    limiter = UserConcurrencyLimiter(LIMITS)
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
     app = _make_app(user, limiter)
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -154,7 +155,7 @@ async def test_streaming_response_holds_slot_until_drained():
 @pytest.mark.asyncio
 async def test_handler_exception_releases_slot():
     user = {"user_id": "u1", "role": "free", "is_admin": False}
-    limiter = UserConcurrencyLimiter(LIMITS)
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
     app = _make_app(user, limiter)
     app.unary_event.set()  # type: ignore[attr-defined]
 
@@ -171,7 +172,7 @@ async def test_handler_exception_releases_slot():
 @pytest.mark.asyncio
 async def test_two_users_have_independent_budgets_via_dependency():
     """Two separate users each get their own slot."""
-    limiter = UserConcurrencyLimiter(LIMITS)
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
 
     # Build two apps, one per user, but sharing the same limiter
     app_a = _make_app({"user_id": "user-A", "role": "free", "is_admin": False}, limiter)
@@ -199,7 +200,7 @@ async def test_two_users_have_independent_budgets_via_dependency():
 @pytest.mark.asyncio
 async def test_pro_user_three_slots_via_dependency():
     user = {"user_id": "pro-1", "role": "pro", "is_admin": False}
-    limiter = UserConcurrencyLimiter(LIMITS)
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
     app = _make_app(user, limiter)
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -221,7 +222,7 @@ async def test_pro_user_three_slots_via_dependency():
 @pytest.mark.asyncio
 async def test_admin_flag_yields_admin_role_in_response_body():
     user = {"user_id": "adm-1", "role": "free", "is_admin": True}
-    limiter = UserConcurrencyLimiter(LIMITS)
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
     app = _make_app(user, limiter)
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -254,3 +255,46 @@ async def test_fail_open_when_limiter_is_none():
         for _ in range(5):
             r = await client.get("/probe")
             assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_concurrency_429_calls_log_rejection(monkeypatch):
+    """When a request is rejected with 429, log_rejection is fired off."""
+    from unittest.mock import AsyncMock
+
+    log_calls: list[dict] = []
+
+    async def fake_log_rejection(**kwargs):
+        log_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "serving.servers.concurrency.log_rejection",
+        fake_log_rejection,
+    )
+
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_app(user, limiter)
+
+    # Stash fake services on app.state so the wired call can find them.
+    app.state.services = type("S", (), {})()
+    app.state.services.log_store = AsyncMock()
+    app.state.services.runtime_settings = AsyncMock()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Saturate the user's slot first.
+        granted, _, _ = await limiter.try_acquire(user["user_id"], "free", False)
+        assert granted
+
+        resp = await client.get("/probe")
+        assert resp.status_code == 429
+        # Yield to the event loop so the fire-and-forget create_task runs.
+        await asyncio.sleep(0)
+
+    # Helper should have been invoked exactly once with concurrency error code.
+    assert len(log_calls) == 1
+    call = log_calls[0]
+    assert call["status_code"] == 429
+    assert call["error_code"] == "concurrency_limit_exceeded"
+    assert call["user"]["user_id"] == "u1"

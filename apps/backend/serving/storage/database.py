@@ -474,7 +474,7 @@ class DatabaseLogger:
                     await conn.execute("""
                         ALTER TABLE users
                         ADD CONSTRAINT users_role_check
-                        CHECK (role IN ('free', 'internal', 'admin'))
+                        CHECK (role IN ('free', 'pro', 'internal', 'admin'))
                     """)
             except asyncpg.PostgresError as exc:
                 invalid_role_rows = await conn.fetch("""

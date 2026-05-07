@@ -10,10 +10,10 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 | `glm-5` | GLM-5 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-4.7` | GLM-4.7 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-5-turbo` | GLM-5 Turbo | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
-| `qwen3.6-27b` | Qwen3.6 27B | 65K tokens | 8K tokens | Function calling, Structured output |
-| `qwen3.6-35b` | Qwen3.6 35B | 65K tokens | 8K tokens | Function calling, Structured output |
+| `kimi-k2.6` | Kimi K2.6 | 262K tokens | 131K tokens | Function calling, Structured output, Thinking mode, Multimodal (text+image) |
+| `qwen3.6-35b` | Qwen3.6 35B | 135K tokens | 8K tokens | Function calling, Structured output |
 | `minimax-m2.7` | MiniMax M2.7 | 196K tokens | 8K tokens | Function calling, Structured output |
-| `minimax-m2.5` | MiniMax M2.5 | 1M tokens | 128K tokens | Function calling, Structured output, Thinking mode, Multimodal (text+image) |
+| `minimax-m2.5` | MiniMax M2.5 | 196K tokens | 131K tokens | Function calling, Structured output, Thinking mode, Multimodal (text+image) |
 
 ---
 
@@ -95,17 +95,20 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 ---
 
-### Qwen3.6 27B
+### Kimi K2.6
 
-**Model ID:** `qwen3.6-27b`
+**Model ID:** `kimi-k2.6`
 
-- Context length: 65,536 tokens
-- Max output: 8,192 tokens
-- Hosting: Self-hosted (free)
-- Input modalities: text
+**Aliases:** `Kimi-K2.6`
+
+- Context length: 262,144 tokens
+- Max output: 131,072 tokens
+- Quantization: int4
+- Input modalities: text, image
 - Output modalities: text
 - Function calling: Yes
 - Structured output: Yes
+- Thinking mode: Yes
 
 ---
 
@@ -113,8 +116,9 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 **Model ID:** `qwen3.6-35b`
 
-- Context length: 65,536 tokens
+- Context length: 135,168 tokens
 - Max output: 8,192 tokens
+- Quantization: fp8
 - Hosting: Self-hosted (free)
 - Input modalities: text
 - Output modalities: text
@@ -141,7 +145,7 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 **Model ID:** `minimax-m2.5`
 
-- Context length: 1,000,000 tokens
+- Context length: 196,608 tokens
 - Max output: 131,072 tokens
 - Quantization: bf16
 - Input modalities: text, image
@@ -180,10 +184,38 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 ---
 
+### Claude Opus 4.7
+
+**Model ID:** `claude-opus-4.7`
+
+- Context length: 1,000,000 tokens
+- Max output: 128,000 tokens
+- Input modalities: text, image
+- Output modalities: text
+- Function calling: Yes
+
+---
+
+### GPT-5.5
+
+**Model ID:** `gpt-5.5`
+
+- Context length: 1,050,000 tokens
+- Max output: 128,000 tokens
+- Input modalities: text, image
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
+- Reasoning effort: Yes
+
+---
+
 ## Switching Models
 
 To use different models, change the model name in your IDE configuration:
 
 **Cursor:** Select from the dropdown in settings
 
-**Roo Code / Kilo Code:** Select from the dropdown in extension settings
+**Kilo Code:** Select from the dropdown in extension settings. A good default is `glm-5.1`; switch to `glm-5-turbo` for faster iteration or `minimax-m2.5` for long-context and image-aware workflows.
+
+**Roo Code:** Select from the dropdown in extension settings

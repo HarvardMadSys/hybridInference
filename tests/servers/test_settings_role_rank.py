@@ -6,7 +6,6 @@ Adding ``pro`` between ``free`` and ``internal`` must not break
 
 from serving.config.settings import (
     ROLE_RANK,
-    USER_CONCURRENCY_LIMITS,
     VALID_ROLES,
     has_role,
 )
@@ -38,16 +37,3 @@ def test_has_role_existing_semantics_preserved():
     assert has_role("admin", "admin") is True
     # pro satisfies free (any role >= rank 0 passes free)
     assert has_role("pro", "free") is True
-
-
-def test_user_concurrency_limits_values():
-    assert USER_CONCURRENCY_LIMITS == {
-        "free": 1,
-        "pro": 3,
-        "internal": 10,
-        "admin": 10,
-    }
-
-
-def test_user_concurrency_limits_keys_are_subset_of_roles():
-    assert set(USER_CONCURRENCY_LIMITS).issubset(set(ROLE_RANK))
