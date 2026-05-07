@@ -210,7 +210,6 @@ function SettingsContent() {
             </form>
           </div>
         </Card>
-
       </div>
 
       {/* Placeholder: Danger Zone */}
