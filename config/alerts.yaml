@@ -14,7 +14,7 @@ rules:
   p95_latency_per_provider:
     enabled: true
     window_sec: 600
-    threshold_ms: 30000
+    threshold_ms: 64000
     min_samples: 80
     cooldown_sec: 1800
     overrides: {}
