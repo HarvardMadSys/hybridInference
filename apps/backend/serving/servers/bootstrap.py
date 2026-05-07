@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
@@ -387,6 +388,14 @@ async def initialize() -> AppServices:
         except Exception as exc:
             logger.warning(f"Runtime settings initialization failed: {exc}")
 
+    model_visibility_resolver = None
+    if operational_store is not None:
+        try:
+            model_visibility_resolver = ModelVisibilityResolver(operational_store)
+            logger.info("Model visibility resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Model visibility resolver initialization failed: {exc}")
+
     # Per-user concurrency limiter — reads live caps from RuntimeSettings so
     # operators can tune them at runtime. Falls back to registry defaults
     # when runtime_settings is unavailable (e.g., DB not configured).
@@ -423,6 +432,7 @@ async def initialize() -> AppServices:
         log_store=log_store,
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
+        model_visibility_resolver=model_visibility_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
