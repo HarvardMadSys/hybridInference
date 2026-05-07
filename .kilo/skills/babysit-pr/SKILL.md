@@ -99,6 +99,7 @@ PR #<N> "title" — <merged | pushed CI fix, waiting for re-run | replied to N c
 ## Guardrails
 
 - **Never force-push.** If the branch needs a rebase, leave a comment and stop.
+- **Never merge into main**. You should only merge into dev.
 - **Never merge to a protected branch by bypassing checks.** If `gh pr merge` fails because checks aren't green, that's the system working — don't pass `--admin`.
 - **Don't switch branches.** This skill operates on the current branch's PR. If the working tree is dirty or you're mid-rebase, stop and report.
 - **One pass per invocation.** Don't loop internally — if scheduled, the next run picks up where this left off.
