@@ -81,26 +81,7 @@ make test
 
 Run the project's lint and typecheck commands if available (check CLAUDE.md, Makefile, or pyproject.toml for the correct commands).
 
-## Step 6 — Create a GitHub issue
-
-Create an issue first (required before PR):
-
-```bash
-gh issue create \
-  --title "<feature title>" \
-  --body "$(cat <<'EOF'
-## Summary
-<brief description>
-
-## Implementation
-<plan summary>
-EOF
-)"
-```
-
-Note the issue number — reference it in the PR.
-
-## Step 7 — Commit and push
+## Step 6 — Commit and push
 
 ```bash
 git add -A && git commit -m "<descriptive message>" && git push -u origin jason/claude/<feature-name>
@@ -108,7 +89,7 @@ git add -A && git commit -m "<descriptive message>" && git push -u origin jason/
 
 Use descriptive commit messages. Don't attribute to Claude unless asked.
 
-## Step 8 — Create PR
+## Step 7 — Create PR
 
 ```bash
 gh pr create \
@@ -118,14 +99,13 @@ gh pr create \
 ## Summary
 <bullet points describing the change>
 
-Closes #<issue-number>
 EOF
 )"
 ```
 
 Provide the PR link to the user.
 
-## Step 9 — Babysit PR
+## Step 8 — Babysit PR
 
 After creating the PR, poll every 2 minutes to:
 1. **Fix CI failures** — fetch logs, diagnose, apply minimal fix, push.
@@ -136,7 +116,7 @@ Use the `check-pr` skill for detailed validation criteria and CI fix procedures.
 
 Maximum babysit time: 30 minutes. If issues persist, report status and stop.
 
-## Step 10 — Merge and cleanup (after user approval)
+## Step 9 — Merge and cleanup (after user approval)
 
 Only merge after the user approves:
 
@@ -151,7 +131,6 @@ git worktree remove ../hybridInference-<feature-name>
 - **Never force-push.** If rebase is needed, leave a comment and stop.
 - **Always run `ruff format`** before every commit/push.
 - **Minimal changes only.** Don't refactor or touch unrelated code.
-- **Always create an issue first.** Reference it in the PR body.
 - **Work in a worktree.** Never modify the main working directory's branch.
 - **Validate before acting.** Don't blindly accept review comments — verify against the code.
 - **Test against staging.** Verify the feature on https://staging.freeinference.org if applicable (account: admin@admin.com:admin).
