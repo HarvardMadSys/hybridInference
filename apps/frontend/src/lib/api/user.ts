@@ -149,7 +149,6 @@ export async function updatePassword(
   return jsonOrThrow<{ message: string }>(resp);
 }
 
-
 // Recent requests types and API
 export interface RecentRequestItem {
   request_id: string;
