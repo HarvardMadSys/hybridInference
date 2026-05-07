@@ -35,7 +35,7 @@ python sglang_idle_proxy/sglang_idle_proxy.py
 ./sglang_idle_proxy/sglang_idle_service.sh start
 
 # With SSH reverse tunnel to a public LLM router
-SSH_HOST='spark2' REMOTE_PORT=8001 ./sglang_idle_proxy/sglang_idle_service.sh start
+SSH_HOST='spark2|internal.freeinference.org' REMOTE_PORT=8001 ./sglang_idle_proxy/sglang_idle_service.sh start
 
 # With API key auth
 FREEINFERENCE_API_KEY='your-secret-key' ./sglang_idle_proxy/sglang_idle_service.sh start
