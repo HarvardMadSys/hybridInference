@@ -129,7 +129,7 @@ A route may use **either** `api_key` (string, existing) **or** `api_keys` (list,
 ```yaml
 - id: glm-4.7
   routes:
-    - provider: zhipu
+    - provider: zai
       base_url: https://api.z.ai/api/paas/v4
       api_keys:
         - ${ZAI_API_KEY_1}

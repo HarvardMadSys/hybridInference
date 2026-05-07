@@ -717,7 +717,7 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
 
 
 async def gather_all() -> list[ProviderQuotaResult]:
-    """Run all 4 provider fetchers in parallel; never raise.
+    """Run all provider fetchers in parallel; never raise.
 
     Each fetcher returns a ``list[ProviderQuotaResult]`` (one per key).
     Results are flattened into a single list.  If a fetcher raises, the
@@ -728,6 +728,7 @@ async def gather_all() -> list[ProviderQuotaResult]:
         ("zai", "ZAI", fetch_zai),
         ("minimax", "MiniMax", fetch_minimax),
         ("ollama", "Ollama Cloud", fetch_ollama),
+        ("featherless", "Featherless", fetch_featherless),
     ]
     raw = await asyncio.gather(
         *(f() for _, _, f in fetchers),
@@ -752,3 +753,27 @@ async def gather_all() -> list[ProviderQuotaResult]:
                 )
             )
     return out
+
+
+async def fetch_featherless() -> list[ProviderQuotaResult]:
+    """Return a stub result for Featherless (no public quota API)."""
+    keys = _discover_env_keys("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="featherless",
+                display_name="Featherless",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+    return _process_multi_key_results(
+        "featherless",
+        "Featherless",
+        keys,
+        [_err("featherless", "Featherless", k, "no_quota_api") for _, k in keys],
+    )

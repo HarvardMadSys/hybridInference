@@ -318,7 +318,7 @@ class ProviderProfile(str, Enum):
     DEFAULT = "default"
     DEEPSEEK = "deepseek"
     OPENROUTER = "openrouter"
-    ZHIPU = "zhipu"
+    ZAI = "zai"
 ```
 
 Update `get_usage_normalizer` to dispatch:
@@ -413,7 +413,7 @@ from serving.servers.registry import parse_openrouter_kind
         ("openrouter[deepinfra]", ("openrouter", "deepinfra")),
         ("openrouter[fireworks]", ("openrouter", "fireworks")),
         ("openrouter[together-ai]", ("openrouter", "together-ai")),
-        ("zhipu", ("zhipu", None)),  # non-openrouter passes through
+        ("zai", ("zai", None)),  # non-openrouter passes through
         ("openai_compat", ("openai_compat", None)),
     ],
 )
@@ -515,7 +515,7 @@ Parent changes:
 - Add `_augment_payload(payload, *, stream)` hook (default no-op) and call it in both `chat_completion` and `stream_chat_completion`. Subclasses use this to inject body fields without copy-pasting the request plumbing.
 - Extend `_build_final_chunk` to accept an optional `usage_info: UsageInfo | None = None` keyword arg; when supplied and `usage_info.upstream_cost_usd is not None`, the streaming final chunk's existing `_routing` block gets an extra `upstream_cost_usd` key. Pass `usage_info=usage_info` from `stream_chat_completion`'s call site. No behavior change for non-OpenRouter adapters since their normalizers leave `upstream_cost_usd = None`.
 
-Non-stream `_routing` injection lives **only** on the OpenRouter subclass via overriding `_parse_completion_response` — keeping the change narrow and avoiding any behavior change for the other OAI-compat adapters (zhipu, chutes, featherless, ollama, vllm, sglang, openai, deepseek).
+Non-stream `_routing` injection lives **only** on the OpenRouter subclass via overriding `_parse_completion_response` — keeping the change narrow and avoiding any behavior change for the other OAI-compat adapters (zai, chutes, featherless, ollama, vllm, sglang, openai, deepseek).
 
 ### 5a: Add `_augment_payload` hook on parent (no other behavior changes)
 
@@ -690,7 +690,7 @@ Expected: 1 passed.
 ```bash
 cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/ test/integration/test_openai_compat_multi_key.py -q 2>&1 | tail -10
 ```
-Expected: All previously-passing adapter tests still pass — no regression for zhipu / chutes / featherless / etc.
+Expected: All previously-passing adapter tests still pass — no regression for zai / chutes / featherless / etc.
 
 - [ ] **Step 5a.5: Commit**
 
@@ -1051,7 +1051,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
-        kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"openai"``, ``"zhipu"``,
+        kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"openai"``, ``"zai"``,
               ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``, ``"openrouter"``,
               ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
@@ -1089,8 +1089,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
             "extra_query": {"api-version": "2024-12-01-preview"},
         }
     # Zhipu routes through OpenAICompatAdapter with a non-/v1 chat path.
-    elif kind == "zhipu":
-        cfg = {**cfg, "provider_profile": "zhipu", "chat_path": "/chat/completions"}
+    elif kind == "zai":
+        cfg = {**cfg, "provider_profile": "zai", "chat_path": "/chat/completions"}
 
     model_cfg = ModelConfig(**cfg)
 
@@ -1104,7 +1104,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "openai_compat",
         "deepseek",
         "openai",
-        "zhipu",
+        "zai",
     ):
         return OpenAICompatAdapter(model_cfg)
 

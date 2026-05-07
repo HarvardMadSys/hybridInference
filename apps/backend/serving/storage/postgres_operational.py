@@ -967,8 +967,8 @@ class PostgresOperationalStore(OperationalStore):
                 return total, [], status_counts
 
             # Post-fetch: batch-query usage dimensions not in CTEs so the
-            # response always carries today/month costs for the page.
-            user_ids = [row["id"] for row in rows if row["key_prefix"]]
+            # response always carries usage costs for the page.
+            user_ids = [row["id"] for row in rows]
 
             if user_ids and not needs_today:
                 today_rows = await conn.fetch(
@@ -996,13 +996,25 @@ class PostgresOperationalStore(OperationalStore):
             else:
                 month_map = {}
 
+            if user_ids and not needs_alltime:
+                alltime_rows = await conn.fetch(
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    "FROM user_daily_cost "
+                    "WHERE user_id = ANY($1::text[]) "
+                    "GROUP BY user_id",
+                    user_ids,
+                )
+                alltime_map = {r["user_id"]: r["cost"] for r in alltime_rows}
+            else:
+                alltime_map = {}
+
         # Assemble result rows with usage columns.
         result_rows: list[Row] = []
         for row in rows:
             r = dict(row)
             r["usage_today"] = r.get("usage_today") or today_map.get(r["id"], 0)
             r["usage_month"] = r.get("usage_month") or month_map.get(r["id"], 0)
-            r.setdefault("usage_alltime", 0)
+            r["usage_alltime"] = r.get("usage_alltime") or alltime_map.get(r["id"], 0)
             result_rows.append(r)
 
         return total, result_rows, status_counts
