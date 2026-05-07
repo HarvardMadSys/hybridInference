@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Header } from './Header';
 
@@ -22,6 +22,10 @@ vi.mock('@/components/providers', () => ({
 }));
 
 describe('Header', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   beforeEach(() => {
     replace.mockClear();
     authState = {
@@ -29,7 +33,17 @@ describe('Header', () => {
     };
   });
 
-  it('shows a dashboard link in the header', () => {
+  it('hides the dashboard link from guests', () => {
+    render(<Header />);
+
+    expect(screen.queryByRole('link', { name: /dashboard/i })).not.toBeInTheDocument();
+  });
+
+  it('shows a dashboard link in the header for authenticated users', () => {
+    authState = {
+      isAuthenticated: true,
+    };
+
     render(<Header />);
 
     expect(screen.getByRole('link', { name: /dashboard/i })).toHaveAttribute('href', '/dashboard');

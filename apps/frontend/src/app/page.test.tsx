@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import HomePage from './page';
 
@@ -33,23 +33,15 @@ vi.mock('@/components/landing', () => ({
   HowItWorks: () => <section aria-label="how it works" />,
 }));
 
-vi.mock('@/components/features/dashboard/ApiKeyManager', () => ({
-  ApiKeyManager: () => <section aria-label="api key manager" />,
-}));
-
-vi.mock('@/components/features/dashboard/ModelsSection', () => ({
-  ModelsSection: () => <section aria-label="models" />,
-}));
-
-vi.mock('@/components/features/dashboard/RecentRequests', () => ({
-  RecentRequests: () => <section aria-label="recent requests" />,
-}));
-
-vi.mock('@/components/features/dashboard/UsageStats', () => ({
-  UsageStats: () => <section aria-label="usage stats" />,
+vi.mock('@/components/features/dashboard/DashboardView', () => ({
+  DashboardView: () => <section aria-label="dashboard view">Dashboard</section>,
 }));
 
 describe('HomePage', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   beforeEach(() => {
     replace.mockClear();
     authState = {
@@ -73,7 +65,7 @@ describe('HomePage', () => {
     expect(container).toHaveTextContent(/provided without guarantee/i);
   });
 
-  it('shows dashboard content on the homepage for authenticated users without redirecting', () => {
+  it('shows dashboard content on the homepage for authenticated users without redirecting', async () => {
     authState = {
       loading: false,
       isAuthenticated: true,
@@ -87,9 +79,9 @@ describe('HomePage', () => {
 
     render(<HomePage />);
 
-    expect(screen.getByRole('heading', { name: /dashboard/i })).toBeInTheDocument();
-    expect(screen.getByText(/welcome back, test user/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/api key manager/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/dashboard view/i)).toBeInTheDocument();
+    expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
+    expect(screen.getByText(/all prompts and responses are logged/i)).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();
   });
 });
