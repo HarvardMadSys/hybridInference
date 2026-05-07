@@ -69,6 +69,12 @@ class TrackingAdapter(BaseAdapter):
         yield "data: [DONE]\n\n"
 
 
+@pytest.fixture(autouse=True)
+def disable_auth_for_cost_tracking_tests(monkeypatch):
+    """Disable auth for cost tracking tests; auth has independent coverage."""
+    monkeypatch.setattr("serving.servers.auth.is_user_auth_enabled", lambda: False)
+
+
 @pytest.fixture
 async def tracking_app(monkeypatch, mock_db_logger) -> FastAPI:
     """Build a minimal completions app for cost logging assertions."""

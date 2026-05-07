@@ -129,8 +129,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zai"``,
-              ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"openai_compat"``, ``"openrouter"``,
-              ``"openrouter[<slug>]"``).
+              ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"cliproxy"``,
+              ``"openai_compat"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -160,6 +160,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         cfg = {**cfg, "provider_profile": "zai", "chat_path": "/chat/completions"}
     elif kind == "minimax":
         cfg = {**cfg, "provider_profile": "minimax"}
+    elif kind == "sglang":
+        cfg = {**cfg, "include_usage_in_stream": True}
 
     model_cfg = ModelConfig(**cfg)
 
@@ -170,6 +172,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "chutes",
         "featherless",
         "ollama",
+        "cliproxy",
         "openai_compat",
         "deepseek",
         "zai",

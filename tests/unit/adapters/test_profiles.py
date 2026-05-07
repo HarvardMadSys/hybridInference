@@ -104,6 +104,21 @@ def test_normalize_usage_default_anthropic_cache_write_tokens() -> None:
     assert info.cache_write_tokens == 80
 
 
+def test_normalize_usage_default_sglang_cached_tokens_serializes_compat_field() -> None:
+    """SGLang exposes cache hits as usage.cached_tokens; keep that public field."""
+    usage_data = {
+        "prompt_tokens": 914,
+        "completion_tokens": 1,
+        "total_tokens": 915,
+        "cached_tokens": 913,
+    }
+
+    info = normalize_usage_default(usage_data)
+
+    assert info.cache_read_tokens == 913
+    assert info.to_dict()["cached_tokens"] == 913
+
+
 def test_normalize_usage_default_empty_dict() -> None:
     """Empty usage dict should not raise and yield all zeros."""
     info = normalize_usage_default({})

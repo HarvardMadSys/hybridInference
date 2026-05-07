@@ -196,6 +196,20 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 ---
 
+### GPT-5.5
+
+**Model ID:** `gpt-5.5`
+
+- Context length: 1,050,000 tokens
+- Max output: 128,000 tokens
+- Input modalities: text, image
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
+- Reasoning effort: Yes
+
+---
+
 ## Switching Models
 
 To use different models, change the model name in your IDE configuration:

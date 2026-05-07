@@ -114,7 +114,10 @@ MODELS_CONFIG_DATA = _load_models_config()
 
 
 def _pick_free_gpu(exclude: set[str] | None = None) -> str:
-    """Return the index of the GPU with the lowest memory utilization."""
+    """Return the index of the GPU with the lowest memory utilization.
+
+    Prefers GPUs with memory utilization < 20%; falls back to the least-used.
+    """
     exclude = exclude or set()
     try:
         result = subprocess.run(
@@ -132,6 +135,8 @@ def _pick_free_gpu(exclude: set[str] | None = None) -> str:
         return "0"
     best_idx = "0"
     best_usage = 1.0
+    free_idx = "0"
+    free_usage = 1.0
     for line in result.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) != 3:
@@ -144,7 +149,21 @@ def _pick_free_gpu(exclude: set[str] | None = None) -> str:
         if usage < best_usage:
             best_usage = usage
             best_idx = idx
-    log.info("Selected GPU %s (%.0f%% mem used).", best_idx, best_usage * 100)
+        if usage < 0.20 and usage < free_usage:
+            free_usage = usage
+            free_idx = idx
+    if free_usage < 1.0:
+        log.info(
+            "Auto-picked GPU %s (%.0f%% mem used — under 20%% threshold).",
+            free_idx,
+            free_usage * 100,
+        )
+        return free_idx
+    log.warning(
+        "No GPU under 20%% memory utilization — falling back to least-used GPU %s (%.0f%% mem used).",
+        best_idx,
+        best_usage * 100,
+    )
     return best_idx
 
 
@@ -220,13 +239,15 @@ class BackendManager:
             )
 
     def _resolve_gpu(self) -> str:
-        gpu = self.config.get("gpu_index", "")
-        if gpu:
-            return str(gpu)
         used_gpus = set()
         for mgr in _backends.values():
             if mgr is not self and mgr.state == "ready":
                 used_gpus.add(str(mgr.config.get("gpu_index", "")))
+        log.info(
+            "[%s] Auto-selecting GPU (excluding %s)",
+            self.model_name,
+            sorted(used_gpus) if used_gpus else "none",
+        )
         return _pick_free_gpu(exclude=used_gpus)
 
     def _start_container(self) -> None:
@@ -325,19 +346,26 @@ for _name, _cfg in MODELS_CONFIG_DATA.items():
     _backends[_name] = BackendManager(_name, _cfg)
 
 
-def _get_backend(body: bytes) -> BackendManager | None:
+def _get_backend(
+    body: bytes, request_path: str = "", request_method: str = ""
+) -> BackendManager | None:
     """Pick the right backend from the ``model`` field in the request body."""
     try:
         model = _json.loads(body).get("model", "")
     except Exception:
         model = ""
-    return _backends.get(model)
+    backend = _backends.get(model)
+    if backend is not None:
+        log.info("[%s] Request: %s %s", model, request_method, request_path)
+    else:
+        log.info("[unknown model] Request: %s %s  model=%s", request_method, request_path, model)
+    return backend
 
 
 WARMUP_THINKING_SSE = (
     'data: {"id":"warmup","object":"chat.completion.chunk",'
     '"choices":[{"index":0,"delta":{"role":"assistant",'
-    '"reasoning_content":"⏳ The model is starting up — this takes about 50 seconds. '
+    '"content":"⏳ The model is starting up — this takes about 50 seconds. '
     'Please wait…"},"finish_reason":null}]}\n\n'
 )
 WARMUP_THINKING_SSE_DONE = (
@@ -355,7 +383,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         body = self._read_body()
-        backend = _get_backend(body)
+        backend = _get_backend(body, request_path=self.path, request_method=self.command)
         if backend is None:
             self.send_error(404, f"Unknown model. Available: {list(_backends.keys())}")
             return

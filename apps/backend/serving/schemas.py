@@ -25,6 +25,8 @@ class ChatMessage(BaseModel):  # type: ignore[no-any-unimported]
     tool_call_id: str | None = None
     # Optional tool name for role="tool" messages
     name: str | None = None
+    # DeepSeek requires assistant reasoning history to be echoed in thinking-mode tool flows.
+    reasoning_content: str | None = None
     # For assistant messages carrying tool calls in OpenAI format
     tool_calls: list[dict[str, Any]] | None = None
 
