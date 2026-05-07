@@ -387,9 +387,9 @@ WARMUP_THINKING_SSE_DONE = (
 class ProxyHandler(BaseHTTPRequestHandler):
     """Forwards requests to the correct sglang backend based on model name."""
 
-    def _check_api_key(self) -> None:
+    def _check_api_key(self) -> bool:
         if not FREEINFERENCE_API_KEY:
-            return
+            return True
 
         auth = self.headers.get("Authorization", "")
         auth = auth[7:] if auth.startswith("Bearer ") else self.headers.get("X-API-Key", "")
@@ -399,13 +399,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"Missing or invalid API key")
+            return False
+
+        return True
 
     def _proxy(self) -> None:
         if self.path == "/v1/models" and self.command == "GET":
             self._handle_models_list()
             return
 
-        self._check_api_key()
+        if not self._check_api_key():
+            return
 
         body = self._read_body()
         backend = _get_backend(body, request_path=self.path, request_method=self.command)
