@@ -29,8 +29,9 @@ format:  ## Format code with ruff (configured for Google style)
 	$(UV_RUN) ruff check --fix .
 	@echo "$(GREEN)OK Code formatted$(RESET)"
 
-lint:  ## Run linters (ruff, pydocstyle)
+lint:  ## Run linters (ruff format check, ruff lint, pydocstyle)
 	@echo "$(YELLOW)Running linters...$(RESET)"
+	$(UV_RUN) ruff format --check .
 	$(UV_RUN) ruff check --no-fix .
 	$(UV_RUN) pydocstyle
 	@echo "$(GREEN)OK Linting passed$(RESET)"
