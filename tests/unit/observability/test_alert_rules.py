@@ -253,7 +253,7 @@ async def test_p95_latency_per_provider_fires(monkeypatch):
             await engine.stop()
 
 
-async def test_p95_latency_uses_unknown_when_provider_missing(monkeypatch):
+async def test_p95_latency_skips_records_without_provider(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     from serving.observability.alerts import reset_dedupe_state
 
@@ -284,12 +284,11 @@ async def test_p95_latency_uses_unknown_when_provider_missing(monkeypatch):
     ) as mock_alert:
         await engine.start()
         try:
-            for ms in range(1000, 31000, 1000):
+            for ms in range(1000, 32000, 1000):
                 handler.queue.put_nowait(_fake_record(200, provider=None, duration_ms=ms))
-            await _drain_until(handler, mock_alert)
-            assert mock_alert.await_count >= 1
-            args, _ = mock_alert.call_args
-            assert "unknown" in args[1]
+            for _ in range(20):
+                await asyncio.sleep(0.01)
+            assert mock_alert.await_count == 0
         finally:
             await engine.stop()
 
