@@ -1,0 +1,28 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_sglang_local_route_uses_local_deployment_url() -> None:
+    """SGLang routes must not reuse LOCAL_BASE_URL for upstream deployment URL."""
+    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())
+
+    qwen = next(model for model in models["models"] if model["id"] == "qwen3.6-35b")
+    sglang_route = next(route for route in qwen["route"] if route["kind"] == "sglang")
+
+    assert sglang_route["base_url"] == "${LOCAL_DEPLOYMENT_URL}"
+
+
+def test_routing_local_deployment_uses_local_deployment_url() -> None:
+    """Routing local_deployment must match the SGLang deployment env var."""
+    routing = yaml.safe_load((ROOT / "config" / "routing.yaml").read_text())
+
+    endpoints = [deployment["endpoint"] for deployment in routing["local_deployment"]]
+
+    assert "${LOCAL_DEPLOYMENT_URL}" in endpoints
+    assert "${LOCAL_BASE_URL}" not in endpoints

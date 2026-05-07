@@ -357,7 +357,7 @@ models:
     route:
       - kind: sglang
         weight: 1.0
-        base_url: ${LOCAL_BASE_URL}
+        base_url: ${LOCAL_DEPLOYMENT_URL}
         provider_model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
         api_keys:
           - ${LOCAL_API_KEY}
