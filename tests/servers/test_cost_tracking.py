@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
+from serving.observability.tracked_tasks import _TRACKED_TASKS
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import AppServices
@@ -138,7 +139,7 @@ async def tracking_client(tracking_app: FastAPI):
 
 
 async def _drain_background_logs() -> None:
-    tasks = list(completions._background_tasks)
+    tasks = list(_TRACKED_TASKS)
     if tasks:
         await asyncio.gather(*tasks)
 
