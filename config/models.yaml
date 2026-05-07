@@ -591,7 +591,7 @@ models:
 
   - id: gpt-5.4
     name: GPT-5.4
-    provider: cliproxy
+    provider: chatgpt
     required_role: internal
     provider_model_id: "gpt-5.4"
     context_length: 1050000
@@ -618,7 +618,7 @@ models:
 
   - id: gpt-5.4-mini
     name: GPT-5.4-mini
-    provider: cliproxy
+    provider: chatgpt
     required_role: internal
     provider_model_id: "gpt-5.4-mini"
     context_length: 1050000
@@ -645,7 +645,7 @@ models:
 
   - id: gpt-5.3-spark
     name: GPT-5.3-Codex-Spark
-    provider: cliproxy
+    provider: chatgpt
     required_role: internal
     provider_model_id: "gpt-5.3-spark"
     context_length: 1050000
@@ -672,7 +672,7 @@ models:
 
   - id: gpt-5.5
     name: GPT-5.5
-    provider: cliproxy
+    provider: chatgpt
     required_role: internal
     provider_model_id: "gpt-5.5"
     context_length: 1050000
