@@ -175,6 +175,7 @@ async def chat_completions(
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
     model_router_registry=Depends(get_model_router_registry),
+    completions_logger: Any | None = None,
     _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
