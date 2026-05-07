@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import type { AdminRecentRequestItem } from '@/lib/api/admin';
@@ -39,9 +39,24 @@ function makeAdminRequest(overrides: Partial<AdminRecentRequestItem> = {}): Admi
   };
 }
 
+function getSmallestMatchingElement(container: HTMLElement, pattern: RegExp): HTMLElement {
+  const elements = [container, ...Array.from(container.querySelectorAll<HTMLElement>('*'))];
+  const match = elements.find((element) => {
+    const text = element.textContent ?? '';
+    if (!pattern.test(text)) return false;
+    return !Array.from(element.children).some((child) => pattern.test(child.textContent ?? ''));
+  });
+
+  if (!match) {
+    throw new Error(`No smallest matching element found for pattern: ${pattern}`);
+  }
+
+  return match;
+}
+
 describe('AdminRecentRequestDetailPanel', () => {
   it('shows full request details without internal network fields', () => {
-    render(
+    const { container } = render(
       <AdminRecentRequestDetailPanel
         req={makeAdminRequest()}
         content={{
@@ -56,13 +71,27 @@ describe('AdminRecentRequestDetailPanel', () => {
     expect(screen.getByText('req_1234567890abcdefghijklmnopFULLID')).toBeInTheDocument();
     expect(screen.queryByText('req_1234567890abcdefghij…')).not.toBeInTheDocument();
 
-    const performanceLine = screen.getByLabelText('Request performance and token details');
-    expect(within(performanceLine).getByText('Latency')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('2.2s')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('TTFT')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('700ms')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('Decode')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('42.3 tok/s')).toBeInTheDocument();
+    expect(
+      getSmallestMatchingElement(
+        container,
+        /model claude-sonnet.*prov anthropic.*status 200.*time .*stream yes.*cost \$0\.02/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      getSmallestMatchingElement(container, /lat 2\.2s.*ttft 700ms.*decode 42\.3 tok\/s/i),
+    ).toBeInTheDocument();
+    expect(
+      getSmallestMatchingElement(
+        container,
+        /in\/out 1,200\s*\/\s*301.*reason\/total 64\s*\/\s*1,665.*cache r\/w 80\s*\/\s*20/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      getSmallestMatchingElement(
+        container,
+        /user Ada Admin.*email ada@example\.com.*uid user_abc123456789.*sess sess_123/i,
+      ),
+    ).toBeInTheDocument();
 
     expect(screen.getByText('User agent')).toBeInTheDocument();
     expect(screen.getByText('Claude-Code/1.0 long user agent value')).toBeInTheDocument();

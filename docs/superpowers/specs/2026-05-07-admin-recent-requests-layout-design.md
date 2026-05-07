@@ -12,14 +12,18 @@ The admin Recent Requests tab lives in `apps/frontend/src/app/dashboard/admin/pa
 
 Keep the main table row optimized for scanning. Do not add the request ID to the main row. Show the full request ID only in the expanded detail panel.
 
-The expanded detail panel should be reorganized into a clearer hierarchy:
+The expanded detail panel should be reorganized into a clearer but more compact hierarchy:
 
-1. First line: request identity, including full request ID, model, provider, status, and timestamp.
-2. Second line: performance and token information, including latency, TTFT, decode throughput, stream, prompt tokens, completion tokens, reasoning tokens, cached tokens, total tokens, and cost.
-3. User/session section: user name, user email, user ID, session ID, and user IP.
-4. User agent: its own full-width line so long values do not crowd other fields.
-5. Content: prompt, reasoning, response, using the existing lazy-loaded request-content API and this exact order.
-6. Error: request error if present.
+1. Request ID stays on its own block so the full value remains readable.
+2. Identity metadata collapses into one inline summary row: model, provider, status, timestamp, stream, and cost.
+3. Performance metadata collapses into one inline summary row: latency, TTFT, and decode throughput.
+4. Token metadata collapses into one inline summary row, using grouped pairs where possible: prompt/completion, reasoning/total, and cached read/cache write.
+5. User/session metadata collapses into one inline summary row: user name, user email, user ID, and session ID. Keep user IP only if it still fits the row without harming scanability; otherwise place it at the end of that row or omit it from the compact treatment and keep it on a short trailing line.
+6. User agent remains its own full-width line so long values do not crowd other metadata.
+7. Content: prompt, reasoning, response, using the existing lazy-loaded request-content API and this exact order.
+8. Error: request error if present.
+
+Compactness should come primarily from reduced padding, fewer bordered pills, and inline rows for short fields, not from hiding data or truncating the full request ID.
 
 ## Removed UI
 

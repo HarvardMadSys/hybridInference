@@ -1,32 +1,33 @@
-# Admin Recent Requests Layout Implementation Plan
+# Admin Recent Requests Compact Layout Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Reorganize the admin dashboard Recent Requests expanded detail view so it shows the full request ID, removes noisy network internals, and presents content in prompt/reasoning/response order.
+**Goal:** Make the admin Recent Requests expanded metadata area substantially more compact by replacing the current pill-heavy layout with dense inline summary rows while preserving the full request ID, separate cached read and cache write values, and the existing prompt/reasoning/response content order.
 
-**Architecture:** Keep the current admin page and API calls. Extract the expanded request detail panel into a small exported component in `apps/frontend/src/app/dashboard/admin/page.tsx` so it can be tested directly without rendering the whole admin page. Replace the existing inline expanded-row grid with that component.
+**Architecture:** Keep the existing admin page, API calls, and lazy-loaded content flow. Limit implementation to the extracted `AdminRecentRequestDetailPanel` component and its focused test, replacing most bordered `DetailPill` grids with inline metadata rows and leaving only long-form fields such as request ID and user agent on their own lines.
 
 **Tech Stack:** Next.js, React 18, TypeScript, Tailwind CSS, Vitest, Testing Library.
 
 ---
 
-### Task 1: Add Failing Detail Panel Test
+### Task 1: Update the Detail Panel Test for Compact Rows
 
 **Files:**
-- Create: `apps/frontend/src/app/dashboard/admin/__tests__/AdminRecentRequestDetailPanel.test.tsx`
-- Modify: none
+- Modify: `apps/frontend/src/app/dashboard/admin/__tests__/AdminRecentRequestDetailPanel.test.tsx`
 - Test: `apps/frontend/src/app/dashboard/admin/__tests__/AdminRecentRequestDetailPanel.test.tsx`
 
 - [ ] **Step 1: Write the failing test**
 
+Replace the current assertions that look for individual token and performance pills with assertions that describe the approved compact inline-row output.
+
 ```tsx
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import type { AdminRecentRequestItem } from '@/lib/api/admin';
-import { AdminRecentRequestDetailPanel } from '../page';
+import { AdminRecentRequestDetailPanel } from '../AdminRecentRequestDetailPanel';
 
 function makeAdminRequest(overrides: Partial<AdminRecentRequestItem> = {}): AdminRecentRequestItem {
   return {
@@ -62,7 +63,7 @@ function makeAdminRequest(overrides: Partial<AdminRecentRequestItem> = {}): Admi
 }
 
 describe('AdminRecentRequestDetailPanel', () => {
-  it('shows full request details without internal network fields', () => {
+  it('renders compact inline metadata rows without internal network fields', () => {
     render(
       <AdminRecentRequestDetailPanel
         req={makeAdminRequest()}
@@ -76,17 +77,18 @@ describe('AdminRecentRequestDetailPanel', () => {
     );
 
     expect(screen.getByText('req_1234567890abcdefghijklmnopFULLID')).toBeInTheDocument();
-    expect(screen.queryByText('req_1234567890abcdefghijkl…')).not.toBeInTheDocument();
-
-    const performanceLine = screen.getByLabelText('Request performance and token details');
-    expect(within(performanceLine).getByText('Latency')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('2.2s')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('TTFT')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('700ms')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('Decode')).toBeInTheDocument();
-    expect(within(performanceLine).getByText('42.3 tok/s')).toBeInTheDocument();
-
-    expect(screen.getByText('User agent')).toBeInTheDocument();
+    expect(screen.getByText(/claude-sonnet/i)).toBeInTheDocument();
+    expect(screen.getByText(/anthropic/i)).toBeInTheDocument();
+    expect(screen.getByText(/\$0\.0234/)).toBeInTheDocument();
+    expect(screen.getByText(/2\.2s/)).toBeInTheDocument();
+    expect(screen.getByText(/700ms/)).toBeInTheDocument();
+    expect(screen.getByText(/42\.3 tok\/s/)).toBeInTheDocument();
+    expect(screen.getByText(/1,200 \/ 301/)).toBeInTheDocument();
+    expect(screen.getByText(/64 \/ 1,665/)).toBeInTheDocument();
+    expect(screen.getByText(/80 \/ 20/)).toBeInTheDocument();
+    expect(screen.getByText(/Ada Admin/)).toBeInTheDocument();
+    expect(screen.getByText(/ada@example.com/)).toBeInTheDocument();
+    expect(screen.getByText(/sess_123/)).toBeInTheDocument();
     expect(screen.getByText('Claude-Code/1.0 long user agent value')).toBeInTheDocument();
 
     expect(screen.queryByText('Network details')).not.toBeInTheDocument();
@@ -100,8 +102,12 @@ describe('AdminRecentRequestDetailPanel', () => {
     const prompt = screen.getByText('Prompt');
     const reasoning = screen.getByText('Reasoning');
     const response = screen.getByText('Response');
-    expect(prompt.compareDocumentPosition(reasoning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(reasoning.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      prompt.compareDocumentPosition(reasoning) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      reasoning.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
 ```
@@ -109,73 +115,164 @@ describe('AdminRecentRequestDetailPanel', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npm run test -- src/app/dashboard/admin/__tests__/AdminRecentRequestDetailPanel.test.tsx`
-Expected: FAIL because `AdminRecentRequestDetailPanel` is not exported from `../page`.
+Expected: FAIL because the component still renders bordered pill grids and no compact inline summary strings such as `1,200 / 301`, `64 / 1,665`, or `80 / 20`.
 
-### Task 2: Implement Detail Panel Component
+### Task 2: Replace Pill Grids with Compact Inline Rows
 
 **Files:**
-- Modify: `apps/frontend/src/app/dashboard/admin/page.tsx`
+- Modify: `apps/frontend/src/app/dashboard/admin/AdminRecentRequestDetailPanel.tsx`
 - Test: `apps/frontend/src/app/dashboard/admin/__tests__/AdminRecentRequestDetailPanel.test.tsx`
 
-- [ ] **Step 1: Add component types and helpers near existing request helpers**
+- [ ] **Step 1: Add a reusable inline row renderer**
 
-Add a reusable content type matching the current `reqContentCache` map value:
-
-```tsx
-type AdminRecentRequestContentState = {
-  prompt: string | null;
-  response: string | null;
-  reasoning_content: string | null;
-  loading: boolean;
-  error?: string;
-};
-```
-
-- [ ] **Step 2: Implement `AdminRecentRequestDetailPanel`**
-
-Create an exported component in `page.tsx` before `export default function AdminPage()` that accepts:
+In `apps/frontend/src/app/dashboard/admin/AdminRecentRequestDetailPanel.tsx`, add a small helper near `DetailPill` and the formatters so the compact rows share one presentation pattern.
 
 ```tsx
-export function AdminRecentRequestDetailPanel({
-  req,
-  content,
+function InlineMetaRow({
+  items,
+  mono = false,
 }: {
-  req: AdminRecentRequestItem;
-  content?: AdminRecentRequestContentState;
+  items: Array<string | null | undefined>;
+  mono?: boolean;
 }) {
-  // render full request id, second-line performance/tokens, user/session,
-  // user agent line, prompt/reasoning/response, and error
+  const visibleItems = items.filter((item): item is string => Boolean(item && item.trim()));
+  if (visibleItems.length === 0) return null;
+
+  return (
+    <div
+      className={[
+        'flex flex-wrap gap-x-3 gap-y-1 border-t border-gray-100 py-1.5 text-[11px] text-gray-600',
+        mono ? 'font-mono text-[11px] text-gray-700' : '',
+      ].join(' ')}
+    >
+      {visibleItems.map((item) => (
+        <span key={item}>{item}</span>
+      ))}
+    </div>
+  );
 }
 ```
 
-Use existing helpers: `formatLatency`, `formatTokens`, `FoldedText`, and `relTime`. Do not render `peer_ip`, `ip_source`, `x_forwarded_for`, or `Network details`.
+- [ ] **Step 2: Add small string helpers for grouped compact values**
 
-- [ ] **Step 3: Replace inline expanded-row grid**
-
-In the expanded request row, replace the existing `<div className="grid grid-cols-2...">...</div>` with:
+Still in `AdminRecentRequestDetailPanel.tsx`, add helpers that produce the grouped token strings required by the approved layout.
 
 ```tsx
-<AdminRecentRequestDetailPanel
-  req={req}
-  content={reqContentCache.get(req.request_id)}
-/>
+function pairLabel(label: string, value: string): string {
+  return `${label} ${value}`;
+}
+
+function pairValue(
+  left: number | null | undefined,
+  right: number | null | undefined,
+  leftLabel: string,
+  rightLabel: string,
+): string | null {
+  if (left == null && right == null) return null;
+  return `${leftLabel} ${formatTokens(left)} / ${rightLabel} ${formatTokens(right)}`;
+}
 ```
 
-- [ ] **Step 4: Run focused test to verify it passes**
+Use them to assemble the exact compact groupings from the spec:
+
+```tsx
+const identityItems = [
+  req.model_id,
+  req.provider,
+  req.status_code != null ? String(req.status_code) : '—',
+  relTime(req.timestamp),
+  req.stream != null ? (req.stream ? 'stream' : 'non-stream') : null,
+  formatCost(req.cost_usd),
+];
+
+const performanceItems = [
+  pairLabel('lat', formatLatency(req.latency_ms)),
+  pairLabel('ttft', formatLatency(req.ttft_ms)),
+  req.decode_throughput_tps != null
+    ? pairLabel('decode', `${req.decode_throughput_tps.toFixed(1)} tok/s`)
+    : null,
+];
+
+const tokenItems = [
+  pairValue(req.prompt_tokens, req.completion_tokens, 'in/out', ''),
+  pairValue(req.reasoning_tokens, req.total_tokens, 'reason/total', ''),
+  pairValue(req.cache_read_tokens, req.cache_write_tokens, 'cache r/w', ''),
+].map((item) => item?.replace(' /  ', ' / '));
+
+const userItems = [req.user_name, req.user_email, req.user_id, req.session_id, req.user_ip];
+```
+
+- [ ] **Step 3: Replace the bordered grids with the compact inline layout**
+
+Replace the current block starting at the top-level wrapper and ending before the content area with this structure:
+
+```tsx
+return (
+  <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
+    <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">Request ID</div>
+    <div className="mt-0.5 break-all font-mono text-[11px] text-gray-800">{req.request_id}</div>
+
+    <InlineMetaRow items={identityItems} />
+    <InlineMetaRow items={performanceItems} mono />
+    <InlineMetaRow items={tokenItems} mono />
+    <InlineMetaRow items={userItems} />
+
+    <div className="border-t border-gray-100 pt-1.5 text-[11px] text-gray-500 truncate">
+      {req.user_agent || '—'}
+    </div>
+
+    <div className="mt-3 grid grid-cols-1 gap-2 text-[11px]">
+      {!content || content.loading ? (
+        <div className="text-gray-400">Loading prompt and response…</div>
+      ) : content.error ? (
+        <div className="text-red-600">Failed to load content: {content.error}</div>
+      ) : (
+        <>
+          <FoldedText label="Prompt" value={content.prompt} />
+          {content.reasoning_content && (
+            <FoldedText label="Reasoning" value={content.reasoning_content} />
+          )}
+          <FoldedText label="Response" value={content.response} />
+        </>
+      )}
+      {req.error && <div className="mt-1 text-red-600">Error: {req.error}</div>}
+    </div>
+  </div>
+);
+```
+
+Do not render `DetailPill` in the metadata area after this change. Keep `FoldedText`, error rendering, and the request content load states unchanged.
+
+- [ ] **Step 4: Remove now-unused `DetailPill` code if the component no longer references it**
+
+Delete the old helper if it is unused after the layout rewrite.
+
+```tsx
+function DetailPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">{label}</div>
+      <div className="mt-0.5 break-words font-mono text-[12px] text-gray-700">{value}</div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 5: Run the focused test to verify it passes**
 
 Run: `npm run test -- src/app/dashboard/admin/__tests__/AdminRecentRequestDetailPanel.test.tsx`
 Expected: PASS.
 
-### Task 3: Verify Frontend Quality Gates
+### Task 3: Verify the Compact Layout Across Frontend Quality Gates
 
 **Files:**
 - Modify: no source changes unless verification finds issues
-- Test: frontend scripts
+- Test: frontend scripts from `apps/frontend`
 
 - [ ] **Step 1: Run format check**
 
 Run: `npm run format:check`
-Expected: PASS or report exact formatting files.
+Expected: PASS or a concrete list of files that need formatting.
 
 - [ ] **Step 2: Run lint**
 
@@ -194,8 +291,8 @@ Expected: PASS.
 
 ## Self-Review
 
-Spec coverage: Task 2 implements the full request ID in detail only, removes internal network fields, separates user agent, moves performance/tokens to the second detail line, and preserves lazy content loading in prompt/reasoning/response order. Task 3 verifies the frontend.
+Spec coverage: Task 1 and Task 2 implement the approved compact inline-row detail layout, preserve the full request ID, keep cached read and cache write values separate, retain prompt/reasoning/response order, and continue to omit internal network details. Task 3 covers the required frontend verification commands.
 
-Placeholder scan: no TBD/TODO placeholders remain.
+Placeholder scan: no TBD/TODO placeholders remain. Every task includes exact files, concrete assertions or code, and explicit commands.
 
-Type consistency: `AdminRecentRequestContentState` matches the existing `reqContentCache` value shape and `AdminRecentRequestItem` matches the existing API type.
+Type consistency: `AdminRecentRequestItem`, `AdminRecentRequestDetailPanel`, and `AdminRecentRequestContentState` match the existing extracted component and test structure in `apps/frontend/src/app/dashboard/admin/`.
