@@ -164,3 +164,27 @@ def test_single_api_key_form_still_works(tmp_path, monkeypatch):
     cfg = router.routes["glm-test"].adapters[0][0].config
     assert cfg.api_key == "single-key"
     assert cfg.api_keys is None
+
+
+def test_missing_single_api_key_raises_in_strict_mode(tmp_path, monkeypatch):
+    monkeypatch.delenv("MISSING_SINGLE", raising=False)
+
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        models:
+          - id: glm-test
+            name: glm-test
+            provider: zai
+            base_url: https://api.example.com
+            route:
+              - kind: zai
+                weight: 1.0
+                base_url: https://api.example.com
+                api_key: ${MISSING_SINGLE}
+        """,
+    )
+
+    router = RouteExecutor()
+    with pytest.raises(ValueError, match="after env expansion"):
+        register_from_models_yaml(router, yaml_path)

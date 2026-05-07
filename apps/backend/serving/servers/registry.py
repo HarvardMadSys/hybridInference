@@ -41,6 +41,10 @@ class ModelRegistrationInfo:
     aliases: list[str] = field(default_factory=list)
 
 
+class MissingEnvBackedKeyError(ValueError):
+    """Raised when an env-backed api_key/api_keys entry resolves blank."""
+
+
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"))
 
 
@@ -280,6 +284,8 @@ def register_from_models_yaml(
             ]
 
             adapters_with_weights = []
+            dynamic_key_registrations: list[tuple[str, object]] = []
+            dynamic_key_providers: set[str] = set()
             for r in routes:
                 kind = r.get("kind") or top_cfg.get("provider")
                 base_url = expand_env(r.get("base_url") or top_cfg.get("base_url"))
@@ -326,13 +332,22 @@ def register_from_models_yaml(
                             continue
                         kept.append(normalized)
                     if not kept:
-                        raise ValueError(
+                        raise MissingEnvBackedKeyError(
                             f"api_keys for {top_cfg.get('id')!r} resolved to "
                             f"empty list after env expansion"
                         )
                     api_keys = kept
                 else:
                     api_key = expand_env(raw_api_key)
+                    if (
+                        isinstance(raw_api_key, str)
+                        and raw_api_key.startswith("${")
+                        and (api_key is None or not api_key.strip())
+                    ):
+                        raise MissingEnvBackedKeyError(
+                            f"api_key for {top_cfg.get('id')!r} resolved to "
+                            f"empty/None after env expansion"
+                        )
 
                 # Adapter config inherits from top-level model config
                 adapter_cfg = dict(top_cfg)
@@ -375,12 +390,10 @@ def register_from_models_yaml(
                 # mark the provider as known (whitelist) and only attach the
                 # adapter when it carries a key pool — otherwise admin actions
                 # would silently no-op against single-key adapters.
-                from serving.adapters import dynamic_keys
-
                 provider_key = adapter_cfg.get("provider") or kind
-                dynamic_keys.register_known_provider(provider_key)
+                dynamic_key_providers.add(provider_key)
                 if getattr(adapter, "_key_pool", None) is not None:
-                    dynamic_keys.register_adapter_for_provider(provider_key, adapter)
+                    dynamic_key_registrations.append((provider_key, adapter))
 
             # Determine model type: "embedding" models bypass RouteExecutor
             model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"
@@ -421,6 +434,13 @@ def register_from_models_yaml(
                 )
                 count += 1 + len(aliases)
 
+            from serving.adapters import dynamic_keys
+
+            for provider_key in dynamic_key_providers:
+                dynamic_keys.register_known_provider(provider_key)
+            for provider_key, adapter in dynamic_key_registrations:
+                dynamic_keys.register_adapter_for_provider(provider_key, adapter)
+
             # Collect per-model metadata for bootstrap (RouteWise strategy resolution)
             model_infos.append(
                 ModelRegistrationInfo(
@@ -429,13 +449,10 @@ def register_from_models_yaml(
                     aliases=aliases,
                 )
             )
-        except ValueError as exc:
-            if (
-                not continue_on_missing_env
-                or "resolved to empty list after env expansion" not in str(exc)
-            ):
+        except MissingEnvBackedKeyError as exc:
+            if not continue_on_missing_env:
                 raise
-            logger.exception("Skipping model %r from %s: %s", m.get("id"), path, exc)
+            logger.warning("Skipping model %r from %s: %s", m.get("id"), path, exc)
             continue
 
     return count, model_infos
