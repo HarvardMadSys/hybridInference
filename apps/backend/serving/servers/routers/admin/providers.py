@@ -61,11 +61,11 @@ async def admin_provider_stats(
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> ProviderStatsResponse:
-    """Return hourly performance stats for a (provider, model_id) window.
+    """Return hourly performance stats for a provider, optionally filtered by model.
 
     Query Parameters:
         provider: Required upstream provider key (e.g. ``openrouter``).
-        model_id: Required model identifier (e.g. ``qwen/qwen3-coder``).
+        model_id: Model identifier, or ``__all__`` to return all models.
         from: ISO8601 lower bound (inclusive). Defaults to ``to - 7 days``.
         to:   ISO8601 upper bound (exclusive). Defaults to current hour.
 
@@ -94,25 +94,46 @@ async def admin_provider_stats(
             detail=f"range must be <= {_PROVIDER_STATS_MAX_DAYS} days",
         )
 
+    fetch_all_models = model_id == "__all__"
+
     async with db_logger.pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT hour_bucket, provider, model_id,
-                   request_count, error_count, stream_count,
-                   ttft_p50_ms, ttft_p95_ms, ttft_p99_ms,
-                   latency_p50_ms, latency_p95_ms, latency_p99_ms,
-                   throughput_avg_tps, throughput_p50_tps, throughput_p95_tps,
-                   prompt_tokens_avg, completion_tokens_avg, total_completion_tokens
-              FROM provider_hourly_stats
-             WHERE provider = $1 AND model_id = $2
-               AND hour_bucket >= $3 AND hour_bucket < $4
-             ORDER BY hour_bucket ASC
-            """,
-            provider,
-            model_id,
-            start,
-            end,
-        )
+        if fetch_all_models:
+            rows = await conn.fetch(
+                """
+                SELECT hour_bucket, provider, model_id,
+                       request_count, error_count, stream_count,
+                       ttft_p50_ms, ttft_p95_ms, ttft_p99_ms,
+                       latency_p50_ms, latency_p95_ms, latency_p99_ms,
+                       throughput_avg_tps, throughput_p50_tps, throughput_p95_tps,
+                       prompt_tokens_avg, completion_tokens_avg, total_completion_tokens
+                  FROM provider_hourly_stats
+                 WHERE provider = $1
+                   AND hour_bucket >= $2 AND hour_bucket < $3
+                 ORDER BY model_id, hour_bucket ASC
+                """,
+                provider,
+                start,
+                end,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT hour_bucket, provider, model_id,
+                       request_count, error_count, stream_count,
+                       ttft_p50_ms, ttft_p95_ms, ttft_p99_ms,
+                       latency_p50_ms, latency_p95_ms, latency_p99_ms,
+                       throughput_avg_tps, throughput_p50_tps, throughput_p95_tps,
+                       prompt_tokens_avg, completion_tokens_avg, total_completion_tokens
+                  FROM provider_hourly_stats
+                 WHERE provider = $1 AND model_id = $2
+                   AND hour_bucket >= $3 AND hour_bucket < $4
+                 ORDER BY hour_bucket ASC
+                """,
+                provider,
+                model_id,
+                start,
+                end,
+            )
         providers = await conn.fetch(
             """
             SELECT DISTINCT provider FROM provider_hourly_stats

@@ -6,7 +6,12 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from serving.config.runtime_settings import get_runtime_settings_instance
+
+if TYPE_CHECKING:
+    from serving.config.runtime_settings import RuntimeSettings
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -176,8 +181,25 @@ def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutSt
         return LLMProberLayoutState()
 
 
-def get_default_daily_quota() -> Decimal:
-    """Get default daily quota for new users from environment."""
+async def get_default_daily_quota_for_role(
+    role: str,
+    runtime_settings: "RuntimeSettings | None",
+) -> Decimal:
+    """Return the default daily USD quota seeded onto a new API key.
+
+    Reads the ``user_daily_quota_<role>`` runtime setting if present.
+    Falls back to ``SIGNUP_DEFAULT_DAILY_QUOTA_USD`` env var (default 100.00)
+    if the role is unknown or runtime settings are unavailable (e.g. early
+    bootstrap).
+    """
+    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+
+    key = f"user_daily_quota_{role}"
+    if runtime_settings is not None:
+        if key in RUNTIME_SETTINGS_REGISTRY:
+            val = await runtime_settings.get_float(key)
+            return Decimal(str(val))
+        logger.warning("No quota runtime setting for role %r — falling back to env var", role)
     quota_str = os.getenv("SIGNUP_DEFAULT_DAILY_QUOTA_USD", "100.00")
     return Decimal(quota_str)
 
@@ -306,8 +328,6 @@ async def create_api_key(
     # Check if email is verified
     require_verification = os.getenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "1") == "1"
     try:
-        from serving.config.runtime_settings import get_runtime_settings_instance
-
         rs = get_runtime_settings_instance()
         require_verification = await rs.get_bool("signup_require_email_verification")
     except (RuntimeError, KeyError):
@@ -324,7 +344,11 @@ async def create_api_key(
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
     key_prefix = api_key[:12]
-    default_quota = get_default_daily_quota()
+    try:
+        rt = get_runtime_settings_instance()
+    except RuntimeError:
+        rt = None
+    default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
 
     await op_store.create_key(
         key_hash=key_hash,
@@ -529,7 +553,11 @@ async def regenerate_api_key(
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
     key_prefix = api_key[:12]
-    default_quota = get_default_daily_quota()
+    try:
+        rt = get_runtime_settings_instance()
+    except RuntimeError:
+        rt = None
+    default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
 
     # Revoke old key via store, then create new one
     await op_store.revoke_key(current_user["user_id"])
@@ -602,22 +630,21 @@ async def get_usage(
             ),
         )
 
-    daily_limit = float(key_row.get("quota_daily_cost_usd") or 0)
+    quota_daily_cost_usd = key_row.get("quota_daily_cost_usd")
+    daily_limit = 1000.0 if quota_daily_cost_usd is None else float(quota_daily_cost_usd)
     monthly_limit = None
     quota_reset_at = _get_daily_quota_reset_at()
 
-    # Fetch usage from log store
+    # Fetch usage from log store (for period breakdown) and op store (for today's quota counter)
     _zero = {"cost_usd": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
     try:
         if log_store:
             all_usage = await log_store.get_user_usage_detail(current_user["user_id"])
             period_key = {"today": "today", "week": "week", "month": "month"}.get(period, "alltime")
             period_data = all_usage.get(period_key, _zero)
-            spent_today = all_usage.get("today", _zero).get("cost_usd", 0.0)
             spent_month = all_usage.get("month", _zero).get("cost_usd", 0.0)
         else:
             period_data = _zero
-            spent_today = 0.0
             spent_month = 0.0
     except Exception as exc:
         logger.warning(
@@ -626,8 +653,18 @@ async def get_usage(
             exc,
         )
         period_data = _zero
-        spent_today = 0.0
         spent_month = 0.0
+
+    # Read today's spend from the op store counter — same source used by quota enforcement
+    try:
+        spent_today = await op_store.get_user_cost_today(current_user["user_id"])
+    except Exception as exc:
+        logger.warning(
+            "Failed to query daily cost counter for user_id=%s: %s",
+            current_user["user_id"],
+            exc,
+        )
+        spent_today = 0.0
 
     remaining_today = max(0, daily_limit - spent_today)
 

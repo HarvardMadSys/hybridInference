@@ -645,18 +645,22 @@ async def test_sort_tie_breaker_in_order_clause(admin_client):
 
 
 @pytest.mark.asyncio
-async def test_sort_alltime_usage_zero_without_sort(admin_client):
-    """usage_alltime_usd defaults to 0 when not sorting by cost_alltime."""
+async def test_alltime_usage_returned_without_cost_sort(admin_client):
+    """usage_alltime_usd is returned even when not sorting by cost_alltime."""
     client, op_store, _log_store, _log = admin_client
 
     sc = {**_EMPTY_SC, "all": 1, "active": 1}
-    op_store.list_users.return_value = (1, [_user_row()], sc)
+    op_store.list_users.return_value = (
+        1,
+        [_user_row_with_usage(usage_alltime=Decimal("12.34"))],
+        sc,
+    )
 
     response = await client.get("/admin/users", headers=AUTH)
 
     assert response.status_code == 200
     user = response.json()["users"][0]
-    assert float(user["usage_alltime_usd"]) == 0.0
+    assert float(user["usage_alltime_usd"]) == 12.34
 
 
 # ========================================================================

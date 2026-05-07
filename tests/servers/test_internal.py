@@ -1,6 +1,5 @@
 """Integration tests for internal auth_request endpoints.
 
-Supports both PostgreSQL and Cloudflare D1 backends.
 Run with: make test-db
 """
 

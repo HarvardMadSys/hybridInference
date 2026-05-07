@@ -1,9 +1,9 @@
 rules:
   failed_request_rate:
     enabled: true
-    window_sec: 300
-    threshold_pct: 5.0
-    min_samples: 20
+    window_sec: 3600
+    threshold_pct: 10.0
+    min_samples: 200
     cooldown_sec: 900
   fivexx_rate:
     enabled: true
@@ -15,7 +15,7 @@ rules:
     enabled: true
     window_sec: 600
     threshold_ms: 30000
-    min_samples: 30
+    min_samples: 80
     cooldown_sec: 1800
     overrides: {}
   auth_failure_spike:
@@ -49,8 +49,8 @@ cost:
     check_interval_sec: 300
     cooldown_sec: 86400
     thresholds_per_role:
-      free: 5.00
-      pro: 50.00
+      free: 20.00
+      pro: 200.00
       internal: 500.00
   provider_hourly_spend:
     enabled: true

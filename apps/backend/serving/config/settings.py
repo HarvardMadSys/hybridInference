@@ -21,28 +21,11 @@ class Settings(BaseSettings):
     db_user: str = "postgres"
     db_password: str = ""
 
-    # Database backend: "postgres" (default) or "d1" (Cloudflare D1 for operational tables)
-    db_backend: str = "postgres"
-    # Dual-write: when DB_BACKEND=d1, also shadow-write to PostgreSQL as a warm standby
-    db_dual_write: bool = False
-
     # Database privacy settings
     # Default False: by default we hash prompt/response content rather than
     # storing it verbatim. Operators can opt in to full-content logging by
     # setting DB_STORE_FULL_CONTENT=true after weighing the privacy impact.
     db_store_full_content: bool = False
-
-    # Cloudflare D1 (used when db_backend = "d1")
-    d1_account_id: str = ""
-    d1_database_id: str = ""
-    d1_api_token: str = ""
-
-    # Cloudflare R2 (log archival — S3-compatible)
-    r2_access_key_id: str = ""
-    r2_secret_access_key: str = ""
-    r2_bucket_name: str = "hybridinference-logs"
-    r2_endpoint_url: str = ""  # e.g. https://<account_id>.r2.cloudflarestorage.com
-    r2_log_retention_days: int = 30  # keep logs in D1 for this many days
 
     # Admin
     admin_token: str = ""
@@ -63,6 +46,9 @@ class Settings(BaseSettings):
 
     # Signup
     signup_enabled: bool = True
+    # Deprecated: only used as fallback when no user_daily_quota_<role>
+    # runtime setting is registered. Per-role quotas (user_daily_quota_free,
+    # _pro, _internal, _admin) are the source of truth at signup.
     signup_default_daily_quota_usd: float = 100.00
     signup_require_email_verification: bool = True
 
@@ -206,14 +192,6 @@ def is_admin_email(email: str) -> bool:
 ROLE_RANK: dict[str, int] = {"free": 0, "pro": 1, "internal": 2, "admin": 3}
 
 VALID_ROLES = frozenset(ROLE_RANK)
-
-# Per-user concurrency caps by role. Used by serving/servers/concurrency.py.
-USER_CONCURRENCY_LIMITS: dict[str, int] = {
-    "free": 1,
-    "pro": 3,
-    "internal": 10,
-    "admin": 10,
-}
 
 
 def has_role(user_role: str, required: str) -> bool:
