@@ -7,6 +7,7 @@ emission, and the start/stop lifecycle hooks added to ``RouteWiseRouter``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from unittest.mock import MagicMock
@@ -19,6 +20,7 @@ from routing.routewise.router import (
     PENDING_DECISIONS_TTL_SECONDS,
     RouteWiseRouter,
 )
+from serving.utils.logging import JsonFormatter
 
 
 class _FakeRouteConfig:
@@ -238,3 +240,47 @@ def test_module_constants() -> None:
     """Defaults align with the spec: 300s TTL, 60s sweep interval."""
     assert PENDING_DECISIONS_TTL_SECONDS == 300.0
     assert PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS == 60.0
+
+
+@pytest.mark.unit
+async def test_streaming_decisions_are_not_ttl_evicted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Long-lived streaming requests should not be treated as leaked decisions."""
+    router = _make_router()
+    now = time.time()
+    router._pending_decisions["req-stream"] = {
+        "timestamp": now - PENDING_DECISIONS_TTL_SECONDS - 100.0,
+        "is_streaming": True,
+    }
+
+    with caplog.at_level(logging.INFO, logger="routing.routewise.router"):
+        evicted = await router._sweep_pending_decisions_once()
+
+    assert evicted == 0
+    assert "req-stream" in router._pending_decisions
+    matching = [
+        r for r in caplog.records if getattr(r, "event", None) == "routewise_decision_evicted"
+    ]
+    assert matching == []
+
+
+@pytest.mark.unit
+async def test_eviction_age_sec_survives_json_formatting(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Eviction records keep ``age_sec`` when LOG_FORMAT=json uses JsonFormatter."""
+    router = _make_router()
+    now = time.time()
+    router._pending_decisions["req-old"] = {
+        "timestamp": now - PENDING_DECISIONS_TTL_SECONDS - 100.0,
+    }
+
+    with caplog.at_level(logging.INFO, logger="routing.routewise.router"):
+        await router._sweep_pending_decisions_once()
+
+    record = next(
+        r for r in caplog.records if getattr(r, "event", None) == "routewise_decision_evicted"
+    )
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["age_sec"] >= int(PENDING_DECISIONS_TTL_SECONDS)

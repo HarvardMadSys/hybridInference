@@ -56,8 +56,8 @@ class PendingDecisionsLeakConfig(BaseModel):
     Fires when the number of ``routewise_decision_evicted`` events seen
     over ``window_sec`` exceeds ``threshold_count``. Indicates that
     ``RouteWiseRouter._pending_decisions`` is leaking entries (likely
-    because ``record_observation`` / ``chat_completion`` is not consuming
-    them on some code path).
+    because ``chat_completion`` / ``stream_chat_completion`` is not
+    consuming them on some code path).
     """
 
     enabled: bool = True

@@ -54,11 +54,13 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-# TTL for entries in RouteWiseRouter._pending_decisions. If
-# ``record_observation`` (or chat_completion / stream_chat_completion) doesn't
-# consume an entry within this window — typically because the request was
-# aborted, timed out, or hit a code-path bug — the periodic sweep evicts it
-# and emits a ``routewise_decision_evicted`` log event.
+# TTL for non-streaming entries in RouteWiseRouter._pending_decisions. If
+# ``chat_completion`` / ``stream_chat_completion`` doesn't consume an entry
+# within this window — typically because the request was aborted, timed out,
+# or hit a code-path bug — the periodic sweep evicts it and emits a
+# ``routewise_decision_evicted`` log event. Active streaming requests are
+# intentionally excluded because they can legitimately remain in-flight for
+# longer than the fixed TTL.
 PENDING_DECISIONS_TTL_SECONDS: float = 300.0
 PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
 
@@ -131,12 +133,6 @@ class RouteWiseRouter(BaseRouter):
         # Populated in _select_adapter(), consumed in chat_completion() /
         # stream_chat_completion().  Same pattern as NimbusRouter.
         self._pending_decisions: dict[str, dict[str, Any]] = {}
-        # Async lock held only during the periodic TTL sweep to safeguard
-        # iteration. Hot-path mutations (_select_adapter, record_observation)
-        # rely on CPython's per-op dict atomicity and asyncio's single-threaded
-        # event loop; acquiring the lock on every observation would serialize
-        # the routing hot path with no real benefit.
-        self._pending_decisions_lock: asyncio.Lock = asyncio.Lock()
         # Periodic TTL-cleanup task; populated by start(), cancelled by stop().
         self._sweep_task: asyncio.Task[None] | None = None
 
@@ -907,6 +903,7 @@ class RouteWiseRouter(BaseRouter):
                 if request_id:
                     self._pending_decisions[request_id] = {
                         **_base_decision(),
+                        "is_streaming": False,
                         "selected_tier": "concurrency",
                         "quota_committed": 0.0,
                         "sc_committed": True,
@@ -932,6 +929,7 @@ class RouteWiseRouter(BaseRouter):
             if request_id:
                 self._pending_decisions[request_id] = {
                     **_base_decision(),
+                    "is_streaming": False,
                     "selected_tier": "quota",
                     "quota_committed": 0.0,
                     "sc_committed": False,
@@ -959,6 +957,7 @@ class RouteWiseRouter(BaseRouter):
             if request_id:
                 self._pending_decisions[request_id] = {
                     **_base_decision(),
+                    "is_streaming": False,
                     "selected_tier": "api",
                     "quota_committed": 0.0,
                     "sc_committed": False,
@@ -977,6 +976,7 @@ class RouteWiseRouter(BaseRouter):
                 if request_id:
                     self._pending_decisions[request_id] = {
                         **_base_decision(),
+                        "is_streaming": False,
                         "selected_tier": "api",
                         "quota_committed": 0.0,
                         "sc_committed": False,
@@ -1178,6 +1178,9 @@ class RouteWiseRouter(BaseRouter):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
 
+        if request_id in self._pending_decisions:
+            self._pending_decisions[request_id]["is_streaming"] = True
+
         done_chunk: str | None = None
 
         try:
@@ -1251,42 +1254,41 @@ class RouteWiseRouter(BaseRouter):
     async def _sweep_pending_decisions_once(self) -> int:
         """Evict stale ``_pending_decisions`` entries; return count evicted.
 
-        Holds ``self._pending_decisions_lock`` for the duration of the sweep
-        so we don't observe a partial view if an async caller ever mutates
-        the dict from inside the lock as well. Entries whose ``timestamp``
-        is older than :data:`PENDING_DECISIONS_TTL_SECONDS` are removed and
-        a ``routewise_decision_evicted`` log event is emitted for each.
+        Entries whose ``timestamp`` is older than
+        :data:`PENDING_DECISIONS_TTL_SECONDS` are removed and a
+        ``routewise_decision_evicted`` log event is emitted for each.
+        Active streaming requests are skipped because their generator may
+        legitimately remain open longer than the fixed TTL.
         """
         now = time.time()
         cutoff = now - PENDING_DECISIONS_TTL_SECONDS
         evicted = 0
-        async with self._pending_decisions_lock:
-            stale: list[tuple[str, float]] = []
-            for request_id, decision in self._pending_decisions.items():
-                ts = decision.get("timestamp")
-                if not isinstance(ts, (int, float)):
-                    # Defensive: skip entries with no usable timestamp rather
-                    # than evicting them (can't compute an age).
-                    continue
-                if ts < cutoff:
-                    stale.append((request_id, float(ts)))
-            for request_id, ts in stale:
-                # Only count + log an actual eviction. ``record_observation``
-                # paths (chat_completion / stream_chat_completion) pop without
-                # holding ``_pending_decisions_lock``, so an entry we picked up
-                # in ``stale`` may have already been consumed by a completing
-                # request between the iteration above and this pop. Treat that
-                # race as "not evicted" rather than emitting a misleading
-                # ``routewise_decision_evicted`` event.
-                if self._pending_decisions.pop(request_id, None) is None:
-                    continue
-                evicted += 1
-                logger.info(
-                    "routewise_decision_evicted",
-                    extra={
-                        "event": "routewise_decision_evicted",
-                        "request_id": request_id,
-                        "age_sec": int(now - ts),
-                    },
-                )
+        stale: list[tuple[str, float]] = []
+        for request_id, decision in self._pending_decisions.items():
+            if decision.get("is_streaming"):
+                continue
+            ts = decision.get("timestamp")
+            if not isinstance(ts, (int, float)):
+                # Defensive: skip entries with no usable timestamp rather
+                # than evicting them (can't compute an age).
+                continue
+            if ts < cutoff:
+                stale.append((request_id, float(ts)))
+        for request_id, ts in stale:
+            # Only count + log an actual eviction. Completion paths pop
+            # without coordinating with the sweep, so an entry we picked up
+            # in ``stale`` may already have been consumed by a finishing
+            # request by the time we reach this pop. Treat that race as
+            # "not evicted" rather than emitting a misleading event.
+            if self._pending_decisions.pop(request_id, None) is None:
+                continue
+            evicted += 1
+            logger.info(
+                "routewise_decision_evicted",
+                extra={
+                    "event": "routewise_decision_evicted",
+                    "request_id": request_id,
+                    "age_sec": int(now - ts),
+                },
+            )
         return evicted

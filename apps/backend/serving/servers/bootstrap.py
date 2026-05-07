@@ -302,13 +302,6 @@ async def initialize() -> AppServices:
             # once canary rollout is ready for production.
             rw_models = [i.model_id for i in model_infos if i.strategy == "routewise"]
             logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
-            # Start the periodic _pending_decisions TTL sweep so leaked
-            # entries (request abort / timeout / code-path bug) get evicted
-            # and emit routewise_decision_evicted events.
-            try:
-                await routewise_router.start()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(f"RouteWiseRouter.start() failed: {exc}")
         except Exception as exc:
             logger.warning(f"RouteWise initialization failed: {exc}. Using fixed routing.")
             model_router_registry = None
@@ -456,6 +449,15 @@ async def initialize() -> AppServices:
                     )
         except Exception as exc:
             logger.warning(f"Runtime settings initialization failed: {exc}")
+
+    # Start the periodic RouteWise pending-decision sweep only after the rest
+    # of bootstrap has succeeded, so a later startup failure cannot leave the
+    # background task running without a matching shutdown.
+    if routewise_router_instance is not None:
+        try:
+            await routewise_router_instance.start()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"RouteWiseRouter.start() failed: {exc}")
 
     return AppServices(
         router=router,

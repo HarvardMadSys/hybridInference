@@ -124,6 +124,36 @@ class TestBootstrapInitialization:
             # Routing manager should be initialized
             assert services.routing_manager is not None
 
+    @pytest.mark.asyncio
+    async def test_initialize_does_not_start_routewise_until_bootstrap_succeeds(self, mock_env):
+        """A later bootstrap failure must not leave the RouteWise sweep task running."""
+        mock_routewise = MagicMock()
+        mock_routewise.start = AsyncMock()
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(
+                    return_value=(
+                        {},
+                        [MagicMock(strategy="routewise", model_id="m", aliases=[])],
+                    )
+                ),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch("routing.routewise.load_routewise_config", return_value=MagicMock()),
+            patch("routing.routewise.RouteWiseRouter", return_value=mock_routewise),
+            patch(
+                "serving.servers.bootstrap.AsyncHTTPClient.shared",
+                side_effect=RuntimeError("boom after routewise init"),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="boom after routewise init"):
+                await bootstrap.initialize()
+
+        mock_routewise.start.assert_not_called()
+
 
 class TestBootstrapShutdown:
     """Test bootstrap shutdown functionality."""
