@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.servers import registry
 from serving.servers.deps import AppServices
 from serving.servers.routers import models
 
@@ -149,21 +150,53 @@ async def test_models_single_adapter_no_aggregation():
 
 
 @pytest.mark.asyncio
-async def test_models_openai_provider_is_preserved_for_gpt_style_entry():
-    router = RouteExecutor()
-    a = _Adapter(
-        _cfg(
-            id="gpt-5.5",
-            provider="openai",
-            supported=["temperature", "max_tokens", "reasoning_effort"],
-            tools=True,
-        ),
-        content="ok",
+async def test_models_openai_provider_is_preserved_for_gpt_style_entry(tmp_path, monkeypatch):
+    from serving.servers.auth import optional_verify_api_key
+
+    yaml_text = (
+        "models:\n"
+        "  - id: gpt-5.5\n"
+        "    name: GPT-5.5\n"
+        "    provider: openai\n"
+        "    required_role: internal\n"
+        "    provider_model_id: gpt-5.5\n"
+        "    quantization: none\n"
+        "    context_length: 1050000\n"
+        "    max_output_length: 128000\n"
+        "    supports_tools: true\n"
+        "    supports_structured_output: true\n"
+        "    supported_params: [max_tokens, stream, tools, tool_choice, reasoning_effort]\n"
+        "    input_modalities: [text, image]\n"
+        "    output_modalities: [text]\n"
+        "    pricing:\n"
+        "      prompt: '5.00'\n"
+        "      completion: '30.00'\n"
+        "      image: '0'\n"
+        "      request: '0'\n"
+        "      input_cache_reads: '5.00'\n"
+        "      input_cache_writes: '0.00'\n"
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: ${CLI_PROXY_BASE_URL}\n"
+        "        api_key: ${CLI_PROXY_API_KEY}\n"
+        "        provider_model_id: gpt-5.5\n"
     )
-    router.register_route("gpt-5.5", [(a, 1.0)])
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
+    monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
+
+    router = RouteExecutor()
+    registry.register_from_models_yaml(router, p)
 
     app = FastAPI()
     app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
+    app.dependency_overrides[optional_verify_api_key] = lambda: {
+        "is_admin": True,
+        "role": "admin",
+        "user_id": "admin-user",
+    }
     app.include_router(models.router)
 
     transport = ASGITransport(app=app)

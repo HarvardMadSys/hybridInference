@@ -199,7 +199,10 @@ def test_register_from_models_yaml_cliproxy_gpt55(tmp_path, monkeypatch):
     assert "reasoning_effort" in adapter.config.supported_params
 
 
-def test_register_from_models_yaml_keeps_model_provider_when_route_kind_differs(tmp_path, monkeypatch):
+@pytest.mark.unit
+def test_register_from_models_yaml_keeps_model_provider_when_route_kind_differs(
+    tmp_path, monkeypatch
+):
     yaml_text = (
         "models:\n"
         "  - id: gpt-5.5\n"
