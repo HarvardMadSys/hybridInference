@@ -101,10 +101,16 @@ class TestBootstrapInitialization:
             services = await bootstrap.initialize()
 
             assert isinstance(services.user_concurrency_limiter, UserConcurrencyLimiter)
+            limiter = services.user_concurrency_limiter
             for role in ("free", "pro", "internal", "admin"):
-                assert services.user_concurrency_limiter.limit_for(role, is_admin=False) >= 1
+                granted, cap, _ = await limiter.try_acquire(f"u-{role}", role, False)
+                assert granted
+                assert cap >= 1
             # is_admin=True must yield admin cap
-            assert services.user_concurrency_limiter.limit_for("free", is_admin=True) == 10
+            granted, cap, label = await limiter.try_acquire("admin-user", "free", True)
+            assert granted
+            assert cap == 10
+            assert label == "admin"
 
     @pytest.mark.asyncio
     async def test_initialize_with_routing_manager(self, mock_env, temp_routing_yaml, monkeypatch):
@@ -210,11 +216,11 @@ class TestBootstrapHelpers:
 models:
   - id: remote-model
     name: Remote Only Model
-    provider: zhipu
+    provider: zai
     context_length: 8192
     max_output_length: 4096
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: https://api.example.com
         api_key: test-key
