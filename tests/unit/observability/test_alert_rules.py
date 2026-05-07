@@ -286,8 +286,7 @@ async def test_p95_latency_skips_records_without_provider(monkeypatch):
         try:
             for ms in range(1000, 32000, 1000):
                 handler.queue.put_nowait(_fake_record(200, provider=None, duration_ms=ms))
-            for _ in range(20):
-                await asyncio.sleep(0.01)
+            await _drain_until(handler, mock_alert)
             assert mock_alert.await_count == 0
         finally:
             await engine.stop()
