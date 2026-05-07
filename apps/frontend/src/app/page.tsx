@@ -30,10 +30,10 @@ export default function HomePage(): JSX.Element {
       <Features />
       <HowItWorks />
       <CodeExample />
-      <div className="px-4 pb-6 text-center text-xs text-gray-500 sm:px-6 lg:px-8">
+      <footer className="px-4 pb-6 text-center text-xs text-gray-500 sm:px-6 lg:px-8">
         <p>Service is provided without guarantee.</p>
         <p className="mt-1">All prompts and responses are logged.</p>
-      </div>
+      </footer>
     </div>
   );
 }

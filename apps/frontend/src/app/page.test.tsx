@@ -18,6 +18,13 @@ vi.mock('@/components/providers', () => ({
   }),
 }));
 
+vi.mock('@/components/landing', () => ({
+  CodeExample: () => <section aria-label="code example" />,
+  Features: () => <section aria-label="features" />,
+  Hero: () => <section aria-label="hero" />,
+  HowItWorks: () => <section aria-label="how it works" />,
+}));
+
 describe('HomePage', () => {
   it('shows the no-guarantee notice before the prompt logging notice', () => {
     const { container } = render(<HomePage />);
@@ -27,9 +34,9 @@ describe('HomePage', () => {
 
     expect(warrantyNotice).toBeInTheDocument();
     expect(loggingNotice).toBeInTheDocument();
-    expect(
-      warrantyNotice.compareDocumentPosition(loggingNotice) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(warrantyNotice.compareDocumentPosition(loggingNotice)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     expect(container).toHaveTextContent(/provided without guarantee/i);
   });
 });
