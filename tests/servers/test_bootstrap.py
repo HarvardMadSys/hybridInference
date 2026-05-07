@@ -71,7 +71,7 @@ class TestBootstrapInitialization:
     async def test_initialize_loads_models_yaml(self, mock_env, temp_models_yaml, monkeypatch):
         """Test that models.yaml is loaded and registered."""
         monkeypatch.setenv("MODELS_CONFIG", temp_models_yaml)
-        monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
+        monkeypatch.setenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001")
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
@@ -116,7 +116,7 @@ class TestBootstrapInitialization:
     async def test_initialize_with_routing_manager(self, mock_env, temp_routing_yaml, monkeypatch):
         """Test initialization with routing manager."""
         monkeypatch.setenv("ROUTING_CONFIG", temp_routing_yaml)
-        monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
+        monkeypatch.setenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001")
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),

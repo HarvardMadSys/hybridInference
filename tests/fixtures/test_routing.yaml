@@ -6,7 +6,7 @@ health_check: 0  # Disabled for testing
 logging:
   output: test.log
 local_deployment:
-  - endpoint: ${LOCAL_BASE_URL:-http://localhost:8001}
+  - endpoint: ${LOCAL_DEPLOYMENT_URL:-http://localhost:8001}
     models:
       - test-model-1
       - qwen-2.5-3b-local-test  # Real local model for e2e tests
