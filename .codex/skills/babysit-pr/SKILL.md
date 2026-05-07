@@ -101,6 +101,7 @@ PR #<N> "title" — <merged | pushed CI fix, waiting for re-run | replied to N c
 - **Never force-push.** If the branch needs a rebase, leave a comment and stop.
 - **Never merge to a protected branch by bypassing checks.** If `gh pr merge` fails because checks aren't green, that's the system working — don't pass `--admin`.
 - **Don't switch branches.** This skill operates on the current branch's PR. If the working tree is dirty or you're mid-rebase, stop and report.
+- **Never merge into main**. You should only merge into dev.
 - **One pass per invocation.** Don't loop internally — if scheduled, the next run picks up where this left off.
 - **Keep running the loop until the PR is merged or closed.** If scheduled, keep invoking this skill on a timer (e.g. every 30 minutes) until the PR is no longer open. This way it can babysit over time, even if the user isn't actively monitoring.
 
