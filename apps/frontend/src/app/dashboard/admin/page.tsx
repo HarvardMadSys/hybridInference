@@ -496,7 +496,9 @@ function FoldedText({ label, value }: { label: string; value?: string | null }) 
       onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
     >
       <summary className="cursor-pointer list-none text-gray-500 flex items-center gap-2">
-        <span>{label}:</span>
+        <span>
+          <span>{label}</span>:
+        </span>
         <span className="text-gray-700 whitespace-pre-wrap break-words">{preview}</span>
         <span className="text-[10px] text-gray-400 group-open:hidden">(show more)</span>
         <span className="text-[10px] text-gray-400 hidden group-open:inline">(show less)</span>
@@ -517,6 +519,131 @@ function formatLatency(ms?: number | null): string {
   if (ms == null) return '—';
   if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.round(ms)}ms`;
+}
+
+function formatCost(cost?: number | null): string {
+  if (cost == null) return '—';
+  if (cost < 0.0001) return '<$0.0001';
+  if (cost < 0.01) return `$${cost.toFixed(4)}`;
+  return `$${cost.toFixed(2)}`;
+}
+
+type AdminRecentRequestContentState = {
+  prompt: string | null;
+  response: string | null;
+  reasoning_content: string | null;
+  loading: boolean;
+  error?: string;
+};
+
+function DetailPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">{label}</div>
+      <div className="mt-0.5 break-words font-mono text-[12px] text-gray-700">{value}</div>
+    </div>
+  );
+}
+
+export function AdminRecentRequestDetailPanel({
+  req,
+  content,
+}: {
+  req: AdminRecentRequestItem;
+  content?: AdminRecentRequestContentState;
+}) {
+  const hasCacheTokens = req.cache_read_tokens != null || req.cache_write_tokens != null;
+  const cachedTokens = hasCacheTokens
+    ? (req.cache_read_tokens ?? 0) + (req.cache_write_tokens ?? 0)
+    : null;
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-2 border-b border-gray-100 pb-3">
+        <div className="flex flex-wrap items-start gap-x-4 gap-y-2 text-[12px]">
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
+              Request ID
+            </div>
+            <div className="mt-0.5 break-all font-mono text-[12px] text-gray-800">
+              {req.request_id}
+            </div>
+          </div>
+          <DetailPill label="Model" value={req.model_id} />
+          <DetailPill label="Provider" value={req.provider} />
+          <DetailPill
+            label="Status"
+            value={req.status_code != null ? String(req.status_code) : '—'}
+          />
+          <DetailPill
+            label="Time"
+            value={`${relTime(req.timestamp)} (${new Date(req.timestamp).toLocaleString()})`}
+          />
+        </div>
+
+        <div
+          aria-label="Request performance and token details"
+          className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"
+        >
+          <DetailPill label="Latency" value={formatLatency(req.latency_ms)} />
+          <DetailPill label="TTFT" value={formatLatency(req.ttft_ms)} />
+          <DetailPill
+            label="Decode"
+            value={
+              req.decode_throughput_tps != null
+                ? `${req.decode_throughput_tps.toFixed(1)} tok/s`
+                : '—'
+            }
+          />
+          <DetailPill
+            label="Stream"
+            value={req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
+          />
+          <DetailPill label="Prompt Tokens" value={formatTokens(req.prompt_tokens ?? 0)} />
+          <DetailPill label="Completion Tokens" value={formatTokens(req.completion_tokens ?? 0)} />
+          <DetailPill label="Reasoning Tokens" value={formatTokens(req.reasoning_tokens ?? 0)} />
+          <DetailPill
+            label="Cached Tokens"
+            value={cachedTokens != null ? formatTokens(cachedTokens) : '—'}
+          />
+          <DetailPill label="Total Tokens" value={formatTokens(req.total_tokens ?? 0)} />
+          <DetailPill label="Cost" value={formatCost(req.cost_usd)} />
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <DetailPill label="User" value={req.user_name || '—'} />
+        <DetailPill label="Email" value={req.user_email || '—'} />
+        <DetailPill label="User ID" value={req.user_id || '—'} />
+        <DetailPill label="Session" value={req.session_id || '—'} />
+        <DetailPill label="User IP" value={req.user_ip || '—'} />
+      </div>
+
+      <div className="mt-2 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5">
+        <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
+          User agent
+        </div>
+        <div className="mt-0.5 break-words text-[12px] text-gray-700">{req.user_agent || '—'}</div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-2 text-[11px]">
+        {!content || content.loading ? (
+          <div className="text-gray-400">Loading prompt and response…</div>
+        ) : content.error ? (
+          <div className="text-red-600">Failed to load content: {content.error}</div>
+        ) : (
+          <>
+            <FoldedText label="Prompt" value={content.prompt} />
+            {content.reasoning_content && (
+              <FoldedText label="Reasoning" value={content.reasoning_content} />
+            )}
+            <FoldedText label="Response" value={content.response} />
+          </>
+        )}
+        {req.error && <div className="mt-1 text-red-600">Error: {req.error}</div>}
+      </div>
+    </div>
+  );
 }
 
 function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
@@ -913,16 +1040,7 @@ export default function AdminPage() {
   const [reqErrorsOnly, setReqErrorsOnly] = useState(false);
   const [reqExpandedId, setReqExpandedId] = useState<string | null>(null);
   const [reqContentCache, setReqContentCache] = useState<
-    Map<
-      string,
-      {
-        prompt: string | null;
-        response: string | null;
-        reasoning_content: string | null;
-        loading: boolean;
-        error?: string;
-      }
-    >
+    Map<string, AdminRecentRequestContentState>
   >(() => new Map());
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
@@ -1713,11 +1831,6 @@ export default function AdminPage() {
                           req.status_code >= 200 &&
                           req.status_code < 400;
                         const isExpanded = reqExpandedId === req.request_id;
-                        const hasCacheTokens =
-                          req.cache_read_tokens != null || req.cache_write_tokens != null;
-                        const cachedTokens = hasCacheTokens
-                          ? (req.cache_read_tokens ?? 0) + (req.cache_write_tokens ?? 0)
-                          : null;
                         const sourceLabel = compactUserAgent(req.user_agent);
                         const surfaceLabel = compactRequestSurface(req.request_surface);
                         return (
@@ -1837,127 +1950,10 @@ export default function AdminPage() {
                             {isExpanded && (
                               <tr className="border-b border-gray-100 bg-gray-50/40">
                                 <td colSpan={9} className="px-4 py-3">
-                                  <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[11px] sm:grid-cols-4">
-                                    <div>
-                                      <span className="text-gray-500">Request ID:</span>{' '}
-                                      <span className="font-mono text-gray-700">
-                                        {req.request_id.length > 24
-                                          ? `${req.request_id.slice(0, 24)}…`
-                                          : req.request_id}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">TTFT:</span>{' '}
-                                      <span className="text-gray-700">
-                                        {req.ttft_ms != null ? `${req.ttft_ms}ms` : '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">User:</span>{' '}
-                                      <span className="text-gray-700">
-                                        {req.user_name || req.user_id || '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">Email:</span>{' '}
-                                      <span className="text-gray-700">{req.user_email || '—'}</span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">User IP:</span>{' '}
-                                      <span className="text-gray-700 font-mono">
-                                        {req.user_ip ?? '—'}
-                                      </span>
-                                    </div>
-                                    <div className="col-span-full">
-                                      <span className="text-gray-500">User agent:</span>{' '}
-                                      <span className="break-words text-gray-700">
-                                        {req.user_agent ?? '—'}
-                                      </span>
-                                    </div>
-                                    <details className="col-span-full group mt-1">
-                                      <summary className="list-none cursor-pointer text-gray-500 hover:text-gray-700 flex items-center gap-2">
-                                        <span className="text-xs">Network details</span>
-                                        <span className="text-[10px] text-gray-400 group-open:hidden">
-                                          (show)
-                                        </span>
-                                        <span className="text-[10px] text-gray-400 hidden group-open:inline">
-                                          (hide)
-                                        </span>
-                                      </summary>
-                                      <div className="mt-2 grid grid-cols-2 gap-x-8 gap-y-1 sm:grid-cols-4">
-                                        <div>
-                                          <span className="text-gray-500">Peer IP:</span>{' '}
-                                          <span className="text-gray-700 font-mono">
-                                            {req.peer_ip ?? '—'}
-                                          </span>
-                                        </div>
-                                        <div>
-                                          <span className="text-gray-500">IP source:</span>{' '}
-                                          <span className="text-gray-700">
-                                            {req.ip_source ?? '—'}
-                                          </span>
-                                        </div>
-                                        <div className="col-span-full">
-                                          <span className="text-gray-500">X-Forwarded-For:</span>{' '}
-                                          <span className="break-words font-mono text-gray-700">
-                                            {req.x_forwarded_for ?? '—'}
-                                          </span>
-                                        </div>
-                                      </div>
-                                    </details>
-                                    <div>
-                                      <span className="text-gray-500">Session:</span>{' '}
-                                      <span className="text-gray-700 font-mono">
-                                        {req.session_id ?? '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">Cached:</span>{' '}
-                                      <span className="text-gray-700">
-                                        {cachedTokens != null ? cachedTokens.toLocaleString() : '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">Stream:</span>{' '}
-                                      <span className="text-gray-700">
-                                        {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
-                                      </span>
-                                    </div>
-                                    {(() => {
-                                      const content = reqContentCache.get(req.request_id);
-                                      if (!content || content.loading) {
-                                        return (
-                                          <div className="col-span-full text-gray-400">
-                                            Loading prompt and response…
-                                          </div>
-                                        );
-                                      }
-                                      if (content.error) {
-                                        return (
-                                          <div className="col-span-full text-red-600">
-                                            Failed to load content: {content.error}
-                                          </div>
-                                        );
-                                      }
-                                      return (
-                                        <>
-                                          {content.reasoning_content && (
-                                            <FoldedText
-                                              label="Reasoning"
-                                              value={content.reasoning_content}
-                                            />
-                                          )}
-                                          <FoldedText label="Prompt" value={content.prompt} />
-                                          <FoldedText label="Response" value={content.response} />
-                                        </>
-                                      );
-                                    })()}
-                                    {req.error && (
-                                      <div className="col-span-full mt-1">
-                                        <span className="text-red-600">Error: {req.error}</span>
-                                      </div>
-                                    )}
-                                  </div>
+                                  <AdminRecentRequestDetailPanel
+                                    req={req}
+                                    content={reqContentCache.get(req.request_id)}
+                                  />
                                 </td>
                               </tr>
                             )}
