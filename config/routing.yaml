@@ -6,7 +6,7 @@ health_check: 300
 logging:
   output: output.log
 local_deployment:
-  - endpoint: http://host.docker.internal:8001
+  - endpoint: ${LOCAL_BASE_URL}
     models:
       - qwen3.6-35b
 remote_deployment:
@@ -25,7 +25,7 @@ remote_deployment:
       - glm-5
       - glm-5-turbo
       - glm-5.1
-  - endpoint: https://api.deepseek.com
+  - endpoint: ${DEEPSEEK_BASE_URL}
     models:
       - deepseek-v4-flash
       - deepseek-v4-pro

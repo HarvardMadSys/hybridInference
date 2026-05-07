@@ -357,7 +357,7 @@ models:
     route:
       - kind: sglang
         weight: 1.0
-        base_url: http://host.docker.internal:8001
+        base_url: ${LOCAL_BASE_URL}
         provider_model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
         api_keys:
           - ${SGLANG_API_KEY}
@@ -445,7 +445,7 @@ models:
     route:
       - kind: deepseek
         weight: 1.0
-        base_url: https://api.deepseek.com
+        base_url: ${DEEPSEEK_BASE_URL}
         api_keys:
           - ${DEEPSEEK_API_KEY}
         provider_model_id: "deepseek-v4-flash"
