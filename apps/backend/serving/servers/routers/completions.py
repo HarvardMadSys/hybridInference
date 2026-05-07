@@ -417,6 +417,43 @@ async def chat_completions(
         config = getattr(adapter, "config", None)
         return getattr(config, "provider", None)
 
+    # Pre-flight: reject image content when the model does not support it.
+    # This check is placed before routing so both streaming and non-streaming
+    # paths get a clean 400 instead of silently stripping image blocks.
+    route_config = router_exec.routes.get(model)
+    model_modalities = route_config.adapters[0][0].config.input_modalities if route_config else []
+    if "image" not in (model_modalities or []):
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image_url":
+                    record_model_request("400", "router")
+                    if log_store and not is_synthetic_probe:
+                        _schedule_db_log_task(
+                            log_store,
+                            request_id,
+                            {
+                                "request_id": request_id,
+                                "model_id": model,
+                                "provider": "router",
+                                "prompt": messages,
+                                "response": None,
+                                "usage": None,
+                                "latency_ms": int((time.time() - start_time) * 1000),
+                                "status_code": 400,
+                                "error": f"Model '{model}' does not support image input",
+                                "params": early_params,
+                                "metadata": metadata,
+                                "pricing": None,
+                            },
+                        )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model '{model}' does not support image input",
+                    )
+
     # Pre-flight: validate pin_provider before routing.  For streaming this is
     # critical (HTTP 200 is already committed once StreamingResponse starts),
     # but we check unconditionally so non-stream also gets a clean 400.

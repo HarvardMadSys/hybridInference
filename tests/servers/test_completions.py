@@ -1188,3 +1188,126 @@ async def test_pin_stream_zero_weight_returns_400(pin_client: AsyncClient):
         headers={"X-Route-Pin": "featherless"},
     )
     assert resp.status_code == 400
+
+
+# --- Image modality gate tests ---
+
+
+@pytest.fixture
+async def image_gate_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
+    """App with a text-only model to test image rejection."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    text_only_cfg = ModelConfig(
+        id="text-model",
+        name="Text Only",
+        provider="zhipu",
+        base_url="http://zhipu.test",
+        input_modalities=["text"],
+    )
+    router.register_route("text-model", [(DummyAdapter(text_only_cfg), 1.0)])
+
+    vision_cfg = ModelConfig(
+        id="vision-model",
+        name="Vision Model",
+        provider="minimax",
+        base_url="http://minimax.test",
+        input_modalities=["text", "image"],
+    )
+    router.register_route("vision-model", [(DummyAdapter(vision_cfg), 1.0)])
+
+    app = FastAPI(title="Image Gate Test App")
+    app.state.services = AppServices(
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    return app
+
+
+@pytest.fixture
+async def image_gate_client(image_gate_app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+    transport = ASGITransport(app=image_gate_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+@pytest.mark.asyncio
+async def test_image_rejected_for_text_only_model(image_gate_client: AsyncClient):
+    """Sending image_url to a text-only model returns 400."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "text-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 400
+    assert "does not support image" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_image_accepted_for_vision_model(image_gate_client: AsyncClient):
+    """Sending image_url to a vision-capable model succeeds."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "vision-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_text_only_message_passes_text_only_model(image_gate_client: AsyncClient):
+    """Text-only content on a text-only model succeeds."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "text-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_image_rejected_streaming_text_only_model(image_gate_client: AsyncClient):
+    """Streaming request with image to text-only model returns 400."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "text-model",
+            "stream": True,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 400
