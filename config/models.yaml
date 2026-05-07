@@ -101,55 +101,55 @@ models:
   #         prompt: "0"
   #         completion: "0"
 
-  - id: glm-5
-    name: GLM-5
-    provider: zai
-    quantization: "fp8"
-    context_length: 200000
-    max_output_length: 128000
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    aliases: ["freeinference-glm-5"]
-    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
-    pricing:
-      prompt: "1.0"
-      completion: "3.2"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0.2"
-      input_cache_writes: "0"
-    route:
-      - kind: zai
-        weight: 1.0
-        base_url: ${ZAI_BASE_URL}
-        api_keys:
-          - ${ZAI_API_KEY}
-          - ${ZAI_API_KEY2}
-        provider_model_id: "glm-5"
-      # Ollama Cloud fallback
-      - kind: ollama
-        weight: 0.24
-        base_url: ${OLLAMA_BASE_URL}
-        api_keys:
-          - ${OLLAMA_API_KEY}
-        provider_model_id: "glm-5"
-      # # Chutes fallback
-      # - kind: chutes
-      #   weight: 1.0
-      #   base_url: ${CHUTES_BASE_URL}
-      #   api_keys:
-      #     - ${CHUTES_API_KEY}
-      #   provider_model_id: "zai-org/GLM-5-TEE"
-      # # Featherless fallback
-      # - kind: featherless
-      #   weight: 1.0
-      #   base_url: ${FEATHERLESS_BASE_URL}
-      #   api_keys:
-      #     - ${FEATHERLESS_API_KEY}
-      #   provider_model_id: "zai-org/GLM-5"
+  # - id: glm-5
+  #   name: GLM-5
+  #   provider: zai
+  #   quantization: "fp8"
+  #   context_length: 200000
+  #   max_output_length: 128000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+  #   input_modalities: ["text"]
+  #   output_modalities: ["text"]
+  #   aliases: ["freeinference-glm-5"]
+  #   # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
+  #   pricing:
+  #     prompt: "1.0"
+  #     completion: "3.2"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.2"
+  #     input_cache_writes: "0"
+  #   route:
+  #     - kind: zai
+  #       weight: 1.0
+  #       base_url: ${ZAI_BASE_URL}
+  #       api_keys:
+  #         - ${ZAI_API_KEY}
+  #         - ${ZAI_API_KEY2}
+  #       provider_model_id: "glm-5"
+  #     # Ollama Cloud fallback
+  #     - kind: ollama
+  #       weight: 0.24
+  #       base_url: ${OLLAMA_BASE_URL}
+  #       api_keys:
+  #         - ${OLLAMA_API_KEY}
+  #       provider_model_id: "glm-5"
+  #     # # Chutes fallback
+  #     # - kind: chutes
+  #     #   weight: 1.0
+  #     #   base_url: ${CHUTES_BASE_URL}
+  #     #   api_keys:
+  #     #     - ${CHUTES_API_KEY}
+  #     #   provider_model_id: "zai-org/GLM-5-TEE"
+  #     # # Featherless fallback
+  #     # - kind: featherless
+  #     #   weight: 1.0
+  #     #   base_url: ${FEATHERLESS_BASE_URL}
+  #     #   api_keys:
+  #     #     - ${FEATHERLESS_API_KEY}
+  #     #   provider_model_id: "zai-org/GLM-5"
 
   - id: glm-5.1
     name: GLM-5.1
@@ -165,11 +165,11 @@ models:
     aliases: ["freeinference-glm-5.1"]
     # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
-      prompt: "1.4"
-      completion: "4.4"
+      prompt: "1.6"
+      completion: "4.8"
       image: "0"
       request: "0"
-      input_cache_reads: "0.26"
+      input_cache_reads: "0.4"
       input_cache_writes: "0"
     route:
       - kind: zai
@@ -265,7 +265,7 @@ models:
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
       # Featherless fallback
       - kind: featherless
-        weight: 0
+        weight: 0.24
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}
@@ -275,7 +275,7 @@ models:
     name: MiniMax M2.7
     provider: minimax
     quantization: "bf16"
-    input_modalities: ["text"]
+    input_modalities: ["text", "image"]
     output_modalities: ["text"]
     context_length: 196608
     max_output_length: 8192
@@ -357,8 +357,10 @@ models:
     route:
       - kind: sglang
         weight: 1.0
-        base_url: http://host.docker.internal:8001
+        base_url: ${LOCAL_BASE_URL}
         provider_model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
+        api_keys:
+          - ${LOCAL_API_KEY}
       # # Featherless fallback
       # - kind: featherless
       #   weight: 0
@@ -443,7 +445,7 @@ models:
     route:
       - kind: deepseek
         weight: 1.0
-        base_url: https://api.deepseek.com
+        base_url: ${DEEPSEEK_BASE_URL}
         api_keys:
           - ${DEEPSEEK_API_KEY}
         provider_model_id: "deepseek-v4-flash"
