@@ -401,3 +401,37 @@ class TestListUsersNewFilters:
         joined = " ".join(all_sqls)
         assert "date_trunc('day'" in joined
         assert "SUM(cost_usd)" in joined
+
+    async def test_alltime_usage_enriched_from_daily_cost_without_cost_sort(self, store, pg_conn):
+        # Regression: default sorting does not include the all-time CTE, but
+        # the admin dashboard still needs historical usage from daily counters.
+        pg_conn.fetchrow.return_value = {"total": 1}
+        pg_conn.fetch.side_effect = [
+            [{"status": "active", "cnt": 1}],  # status counts
+            [
+                {
+                    "id": "historical",
+                    "email": "h@x.com",
+                    "user_name": None,
+                    "role": "free",
+                    "status": "active",
+                    "email_verified": True,
+                    "approval_note": None,
+                    "reviewed_at": None,
+                    "reviewed_by": None,
+                    "created_at": None,
+                    "last_login_at": None,
+                    "key_prefix": None,
+                    "key_status": None,
+                },
+            ],
+            [],  # today's costs lookup
+            [],  # month's costs lookup
+            [{"user_id": "historical", "cost": Decimal("12.34")}],
+        ]
+
+        _total, rows, _ = await store.list_users()
+
+        assert rows[0]["usage_alltime"] == Decimal("12.34")
+        alltime_sql = pg_conn.fetch.call_args_list[-1].args[0]
+        assert "FROM user_daily_cost" in alltime_sql
