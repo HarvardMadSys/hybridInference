@@ -9,9 +9,14 @@ import {
   removeSignupAllowedDomain,
   RuntimeSettingItem,
   updateRuntimeSetting,
+  applyRoleQuota,
+  previewRoleQuotaApply,
+  Role,
+  RoleQuotaPreview,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
+import { validateNumericSettingInput } from './numericSettingValidation';
 import { validateSignupDomainInput } from './signupDomainValidation';
 
 function relTime(iso: string | null): string {
@@ -44,9 +49,17 @@ export function SettingsTab() {
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [featureFlags, setFeatureFlags] = useState<RuntimeSettingItem[]>([]);
+  const [numericSettings, setNumericSettings] = useState<RuntimeSettingItem[]>([]);
+  const [numericDrafts, setNumericDrafts] = useState<Record<string, string>>({});
+  const [savingKey, setSavingKey] = useState<string | null>(null);
   const [flagsLoading, setFlagsLoading] = useState(true);
   const [flagsError, setFlagsError] = useState<string | null>(null);
   const [togglingKey, setTogglingKey] = useState<string | null>(null);
+
+  const QUOTA_KEY_PREFIX = 'user_daily_quota_';
+  const [quotaConfirm, setQuotaConfirm] = useState<RoleQuotaPreview | null>(null);
+  const [quotaLoadingRole, setQuotaLoadingRole] = useState<Role | null>(null);
+  const [quotaApplyingRole, setQuotaApplyingRole] = useState<Role | null>(null);
 
   const loadDomains = useCallback(async () => {
     setLoading(true);
@@ -67,6 +80,11 @@ export function SettingsTab() {
     try {
       const resp = await listRuntimeSettings();
       setFeatureFlags(resp.settings.filter((s) => s.value_type === 'bool'));
+      const numerics = resp.settings.filter(
+        (s) => s.value_type === 'int' || s.value_type === 'float',
+      );
+      setNumericSettings(numerics);
+      setNumericDrafts(Object.fromEntries(numerics.map((s) => [s.key, String(s.value ?? '')])));
     } catch (e) {
       setFlagsError(getErrorMessage(e));
     } finally {
@@ -113,6 +131,30 @@ export function SettingsTab() {
     }
   };
 
+  const onSaveNumeric = async (setting: RuntimeSettingItem) => {
+    const draft = numericDrafts[setting.key] ?? '';
+    const validated = validateNumericSettingInput(draft, {
+      min: setting.min,
+      max: setting.max,
+      integer: setting.value_type === 'int',
+    });
+    if (!validated.ok) {
+      flashToast(`${setting.key}: ${validated.error}`);
+      return;
+    }
+    setSavingKey(setting.key);
+    try {
+      const updated = await updateRuntimeSetting(setting.key, validated.value);
+      flashToast(`${updated.key} set to ${updated.value}`);
+      setNumericSettings((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
+      setNumericDrafts((prev) => ({ ...prev, [updated.key]: String(updated.value ?? '') }));
+    } catch (e) {
+      flashToast(`Failed to update ${setting.key}: ${getErrorMessage(e)}`);
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
   const onAdd = async () => {
     setInputError(null);
     const validated = validateSignupDomainInput(input);
@@ -149,6 +191,33 @@ export function SettingsTab() {
     } finally {
       setRemoving(null);
       setConfirm(null);
+    }
+  };
+
+  const onClickApply = async (role: Role) => {
+    setQuotaLoadingRole(role);
+    try {
+      const preview = await previewRoleQuotaApply(role);
+      setQuotaConfirm(preview);
+    } catch (e) {
+      flashToast(`Preview failed: ${getErrorMessage(e)}`);
+    } finally {
+      setQuotaLoadingRole(null);
+    }
+  };
+
+  const onConfirmApply = async () => {
+    if (!quotaConfirm) return;
+    const role = quotaConfirm.role;
+    setQuotaApplyingRole(role);
+    try {
+      const res = await applyRoleQuota(role);
+      flashToast(`Updated ${res.keys_updated} keys for role ${role} to $${res.quota}`);
+      setQuotaConfirm(null);
+    } catch (e) {
+      flashToast(`Apply failed: ${getErrorMessage(e)}`);
+    } finally {
+      setQuotaApplyingRole(null);
     }
   };
 
@@ -219,6 +288,123 @@ export function SettingsTab() {
                       }`}
                     />
                   </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Numeric Settings */}
+      <div className="rounded-xl border border-gray-200 bg-white p-5">
+        <div className="mb-3">
+          <h2 className="text-[14px] font-semibold text-gray-900">Numeric Settings</h2>
+          <p className="mt-1 text-[12px] text-gray-500">
+            Adjust numeric runtime knobs (e.g. per-user concurrency caps). Changes take effect
+            immediately.
+          </p>
+        </div>
+
+        {flagsLoading ? (
+          <div className="py-8 text-center text-[13px] text-gray-400">Loading...</div>
+        ) : numericSettings.length === 0 ? (
+          <div className="rounded-md border border-dashed border-gray-200 px-4 py-6 text-center text-[12px] text-gray-500">
+            No numeric settings available.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {numericSettings.map((setting) => {
+              const isSaving = savingKey === setting.key;
+              const draft = numericDrafts[setting.key] ?? '';
+              const validated = validateNumericSettingInput(draft, {
+                min: setting.min,
+                max: setting.max,
+                integer: setting.value_type === 'int',
+              });
+              const isDirty = validated.ok && validated.value !== setting.value;
+              const isDefault = setting.value === setting.default_value;
+              const rangeHint = (() => {
+                const lo = setting.min;
+                const hi = setting.max;
+                if (lo != null && hi != null) return `${lo}–${hi}`;
+                if (lo != null) return `≥ ${lo}`;
+                if (hi != null) return `≤ ${hi}`;
+                return null;
+              })();
+              return (
+                <div
+                  key={setting.key}
+                  className="flex items-center justify-between gap-4 rounded-lg border border-gray-100 px-4 py-3"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-medium text-gray-900">
+                        {setting.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                      </span>
+                      {!isDefault && (
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                          Modified
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-gray-500">
+                      {setting.description}
+                      {rangeHint && (
+                        <span className="ml-1 text-gray-400">(range: {rangeHint})</span>
+                      )}
+                      <span className="ml-1 text-gray-400">
+                        Default: {String(setting.default_value)}
+                      </span>
+                    </p>
+                    {!validated.ok && draft !== '' && (
+                      <p className="mt-0.5 text-[11px] text-red-600" role="alert">
+                        {validated.error}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      step={setting.value_type === 'int' ? 1 : 'any'}
+                      min={setting.min ?? undefined}
+                      max={setting.max ?? undefined}
+                      value={draft}
+                      disabled={isSaving}
+                      onChange={(e) =>
+                        setNumericDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && isDirty && !isSaving) {
+                          e.preventDefault();
+                          onSaveNumeric(setting);
+                        }
+                      }}
+                      aria-label={`${setting.key} value`}
+                      className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onSaveNumeric(setting)}
+                      disabled={!isDirty || isSaving}
+                      className="rounded-md bg-gray-900 px-3 py-1 text-[12px] font-medium text-white transition hover:bg-gray-700 disabled:opacity-40"
+                    >
+                      {isSaving ? 'Saving...' : 'Save'}
+                    </button>
+                    {setting.key.startsWith(QUOTA_KEY_PREFIX) && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)
+                        }
+                        disabled={quotaLoadingRole !== null || quotaApplyingRole !== null}
+                        className="rounded-md border border-gray-300 bg-white px-3 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                      >
+                        {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
+                          ? 'Loading...'
+                          : 'Apply to existing users'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -343,6 +529,49 @@ export function SettingsTab() {
           </div>
         )}
       </div>
+
+      {/* Quota apply confirm dialog */}
+      {quotaConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => quotaApplyingRole === null && setQuotaConfirm(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl bg-white p-5 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-[15px] font-semibold text-gray-900">
+              Apply quota to role <code>{quotaConfirm.role}</code>
+            </h3>
+            <p className="mt-2 text-[13px] text-gray-600">
+              This sets <code>quota_daily_cost_usd = ${quotaConfirm.quota.toString()}</code> on{' '}
+              <strong>{quotaConfirm.keys_affected}</strong> active API keys belonging to{' '}
+              <strong>{quotaConfirm.users_affected}</strong> users with role{' '}
+              <code>{quotaConfirm.role}</code>. Custom per-key overrides will be lost.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setQuotaConfirm(null)}
+                disabled={quotaApplyingRole !== null}
+                className="rounded-md px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onConfirmApply}
+                disabled={quotaApplyingRole !== null}
+                className="rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+              >
+                {quotaApplyingRole !== null ? 'Applying...' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirm dialog */}
       {confirm && (

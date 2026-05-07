@@ -79,7 +79,7 @@ async def list_users(
     - quota_state: ``default`` / ``custom`` filter on whether the user's active
       key has a quota override; ``near`` / ``over`` use today's spend vs quota.
     - provider: keep only users who hit ``provider`` in api_logs in the last
-      30 days (Postgres-only — D1 deployments ignore this).
+      30 days.
     - active_within_hours: ``last_login_at`` must be within the window.
     - anomaly: when ``true``, keep only users whose today's spend is
       anomalously high vs. their prior 7-day average (today >= $1, history

@@ -13,6 +13,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
@@ -29,6 +30,17 @@ if TYPE_CHECKING:
 
 
 from serving.servers.auth import verify_api_key
+
+
+@pytest.fixture(autouse=True)
+def disable_auth_for_completions_tests(monkeypatch):
+    """Disable auth for routing-focused completions tests."""
+    from serving.config.settings import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setattr("serving.servers.auth.is_user_auth_enabled", lambda: False)
+    yield
+    get_settings.cache_clear()
 
 
 class DummyAdapter(BaseAdapter):
@@ -788,6 +800,36 @@ class ErrorBeforeAnyTokenAdapter(BaseAdapter):
             yield ""
 
 
+class UpstreamStatusErrorAdapter(BaseAdapter):
+    """Adapter that raises an upstream HTTP status during streaming."""
+
+    def __init__(
+        self, config: ModelConfig, status_code: int, error_body: str | None = None
+    ) -> None:
+        super().__init__(config)
+        self.status_code = status_code
+        self.error_body = error_body
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        raise RuntimeError("not implemented")
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        exc = aiohttp.ClientResponseError(
+            request_info=MagicMock(real_url="http://upstream.test/v1/chat/completions"),
+            history=(),
+            status=self.status_code,
+            message="Service Unavailable",
+            headers=None,
+        )
+        if self.error_body is not None:
+            exc.error_body = self.error_body
+        raise exc
+        if False:  # pragma: no cover
+            yield ""
+
+
 def _build_ttft_app(model_id: str, adapter: BaseAdapter, mock_log_store, monkeypatch) -> FastAPI:
     """Build a minimal app for TTFT testing."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
@@ -1072,6 +1114,81 @@ async def test_ttft_null_when_error_before_any_token(monkeypatch, mock_log_store
     assert ttft is None, "ttft_ms should be None when error occurs before any meaningful delta"
 
 
+@pytest.mark.asyncio
+async def test_streaming_upstream_error_status_logged_to_db(monkeypatch, mock_log_store):
+    """Streaming upstream HTTP errors should log the upstream status, not a generic 500."""
+    app = _build_ttft_app(
+        "upstream-status-model",
+        UpstreamStatusErrorAdapter(_mk_cfg("upstream-status-model"), status_code=503),
+        mock_log_store,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "upstream-status-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp,
+    ):
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line.startswith("data: ")]
+
+    db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert db_kwargs is not None, "DB log_request should have been called on error path"
+    assert db_kwargs["status_code"] == 503
+
+    error_chunks = [json.loads(line[6:])["error"] for line in lines if "error" in line]
+    assert error_chunks
+    assert error_chunks[0]["code"] == 503
+
+
+@pytest.mark.asyncio
+async def test_streaming_upstream_error_body_logged_to_db(monkeypatch, mock_log_store):
+    """Streaming upstream HTTP errors should persist the upstream body for operators."""
+    upstream_body = (
+        '{"error":{"message":"cliproxy queue overloaded",'
+        '"type":"server_error","api_key":"sk-secret"}}'
+    )
+    app = _build_ttft_app(
+        "upstream-body-model",
+        UpstreamStatusErrorAdapter(
+            _mk_cfg("upstream-body-model"), status_code=503, error_body=upstream_body
+        ),
+        mock_log_store,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "upstream-body-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp,
+    ):
+        assert resp.status_code == 200
+        async for _ in resp.aiter_lines():
+            pass
+
+    db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert db_kwargs is not None, "DB log_request should have been called on error path"
+    assert "cliproxy queue overloaded" in db_kwargs["error"]
+    assert "upstream_body=" in db_kwargs["error"]
+    assert "sk-secret" not in db_kwargs["error"]
+
+
 # ===========================================================================
 # X-Route-Pin integration tests
 # ===========================================================================
@@ -1083,12 +1200,12 @@ async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")  # all callers are admin
 
     router = RouteExecutor()
-    zhipu = DummyAdapter(_mk_cfg("test-model"))
-    zhipu.config = ModelConfig(
+    zai = DummyAdapter(_mk_cfg("test-model"))
+    zai.config = ModelConfig(
         id="test-model",
         name="test-model",
-        provider="zhipu",
-        base_url="http://zhipu",
+        provider="zai",
+        base_url="http://zai",
         context_length=8192,
         max_output_length=4096,
     )
@@ -1110,7 +1227,7 @@ async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
         context_length=8192,
         max_output_length=4096,
     )
-    router.register_route("test-model", [(zhipu, 0.8), (ollama, 0.2), (disabled, 0.0)])
+    router.register_route("test-model", [(zai, 0.8), (ollama, 0.2), (disabled, 0.0)])
 
     app = FastAPI()
     app.state.services = AppServices(
@@ -1189,5 +1306,128 @@ async def test_pin_stream_zero_weight_returns_400(pin_client: AsyncClient):
         "/v1/chat/completions",
         json=_chat_body(stream=True),
         headers={"X-Route-Pin": "featherless"},
+    )
+    assert resp.status_code == 400
+
+
+# --- Image modality gate tests ---
+
+
+@pytest.fixture
+async def image_gate_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
+    """App with a text-only model to test image rejection."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    router = RouteExecutor()
+    text_only_cfg = ModelConfig(
+        id="text-model",
+        name="Text Only",
+        provider="zhipu",
+        base_url="http://zhipu.test",
+        input_modalities=["text"],
+    )
+    router.register_route("text-model", [(DummyAdapter(text_only_cfg), 1.0)])
+
+    vision_cfg = ModelConfig(
+        id="vision-model",
+        name="Vision Model",
+        provider="minimax",
+        base_url="http://minimax.test",
+        input_modalities=["text", "image"],
+    )
+    router.register_route("vision-model", [(DummyAdapter(vision_cfg), 1.0)])
+
+    app = FastAPI(title="Image Gate Test App")
+    app.state.services = AppServices(
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    return app
+
+
+@pytest.fixture
+async def image_gate_client(image_gate_app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+    transport = ASGITransport(app=image_gate_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+@pytest.mark.asyncio
+async def test_image_rejected_for_text_only_model(image_gate_client: AsyncClient):
+    """Sending image_url to a text-only model returns 400."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "text-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 400
+    assert "does not support image" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_image_accepted_for_vision_model(image_gate_client: AsyncClient):
+    """Sending image_url to a vision-capable model succeeds."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "vision-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_text_only_message_passes_text_only_model(image_gate_client: AsyncClient):
+    """Text-only content on a text-only model succeeds."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "text-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_image_rejected_streaming_text_only_model(image_gate_client: AsyncClient):
+    """Streaming request with image to text-only model returns 400."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "text-model",
+            "stream": True,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+                    ],
+                }
+            ],
+        },
     )
     assert resp.status_code == 400

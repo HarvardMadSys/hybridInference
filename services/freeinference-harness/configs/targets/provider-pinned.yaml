@@ -15,12 +15,12 @@ defaults:
     X-Reasoning-Passthrough: "true"
 
 targets:
-  # ── glm-4.7: zhipu + ollama + chutes + featherless ──────────────────
-  - name: glm-4.7@zhipu-gw
+  # ── glm-4.7: zai + ollama + chutes + featherless ──────────────────
+  - name: glm-4.7@zai-gw
     model: glm-4.7
-    tags: [zhipu, glm, pinned]
+    tags: [zai, glm, pinned]
     extra_headers:
-      X-Route-Pin: zhipu
+      X-Route-Pin: zai
     capabilities:
       chat: true
       streaming: true
@@ -77,12 +77,12 @@ targets:
       streaming: true
       tools: true
 
-  # ── glm-5: zhipu + ollama + chutes + featherless ────────────────────
-  - name: glm-5@zhipu-gw
+  # ── glm-5: zai + ollama + chutes + featherless ────────────────────
+  - name: glm-5@zai-gw
     model: glm-5
-    tags: [zhipu, glm, pinned]
+    tags: [zai, glm, pinned]
     extra_headers:
-      X-Route-Pin: zhipu
+      X-Route-Pin: zai
     capabilities:
       chat: true
       streaming: true
@@ -118,12 +118,12 @@ targets:
       streaming: true
       tools: true
 
-  # ── glm-5.1: zhipu only ─────────────────────────────────────────────
-  - name: glm-5.1@zhipu-gw
+  # ── glm-5.1: zai only ─────────────────────────────────────────────
+  - name: glm-5.1@zai-gw
     model: glm-5.1
-    tags: [zhipu, glm, pinned]
+    tags: [zai, glm, pinned]
     extra_headers:
-      X-Route-Pin: zhipu
+      X-Route-Pin: zai
     capabilities:
       chat: true
       streaming: true

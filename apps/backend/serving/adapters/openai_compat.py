@@ -113,6 +113,7 @@ class OpenAICompatAdapter(BaseAdapter):
             "min_p",
             "frequency_penalty",
             "presence_penalty",
+            "reasoning_effort",
             "thinking",
             "tool_stream",
         )

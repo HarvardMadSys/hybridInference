@@ -102,6 +102,9 @@ KEY_POOL_COOLDOWNS = _LabeledNoOp()
 KEY_POOL_EXHAUSTED = _LabeledNoOp()
 KEY_POOL_ACTIVE_AFFINITIES = _LabeledGaugeNoOp()
 
+# Routing affinity metrics
+ROUTING_AFFINITY = _LabeledNoOp()
+
 # Per-user concurrency limiter metrics
 USER_CONCURRENCY_IN_FLIGHT = _LabeledGaugeNoOp()
 USER_CONCURRENCY_ACQUIRES_TOTAL = _LabeledNoOp()
@@ -202,6 +205,7 @@ __all__ = [
     "ROUTEWISE_TIER_DECISIONS",
     "ROUTEWISE_VALUE_ESTIMATE",
     # Routing strategy metrics
+    "ROUTING_AFFINITY",
     "ROUTING_STRATEGY_SELECTED",
     # Streaming metrics
     "STREAMING_INTERRUPTION",
