@@ -4,6 +4,8 @@ Learn how to configure FreeInference with popular coding agents and IDEs.
 
 All agents use the same FreeInference API key. If you don't have one yet, see the [Quick Start](quickstart.md).
 
+If you are choosing one default setup path, use Kilo Code. It works directly with FreeInference's OpenAI-compatible endpoint and has the most detailed setup guide below.
+
 ---
 
 ## Cursor
@@ -199,17 +201,59 @@ GitHub Copilot does not support custom OpenAI-compatible endpoints. However, you
 
 ---
 
-## Roo Code & Kilo Code
+## Kilo Code
 
-[Roo Code](https://roocode.com) and [Kilo Code](https://kilocode.ai) are AI coding assistants with similar configuration.
+[Kilo Code](https://kilocode.ai) is an AI coding assistant that works well with FreeInference through the standard OpenAI-compatible endpoint.
 
 ### Configuration Steps
 
-1. Install the Roo Code or Kilo Code extension/plugin in your IDE (VS Code or JetBrains)
+1. Install the **Kilo Code** extension or plugin in your IDE.
 
-2. Open the settings (click the settings icon in the extension panel)
+2. Open the Kilo Code panel.
 
-3. In **API Provider**, select **OpenAI Compatible**
+3. Open Kilo Code settings.
+
+4. In **API Provider**, select **OpenAI Compatible**.
+
+5. Configure the connection exactly as follows:
+
+   ```
+   Base URL: https://freeinference.org/v1
+   API Key: your-api-key-here
+   ```
+
+6. Choose a model based on the workflow you want:
+
+   | Use Case | Recommended Model |
+   |----------|-------------------|
+   | Default coding assistant | `glm-5.1` |
+   | Faster edit loops | `glm-5-turbo` |
+   | Long context or image input | `minimax-m2.5` |
+   | Strong bilingual coding | `glm-5` |
+
+7. Save the settings.
+
+8. Start a new Kilo Code session and send a simple prompt such as `Summarize this repository` to confirm the connection works.
+
+### Notes
+
+- Use the exact base URL `https://freeinference.org/v1` with no extra path segments.
+- If the model picker is empty, reopen the Kilo panel or paste the model ID manually.
+- If you want repository indexing, see the `Codebase Indexing` section below for the Kilo-specific embedding setup.
+
+---
+
+## Roo Code
+
+[Roo Code](https://roocode.com) is an AI coding assistant for VS Code and JetBrains with a similar OpenAI-compatible setup.
+
+### Configuration Steps
+
+1. Install the **Roo Code** extension or plugin in your IDE.
+
+2. Open the Roo Code settings.
+
+3. In **API Provider**, select **OpenAI Compatible**.
 
 4. Configure the connection:
    ```
@@ -217,9 +261,9 @@ GitHub Copilot does not support custom OpenAI-compatible endpoints. However, you
    API Key: your-api-key-here
    ```
 
-5. Select your preferred model (e.g., `glm-5`, `glm-5.1`, `glm-4.7`, `minimax-m2.5`, etc.)
+5. Select your preferred model such as `glm-5.1`, `glm-5`, `glm-4.7`, or `minimax-m2.5`.
 
-6. Save settings and start using with FreeInference!
+6. Save settings and start using FreeInference.
 
 ---
 
@@ -453,12 +497,17 @@ If you get "model not found" errors:
 | 503 Accounts unavailable | Subscription pool exhausted | Wait a minute and retry |
 | Connection timeout | Network issue | Check connectivity to `freeinference.org` |
 
-### Roo Code / Kilo Code Issues
+### Kilo Code / Roo Code Issues
 
 **Provider not connecting:**
 - Verify **OpenAI Compatible** is selected as the provider
 - Check that the base URL and API key are correct
 - Try reloading the extension
+
+**Model list empty or stale:**
+- Reopen the Kilo Code or Roo Code panel
+- Paste a known model ID such as `glm-5.1` manually
+- Confirm the base URL is exactly `https://freeinference.org/v1`
 
 ---
 
@@ -473,8 +522,8 @@ If you get "model not found" errors:
 | Aider | OpenAI | `https://freeinference.org/v1` | Environment variables |
 | Twinny | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | CodeGPT | OpenAI | `https://freeinference.org/v1` | Extension settings |
-| Roo Code | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | Kilo Code | OpenAI | `https://freeinference.org/v1` | Extension settings |
+| Roo Code | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | Windsurf | OpenAI | `https://freeinference.org/v1` | Cascade → Model Provider |
 | JetBrains AI | via plugin | `https://freeinference.org/v1` | Use Roo Code / Continue / CodeGPT plugin |
 | Any OpenAI client | OpenAI | `https://freeinference.org/v1` | Client config |
