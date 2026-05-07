@@ -26,7 +26,7 @@ help:  ## Show this help message
 format:  ## Format code with ruff (configured for Google style)
 	@echo "$(YELLOW)Running formatter...$(RESET)"
 	$(UV_RUN) ruff format .
-	$(UV_RUN) ruff check --fix .
+	$(UV_RUN) ruff check --fix --unsafe-fixes .
 	@echo "$(GREEN)OK Code formatted$(RESET)"
 
 lint:  ## Run linters (ruff format check, ruff lint, pydocstyle)
