@@ -363,7 +363,15 @@ def register_from_models_yaml(
                 # preserved while analytics columns (api_logs.provider, Prometheus
                 # labels) see a single "openrouter" cohort.
                 provider_for_cfg, _ = parse_openrouter_kind(kind)
-                adapter_cfg["provider"] = provider_for_cfg
+                # Preserve explicit model-level provider only for logical OpenAI
+                # adapters where route kind remains OpenAI-compatible and the
+                # model declares provider: openai. This keeps GPT-style models
+                # surfaced as owned_by=openai, while leaving other cross-kind
+                # variants (e.g., zai->ollama/chutes, minimax->ollama) unchanged.
+                if kind == "openai_compat" and top_cfg.get("provider") == "openai":
+                    adapter_cfg["provider"] = "openai"
+                else:
+                    adapter_cfg["provider"] = provider_for_cfg
                 # Generate unique endpoint_id for availability tracking and circuit breaker
                 adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)
 
