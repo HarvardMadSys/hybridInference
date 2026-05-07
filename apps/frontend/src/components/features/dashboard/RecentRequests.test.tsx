@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RecentRequestItem } from '@/lib/api/user';
 import { RecentRequests } from './RecentRequests';
@@ -9,6 +9,10 @@ import { RecentRequests } from './RecentRequests';
 vi.mock('@/lib/hooks', () => ({
   useRecentRequests: vi.fn(),
 }));
+
+afterEach(() => {
+  cleanup();
+});
 
 function makeRequest(overrides: Partial<RecentRequestItem> = {}): RecentRequestItem {
   return {
@@ -50,7 +54,7 @@ describe('RecentRequests', () => {
 
     expect(screen.queryByText('Request Details')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('claude-sonnet'));
+    fireEvent.click(screen.getAllByText('claude-sonnet')[0]);
 
     expect(screen.getByText('Request Details')).toBeInTheDocument();
     expect(screen.getByText('req_1234567890abcdefghijklmnop')).toBeInTheDocument();
@@ -64,8 +68,34 @@ describe('RecentRequests', () => {
     expect(screen.getByText('Prompt / Output')).toBeInTheDocument();
     expect(screen.getByText('1.2k / 301')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('claude-sonnet'));
+    fireEvent.click(screen.getAllByText('claude-sonnet')[0]);
 
     expect(screen.queryByText('Request Details')).not.toBeInTheDocument();
+  });
+
+  it('rounds sub-second latencies consistently across metrics', async () => {
+    const { useRecentRequests } = await import('@/lib/hooks');
+    vi.mocked(useRecentRequests).mockReturnValue({
+      data: {
+        requests: [
+          makeRequest({
+            latency_ms: 456.7,
+            ttft_ms: 123.4,
+          }),
+        ],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useRecentRequests>);
+
+    render(<RecentRequests />);
+
+    fireEvent.click(screen.getAllByText('claude-sonnet')[0]);
+
+    expect(screen.getByText('457ms')).toBeInTheDocument();
+    expect(screen.getByText('123ms')).toBeInTheDocument();
   });
 });

@@ -58,7 +58,7 @@ function formatCost(cost: number | null | undefined): string {
 function formatLatency(latencyMs: number | null | undefined): string {
   if (latencyMs == null) return '—';
   if (latencyMs >= 1000) return `${(latencyMs / 1000).toFixed(1)}s`;
-  return `${latencyMs}ms`;
+  return `${Math.round(latencyMs).toLocaleString()}ms`;
 }
 
 function DetailStat({ label, value }: { label: string; value: string }): JSX.Element {
@@ -158,7 +158,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
 
               <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <DetailStat label="Latency" value={formatLatency(req.latency_ms)} />
-                <DetailStat label="TTFT" value={req.ttft_ms != null ? `${req.ttft_ms}ms` : '—'} />
+                <DetailStat label="TTFT" value={formatLatency(req.ttft_ms)} />
                 <DetailStat label="Total Tokens" value={formatTokens(req.total_tokens)} />
                 <DetailStat label="Cached Tokens" value={formatTokens(cachedTokens)} />
                 <DetailStat
