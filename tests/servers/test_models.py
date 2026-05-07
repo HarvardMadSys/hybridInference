@@ -149,6 +149,32 @@ async def test_models_single_adapter_no_aggregation():
 
 
 @pytest.mark.asyncio
+async def test_models_openai_provider_is_preserved_for_gpt_style_entry():
+    router = RouteExecutor()
+    a = _Adapter(
+        _cfg(
+            id="gpt-5.5",
+            provider="openai",
+            supported=["temperature", "max_tokens", "reasoning_effort"],
+            tools=True,
+        ),
+        content="ok",
+    )
+    router.register_route("gpt-5.5", [(a, 1.0)])
+
+    app = FastAPI()
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
+    app.include_router(models.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+
+    item = next(m for m in resp.json()["data"] if m["id"] == "gpt-5.5")
+    assert item["owned_by"] == "openai"
+
+
+@pytest.mark.asyncio
 async def test_models_pricing_primary_config_behavior():
     router = RouteExecutor()
     p_primary = {"prompt": "1", "completion": "2"}

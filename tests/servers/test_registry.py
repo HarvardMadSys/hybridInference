@@ -199,6 +199,45 @@ def test_register_from_models_yaml_cliproxy_gpt55(tmp_path, monkeypatch):
     assert "reasoning_effort" in adapter.config.supported_params
 
 
+def test_register_from_models_yaml_keeps_model_provider_when_route_kind_differs(tmp_path, monkeypatch):
+    yaml_text = (
+        "models:\n"
+        "  - id: gpt-5.5\n"
+        "    name: GPT-5.5\n"
+        "    provider: openai\n"
+        "    required_role: internal\n"
+        "    provider_model_id: gpt-5.5\n"
+        "    context_length: 1050000\n"
+        "    max_output_length: 128000\n"
+        "    supports_tools: true\n"
+        "    supports_structured_output: true\n"
+        "    supported_params: [max_tokens, stream, tools, tool_choice, reasoning_effort]\n"
+        "    input_modalities: [text, image]\n"
+        "    output_modalities: [text]\n"
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: ${CLI_PROXY_BASE_URL}\n"
+        "        api_key: ${CLI_PROXY_API_KEY}\n"
+        "        provider_model_id: gpt-5.5\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
+    monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
+
+    exe = RouteExecutor()
+    count, infos = registry.register_from_models_yaml(exe, Path(p))
+
+    assert count == 1
+    route = exe.routes["gpt-5.5"]
+    adapter = route.adapters[0][0]
+    assert adapter.config.provider == "openai"
+    assert adapter.config.base_url == "http://cliproxy.local/v1"
+    assert adapter.config.provider_model_id == "gpt-5.5"
+    assert [info.model_id for info in infos] == ["gpt-5.5"]
+
+
 @pytest.mark.unit
 def test_register_from_models_yaml_skips_bad_model_and_continues(tmp_path, monkeypatch):
     yaml_text = (
