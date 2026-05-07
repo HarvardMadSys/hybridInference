@@ -253,14 +253,10 @@ def mock_env(monkeypatch):
     """Mock environment variables for testing."""
     test_env = {
         "DB_ENABLED": "false",  # Disable DB in tests by default
-        "DB_BACKEND": "postgres",  # Ensure tests default to postgres, not D1 from .env
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
         "LOCAL_BASE_URL": "http://localhost:8001",
     }
-    # Clear D1 env vars that may leak from .env
-    for d1_var in ("D1_ACCOUNT_ID", "D1_DATABASE_ID", "D1_API_TOKEN"):
-        monkeypatch.delenv(d1_var, raising=False)
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
     # Clear cached settings so bootstrap reads the test env
@@ -506,8 +502,7 @@ async def auth_app_db_logger_fixture(auth_app):
 async def require_db(auth_app):
     """Skip tests that require database if not available.
 
-    Returns the operational store from the app services, which works with
-    both PostgreSQL and D1 backends.
+    Returns the operational store from the app services.
 
     Usage:
         async def test_user_creation(auth_client, require_db):

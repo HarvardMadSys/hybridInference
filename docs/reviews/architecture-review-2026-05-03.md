@@ -9,8 +9,7 @@ This document consolidates five per-subsystem architecture reviews of the FreeIn
 - **`RouteWiseRouter` is a 1188-line monolith** combining 3-tier classification, primal-dual LP, hedging, quota, concurrency, and predictor — with `_pending_decisions` keyed by request_id and no cleanup guard ([routing/routewise/router.py](routing/routewise/router.py)). See [routing/](#routing-router-executor-routewise).
 - **The admin page is a 3343-line React monolith** with 32 useState calls ([frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx)). See [frontend/](#frontend-nextjs-dashboard--admin).
 - **Cost increment and request logging are fire-and-forget** with no observability — if a user disconnects mid-stream, cost may be lost ([serving/servers/routers/completions.py:46-95](serving/servers/routers/completions.py#L46)). See [serving/](#serving-fastapi-gateway-adapters-storage-observability).
-- **D1 dual-write shadow failures are silent** — only logged, never surfaced as metrics, so D1↔Postgres drift is undetectable ([serving/storage/dual_write.py:61-76](serving/storage/dual_write.py#L61)). See [serving/](#serving-fastapi-gateway-adapters-storage-observability).
-- **No schema migration framework.** Static SQL in [serving/storage/d1_schema.sql](serving/storage/d1_schema.sql), schema applied at app startup, no rollback. See [infrastructure](#infrastructure--config--scripts-deployment--ops).
+- **No schema migration framework.** Schema is applied by startup initialization code, with no rollback. See [infrastructure](#infrastructure--config--scripts-deployment--ops).
 - **SSH-based git-reset deployment with no human gates or rollback automation.** Any green CI on `main` SSHes into prod and `git reset --hard`s. See [infrastructure](#infrastructure--config--scripts-deployment--ops).
 - **Secrets sit unencrypted in `.env` files on disk** (API keys, DB passwords, JWT secret, Slack webhooks). See [infrastructure](#infrastructure--config--scripts-deployment--ops).
 - **DB backups run nightly to S3 but are never restore-tested**; RTO/RPO undocumented. See [infrastructure](#infrastructure--config--scripts-deployment--ops).
@@ -30,7 +29,7 @@ This document consolidates five per-subsystem architecture reviews of the FreeIn
   - `routers/` (9 routes): HTTP endpoints for chat, embeddings, auth, health, admin
   - `middleware/` (4 modules): request logging, error handling, request ID, timeout
   - `app.py`, `bootstrap.py`, `auth.py`, `deps.py`, `registry.py`, `concurrency.py`
-- **`storage/`** (7 modules): `OperationalStore` & `LogStore` abstractions with dual Postgres/D1 implementations.
+- **`storage/`**: `OperationalStore` & `LogStore` abstractions backed by PostgreSQL implementations.
 - **`observability/`**: Metrics (currently no-op shims).
 - **`config/`, `utils/`, `auth/`, `admin/`**: Configuration, JWT, email, rate limiting, admin endpoints.
 
@@ -63,18 +62,15 @@ Strong abstraction via `BaseAdapter` ([serving/adapters/base.py:1-100](serving/a
 
 #### Storage / Persistence
 
-Hybrid dual-write architecture:
+Storage architecture:
 
-- **`OperationalStore`** (users, API keys, sessions, tokens): Postgres or D1 (Cloudflare).
-- **`LogStore`** (request logs, hourly stats): Always Postgres (D1 lacks transactional guarantees for high-volume appends).
-- **`DualWriteOperationalStore`** ([serving/storage/dual_write.py:46+](serving/storage/dual_write.py#L46)): Reads from D1 primary; writes replayed asynchronously to Postgres shadow for fallback. Shadow failures are swallowed, logged only.
+- **`OperationalStore`** (users, API keys, sessions, tokens): PostgreSQL.
+- **`LogStore`** (request logs, hourly stats): PostgreSQL.
 
-Schema shape: [serving/storage/postgres_operational.py](serving/storage/postgres_operational.py) (1499 lines) and [serving/storage/d1_operational.py](serving/storage/d1_operational.py) (1186 lines) mirror each other. [serving/storage/postgres_log.py](serving/storage/postgres_log.py) (616 lines) maintains hourly bucketed logs. Both stores have immutable column allowlists ([serving/storage/base.py:36-60](serving/storage/base.py#L36)) to prevent SQL injection in dynamic UPDATE paths.
+Schema shape: [serving/storage/postgres_operational.py](serving/storage/postgres_operational.py) handles operational tables. [serving/storage/postgres_log.py](serving/storage/postgres_log.py) maintains hourly bucketed logs. Stores have immutable column allowlists ([serving/storage/base.py:36-60](serving/storage/base.py#L36)) to prevent SQL injection in dynamic UPDATE paths.
 
 **Concerns**:
 
-- D1 schema intentionally omits `error` column ([serving/storage/exceptions.py:149-155](serving/storage/exceptions.py#L149)) — `request_id` surfaced to user is non-debuggable if D1-only.
-- Dual-write shadow failures are silent (no metrics, only logs) — operators can't easily detect D1/Postgres drift.
 - No foreign keys between operational & log stores — accidental orphaning is silent.
 
 #### Observability
@@ -99,7 +95,7 @@ Schema shape: [serving/storage/postgres_operational.py](serving/storage/postgres
 
 - Routers are provider-agnostic, config-driven.
 - Auth concerns isolated in [serving/servers/auth.py](serving/servers/auth.py).
-- Storage layer abstracted (can swap D1 ↔ Postgres at runtime via `DB_BACKEND` env var).
+- Storage layer abstracted behind store protocols.
 - Adapters have minimal dependency on router logic.
 
 **Coupling issues**:
@@ -114,10 +110,8 @@ Schema shape: [serving/storage/postgres_operational.py](serving/storage/postgres
 | File | Lines | Responsibility |
 |------|-------|----------------|
 | [serving/storage/postgres_operational.py](serving/storage/postgres_operational.py) | 1499 | All user/key/session CRUD for Postgres |
-| [serving/storage/d1_operational.py](serving/storage/d1_operational.py) | 1186 | All user/key/session CRUD for D1 (Cloudflare) |
 | [serving/storage/database.py](serving/storage/database.py) | 1096 | Postgres connection pooling, migration runner |
 | [serving/servers/routers/completions.py](serving/servers/routers/completions.py) | 1030 | Chat completions endpoint with routing, streaming, cost tracking, logging |
-| [serving/storage/dual_write.py](serving/storage/dual_write.py) | 892 | Proxy for primary/shadow dual writes |
 | [serving/servers/routers/user_routes.py](serving/servers/routers/user_routes.py) | 865 | User profile, API key mgmt, quota reads |
 | [serving/schemas_admin.py](serving/schemas_admin.py) | 825 | Admin-facing Pydantic schemas |
 | [serving/adapters/openai_compat.py](serving/adapters/openai_compat.py) | 782 | Generic OpenAI-compatible provider adapter |
@@ -127,10 +121,9 @@ Schema shape: [serving/storage/postgres_operational.py](serving/storage/postgres
 #### Top Architectural Concerns
 
 1. Fire-and-forget cost/logging without observability ([serving/servers/routers/completions.py:46-95](serving/servers/routers/completions.py#L46)).
-2. D1 shadow divergence risk undetected ([serving/storage/dual_write.py:61-76](serving/storage/dual_write.py#L61)).
-3. Metrics removed, no alerting on inference quality ([serving/observability/metrics.py](serving/observability/metrics.py)).
-4. Router centralization and single-responsibility creep ([serving/servers/routers/completions.py](serving/servers/routers/completions.py), 1030 lines).
-5. No schema validation on routing metadata ([serving/servers/routers/completions.py:110-130](serving/servers/routers/completions.py#L110), `routing_info` dict).
+2. Metrics removed, no alerting on inference quality ([serving/observability/metrics.py](serving/observability/metrics.py)).
+3. Router centralization and single-responsibility creep ([serving/servers/routers/completions.py](serving/servers/routers/completions.py), 1030 lines).
+4. No schema validation on routing metadata ([serving/servers/routers/completions.py:110-130](serving/servers/routers/completions.py#L110), `routing_info` dict).
 
 ### routing/ (router, executor, RouteWise)
 
@@ -410,8 +403,8 @@ Fallback chain ([routing/routers.py:405-447](routing/routers.py#L405)):
 - `.env` file (not version-controlled).
 - [config/models.yaml](config/models.yaml) — model registry with provider URLs, API keys via `${ENV_VAR}`, per-model pricing, weighted fallback.
 - [config/routing.yaml](config/routing.yaml), [config/routewise.yaml](config/routewise.yaml).
-- DB backend: PostgreSQL (default) or Cloudflare D1 (`DB_BACKEND`).
-- Schema: static SQL ([serving/storage/d1_schema.sql](serving/storage/d1_schema.sql)) — no migration framework.
+- DB backend: PostgreSQL.
+- Schema: initialized by PostgreSQL store code; Alembic migration coverage is a separate gap.
 - Init in application code on startup.
 
 #### Observability Stack — Sparse
@@ -428,7 +421,6 @@ Fallback chain ([routing/routers.py:405-447](routing/routers.py#L405)):
 - `deploy_production.sh`, `deploy_staging.sh` — bash wrappers around `git reset` + `docker compose build`.
 - [scripts/db/backup.sh](scripts/db/backup.sh) — daily 04:00 UTC, S3 with GFS rotation. No restore verification, no dry-run.
 - Auth import scripts (`import_claude_auth.py`, `import_codex_auth.py`) — manual CLI on deploy.
-- Cloudflare scripts — D1 migration, R2 archival.
 - **Missing**: unified deployment CLI, runbook automation, canary/blue-green.
 
 #### CI/CD (`.github/workflows/`)
@@ -476,7 +468,7 @@ Fallback chain ([routing/routers.py:405-447](routing/routers.py#L405)):
 
 - [serving/servers/routers/completions.py](serving/servers/routers/completions.py) (1030 lines): auth, role gating, streaming, error, cost, logging, routing observation.
 - [routing/routewise/router.py](routing/routewise/router.py) (1188 lines): 3-tier classification, primal-dual, LP, hedging, quota, concurrency.
-- [serving/storage/postgres_operational.py](serving/storage/postgres_operational.py) (1499 lines) and [serving/storage/d1_operational.py](serving/storage/d1_operational.py) (1186 lines): all user/key/session CRUD in single files.
+- [serving/storage/postgres_operational.py](serving/storage/postgres_operational.py) (1499 lines): user/key/session CRUD concentrated in a single file.
 - [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx) (3343 lines): 32 useState calls, 6+ tabs.
 - [serving/adapters/openai_compat.py](serving/adapters/openai_compat.py) (782 lines): absorbing every provider quirk.
 
@@ -485,7 +477,6 @@ Fallback chain ([routing/routers.py:405-447](routing/routers.py#L405)):
 **Subsystems**: serving, routing, storage.
 
 - Cost increment + request logging run async without await ([serving/servers/routers/completions.py:46-95](serving/servers/routers/completions.py#L46)). User disconnect mid-stream → cost may not be tracked.
-- `DualWriteOperationalStore` shadow failures are swallowed and logged only ([serving/storage/dual_write.py:61-76](serving/storage/dual_write.py#L61)) — D1↔Postgres drift undetectable.
 - `RouteWiseRouter._pending_decisions[request_id]` relies on caller to invoke `record_observation()`; no callback guard, leak under throughput.
 - RouteWise shadow hedging decision log grows unbounded.
 
@@ -493,8 +484,7 @@ Fallback chain ([routing/routers.py:405-447](routing/routers.py#L405)):
 
 **Subsystems**: storage, infrastructure.
 
-- No migration framework. [serving/storage/d1_schema.sql](serving/storage/d1_schema.sql) is static SQL applied at app startup.
-- D1 schema intentionally omits `error` column ([serving/storage/exceptions.py:149-155](serving/storage/exceptions.py#L149)) — debug info inaccessible.
+- No migration framework; schema initialization still runs in application startup paths.
 - No foreign keys between operational and log stores.
 - SSH-deploy to prod via `git reset --hard` on any green main CI; no human gate, no rollback automation.
 - Secrets in plaintext `.env` files on disk (API keys, DB passwords, JWT, Slack).
@@ -515,8 +505,8 @@ Fallback chain ([routing/routers.py:405-447](routing/routers.py#L405)):
 
 1. **Restore baseline metrics + alerting end-to-end.** Re-enable Prometheus scrape, wire real counters/histograms in [serving/observability/metrics.py](serving/observability/metrics.py), expand Alertmanager routes beyond the 3 hard-coded names, and add at least one external uptime/probe check. This is the highest leverage move because every other concern (silent shadow drift, fire-and-forget cost, RouteWise opacity, deploy regressions) is currently undetectable.
 2. **Decompose `completions.py` and `routewise/router.py`.** Pull cost, logging, routing-observation, and role-gating into composable middleware/services; split RouteWise classification, LP, hedging, and quota into independently testable modules. The blast radius of either file is the entire request path; shrinking them unlocks unit-testability and reduces incident MTTR.
-3. **Adopt a real DB migration framework and wire it into deploy.** Replace static [serving/storage/d1_schema.sql](serving/storage/d1_schema.sql) with versioned migrations (Alembic or equivalent), gate deploy on migration apply, and add a nightly restore-test of [scripts/db/backup.sh](scripts/db/backup.sh). Schema drift between code and DB is a silent-corruption class of bug; backups that have never been restored aren't backups.
+3. **Adopt a real DB migration framework and wire it into deploy.** Replace startup-driven schema initialization with versioned migrations (Alembic or equivalent), gate deploy on migration apply, and add a nightly restore-test of [scripts/db/backup.sh](scripts/db/backup.sh). Schema drift between code and DB is a silent-corruption class of bug; backups that have never been restored aren't backups.
 4. **Add a deployment safety gate and rollback path.** Require human approval (or canary + auto-rollback) between green CI and SSH `git reset --hard` to prod; move secrets out of plaintext `.env` to a managed store. Today any `main` merge is a one-shot to production with no undo.
-5. **Make shadow writes and pending-decision state observable, not silent.** Surface [serving/storage/dual_write.py:61-76](serving/storage/dual_write.py#L61) shadow failures as metrics + alerts, add a TTL/cleanup sweep for `_pending_decisions` in [routing/routewise/router.py](routing/routewise/router.py), and bound the hedging decision log. These are unbounded-leak / silent-divergence bugs waiting to happen at scale.
+5. **Make pending-decision state observable, not silent.** Add a TTL/cleanup sweep for `_pending_decisions` in [routing/routewise/router.py](routing/routewise/router.py), bound the hedging decision log, and surface request-path failures with real metrics + alerts. These are unbounded-leak / silent-failure bugs waiting to happen at scale.
 6. **Break up the admin page and unify frontend state.** Split [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx) by tab into route segments, push auth state into React Query, and route the playground stream through the API layer instead of bypassing it ([frontend/src/app/dashboard/playground/page.tsx:271](frontend/src/app/dashboard/playground/page.tsx#L271)). 3343 lines + 32 useState is the frontend equivalent of `completions.py`.
 7. **Consolidate client tooling around the harness contract.** Either delete `client/` and `llm-prober/` or rebuild `client/` on top of the harness's HTTP-only black-box pattern; share a single percentile/metrics implementation; add a lint rule enforcing harness's no-`serving`-imports rule. The current state has a `NotImplementedError` in a "production" load tester, an empty directory, and duplicated metrics — net negative.
