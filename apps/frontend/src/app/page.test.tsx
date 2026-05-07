@@ -1,21 +1,29 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import HomePage from './page';
 
+const replace = vi.fn();
+let authState = {
+  loading: false,
+  isAuthenticated: false,
+  user: null as { id: string; email: string; role: string; user_name?: string | null } | null,
+};
+
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: vi.fn() }),
+  useRouter: () => ({ replace }),
 }));
 
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({
-    state: {
-      loading: false,
-      isAuthenticated: false,
-    },
+    state: authState,
   }),
+}));
+
+vi.mock('@/components/providers/AuthProvider', () => ({
+  hasRole: (userRole: string | undefined, required: string) => userRole === required,
 }));
 
 vi.mock('@/components/landing', () => ({
@@ -25,7 +33,32 @@ vi.mock('@/components/landing', () => ({
   HowItWorks: () => <section aria-label="how it works" />,
 }));
 
+vi.mock('@/components/features/dashboard/ApiKeyManager', () => ({
+  ApiKeyManager: () => <section aria-label="api key manager" />,
+}));
+
+vi.mock('@/components/features/dashboard/ModelsSection', () => ({
+  ModelsSection: () => <section aria-label="models" />,
+}));
+
+vi.mock('@/components/features/dashboard/RecentRequests', () => ({
+  RecentRequests: () => <section aria-label="recent requests" />,
+}));
+
+vi.mock('@/components/features/dashboard/UsageStats', () => ({
+  UsageStats: () => <section aria-label="usage stats" />,
+}));
+
 describe('HomePage', () => {
+  beforeEach(() => {
+    replace.mockClear();
+    authState = {
+      loading: false,
+      isAuthenticated: false,
+      user: null,
+    };
+  });
+
   it('shows the no-guarantee notice before the prompt logging notice', () => {
     const { container } = render(<HomePage />);
 
@@ -38,5 +71,25 @@ describe('HomePage', () => {
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(container).toHaveTextContent(/provided without guarantee/i);
+  });
+
+  it('shows dashboard content on the homepage for authenticated users without redirecting', () => {
+    authState = {
+      loading: false,
+      isAuthenticated: true,
+      user: {
+        id: 'user-1',
+        email: 'user@example.com',
+        role: 'free',
+        user_name: 'Test User',
+      },
+    };
+
+    render(<HomePage />);
+
+    expect(screen.getByRole('heading', { name: /dashboard/i })).toBeInTheDocument();
+    expect(screen.getByText(/welcome back, test user/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/api key manager/i)).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
   });
 });
