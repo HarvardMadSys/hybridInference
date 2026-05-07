@@ -30,6 +30,9 @@ export default function HomePage(): JSX.Element {
       <Features />
       <HowItWorks />
       <CodeExample />
+      <p className="px-4 pb-6 text-center text-xs text-gray-500 sm:px-6 lg:px-8">
+        All prompts and responses are logged.
+      </p>
     </div>
   );
 }
