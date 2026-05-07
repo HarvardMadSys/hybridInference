@@ -650,8 +650,8 @@ models:
     provider: openai
     required_role: internal
     provider_model_id: "gpt-5.3-spark"
-    context_length: 1050000
-    max_output_length: 128000
+    context_length: 120800
+    max_output_length: 8000
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, response_format, seed, reasoning_effort]
