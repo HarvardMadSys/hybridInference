@@ -30,8 +30,9 @@ format:  ## Format code with ruff (configured for Google style)
 	$(UV_RUN) ruff check --fix .
 	@echo "$(GREEN)OK Code formatted$(RESET)"
 
-lint:  ## Run linters (ruff, pydocstyle)
+lint:  ## Run linters (ruff format check, ruff lint, pydocstyle)
 	@echo "$(YELLOW)Running linters...$(RESET)"
+	$(UV_RUN) ruff format --check .
 	$(UV_RUN) ruff check --no-fix .
 	$(UV_RUN) pydocstyle
 	@echo "$(GREEN)OK Linting passed$(RESET)"
@@ -51,11 +52,6 @@ test-db:  ## Run tests that require PostgreSQL (set TEST_DB_* env vars)
 	@echo "$(YELLOW)Running database-dependent tests...$(RESET)"
 	$(UV_RUN) pytest -vv -m "dbtest"
 	@echo "$(GREEN)OK Database tests passed$(RESET)"
-
-test-d1:  ## Run live Cloudflare D1 integration tests (requires D1_ACCOUNT_ID, D1_DATABASE_ID, D1_API_TOKEN in .env)
-	@echo "$(YELLOW)Running D1 integration tests...$(RESET)"
-	$(UV_RUN) pytest -vv -m "d1"
-	@echo "$(GREEN)OK D1 tests passed$(RESET)"
 
 test-all:  ## Run all tests except external (includes db-dependent)
 	@echo "$(YELLOW)Running all tests (not external)...$(RESET)"

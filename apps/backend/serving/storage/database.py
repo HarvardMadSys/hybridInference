@@ -24,6 +24,22 @@ from serving.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _parse_admin_emails(raw: str) -> list[str]:
+    """Return normalized admin email addresses from a comma-separated env var."""
+    return [email.strip().lower() for email in raw.split(",") if email.strip()]
+
+
+def _parse_command_tag_count(command_tag: str) -> int:
+    """Extract the affected row count from an asyncpg command tag."""
+    parts = command_tag.split()
+    if not parts:
+        return 0
+    try:
+        return int(parts[-1])
+    except ValueError:
+        return 0
+
+
 class DatabaseLogger:
     """Asynchronous PostgreSQL logger using a pooled connection."""
 
@@ -138,22 +154,37 @@ class DatabaseLogger:
         )
 
         if should_store_full:
-            # Store full prompt and response text
-            prompt_str = json.dumps(prompt) if isinstance(prompt, list) else str(prompt)
-            response_str = (
-                json.dumps(response)
-                if isinstance(response, dict)
-                else str(response)
-                if response is not None
-                else None
-            )
+            prompt_to_store = prompt
+            response_to_store = response
         else:
-            # Privacy mode: only store hash, not content
-            prompt_str = None
-            response_str = None
+            prompt_to_store = None
+            response_to_store = None
 
-        # Calculate cost based on usage and pricing
-        cost_usd = calculate_cost(usage, pricing)
+        # Extract parameters
+        params = params or {}
+        temperature = params.get("temperature")
+        top_p = params.get("top_p")
+        max_tokens = params.get("max_tokens")
+        seed = params.get("seed")
+        stream = params.get("stream", False)
+
+        # Extract metadata
+        metadata = metadata or {}
+        user_id = metadata.get("user_id")
+        session_id = metadata.get("session_id")
+        tools = metadata.get("tools")
+
+        # Token usage
+        usage = usage or {}
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        reasoning_tokens = usage.get("reasoning_tokens")
+        total_tokens = usage.get("total_tokens")
+        cache_read_tokens = usage.get("cache_read_tokens")
+        cache_write_tokens = usage.get("cache_write_tokens")
+
+        # Compute user-billed cost when pricing is available
+        cost_usd = calculate_cost(usage if usage else None, pricing)
 
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -163,161 +194,65 @@ class DatabaseLogger:
                     temperature, top_p, max_tokens, seed, stream,
                     ttft_ms, latency_ms,
                     prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
-                    cache_read_tokens, cache_write_tokens, cost_usd,
+                    cache_read_tokens, cache_write_tokens,
                     prompt, response, prompt_hash, response_hash,
-                    status_code, error, user_id, session_id, metadata,
-                    tools, upstream_cost_usd
-                )
-                VALUES (
+                    status_code, error, user_id, session_id, metadata, tools,
+                    cost_usd, upstream_cost_usd
+                ) VALUES (
                     $1, $2, $3,
                     $4, $5, $6, $7, $8,
                     $9, $10,
                     $11, $12, $13, $14,
-                    $15, $16, $17,
-                    $18, $19, $20, $21,
-                    $22, $23, $24, $25, $26::jsonb,
-                    $27::jsonb, $28
+                    $15, $16,
+                    $17, $18, $19, $20,
+                    $21, $22, $23, $24, $25, $26,
+                    $27, $28
                 )
-                ON CONFLICT (request_id) DO NOTHING
                 """,
                 request_id,
                 model_id,
                 provider,
-                # Request parameters
-                (params or {}).get("temperature"),
-                (params or {}).get("top_p"),
-                (params or {}).get("max_tokens"),
-                (params or {}).get("seed"),
-                (params or {}).get("stream"),
-                # Performance metrics
+                temperature,
+                top_p,
+                max_tokens,
+                seed,
+                stream,
                 ttft_ms,
                 latency_ms,
-                # Token usage
-                (usage or {}).get("prompt_tokens"),
-                (usage or {}).get("completion_tokens"),
-                (usage or {}).get("reasoning_tokens"),
-                (usage or {}).get("total_tokens"),
-                # Cache and cost
-                (usage or {}).get("cache_read_tokens"),
-                (usage or {}).get("cache_write_tokens"),
-                cost_usd,
-                # Content
-                prompt_str,
-                response_str,
+                prompt_tokens,
+                completion_tokens,
+                reasoning_tokens,
+                total_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                json.dumps(prompt_to_store)
+                if isinstance(prompt_to_store, list)
+                else prompt_to_store,
+                json.dumps(response_to_store)
+                if isinstance(response_to_store, dict)
+                else response_to_store,
                 prompt_hash,
                 response_hash,
-                # Metadata
                 status_code,
                 error,
-                (metadata or {}).get("user_id"),
-                (metadata or {}).get("session_id"),
+                user_id,
+                session_id,
                 json.dumps(metadata) if metadata else None,
-                json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
+                json.dumps(tools) if tools else None,
+                cost_usd,
                 upstream_cost_usd,
             )
 
-    async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
-        """Aggregate recent real-user traffic per (model_id, provider).
-
-        Returns a dict keyed by ``"model_id::provider"`` with per-route stats.
-        Synthetic probes (``user_id IS NULL``) are excluded.
-        """
-        if not self.pool:
-            return {}
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT model_id, provider,
-                       COUNT(*)                                           AS request_count,
-                       COUNT(*) FILTER (WHERE status_code < 400)          AS success_count,
-                       MAX(timestamp)                                     AS last_request_at,
-                       AVG(latency_ms) FILTER (WHERE status_code < 400)   AS avg_latency_ms,
-                       COUNT(*) FILTER (WHERE stream = TRUE)              AS stream_count,
-                       COUNT(*) FILTER (WHERE stream IS NOT TRUE)         AS non_stream_count,
-                       COUNT(*) FILTER (WHERE stream = TRUE AND status_code < 400)
-                           AS stream_success_count,
-                       COUNT(*) FILTER (WHERE stream IS NOT TRUE AND status_code < 400)
-                           AS non_stream_success_count,
-                       MAX(timestamp) FILTER (WHERE stream = TRUE AND status_code < 400)
-                           AS stream_last_success_at,
-                       MAX(timestamp) FILTER (WHERE stream IS NOT TRUE AND status_code < 400)
-                           AS non_stream_last_success_at,
-                       AVG(ttft_ms) FILTER (WHERE stream = TRUE AND status_code < 400 AND ttft_ms IS NOT NULL)
-                           AS stream_avg_ttft_ms,
-                       AVG(completion_tokens) FILTER (WHERE status_code < 400 AND completion_tokens IS NOT NULL)
-                           AS avg_completion_tokens,
-                       AVG(completion_tokens) FILTER (WHERE stream = TRUE AND status_code < 400 AND completion_tokens IS NOT NULL)
-                           AS stream_avg_completion_tokens,
-                       AVG(completion_tokens) FILTER (WHERE stream IS NOT TRUE AND status_code < 400 AND completion_tokens IS NOT NULL)
-                           AS non_stream_avg_completion_tokens
-                FROM api_logs
-                WHERE timestamp >= NOW() - ($1 || ' minutes')::interval
-                  AND user_id IS NOT NULL
-                GROUP BY model_id, provider
-                """,
-                str(window_minutes),
-            )
-        result: dict[str, Any] = {}
-        for row in rows:
-            key = f"{row['model_id']}::{row['provider']}"
-            last_req = row["last_request_at"]
-
-            def _iso(ts: object) -> str | None:
-                if ts is None:
-                    return None
-                return ts.isoformat().replace("+00:00", "Z")  # type: ignore[union-attr]
-
-            def _round_or_none(val: object) -> float | None:
-                if val is None:
-                    return None
-                return round(float(val), 1)
-
-            result[key] = {
-                "request_count": row["request_count"],
-                "success_count": row["success_count"],
-                "last_request_at": _iso(last_req),
-                "avg_latency_ms": _round_or_none(row["avg_latency_ms"]),
-                "stream_count": row["stream_count"],
-                "non_stream_count": row["non_stream_count"],
-                "stream_success_count": row["stream_success_count"],
-                "non_stream_success_count": row["non_stream_success_count"],
-                "stream_last_success_at": _iso(row["stream_last_success_at"]),
-                "non_stream_last_success_at": _iso(row["non_stream_last_success_at"]),
-                "stream_avg_ttft_ms": _round_or_none(row["stream_avg_ttft_ms"]),
-                "avg_completion_tokens": _round_or_none(row["avg_completion_tokens"]),
-                "stream_avg_completion_tokens": _round_or_none(row["stream_avg_completion_tokens"]),
-                "non_stream_avg_completion_tokens": _round_or_none(
-                    row["non_stream_avg_completion_tokens"]
-                ),
-            }
-        return result
-
-    async def get_stats(
-        self, model_id: str | None = None, provider: str | None = None, hours: int = 24
-    ) -> list[dict[str, Any]]:
-        """Fetch aggregated hourly stats for the given time window."""
-        if not self.pool:
-            return []
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM api_stats_hourly
-                WHERE hour >= NOW() - ($1 || ' hours')::interval
-                AND ($2::text IS NULL OR model_id = $2)
-                AND ($3::text IS NULL OR provider = $3)
-                ORDER BY hour DESC
-                LIMIT 1000
-                """,
-                hours,
-                model_id,
-                provider,
-            )
-        return [dict(r) for r in rows]
-
     async def cleanup(self) -> None:
-        """Close the connection pool if initialized."""
+        """Close the asyncpg connection pool if it exists."""
         if self.pool:
-            try:
-                await self.pool.close()  # type: ignore[attr-defined]
-            finally:
-                self.pool = None
+            await self.pool.close()
+            self.pool = None
+
+
+__all__ = [
+    "DatabaseLogger",
+    "calculate_cost",
+    "compute_prompt_hash",
+    "compute_prompt_hash_chunked",
+]

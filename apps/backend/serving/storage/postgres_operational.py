@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
-from serving.storage.base import OperationalStore, Row
+from serving.storage.base import OperationalStore, ProviderKeyRow, Row
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -31,6 +31,11 @@ def _parse_command_tag_count(command_tag: str) -> int:
         return int(parts[-1])
     except ValueError:
         return 0
+
+
+def _parse_admin_emails(raw: str) -> list[str]:
+    """Return normalized admin email addresses from a comma-separated env var."""
+    return [email.strip().lower() for email in raw.split(",") if email.strip()]
 
 
 class PostgresOperationalStore(OperationalStore):
@@ -227,6 +232,9 @@ class PostgresOperationalStore(OperationalStore):
             sessions_status = await conn.execute(
                 "DELETE FROM auth_sessions WHERE user_id = $1", user_id
             )
+            login_events_status = await conn.execute(
+                "DELETE FROM login_events WHERE user_id = $1", user_id
+            )
             verif_status = await conn.execute(
                 "DELETE FROM email_verification_tokens WHERE user_id = $1", user_id
             )
@@ -244,6 +252,7 @@ class PostgresOperationalStore(OperationalStore):
             counts = {
                 "api_keys": _row_count(keys_status),
                 "auth_sessions": _row_count(sessions_status),
+                "login_events": _row_count(login_events_status),
                 "email_verification_tokens": _row_count(verif_status),
                 "password_reset_tokens": _row_count(reset_status),
                 "user_daily_cost": _row_count(cost_status),
@@ -578,8 +587,8 @@ class PostgresOperationalStore(OperationalStore):
                 return total, [], status_counts
 
             # Post-fetch: batch-query usage dimensions not in CTEs so the
-            # response always carries today/month costs for the page.
-            user_ids = [row["id"] for row in rows if row["key_prefix"]]
+            # response always carries usage costs for the page.
+            user_ids = [row["id"] for row in rows]
 
             if user_ids and not needs_today:
                 today_rows = await conn.fetch(
@@ -607,13 +616,25 @@ class PostgresOperationalStore(OperationalStore):
             else:
                 month_map = {}
 
+            if user_ids and not needs_alltime:
+                alltime_rows = await conn.fetch(
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    "FROM user_daily_cost "
+                    "WHERE user_id = ANY($1::text[]) "
+                    "GROUP BY user_id",
+                    user_ids,
+                )
+                alltime_map = {r["user_id"]: r["cost"] for r in alltime_rows}
+            else:
+                alltime_map = {}
+
         # Assemble result rows with usage columns.
         result_rows: list[Row] = []
         for row in rows:
             r = dict(row)
             r["usage_today"] = r.get("usage_today") or today_map.get(r["id"], 0)
             r["usage_month"] = r.get("usage_month") or month_map.get(r["id"], 0)
-            r.setdefault("usage_alltime", 0)
+            r["usage_alltime"] = r.get("usage_alltime") or alltime_map.get(r["id"], 0)
             result_rows.append(r)
 
         return total, result_rows, status_counts
@@ -955,6 +976,56 @@ class PostgresOperationalStore(OperationalStore):
         """Delete all sessions for a user."""
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", user_id)
+
+    # -- login events --------------------------------------------------------
+
+    async def record_login_event(
+        self,
+        *,
+        email: str,
+        outcome: str,
+        failure_reason: str | None,
+        user_id: str | None,
+        ip: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Insert one ``login_events`` row."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO login_events
+                    (user_id, email, outcome, failure_reason, ip, user_agent)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                user_id,
+                email,
+                outcome,
+                failure_reason,
+                ip,
+                user_agent,
+            )
+
+    async def purge_login_events_older_than(self, days: int) -> int:
+        """Delete rows older than ``days`` days. Returns the deleted count."""
+        async with self._pool.acquire() as conn:
+            status = await conn.execute(
+                "DELETE FROM login_events "
+                "WHERE created_at < NOW() - ($1::int || ' days')::interval",
+                days,
+            )
+        try:
+            return int(status.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
+
+    async def purge_login_events_for_user(self, user_id: str) -> int:
+        """Delete all rows for ``user_id``. Returns the deleted count."""
+        async with self._pool.acquire() as conn:
+            status = await conn.execute("DELETE FROM login_events WHERE user_id = $1", user_id)
+        try:
+            return int(status.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
 
     # -- email verification tokens -------------------------------------------
 
@@ -1630,3 +1701,141 @@ class PostgresOperationalStore(OperationalStore):
                 user_ids,
             )
         return {r["user_id"]: float(r["cost"]) for r in rows}
+
+    # -- role quota ----------------------------------------------------------
+
+    async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
+        """Return ``(key_count, user_count)`` of active api_keys whose owner has this role."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(*)::int AS keys,
+                       COUNT(DISTINCT k.user_id)::int AS users
+                FROM api_keys k
+                JOIN users u ON u.id = k.user_id
+                WHERE k.status = 'active' AND u.role = $1
+                """,
+                role,
+            )
+        if row is None:
+            return 0, 0
+        return int(row["keys"]), int(row["users"])
+
+    async def apply_role_quota(self, role: str, quota: Decimal) -> int:
+        """Bulk-update ``quota_daily_cost_usd`` for all active keys whose owner has *role*.
+
+        Returns the number of rows updated.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            tag = await conn.execute(
+                """
+                    UPDATE api_keys
+                    SET quota_daily_cost_usd = $1
+                    WHERE status = 'active'
+                      AND user_id IN (SELECT id FROM users WHERE role = $2)
+                    """,
+                quota,
+                role,
+            )
+        return _parse_command_tag_count(tag)
+
+    # -- provider api keys ---------------------------------------------------
+
+    async def add_provider_key(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        label: str | None,
+        created_by: str | None,
+        key_id: str | None = None,
+    ) -> str:
+        """Insert a new provider API key row. Returns the row uuid."""
+        import uuid
+
+        if key_id is None:
+            key_id = str(uuid.uuid4())
+        prefix = _mask_provider_key(api_key)
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO provider_api_keys "
+                "(id, provider, api_key, key_prefix, label, created_by) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                key_id,
+                provider,
+                api_key,
+                prefix,
+                label,
+                created_by,
+            )
+        return key_id
+
+    async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
+        """Return masked active provider key rows, newest first."""
+        async with self._pool.acquire() as conn:
+            if provider is None:
+                rows = await conn.fetch(
+                    "SELECT id, provider, key_prefix, label, status, created_at "
+                    "FROM provider_api_keys WHERE status = 'active' "
+                    "ORDER BY created_at DESC"
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT id, provider, key_prefix, label, status, created_at "
+                    "FROM provider_api_keys WHERE status = 'active' AND provider = $1 "
+                    "ORDER BY created_at DESC",
+                    provider,
+                )
+        return [
+            ProviderKeyRow(
+                id=r["id"],
+                provider=r["provider"],
+                key_prefix=r["key_prefix"],
+                label=r["label"],
+                status=r["status"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+
+    async def list_provider_keys_full(self, provider: str) -> list[str]:
+        """Return raw active API keys for *provider* (boot-time use only)."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT api_key FROM provider_api_keys "
+                "WHERE provider = $1 AND status = 'active' "
+                "ORDER BY created_at ASC",
+                provider,
+            )
+        return [r["api_key"] for r in rows]
+
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        """Return ``(provider, raw_key)`` for *key_id*, or None if absent."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT provider, api_key FROM provider_api_keys WHERE id = $1",
+                key_id,
+            )
+        if row is None:
+            return None
+        return (row["provider"], row["api_key"])
+
+    async def delete_provider_key(self, key_id: str) -> bool:
+        """Hard-delete the provider key row. Returns True when a row was removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM provider_api_keys WHERE id = $1",
+                key_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+
+def _mask_provider_key(api_key: str) -> str:
+    """Mask an upstream provider API key for display.
+
+    Returns first 8 + "..." + last 4 when the key is long enough; otherwise
+    a generic placeholder so short secrets are never leaked.
+    """
+    if len(api_key) >= 16:
+        return f"{api_key[:8]}...{api_key[-4:]}"
+    return "***configured***"

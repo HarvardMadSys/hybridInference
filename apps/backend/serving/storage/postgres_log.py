@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -72,11 +73,12 @@ class PostgresLogStore(LogStore):
         sql = """
             SELECT provider, COALESCE(SUM(cost_usd), 0) AS total
             FROM api_logs
-            WHERE date_trunc('hour', timestamp) = $1::timestamptz
+            WHERE date_trunc('hour', timestamp) = $1
             GROUP BY provider
         """
+        hour_dt = dt.datetime.fromisoformat(hour_iso)
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(sql, hour_iso)
+            rows = await conn.fetch(sql, hour_dt)
         return {r["provider"]: float(r["total"]) for r in rows if r["provider"]}
 
     # -- request logging -----------------------------------------------------

@@ -5,8 +5,6 @@ import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import {
-  AdminMetricDistribution,
-  AdminPerformanceMetricsWindow,
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
   AuditLogEntry,
@@ -23,12 +21,12 @@ import {
   getBroadcastDetail,
   cancelBroadcast,
   exportRequests,
-  getPerformanceMetrics,
   getProviderQuotas,
   getRecentRequestContent,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { AnalyticsTab } from './AnalyticsTab';
+import { ProviderKeysTab } from './ProviderKeysTab';
 import { ProviderPerformanceTab } from './ProviderPerformanceTab';
 import { SettingsTab } from './SettingsTab';
 import { TokenUsageTab } from './TokenUsageTab';
@@ -50,6 +48,26 @@ function relTime(s: string | null): string {
 function previewText(value: string, maxChars: number = 280): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}...`;
+}
+
+function compactRequestSurface(surface?: string | null): string {
+  if (surface === 'anthropic_messages') return 'Anthropic';
+  if (surface === 'openai_chat_completions') return 'OpenAI';
+  return surface || 'API';
+}
+
+function compactUserAgent(userAgent?: string | null): string {
+  if (!userAgent) return '—';
+  const lower = userAgent.toLowerCase();
+  if (lower.includes('cursor')) return 'Cursor';
+  if (lower.includes('claude-code')) return 'Claude Code';
+  if (lower.includes('anthropic')) return 'Anthropic SDK';
+  if (lower.includes('openai')) return 'OpenAI SDK';
+  if (lower.includes('python')) return 'Python';
+  if (lower.includes('node') || lower.includes('undici')) return 'Node';
+  if (lower.includes('curl')) return 'curl';
+  if (lower.includes('mozilla')) return 'Browser';
+  return userAgent.split(/[ /]/, 1)[0] || userAgent;
 }
 
 function applyOffsetJump(
@@ -551,134 +569,6 @@ function formatTokens(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
-function formatThroughput(n: number): string {
-  if (n >= 1000) {
-    const k = n / 1000;
-    return `${k.toFixed(n % 1000 === 0 ? 0 : 1)}k tok/s`;
-  }
-  if (n >= 100) return `${Math.round(n)} tok/s`;
-  return `${n.toFixed(1)} tok/s`;
-}
-
-function formatBucketEdge(value: number, kind: 'tokens' | 'ms' | 'tps'): string {
-  const formatK = (v: number): string => `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k`;
-  if (kind === 'tokens') {
-    return value >= 1000 ? formatK(value) : value.toLocaleString();
-  }
-  if (kind === 'tps') {
-    return formatThroughput(value);
-  }
-  return value >= 1000 ? `${formatK(value)}s` : `${value}ms`;
-}
-
-function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
-  const rows: Array<{
-    title: string;
-    dist: AdminMetricDistribution;
-    kind: 'tokens' | 'ms' | 'tps';
-  }> = [
-    { title: 'Prompt tokens', dist: metric.prompt_tokens, kind: 'tokens' },
-    { title: 'Response tokens', dist: metric.completion_tokens, kind: 'tokens' },
-    { title: 'TTFT', dist: metric.ttft_ms, kind: 'ms' },
-    { title: 'Throughput', dist: metric.throughput_tps, kind: 'tps' },
-  ];
-  const formatValue = (v: number | null | undefined, kind: 'tokens' | 'ms' | 'tps'): string => {
-    if (v == null) return '—';
-    return kind === 'ms'
-      ? formatLatency(v)
-      : kind === 'tps'
-        ? formatThroughput(v)
-        : formatTokens(v);
-  };
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
-      <div className="flex items-center justify-between">
-        <div className="text-[12px] font-semibold text-gray-900">{metric.label}</div>
-        <div className="text-[10px] text-gray-400">{metric.window_minutes}m window</div>
-      </div>
-      <table className="mt-2 w-full">
-        <thead>
-          <tr className="text-[10px] uppercase tracking-wider text-gray-400 font-medium">
-            <th className="py-1 text-left">Metric</th>
-            <th className="py-1 text-right">n</th>
-            <th className="py-1 text-right">p50</th>
-            <th className="py-1 text-right">p95</th>
-            <th className="py-1 text-right">p99</th>
-            <th className="py-1 text-right">Dist</th>
-          </tr>
-        </thead>
-        <tbody className="[&>tr+tr>td]:border-t [&>tr+tr>td]:border-gray-100">
-          {rows.map((row) => {
-            const maxBucket = Math.max(...row.dist.histogram.map((b) => b.count), 1);
-            return (
-              <tr key={row.title}>
-                <td className="py-1.5 text-[11px] text-gray-600">{row.title}</td>
-                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                  {row.dist.count.toLocaleString()}
-                </td>
-                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                  {formatValue(row.dist.p50, row.kind)}
-                </td>
-                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                  {formatValue(row.dist.p95, row.kind)}
-                </td>
-                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                  {formatValue(row.dist.p99, row.kind)}
-                </td>
-                <td className="py-1.5 text-right">
-                  {(() => {
-                    const peakIdx = row.dist.histogram.reduce(
-                      (best, b, i, arr) => (b.count > arr[best].count ? i : best),
-                      0,
-                    );
-                    const peak = row.dist.histogram[peakIdx];
-                    const peakLower = peak ? formatBucketEdge(peak.lower_bound, row.kind) : '';
-                    const peakUpper =
-                      peak == null
-                        ? ''
-                        : peak.upper_bound == null
-                          ? '∞'
-                          : formatBucketEdge(peak.upper_bound, row.kind);
-                    const srSummary =
-                      peak && peak.count > 0
-                        ? `Distribution peak [${peakLower}, ${peakUpper}) with ${peak.count.toLocaleString()} samples across ${row.dist.histogram.length} buckets`
-                        : 'Distribution: no samples';
-                    return (
-                      <>
-                        <span className="sr-only">{srSummary}</span>
-                        <div aria-hidden="true" className="ml-auto flex h-5 w-20 items-end gap-px">
-                          {row.dist.histogram.map((b, idx) => {
-                            const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
-                            const upperLabel =
-                              b.upper_bound == null
-                                ? '∞'
-                                : formatBucketEdge(b.upper_bound, row.kind);
-                            const lowerLabel = formatBucketEdge(b.lower_bound, row.kind);
-                            return (
-                              <div
-                                key={`${idx}-${b.lower_bound}`}
-                                className={`min-w-0 flex-1 rounded-t-[1px] ${
-                                  b.count === 0 ? 'bg-gray-200' : 'bg-gray-700'
-                                }`}
-                                style={{ height: `${height}%` }}
-                                title={`[${lowerLabel}, ${upperLabel}): ${b.count.toLocaleString()}`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </>
-                    );
-                  })()}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function pct(used: number | null, limit: number | null): number | null {
   if (used == null || limit == null || limit <= 0) return null;
   return Math.min(100, (used / limit) * 100);
@@ -692,10 +582,13 @@ function formatNum(v: number | null): string {
   return v.toFixed(2);
 }
 
-function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
-  const stripeColor = provider.ok
+function ProviderCard({ group }: { group: ProviderQuotaResult[] }) {
+  const first = group[0];
+  const providerName = first.display_name.replace(/ #\d+$/, '');
+  const isMultiKey = group.length > 1 || first.key_index !== null;
+  const stripeColor = group.some((p) => p.ok)
     ? 'bg-emerald-500'
-    : provider.error === 'not_configured'
+    : first.error === 'not_configured'
       ? 'bg-gray-300'
       : 'bg-red-400';
 
@@ -703,65 +596,89 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
     <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
       <div className={`h-1 ${stripeColor}`} />
       <div className="p-4">
-        <div className="flex items-baseline justify-between gap-3">
-          <h3 className="text-[15px] font-semibold text-gray-900">{provider.display_name}</h3>
-          <span
-            className={`tabular-nums text-[11px] ${provider.key_configured ? 'text-gray-500' : 'text-gray-400'}`}
-          >
-            {provider.key_masked ?? 'Not configured'}
-          </span>
-        </div>
+        <h3 className="text-[15px] font-semibold text-gray-900">{providerName}</h3>
 
-        {provider.ok ? (
-          provider.usages.length === 0 ? (
-            <p className="mt-3 text-[12px] text-gray-400">No usage data returned.</p>
-          ) : (
-            <div className="mt-3 space-y-3">
-              {provider.usages.map((u, i) => {
-                const p = pct(u.used, u.limit);
-                return (
-                  <div key={i}>
-                    <div className="flex items-baseline justify-between text-[12px]">
-                      <span className="text-gray-600">{u.label}</span>
-                      <span className="tabular-nums text-gray-700">
-                        {formatNum(u.used)}
-                        {u.limit != null && ` / ${formatNum(u.limit)}`} {u.unit}
-                        {p != null && <span className="ml-1 text-gray-400">({p.toFixed(0)}%)</span>}
-                      </span>
-                    </div>
-                    {p != null && (
-                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
-                        <div
-                          className={`h-full ${
-                            p >= 90 ? 'bg-red-400' : p >= 70 ? 'bg-amber-400' : 'bg-gray-900'
-                          }`}
-                          style={{ width: `${p}%` }}
-                        />
+        {group.map((provider) => (
+          <div key={provider.key_index ?? 'single'} className={isMultiKey ? 'mt-3' : ''}>
+            {isMultiKey && (
+              <div className="mb-1 flex items-baseline justify-between">
+                <span className="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600">
+                  #{provider.key_index}
+                </span>
+                <span className="tabular-nums text-[11px] text-gray-500">
+                  {provider.key_masked ?? 'Not configured'}
+                </span>
+              </div>
+            )}
+            {!isMultiKey && (
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <span />
+                <span
+                  className={`tabular-nums text-[11px] ${provider.key_configured ? 'text-gray-500' : 'text-gray-400'}`}
+                >
+                  {provider.key_masked ?? 'Not configured'}
+                </span>
+              </div>
+            )}
+
+            {provider.ok ? (
+              provider.usages.length === 0 ? (
+                <p className="text-[12px] text-gray-400">No usage data returned.</p>
+              ) : (
+                <div className={isMultiKey ? 'mt-1.5 space-y-2' : 'mt-3 space-y-3'}>
+                  {provider.usages.map((u, i) => {
+                    const p = pct(u.used, u.limit);
+                    return (
+                      <div key={i}>
+                        <div className="flex items-baseline justify-between text-[12px]">
+                          <span className="text-gray-600">{u.label}</span>
+                          <span className="tabular-nums text-gray-700">
+                            {formatNum(u.used)}
+                            {u.limit != null && ` / ${formatNum(u.limit)}`} {u.unit}
+                            {p != null && (
+                              <span className="ml-1 text-gray-400">({p.toFixed(0)}%)</span>
+                            )}
+                          </span>
+                        </div>
+                        {p != null && (
+                          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
+                            <div
+                              className={`h-full ${
+                                p >= 90 ? 'bg-red-400' : p >= 70 ? 'bg-amber-400' : 'bg-gray-900'
+                              }`}
+                              style={{ width: `${p}%` }}
+                            />
+                          </div>
+                        )}
+                        {u.reset_at && (
+                          <p className="mt-1 text-[11px] text-gray-400">
+                            Resets at{' '}
+                            {new Date(u.reset_at).toLocaleString('en-US', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit',
+                              timeZoneName: 'short',
+                            })}
+                          </p>
+                        )}
                       </div>
-                    )}
-                    {u.reset_at && (
-                      <p className="mt-1 text-[11px] text-gray-400">
-                        Resets at{' '}
-                        {new Date(u.reset_at).toLocaleString('en-US', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: 'numeric',
-                          minute: '2-digit',
-                          timeZoneName: 'short',
-                        })}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )
-        ) : (
-          <p className="mt-3 text-[12px] text-gray-400">
-            Quota unavailable — <span className="text-gray-500">{provider.error}</span>
-          </p>
-        )}
+                    );
+                  })}
+                </div>
+              )
+            ) : (
+              <p
+                className={
+                  isMultiKey ? 'mt-1 text-[12px] text-gray-400' : 'mt-3 text-[12px] text-gray-400'
+                }
+              >
+                Quota unavailable — <span className="text-gray-500">{provider.error}</span>
+              </p>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -817,6 +734,8 @@ const AUDIT_CATEGORY_CLASS: Record<AuditCategory, string> = {
   other: 'bg-gray-100 text-gray-700',
 };
 
+const AUDIT_DETAIL_PREVIEW_COUNT = 2;
+
 function formatRelative(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   const s = Math.floor(ms / 1000);
@@ -846,69 +765,99 @@ function formatAuditDetailValue(v: unknown): { display: string; full: string } {
   return { display, full };
 }
 
-function RawJsonDetails({ data }: { data: unknown }) {
-  const [open, setOpen] = useState(false);
+function summarizeAuditDetails(details: Record<string, unknown>): {
+  text: string;
+  remaining: number;
+} {
+  const entries = Object.entries(details);
+  if (entries.length === 0) return { text: '', remaining: 0 };
+  const shown = entries.slice(0, AUDIT_DETAIL_PREVIEW_COUNT).map(([key, value]) => {
+    const { display } = formatAuditDetailValue(value);
+    return `${key}=${display}`;
+  });
+  return {
+    text: shown.join(' • '),
+    remaining: Math.max(0, entries.length - AUDIT_DETAIL_PREVIEW_COUNT),
+  };
+}
+
+function AuditDetailsSummary({ details }: { details: Record<string, unknown> }) {
+  const { text, remaining } = summarizeAuditDetails(details);
+  if (!text) return null;
   return (
-    <details onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
-      <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600 mt-1">
+    <div className="mt-1 text-[11px] text-gray-500">
+      <span className="mr-1">{text}</span>
+      {remaining > 0 && <span className="text-gray-400">(+{remaining} more)</span>}
+    </div>
+  );
+}
+
+function AuditDetailsFull({ details }: { details: Record<string, unknown> }) {
+  const entries = Object.entries(details);
+  if (entries.length === 0) return null;
+  return (
+    <details className="mt-1">
+      <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-600">
         Raw JSON
       </summary>
-      {open && (
-        <pre className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 text-[11px] text-gray-600 overflow-x-auto border border-gray-100">
-          {JSON.stringify(data, null, 2)}
+      <div className="mt-1.5 rounded-md bg-gray-50 px-3 py-2 border border-gray-100">
+        <pre className="text-[11px] text-gray-600 overflow-x-auto">
+          {JSON.stringify(details, null, 2)}
         </pre>
-      )}
+      </div>
     </details>
   );
 }
 
 export default function AdminPage() {
   const { state } = useAuth();
+  const isAdmin = state.user?.is_admin === true;
 
   // Top-level tab
   const [activeTab, setActiveTab] = useState<
-    | 'users'
-    | 'audit'
-    | 'requests'
-    | 'broadcast'
-    | 'providers'
-    | 'analytics'
-    | 'performance'
-    | 'token-usage'
-    | 'settings'
+    'users' | 'audit' | 'requests' | 'broadcast' | 'providers' | 'analytics' | 'usage' | 'settings'
   >('users');
+
+  // Providers sub-tab
+  const [providerSubTab, setProviderSubTab] = useState<'quota' | 'performance' | 'keys'>('quota');
+  const [providerKeysRefreshNonce, setProviderKeysRefreshNonce] = useState(0);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
-    const normalized = tab === 'provider-perf' ? 'performance' : tab;
-    if (
-      normalized === 'users' ||
-      normalized === 'audit' ||
-      normalized === 'requests' ||
-      normalized === 'broadcast' ||
-      normalized === 'providers' ||
-      normalized === 'analytics' ||
-      normalized === 'performance' ||
-      normalized === 'token-usage' ||
-      normalized === 'settings'
+    const sub = params.get('sub');
+    if (tab === 'performance' || tab === 'provider-perf') {
+      setActiveTab('providers');
+      setProviderSubTab('performance');
+      params.set('tab', 'providers');
+      params.set('sub', 'performance');
+      const next = `${window.location.pathname}?${params.toString()}`;
+      window.history.replaceState({}, '', next);
+    } else if (
+      tab === 'users' ||
+      tab === 'audit' ||
+      tab === 'requests' ||
+      tab === 'broadcast' ||
+      tab === 'providers' ||
+      tab === 'analytics' ||
+      tab === 'usage' ||
+      tab === 'settings'
     ) {
       setActiveTab(
-        normalized as
+        tab as
           | 'users'
           | 'audit'
           | 'requests'
           | 'broadcast'
           | 'providers'
           | 'analytics'
-          | 'performance'
-          | 'token-usage'
+          | 'usage'
           | 'settings',
       );
-      if (tab === 'provider-perf') {
-        params.set('tab', 'performance');
-        const next = `${window.location.pathname}?${params.toString()}`;
-        window.history.replaceState({}, '', next);
+      if (tab === 'providers' && sub === 'performance') {
+        setProviderSubTab('performance');
+      } else if (tab === 'providers' && sub === 'keys') {
+        setProviderSubTab('keys');
       }
     }
   }, []);
@@ -978,8 +927,6 @@ export default function AdminPage() {
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
-  const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
-  const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
   const [perfRefreshNonce, setPerfRefreshNonce] = useState(0);
   const reqJumpInputId = useId();
   const REQ_PAGE_SIZE = 50;
@@ -1098,19 +1045,6 @@ export default function AdminPage() {
     }
   }, []);
 
-  const loadPerformanceMetrics = useCallback(async () => {
-    setPerfMetricsLoading(true);
-    setError(null);
-    try {
-      const d = await getPerformanceMetrics();
-      setPerfMetrics(d.windows);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setPerfMetricsLoading(false);
-    }
-  }, []);
-
   const loadProviderQuotas = useCallback(async () => {
     setProviderQuotasLoading(true);
     setError(null);
@@ -1125,23 +1059,22 @@ export default function AdminPage() {
   }, []);
 
   useEffect(() => {
+    if (!isAdmin) return;
     if (activeTab === 'audit') loadAudit();
-  }, [loadAudit, activeTab]);
+  }, [loadAudit, activeTab, isAdmin]);
 
   useEffect(() => {
+    if (!isAdmin) return;
     if (activeTab === 'requests') {
       loadRequests();
       loadRequestMetrics();
     }
-  }, [loadRequests, loadRequestMetrics, activeTab]);
+  }, [loadRequests, loadRequestMetrics, activeTab, isAdmin]);
 
   useEffect(() => {
-    if (activeTab === 'performance') loadPerformanceMetrics();
-  }, [loadPerformanceMetrics, activeTab]);
-
-  useEffect(() => {
-    if (activeTab === 'providers') loadProviderQuotas();
-  }, [loadProviderQuotas, activeTab]);
+    if (!isAdmin) return;
+    if (activeTab === 'providers' && providerSubTab === 'quota') loadProviderQuotas();
+  }, [loadProviderQuotas, activeTab, providerSubTab, isAdmin]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1162,10 +1095,11 @@ export default function AdminPage() {
   }, []);
 
   useEffect(() => {
+    if (!isAdmin) return;
     if (activeTab === 'broadcast') loadBroadcasts();
-  }, [loadBroadcasts, activeTab]);
+  }, [loadBroadcasts, activeTab, isAdmin]);
 
-  if (!state.user?.is_admin) {
+  if (!isAdmin) {
     return (
       <ProtectedRoute>
         <div className="flex min-h-[50vh] flex-col items-center justify-center text-center">
@@ -1192,13 +1126,17 @@ export default function AdminPage() {
       | 'broadcast'
       | 'providers'
       | 'analytics'
-      | 'performance'
-      | 'token-usage'
+      | 'usage'
       | 'settings',
   ) => {
     setActiveTab(tab);
     const params = new URLSearchParams(window.location.search);
     params.set('tab', tab);
+    if (tab === 'providers') {
+      params.set('sub', providerSubTab);
+    } else {
+      params.delete('sub');
+    }
     const next = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', next);
   };
@@ -1217,18 +1155,20 @@ export default function AdminPage() {
       return;
     }
     if (activeTab === 'providers') {
-      loadProviderQuotas();
-      return;
-    }
-    if (activeTab === 'performance') {
-      loadPerformanceMetrics();
-      setPerfRefreshNonce((n) => n + 1);
+      if (providerSubTab === 'quota') {
+        loadProviderQuotas();
+      } else if (providerSubTab === 'performance') {
+        setPerfRefreshNonce((n) => n + 1);
+      } else {
+        setProviderKeysRefreshNonce((n) => n + 1);
+      }
       return;
     }
     if (activeTab === 'analytics') {
       return;
     }
-    if (activeTab === 'token-usage') {
+    if (activeTab === 'usage') {
+      setPerfRefreshNonce((n) => n + 1);
       return;
     }
     if (activeTab === 'settings') {
@@ -1269,7 +1209,6 @@ export default function AdminPage() {
               auditLoading ||
               reqLoading ||
               reqMetricsLoading ||
-              perfMetricsLoading ||
               providerQuotasLoading
             }
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
@@ -1278,7 +1217,6 @@ export default function AdminPage() {
             auditLoading ||
             reqLoading ||
             reqMetricsLoading ||
-            perfMetricsLoading ||
             providerQuotasLoading
               ? 'Loading...'
               : 'Refresh'}
@@ -1298,11 +1236,10 @@ export default function AdminPage() {
               'users',
               'requests',
               'providers',
-              'token-usage',
+              'usage',
               'audit',
               'broadcast',
               'analytics',
-              'performance',
               'settings',
             ] as const
           ).map((tab) => (
@@ -1321,17 +1258,15 @@ export default function AdminPage() {
                   ? 'Recent Requests'
                   : tab === 'providers'
                     ? 'Providers'
-                    : tab === 'token-usage'
-                      ? 'Token Usage'
+                    : tab === 'usage'
+                      ? 'Usage'
                       : tab === 'audit'
                         ? 'Audit Log'
                         : tab === 'broadcast'
                           ? 'Broadcast Email'
                           : tab === 'analytics'
                             ? 'Analytics'
-                            : tab === 'performance'
-                              ? 'Performance'
-                              : 'Settings'}
+                            : 'Settings'}
             </button>
           ))}
         </div>
@@ -1421,10 +1356,12 @@ export default function AdminPage() {
                     const absoluteTs = new Date(entry.timestamp).toLocaleString();
                     const tid = entry.target_user_id;
                     const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
-                    const detailEntries =
-                      entry.details && typeof entry.details === 'object'
-                        ? Object.entries(entry.details)
-                        : [];
+                    const details =
+                      entry.details &&
+                      typeof entry.details === 'object' &&
+                      !Array.isArray(entry.details)
+                        ? (entry.details as Record<string, unknown>)
+                        : null;
                     return (
                       <div
                         key={entry.id}
@@ -1467,26 +1404,8 @@ export default function AdminPage() {
                             {formatRelative(entry.timestamp)}
                           </time>
                         </div>
-                        {detailEntries.length > 0 && (
-                          <>
-                            <div className="flex flex-wrap gap-1.5 mt-1.5">
-                              {detailEntries.map(([k, v]) => {
-                                const { display, full } = formatAuditDetailValue(v);
-                                return (
-                                  <span
-                                    key={k}
-                                    title={full}
-                                    className="inline-flex items-center gap-1 rounded bg-gray-50 border border-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700"
-                                  >
-                                    <span className="text-gray-400">{k}:</span>
-                                    <span>{display}</span>
-                                  </span>
-                                );
-                              })}
-                            </div>
-                            <RawJsonDetails data={entry.details} />
-                          </>
-                        )}
+                        {details && <AuditDetailsSummary details={details} />}
+                        {details && <AuditDetailsFull details={details} />}
                         <div className="mt-1 text-[11px] text-gray-400">from {entry.admin_ip}</div>
                       </div>
                     );
@@ -1526,21 +1445,65 @@ export default function AdminPage() {
         {/* ========== Providers Tab ========== */}
         {activeTab === 'providers' && (
           <div className="mt-6">
-            {providerQuotasLoading ? (
-              <div className="flex justify-center py-24">
-                <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-              </div>
-            ) : providerQuotas.length === 0 ? (
-              <div className="py-24 text-center">
-                <p className="text-[13px] text-gray-400">No provider data.</p>
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {providerQuotas.map((p) => (
-                  <ProviderCard key={p.name} provider={p} />
-                ))}
-              </div>
+            {/* Sub-tab toggle */}
+            <div className="mb-5 flex items-center gap-1">
+              {(['quota', 'performance', 'keys'] as const).map((sub) => (
+                <button
+                  key={sub}
+                  onClick={() => {
+                    setProviderSubTab(sub);
+                    const params = new URLSearchParams(window.location.search);
+                    params.set('tab', 'providers');
+                    params.set('sub', sub);
+                    window.history.replaceState(
+                      {},
+                      '',
+                      `${window.location.pathname}?${params.toString()}`,
+                    );
+                  }}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
+                    providerSubTab === sub
+                      ? 'bg-gray-900 text-white'
+                      : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+                  }`}
+                >
+                  {sub === 'quota' ? 'Quota' : sub === 'performance' ? 'Performance' : 'Keys'}
+                </button>
+              ))}
+            </div>
+
+            {/* Quota sub-tab */}
+            {providerSubTab === 'quota' &&
+              (providerQuotasLoading ? (
+                <div className="flex justify-center py-24">
+                  <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+                </div>
+              ) : providerQuotas.length === 0 ? (
+                <div className="py-24 text-center">
+                  <p className="text-[13px] text-gray-400">No provider data.</p>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {Array.from(
+                    providerQuotas.reduce((acc, p) => {
+                      const group = acc.get(p.name) || [];
+                      group.push(p);
+                      acc.set(p.name, group);
+                      return acc;
+                    }, new Map<string, ProviderQuotaResult[]>()),
+                  ).map(([name, group]) => (
+                    <ProviderCard key={name} group={group} />
+                  ))}
+                </div>
+              ))}
+
+            {/* Performance sub-tab */}
+            {providerSubTab === 'performance' && (
+              <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
             )}
+
+            {/* Keys sub-tab */}
+            {providerSubTab === 'keys' && <ProviderKeysTab refreshKey={providerKeysRefreshNonce} />}
           </div>
         )}
 
@@ -1721,7 +1684,7 @@ export default function AdminPage() {
                           User
                         </th>
                         <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
-                          IP
+                          Source
                         </th>
                         <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                           Status
@@ -1755,6 +1718,8 @@ export default function AdminPage() {
                         const cachedTokens = hasCacheTokens
                           ? (req.cache_read_tokens ?? 0) + (req.cache_write_tokens ?? 0)
                           : null;
+                        const sourceLabel = compactUserAgent(req.user_agent);
+                        const surfaceLabel = compactRequestSurface(req.request_surface);
                         return (
                           <Fragment key={req.request_id}>
                             <tr
@@ -1806,8 +1771,15 @@ export default function AdminPage() {
                                   <span className="text-gray-300">—</span>
                                 )}
                               </td>
-                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px] font-mono text-gray-500">
-                                {req.user_ip ?? <span className="text-gray-300">—</span>}
+                              <td className="whitespace-nowrap px-3 py-2.5 text-[12px] text-gray-500">
+                                <div className="max-w-[180px]" title={req.user_agent || undefined}>
+                                  <div className="truncate font-medium text-gray-700">
+                                    {sourceLabel}
+                                  </div>
+                                  <div className="truncate text-[11px] text-gray-400">
+                                    {surfaceLabel}
+                                  </div>
+                                </div>
                               </td>
                               <td className="whitespace-nowrap px-3 py-2.5 text-[12px]">
                                 {req.status_code != null ? (
@@ -1894,6 +1866,49 @@ export default function AdminPage() {
                                       <span className="text-gray-500">User IP:</span>{' '}
                                       <span className="text-gray-700 font-mono">
                                         {req.user_ip ?? '—'}
+                                      </span>
+                                    </div>
+                                    <div className="col-span-full">
+                                      <span className="text-gray-500">User agent:</span>{' '}
+                                      <span className="break-words text-gray-700">
+                                        {req.user_agent ?? '—'}
+                                      </span>
+                                    </div>
+                                    <details className="col-span-full group mt-1">
+                                      <summary className="list-none cursor-pointer text-gray-500 hover:text-gray-700 flex items-center gap-2">
+                                        <span className="text-xs">Network details</span>
+                                        <span className="text-[10px] text-gray-400 group-open:hidden">
+                                          (show)
+                                        </span>
+                                        <span className="text-[10px] text-gray-400 hidden group-open:inline">
+                                          (hide)
+                                        </span>
+                                      </summary>
+                                      <div className="mt-2 grid grid-cols-2 gap-x-8 gap-y-1 sm:grid-cols-4">
+                                        <div>
+                                          <span className="text-gray-500">Peer IP:</span>{' '}
+                                          <span className="text-gray-700 font-mono">
+                                            {req.peer_ip ?? '—'}
+                                          </span>
+                                        </div>
+                                        <div>
+                                          <span className="text-gray-500">IP source:</span>{' '}
+                                          <span className="text-gray-700">
+                                            {req.ip_source ?? '—'}
+                                          </span>
+                                        </div>
+                                        <div className="col-span-full">
+                                          <span className="text-gray-500">X-Forwarded-For:</span>{' '}
+                                          <span className="break-words font-mono text-gray-700">
+                                            {req.x_forwarded_for ?? '—'}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </details>
+                                    <div>
+                                      <span className="text-gray-500">Session:</span>{' '}
+                                      <span className="text-gray-700 font-mono">
+                                        {req.session_id ?? '—'}
                                       </span>
                                     </div>
                                     <div>
@@ -2030,39 +2045,8 @@ export default function AdminPage() {
           </div>
         )}
         {activeTab === 'analytics' && <AnalyticsTab />}
-        {activeTab === 'token-usage' && <TokenUsageTab />}
+        {activeTab === 'usage' && <TokenUsageTab perfRefreshNonce={perfRefreshNonce} />}
         {activeTab === 'settings' && <SettingsTab />}
-
-        {activeTab === 'performance' && (
-          <div className="mt-5 space-y-6">
-            <ProviderPerformanceTab refreshKey={perfRefreshNonce} />
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <div>
-                  <h2 className="text-[14px] font-semibold text-gray-900">Performance metrics</h2>
-                  <p className="text-[11px] text-gray-400">
-                    Prompt/response length, time-to-first-token, and inter-token latency
-                    distributions.
-                  </p>
-                </div>
-                {perfMetricsLoading && (
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-                )}
-              </div>
-              {perfMetrics.length > 0 ? (
-                <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-2">
-                  {perfMetrics.map((metric) => (
-                    <PerformanceMetricsCard key={metric.key} metric={metric} />
-                  ))}
-                </div>
-              ) : !perfMetricsLoading ? (
-                <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
-                  <p className="text-[13px] text-gray-400">No performance metrics available.</p>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        )}
 
         {/* ========== Broadcast Email Tab ========== */}
         {activeTab === 'broadcast' && (

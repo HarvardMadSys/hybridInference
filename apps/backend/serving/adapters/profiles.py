@@ -28,7 +28,7 @@ class ProviderProfile(str, Enum):
     DEEPSEEK = "deepseek"
     MINIMAX = "minimax"
     OPENROUTER = "openrouter"
-    ZHIPU = "zhipu"
+    ZAI = "zai"
 
 
 def get_usage_normalizer(profile: ProviderProfile) -> Callable[[dict[str, Any]], UsageInfo]:
@@ -64,7 +64,7 @@ def supports_guided_json(profile: ProviderProfile) -> bool:
 
 def default_chat_path(profile: ProviderProfile) -> str | None:
     """Return the provider's non-standard chat path, if any."""
-    if profile == ProviderProfile.ZHIPU:
+    if profile == ProviderProfile.ZAI:
         return "/chat/completions"
     return None
 
@@ -110,8 +110,8 @@ def normalize_usage_default(usage_data: dict[str, Any]) -> UsageInfo:
 
     Uses extract_reasoning_tokens and extract_cache_tokens to handle nested
     provider-specific formats such as:
-    - completion_tokens_details.reasoning_tokens (ZAI/Zhipu, MiniMax, OpenAI o1)
-    - prompt_tokens_details.cached_tokens (ZAI/Zhipu, MiniMax, Chutes, OpenAI)
+    - completion_tokens_details.reasoning_tokens (ZAI, MiniMax, OpenAI o1)
+    - prompt_tokens_details.cached_tokens (ZAI, MiniMax, Chutes, OpenAI)
     in addition to top-level fields.
     """
     from .base import UsageInfo

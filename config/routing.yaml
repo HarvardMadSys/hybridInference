@@ -2,36 +2,30 @@ routing_strategy: fixed
 routing_parameter:
   local_fraction: 1
 timeout: 2
-health_check: 30
+health_check: 300
 logging:
   output: output.log
 local_deployment:
-  - endpoint: http://host.docker.internal:8007
+  - endpoint: http://host.docker.internal:8001
     models:
-      - qwen3.5-27b
-  # - endpoint: http://host.docker.internal:8003
-  #   models:
-  #     - qwen3-coder-30b
-  - endpoint: http://host.docker.internal:12003
-    models:
-      - glm-4.6
-  # - endpoint: http://host.docker.internal:12004
-  #   models:
-  #     - minimax-m2.7
-  - endpoint: http://host.docker.internal:8004/v1
-    models:
-      - glm-4.7-flash
+      - qwen3.6-35b
 remote_deployment:
-  # - endpoint: ${CHUTES_BASE_URL}
-  #   models:
-  #     - qwen3-coder-30b
-  - endpoint: https://api.minimax.io/v1
+  - endpoint: ${CHUTES_BASE_URL}
+    models:
+      - moonshotai/Kimi-K2.6-TEE
+      - zai-org/GLM-5-Turbo
+  - endpoint: ${MINIMAX_BASE_URL}
     models:
       - minimax-m2.7
       - minimax-m2.5
-  - endpoint: https://api.z.ai/api/coding/paas/v4/
+  - endpoint: ${ZAI_BASE_URL}
     models:
       - glm-4.7
       - glm-4.7-flash
       - glm-5
+      - glm-5-turbo
       - glm-5.1
+  - endpoint: https://api.deepseek.com
+    models:
+      - deepseek-v4-flash
+      - deepseek-v4-pro

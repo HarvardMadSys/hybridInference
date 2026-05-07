@@ -9,7 +9,10 @@ from httpx import ASGITransport, AsyncClient
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
-from serving.servers.middleware.error import install_error_handlers
+from serving.servers.middleware.error import (
+    FallbackErrorMiddleware,
+    install_error_handlers,
+)
 from serving.servers.routers import admin, models
 
 
@@ -87,8 +90,8 @@ async def test_error_middleware_integration_http_exception_and_generic():
     def raise_any():
         raise RuntimeError("boom")
 
-    # Install error handlers after routes are defined
     install_error_handlers(app)
+    app.add_middleware(FallbackErrorMiddleware)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

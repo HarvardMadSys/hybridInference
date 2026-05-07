@@ -22,6 +22,12 @@ export const signupSchema = z
       .trim()
       .min(2, 'Username must be at least 2 characters')
       .max(50, 'Username cannot exceed 50 characters'),
+    useCase: z
+      .string()
+      .trim()
+      .max(2000, 'Use case cannot exceed 2000 characters')
+      .optional()
+      .or(z.literal('')),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: 'Passwords do not match',

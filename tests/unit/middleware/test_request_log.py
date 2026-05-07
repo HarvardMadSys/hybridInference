@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from httpx import ASGITransport, AsyncClient
 
 from serving.servers.middleware.request_log import RequestLogMiddleware
@@ -66,13 +66,17 @@ def app_with_middleware():
     def completions():
         return {}
 
+    @app.get("/user/me")
+    def unauthorized():
+        return Response(status_code=401)
+
     return app
 
 
-async def _get(app, path: str) -> None:
+async def _get(app, path: str, headers: dict[str, str] | None = None) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        await client.get(path)
+        await client.get(path, headers=headers)
 
 
 class TestRequestLogMiddleware:
@@ -81,6 +85,7 @@ class TestRequestLogMiddleware:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("path", ["/health", "/health/deep", "/metrics"])
     async def test_verbose_paths_log_at_debug(self, app_with_middleware, caplog, path):
+        """Quiet health and metrics paths are still visible at DEBUG."""
         with caplog.at_level(logging.DEBUG, logger="serving.servers.middleware.request_log"):
             await _get(app_with_middleware, path)
 
@@ -91,6 +96,7 @@ class TestRequestLogMiddleware:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("path", ["/health", "/health/deep", "/metrics"])
     async def test_verbose_paths_silent_at_info(self, app_with_middleware, caplog, path):
+        """Quiet health and metrics paths do not emit INFO request logs."""
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
             await _get(app_with_middleware, path)
 
@@ -99,9 +105,59 @@ class TestRequestLogMiddleware:
 
     @pytest.mark.asyncio
     async def test_normal_path_logs_at_info(self, app_with_middleware, caplog):
+        """Normal request paths emit INFO request logs."""
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
             await _get(app_with_middleware, "/v1/chat/completions")
 
         records = [r for r in caplog.records if r.getMessage() == "http_request"]
         assert records, "Expected an http_request log record for /v1/chat/completions"
         assert all(r.levelno == logging.INFO for r in records)
+
+    @pytest.mark.asyncio
+    async def test_request_log_includes_client_and_peer_ip(
+        self, app_with_middleware, caplog, monkeypatch
+    ):
+        """Request logs carry both trusted client IP and socket peer IP."""
+        monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+
+        with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
+            await _get(
+                app_with_middleware,
+                "/v1/chat/completions",
+                headers={
+                    "x-forwarded-for": "203.0.113.8",
+                    "x-real-ip": "203.0.113.8",
+                    "user-agent": "pytest-client",
+                    "origin": "https://freeinference.org",
+                },
+            )
+
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
+        assert records
+        record = records[-1]
+        assert record.remote_ip == "203.0.113.8"
+        assert record.peer_ip
+        assert record.ip_source == "x-forwarded-for"
+        assert record.x_forwarded_for == "203.0.113.8"
+        assert record.x_real_ip == "203.0.113.8"
+        assert record.user_agent == "pytest-client"
+        assert record.origin == "https://freeinference.org"
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_path_is_silent_at_info(self, app_with_middleware, caplog):
+        """401 auth challenges do not emit INFO request logs."""
+        with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
+            await _get(app_with_middleware, "/user/me")
+
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
+        assert not records, "Expected no INFO http_request log for 401 auth challenge"
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_path_logs_at_debug(self, app_with_middleware, caplog):
+        """401 auth challenges remain available at DEBUG."""
+        with caplog.at_level(logging.DEBUG, logger="serving.servers.middleware.request_log"):
+            await _get(app_with_middleware, "/user/me")
+
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
+        assert records, "Expected a DEBUG http_request log for 401 auth challenge"
+        assert all(r.levelno == logging.DEBUG for r in records)

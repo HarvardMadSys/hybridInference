@@ -17,7 +17,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from .base import OperationalStore, Row
+from .base import OperationalStore, ProviderKeyRow, Row
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -303,6 +303,21 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete_pattern("auth_light:*")
         return old_prefix
 
+    # -- role quotas (invalidate auth caches on bulk write) ------------------
+
+    async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
+        """Delegate to wrapped store."""
+        return await self._store.count_active_keys_for_role(role)
+
+    async def apply_role_quota(self, role: str, quota: Decimal) -> int:
+        """Delegate then invalidate auth caches (quota_daily_cost_usd changed for all role rows)."""
+        n = await self._store.apply_role_quota(role, quota)
+        # Bulk write touches quota_daily_cost_usd on all keys for a role; clear
+        # all per-key auth cache entries to prevent stale quota lookups.
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
+        return n
+
     # -- pure pass-through (no caching, no invalidation) ---------------------
 
     async def get_user_by_email(self, email: str) -> Row | None:
@@ -469,6 +484,36 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_user_sessions(user_id)
 
+    # -- login events (pass-through) -----------------------------------------
+
+    async def record_login_event(
+        self,
+        *,
+        email: str,
+        outcome: str,
+        failure_reason: str | None,
+        user_id: str | None,
+        ip: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.record_login_event(
+            email=email,
+            outcome=outcome,
+            failure_reason=failure_reason,
+            user_id=user_id,
+            ip=ip,
+            user_agent=user_agent,
+        )
+
+    async def purge_login_events_older_than(self, days: int) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.purge_login_events_older_than(days)
+
+    async def purge_login_events_for_user(self, user_id: str) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.purge_login_events_for_user(user_id)
+
     # -- tokens (pass-through) -----------------------------------------------
 
     async def create_verification_token(
@@ -623,6 +668,13 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_user_cost_period(user_id, period)
 
+    async def query_users_over_daily_threshold(
+        self,
+        thresholds: dict[str, float],
+    ) -> list[tuple[str, str, float]]:
+        """Delegate to wrapped store."""
+        return await self._store.query_users_over_daily_threshold(thresholds)
+
     async def get_batch_usage(
         self, user_ids: list[str], period: Literal["today", "month"]
     ) -> dict[str, float]:
@@ -642,3 +694,39 @@ class CachedOperationalStore(OperationalStore):
     async def get_users_summary(self, **kwargs: Any) -> Row:
         """Delegate to wrapped store (no caching — admin dashboard endpoint)."""
         return await self._store.get_users_summary(**kwargs)
+
+    # -- provider api keys (pass-through) ------------------------------------
+
+    async def add_provider_key(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        label: str | None,
+        created_by: str | None,
+        key_id: str | None = None,
+    ) -> str:
+        """Delegate to wrapped store."""
+        return await self._store.add_provider_key(
+            provider=provider,
+            api_key=api_key,
+            label=label,
+            created_by=created_by,
+            key_id=key_id,
+        )
+
+    async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_keys(provider)
+
+    async def list_provider_keys_full(self, provider: str) -> list[str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_keys_full(provider)
+
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_provider_key_full(key_id)
+
+    async def delete_provider_key(self, key_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_provider_key(key_id)

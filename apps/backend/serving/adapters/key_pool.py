@@ -25,6 +25,7 @@ class _KeyState:
     key: str
     request_count: int = 0
     cooldown_until: float = 0.0  # monotonic timestamp
+    removed: bool = False
 
 
 @dataclass
@@ -58,8 +59,46 @@ class KeyPool:
         self._provider_label = provider_label
 
     def size(self) -> int:
-        """Return the number of keys in the pool."""
-        return len(self._keys)
+        """Return the number of active (non-removed) keys in the pool."""
+        with self._lock:
+            return sum(1 for s in self._keys if not s.removed)
+
+    def snapshot_keys(self) -> list[str]:
+        """Return a snapshot of every active key currently in the pool."""
+        with self._lock:
+            return [s.key for s in self._keys if not s.removed]
+
+    def add_key(self, key: str) -> int:
+        """Add a key to the pool, returning its slot index.
+
+        Idempotent: if ``key`` is already present (active or removed), the
+        existing slot is reactivated and returned. Otherwise a new slot is
+        appended.
+        """
+        with self._lock:
+            for idx, state in enumerate(self._keys):
+                if state.key == key:
+                    state.removed = False
+                    return idx
+            self._keys.append(_KeyState(key=key))
+            return len(self._keys) - 1
+
+    def remove_key(self, key: str) -> bool:
+        """Mark a key as removed and drop affinity entries pointing at it.
+
+        Returns True if the key was present and removed, False otherwise.
+        Slots are tombstoned (not popped) so existing key indices remain
+        stable for in-flight leases.
+        """
+        with self._lock:
+            for idx, state in enumerate(self._keys):
+                if state.key == key and not state.removed:
+                    state.removed = True
+                    stale = [k for k, a in self._affinity.items() if a.key_index == idx]
+                    for k in stale:
+                        del self._affinity[k]
+                    return True
+            return False
 
     def affinity_count(self) -> int:
         """Return the number of active per-user affinity entries."""
@@ -77,12 +116,10 @@ class KeyPool:
 
             existing = self._affinity.get(affinity_key)
             if existing is not None:
+                bound = self._keys[existing.key_index]
                 # Affinity is honored only when it is still valid AND the
-                # bound key is not cooled down.
-                if (
-                    now < existing.expires_at
-                    and self._keys[existing.key_index].cooldown_until <= now
-                ):
+                # bound key is not cooled down or removed.
+                if now < existing.expires_at and not bound.removed and bound.cooldown_until <= now:
                     idx = existing.key_index
                     self._keys[idx].request_count += 1
                     return self._keys[idx].key, Lease(idx, affinity_key)
@@ -108,6 +145,8 @@ class KeyPool:
         best_idx: int | None = None
         best_count: int | None = None
         for i, state in enumerate(self._keys):
+            if state.removed:
+                continue
             if state.cooldown_until > now:
                 continue
             if best_count is None or state.request_count < best_count:

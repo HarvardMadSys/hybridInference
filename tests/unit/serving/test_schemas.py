@@ -27,6 +27,34 @@ def test_chat_completion_request_basic_and_extra_ignored():
 
 
 @pytest.mark.unit
+def test_chat_completion_request_preserves_assistant_reasoning_content():
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "user", "content": "inspect this"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "I should inspect the file first.",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "read", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+            ],
+        }
+    )
+
+    dumped = [message.model_dump() for message in req.messages]
+    assert dumped[1]["reasoning_content"] == "I should inspect the file first."
+
+
+@pytest.mark.unit
 def test_chat_completion_request_invalid_ranges():
     with pytest.raises(ValidationError):
         ChatCompletionRequest.model_validate(

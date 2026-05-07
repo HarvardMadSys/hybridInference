@@ -77,6 +77,7 @@ async def test_alerter_no_fire_under_threshold():
     """Boundary: count == threshold (20) must NOT fire — strict greater-than."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=20)
+    pool.fetchrow = AsyncMock(return_value=None)
     alerter = _make_alerter(pool, threshold=20)
 
     with patch(
@@ -94,6 +95,7 @@ async def test_alerter_fires_over_threshold():
     """count == 21 (one over threshold of 20) must call alert_slack with expected context."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=21)
+    pool.fetchrow = AsyncMock(return_value=None)
     alerter = _make_alerter(pool, threshold=20, window=5)
 
     with patch(
@@ -115,6 +117,58 @@ async def test_alerter_fires_over_threshold():
 
 
 @pytest.mark.asyncio
+async def test_alerter_fires_includes_breakdown():
+    """Breakdown fields (status_codes, providers, models, sample_error) are included in context."""
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=25)
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "status_codes": "500, 503",
+            "providers": "openai",
+            "models": "gpt-4o",
+            "sample_error": "upstream timeout",
+        }
+    )
+    alerter = _make_alerter(pool, threshold=20, window=5)
+
+    with patch(
+        "serving.admin.failed_request_alerter.alert_slack",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as mock_alert:
+        await alerter.run_check()
+
+    args, _ = mock_alert.await_args
+    _, _, context = args
+    assert context["status_codes"] == "500, 503"
+    assert context["providers"] == "openai"
+    assert context["models"] == "gpt-4o"
+    assert context["sample_error"] == "upstream timeout"
+
+
+@pytest.mark.asyncio
+async def test_alerter_breakdown_failure_does_not_block_alert():
+    """If the breakdown query raises, the alert still fires with just count/window/threshold."""
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=25)
+    pool.fetchrow = AsyncMock(side_effect=RuntimeError("db hiccup"))
+    alerter = _make_alerter(pool, threshold=20, window=5)
+
+    with patch(
+        "serving.admin.failed_request_alerter.alert_slack",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as mock_alert:
+        await alerter.run_check()
+
+    mock_alert.assert_awaited_once()
+    args, _ = mock_alert.await_args
+    _, _, context = args
+    assert context["count"] == 25
+    assert "status_codes" not in context
+
+
+@pytest.mark.asyncio
 async def test_alerter_fires_via_httpx_payload(monkeypatch):
     """End-to-end through alert_slack: httpx receives {"text": ...}."""
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/abc")
@@ -124,6 +178,7 @@ async def test_alerter_fires_via_httpx_payload(monkeypatch):
 
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=25)
+    pool.fetchrow = AsyncMock(return_value=None)
     alerter = _make_alerter(pool, threshold=20)
 
     fake_resp = MagicMock(status_code=200, text="ok")
@@ -156,6 +211,7 @@ async def test_alerter_cooldown_suppresses_repeat():
     """A second check inside the cooldown window must NOT post again."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=30)
+    pool.fetchrow = AsyncMock(return_value=None)
 
     times = [
         datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
@@ -183,6 +239,7 @@ async def test_alerter_cooldown_expires_then_fires():
     """After the cooldown elapses, a second over-threshold check posts again."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=30)
+    pool.fetchrow = AsyncMock(return_value=None)
 
     times = [
         datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
@@ -210,6 +267,7 @@ async def test_alerter_failed_post_does_not_start_cooldown():
     """If the Slack POST fails, last_alert_at must remain unset so the next tick retries."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=30)
+    pool.fetchrow = AsyncMock(return_value=None)
 
     times = [
         datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
@@ -370,6 +428,7 @@ async def test_alerter_swallows_query_exception():
     """If the failure-count query raises, run_check logs and returns — no crash."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(side_effect=RuntimeError("db down"))
+    pool.fetchrow = AsyncMock(return_value=None)
     alerter = _make_alerter(pool)
 
     with patch(

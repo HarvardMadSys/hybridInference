@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
+import uuid
 from contextlib import suppress
 from typing import Any
 
@@ -36,12 +38,29 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip_info
 from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
 router = APIRouter()
 _background_tasks: set = set()
+_MAX_DB_ERROR_LENGTH = 4000
+_SECRET_VALUE_RE = re.compile(
+    r'(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization)"?\s*[:=]\s*)'
+    r'("?)[^"\s,}]+("?)'
+)
+_BEARER_TOKEN_RE = re.compile(r"(?i)bearer\s+[a-z0-9._~+/=-]+")
+
+
+def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
+    """Compute the per-request affinity key used by FixedRouter.
+
+    Authenticated users are keyed by their auth_key_hash; anonymous traffic
+    by their client IP. The "ip:" prefix prevents collisions with hash values.
+    """
+    if auth_key_hash:
+        return auth_key_hash
+    return f"ip:{client_ip}"
 
 
 def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
@@ -153,6 +172,52 @@ def _build_db_params(
     return _params
 
 
+def _extract_exception_status_code(exc: BaseException, default: int = 500) -> int:
+    """Return the HTTP status carried by common upstream exception shapes."""
+    status_code = None
+
+    if hasattr(exc, "status_code") and exc.status_code is not None:
+        status_code = exc.status_code
+    elif hasattr(exc, "response") and exc.response is not None:
+        if hasattr(exc.response, "status_code"):
+            status_code = exc.response.status_code
+        elif hasattr(exc.response, "status"):
+            status_code = exc.response.status
+    elif hasattr(exc, "status") and exc.status is not None:
+        status_code = exc.status
+    elif hasattr(exc, "code") and exc.code is not None:
+        status_code = exc.code
+
+    if status_code is None:
+        return default
+
+    try:
+        return int(status_code)
+    except (TypeError, ValueError):
+        return default
+
+
+def _redact_error_text(value: str) -> str:
+    redacted = _SECRET_VALUE_RE.sub(r"\1\2[REDACTED]\3", value)
+    return _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
+
+
+def _format_exception_for_db(exc: BaseException) -> str:
+    """Return capped, redacted operator-facing error text for api_logs.error."""
+    exc_text = str(exc)
+    upstream_body = getattr(exc, "error_body", None)
+    if upstream_body is None:
+        value = exc_text
+    else:
+        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
+        value = f"{exc_text} | upstream_body={body_text}"
+
+    value = _redact_error_text(value)
+    if len(value) > _MAX_DB_ERROR_LENGTH:
+        return value[: _MAX_DB_ERROR_LENGTH - 14] + "...[truncated]"
+    return value
+
+
 @router.post(
     "/v1/chat/completions",
     response_model=ChatCompletionResponse,
@@ -210,7 +275,6 @@ async def chat_completions(
     messages = [m.model_dump() for m in payload.messages]
 
     # Debug-only: log inbound message roles to verify client behavior.
-    # Note: We intentionally avoid logging message contents to protect privacy.
     try:
         roles = [msg.get("role") for msg in messages]
         tool_count = sum(1 for msg in messages if msg.get("role") == "tool")
@@ -218,13 +282,58 @@ async def chat_completions(
             f"Inbound roles: model={model}, roles={roles}, tool_messages={tool_count}, total={len(messages)}"
         )
     except Exception:
-        # Swallow any logging issues to avoid impacting request handling.
         pass
+
+    request_id = f"req_{uuid.uuid4().hex}"
+    start_time = time.time()
+    is_authenticated = bool(user_ctx.get("authenticated"))
+    provider = "router"
+    session_id = request.headers.get("X-Session-ID")
+    ip_info = get_client_ip_info(request)
+
+    metadata = {
+        "user_agent": request.headers.get("user-agent"),
+        "ip": ip_info.client_ip,
+        "peer_ip": ip_info.peer_ip,
+        "ip_source": ip_info.source,
+        "x_forwarded_for": ip_info.x_forwarded_for,
+        "x_real_ip": ip_info.x_real_ip,
+        "authorization": bool(authorization) or is_authenticated,
+        "authenticated": is_authenticated,
+        "user_id": user_ctx.get("user_id"),
+        "surface": "openai_chat_completions",
+    }
+    if is_synthetic_probe:
+        metadata["synthetic_probe"] = True
+    if session_id:
+        metadata["session_id"] = session_id
+
+    early_params: dict[str, Any] = {"stream": bool(payload.stream)}
+    if session_id:
+        early_params["session_id"] = session_id
 
     # Check if model has routing configured
     if model not in router_exec.routes:
-        # Record 404 error for model not found
         record_model_request("404", "router")
+        if log_store and not is_synthetic_probe:
+            _schedule_db_log_task(
+                log_store,
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": "router",
+                    "prompt": messages,
+                    "response": None,
+                    "usage": None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": 404,
+                    "error": f"Model '{model}' not found",
+                    "params": early_params,
+                    "metadata": metadata,
+                    "pricing": None,
+                },
+            )
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Role-based model gate: insufficient role sees a 404 as if the model doesn't exist
@@ -237,10 +346,29 @@ async def chat_completions(
             extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
         record_model_request("404", "router")
+        if log_store and not is_synthetic_probe:
+            _schedule_db_log_task(
+                log_store,
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": "router",
+                    "prompt": messages,
+                    "response": None,
+                    "usage": None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": 404,
+                    "error": f"Model '{model}' not found",
+                    "params": early_params,
+                    "metadata": metadata,
+                    "pricing": None,
+                },
+            )
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Extract parameters
-    params: dict[str, Any] = {}
+    params: dict[str, Any] = {"stream": bool(payload.stream)}
     if payload.temperature is not None:
         params["temperature"] = payload.temperature
     if payload.top_p is not None:
@@ -269,46 +397,28 @@ async def chat_completions(
         params["tool_choice"] = payload.tool_choice
     if payload.response_format is not None:
         params["response_format"] = payload.response_format.model_dump(by_alias=True)
-    # Always record whether this request is streaming for DB analytics
-    params["stream"] = bool(payload.stream)
+    if session_id:
+        params["session_id"] = session_id
 
     # Stable user identifier used by cost tracking
     user_id: str = user_ctx.get("user_id") or "anonymous"
 
-    # Affinity key for multi-key API rotation — pinned to the specific
-    # hyi-xxx key in use (not user_id, since a user may have multiple keys).
     from serving.utils import context as req_ctx
 
-    req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
+    auth_key_hash = user_ctx.get("auth_key_hash")
+    affinity_key = derive_affinity_key(auth_key_hash, ip_info.client_ip)
+    req_ctx.update(
+        {
+            "auth_key_hash": auth_key_hash or "_anon",
+            "affinity_key": affinity_key,
+        }
+    )
 
-    # Generate request ID and metadata
-    request_id = f"req_{int(time.time() * 1000000)}"
-    start_time = time.time()
-    is_authenticated = bool(user_ctx.get("authenticated"))
-    # Initialize provider early to avoid UnboundLocalError in exception handlers
-    provider = "router"
-    # Extract a stable session identifier from a single, canonical header.
-    # Clients are expected to send X-Session-ID. Starlette headers are case-insensitive.
-    session_id = request.headers.get("X-Session-ID")
     # Provider pinning: allows the harness (or admin tooling) to force routing
     # to a specific backend.  Only honoured for admin users to prevent abuse.
     pin_provider = request.headers.get("X-Route-Pin")
     if pin_provider and not user_ctx.get("is_admin", False):
-        pin_provider = None  # silently ignore for non-admin
-
-    metadata = {
-        "user_agent": request.headers.get("user-agent"),
-        "ip": get_client_ip(request),
-        # Preserve legacy field but treat either auth header as authenticated
-        "authorization": bool(authorization) or is_authenticated,
-        "authenticated": is_authenticated,
-        "user_id": user_ctx.get("user_id"),
-    }
-    if is_synthetic_probe:
-        metadata["synthetic_probe"] = True
-    if session_id:
-        metadata["session_id"] = session_id
-        params["session_id"] = session_id
+        pin_provider = None
 
     # Helper function to get pricing for a specific provider
     def get_pricing_for_provider(
@@ -359,6 +469,43 @@ async def chat_completions(
         adapter, _ = route.adapters[0]
         config = getattr(adapter, "config", None)
         return getattr(config, "provider", None)
+
+    # Pre-flight: reject image content when the model does not support it.
+    # This check is placed before routing so both streaming and non-streaming
+    # paths get a clean 400 instead of silently stripping image blocks.
+    route_config = router_exec.routes.get(model)
+    model_modalities = route_config.adapters[0][0].config.input_modalities if route_config else []
+    if "image" not in (model_modalities or []):
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image_url":
+                    record_model_request("400", "router")
+                    if log_store and not is_synthetic_probe:
+                        _schedule_db_log_task(
+                            log_store,
+                            request_id,
+                            {
+                                "request_id": request_id,
+                                "model_id": model,
+                                "provider": "router",
+                                "prompt": messages,
+                                "response": None,
+                                "usage": None,
+                                "latency_ms": int((time.time() - start_time) * 1000),
+                                "status_code": 400,
+                                "error": f"Model '{model}' does not support image input",
+                                "params": early_params,
+                                "metadata": metadata,
+                                "pricing": None,
+                            },
+                        )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model '{model}' does not support image input",
+                    )
 
     # Pre-flight: validate pin_provider before routing.  For streaming this is
     # critical (HTTP 200 is already committed once StreamingResponse starts),
@@ -496,7 +643,17 @@ async def chat_completions(
                                         f"Extracted usage from chunk {chunk_count}: {usage_data}"
                                     )
                                 if result.routing_info:
-                                    routing_info = result.routing_info
+                                    # Merge so the synthetic routing chunk emitted at the
+                                    # start (provider/base_url/endpoint_id) isn't overwritten
+                                    # by a later metadata-only chunk (e.g., RouteWise's
+                                    # decision_info chunk emitted just before [DONE]).
+                                    if routing_info is None:
+                                        routing_info = dict(result.routing_info)
+                                    else:
+                                        routing_info.update(result.routing_info)
+                                    _ri_provider = routing_info.get("provider")
+                                    if _ri_provider:
+                                        req_ctx.update({"provider": _ri_provider})
                                     logger.debug(
                                         f"Extracted routing from chunk {chunk_count}: {routing_info}"
                                     )
@@ -743,6 +900,7 @@ async def chat_completions(
 
                 ctx = req_ctx.get()
                 provider_for_error = ctx.get("provider", "router") if ctx else "router"
+                stream_status_code = _extract_exception_status_code(exc)
 
                 if log_store and not is_synthetic_probe:
                     _schedule_db_log_task(
@@ -756,8 +914,8 @@ async def chat_completions(
                             "response": None,
                             "usage": None,
                             "latency_ms": int((time.time() - start_time) * 1000),
-                            "status_code": 500,
-                            "error": str(exc),
+                            "status_code": stream_status_code,
+                            "error": _format_exception_for_db(exc),
                             "params": params,
                             "metadata": metadata,
                             "ttft_ms": ttft_ms,
@@ -765,8 +923,14 @@ async def chat_completions(
                         },
                     )
 
-                user_msg = scrub_error_for_user(exc, request_id, 500)
-                error_chunk = {"error": {"message": user_msg, "type": "server_error", "code": 500}}
+                user_msg = scrub_error_for_user(exc, request_id, stream_status_code)
+                error_chunk = {
+                    "error": {
+                        "message": user_msg,
+                        "type": "server_error",
+                        "code": stream_status_code,
+                    }
+                }
                 error_msg = f"data: {json.dumps(error_chunk)}\n\n"
                 logger.error(f"Yielding error chunk: {error_msg}")
                 yield error_msg
@@ -811,8 +975,9 @@ async def chat_completions(
                 provider = routing_info.get("provider", "router")
                 base_url = routing_info.get("base_url")
                 routing_pricing = routing_info.get("pricing")
-                # See comment above: strip upstream_cost_usd before merging into metadata JSONB.
                 metadata.update({k: v for k, v in routing_info.items() if k != "upstream_cost_usd"})  # type: ignore[arg-type]
+                if provider != "router":
+                    req_ctx.update({"provider": provider})
         else:
             # Fallback: get provider from request context when response is not a dict
             from serving.utils import context as req_ctx
@@ -978,33 +1143,7 @@ async def chat_completions(
                 success=False,
             )
 
-        # Best-effort extraction of status code from exception
-        # Different HTTP client libraries store status codes in different places:
-        # - OpenAI/Anthropic SDK: exc.status_code
-        # - httpx: exc.response.status_code
-        # - aiohttp: exc.status
-        # - requests: exc.response.status_code
-        exc_status_code = None
-
-        # Try direct status_code attribute (OpenAI, Anthropic SDKs)
-        if hasattr(exc, "status_code") and exc.status_code is not None:
-            exc_status_code = exc.status_code
-        # Try response.status_code (httpx, requests)
-        elif hasattr(exc, "response") and exc.response is not None:
-            if hasattr(exc.response, "status_code"):
-                exc_status_code = exc.response.status_code
-            elif hasattr(exc.response, "status"):
-                exc_status_code = exc.response.status
-        # Try direct status attribute (aiohttp)
-        elif hasattr(exc, "status") and exc.status is not None:
-            exc_status_code = exc.status
-        # Try code attribute (some custom exceptions)
-        elif hasattr(exc, "code") and exc.code is not None:
-            exc_status_code = exc.code
-
-        # Default to 500 if we couldn't extract status code
-        if exc_status_code is None:
-            exc_status_code = 500
+        exc_status_code = _extract_exception_status_code(exc)
 
         # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
@@ -1027,7 +1166,7 @@ async def chat_completions(
                     "usage": None,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": exc_status_code,
-                    "error": str(exc),
+                    "error": _format_exception_for_db(exc),
                     "params": params,
                     "metadata": metadata,
                     "pricing": None,  # Error case - no pricing available

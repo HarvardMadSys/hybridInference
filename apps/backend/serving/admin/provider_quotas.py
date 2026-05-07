@@ -1,7 +1,13 @@
 """Provider quota fetchers for the admin dashboard 'Providers' tab.
 
-Each public fetcher returns a `ProviderQuotaResult`. Errors are converted
-to structured results — fetchers never raise out of the gather.
+Each public fetcher returns a ``list[ProviderQuotaResult]`` — one entry per
+configured API key.  When a provider has a single key the list contains one
+element with ``key_index=None`` (backward compatible).  When multiple keys are
+configured via numbered env var suffixes (e.g. ``ZAI_API_KEY2``) the list
+contains one element per key with ``key_index=1, 2, …``.
+
+Errors are converted to structured results — fetchers never raise out of the
+gather.
 """
 
 from __future__ import annotations
@@ -33,6 +39,67 @@ def _mask_key(key: str) -> str:
     if len(key) >= 16:
         return f"{key[:8]}...{key[-4:]}"
     return "***configured***"
+
+
+_MAX_KEYS = 20
+
+
+def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, str]]:
+    """Discover all configured API keys via numbered env var suffixes.
+
+    Returns list of ``(index, value)``.  ``index=1`` for *base_var*,
+    ``index=N`` for ``{numbered_prefix}{N}``.  Numbered suffixes are
+    only scanned when the base var is set.  Stops at the first missing
+    numbered var.
+    """
+    keys: list[tuple[int, str]] = []
+    val = os.getenv(base_var, "")
+    if not val:
+        return keys
+    keys.append((1, val))
+    for i in range(2, _MAX_KEYS):
+        val = os.getenv(f"{numbered_prefix}{i}", "")
+        if not val:
+            break
+        keys.append((i, val))
+    return keys
+
+
+def _process_multi_key_results(
+    name: str,
+    display_name: str,
+    keys: list[tuple[int, str]],
+    results: list[ProviderQuotaResult | BaseException],
+) -> list[ProviderQuotaResult]:
+    """Process parallel fetch results into a list of ProviderQuotaResult."""
+    out: list[ProviderQuotaResult] = []
+    multi = len(keys) > 1
+    for (idx, _key), result in zip(keys, results, strict=True):
+        if isinstance(result, ProviderQuotaResult):
+            out.append(
+                result.model_copy(
+                    update={
+                        "key_index": idx if multi else None,
+                        "display_name": f"{display_name} #{idx}" if multi else display_name,
+                    }
+                )
+            )
+        else:
+            logger.error("fetch_%s: key #%d raised", name, idx, exc_info=result)
+            out.append(
+                ProviderQuotaResult(
+                    name=name,
+                    display_name=f"{display_name} #{idx}" if multi else display_name,
+                    key_index=idx if multi else None,
+                    key_configured=True,
+                    key_masked=_mask_key(_key),
+                    fetched_at=_now(),
+                    ok=False,
+                    error="unexpected",
+                    usages=[],
+                )
+            )
+    return out
 
 
 def _now() -> datetime:
@@ -111,21 +178,8 @@ def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaRe
     )
 
 
-async def fetch_chutes() -> ProviderQuotaResult:
-    """Fetch quota usage from Chutes via /users/me/subscription_usage."""
-    key = os.getenv("CHUTES_API_KEY", "")
-    if not key:
-        return ProviderQuotaResult(
-            name="chutes",
-            display_name="Chutes",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
-
+async def _fetch_chutes_for_key(key: str) -> ProviderQuotaResult:
+    """Fetch quota usage from Chutes for a single API key."""
     url = "https://api.chutes.ai/users/me/subscription_usage"
     headers = {"Authorization": f"Bearer {key}"}
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
@@ -161,6 +215,31 @@ async def fetch_chutes() -> ProviderQuotaResult:
         error=None,
         usages=usages,
     )
+
+
+async def fetch_chutes() -> list[ProviderQuotaResult]:
+    """Fetch quota usage from Chutes for all configured API keys."""
+    keys = _discover_env_keys("CHUTES_API_KEY", "CHUTES_API_KEY")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="chutes",
+                display_name="Chutes",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_chutes_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+
+    return _process_multi_key_results("chutes", "Chutes", keys, results)
 
 
 async def _fetch_chutes_request_counts(
@@ -285,26 +364,8 @@ def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
     return usages
 
 
-async def fetch_zai() -> ProviderQuotaResult:
-    """Fetch quota usage from ZAI via /api/monitor/usage/quota/limit.
-
-    Endpoint discovered from ZAI's official `glm-plan-usage` plugin. The
-    plugin uses `ANTHROPIC_AUTH_TOKEN`; we attempt with `ZAI_API_KEY`. If
-    the API key is rejected we surface `auth_failed`.
-    """
-    key = os.getenv("ZAI_API_KEY", "")
-    if not key:
-        return ProviderQuotaResult(
-            name="zai",
-            display_name="ZAI",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
-
+async def _fetch_zai_for_key(key: str) -> ProviderQuotaResult:
+    """Fetch quota for a single ZAI API key."""
     url = "https://api.z.ai/api/monitor/usage/quota/limit"
     headers = {
         "Authorization": f"Bearer {key}",
@@ -334,7 +395,6 @@ async def fetch_zai() -> ProviderQuotaResult:
         logger.exception("fetch_zai: unexpected error")
         return _err("zai", "ZAI", key, "unexpected")
 
-    # Some ZAI responses wrap data in a "data" key
     body = data.get("data") if isinstance(data.get("data"), dict) else data
     limits = body.get("limits") if isinstance(body, dict) else None
     if not isinstance(limits, list):
@@ -354,9 +414,8 @@ async def fetch_zai() -> ProviderQuotaResult:
 
         entry_reset_at = _parse_epoch_ms(entry.get("nextResetTime"))
         used_raw = entry.get("currentValue") if "currentValue" in entry else entry.get("used")
-        limit_raw = entry.get("usage")  # "usage" is the total cap in the ZAI API
+        limit_raw = entry.get("usage")
 
-        # For entries with no absolute values, fall back to percentage
         if used_raw is None and limit_raw is None and "percentage" in entry:
             pct = entry.get("percentage")
             usages.append(
@@ -392,25 +451,36 @@ async def fetch_zai() -> ProviderQuotaResult:
     )
 
 
-async def fetch_minimax() -> ProviderQuotaResult:
-    """Fetch coding-plan quota from MiniMax via cookie-authed endpoint.
+async def fetch_zai() -> list[ProviderQuotaResult]:
+    """Fetch quota usage from ZAI for all configured API keys.
 
-    The endpoint requires browser session cookies from minimax.io; API key
-    auth returns status_code 1004, and no active coding plan returns 2062.
+    Endpoint discovered from ZAI's official ``glm-plan-usage`` plugin.
     """
-    cookie = os.getenv("MINIMAX_SESSION_COOKIE", "")
-    if not cookie:
-        return ProviderQuotaResult(
-            name="minimax",
-            display_name="MiniMax",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
+    keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="zai",
+                display_name="ZAI",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
 
+    results = await asyncio.gather(
+        *[_fetch_zai_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+
+    return _process_multi_key_results("zai", "ZAI", keys, results)
+
+
+async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
+    """Fetch coding-plan quota for a single MiniMax session cookie."""
     url = "https://platform.minimax.io/v1/api/openplatform/coding_plan/remains"
     headers = {"Cookie": cookie}
     group_id = settings.minimax_group_id
@@ -515,33 +585,39 @@ async def fetch_minimax() -> ProviderQuotaResult:
     )
 
 
+async def fetch_minimax() -> list[ProviderQuotaResult]:
+    """Fetch coding-plan quota from MiniMax for all configured session cookies."""
+    keys = _discover_env_keys("MINIMAX_SESSION_COOKIE", "MINIMAX_SESSION_COOKIE")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="minimax",
+                display_name="MiniMax",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_minimax_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+
+    return _process_multi_key_results("minimax", "MiniMax", keys, results)
+
+
 _USAGE_PATTERN = re.compile(
     r"(?P<label>session|weekly|monthly|daily)\s+usage\s+(?P<pct>[\d.]+)%\s+used",
     re.IGNORECASE,
 )
 
 
-async def fetch_ollama() -> ProviderQuotaResult:
-    """Scrape Ollama Cloud usage from the settings page (cookie-authenticated).
-
-    Ollama exposes no quota API; we GET https://ollama.com/settings with the
-    admin's session cookie and parse usage figures from the HTML. If the
-    page structure changes, the fetcher returns parse_error so the admin
-    knows the parser needs updating.
-    """
-    cookie = os.getenv("OLLAMA_SESSION_COOKIE", "")
-    if not cookie:
-        return ProviderQuotaResult(
-            name="ollama",
-            display_name="Ollama Cloud",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
-
+async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
+    """Scrape Ollama Cloud usage for a single session cookie."""
     url = "https://ollama.com/settings"
     headers = {
         "Cookie": cookie,
@@ -570,8 +646,6 @@ async def fetch_ollama() -> ProviderQuotaResult:
 
     usages = _parse_ollama_html(html)
     if not usages:
-        # Authenticated pages have usage figures; their absence usually
-        # means cookie expired and we got a sign-in page instead.
         if "sign in" in html.lower() or "login" in html.lower():
             return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
         return _err("ollama", "Ollama Cloud", cookie, "parse_error")
@@ -586,6 +660,31 @@ async def fetch_ollama() -> ProviderQuotaResult:
         error=None,
         usages=usages,
     )
+
+
+async def fetch_ollama() -> list[ProviderQuotaResult]:
+    """Scrape Ollama Cloud usage for all configured session cookies."""
+    keys = _discover_env_keys("OLLAMA_SESSION_COOKIE", "OLLAMA_SESSION_COOKIE")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="ollama",
+                display_name="Ollama Cloud",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_ollama_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+
+    return _process_multi_key_results("ollama", "Ollama Cloud", keys, results)
 
 
 def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
@@ -618,18 +717,18 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
 
 
 async def gather_all() -> list[ProviderQuotaResult]:
-    """Run all 4 provider fetchers in parallel; never raise.
+    """Run all provider fetchers in parallel; never raise.
 
-    If a fetcher raises (rather than returning an error result), the
-    exception is caught and converted to a `ProviderQuotaResult(ok=False,
-    error='unexpected')` so the admin endpoint can always respond with a
-    well-formed payload.
+    Each fetcher returns a ``list[ProviderQuotaResult]`` (one per key).
+    Results are flattened into a single list.  If a fetcher raises, the
+    exception is caught and converted to a single error result.
     """
     fetchers = [
         ("chutes", "Chutes", fetch_chutes),
         ("zai", "ZAI", fetch_zai),
         ("minimax", "MiniMax", fetch_minimax),
         ("ollama", "Ollama Cloud", fetch_ollama),
+        ("featherless", "Featherless", fetch_featherless),
     ]
     raw = await asyncio.gather(
         *(f() for _, _, f in fetchers),
@@ -637,8 +736,8 @@ async def gather_all() -> list[ProviderQuotaResult]:
     )
     out: list[ProviderQuotaResult] = []
     for (name, display_name, _), result in zip(fetchers, raw, strict=True):
-        if isinstance(result, ProviderQuotaResult):
-            out.append(result)
+        if isinstance(result, list):
+            out.extend(result)
         else:
             logger.error("gather_all: %s fetcher raised", name, exc_info=result)
             out.append(
@@ -654,3 +753,27 @@ async def gather_all() -> list[ProviderQuotaResult]:
                 )
             )
     return out
+
+
+async def fetch_featherless() -> list[ProviderQuotaResult]:
+    """Return a stub result for Featherless (no public quota API)."""
+    keys = _discover_env_keys("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="featherless",
+                display_name="Featherless",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+    return _process_multi_key_results(
+        "featherless",
+        "Featherless",
+        keys,
+        [_err("featherless", "Featherless", k, "no_quota_api") for _, k in keys],
+    )

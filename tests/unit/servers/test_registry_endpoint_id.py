@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from serving.servers.registry import _make_provider_id
+from serving.servers.registry import _make_adapter, _make_provider_id
 
 # ---------------------------------------------------------------------------
 # Local endpoints — must include port to avoid collisions
@@ -37,8 +37,9 @@ def test_local_without_port_fallback() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_zhipu_api() -> None:
-    assert _make_provider_id("glm-4.6", "zhipu", "https://api.z.ai/v4/") == "glm-4.6:zhipu-api"
+def test_zai_api() -> None:
+
+    assert _make_provider_id("glm-4.6", "zai", "https://api.z.ai/v4/") == "glm-4.6:zai-api"
 
 
 def test_chutes_api() -> None:
@@ -60,3 +61,17 @@ def test_fallback_on_bad_url() -> None:
     # urlparse doesn't raise on malformed URLs; hostname becomes None → "unknown"
     eid = _make_provider_id("m", "sglang", "not-a-url")
     assert eid == "m:unknown-api"
+
+
+def test_sglang_routes_request_stream_usage() -> None:
+    adapter = _make_adapter(
+        "sglang",
+        {
+            "id": "qwen3.6-35b",
+            "name": "Qwen3.6 35B",
+            "provider": "sglang",
+            "base_url": "http://localhost:8001",
+        },
+    )
+
+    assert adapter.config.include_usage_in_stream is True

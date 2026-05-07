@@ -278,7 +278,7 @@ class TestHasNonEmptyContent:
 def test_pin_selects_matching_provider():
     """pin_provider deterministically selects the matching adapter."""
     exe = RouteExecutor()
-    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
 
@@ -290,7 +290,7 @@ def test_pin_selects_matching_provider():
 def test_pin_skips_zero_weight():
     """pin_provider must not route to a weight=0 (disabled) adapter."""
     exe = RouteExecutor()
-    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="featherless"))
     exe.register_route("m", [(a, 1.0), (b, 0.0)])
 
@@ -302,7 +302,7 @@ def test_pin_skips_zero_weight():
 def test_pin_miss_returns_none():
     """pin_provider with unknown name returns None."""
     exe = RouteExecutor()
-    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    a = _EchoAdapter(_cfg("m", provider="zai"))
     exe.register_route("m", [(a, 1.0)])
 
     chosen = exe._select_adapter("m", pin_provider="nonexistent")
@@ -314,7 +314,7 @@ def test_pin_miss_returns_none():
 async def test_pin_miss_raises_provider_pin_error():
     """chat_completion with unmatched pin raises ProviderPinError, not generic ValueError."""
     exe = RouteExecutor()
-    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    a = _EchoAdapter(_cfg("m", provider="zai"))
     exe.register_route("m", [(a, 1.0)])
 
     with pytest.raises(ProviderPinError, match="nonexistent"):
@@ -328,13 +328,13 @@ async def test_pin_miss_raises_provider_pin_error():
 async def test_pin_no_fallback_on_failure():
     """When pin_provider is set and the pinned adapter fails, must NOT fallback."""
     exe = RouteExecutor()
-    primary = _FailAdapter(_cfg("m", provider="zhipu"))
+    primary = _FailAdapter(_cfg("m", provider="zai"))
     backup = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(primary, 0.8), (backup, 0.2)])
 
     with pytest.raises(RuntimeError, match="fail"):
         await exe.chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zhipu"
+            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zai"
         )
 
 
@@ -343,7 +343,7 @@ async def test_pin_no_fallback_on_failure():
 async def test_pin_success():
     """pin_provider routes to the correct adapter and returns its response."""
     exe = RouteExecutor()
-    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
 
@@ -358,7 +358,7 @@ async def test_pin_success():
 async def test_fallback_skips_zero_weight():
     """Normal fallback loop must skip weight=0 adapters."""
     exe = RouteExecutor()
-    primary = _FailAdapter(_cfg("m", provider="zhipu"))
+    primary = _FailAdapter(_cfg("m", provider="zai"))
     disabled = _EchoAdapter(_cfg("m", provider="featherless"))
     backup = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(primary, 0.8), (disabled, 0.0), (backup, 0.2)])
@@ -381,7 +381,7 @@ async def test_fallback_skips_zero_weight():
 async def test_stream_pin_success():
     """stream_chat_completion with pin routes to correct adapter."""
     exe = RouteExecutor()
-    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
 
@@ -398,7 +398,7 @@ async def test_stream_pin_success():
 async def test_stream_pin_miss_raises():
     """stream_chat_completion with unmatched pin raises ProviderPinError."""
     exe = RouteExecutor()
-    a = _EchoAdapter(_cfg("m", provider="zhipu"))
+    a = _EchoAdapter(_cfg("m", provider="zai"))
     exe.register_route("m", [(a, 1.0)])
 
     with pytest.raises(ProviderPinError, match="nonexistent"):
@@ -413,13 +413,13 @@ async def test_stream_pin_miss_raises():
 async def test_stream_pin_no_fallback():
     """stream_chat_completion with pin must NOT fallback on failure."""
     exe = RouteExecutor()
-    primary = _FailAdapter(_cfg("m", provider="zhipu"))
+    primary = _FailAdapter(_cfg("m", provider="zai"))
     backup = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(primary, 0.8), (backup, 0.2)])
 
     with pytest.raises(RuntimeError, match="fail"):
         async for _ in exe.stream_chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zhipu"
+            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zai"
         ):
             pass
 
@@ -492,10 +492,89 @@ async def test_stream_no_fallback_after_chunks_yielded():
         ):
             chunks_seen.append(chunk)
 
-    # Exactly one chunk from primary, then the exception. Backup must NOT
-    # have produced any chunks — that would indicate a fallback corrupted
-    # the stream after partial output.
-    assert len(chunks_seen) == 1
+    # One synthetic _routing chunk + one chunk from primary, then the exception.
+    # Backup must NOT have produced any chunks — that would indicate a fallback
+    # corrupted the stream after partial output.
+    assert len(chunks_seen) == 2
+    # First chunk is the synthetic routing metadata for the primary adapter.
+    assert '"_routing"' in chunks_seen[0]
+    assert '"provider": "primary"' in chunks_seen[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_emits_routing_chunk_with_provider_and_base_url():
+    """Regression: streaming must yield a synthetic _routing chunk first.
+
+    Without this chunk, completions.py falls back to provider="router" and
+    pricing=None for streaming requests, because req_ctx.push() inside
+    _execute_stream_adapter happens in the background reader task and is
+    invisible to the parent coroutine. api_logs would record cost_usd=NULL
+    for every streaming request (notably Claude / Anthropic models).
+    """
+    import json as _json
+
+    exe = RouteExecutor()
+    primary = _EchoAdapter(_cfg("m", provider="anthropic"))
+    primary.config.base_url = "https://api.anthropic.com"
+    primary.config.endpoint_id = "m:anthropic-api"
+    exe.register_route("m", [(primary, 1.0)])
+    exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
+
+    chunks: list[Any] = []
+    async for chunk in exe.stream_chat_completion(
+        "m", messages=[{"role": "user", "content": "hi"}]
+    ):
+        chunks.append(chunk)
+
+    # First chunk is the synthetic routing metadata.
+    assert chunks, "stream produced no chunks"
+    first = chunks[0]
+    assert isinstance(first, str) and first.startswith("data: ")
+    payload = _json.loads(first[len("data: ") :].strip())
+    assert payload["choices"] == []
+    routing = payload["_routing"]
+    assert routing["provider"] == "anthropic"
+    assert routing["base_url"] == "https://api.anthropic.com"
+    assert routing["endpoint_id"] == "m:anthropic-api"
+    assert "fallback" not in routing
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_emits_routing_chunk_for_fallback_adapter():
+    """Fallback adapter also gets a _routing chunk (with fallback=True)."""
+    import json as _json
+
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="primary"))
+    backup = _EchoAdapter(_cfg("m", provider="backup"))
+    backup.config.base_url = "https://backup.example"
+    exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
+    exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
+
+    chunks: list[Any] = []
+    async for chunk in exe.stream_chat_completion(
+        "m", messages=[{"role": "user", "content": "hi"}]
+    ):
+        chunks.append(chunk)
+
+    # Two routing chunks (primary + backup) plus the backup's content chunk.
+    routing_payloads = []
+    for chunk in chunks:
+        if isinstance(chunk, str) and chunk.startswith("data: "):
+            try:
+                p = _json.loads(chunk[len("data: ") :].strip())
+            except (ValueError, _json.JSONDecodeError):
+                continue
+            if "_routing" in p:
+                routing_payloads.append(p["_routing"])
+
+    assert len(routing_payloads) == 2
+    assert routing_payloads[0]["provider"] == "primary"
+    assert routing_payloads[0].get("fallback") is not True
+    assert routing_payloads[1]["provider"] == "backup"
+    assert routing_payloads[1].get("fallback") is True
 
 
 @pytest.mark.unit
@@ -516,3 +595,63 @@ def test_admin_only_propagated():
     assert exe.routes["m-alias"].admin_only is True
     # Shared reference
     assert exe.routes["m"] is exe.routes["m-alias"]
+
+
+@pytest.mark.unit
+def test_weights_renormalized_when_circuit_breaker_excludes_adapter():
+    """Regression: filtered adapters must not distort remaining weight distribution.
+
+    When a circuit breaker excludes an adapter from the pool, the remaining
+    weights must be renormalized so that ``random.random()`` (uniform [0,1))
+    maps proportionally to the surviving adapters.  Without renormalization,
+    the last adapter in the pool absorbed all overflow probability mass,
+    getting disproportionately more traffic than its weight warranted.
+    """
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    b = _EchoAdapter(_cfg("m", provider="B"))
+    c = _EchoAdapter(_cfg("m", provider="C"))
+    exe.register_route("m", [(a, 1.0), (b, 1.0), (c, 1.0)])
+
+    for _ in range(3):
+        exe._on_failure("B", reason="test_failure")
+    status = exe.get_provider_status()
+    assert status["B"]["circuit_state"] == "open"
+
+    random.seed(42)
+    n = 10000
+    picks = {"A": 0, "C": 0}
+    for _ in range(n):
+        chosen = exe._select_adapter("m")
+        assert chosen is not None
+        assert chosen.config.provider != "B"
+        picks[chosen.config.provider] += 1
+
+    frac_a = picks["A"] / n
+    frac_c = picks["C"] / n
+    assert 0.47 <= frac_a <= 0.53, f"A fraction {frac_a} outside tolerance"
+    assert 0.47 <= frac_c <= 0.53, f"C fraction {frac_c} outside tolerance"
+
+
+@pytest.mark.unit
+def test_select_skips_zero_weight_when_positive_circuits_open():
+    """Regression: weight=0 (disabled) adapters must never be selected even when
+    every positive-weight adapter has its circuit open.
+
+    Pre-fix the cumulative-weight loop's terminal ``return pool[-1][0]``
+    fallback could land on a weight=0 adapter when all positive-weight
+    adapters were filtered out by the circuit breaker. AllCircuitsOpenError
+    is the correct outcome instead.
+    """
+    from routing.routers import AllCircuitsOpenError
+
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    disabled = _EchoAdapter(_cfg("m", provider="DISABLED"))
+    exe.register_route("m", [(a, 1.0), (disabled, 0.0)])
+
+    for _ in range(3):
+        exe._on_failure("A", reason="test_failure")
+
+    with pytest.raises(AllCircuitsOpenError):
+        exe._select_adapter("m")
