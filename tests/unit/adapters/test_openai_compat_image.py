@@ -152,9 +152,9 @@ class TestZaiModelsDoNotSupportImage:
         for model in data["models"]:
             model_id = model.get("id", "")
             for route in model.get("route", []):
-                if route.get("kind") != "zhipu":
+                if route.get("kind") != "zai":
                     continue
                 modalities = model.get("input_modalities", [])
                 assert "image" not in modalities, (
-                    f"Model {model_id} with kind=zhipu should not support image (got {modalities})"
+                    f"Model {model_id} with kind=zai should not support image (got {modalities})"
                 )
