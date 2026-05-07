@@ -48,7 +48,10 @@ async def main(output_path: str = "api_logs_export.jsonl") -> int:
     db_user = os.environ.get("DB_USER")
     db_password = os.environ.get("DB_PASSWORD", "")
     if not db_user:
-        print("ERROR: DB_USER is not set. Load the .env file or set the environment variable.", flush=True)
+        print(
+            "ERROR: DB_USER is not set. Load the .env file or set the environment variable.",
+            flush=True,
+        )
         return 1
     dsn = (
         f"postgresql://{db_user}"
@@ -62,8 +65,9 @@ async def main(output_path: str = "api_logs_export.jsonl") -> int:
         count = await _export_jsonl(pool, output_path)
         if count == 0:
             print("No rows found in api_logs.")
-            return
+            return 0
         print(f"Exported {count} rows to {output_path}")
+        return 0
     finally:
         await pool.close()
 
