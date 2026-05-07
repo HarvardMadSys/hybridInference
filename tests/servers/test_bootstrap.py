@@ -154,9 +154,9 @@ class TestBootstrapInitialization:
                 "serving.servers.bootstrap.AsyncHTTPClient.shared",
                 side_effect=RuntimeError("boom after routewise init"),
             ),
+            pytest.raises(RuntimeError, match="boom after routewise init"),
         ):
-            with pytest.raises(RuntimeError, match="boom after routewise init"):
-                await bootstrap.initialize()
+            await bootstrap.initialize()
 
         mock_routewise.start.assert_not_called()
 
