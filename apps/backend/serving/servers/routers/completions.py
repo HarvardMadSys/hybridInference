@@ -49,11 +49,15 @@ from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
+    import asyncio
+
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
 
 logger = get_logger(__name__)
 router = APIRouter()
+_background_tasks: set[asyncio.Task[Any]] = set()
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 
 @router.post(
@@ -276,6 +280,42 @@ async def chat_completions(
         config = getattr(adapter, "config", None)
         return getattr(config, "provider", None)
 
+    # Pre-flight: reject image content when the model does not support it.
+    # This check is placed before routing so both streaming and non-streaming
+    # paths get a clean 400 instead of silently stripping image blocks.
+    route_config = router_exec.routes.get(model)
+    model_modalities = route_config.adapters[0][0].config.input_modalities if route_config else []
+    if "image" not in (model_modalities or []):
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image_url":
+                    record_model_request("400", "router")
+                    if log_store and not is_synthetic_probe:
+                        completions_logger.schedule_log(
+                            request_id,
+                            {
+                                "request_id": request_id,
+                                "model_id": model,
+                                "provider": "router",
+                                "prompt": messages,
+                                "response": None,
+                                "usage": None,
+                                "latency_ms": int((time.time() - start_time) * 1000),
+                                "status_code": 400,
+                                "error": f"Model '{model}' does not support image input",
+                                "params": early_params,
+                                "metadata": metadata,
+                                "pricing": None,
+                            },
+                        )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model '{model}' does not support image input",
+                    )
+
     # Pre-flight: validate pin_provider before routing.  For streaming this is
     # critical (HTTP 200 is already committed once StreamingResponse starts),
     # but we check unconditionally so non-stream also gets a clean 400.
@@ -385,15 +425,16 @@ async def chat_completions(
             _ns_usage = (
                 normalize_usage(response.get("usage")) if isinstance(response, dict) else None
             ) or {}
-            routing = await cost_tracker.schedule_increment(
-                user_id=user_id,
-                routing=routing,
-                prompt_tokens=int(_ns_usage.get("prompt_tokens", 0) or 0),
-                completion_tokens=int(_ns_usage.get("completion_tokens", 0) or 0),
-                cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
-                cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
-                reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
-            )
+            if _ns_usage:
+                routing = await cost_tracker.schedule_increment(
+                    user_id=user_id,
+                    routing=routing,
+                    prompt_tokens=int(_ns_usage.get("prompt_tokens", 0) or 0),
+                    completion_tokens=int(_ns_usage.get("completion_tokens", 0) or 0),
+                    cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
+                    cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
+                    reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
+                )
 
         # Background DB log so the row write doesn't block the HTTP response.
         if log_store and not is_synthetic_probe:
@@ -426,6 +467,8 @@ async def chat_completions(
                     "upstream_cost_usd": routing.upstream_cost_usd,
                 },
             )
+            _background_tasks.clear()
+            _background_tasks.update(completions_logger._background_tasks)
 
         # Emit token counters when usage is available, with anomaly checks
         # Normalize usage to extract reasoning_tokens from nested locations

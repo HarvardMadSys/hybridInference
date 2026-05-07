@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import re
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
@@ -52,6 +53,52 @@ logger = get_logger(__name__)
 # drop the connection during long upstream pauses (e.g., reasoning).
 _KEEPALIVE_INTERVAL = 30
 _SENTINEL: Any = object()
+
+
+def _extract_exception_status_code(exc: BaseException, default: int = 500) -> int:
+    """Return the HTTP status carried by common upstream exception shapes."""
+    status_code = None
+
+    if hasattr(exc, "status_code") and exc.status_code is not None:
+        status_code = exc.status_code
+    elif hasattr(exc, "response") and exc.response is not None:
+        if hasattr(exc.response, "status_code"):
+            status_code = exc.response.status_code
+        elif hasattr(exc.response, "status"):
+            status_code = exc.response.status
+    elif hasattr(exc, "status") and exc.status is not None:
+        status_code = exc.status
+    elif hasattr(exc, "code") and exc.code is not None:
+        status_code = exc.code
+
+    if status_code is None:
+        return default
+
+    try:
+        return int(status_code)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_exception_for_db(exc: BaseException, max_len: int = 4000) -> str:
+    """Return capped, redacted operator-facing error text for api_logs.error."""
+    exc_text = str(exc)
+    upstream_body = getattr(exc, "error_body", None)
+    if upstream_body is None:
+        value = exc_text
+    else:
+        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
+        value = f"{exc_text} | upstream_body={body_text}"
+
+    value = re.sub(
+        r'(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization)"?\s*[:=]\s*)("?)[^"\s,}]+("?)',
+        r"\1\2[REDACTED]\3",
+        value,
+    )
+    value = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
+    if len(value) > max_len:
+        return value[: max_len - 14] + "...[truncated]"
+    return value
 
 
 class _ToolCallAccumulator:
@@ -221,7 +268,7 @@ class StreamSession:
         """
         return self._yielded_first_chunk
 
-    async def stream(self, adapter_chunks: AsyncIterator[str]) -> AsyncIterator[bytes]:
+    async def stream(self, adapter_chunks: AsyncIterator[str]) -> AsyncIterator[str]:
         """Yield SSE bytes for the streaming response.
 
         Owns: initial role chunk emission, keepalive heartbeats, per-chunk
@@ -368,8 +415,15 @@ class StreamSession:
             await self._finalize_success()
         except Exception as exc:
             await self._finalize_failure(exc)
-            user_msg = scrub_error_for_user(exc, self._request_id, 500)
-            error_chunk = {"error": {"message": user_msg, "type": "server_error", "code": 500}}
+            exc_status_code = _extract_exception_status_code(exc)
+            user_msg = scrub_error_for_user(exc, self._request_id, exc_status_code)
+            error_chunk = {
+                "error": {
+                    "message": user_msg,
+                    "type": "server_error",
+                    "code": exc_status_code,
+                }
+            }
             error_msg = f"data: {json.dumps(error_chunk)}\n\n"
             logger.error(f"Yielding error chunk: {error_msg}")
             yield error_msg
@@ -560,6 +614,7 @@ class StreamSession:
 
         ctx = req_ctx.get()
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
+        exc_status_code = _extract_exception_status_code(exc)
 
         if self._log_store and not self._is_synthetic_probe:
             self._completions_logger.schedule_log(
@@ -572,11 +627,13 @@ class StreamSession:
                     "response": None,
                     "usage": None,
                     "latency_ms": int((time.time() - self._start_time) * 1000),
-                    "status_code": 500,
-                    "error": str(exc),
+                    "status_code": exc_status_code,
+                    "error": _format_exception_for_db(exc),
                     "params": self._params,
                     "metadata": self._metadata,
                     "ttft_ms": self._ttft.ttft_ms,
                     "pricing": None,
                 },
             )
+
+        return
