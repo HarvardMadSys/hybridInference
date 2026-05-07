@@ -85,6 +85,7 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8001"))
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1200"))
 HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "600"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
+FREEINFERENCE_API_KEY = os.environ.get("FREEINFERENCE_API_KEY", "").strip()
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = _SCRIPT_DIR / "models.json"
@@ -341,6 +342,15 @@ class BackendManager:
                 return
 
 
+def _copy_stream(resp: Any, wfile: Any) -> None:
+    while True:
+        chunk = resp.read(8192)
+        if not chunk:
+            break
+        wfile.write(chunk)
+        wfile.flush()
+
+
 _backends: dict[str, BackendManager] = {}
 for _name, _cfg in MODELS_CONFIG_DATA.items():
     _backends[_name] = BackendManager(_name, _cfg)
@@ -365,7 +375,7 @@ def _get_backend(
 WARMUP_THINKING_SSE = (
     'data: {"id":"warmup","object":"chat.completion.chunk",'
     '"choices":[{"index":0,"delta":{"role":"assistant",'
-    '"content":"⏳ The model is starting up — this takes about 50 seconds. '
+    '"content":"⏳ The model is starting up — this takes about 120 seconds. '
     'Please wait…"},"finish_reason":null}]}\n\n'
 )
 WARMUP_THINKING_SSE_DONE = (
@@ -377,10 +387,28 @@ WARMUP_THINKING_SSE_DONE = (
 class ProxyHandler(BaseHTTPRequestHandler):
     """Forwards requests to the correct sglang backend based on model name."""
 
+    def _check_api_key(self) -> None:
+        if not FREEINFERENCE_API_KEY:
+            return
+
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            auth = auth[7:]
+        else:
+            auth = self.headers.get("X-API-Key", "")
+
+        if auth != FREEINFERENCE_API_KEY:
+            self.send_response(401)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"Missing or invalid API key")
+
     def _proxy(self) -> None:
         if self.path == "/v1/models" and self.command == "GET":
             self._handle_models_list()
             return
+
+        self._check_api_key()
 
         body = self._read_body()
         backend = _get_backend(body, request_path=self.path, request_method=self.command)
@@ -464,13 +492,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
         req = Request(target, data=body if body else None, headers=headers, method=self.command)
         try:
             with urlopen(req, timeout=300) as resp:
+                is_streaming = resp.headers.get("Content-type", "").startswith("text/event-stream")
                 self.send_response(resp.status)
                 for key, val in resp.getheaders():
                     if key.lower() in ("transfer-encoding", "connection"):
                         continue
                     self.send_header(key, val)
                 self.end_headers()
-                self.wfile.write(resp.read())
+                if is_streaming:
+                    _copy_stream(resp, self.wfile)
+                else:
+                    self.wfile.write(resp.read())
         except URLError as exc:
             self.send_error(502, f"Backend error: {exc}")
         except Exception as exc:
