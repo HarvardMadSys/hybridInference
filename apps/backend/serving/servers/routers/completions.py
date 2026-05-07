@@ -57,7 +57,13 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 router = APIRouter()
 _background_tasks: set[asyncio.Task[Any]] = set()
-_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
+    """Compute the affinity key used for sticky multi-key routing."""
+    if auth_key_hash:
+        return auth_key_hash
+    return f"ip:{client_ip}"
 
 
 @router.post(
@@ -241,7 +247,14 @@ async def chat_completions(
 
     # Affinity key for multi-key API rotation — pinned to the specific
     # hyi-xxx key in use (not user_id, since a user may have multiple keys).
-    req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
+    auth_key_hash = user_ctx.get("auth_key_hash")
+    affinity_key = derive_affinity_key(auth_key_hash, get_client_ip(request))
+    req_ctx.update(
+        {
+            "auth_key_hash": auth_key_hash or "_anon",
+            "affinity_key": affinity_key,
+        }
+    )
 
     # Provider pinning: allows the harness (or admin tooling) to force routing
     # to a specific backend.  Only honoured for admin users to prevent abuse.
