@@ -149,17 +149,6 @@ export async function updatePassword(
   return jsonOrThrow<{ message: string }>(resp);
 }
 
-export async function changeEmail(
-  newEmail: string,
-  password: string,
-): Promise<{ message: string; new_email: string }> {
-  const resp = await fetchWithAuth(API_BASE, '/user/change-email', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ new_email: newEmail, password }),
-  });
-  return jsonOrThrow<{ message: string; new_email: string }>(resp);
-}
 
 // Recent requests types and API
 export interface RecentRequestItem {
