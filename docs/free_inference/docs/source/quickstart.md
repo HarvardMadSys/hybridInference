@@ -10,7 +10,25 @@ Get started with FreeInference in 5 minutes.
 
 ## Step 2: Configure Your Agent
 
-Choose your coding agent below and follow the steps. For detailed setup and troubleshooting, see the [Integration Guides](integrations.md).
+Choose your coding agent below and follow the steps. If you want the fastest agent-first setup, start with Kilo Code. For detailed setup and troubleshooting, see the [Integration Guides](integrations.md).
+
+### Kilo Code (Recommended)
+
+1. Install the Kilo Code extension or plugin in your IDE
+2. Open the Kilo Code side panel
+3. Open Kilo Code settings
+4. Set **API Provider** to **OpenAI Compatible**
+5. Enter the exact connection values:
+   - Base URL: `https://freeinference.org/v1`
+   - API Key: `your-api-key-here`
+6. Select a model:
+   - `glm-5.1` for general coding tasks
+   - `glm-5-turbo` for faster edits and shorter loops
+   - `minimax-m2.5` for long-context or image-aware work
+7. Save the settings
+8. Start a new Kilo session and send a short prompt to verify the connection
+
+> **Tip:** If the model list does not refresh immediately, reopen the Kilo panel or paste the model id manually.
 
 ### Cursor
 
@@ -30,7 +48,7 @@ bash setup_claude_code.sh
 
 > **Security note:** Always review remote shell scripts before executing them. You can also clone the repo and run `ops/setup/setup_claude_code.sh` from your local checkout.
 
-### Roo Code / Kilo Code / Cline
+### Roo Code / Cline
 
 1. Install extension in your IDE
 2. Settings → **OpenAI Compatible**

@@ -216,4 +216,6 @@ To use different models, change the model name in your IDE configuration:
 
 **Cursor:** Select from the dropdown in settings
 
-**Roo Code / Kilo Code:** Select from the dropdown in extension settings
+**Kilo Code:** Select from the dropdown in extension settings. A good default is `glm-5.1`; switch to `glm-5-turbo` for faster iteration or `minimax-m2.5` for long-context and image-aware workflows.
+
+**Roo Code:** Select from the dropdown in extension settings

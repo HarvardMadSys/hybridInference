@@ -4,13 +4,13 @@ FreeInference Documentation
 **Free LLM inference for coding agents and IDEs**
 
 FreeInference provides free access to state-of-the-art language models
-specifically designed for coding agents like Cursor, Roo Code, and other AI-powered IDEs.
+for coding agents and AI-powered IDEs, with a particularly smooth setup path for Kilo Code.
 
 Quick Links
 -----------
 
 * :doc:`quickstart` - Get started in 5 minutes
-* :doc:`integrations` - Configure with Cursor, Roo Code, and other coding agents
+* :doc:`integrations` - Configure with Kilo Code, Cursor, Roo Code, and other coding agents
 * :doc:`models` - View available models
 * :doc:`api_headers` - API headers reference
 
@@ -34,7 +34,10 @@ Key Features
    Access GLM, Qwen, MiniMax, and other powerful models
 
 **IDE Integration**
-   Easy setup with Cursor, Roo Code, Kilo Code, and more
+   Easy setup with Kilo Code, Cursor, Roo Code, and more
+
+**Kilo-Friendly Setup**
+   Detailed Kilo Code instructions for a fast OpenAI-compatible configuration
 
 
 
@@ -45,8 +48,8 @@ Getting Started
 
 2. **Choose your IDE:**
 
+   - :doc:`Integrations <integrations>` - Kilo Code setup with recommended models
    - :doc:`Cursor <integrations>` - AI-powered code editor
-   - :doc:`Roo Code / Kilo Code <integrations>` - VS Code extensions
 
 3. **Configure and start coding!**
 
