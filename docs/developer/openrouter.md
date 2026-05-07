@@ -65,7 +65,7 @@ cp .env.example .env
 ```
 Populate it with provider credentials and runtime configuration:
 ```bash
-LOCAL_BASE_URL=https://freeinference.org/v1
+LOCAL_DEPLOYMENT_URL=http://host.docker.internal:8001/v1
 DEEPSEEK_API_KEY=your-deepseek-api-key
 GEMINI_API_KEY=your-gemini-api-key
 DB_HOST=localhost
@@ -183,7 +183,7 @@ pytest tests/servers/test_bootstrap.py -q
 ## Troubleshooting
 
 - **Port already in use**: `sudo lsof -ti :80 | xargs sudo kill -9`
-- **Missing models**: Verify `config/models.yaml` contains the expected entries and that `LOCAL_BASE_URL` is reachable.
+- **Missing models**: Verify `config/models.yaml` contains the expected entries and that `LOCAL_DEPLOYMENT_URL` is reachable.
 - **No logs written**: Confirm PostgreSQL is reachable and the configured database credentials are correct.
 
 ## Related Docs

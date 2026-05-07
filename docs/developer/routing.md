@@ -38,7 +38,7 @@ health_check: 30
 logging:
   output: output.log
 local_deployment:
-  - endpoint: ${LOCAL_BASE_URL:-http://localhost:8000}
+  - endpoint: ${LOCAL_DEPLOYMENT_URL:-http://localhost:8000}
     models:
 remote_deployment:
     models:

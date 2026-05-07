@@ -6,7 +6,7 @@ health_check: 300
 logging:
   output: output.log
 local_deployment:
-  - endpoint: ${LOCAL_BASE_URL}
+  - endpoint: ${LOCAL_DEPLOYMENT_URL}
     models:
       - qwen3.6-35b
 remote_deployment:

@@ -107,7 +107,7 @@ health_check: 30
 logging:
   output: output.log
 local_deployment:
-  - endpoint: ${LOCAL_BASE_URL:-http://localhost:8000}
+  - endpoint: ${LOCAL_DEPLOYMENT_URL:-http://localhost:8000}
     models:
 remote_deployment:
     models:
@@ -126,7 +126,7 @@ Simply omit `routing.yaml` to use default weights from `models.yaml` (typically 
 
 ### Set Environment Variables:
   ```bash
-  export LOCAL_BASE_URL=http://localhost:8000
+  export LOCAL_DEPLOYMENT_URL=http://localhost:8000
   ```
 
 ### Start the Server:
