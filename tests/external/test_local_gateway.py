@@ -71,7 +71,7 @@ GATEWAY_TIMEOUT = int(os.getenv("GATEWAY_TIMEOUT", "30"))
 GATEWAY_API_KEY = os.getenv("GATEWAY_API_KEY", "")
 
 # Local server configuration
-LOCAL_DEPLOYMENT_URL = os.getenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001").rstrip("/")
+LOCAL_DEPLOYMENT_URL = os.getenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001/v1").rstrip("/")
 
 # Test configuration
 TEST_AUTH = os.getenv("USER_AUTH_ENABLED", "0") == "1"
@@ -153,7 +153,7 @@ def ensure_local_server_up() -> None:
         pytest.skip: If local server is not reachable
     """
     try:
-        response = requests.get(f"{LOCAL_DEPLOYMENT_URL}/v1/models", timeout=2)
+        response = requests.get(f"{LOCAL_DEPLOYMENT_URL}/models", timeout=2)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         pytest.skip(
@@ -433,7 +433,7 @@ def test_gateway_local_model_routing(gateway_url, gateway_timeout, auth_headers)
     ensure_local_server_up()
 
     # Step 1: Verify local server has models
-    local_models_resp = requests.get(f"{LOCAL_DEPLOYMENT_URL}/v1/models", timeout=5)
+    local_models_resp = requests.get(f"{LOCAL_DEPLOYMENT_URL}/models", timeout=5)
     local_models_resp.raise_for_status()
     local_models = local_models_resp.json()["data"]
 
@@ -640,7 +640,7 @@ def test_gateway_summary(gateway_url, gateway_timeout, auth_headers):
 
     # Check local server health
     try:
-        response = requests.get(f"{LOCAL_DEPLOYMENT_URL}/v1/models", timeout=2)
+        response = requests.get(f"{LOCAL_DEPLOYMENT_URL}/models", timeout=2)
         results["local_server_health"] = (
             "UP" if response.status_code == 200 else f"HTTP {response.status_code}"
         )
