@@ -192,18 +192,22 @@ class RouteWiseRouter(BaseRouter):
         shared ``FixedRouter`` so classification and latency-profile init
         can run.
 
-        Idempotent: a second call rewrites classification.  In normal use it
-        is called exactly once, immediately after ``build_router`` returns.
+        Safe to call more than once: this method rebuilds classification and
+        clears any derived state tied to the previously attached router. In
+        normal use it is called exactly once, immediately after
+        ``build_router`` returns.
         """
         self.fixed_router = fixed_router
         self.classified = {}
         self._adapter_sub_type = {}
+        self._pending_decisions = {}
         self._api_adapter_prices = {}
         self._latency_profiles = {}
         self._swrr_samplers = {}
         self._last_lp_times = {}
         self._last_lp_weights = {}
         self._last_lp_statuses = {}
+        self._shadow_hedge_log = []
         self._api_endpoint_map = {}
         self._pending_lp_solves = set()
         self._classify_all()

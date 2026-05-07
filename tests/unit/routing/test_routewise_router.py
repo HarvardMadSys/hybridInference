@@ -259,6 +259,27 @@ class TestRouteWiseRouterScaffold:
         entries = router.classified["test-model"]
         assert entries[0][2] is SubscriptionType.API
 
+    def test_attach_fixed_router_clears_derived_state_on_rebind(self):
+        """Rebinding resets all derived state that depends on prior routing activity."""
+        adapter = _make_adapter()
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(adapter, 1.0)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router._pending_decisions["req-1"] = {"decision": "quota"}
+        router._shadow_hedge_log.append(MagicMock())
+        router._pending_lp_solves.add("test-model")
+
+        replacement = _FakeFixedRouter()
+        replacement.add("test-model", [(adapter, 1.0)])
+
+        router.attach_fixed_router(replacement)
+
+        assert router.fixed_router is replacement
+        assert router._pending_decisions == {}
+        assert router._shadow_hedge_log == []
+        assert router._pending_lp_solves == set()
+
     def test_concurrency_adapter_skipped_when_disabled(self):
         """S_C adapter is not selected when concurrency_enabled=False."""
         conc = _make_adapter(subscription_type="concurrency")

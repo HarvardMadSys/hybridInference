@@ -63,6 +63,9 @@ class JsonFormatter(logging.Formatter):
             "latency_ms",
             "user_id",
             "error",
+            "event",
+            "strategy",
+            "param_keys",
         ):
             if key in record.__dict__:
                 payload[key] = record.__dict__[key]

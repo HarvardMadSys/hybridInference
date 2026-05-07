@@ -63,6 +63,7 @@ class TestModelRouterRegistry:
         """Cache miss logs a router_initialized event."""
         from routing.model_router_registry import ModelRouterRegistry
         from routing.routers import FixedRouter
+        from serving.utils.logging import JsonFormatter
 
         reg = ModelRouterRegistry(
             models_config={"glm-4.7": {"router_params": {"local_fraction": 0.7}}},
@@ -77,6 +78,11 @@ class TestModelRouterRegistry:
         assert rec.model == "glm-4.7"
         assert rec.strategy == "fixed"
         assert rec.param_keys == ["local_fraction"]
+
+        payload = JsonFormatter().format(rec)
+        assert '"event": "router_initialized"' in payload
+        assert '"strategy": "fixed"' in payload
+        assert '"param_keys": ["local_fraction"]' in payload
 
     def test_get_router_uses_default_router_from_config(self):
         """default_router_name='routewise' applies when model omits 'router'."""
