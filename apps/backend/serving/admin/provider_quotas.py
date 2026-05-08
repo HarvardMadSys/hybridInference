@@ -192,6 +192,103 @@ def _parse_epoch_ms(value: Any) -> datetime | None:
         return None
 
 
+def _as_float(value: Any) -> float | None:
+    """Convert a JSON number to float while rejecting bool and non-numeric values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _chatgpt_usage_from_block(label: str, block: Any) -> ProviderQuotaUsage | None:
+    """Parse one ChatGPT message-cap block into a generic usage row."""
+    if not isinstance(block, dict):
+        return None
+
+    limit = next(
+        (
+            value
+            for value in (
+                _as_float(block.get("limit")),
+                _as_float(block.get("total")),
+                _as_float(block.get("cap")),
+                _as_float(block.get("message_cap")),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    used = next(
+        (
+            value
+            for value in (
+                _as_float(block.get("used")),
+                _as_float(block.get("current")),
+                _as_float(block.get("current_value")),
+                _as_float(block.get("messages_used")),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    remaining = _as_float(block.get("remaining"))
+    if used is None and limit is not None and remaining is not None:
+        used = max(0.0, limit - remaining)
+
+    if used is None and limit is None:
+        return None
+
+    reset_at = (
+        _parse_iso(block.get("reset_at"))
+        or _parse_iso(block.get("resets_at"))
+        or _parse_iso(block.get("reset_time"))
+        or _parse_iso(block.get("reset_after"))
+    )
+    return ProviderQuotaUsage(
+        label=f"{label} messages",
+        used=used,
+        limit=limit,
+        unit="messages",
+        reset_at=reset_at,
+    )
+
+
+def _parse_chatgpt_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
+    """Parse recognized ChatGPT quota payload shapes into usage rows.
+
+    ChatGPT web payloads are not a public stable API. Keep this parser
+    conservative and return an empty list for unknown shapes.
+    """
+    usages: list[ProviderQuotaUsage] = []
+
+    for mapping_key in ("message_caps", "message_cap"):
+        mapping = data.get(mapping_key)
+        if isinstance(mapping, dict):
+            for label, block in mapping.items():
+                usage = _chatgpt_usage_from_block(str(label), block)
+                if usage is not None:
+                    usages.append(usage)
+
+    models = data.get("models")
+    if isinstance(models, list):
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            label = str(model.get("title") or model.get("slug") or model.get("id") or "Messages")
+            block = model.get("message_cap") or model.get("message_caps") or model.get("quota") or model.get("usage")
+            usage = _chatgpt_usage_from_block(label, block)
+            if usage is not None:
+                usages.append(usage)
+
+    if not usages:
+        top_level = _chatgpt_usage_from_block("Messages", data)
+        if top_level is not None:
+            usages.append(top_level)
+
+    return usages
+
+
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
     return ProviderQuotaResult(
         name=name,

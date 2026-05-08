@@ -14,6 +14,7 @@ from serving.admin.provider_quotas import (
     _discover_env_keys,
     _mask_key,
     _next_reset,
+    _parse_chatgpt_usage,
     _parse_iso,
     fetch_chutes,
     fetch_minimax,
@@ -146,6 +147,74 @@ class TestParseIso:
         assert _parse_iso("2026-05-02T04:00:00Z") is not None
         # Embedded Z that is not a TZ marker -> ValueError -> None
         assert _parse_iso("2026Z05-02T04:00:00") is None
+
+
+class TestParseChatGPTUsage:
+    def test_parses_model_message_caps(self):
+        payload = {
+            "models": [
+                {
+                    "slug": "gpt-5",
+                    "title": "GPT-5",
+                    "message_cap": {
+                        "used": 18,
+                        "limit": 80,
+                        "reset_at": "2026-05-08T00:00:00Z",
+                    },
+                },
+                {
+                    "slug": "gpt-4o",
+                    "title": "GPT-4o",
+                    "message_cap": {
+                        "remaining": 14,
+                        "total": 40,
+                        "reset_at": "2026-05-08T12:30:00+00:00",
+                    },
+                },
+            ]
+        }
+
+        usages = _parse_chatgpt_usage(payload)
+
+        assert len(usages) == 2
+        gpt5 = usages[0]
+        assert gpt5.label == "GPT-5 messages"
+        assert gpt5.used == 18.0
+        assert gpt5.limit == 80.0
+        assert gpt5.unit == "messages"
+        assert gpt5.reset_at == datetime(2026, 5, 8, 0, 0, 0, tzinfo=timezone.utc)
+
+        gpt4o = usages[1]
+        assert gpt4o.label == "GPT-4o messages"
+        assert gpt4o.used == 26.0
+        assert gpt4o.limit == 40.0
+        assert gpt4o.unit == "messages"
+        assert gpt4o.reset_at == datetime(2026, 5, 8, 12, 30, 0, tzinfo=timezone.utc)
+
+    def test_parses_top_level_message_caps_mapping(self):
+        payload = {
+            "message_caps": {
+                "gpt-5-thinking": {
+                    "used": 3,
+                    "limit": 50,
+                    "resets_at": "2026-05-09T00:00:00Z",
+                }
+            }
+        }
+
+        usages = _parse_chatgpt_usage(payload)
+
+        assert len(usages) == 1
+        usage = usages[0]
+        assert usage.label == "gpt-5-thinking messages"
+        assert usage.used == 3.0
+        assert usage.limit == 50.0
+        assert usage.unit == "messages"
+        assert usage.reset_at == datetime(2026, 5, 9, 0, 0, 0, tzinfo=timezone.utc)
+
+    def test_returns_empty_for_unknown_shape(self):
+        assert _parse_chatgpt_usage({"models": [{"slug": "gpt-5"}]}) == []
+        assert _parse_chatgpt_usage({"unrelated": "value"}) == []
 
 
 class TestDiscoverEnvKeys:
