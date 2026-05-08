@@ -23,7 +23,8 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
   const [models, setModels] = useState<AdminModelVisibilityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [savingModelId, setSavingModelId] = useState<string | null>(null);
+  const [savingModelIds, setSavingModelIds] = useState<Set<string>>(new Set());
+  const [draftOverrides, setDraftOverrides] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -42,19 +43,32 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
     void load();
   }, [load]);
 
-  const handleChangeRole = async (modelId: string, value: string) => {
-    const requiredRole = value === DEFAULT_VALUE ? null : (value as Role);
-    setSavingModelId(modelId);
-    try {
-      const updated = await updateModelVisibility(modelId, requiredRole);
-      setModels((prev) => prev.map((model) => (model.model_id === modelId ? updated : model)));
-      onToast(`Updated visibility for ${modelId}.`);
-    } catch (e) {
-      onToast(`Failed to update ${modelId}: ${getErrorMessage(e)}`);
-    } finally {
-      setSavingModelId(null);
-    }
-  };
+  const handleChangeRole = useCallback(
+    async (modelId: string, value: string) => {
+      const requiredRole = value === DEFAULT_VALUE ? null : (value as Role);
+      setDraftOverrides((prev) => ({ ...prev, [modelId]: value }));
+      setSavingModelIds((prev) => new Set(prev).add(modelId));
+      try {
+        const updated = await updateModelVisibility(modelId, requiredRole);
+        setModels((prev) => prev.map((model) => (model.model_id === modelId ? updated : model)));
+        onToast(`Updated visibility for ${modelId}.`);
+      } catch (e) {
+        onToast(`Failed to update ${modelId}: ${getErrorMessage(e)}`);
+      } finally {
+        setDraftOverrides((prev) => {
+          const next = { ...prev };
+          delete next[modelId];
+          return next;
+        });
+        setSavingModelIds((prev) => {
+          const next = new Set(prev);
+          next.delete(modelId);
+          return next;
+        });
+      }
+    },
+    [onToast],
+  );
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-5">
@@ -68,7 +82,11 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
       {error && (
         <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
           {error}
-          <button onClick={() => void load()} className="ml-2 font-medium underline">
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="ml-2 font-medium underline"
+          >
             Retry
           </button>
         </div>
@@ -94,7 +112,9 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
             </thead>
             <tbody className="divide-y divide-gray-100">
               {models.map((model) => {
-                const isSaving = savingModelId === model.model_id;
+                const isSaving = savingModelIds.has(model.model_id);
+                const selectedOverride =
+                  draftOverrides[model.model_id] ?? (model.override_required_role ?? DEFAULT_VALUE);
 
                 return (
                   <tr key={model.model_id} className="bg-white">
@@ -109,7 +129,7 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
                         aria-label={`Runtime override for ${model.model_id}`}
                         className="rounded-md border border-gray-300 px-2 py-1 text-[13px] text-gray-900"
                         disabled={isSaving}
-                        value={model.override_required_role ?? DEFAULT_VALUE}
+                        value={selectedOverride}
                         onChange={(e) => void handleChangeRole(model.model_id, e.target.value)}
                       >
                         <option value={DEFAULT_VALUE}>Use default</option>
