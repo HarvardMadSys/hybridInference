@@ -689,6 +689,27 @@ class OperationalStore(ABC):
     async def list_settings(self) -> list[Row]:
         """Return all site_settings rows."""
 
+    @abstractmethod
+    async def get_model_visibility_override(self, model_id: str) -> Row | None:
+        """Fetch a single model visibility override row by model_id."""
+
+    @abstractmethod
+    async def set_model_visibility_override(
+        self,
+        model_id: str,
+        required_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model visibility override row."""
+
+    @abstractmethod
+    async def delete_model_visibility_override(self, model_id: str) -> bool:
+        """Delete a model visibility override row. Returns True if removed."""
+
+    @abstractmethod
+    async def list_model_visibility_overrides(self) -> list[Row]:
+        """Return all model visibility override rows ordered by model_id."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod

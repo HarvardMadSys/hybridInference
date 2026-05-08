@@ -17,6 +17,7 @@ from serving.servers.deps import (
     AppServices,
     get_current_user,
     get_db_logger,
+    get_model_visibility_resolver,
     get_router,
     get_services,
     require_role,
@@ -32,16 +33,19 @@ class TestAppServices:
         router = RouteExecutor()
         db_logger = MagicMock(spec=DatabaseLogger)
         routing_manager = MagicMock()
+        model_visibility_resolver = MagicMock()
 
         services = AppServices(
             router=router,
             db_logger=db_logger,
             routing_manager=routing_manager,
+            model_visibility_resolver=model_visibility_resolver,
         )
 
         assert services.router is router
         assert services.db_logger is db_logger
         assert services.routing_manager is routing_manager
+        assert services.model_visibility_resolver is model_visibility_resolver
 
     def test_app_services_with_defaults(self):
         """Test creating AppServices with only required fields."""
@@ -52,6 +56,7 @@ class TestAppServices:
         assert services.router is router
         assert services.db_logger is None
         assert services.routing_manager is None
+        assert services.model_visibility_resolver is None
 
     def test_app_services_type_annotations(self):
         """Test that AppServices has proper type annotations."""
@@ -60,6 +65,7 @@ class TestAppServices:
         assert "router" in annotations
         assert "db_logger" in annotations
         assert "routing_manager" in annotations
+        assert "model_visibility_resolver" in annotations
 
 
 class TestDependencyFunctions:
@@ -98,6 +104,27 @@ class TestDependencyFunctions:
 
         assert result is app_services.db_logger
 
+    def test_get_model_visibility_resolver(self, app_services):
+        """Test get_model_visibility_resolver extracts resolver from services."""
+
+        def mock_get_services():
+            return app_services
+
+        result = get_model_visibility_resolver(mock_get_services())
+
+        assert result is app_services.model_visibility_resolver
+
+    def test_get_model_visibility_resolver_when_none(self):
+        """Test get_model_visibility_resolver returns None when not configured."""
+        services = AppServices(router=RouteExecutor())
+
+        def mock_get_services():
+            return services
+
+        result = get_model_visibility_resolver(mock_get_services())
+
+        assert result is None
+
     def test_get_db_logger_when_none(self):
         """Test get_db_logger returns None when not configured."""
         services = AppServices(router=RouteExecutor())
@@ -118,6 +145,7 @@ class TestDependencyIntegration:
         from fastapi import Depends
 
         app = FastAPI()
+        app_services.model_visibility_resolver = Mock()
         app.state.services = app_services
 
         @app.get("/test-router")
@@ -127,6 +155,10 @@ class TestDependencyIntegration:
         @app.get("/test-logger")
         def test_logger_endpoint(logger=Depends(get_db_logger)):
             return {"has_logger": logger is not None}
+
+        @app.get("/test-model-visibility")
+        def test_model_visibility_endpoint(resolver=Depends(get_model_visibility_resolver)):
+            return {"has_resolver": resolver is not None}
 
         client = TestClient(app)
 
@@ -139,6 +171,10 @@ class TestDependencyIntegration:
         response = client.get("/test-logger")
         assert response.status_code == 200
         assert response.json()["has_logger"] is True
+
+        response = client.get("/test-model-visibility")
+        assert response.status_code == 200
+        assert response.json()["has_resolver"] is True
 
     def test_dependencies_with_missing_state(self):
         """Test that dependencies fail gracefully when app.state is not set."""

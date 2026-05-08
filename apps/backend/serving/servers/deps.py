@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
+    from serving.config.model_visibility import ModelVisibilityResolver
     from serving.observability.alert_rules import AlertEngine
     from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
@@ -45,6 +46,7 @@ class AppServices:
     log_store: LogStore | None = None
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
+    model_visibility_resolver: ModelVisibilityResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None
@@ -100,6 +102,13 @@ def get_model_router_registry(
 ) -> ModelRouterRegistry | None:
     """Dependency to obtain the ModelRouterRegistry (if configured)."""
     return services.model_router_registry
+
+
+def get_model_visibility_resolver(
+    services: AppServices = Depends(get_services),
+) -> ModelVisibilityResolver | None:
+    """Dependency to obtain the ModelVisibilityResolver (if configured)."""
+    return getattr(services, "model_visibility_resolver", None)
 
 
 def is_database_connected(db_logger: DatabaseLogger | None) -> bool:
