@@ -300,11 +300,9 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Security audit
         run: |
           uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
-          uvx --python "$(which python)" pip-audit --progress-spinner off -r /tmp/audit-requirements.txt
+          uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off -r /tmp/audit-requirements.txt
