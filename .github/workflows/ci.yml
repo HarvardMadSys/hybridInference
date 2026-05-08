@@ -305,4 +305,4 @@ jobs:
       - name: Security audit
         run: |
           uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
-          uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off --no-deps -r /tmp/audit-requirements.txt
+          uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt
