@@ -1,5 +1,3 @@
-'use client';
-
 import { CodeExample, Features, Hero, HowItWorks } from '@/components/landing';
 
 export default function HomePage(): JSX.Element {

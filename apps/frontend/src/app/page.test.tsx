@@ -5,16 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import HomePage from './page';
 
-const replace = vi.fn();
 let authState = {
   loading: false,
   isAuthenticated: false,
   user: null as { id: string; email: string; role: string; user_name?: string | null } | null,
 };
-
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace }),
-}));
 
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({
@@ -43,7 +38,6 @@ describe('HomePage', () => {
   });
 
   beforeEach(() => {
-    replace.mockClear();
     authState = {
       loading: false,
       isAuthenticated: false,
@@ -85,6 +79,5 @@ describe('HomePage', () => {
     expect(screen.queryByLabelText(/dashboard view/i)).not.toBeInTheDocument();
     expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
     expect(screen.getByText(/all prompts and responses are logged/i)).toBeInTheDocument();
-    expect(replace).not.toHaveBeenCalled();
   });
 });
