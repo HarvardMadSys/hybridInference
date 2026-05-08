@@ -6,6 +6,46 @@ All agents use the same FreeInference API key. If you don't have one yet, see th
 
 If you are choosing one default setup path, use Kilo Code. It works directly with FreeInference's OpenAI-compatible endpoint and has the most detailed setup guide below.
 
+## Kilo Code
+
+[Kilo Code](https://kilocode.ai) is an AI coding assistant that works well with FreeInference through the standard OpenAI-compatible endpoint.
+
+### Configuration Steps
+
+1. Install the **Kilo Code** extension or plugin in your IDE.
+
+2. Open the Kilo Code panel.
+
+3. Open Kilo Code settings.
+
+4. In **API Provider**, select **OpenAI Compatible**.
+
+5. Configure the connection exactly as follows:
+
+   ```
+   Base URL: https://freeinference.org/v1
+   API Key: your-api-key-here
+   ```
+
+6. Choose a model based on the workflow you want:
+
+   | Use Case | Recommended Model |
+   |----------|-------------------|
+   | Default coding assistant | `glm-5.1` |
+   | Faster edit loops | `glm-5-turbo` |
+   | Long context or image input | `minimax-m2.5` |
+   | Strong bilingual coding | `glm-4.7` |
+
+7. Save the settings.
+
+8. Start a new Kilo Code session and send a simple prompt such as `Summarize this repository` to confirm the connection works.
+
+### Notes
+
+- Use the exact base URL `https://freeinference.org/v1` with no extra path segments.
+- If the model picker is empty, reopen the Kilo panel or paste the model ID manually.
+- If you want repository indexing, see the `Codebase Indexing` section below for the Kilo-specific embedding setup.
+
 ---
 
 ## Cursor
@@ -44,16 +84,7 @@ If you are choosing one default setup path, use Kilo Code. It works directly wit
 ### Quick Setup (macOS / Linux)
 
 ```bash
-curl -fsSL -o setup_claude_code.sh https://raw.githubusercontent.com/HarvardMadSys/hybridInference/main/ops/setup/setup_claude_code.sh
-# Inspect the script before running it (recommended security practice):
-less setup_claude_code.sh
-bash setup_claude_code.sh
-```
-
-Or pass your key directly:
-
-```bash
-FREEINFERENCE_API_KEY="your-key-here" bash setup_claude_code.sh
+ANTHROPIC_API_KEY="your-key-here" bash setup_claude_code.sh
 ```
 
 > **Security note:** Always review remote shell scripts before executing them. You can also clone this repository and run `ops/setup/setup_claude_code.sh` from your local checkout instead of fetching it over the network.
@@ -65,16 +96,12 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://freeinference.org/anthropic",
+    "ANTHROPIC_BASE_URL": "https://freeinference.org/",
     "ANTHROPIC_AUTH_TOKEN": "<your-freeinference-api-key>",
     "API_TIMEOUT_MS": "600000"
   }
 }
 ```
-
-### Model Availability
-
-Claude Code uses FreeInference's Anthropic-compatible model registry automatically. Query `https://freeinference.org/anthropic/v1/models` with your API key for the live model list available to your account.
 
 ---
 
@@ -144,96 +171,7 @@ Claude Code uses FreeInference's Anthropic-compatible model registry automatical
 
 4. Save the config. FreeInference models will appear in the model dropdown.
 
----
 
-## Aider
-
-[Aider](https://aider.chat/) is a CLI-based AI pair programmer.
-
-### Configuration Steps
-
-```bash
-# Install aider if you haven't already
-pip install aider-chat
-
-# Set environment variables
-export OPENAI_API_BASE=https://freeinference.org/v1
-export OPENAI_API_KEY=your-api-key-here
-
-# Launch aider with a FreeInference model
-aider --model openai/glm-5.1
-```
-
-Or set the variables in your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) for persistence.
-
----
-
-## Copilot Alternatives (via OpenAI-compatible proxy)
-
-GitHub Copilot does not support custom OpenAI-compatible endpoints. However, you can use FreeInference with these Copilot alternatives that do:
-
-### Twinny
-
-[Twinny](https://github.com/twinnydotdev/twinny) is an open-source VS Code extension for inline completions and chat.
-
-1. Install **Twinny** from the VS Code Marketplace
-2. Open settings → search for "twinny"
-3. Set **Twinny Provider** to **OpenAI**
-4. Set **API Base URL** to `https://freeinference.org/v1`
-5. Set **API Key** to your FreeInference API key
-6. Set **Model** to `glm-5-turbo` (for fast completions) or `glm-5.1` (for chat)
-
-### CodeGPT
-
-[CodeGPT](https://codegpt.co/) is another VS Code extension supporting custom OpenAI endpoints.
-
-1. Install **CodeGPT** from the VS Code Marketplace
-2. Open settings → select **Providers** → **OpenAI**
-3. Set **API Key** to your FreeInference API key
-4. Set **Base URL** to `https://freeinference.org/v1`
-5. Set **Model** to `glm-5.1`
-
----
-
-## Kilo Code
-
-[Kilo Code](https://kilocode.ai) is an AI coding assistant that works well with FreeInference through the standard OpenAI-compatible endpoint.
-
-### Configuration Steps
-
-1. Install the **Kilo Code** extension or plugin in your IDE.
-
-2. Open the Kilo Code panel.
-
-3. Open Kilo Code settings.
-
-4. In **API Provider**, select **OpenAI Compatible**.
-
-5. Configure the connection exactly as follows:
-
-   ```
-   Base URL: https://freeinference.org/v1
-   API Key: your-api-key-here
-   ```
-
-6. Choose a model based on the workflow you want:
-
-   | Use Case | Recommended Model |
-   |----------|-------------------|
-   | Default coding assistant | `glm-5.1` |
-   | Faster edit loops | `glm-5-turbo` |
-   | Long context or image input | `minimax-m2.5` |
-   | Strong bilingual coding | `glm-4.7` |
-
-7. Save the settings.
-
-8. Start a new Kilo Code session and send a simple prompt such as `Summarize this repository` to confirm the connection works.
-
-### Notes
-
-- Use the exact base URL `https://freeinference.org/v1` with no extra path segments.
-- If the model picker is empty, reopen the Kilo panel or paste the model ID manually.
-- If you want repository indexing, see the `Codebase Indexing` section below for the Kilo-specific embedding setup.
 
 ---
 

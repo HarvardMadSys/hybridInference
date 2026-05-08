@@ -59,7 +59,7 @@ FreeInference provides free access to state-of-the-art language models for codin
 - **GLM-4.7** - 200K context, bilingual coding assistant
 - **GLM-5.1** - 200K context, enhanced version
 - **GLM-5 Turbo** - 200K context, performance variant
-- **Qwen3.6 35B** - 135K context, strong reasoning and coding intelligence
+- **Qwen3.6 35B** - 262K context, strong reasoning and coding intelligence
 - **MiniMax M2.7** - 205K context
 - **MiniMax M2.5** - 205K context, multimodal (text + image)
 

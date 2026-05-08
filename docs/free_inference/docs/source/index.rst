@@ -81,7 +81,7 @@ Available Models
      - 205K tokens
      - Large codebases
    * - Qwen3.6 35B :sup:`fastest`
-     - 135K tokens
+     - 262K tokens
      - Strong reasoning and coding intelligence
 
 See the complete :doc:`models` list for all available models.
