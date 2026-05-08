@@ -10,8 +10,8 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 | `glm-4.7` | GLM-4.7 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-5-turbo` | GLM-5 Turbo | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `qwen3.6-35b` | Qwen3.6 35B | 135K tokens | 8K tokens | Function calling, Structured output |
-| `minimax-m2.7` | MiniMax M2.7 | 196K tokens | 8K tokens | Function calling, Structured output |
-| `minimax-m2.5` | MiniMax M2.5 | 196K tokens | 131K tokens | Function calling, Structured output, Thinking mode, Multimodal (text+image) |
+| `minimax-m2.7` | MiniMax M2.7 | 205K tokens | 8K tokens | Function calling, Structured output |
+| `minimax-m2.5` | MiniMax M2.5 | 205K tokens | 131K tokens | Function calling, Structured output, Thinking mode, Multimodal (text+image) |
 
 ---
 
@@ -81,7 +81,6 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 - Context length: 135,168 tokens
 - Max output: 8,192 tokens
 - Quantization: fp8
-- Hosting: Self-hosted (free)
 - Input modalities: text
 - Output modalities: text
 - Function calling: Yes
@@ -93,7 +92,7 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 **Model ID:** `minimax-m2.7`
 
-- Context length: 196,608 tokens
+- Context length: 204,800 tokens
 - Max output: 8,192 tokens
 - Quantization: bf16
 - Input modalities: text
@@ -107,7 +106,7 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 **Model ID:** `minimax-m2.5`
 
-- Context length: 196,608 tokens
+- Context length: 204,800 tokens
 - Max output: 131,072 tokens
 - Quantization: bf16
 - Input modalities: text, image
@@ -115,132 +114,6 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 - Function calling: Yes
 - Structured output: Yes
 - Thinking mode: Yes
-
----
-
-## Internal Models
-
-> **Note:** The following models require internal role access and are not available to general users.
-
-### Claude Sonnet 4.6
-
-**Model ID:** `claude-sonnet-4.6`
-
-- Context length: 200,000 tokens
-- Max output: 64,000 tokens
-- Input modalities: text, image
-- Output modalities: text
-- Function calling: Yes
-
----
-
-### Claude Opus 4.6
-
-**Model ID:** `claude-opus-4.6`
-
-- Context length: 200,000 tokens
-- Max output: 128,000 tokens
-- Input modalities: text, image
-- Output modalities: text
-- Function calling: Yes
-
----
-
-### Claude Opus 4.7
-
-**Model ID:** `claude-opus-4.7`
-
-- Context length: 1,000,000 tokens
-- Max output: 128,000 tokens
-- Input modalities: text, image
-- Output modalities: text
-- Function calling: Yes
-
----
-
-### GPT-5.5
-
-**Model ID:** `gpt-5.5`
-
-- Context length: 1,050,000 tokens
-- Max output: 128,000 tokens
-- Input modalities: text, image
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-- Reasoning effort: Yes
-
----
-
-### GPT-5.4
-
-**Model ID:** `gpt-5.4`
-
-- Context length: 1,050,000 tokens
-- Max output: 128,000 tokens
-- Input modalities: text, image
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-- Reasoning effort: Yes
-
----
-
-### GPT-5.4 Mini
-
-**Model ID:** `gpt-5.4-mini`
-
-- Context length: 1,050,000 tokens
-- Max output: 128,000 tokens
-- Input modalities: text, image
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-- Reasoning effort: Yes
-
----
-
-### GPT-5.3 Codex Spark
-
-**Model ID:** `gpt-5.3-spark`
-
-- Context length: 120,800 tokens
-- Max output: 8,000 tokens
-- Input modalities: text, image
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-- Reasoning effort: Yes
-
----
-
-### DeepSeek V4 Flash
-
-**Model ID:** `deepseek-v4-flash`
-
-- Context length: 1,000,000 tokens
-- Max output: 393,216 tokens
-- Input modalities: text
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-- Thinking mode: Yes
-- Reasoning effort: Yes
-
----
-
-### DeepSeek V4 Pro
-
-**Model ID:** `deepseek-v4-pro`
-
-- Context length: 1,000,000 tokens
-- Max output: 393,216 tokens
-- Input modalities: text
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-- Thinking mode: Yes
-- Reasoning effort: Yes
 
 ---
 

@@ -72,15 +72,9 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
 }
 ```
 
-### Available Models
+### Model Availability
 
-| Model | Description |
-|-------|-------------|
-| `claude-sonnet-4.6` | Default model in Claude Code |
-| `claude-opus-4.6` | High-capability Opus generation |
-| `claude-opus-4.7` | Latest Opus (1M context) |
-
-> **Note:** Claude models require internal role access. Publicly available models (`glm-5.1`, `minimax-m2.5`, etc.) are not compatible with Claude Code since it only supports Anthropic-format APIs. The list above is a curated set — query `https://freeinference.org/anthropic/v1/models` (with your API key) for the live registry.
+Claude Code uses FreeInference's Anthropic-compatible model registry automatically. Query `https://freeinference.org/anthropic/v1/models` with your API key for the live model list available to your account.
 
 ---
 
