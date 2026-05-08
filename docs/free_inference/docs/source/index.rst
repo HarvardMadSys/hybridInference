@@ -75,14 +75,14 @@ Available Models
      - 200K tokens
      - Long context, bilingual
    * - MiniMax M2.5
-     - 196K tokens
+     - 205K tokens
      - Ultra-long context, multimodal
    * - MiniMax M2.7
-     - 196K tokens
+     - 205K tokens
      - Large codebases
    * - Qwen3.6 35B :sup:`fastest`
      - 135K tokens
-     - Self-hosted code generation
+     - Strong reasoning and coding intelligence
 
 See the complete :doc:`models` list for all available models.
 
