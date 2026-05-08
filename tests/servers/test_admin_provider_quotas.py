@@ -970,17 +970,18 @@ class TestFetchChatGPT:
 
 class TestGatherAll:
     @pytest.mark.asyncio
-    async def test_gather_all_returns_four_results_even_if_one_raises(self, monkeypatch):
+    async def test_gather_all_returns_six_results_when_unconfigured(self, monkeypatch):
         monkeypatch.delenv("CHUTES_API_KEY", raising=False)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
 
         results = await gather_all()
-        assert len(results) == 5
+        assert len(results) == 6
         names = {r.name for r in results}
-        assert names == {"chutes", "zai", "minimax", "ollama", "featherless"}
+        assert names == {"chutes", "zai", "minimax", "ollama", "featherless", "chatgpt"}
         assert all(r.error == "not_configured" for r in results)
 
     @pytest.mark.asyncio
@@ -993,12 +994,33 @@ class TestGatherAll:
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
 
         results = await gather_all()
-        assert len(results) == 5
+        assert len(results) == 6
         chutes = next(r for r in results if r.name == "chutes")
         assert chutes.ok is False
         assert chutes.error == "unexpected"
+
+    @pytest.mark.asyncio
+    async def test_gather_all_passes_op_store_to_chatgpt(self, monkeypatch):
+        seen = {}
+
+        async def fake_chatgpt(op_store=None):
+            seen["op_store"] = op_store
+            return []
+
+        monkeypatch.setattr("serving.admin.provider_quotas.fetch_chatgpt", fake_chatgpt)
+        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+
+        op_store = MagicMock()
+        await gather_all(op_store=op_store)
+
+        assert seen["op_store"] is op_store
 
 
 class TestProviderQuotasRoute:

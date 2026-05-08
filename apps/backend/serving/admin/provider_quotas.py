@@ -931,11 +931,11 @@ async def fetch_chatgpt(op_store: Any | None = None) -> list[ProviderQuotaResult
     return _process_multi_key_results("chatgpt", "ChatGPT", keys, results)
 
 
-async def gather_all() -> list[ProviderQuotaResult]:
+async def gather_all(op_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Run all provider fetchers in parallel; never raise.
 
     Each fetcher returns a ``list[ProviderQuotaResult]`` (one per key).
-    Results are flattened into a single list.  If a fetcher raises, the
+    Results are flattened into a single list. If a fetcher raises, the
     exception is caught and converted to a single error result.
     """
     fetchers = [
@@ -944,6 +944,7 @@ async def gather_all() -> list[ProviderQuotaResult]:
         ("minimax", "MiniMax", fetch_minimax),
         ("ollama", "Ollama Cloud", fetch_ollama),
         ("featherless", "Featherless", fetch_featherless),
+        ("chatgpt", "ChatGPT", lambda: fetch_chatgpt(op_store)),
     ]
     raw = await asyncio.gather(
         *(f() for _, _, f in fetchers),
