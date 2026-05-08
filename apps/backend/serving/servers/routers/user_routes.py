@@ -49,10 +49,11 @@ from serving.servers.deps import (
     get_db_logger,
     get_embedding_adapters,
     get_log_store,
+    get_model_visibility_resolver,
     get_operational_store,
     get_router,
 )
-from serving.servers.routers.models import build_model_list
+from serving.servers.routers.models import _build_model_list_async
 from serving.utils import password as password_utils
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -241,12 +242,14 @@ async def get_user_models(
     current_user=Depends(get_current_user),
     router_exec=Depends(get_router),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
 ) -> ModelList:
     """List models available to the current dashboard user."""
-    return build_model_list(
+    return await _build_model_list_async(
         router_exec=router_exec,
         embedding_adapters=embedding_adapters,
         user_role=current_user.get("role", "free"),
+        model_visibility_resolver=model_visibility_resolver,
     )
 
 
