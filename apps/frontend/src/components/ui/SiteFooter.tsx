@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { config } from '@/config/env';
 import { BuildInfo } from '@/components/ui/BuildInfo';
 
@@ -25,9 +26,9 @@ export function SiteFooter(): JSX.Element {
           Docs
         </a>
         <span aria-hidden="true">·</span>
-        <a href="/terms" className="hover:text-crimson">
+        <Link href="/terms" className="hover:text-crimson">
           Terms
-        </a>
+        </Link>
         <span aria-hidden="true">·</span>
         <a
           href="https://github.com/HarvardMadSys/hybridInference"

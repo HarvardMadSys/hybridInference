@@ -19,7 +19,7 @@ describe('TermsPage', () => {
     expect(screen.getByRole('heading', { name: /acceptable use/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /logging and data use/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /no warranty/i })).toBeInTheDocument();
-    expect(screen.getByText(/all prompts and responses are logged/i)).toBeInTheDocument();
+    expect(screen.getByText(/all prompts and responses may be logged/i)).toBeInTheDocument();
     expect(screen.getByText(/this page is not legal advice/i)).toBeInTheDocument();
   });
 
@@ -30,8 +30,12 @@ describe('TermsPage', () => {
     expect(screen.getByText(/no performance guarantee/i)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /quotas and limits/i })).toBeInTheDocument();
     expect(screen.getByText(/quotas.*may change based on usage/i)).toBeInTheDocument();
-    expect(screen.getByText(/sanitize all text before analysis/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/sanitize all text before analysis where feasible/i),
+    ).toBeInTheDocument();
     expect(screen.getByText(/sanitization is not a guarantee/i)).toBeInTheDocument();
-    expect(screen.getByText(/must review model outputs before relying on them/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/must review model outputs before relying on them/i),
+    ).toBeInTheDocument();
   });
 });

@@ -1,13 +1,15 @@
+import { config } from '@/config/env';
+
 export const metadata = {
-  title: 'Terms of Service | FreeInference',
-  description: 'Terms of Service for FreeInference.',
+  title: `Terms of Service | ${config.appName}`,
+  description: `Terms of Service for ${config.appName}.`,
 };
 
 const sections = [
   {
     title: '1. Service Overview',
     body: [
-      'FreeInference is an experimental research service that provides access to hosted and routed large language model inference for experimentation and related development work.',
+      `${config.appName} is an experimental research service that provides access to hosted and routed large language model inference for experimentation and related development work.`,
       'The service may route requests across local inference servers and remote model providers. Available models, providers, limits, features, latency, throughput, output quality, and routing behavior may change without notice, and there is no performance guarantee.',
     ],
   },
@@ -15,7 +17,7 @@ const sections = [
     title: '2. Eligibility and Accounts',
     body: [
       'You are responsible for maintaining the confidentiality of your account credentials and API keys. You are responsible for activity submitted through your account or keys.',
-      'Do not share API keys publicly, embed them in client-side code, or use another person\'s account without permission.',
+      "Do not share API keys publicly, embed them in client-side code, or use another person's account without permission.",
     ],
   },
   {
@@ -35,8 +37,8 @@ const sections = [
   {
     title: '5. Logging and Data Use',
     body: [
-      'All prompts and responses are logged. Logs may be used to operate, secure, debug, improve, and analyze the service.',
-      'We sanitize all text before analysis to reduce sensitive or identifying content in analysis workflows. Sanitization is not a guarantee that all sensitive information will be removed from logs, derived data, or third-party provider systems.',
+      'All prompts and responses may be logged, stored, hashed, redacted, or otherwise processed depending on operator configuration and service needs. Logs and derived data may be used to operate, secure, debug, improve, and analyze the service.',
+      'We sanitize all text before analysis where feasible to reduce sensitive or identifying content in analysis workflows. Sanitization is not a guarantee that all sensitive information will be removed from logs, derived data, or third-party provider systems.',
       'Do not submit sensitive personal information, confidential information, regulated data, secrets, credentials, or data you are not authorized to process through the service.',
     ],
   },
@@ -70,7 +72,7 @@ const sections = [
   {
     title: '10. Contact',
     body: [
-      'For questions about FreeInference or these terms, contact the Harvard MadSys group through the project links on this site.',
+      `For questions about ${config.appName} or these terms, contact admin@freeinference.org.`,
     ],
   },
 ];
@@ -80,14 +82,14 @@ export default function TermsPage(): JSX.Element {
     <article className="mx-auto w-full max-w-3xl rounded-2xl border border-gray-200 bg-white px-6 py-8 shadow-sm sm:px-10 sm:py-10">
       <div className="border-b border-gray-200 pb-6">
         <p className="font-serif text-sm font-semibold uppercase tracking-[0.2em] text-crimson">
-          FreeInference
+          {config.appName}
         </p>
         <h1 className="mt-3 text-3xl font-bold tracking-tight text-gray-950 sm:text-4xl">
           Terms of Service
         </h1>
         <p className="mt-4 text-sm leading-6 text-gray-600">
-          Last updated: May 7, 2026. These terms are a practical operating policy for using
-          FreeInference and are not legal advice.
+          Last updated: May 7, 2026. These terms are a practical operating policy for using{' '}
+          {config.appName} and are not legal advice.
         </p>
       </div>
 
@@ -95,8 +97,8 @@ export default function TermsPage(): JSX.Element {
         {sections.map((section) => (
           <section key={section.title} className="space-y-3">
             <h2 className="text-xl font-semibold tracking-tight text-gray-950">{section.title}</h2>
-            {section.body.map((paragraph) => (
-              <p key={paragraph} className="text-sm leading-7 text-gray-700">
+            {section.body.map((paragraph, index) => (
+              <p key={index} className="text-sm leading-7 text-gray-700">
                 {paragraph}
               </p>
             ))}
