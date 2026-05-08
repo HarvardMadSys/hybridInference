@@ -266,7 +266,6 @@ jobs:
           flags: backend-shard-${{ matrix.shard }}
           fail_ci_if_error: false
           verbose: true
-        continue-on-error: true
 
   docker-build:
     name: Docker Build (${{ matrix.image }})
