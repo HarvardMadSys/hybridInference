@@ -65,7 +65,7 @@ describe('HomePage', () => {
     expect(container).toHaveTextContent(/provided without guarantee/i);
   });
 
-  it('shows dashboard content on the homepage for authenticated users without redirecting', async () => {
+  it('shows the public homepage for authenticated users without redirecting', () => {
     authState = {
       loading: false,
       isAuthenticated: true,
@@ -79,7 +79,11 @@ describe('HomePage', () => {
 
     render(<HomePage />);
 
-    expect(await screen.findByLabelText(/dashboard view/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/hero/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/features/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/how it works/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/code example/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/dashboard view/i)).not.toBeInTheDocument();
     expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
     expect(screen.getByText(/all prompts and responses are logged/i)).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();
