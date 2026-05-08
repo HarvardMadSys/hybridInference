@@ -60,9 +60,9 @@ FreeInference provides free access to state-of-the-art language models for codin
 - **GLM-5** - 200K context, latest generation
 - **GLM-5.1** - 200K context, enhanced version
 - **GLM-5 Turbo** - 200K context, performance variant
-- **Qwen3.6 35B** - 65K context, self-hosted, fatest
+- **Qwen3.6 35B** - 135K context, self-hosted, fatest
 - **MiniMax M2.7** - 196K context
-- **MiniMax M2.5** - 1M context, multimodal (text + image)
+- **MiniMax M2.5** - 196K context, multimodal (text + image)
 
 See the [Models documentation](https://doc.freeinference.org/models.html) for the complete list.
 
