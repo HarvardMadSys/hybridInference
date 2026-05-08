@@ -127,6 +127,7 @@ git worktree remove ../hybridInference-<feature-name>
 ## Guardrails
 
 - **Never commit to `main` or `dev`.** Always use a feature branch.
+- **Use multiple sub-agents for different tasks.** Don't do everything in one agent. For example, use separate agents for coding, testing, and documentation.
 - **Never force-push.** If rebase is needed, leave a comment and stop.
 - **Always run `ruff format`** before every commit/push.
 - **Minimal changes only.** Don't refactor or touch unrelated code.
