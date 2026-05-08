@@ -8,7 +8,9 @@ import {
 
 describe('normalizeChatGPTCookieInput', () => {
   it('trims and returns raw credential input unchanged', () => {
-    expect(normalizeChatGPTCookieInput('  session=raw_cookie_value  ')).toBe('session=raw_cookie_value');
+    expect(normalizeChatGPTCookieInput('  session=raw_cookie_value  ')).toBe(
+      'session=raw_cookie_value',
+    );
   });
 
   it('normalizes a Cookie header into a canonical cookie string', () => {
