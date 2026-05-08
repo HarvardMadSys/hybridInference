@@ -134,7 +134,6 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
         t: fmtHour(r.hour_bucket),
         ttft_p50: r.ttft_p50_ms ?? null,
         ttft_p95: r.ttft_p95_ms ?? null,
-        ttft_p99: r.ttft_p99_ms ?? null,
         thru_avg: r.throughput_avg_tps ?? null,
         thru_p50: r.throughput_p50_tps ?? null,
         thru_p95: r.throughput_p95_tps ?? null,
@@ -164,39 +163,43 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
         <Kpi label="Completion tokens" value={totals.tokens.toLocaleString()} />
       </div>
 
-      <div className="rounded-xl border p-4">
-        <p className="text-sm font-semibold mb-2">TTFT (ms)</p>
-        <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="t" minTickGap={32} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="ttft_p50" stroke="#3b82f6" dot={false} name="p50" />
-              <Line type="monotone" dataKey="ttft_p95" stroke="#f59e0b" dot={false} name="p95" />
-              <Line type="monotone" dataKey="ttft_p99" stroke="#ef4444" dot={false} name="p99" />
-            </LineChart>
-          </ResponsiveContainer>
+      <div
+        data-testid="provider-performance-chart-row"
+        className="grid grid-cols-1 gap-3 lg:grid-cols-2"
+      >
+        <div data-testid="provider-performance-ttft-card" className="rounded-xl border p-3">
+          <p className="mb-1 text-[13px] font-semibold">TTFT (ms)</p>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Line type="monotone" dataKey="ttft_p50" stroke="#3b82f6" dot={false} name="p50" />
+                <Line type="monotone" dataKey="ttft_p95" stroke="#f59e0b" dot={false} name="p95" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
         </div>
-      </div>
 
-      <div className="rounded-xl border p-4">
-        <p className="text-sm font-semibold mb-2">Throughput (tokens/sec)</p>
-        <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="t" minTickGap={32} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="thru_avg" stroke="#10b981" dot={false} name="avg" />
-              <Line type="monotone" dataKey="thru_p50" stroke="#3b82f6" dot={false} name="p50" />
-              <Line type="monotone" dataKey="thru_p95" stroke="#8b5cf6" dot={false} name="p95" />
-            </LineChart>
-          </ResponsiveContainer>
+        <div data-testid="provider-performance-throughput-card" className="rounded-xl border p-3">
+          <p className="mb-1 text-[13px] font-semibold">Throughput (tokens/sec)</p>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Line type="monotone" dataKey="thru_avg" stroke="#10b981" dot={false} name="avg" />
+                <Line type="monotone" dataKey="thru_p50" stroke="#3b82f6" dot={false} name="p50" />
+                <Line type="monotone" dataKey="thru_p95" stroke="#8b5cf6" dot={false} name="p95" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       </div>
     </div>
