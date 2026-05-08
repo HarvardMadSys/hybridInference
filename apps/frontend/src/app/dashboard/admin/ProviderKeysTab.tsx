@@ -376,6 +376,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                     }}
                     rows={4}
                     placeholder={specialInput.placeholder}
+                    autoComplete="off"
                     spellCheck={false}
                     aria-invalid={Boolean(specialInputError)}
                     aria-describedby={
