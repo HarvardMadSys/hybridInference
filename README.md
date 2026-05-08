@@ -43,4 +43,4 @@ docs/             # User docs, developer docs, agent specs/plans, reviews
 
 ## License
 
-This repository is licensed under the MIT License.
+This repository is licensed under the [MIT License](LICENSE).
