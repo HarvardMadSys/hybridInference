@@ -4,8 +4,8 @@ import { Crimson_Text } from 'next/font/google';
 import { config } from '@/config/env';
 import { Providers } from '@/components/providers';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
-import { BuildInfo } from '@/components/ui/BuildInfo';
 import { Header } from '@/components/ui/Header';
+import { SiteFooter } from '@/components/ui/SiteFooter';
 
 const crimsonText = Crimson_Text({
   subsets: ['latin'],
@@ -42,40 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-6 py-12">
               {children}
             </main>
-            <footer className="mx-auto w-full max-w-5xl px-6 py-6 text-center text-sm text-gray-400">
-              <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
-                <span>© {config.appName}</span>
-                <span aria-hidden="true">·</span>
-                <a
-                  href="https://madsys.seas.harvard.edu"
-                  className="hover:text-crimson"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Harvard SEAS
-                </a>
-                <span aria-hidden="true">·</span>
-                <a
-                  href="https://doc.freeinference.org/"
-                  className="hover:text-crimson"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Docs
-                </a>
-                <span aria-hidden="true">·</span>
-                <a
-                  href="https://github.com/HarvardMadSys/hybridInference"
-                  className="hover:text-crimson"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  GitHub
-                </a>
-                <span aria-hidden="true">·</span>
-                <BuildInfo />
-              </div>
-            </footer>
+            <SiteFooter />
             <noscript>
               <div className="statcounter">
                 <a
