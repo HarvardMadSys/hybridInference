@@ -59,7 +59,9 @@ describe('ProviderKeysTab cookie upload', () => {
     render(<ProviderKeysTab />);
 
     await screen.findByRole('button', { name: /upload cookie/i });
-    fireEvent.change(screen.getByLabelText(/^provider$/i), { target: { value: 'openrouter' } });
+    fireEvent.change(screen.getByLabelText(/^selected provider$/i), {
+      target: { value: 'openrouter' },
+    });
 
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /upload cookie/i })).not.toBeInTheDocument();
