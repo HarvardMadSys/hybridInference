@@ -1,5 +1,10 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
-import { applyRoleQuota, previewRoleQuotaApply } from '../admin';
+import {
+  applyRoleQuota,
+  listModelVisibility,
+  previewRoleQuotaApply,
+  updateModelVisibility,
+} from '../admin';
 import { setAccessToken } from '../client';
 
 const fetchMock = vi.fn();
@@ -56,5 +61,84 @@ describe('role quota client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ role: 'pro' });
+  });
+});
+
+describe('model visibility client', () => {
+  it('listModelVisibility hits model visibility endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              model_id: 'gpt-4o-mini',
+              baseline_required_role: 'free',
+              override_required_role: null,
+              effective_required_role: 'free',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await listModelVisibility();
+
+    expect(out.models[0]).toMatchObject({
+      model_id: 'gpt-4o-mini',
+      baseline_required_role: 'free',
+      override_required_role: null,
+      effective_required_role: 'free',
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/models/visibility');
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+  });
+
+  it('updateModelVisibility PATCHes the model visibility endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'gpt-4o-mini',
+          baseline_required_role: 'free',
+          override_required_role: 'internal',
+          effective_required_role: 'internal',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await updateModelVisibility('gpt-4o-mini', 'internal');
+
+    expect(out.override_required_role).toBe('internal');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/models/gpt-4o-mini/visibility');
+    expect(init.method).toBe('PATCH');
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+    expect(JSON.parse(init.body as string)).toEqual({ required_role: 'internal' });
+  });
+
+  it('updateModelVisibility sends null required_role when clearing visibility role', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'gpt-4o-mini',
+          baseline_required_role: 'free',
+          override_required_role: null,
+          effective_required_role: 'free',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await updateModelVisibility('gpt-4o-mini', null);
+
+    expect(out.override_required_role).toBeNull();
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({ required_role: null });
   });
 });

@@ -27,6 +27,7 @@ from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
     get_log_store,
     get_model_router_registry,
+    get_model_visibility_resolver,
     get_operational_store,
     get_router,
 )
@@ -232,6 +233,7 @@ async def chat_completions(
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
     model_router_registry=Depends(get_model_router_registry),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
@@ -316,6 +318,11 @@ async def chat_completions(
     route = router_exec.routes[model]
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = user_ctx.get("role", "free")
+    if model_visibility_resolver is not None:
+        canonical_id = route.adapters[0][0].config.id if route.adapters else model
+        required = await model_visibility_resolver.get_effective_required_role(
+            canonical_id, required
+        )
     if not has_role(user_role, required):
         logger.info(
             "Insufficient role for model",
@@ -457,6 +464,7 @@ async def chat_completions(
                 continue
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "image_url":
+                    record_model_request("400", "router")
                     if log_store and not is_synthetic_probe:
                         _schedule_db_log_task(
                             log_store,

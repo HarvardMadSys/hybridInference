@@ -92,6 +92,7 @@ Optional (enable providers as needed):
 ```bash
 make test          # Run unit/integration tests
 make lint          # Run linters
+make format        # Auto-format code
 make check         # Run all checks
 ```
 

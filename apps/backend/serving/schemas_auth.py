@@ -242,20 +242,6 @@ class ChangePasswordResponse(BaseModel):
     message: str
 
 
-class ChangeEmailRequest(BaseModel):
-    """Change email request."""
-
-    new_email: EmailStr
-    password: str  # Require password confirmation
-
-
-class ChangeEmailResponse(BaseModel):
-    """Change email response."""
-
-    message: str
-    new_email: str
-
-
 # Recent requests schemas
 class RecentRequestItem(BaseModel):
     """A single API request log entry (user-facing)."""

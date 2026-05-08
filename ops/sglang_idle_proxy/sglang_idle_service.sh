@@ -79,6 +79,7 @@ case "$cmd" in
           -o ExitOnForwardFailure=yes \
           "$host" &
         TUNNEL_PID=$!
+        # Give ssh a moment to fail fast (bad host key, bad auth, port in use).
         sleep 1
         if kill -0 "$TUNNEL_PID" 2>/dev/null; then
           TUNNEL_PIDS+=("$TUNNEL_PID")

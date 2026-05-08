@@ -38,7 +38,7 @@ from serving.observability.metrics import (
 from serving.observability.rejection_log import log_rejection
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
-from serving.servers.deps import get_log_store, get_router
+from serving.servers.deps import get_log_store, get_model_visibility_resolver, get_router
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip_info
 
@@ -131,7 +131,9 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
 # --- Model resolution ------------------------------------------------------
 
 
-def _resolve(model_id: str, router_exec, user_ctx: dict | None):
+async def _resolve(
+    model_id: str, router_exec, user_ctx: dict | None, model_visibility_resolver=None
+):
     """Return (canonical_model_id, route, adapter)."""
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
@@ -139,6 +141,8 @@ def _resolve(model_id: str, router_exec, user_ctx: dict | None):
         raise HTTPException(404, f"Model '{model_id}' not found")
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = (user_ctx or {}).get("role", "free")
+    if model_visibility_resolver is not None:
+        required = await model_visibility_resolver.get_effective_required_role(canonical, required)
     if not has_role(user_role, required):
         raise HTTPException(404, f"Model '{model_id}' not found")
     if not route.adapters:
@@ -479,6 +483,7 @@ async def anthropic_messages(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     log_store=Depends(get_log_store),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
     _conc=Depends(enforce_user_concurrency),
 ):
     """Handle Anthropic Messages API requests (non-streaming)."""
@@ -499,7 +504,12 @@ async def anthropic_messages(
         return _anthropic_error(400, "Missing required field: max_tokens")
 
     try:
-        canonical, _route, adapter = _resolve(model_id, router_exec, user_ctx)
+        canonical, _route, adapter = await _resolve(
+            model_id,
+            router_exec,
+            user_ctx,
+            model_visibility_resolver,
+        )
     except HTTPException as exc:
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(

@@ -200,6 +200,169 @@ def test_register_from_models_yaml_cliproxy_gpt55(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_register_from_models_yaml_keeps_model_provider_when_route_kind_differs(
+    tmp_path, monkeypatch
+):
+    yaml_text = (
+        "models:\n"
+        "  - id: gpt-5.5\n"
+        "    name: GPT-5.5\n"
+        "    provider: openai\n"
+        "    required_role: internal\n"
+        "    provider_model_id: gpt-5.5\n"
+        "    context_length: 1050000\n"
+        "    max_output_length: 128000\n"
+        "    supports_tools: true\n"
+        "    supports_structured_output: true\n"
+        "    supported_params: [max_tokens, stream, tools, tool_choice, reasoning_effort]\n"
+        "    input_modalities: [text, image]\n"
+        "    output_modalities: [text]\n"
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: ${CLI_PROXY_BASE_URL}\n"
+        "        api_key: ${CLI_PROXY_API_KEY}\n"
+        "        provider_model_id: gpt-5.5\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
+    monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
+
+    exe = RouteExecutor()
+    count, infos = registry.register_from_models_yaml(exe, Path(p))
+
+    assert count == 1
+    route = exe.routes["gpt-5.5"]
+    adapter = route.adapters[0][0]
+    assert adapter.config.provider == "openai"
+    assert adapter.config.base_url == "http://cliproxy.local/v1"
+    assert adapter.config.provider_model_id == "gpt-5.5"
+    assert [info.model_id for info in infos] == ["gpt-5.5"]
+
+
+@pytest.mark.unit
+def test_register_from_models_yaml_skips_bad_model_and_continues(tmp_path, monkeypatch):
+    yaml_text = (
+        "models:\n"
+        "  - id: qwen3.6-35b\n"
+        "    name: Qwen3.6 35B\n"
+        "    provider: sglang\n"
+        "    route:\n"
+        "      - kind: sglang\n"
+        "        weight: 1.0\n"
+        "        base_url: http://host.docker.internal:8001\n"
+        "        api_keys:\n"
+        "          - ${SGLANG_API_KEY}\n"
+        "  - id: gpt-5.5\n"
+        "    name: GPT-5.5\n"
+        "    provider: cliproxy\n"
+        "    required_role: internal\n"
+        "    route:\n"
+        "      - kind: cliproxy\n"
+        "        weight: 1.0\n"
+        "        base_url: ${CLI_PROXY_BASE_URL}\n"
+        "        api_key: ${CLI_PROXY_API_KEY}\n"
+        "        provider_model_id: gpt-5.5\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.delenv("SGLANG_API_KEY", raising=False)
+    monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
+    monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
+
+    exe = RouteExecutor()
+    count, infos = registry.register_from_models_yaml(exe, Path(p), continue_on_missing_env=True)
+
+    assert count == 1
+    assert "qwen3.6-35b" not in exe.routes
+    assert "gpt-5.5" in exe.routes
+    assert exe.routes["gpt-5.5"].required_role == "internal"
+    assert [info.model_id for info in infos] == ["gpt-5.5"]
+
+
+@pytest.mark.unit
+def test_register_from_models_yaml_skips_missing_single_api_key_in_bootstrap_mode(
+    tmp_path, monkeypatch, caplog
+):
+    yaml_text = (
+        "models:\n"
+        "  - id: qwen3.6-35b\n"
+        "    name: Qwen3.6 35B\n"
+        "    provider: sglang\n"
+        "    route:\n"
+        "      - kind: sglang\n"
+        "        weight: 1.0\n"
+        "        base_url: http://host.docker.internal:8001\n"
+        "        api_key: ${SGLANG_API_KEY}\n"
+        "  - id: gpt-5.5\n"
+        "    name: GPT-5.5\n"
+        "    provider: cliproxy\n"
+        "    required_role: internal\n"
+        "    route:\n"
+        "      - kind: cliproxy\n"
+        "        weight: 1.0\n"
+        "        base_url: ${CLI_PROXY_BASE_URL}\n"
+        "        api_key: ${CLI_PROXY_API_KEY}\n"
+        "        provider_model_id: gpt-5.5\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.delenv("SGLANG_API_KEY", raising=False)
+    monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
+    monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
+
+    exe = RouteExecutor()
+    with caplog.at_level("WARNING"):
+        count, infos = registry.register_from_models_yaml(
+            exe, Path(p), continue_on_missing_env=True
+        )
+
+    assert count == 1
+    assert "qwen3.6-35b" not in exe.routes
+    assert "gpt-5.5" in exe.routes
+    assert "Skipping model 'qwen3.6-35b'" in caplog.text
+    assert "Traceback" not in caplog.text
+    assert [info.model_id for info in infos] == ["gpt-5.5"]
+
+
+@pytest.mark.unit
+def test_register_from_models_yaml_does_not_register_dynamic_keys_for_skipped_model(
+    tmp_path, monkeypatch
+):
+    from serving.adapters import dynamic_keys
+
+    yaml_text = (
+        "models:\n"
+        "  - id: mixed-model\n"
+        "    name: Mixed Model\n"
+        "    provider: zai\n"
+        "    route:\n"
+        "      - kind: zai\n"
+        "        weight: 1.0\n"
+        "        base_url: https://api.example.com\n"
+        "        api_keys:\n"
+        "          - ${LIVE_KEY}\n"
+        "      - kind: zai\n"
+        "        weight: 0.5\n"
+        "        base_url: https://api.example.com\n"
+        "        api_keys:\n"
+        "          - ${MISSING_KEY}\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("LIVE_KEY", "live-key")
+    monkeypatch.delenv("MISSING_KEY", raising=False)
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p), continue_on_missing_env=True)
+
+    assert "mixed-model" not in exe.routes
+    assert "zai" not in dynamic_keys.get_known_providers()
+    assert dynamic_keys.get_pools_for_provider("zai") == []
+
+
+@pytest.mark.unit
 def test_register_from_models_yaml_invalid_processor_override_raises(tmp_path):
     yaml_text = (
         "models:\n"
