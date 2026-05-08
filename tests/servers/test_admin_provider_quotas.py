@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +17,7 @@ from serving.admin.provider_quotas import (
     _next_reset,
     _parse_chatgpt_usage,
     _parse_iso,
+    fetch_chatgpt,
     fetch_chutes,
     fetch_minimax,
     fetch_ollama,
@@ -830,6 +832,103 @@ class TestFetchOllama:
         assert weekly_use.used == 5.0
         assert weekly_use.limit == 100.0
         assert weekly_use.unit == "%"
+
+
+class TestFetchChatGPT:
+    @pytest.mark.asyncio
+    async def test_not_configured_when_cookie_missing(self, monkeypatch):
+        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
+        results = await fetch_chatgpt(None)
+        assert len(results) == 1
+        result = results[0]
+        assert result.ok is False
+        assert result.error == "not_configured"
+        assert result.name == "chatgpt"
+        assert result.display_name == "ChatGPT"
+        assert result.key_configured is False
+
+    @pytest.mark.asyncio
+    async def test_success_parses_messages_and_masks_cookie(self, monkeypatch):
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
+        payload = {
+            "models": [
+                {
+                    "slug": "gpt-5",
+                    "title": "GPT-5",
+                    "message_cap": {
+                        "used": 18,
+                        "limit": 80,
+                        "reset_at": "2026-05-08T00:00:00Z",
+                    },
+                }
+            ]
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ) as mock_session_cls:
+            results = await fetch_chatgpt(None)
+
+        result = results[0]
+        assert result.ok is True
+        assert result.error is None
+        assert result.name == "chatgpt"
+        assert result.display_name == "ChatGPT"
+        assert result.key_configured is True
+        assert result.key_masked is not None
+        assert "chatgpt_cookie" not in result.key_masked
+        assert len(result.usages) == 1
+        assert result.usages[0].label == "GPT-5 messages"
+        assert result.usages[0].used == 18.0
+        assert result.usages[0].limit == 80.0
+
+        session = mock_session_cls.return_value.__aenter__.return_value
+        call_args = session.get.call_args
+        assert call_args.args[0] == "https://chatgpt.com/backend-api/models"
+        assert call_args.kwargs["allow_redirects"] is False
+        assert call_args.kwargs["headers"]["Cookie"] == "session=chatgpt_cookie_abcdefghijklmnop"
+        assert "User-Agent" in call_args.kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_auth_failed_on_redirect_or_401(self, monkeypatch):
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=302),
+        ):
+            redirected = (await fetch_chatgpt(None))[0]
+        assert redirected.ok is False
+        assert redirected.error == "auth_failed"
+
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=401),
+        ):
+            unauthorized = (await fetch_chatgpt(None))[0]
+        assert unauthorized.ok is False
+        assert unauthorized.error == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_parse_error_on_unknown_shape(self, monkeypatch):
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data={"models": [{"slug": "gpt-5"}]}),
+        ):
+            result = (await fetch_chatgpt(None))[0]
+        assert result.ok is False
+        assert result.error == "parse_error"
+
+    @pytest.mark.asyncio
+    async def test_timeout_maps_to_timeout(self, monkeypatch):
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError()),
+        ):
+            result = (await fetch_chatgpt(None))[0]
+        assert result.ok is False
+        assert result.error == "timeout"
 
 
 class TestGatherAll:

@@ -29,6 +29,7 @@ from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 8
+_CHATGPT_MODELS_URL = "https://chatgpt.com/backend-api/models"
 
 
 def _mask_key(key: str) -> str:
@@ -858,6 +859,76 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
             )
         )
     return usages
+
+
+async def _fetch_chatgpt_for_key(cookie: str) -> ProviderQuotaResult:
+    """Fetch ChatGPT message quota for a single session cookie."""
+    headers = {
+        "Cookie": cookie,
+        "User-Agent": "Mozilla/5.0 (compatible; freeinference-admin/1.0)",
+        "Accept": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(_CHATGPT_MODELS_URL, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("chatgpt", "ChatGPT", cookie, "auth_failed")
+            if resp.status >= 400:
+                return _err("chatgpt", "ChatGPT", cookie, "unexpected")
+            try:
+                data: dict[str, Any] = await resp.json()
+            except Exception:
+                return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+    except asyncio.TimeoutError:
+        return _err("chatgpt", "ChatGPT", cookie, "timeout")
+    except aiohttp.ClientError:
+        return _err("chatgpt", "ChatGPT", cookie, "unexpected")
+    except Exception:
+        logger.exception("fetch_chatgpt: unexpected error")
+        return _err("chatgpt", "ChatGPT", cookie, "unexpected")
+
+    usages = _parse_chatgpt_usage(data)
+    if not usages:
+        return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+
+    return ProviderQuotaResult(
+        name="chatgpt",
+        display_name="ChatGPT",
+        key_configured=True,
+        key_masked=_mask_key(cookie),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
+
+
+async def fetch_chatgpt(op_store: Any | None = None) -> list[ProviderQuotaResult]:
+    """Fetch ChatGPT quota usage for env and DB-backed session cookies."""
+    keys = await _discover_chatgpt_credentials(op_store)
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="chatgpt",
+                display_name="ChatGPT",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_chatgpt_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+    return _process_multi_key_results("chatgpt", "ChatGPT", keys, results)
 
 
 async def gather_all() -> list[ProviderQuotaResult]:
