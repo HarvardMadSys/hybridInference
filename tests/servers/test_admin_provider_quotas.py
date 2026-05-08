@@ -887,7 +887,9 @@ class TestFetchChatGPT:
         assert call_args.args[0] == "https://chatgpt.com/backend-api/models"
         assert call_args.kwargs["allow_redirects"] is False
         assert call_args.kwargs["headers"]["Cookie"] == "session=chatgpt_cookie_abcdefghijklmnop"
+        assert call_args.kwargs["headers"]["Accept"] == "application/json"
         assert "User-Agent" in call_args.kwargs["headers"]
+        assert mock_session_cls.call_args.kwargs["timeout"].total == 8
 
     @pytest.mark.asyncio
     async def test_auth_failed_on_redirect_or_401(self, monkeypatch):
@@ -929,6 +931,41 @@ class TestFetchChatGPT:
             result = (await fetch_chatgpt(None))[0]
         assert result.ok is False
         assert result.error == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_error_paths_do_not_leak_raw_cookie(self, monkeypatch):
+        secret = "distinctive_chatgpt_secret"
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", f"session={secret}_abcdefghijklmnop")
+
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=401),
+        ):
+            auth_failed = (await fetch_chatgpt(None))[0]
+        assert auth_failed.error == "auth_failed"
+        assert auth_failed.key_masked is not None
+        assert secret not in auth_failed.key_masked
+        assert secret not in auth_failed.error
+
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data={"models": [{"slug": "gpt-5"}]}),
+        ):
+            parse_error = (await fetch_chatgpt(None))[0]
+        assert parse_error.error == "parse_error"
+        assert parse_error.key_masked is not None
+        assert secret not in parse_error.key_masked
+        assert secret not in parse_error.error
+
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError()),
+        ):
+            timeout = (await fetch_chatgpt(None))[0]
+        assert timeout.error == "timeout"
+        assert timeout.key_masked is not None
+        assert secret not in timeout.key_masked
+        assert secret not in timeout.error
 
 
 class TestGatherAll:
