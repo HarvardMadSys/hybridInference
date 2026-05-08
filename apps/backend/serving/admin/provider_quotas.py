@@ -115,6 +115,8 @@ async def _discover_claude_code_credentials(op_store: Any | None = None) -> list
         seen.add(value)
         out.append((len(out) + 1, value))
     return out
+
+
 def _process_multi_key_results(
     name: str,
     display_name: str,
@@ -389,6 +391,8 @@ def _parse_claude_code_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
             )
 
     return usages
+
+
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
     return ProviderQuotaResult(
         name=name,
@@ -1084,6 +1088,8 @@ async def fetch_claude_code(op_store: Any | None = None) -> list[ProviderQuotaRe
         return_exceptions=True,
     )
     return _process_multi_key_results("claude-code", "Claude Code", keys, results)
+
+
 async def gather_all(op_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Run all provider fetchers in parallel; never raise.
 

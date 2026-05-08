@@ -980,6 +980,8 @@ class TestFetchChatGPT:
         assert timeout.key_masked is not None
         assert secret not in timeout.key_masked
         assert secret not in timeout.error
+
+
 class TestParseClaudeCodeUsage:
     def test_parses_subscription_usage_buckets(self):
         payload = {
