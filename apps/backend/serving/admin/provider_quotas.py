@@ -340,7 +340,7 @@ _CLAUDE_CODE_USAGE_BUCKETS = (
     ("seven_day_oauth_apps", "7-day OAuth apps"),
     ("seven_day_opus", "7-day Opus"),
     ("seven_day_sonnet", "7-day Sonnet"),
-    ("seven_day_cowork", "7-day cowork"),
+    ("seven_day_cowork", "7-day Cowork"),
 )
 
 

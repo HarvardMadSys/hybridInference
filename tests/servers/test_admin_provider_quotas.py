@@ -1007,7 +1007,7 @@ class TestParseClaudeCodeUsage:
             "7-day OAuth apps",
             "7-day Opus",
             "7-day Sonnet",
-            "7-day cowork",
+            "7-day Cowork",
             "Extra usage",
             "Extra usage credits",
         ]
