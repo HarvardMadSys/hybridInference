@@ -81,10 +81,7 @@ export default function TermsPage(): JSX.Element {
   return (
     <article className="mx-auto w-full max-w-3xl rounded-2xl border border-gray-200 bg-white px-6 py-8 shadow-sm sm:px-10 sm:py-10">
       <div className="border-b border-gray-200 pb-6">
-        <p className="font-serif text-sm font-semibold uppercase tracking-[0.2em] text-crimson">
-          {config.appName}
-        </p>
-        <h1 className="mt-3 text-3xl font-bold tracking-tight text-gray-950 sm:text-4xl">
+        <h1 className="text-3xl font-bold tracking-tight text-gray-950 sm:text-4xl">
           Terms of Service
         </h1>
         <p className="mt-4 text-sm leading-6 text-gray-600">
