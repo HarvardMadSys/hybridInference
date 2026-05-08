@@ -266,8 +266,9 @@ def _chatgpt_usage_from_block(label: str, block: Any) -> ProviderQuotaUsage | No
         or _parse_iso(block.get("reset_time"))
         or _parse_iso(block.get("reset_after"))
     )
+    usage_label = label if label.lower().endswith("messages") else f"{label} messages"
     return ProviderQuotaUsage(
-        label=f"{label} messages",
+        label=usage_label,
         used=used,
         limit=limit,
         unit="messages",

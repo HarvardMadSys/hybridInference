@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,7 +52,7 @@ class TestMaskKey:
 
 
 def _mock_aiohttp_get(
-    *, status: int = 200, json_data: dict | None = None, raise_exc: Exception | None = None
+    *, status: int = 200, json_data: Any | None = None, raise_exc: Exception | None = None
 ):
     """Build a context-manager mock for `aiohttp.ClientSession().get(...)`."""
     response = MagicMock()
