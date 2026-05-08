@@ -182,7 +182,10 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
         <select
           id="provider-keys-select"
           value={selectedProvider}
-          onChange={(e) => setSelectedProvider(e.target.value)}
+          onChange={(e) => {
+            setSelectedProvider(e.target.value);
+            setFormProvider(e.target.value);
+          }}
           className="mt-1 w-full max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
         >
           {providers.length === 0 && <option value="">(no providers loaded)</option>}
@@ -265,7 +268,10 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
               <select
                 id="provider-keys-form-provider"
                 value={formProvider}
-                onChange={(e) => setFormProvider(e.target.value)}
+                onChange={(e) => {
+                  setFormProvider(e.target.value);
+                  setSelectedProvider(e.target.value);
+                }}
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                 required
               >
