@@ -227,7 +227,7 @@ models:
     quantization: "bf16"
     input_modalities: ["text", "image"]
     output_modalities: ["text"]
-    context_length: 196608
+    context_length: 204800
     max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
@@ -277,7 +277,7 @@ models:
     quantization: "bf16"
     input_modalities: ["text", "image"]
     output_modalities: ["text"]
-    context_length: 196608
+    context_length: 204800
     max_output_length: 8192
     supports_tools: true
     supports_structured_output: true
