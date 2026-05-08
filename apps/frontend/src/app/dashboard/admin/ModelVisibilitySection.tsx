@@ -82,11 +82,7 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
       {error && (
         <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600">
           {error}
-          <button
-            type="button"
-            onClick={() => void load()}
-            className="ml-2 font-medium underline"
-          >
+          <button type="button" onClick={() => void load()} className="ml-2 font-medium underline">
             Retry
           </button>
         </div>
@@ -114,7 +110,7 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
               {models.map((model) => {
                 const isSaving = savingModelIds.has(model.model_id);
                 const selectedOverride =
-                  draftOverrides[model.model_id] ?? (model.override_required_role ?? DEFAULT_VALUE);
+                  draftOverrides[model.model_id] ?? model.override_required_role ?? DEFAULT_VALUE;
 
                 return (
                   <tr key={model.model_id} className="bg-white">
