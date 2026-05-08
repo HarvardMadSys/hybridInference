@@ -163,7 +163,10 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
         <Kpi label="Completion tokens" value={totals.tokens.toLocaleString()} />
       </div>
 
-      <div data-testid="provider-performance-chart-row" className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <div
+        data-testid="provider-performance-chart-row"
+        className="grid grid-cols-1 gap-3 lg:grid-cols-2"
+      >
         <div data-testid="provider-performance-ttft-card" className="rounded-xl border p-3">
           <p className="mb-1 text-[13px] font-semibold">TTFT (ms)</p>
           <div className="h-48">

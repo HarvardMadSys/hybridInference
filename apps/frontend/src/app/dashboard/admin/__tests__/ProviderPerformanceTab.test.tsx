@@ -21,34 +21,31 @@ vi.mock('recharts', () => ({
 
 vi.mock('@/lib/api/admin', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/admin')>('@/lib/api/admin');
+  const mockStatsRow = {
+    hour_bucket: '2026-05-07T20:00:00.000Z',
+    provider: 'openai',
+    model_id: 'gpt-4o-mini',
+    request_count: 12,
+    error_count: 1,
+    total_prompt_tokens: 1200,
+    total_completion_tokens: 800,
+    ttft_p50_ms: 300,
+    ttft_p95_ms: 700,
+    ttft_p99_ms: 1100,
+    latency_p50_ms: 900,
+    latency_p95_ms: 1500,
+    latency_p99_ms: 1800,
+    throughput_avg_tps: 42,
+    throughput_p50_tps: 38,
+    throughput_p95_tps: 55,
+  };
+
   return {
     ...actual,
     getProviderStats: vi.fn(async ({ provider }: { provider: string }) => ({
       providers: ['openai'],
       pairs: [{ provider: 'openai', model_id: 'gpt-4o-mini' }],
-      rows:
-        provider === '__none__'
-          ? []
-          : [
-            {
-              hour_bucket: '2026-05-07T20:00:00.000Z',
-              provider: 'openai',
-              model_id: 'gpt-4o-mini',
-              request_count: 12,
-              error_count: 1,
-              total_prompt_tokens: 1200,
-              total_completion_tokens: 800,
-              ttft_p50_ms: 300,
-              ttft_p95_ms: 700,
-              ttft_p99_ms: 1100,
-              latency_p50_ms: 900,
-              latency_p95_ms: 1500,
-              latency_p99_ms: 1800,
-              throughput_avg_tps: 42,
-              throughput_p50_tps: 38,
-              throughput_p95_tps: 55,
-            },
-          ],
+      rows: provider === '__none__' ? [] : [mockStatsRow],
     })),
     getTtftScatter: vi.fn(async () => ({ models: [] })),
   };
