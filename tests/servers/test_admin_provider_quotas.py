@@ -212,6 +212,22 @@ class TestParseChatGPTUsage:
         assert usage.unit == "messages"
         assert usage.reset_at == datetime(2026, 5, 9, 0, 0, 0, tzinfo=timezone.utc)
 
+    def test_derives_used_from_limit_minus_remaining_without_clamping(self):
+        payload = {
+            "message_caps": {
+                "temporary": {
+                    "remaining": 50,
+                    "limit": 40,
+                }
+            }
+        }
+
+        usages = _parse_chatgpt_usage(payload)
+
+        assert len(usages) == 1
+        assert usages[0].used == -10.0
+        assert usages[0].limit == 40.0
+
     def test_returns_empty_for_unknown_shape(self):
         assert _parse_chatgpt_usage({"models": [{"slug": "gpt-5"}]}) == []
         assert _parse_chatgpt_usage({"unrelated": "value"}) == []

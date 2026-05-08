@@ -234,7 +234,7 @@ def _chatgpt_usage_from_block(label: str, block: Any) -> ProviderQuotaUsage | No
     )
     remaining = _as_float(block.get("remaining"))
     if used is None and limit is not None and remaining is not None:
-        used = max(0.0, limit - remaining)
+        used = limit - remaining
 
     if used is None and limit is None:
         return None
