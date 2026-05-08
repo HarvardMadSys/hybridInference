@@ -118,7 +118,9 @@ async def update_model_visibility(
             "model_id": model_id,
             "old_override_required_role": old_override,
             "new_override_required_role": new_override,
-            "old_effective_required_role": old_override or baseline,
+            "old_effective_required_role": _effective_required_role_for_admin_list(
+                baseline, old_override
+            ),
             "new_effective_required_role": new_effective,
         },
     )

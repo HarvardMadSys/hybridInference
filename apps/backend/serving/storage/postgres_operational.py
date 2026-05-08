@@ -11,6 +11,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any, Literal
 
+from serving.config.settings import VALID_ROLES
 from serving.storage.base import OperationalStore, ProviderKeyRow, Row
 from serving.utils.logging import get_logger
 
@@ -1760,7 +1761,7 @@ class PostgresOperationalStore(OperationalStore):
         updated_by: str | None,
     ) -> None:
         """Upsert a model visibility override row."""
-        if required_role not in ("free", "pro", "internal", "admin"):
+        if required_role not in VALID_ROLES:
             raise ValueError(f"Invalid required_role: {required_role}")
         async with self._pool.acquire() as conn:
             await conn.execute(

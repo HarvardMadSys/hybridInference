@@ -25,7 +25,6 @@ from typing import Any
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.params import Depends as DependsParam
 from fastapi.responses import JSONResponse
 
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
@@ -488,9 +487,6 @@ async def anthropic_messages(
     _conc=Depends(enforce_user_concurrency),
 ):
     """Handle Anthropic Messages API requests (non-streaming)."""
-    if isinstance(model_visibility_resolver, DependsParam):
-        model_visibility_resolver = None
-
     request_id = f"amsg_{int(time.time() * 1_000_000)}"
     start = time.time()
 

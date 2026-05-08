@@ -11,7 +11,6 @@ from contextlib import suppress
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.params import Depends as DependsParam
 from fastapi.responses import StreamingResponse
 
 from routing.executor import ProviderPinError
@@ -250,9 +249,6 @@ async def chat_completions(
     to the appropriate adapter. Streaming and non-streaming flows are
     both supported.
     """
-    if isinstance(model_visibility_resolver, DependsParam):
-        model_visibility_resolver = None
-
     try:
         body = await request.json()
         payload = ChatCompletionRequest.model_validate(body)
