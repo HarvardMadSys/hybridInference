@@ -65,6 +65,33 @@ def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, s
     return keys
 
 
+async def _discover_chatgpt_credentials(op_store: Any | None = None) -> list[tuple[int, str]]:
+    """Discover ChatGPT session credentials from env and DB provider keys.
+
+    Env credentials are ordered before DB credentials. Duplicate raw values are
+    removed so one account is not fetched twice.
+    """
+    raw_values = [
+        value
+        for _, value in _discover_env_keys("CHATGPT_SESSION_COOKIE", "CHATGPT_SESSION_COOKIE")
+    ]
+
+    if op_store is not None:
+        try:
+            raw_values.extend(await op_store.list_provider_keys_full("chatgpt"))
+        except Exception:
+            logger.exception("fetch_chatgpt: failed to load DB provider keys")
+
+    seen: set[str] = set()
+    out: list[tuple[int, str]] = []
+    for value in raw_values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append((len(out) + 1, value))
+    return out
+
+
 def _process_multi_key_results(
     name: str,
     display_name: str,

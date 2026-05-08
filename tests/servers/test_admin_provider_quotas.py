@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from serving.admin.provider_quotas import (
+    _discover_chatgpt_credentials,
     _discover_env_keys,
     _mask_key,
     _next_reset,
@@ -182,6 +183,54 @@ class TestDiscoverEnvKeys:
         monkeypatch.setenv("ZAI_API_KEY2", "key2_long_enough_5678")
         keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
         assert keys == []
+
+
+class TestDiscoverChatGPTCredentials:
+    @pytest.mark.asyncio
+    async def test_env_credentials_only(self, monkeypatch):
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=env_primary_1234567890")
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE2", "session=env_secondary_1234567890")
+        monkeypatch.delenv("CHATGPT_SESSION_COOKIE3", raising=False)
+
+        keys = await _discover_chatgpt_credentials(None)
+
+        assert keys == [
+            (1, "session=env_primary_1234567890"),
+            (2, "session=env_secondary_1234567890"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_db_credentials_only(self, monkeypatch):
+        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
+        op_store = MagicMock()
+        op_store.list_provider_keys_full = AsyncMock(
+            return_value=["session=db_primary_1234567890", "session=db_secondary_1234567890"]
+        )
+
+        keys = await _discover_chatgpt_credentials(op_store)
+
+        assert keys == [
+            (1, "session=db_primary_1234567890"),
+            (2, "session=db_secondary_1234567890"),
+        ]
+        op_store.list_provider_keys_full.assert_awaited_once_with("chatgpt")
+
+    @pytest.mark.asyncio
+    async def test_env_and_db_credentials_are_deduped_in_order(self, monkeypatch):
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=shared_1234567890")
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE2", "session=env_only_1234567890")
+        op_store = MagicMock()
+        op_store.list_provider_keys_full = AsyncMock(
+            return_value=["session=shared_1234567890", "session=db_only_1234567890"]
+        )
+
+        keys = await _discover_chatgpt_credentials(op_store)
+
+        assert keys == [
+            (1, "session=shared_1234567890"),
+            (2, "session=env_only_1234567890"),
+            (3, "session=db_only_1234567890"),
+        ]
 
 
 class TestFetchChutes:
