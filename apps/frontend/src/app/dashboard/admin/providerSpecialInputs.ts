@@ -50,6 +50,15 @@ function isHeaderLike(input: string): boolean {
   return /^cookie\s*:/i.test(input) || input.includes(';');
 }
 
+function isChatGPTSessionCookieName(name: string): boolean {
+  return CHATGPT_SESSION_COOKIE_NAMES.some((sessionName) => {
+    if (name === sessionName) return true;
+
+    const chunkPrefix = `${sessionName}.`;
+    return name.startsWith(chunkPrefix) && /^\d+$/.test(name.slice(chunkPrefix.length));
+  });
+}
+
 export function normalizeChatGPTCookieInput(input: string): string {
   const trimmed = input.trim();
   if (!trimmed) {
@@ -63,10 +72,9 @@ export function normalizeChatGPTCookieInput(input: string): string {
   const pairs = parseCookiePairs(stripCookieHeaderPrefix(trimmed));
   const selected = pairs.filter(
     (pair) =>
-      CHATGPT_SESSION_COOKIE_NAMES.includes(pair.name) ||
-      OPTIONAL_CHATGPT_COOKIE_NAMES.includes(pair.name),
+      isChatGPTSessionCookieName(pair.name) || OPTIONAL_CHATGPT_COOKIE_NAMES.includes(pair.name),
   );
-  const hasSession = selected.some((pair) => CHATGPT_SESSION_COOKIE_NAMES.includes(pair.name));
+  const hasSession = selected.some((pair) => isChatGPTSessionCookieName(pair.name));
   if (!hasSession) {
     throw new Error('ChatGPT cookie header did not include a session cookie.');
   }

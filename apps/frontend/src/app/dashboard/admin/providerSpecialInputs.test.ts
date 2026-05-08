@@ -39,6 +39,31 @@ describe('normalizeChatGPTCookieInput', () => {
     );
   });
 
+  it('preserves chunked secure session cookies in header order', () => {
+    const input =
+      'Cookie: foo=bar; __Secure-next-auth.session-token.0=part0; __Secure-next-auth.session-token.1=part1; cf_clearance=clear456';
+
+    expect(normalizeChatGPTCookieInput(input)).toBe(
+      '__Secure-next-auth.session-token.0=part0; __Secure-next-auth.session-token.1=part1; cf_clearance=clear456',
+    );
+  });
+
+  it('preserves chunked legacy session cookies', () => {
+    const input = 'Cookie: next-auth.session-token.0=part0; next-auth.session-token.1=part1';
+
+    expect(normalizeChatGPTCookieInput(input)).toBe(
+      'next-auth.session-token.0=part0; next-auth.session-token.1=part1',
+    );
+  });
+
+  it('preserves optional __cf_bm cookie', () => {
+    const input = 'Cookie: __Secure-next-auth.session-token=abc123; __cf_bm=bm456';
+
+    expect(normalizeChatGPTCookieInput(input)).toBe(
+      '__Secure-next-auth.session-token=abc123; __cf_bm=bm456',
+    );
+  });
+
   it('rejects blank input', () => {
     expect(() => normalizeChatGPTCookieInput('   ')).toThrow('Cookie value must not be blank.');
   });
