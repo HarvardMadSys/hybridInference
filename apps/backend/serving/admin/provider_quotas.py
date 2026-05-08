@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 8
 _CHATGPT_MODELS_URL = "https://chatgpt.com/backend-api/models"
+_CLAUDE_CODE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 
 
 def _mask_key(key: str) -> str:
@@ -82,6 +83,29 @@ async def _discover_chatgpt_credentials(op_store: Any | None = None) -> list[tup
             raw_values.extend(await op_store.list_provider_keys_full("chatgpt"))
         except Exception:
             logger.exception("fetch_chatgpt: failed to load DB provider keys")
+
+    seen: set[str] = set()
+    out: list[tuple[int, str]] = []
+    for value in raw_values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append((len(out) + 1, value))
+    return out
+
+
+async def _discover_claude_code_credentials(op_store: Any | None = None) -> list[tuple[int, str]]:
+    """Discover Claude Code OAuth tokens from env and DB provider keys."""
+    raw_values = [
+        value
+        for _, value in _discover_env_keys("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+    ]
+
+    if op_store is not None:
+        try:
+            raw_values.extend(await op_store.list_provider_keys_full("claude-code"))
+        except Exception:
+            logger.exception("fetch_claude_code: failed to load DB provider keys")
 
     seen: set[str] = set()
     out: list[tuple[int, str]] = []
@@ -306,6 +330,65 @@ def _parse_chatgpt_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
             usage = _chatgpt_usage_from_block(label, block)
             if usage is not None:
                 usages.append(usage)
+
+    return usages
+
+
+_CLAUDE_CODE_USAGE_BUCKETS = (
+    ("five_hour", "5-hour usage"),
+    ("seven_day", "7-day usage"),
+    ("seven_day_oauth_apps", "7-day OAuth apps"),
+    ("seven_day_opus", "7-day Opus"),
+    ("seven_day_sonnet", "7-day Sonnet"),
+    ("seven_day_cowork", "7-day cowork"),
+)
+
+
+def _parse_claude_code_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
+    """Parse Claude Code OAuth subscription usage buckets into quota rows."""
+    usages: list[ProviderQuotaUsage] = []
+    for key, label in _CLAUDE_CODE_USAGE_BUCKETS:
+        block = data.get(key)
+        if not isinstance(block, dict):
+            continue
+        utilization = _as_float(block.get("utilization"))
+        if utilization is None:
+            continue
+        usages.append(
+            ProviderQuotaUsage(
+                label=label,
+                used=utilization,
+                limit=100.0,
+                unit="%",
+                reset_at=_parse_iso(block.get("resets_at")),
+            )
+        )
+
+    extra_usage = data.get("extra_usage")
+    if isinstance(extra_usage, dict):
+        utilization = _as_float(extra_usage.get("utilization"))
+        if utilization is not None:
+            usages.append(
+                ProviderQuotaUsage(
+                    label="Extra usage",
+                    used=utilization,
+                    limit=100.0,
+                    unit="%",
+                    reset_at=None,
+                )
+            )
+        used_credits = _as_float(extra_usage.get("used_credits"))
+        monthly_limit = _as_float(extra_usage.get("monthly_limit"))
+        if used_credits is not None and monthly_limit is not None:
+            usages.append(
+                ProviderQuotaUsage(
+                    label="Extra usage credits",
+                    used=used_credits,
+                    limit=monthly_limit,
+                    unit="credits",
+                    reset_at=None,
+                )
+            )
 
     return usages
 
@@ -934,6 +1017,79 @@ async def fetch_chatgpt(op_store: Any | None = None) -> list[ProviderQuotaResult
     return _process_multi_key_results("chatgpt", "ChatGPT", keys, results)
 
 
+async def _fetch_claude_code_for_key(token: str) -> ProviderQuotaResult:
+    """Fetch Claude Code subscription usage for a single OAuth token."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "Accept": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(_CLAUDE_CODE_USAGE_URL, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("claude-code", "Claude Code", token, "auth_failed")
+            if resp.status >= 400:
+                return _err("claude-code", "Claude Code", token, "unexpected")
+            try:
+                raw = await resp.json()
+            except Exception:
+                return _err("claude-code", "Claude Code", token, "parse_error")
+            if not isinstance(raw, dict):
+                return _err("claude-code", "Claude Code", token, "parse_error")
+            data: dict[str, Any] = raw
+    except asyncio.TimeoutError:
+        return _err("claude-code", "Claude Code", token, "timeout")
+    except aiohttp.ClientError:
+        return _err("claude-code", "Claude Code", token, "unexpected")
+    except Exception:
+        logger.exception("fetch_claude_code: unexpected error")
+        return _err("claude-code", "Claude Code", token, "unexpected")
+
+    usages = _parse_claude_code_usage(data)
+    if not usages:
+        return _err("claude-code", "Claude Code", token, "parse_error")
+
+    return ProviderQuotaResult(
+        name="claude-code",
+        display_name="Claude Code",
+        key_configured=True,
+        key_masked=_mask_key(token),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
+
+
+async def fetch_claude_code(op_store: Any | None = None) -> list[ProviderQuotaResult]:
+    """Fetch Claude Code subscription usage for env and DB-backed OAuth tokens."""
+    keys = await _discover_claude_code_credentials(op_store)
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="claude-code",
+                display_name="Claude Code",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_claude_code_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+    return _process_multi_key_results("claude-code", "Claude Code", keys, results)
+
+
 async def gather_all(op_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Run all provider fetchers in parallel; never raise.
 
@@ -948,6 +1104,7 @@ async def gather_all(op_store: Any | None = None) -> list[ProviderQuotaResult]:
         ("ollama", "Ollama Cloud", fetch_ollama),
         ("featherless", "Featherless", fetch_featherless),
         ("chatgpt", "ChatGPT", lambda: fetch_chatgpt(op_store)),
+        ("claude-code", "Claude Code", lambda: fetch_claude_code(op_store)),
     ]
     raw = await asyncio.gather(
         *(f() for _, _, f in fetchers),

@@ -17,9 +17,11 @@ from serving.admin.provider_quotas import (
     _mask_key,
     _next_reset,
     _parse_chatgpt_usage,
+    _parse_claude_code_usage,
     _parse_iso,
     fetch_chatgpt,
     fetch_chutes,
+    fetch_claude_code,
     fetch_minimax,
     fetch_ollama,
     fetch_zai,
@@ -980,20 +982,213 @@ class TestFetchChatGPT:
         assert secret not in timeout.error
 
 
+class TestParseClaudeCodeUsage:
+    def test_parses_subscription_usage_buckets(self):
+        payload = {
+            "five_hour": {"utilization": 45, "resets_at": "2026-05-08T04:00:00Z"},
+            "seven_day": {"utilization": 62.5, "resets_at": "2026-05-11T00:00:00Z"},
+            "seven_day_oauth_apps": {"utilization": 12, "resets_at": None},
+            "seven_day_opus": {"utilization": 30, "resets_at": "2026-05-11T00:00:00Z"},
+            "seven_day_sonnet": {"utilization": 55, "resets_at": "2026-05-11T00:00:00Z"},
+            "seven_day_cowork": {"utilization": 8, "resets_at": "2026-05-11T00:00:00Z"},
+            "extra_usage": {
+                "is_enabled": True,
+                "monthly_limit": 1000,
+                "used_credits": 250,
+                "utilization": 25,
+            },
+        }
+
+        usages = _parse_claude_code_usage(payload)
+
+        assert [u.label for u in usages] == [
+            "5-hour usage",
+            "7-day usage",
+            "7-day OAuth apps",
+            "7-day Opus",
+            "7-day Sonnet",
+            "7-day cowork",
+            "Extra usage",
+            "Extra usage credits",
+        ]
+        assert usages[0].used == 45.0
+        assert usages[0].limit == 100.0
+        assert usages[0].unit == "%"
+        assert usages[0].reset_at == datetime(2026, 5, 8, 4, 0, 0, tzinfo=timezone.utc)
+        assert usages[1].used == 62.5
+        assert usages[2].reset_at is None
+        assert usages[6].used == 25.0
+        assert usages[6].limit == 100.0
+        assert usages[7].used == 250.0
+        assert usages[7].limit == 1000.0
+        assert usages[7].unit == "credits"
+
+    def test_ignores_malformed_buckets(self):
+        payload = {
+            "five_hour": {"utilization": float("nan"), "resets_at": "2026-05-08T04:00:00Z"},
+            "seven_day": "not-a-bucket",
+            "seven_day_opus": {"utilization": True, "resets_at": "2026-05-11T00:00:00Z"},
+            "seven_day_sonnet": {"resets_at": "2026-05-11T00:00:00Z"},
+            "extra_usage": {"is_enabled": True, "used_credits": 10},
+        }
+
+        assert _parse_claude_code_usage(payload) == []
+
+
+class TestFetchClaudeCode:
+    @pytest.mark.asyncio
+    async def test_not_configured_when_token_missing(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        results = await fetch_claude_code(None)
+
+        assert len(results) == 1
+        result = results[0]
+        assert result.ok is False
+        assert result.error == "not_configured"
+        assert result.name == "claude-code"
+        assert result.display_name == "Claude Code"
+        assert result.key_configured is False
+
+    @pytest.mark.asyncio
+    async def test_success_parses_usage_and_sends_oauth_headers(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-abcdefghijklmnop")
+        payload = {
+            "five_hour": {"utilization": 45, "resets_at": "2026-05-08T04:00:00Z"},
+            "seven_day_opus": {"utilization": 30, "resets_at": "2026-05-11T00:00:00Z"},
+            "extra_usage": {
+                "is_enabled": True,
+                "monthly_limit": 1000,
+                "used_credits": 250,
+                "utilization": 25,
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ) as mock_session_cls:
+            results = await fetch_claude_code(None)
+
+        result = results[0]
+        assert result.ok is True
+        assert result.error is None
+        assert result.name == "claude-code"
+        assert result.display_name == "Claude Code"
+        assert result.key_configured is True
+        assert result.key_masked == "sk-ant-o...mnop"
+        assert [u.label for u in result.usages] == [
+            "5-hour usage",
+            "7-day Opus",
+            "Extra usage",
+            "Extra usage credits",
+        ]
+
+        session = mock_session_cls.return_value.__aenter__.return_value
+        call_args = session.get.call_args
+        assert call_args.args[0] == "https://api.anthropic.com/api/oauth/usage"
+        assert call_args.kwargs["allow_redirects"] is False
+        assert call_args.kwargs["headers"]["Authorization"] == "Bearer sk-ant-oat-abcdefghijklmnop"
+        assert call_args.kwargs["headers"]["anthropic-beta"] == "oauth-2025-04-20"
+        assert call_args.kwargs["headers"]["Accept"] == "application/json"
+        assert mock_session_cls.call_args.kwargs["timeout"].total == 8
+
+    @pytest.mark.asyncio
+    async def test_auth_failed_on_redirect_or_401(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-abcdefghijklmnop")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=302),
+        ):
+            redirected = (await fetch_claude_code(None))[0]
+        assert redirected.ok is False
+        assert redirected.error == "auth_failed"
+
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=401),
+        ):
+            unauthorized = (await fetch_claude_code(None))[0]
+        assert unauthorized.ok is False
+        assert unauthorized.error == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_parse_error_on_unknown_shape(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-abcdefghijklmnop")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data={"unrelated": "junk"}),
+        ):
+            result = (await fetch_claude_code(None))[0]
+        assert result.ok is False
+        assert result.error == "parse_error"
+
+    @pytest.mark.asyncio
+    async def test_timeout_maps_to_timeout(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-abcdefghijklmnop")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError()),
+        ):
+            result = (await fetch_claude_code(None))[0]
+        assert result.ok is False
+        assert result.error == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_discovers_db_backed_tokens(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        op_store = MagicMock()
+        op_store.list_provider_keys_full = AsyncMock(
+            return_value=["sk-ant-oat-db-token-abcdefghijklmnop"]
+        )
+        payload = {"five_hour": {"utilization": 10, "resets_at": None}}
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = (await fetch_claude_code(op_store))[0]
+
+        op_store.list_provider_keys_full.assert_awaited_once_with("claude-code")
+        assert result.ok is True
+        assert result.usages[0].label == "5-hour usage"
+
+    @pytest.mark.asyncio
+    async def test_multi_token_results_are_indexed(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-token-one-abcdefghijklmnop")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN2", "sk-ant-oat-token-two-abcdefghijklmnop")
+        payload = {"five_hour": {"utilization": 10, "resets_at": None}}
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_claude_code(None)
+
+        assert [r.key_index for r in results] == [1, 2]
+        assert [r.display_name for r in results] == ["Claude Code #1", "Claude Code #2"]
+
+
 class TestGatherAll:
     @pytest.mark.asyncio
-    async def test_gather_all_returns_six_results_when_unconfigured(self, monkeypatch):
+    async def test_gather_all_returns_seven_results_when_unconfigured(self, monkeypatch):
         monkeypatch.delenv("CHUTES_API_KEY", raising=False)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
         monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
         results = await gather_all()
-        assert len(results) == 6
+        assert len(results) == 7
         names = {r.name for r in results}
-        assert names == {"chutes", "zai", "minimax", "ollama", "featherless", "chatgpt"}
+        assert names == {
+            "chutes",
+            "zai",
+            "minimax",
+            "ollama",
+            "featherless",
+            "chatgpt",
+            "claude-code",
+        }
         assert all(r.error == "not_configured" for r in results)
 
     @pytest.mark.asyncio
@@ -1007,9 +1202,10 @@ class TestGatherAll:
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
         monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
         results = await gather_all()
-        assert len(results) == 6
+        assert len(results) == 7
         chutes = next(r for r in results if r.name == "chutes")
         assert chutes.ok is False
         assert chutes.error == "unexpected"
@@ -1028,6 +1224,28 @@ class TestGatherAll:
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        op_store = MagicMock()
+        await gather_all(op_store=op_store)
+
+        assert seen["op_store"] is op_store
+
+    @pytest.mark.asyncio
+    async def test_gather_all_passes_op_store_to_claude_code(self, monkeypatch):
+        seen = {}
+
+        async def fake_claude_code(op_store=None):
+            seen["op_store"] = op_store
+            return []
+
+        monkeypatch.setattr("serving.admin.provider_quotas.fetch_claude_code", fake_claude_code)
+        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
 
         op_store = MagicMock()
         await gather_all(op_store=op_store)
@@ -1072,6 +1290,7 @@ class TestProviderQuotasRoute:
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
         monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1080,7 +1299,7 @@ class TestProviderQuotasRoute:
         assert resp.status_code == 200
         body = resp.json()
         assert "generated_at" in body
-        assert len(body["providers"]) == 6
+        assert len(body["providers"]) == 7
         assert {p["name"] for p in body["providers"]} == {
             "chutes",
             "zai",
@@ -1088,6 +1307,7 @@ class TestProviderQuotasRoute:
             "ollama",
             "featherless",
             "chatgpt",
+            "claude-code",
         }
 
     @pytest.mark.asyncio
