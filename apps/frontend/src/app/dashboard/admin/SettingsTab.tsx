@@ -18,6 +18,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 
 import { validateNumericSettingInput } from './numericSettingValidation';
 import { validateSignupDomainInput } from './signupDomainValidation';
+import { ModelVisibilitySection } from './ModelVisibilitySection';
 
 function relTime(iso: string | null): string {
   if (!iso) return '—';
@@ -411,6 +412,8 @@ export function SettingsTab() {
           </div>
         )}
       </div>
+
+      <ModelVisibilitySection onToast={flashToast} />
 
       {/* Signup Policy */}
       <div className="rounded-xl border border-gray-200 bg-white p-5">
