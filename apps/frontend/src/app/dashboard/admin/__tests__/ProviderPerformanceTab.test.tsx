@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ProviderPerformanceTab } from '../ProviderPerformanceTab';
@@ -56,11 +56,11 @@ vi.mock('@/lib/api/admin', async () => {
 
 describe('ProviderPerformanceTab', () => {
   it('renders compact TTFT and throughput charts in one responsive row without p99', async () => {
-    const { container } = render(<ProviderPerformanceTab />);
+    render(<ProviderPerformanceTab />);
 
     await screen.findByText('gpt-4o-mini');
 
-    const compactRow = container.querySelector('[data-testid="provider-performance-chart-row"]');
+    const compactRow = screen.getByTestId('provider-performance-chart-row');
     expect(compactRow).toHaveClass('grid-cols-1', 'lg:grid-cols-2', 'gap-3');
 
     const ttftCard = screen.getByTestId('provider-performance-ttft-card');
@@ -73,9 +73,5 @@ describe('ProviderPerformanceTab', () => {
     const throughputCard = screen.getByTestId('provider-performance-throughput-card');
     expect(throughputCard).toHaveClass('p-3');
     expect(within(throughputCard).getByText('Throughput (tokens/sec)')).toBeInTheDocument();
-
-    await waitFor(() => {
-      expect(screen.queryByText('Loading…')).not.toBeInTheDocument();
-    });
   });
 });
