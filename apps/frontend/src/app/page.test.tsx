@@ -79,10 +79,9 @@ describe('HomePage', () => {
 
     render(<HomePage />);
 
-    expect(screen.getByLabelText(/hero/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/features/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/how it works/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/code example/i)).toBeInTheDocument();
+    [/hero/i, /features/i, /how it works/i, /code example/i].forEach((pattern) => {
+      expect(screen.getByLabelText(pattern)).toBeInTheDocument();
+    });
     expect(screen.queryByLabelText(/dashboard view/i)).not.toBeInTheDocument();
     expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
     expect(screen.getByText(/all prompts and responses are logged/i)).toBeInTheDocument();
