@@ -879,9 +879,12 @@ async def _fetch_chatgpt_for_key(cookie: str) -> ProviderQuotaResult:
             if resp.status >= 400:
                 return _err("chatgpt", "ChatGPT", cookie, "unexpected")
             try:
-                data: dict[str, Any] = await resp.json()
+                raw = await resp.json()
             except Exception:
                 return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+            if not isinstance(raw, dict):
+                return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+            data: dict[str, Any] = raw
     except asyncio.TimeoutError:
         return _err("chatgpt", "ChatGPT", cookie, "timeout")
     except aiohttp.ClientError:

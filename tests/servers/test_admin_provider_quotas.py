@@ -56,7 +56,7 @@ def _mock_aiohttp_get(
     """Build a context-manager mock for `aiohttp.ClientSession().get(...)`."""
     response = MagicMock()
     response.status = status
-    response.json = AsyncMock(return_value=json_data or {})
+    response.json = AsyncMock(return_value={} if json_data is None else json_data)
     response.text = AsyncMock(return_value="")
 
     cm = MagicMock()
@@ -916,6 +916,17 @@ class TestFetchChatGPT:
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=200, json_data={"models": [{"slug": "gpt-5"}]}),
+        ):
+            result = (await fetch_chatgpt(None))[0]
+        assert result.ok is False
+        assert result.error == "parse_error"
+
+    @pytest.mark.asyncio
+    async def test_parse_error_on_non_object_json(self, monkeypatch):
+        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=[]),
         ):
             result = (await fetch_chatgpt(None))[0]
         assert result.ok is False
