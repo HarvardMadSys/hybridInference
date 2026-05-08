@@ -464,7 +464,6 @@ async def chat_completions(
                 continue
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "image_url":
-                    record_model_request("400", "router")
                     if log_store and not is_synthetic_probe:
                         _schedule_db_log_task(
                             log_store,
