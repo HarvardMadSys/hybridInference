@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -193,17 +194,37 @@ def _parse_epoch_ms(value: Any) -> datetime | None:
 
 
 def _as_float(value: Any) -> float | None:
-    """Convert a JSON number to float while rejecting bool and non-numeric values."""
+    """Convert a JSON number to float while rejecting bool and non-finite values."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        converted = float(value)
+        return converted if math.isfinite(converted) else None
     return None
 
 
 def _chatgpt_usage_from_block(label: str, block: Any) -> ProviderQuotaUsage | None:
     """Parse one ChatGPT message-cap block into a generic usage row."""
     if not isinstance(block, dict):
+        return None
+
+    numeric_keys = (
+        "limit",
+        "total",
+        "cap",
+        "message_cap",
+        "used",
+        "current",
+        "current_value",
+        "messages_used",
+        "remaining",
+    )
+    if any(
+        isinstance(block.get(key), (int, float))
+        and not isinstance(block.get(key), bool)
+        and not math.isfinite(float(block[key]))
+        for key in numeric_keys
+    ):
         return None
 
     limit = next(
@@ -276,15 +297,14 @@ def _parse_chatgpt_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
             if not isinstance(model, dict):
                 continue
             label = str(model.get("title") or model.get("slug") or model.get("id") or "Messages")
-            block = model.get("message_cap") or model.get("message_caps") or model.get("quota") or model.get("usage")
+            block = None
+            for block_key in ("message_cap", "message_caps", "quota", "usage"):
+                if block_key in model:
+                    block = model.get(block_key)
+                    break
             usage = _chatgpt_usage_from_block(label, block)
             if usage is not None:
                 usages.append(usage)
-
-    if not usages:
-        top_level = _chatgpt_usage_from_block("Messages", data)
-        if top_level is not None:
-            usages.append(top_level)
 
     return usages
 

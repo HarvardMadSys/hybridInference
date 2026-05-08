@@ -228,6 +228,47 @@ class TestParseChatGPTUsage:
         assert usages[0].used == -10.0
         assert usages[0].limit == 40.0
 
+    def test_does_not_parse_generic_top_level_numbers(self):
+        assert _parse_chatgpt_usage({"total": 0}) == []
+        assert _parse_chatgpt_usage({"used": 1}) == []
+
+    def test_rejects_non_finite_numbers(self):
+        payload = {
+            "message_caps": {
+                "nan": {"used": float("nan"), "limit": 10},
+                "inf": {"used": float("inf"), "limit": 10},
+                "negative_inf": {"used": float("-inf"), "limit": 10},
+            }
+        }
+
+        assert _parse_chatgpt_usage(payload) == []
+
+    def test_preserves_zero_values_in_message_cap_block(self):
+        payload = {"models": [{"title": "GPT-Zero", "message_cap": {"used": 0, "limit": 0}}]}
+
+        usages = _parse_chatgpt_usage(payload)
+
+        assert len(usages) == 1
+        assert usages[0].used == 0.0
+        assert usages[0].limit == 0.0
+
+    def test_prefers_message_cap_block_with_zero_values(self):
+        payload = {
+            "models": [
+                {
+                    "title": "GPT-Zero",
+                    "message_cap": {"used": 0, "limit": 0},
+                    "quota": {"used": 9, "limit": 9},
+                }
+            ]
+        }
+
+        usages = _parse_chatgpt_usage(payload)
+
+        assert len(usages) == 1
+        assert usages[0].used == 0.0
+        assert usages[0].limit == 0.0
+
     def test_returns_empty_for_unknown_shape(self):
         assert _parse_chatgpt_usage({"models": [{"slug": "gpt-5"}]}) == []
         assert _parse_chatgpt_usage({"unrelated": "value"}) == []
