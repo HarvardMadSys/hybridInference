@@ -74,8 +74,7 @@ async def _discover_chatgpt_credentials(op_store: Any | None = None) -> list[tup
     removed so one account is not fetched twice.
     """
     raw_values = [
-        value
-        for _, value in _discover_env_keys("CHATGPT_SESSION_COOKIE", "CHATGPT_SESSION_COOKIE")
+        value for _, value in _discover_env_keys("CHATGPT_SESSION_COOKIE", "CHATGPT_SESSION_COOKIE")
     ]
 
     if op_store is not None:
