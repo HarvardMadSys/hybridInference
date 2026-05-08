@@ -211,12 +211,6 @@ class OpenAICompatAdapter(BaseAdapter):
                 url=url, json=payload, headers=headers, timeout=120, retries=2
             )
 
-        from serving.observability.metrics import (
-            KEY_POOL_ACTIVE_AFFINITIES,
-            KEY_POOL_COOLDOWNS,
-            KEY_POOL_EXHAUSTED,
-            KEY_POOL_REQUESTS,
-        )
         from serving.utils import context as req_ctx
 
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
@@ -231,12 +225,26 @@ class OpenAICompatAdapter(BaseAdapter):
             try:
                 api_key, lease = self._key_pool.acquire(affinity_key)
             except KeyPoolExhausted as exhausted:
-                KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+                logger.warning(
+                    "key_pool_exhausted",
+                    extra={
+                        "event": "key_pool_exhausted",
+                        "provider": provider,
+                        "stage": "acquire",
+                    },
+                )
                 if last_429_error is not None:
                     raise last_429_error from exhausted
                 raise
 
-            KEY_POOL_REQUESTS.labels(provider=provider, key_index=str(lease.key_index)).inc()
+            logger.debug(
+                "key_pool_request",
+                extra={
+                    "event": "key_pool_request",
+                    "provider": provider,
+                    "key_index": lease.key_index,
+                },
+            )
 
             headers = self._build_headers(api_key_override=api_key)
             try:
@@ -247,8 +255,13 @@ class OpenAICompatAdapter(BaseAdapter):
                     timeout=aiohttp.ClientTimeout(total=120),
                 )
                 self._key_pool.release(lease, status_code=200, retry_after=None)
-                KEY_POOL_ACTIVE_AFFINITIES.labels(provider=provider).set(
-                    self._key_pool.affinity_count()
+                logger.debug(
+                    "key_pool_active_affinities",
+                    extra={
+                        "event": "key_pool_active_affinities",
+                        "provider": provider,
+                        "count": self._key_pool.affinity_count(),
+                    },
                 )
                 return response
             except aiohttp.ClientResponseError as e:
@@ -256,11 +269,15 @@ class OpenAICompatAdapter(BaseAdapter):
                     retry_after = e.headers.get("Retry-After") if e.headers else None
                     self._key_pool.release(lease, status_code=429, retry_after=retry_after)
                     reason = "retry_after" if retry_after else "default_2min"
-                    KEY_POOL_COOLDOWNS.labels(
-                        provider=provider,
-                        key_index=str(lease.key_index),
-                        reason=reason,
-                    ).inc()
+                    logger.warning(
+                        "key_pool_cooldown",
+                        extra={
+                            "event": "key_pool_cooldown",
+                            "provider": provider,
+                            "key_index": lease.key_index,
+                            "reason": reason,
+                        },
+                    )
                     last_429_error = e
                     continue  # try next key
                 # Non-429 error — release without cooldown, propagate.
@@ -268,7 +285,14 @@ class OpenAICompatAdapter(BaseAdapter):
                 raise
 
         # Loop exhausted naturally (every key returned 429 in this single call)
-        KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+        logger.warning(
+            "key_pool_exhausted",
+            extra={
+                "event": "key_pool_exhausted",
+                "provider": provider,
+                "stage": "all_429",
+            },
+        )
         assert last_429_error is not None
         raise last_429_error
 
@@ -303,12 +327,6 @@ class OpenAICompatAdapter(BaseAdapter):
             yield stream_iter, None, first
             return
 
-        from serving.observability.metrics import (
-            KEY_POOL_ACTIVE_AFFINITIES,
-            KEY_POOL_COOLDOWNS,
-            KEY_POOL_EXHAUSTED,
-            KEY_POOL_REQUESTS,
-        )
         from serving.utils import context as req_ctx
 
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
@@ -320,12 +338,27 @@ class OpenAICompatAdapter(BaseAdapter):
             try:
                 api_key, lease = self._key_pool.acquire(affinity_key)
             except KeyPoolExhausted as exhausted:
-                KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+                logger.warning(
+                    "key_pool_exhausted",
+                    extra={
+                        "event": "key_pool_exhausted",
+                        "provider": provider,
+                        "stage": "stream_acquire",
+                    },
+                )
                 if last_429 is not None:
                     raise last_429 from exhausted
                 raise
 
-            KEY_POOL_REQUESTS.labels(provider=provider, key_index=str(lease.key_index)).inc()
+            logger.debug(
+                "key_pool_request",
+                extra={
+                    "event": "key_pool_request",
+                    "provider": provider,
+                    "key_index": lease.key_index,
+                    "stage": "stream",
+                },
+            )
 
             headers = self._build_headers(api_key_override=api_key)
             stream_iter = self.http.stream_post(
@@ -336,8 +369,13 @@ class OpenAICompatAdapter(BaseAdapter):
             except StopAsyncIteration:
                 # Empty stream — treat as success
                 self._key_pool.release(lease, status_code=200, retry_after=None)
-                KEY_POOL_ACTIVE_AFFINITIES.labels(provider=provider).set(
-                    self._key_pool.affinity_count()
+                logger.debug(
+                    "key_pool_active_affinities",
+                    extra={
+                        "event": "key_pool_active_affinities",
+                        "provider": provider,
+                        "count": self._key_pool.affinity_count(),
+                    },
                 )
                 return
             except aiohttp.ClientResponseError as e:
@@ -345,11 +383,16 @@ class OpenAICompatAdapter(BaseAdapter):
                     retry_after = e.headers.get("Retry-After") if e.headers else None
                     self._key_pool.release(lease, status_code=429, retry_after=retry_after)
                     reason = "retry_after" if retry_after else "default_2min"
-                    KEY_POOL_COOLDOWNS.labels(
-                        provider=provider,
-                        key_index=str(lease.key_index),
-                        reason=reason,
-                    ).inc()
+                    logger.warning(
+                        "key_pool_cooldown",
+                        extra={
+                            "event": "key_pool_cooldown",
+                            "provider": provider,
+                            "key_index": lease.key_index,
+                            "reason": reason,
+                            "stage": "stream",
+                        },
+                    )
                     last_429 = e
                     continue
                 # Non-429 — release without cooldown, propagate
@@ -361,7 +404,14 @@ class OpenAICompatAdapter(BaseAdapter):
             return
 
         # Loop exhausted — every key returned 429
-        KEY_POOL_EXHAUSTED.labels(provider=provider).inc()
+        logger.warning(
+            "key_pool_exhausted",
+            extra={
+                "event": "key_pool_exhausted",
+                "provider": provider,
+                "stage": "stream_all_429",
+            },
+        )
         assert last_429 is not None
         raise last_429
 
@@ -649,12 +699,13 @@ class OpenAICompatAdapter(BaseAdapter):
         finally:
             if active_lease is not None and self._key_pool is not None:
                 self._key_pool.release(active_lease, status_code=200, retry_after=None)
-                from serving.observability.metrics import (
-                    KEY_POOL_ACTIVE_AFFINITIES,
-                )
-
-                KEY_POOL_ACTIVE_AFFINITIES.labels(provider=self.config.provider).set(
-                    self._key_pool.affinity_count()
+                logger.debug(
+                    "key_pool_active_affinities",
+                    extra={
+                        "event": "key_pool_active_affinities",
+                        "provider": self.config.provider,
+                        "count": self._key_pool.affinity_count(),
+                    },
                 )
 
         # Flush processor buffer at end of stream
