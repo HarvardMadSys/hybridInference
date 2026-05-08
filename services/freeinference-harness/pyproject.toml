@@ -2,6 +2,7 @@
 name = "freeinference-harness"
 version = "0.1.0"
 description = "Standalone black-box harness for FreeInference."
+license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

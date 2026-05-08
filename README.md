@@ -43,4 +43,4 @@ docs/             # User docs, developer docs, agent specs/plans, reviews
 
 ## License
 
-This repository is being prepared for open-source release. Add the authoritative license file before publishing the repository publicly.
+This repository is licensed under the MIT License.
