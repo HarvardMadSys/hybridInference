@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SettingsTab } from '../SettingsTab';
@@ -33,8 +34,18 @@ vi.mock('@/lib/api/admin', async () => {
 describe('SettingsTab model visibility', () => {
   it('renders the section inside Admin Settings and shows update toasts', async () => {
     const api = await import('@/lib/api/admin');
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
 
-    render(<SettingsTab />);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab />
+      </QueryClientProvider>,
+    );
 
     expect(await screen.findByText('Model Visibility')).toBeInTheDocument();
     const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');

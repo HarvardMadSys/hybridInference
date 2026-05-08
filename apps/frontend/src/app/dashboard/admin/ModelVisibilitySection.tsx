@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import type { AdminModelVisibilityItem, Role } from '@/lib/api/admin';
 import { listModelVisibility, updateModelVisibility } from '@/lib/api/admin';
@@ -20,6 +21,7 @@ interface ModelVisibilitySectionProps {
 }
 
 export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps) {
+  const queryClient = useQueryClient();
   const [models, setModels] = useState<AdminModelVisibilityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +53,7 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
       try {
         const updated = await updateModelVisibility(modelId, requiredRole);
         setModels((prev) => prev.map((model) => (model.model_id === modelId ? updated : model)));
+        void queryClient.invalidateQueries({ queryKey: ['user', 'models'] });
         onToast(`Updated visibility for ${modelId}.`);
       } catch (e) {
         onToast(`Failed to update ${modelId}: ${getErrorMessage(e)}`);
@@ -67,7 +70,7 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
         });
       }
     },
-    [onToast],
+    [onToast, queryClient],
   );
 
   return (

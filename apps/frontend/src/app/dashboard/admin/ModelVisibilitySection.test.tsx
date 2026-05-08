@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ModelVisibilitySection } from './ModelVisibilitySection';
@@ -27,6 +28,19 @@ type QueuedUpdate = {
   effective_required_role: Role;
 };
 
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+}
+
+function renderWithQueryClient(ui: React.ReactElement, queryClient = createTestQueryClient()) {
+  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
+
 describe('ModelVisibilitySection', () => {
   const onToast = vi.fn();
 
@@ -50,7 +64,7 @@ describe('ModelVisibilitySection', () => {
       ],
     });
 
-    render(<ModelVisibilitySection onToast={onToast} />);
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
     expect(screen.getByText('Loading...')).toBeInTheDocument();
     expect(await screen.findByText('gpt-4o-mini')).toBeInTheDocument();
@@ -75,7 +89,7 @@ describe('ModelVisibilitySection', () => {
       effective_required_role: 'internal',
     });
 
-    render(<ModelVisibilitySection onToast={onToast} />);
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
     const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
     fireEvent.change(select, { target: { value: 'internal' } });
@@ -104,7 +118,7 @@ describe('ModelVisibilitySection', () => {
       effective_required_role: 'free',
     });
 
-    render(<ModelVisibilitySection onToast={onToast} />);
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
     const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
     fireEvent.change(select, { target: { value: '__default__' } });
@@ -117,7 +131,7 @@ describe('ModelVisibilitySection', () => {
   it('shows an inline error when loading fails', async () => {
     vi.mocked(listModelVisibility).mockRejectedValue(new Error('backend unavailable'));
 
-    render(<ModelVisibilitySection onToast={onToast} />);
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
     expect(await screen.findByText('backend unavailable')).toBeInTheDocument();
   });
@@ -136,7 +150,7 @@ describe('ModelVisibilitySection', () => {
         ],
       });
 
-    render(<ModelVisibilitySection onToast={onToast} />);
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
     expect(await screen.findByText('backend unavailable')).toBeInTheDocument();
     const retryButton = screen.getByRole('button', { name: 'Retry' });
@@ -175,7 +189,7 @@ describe('ModelVisibilitySection', () => {
         }),
     );
 
-    render(<ModelVisibilitySection onToast={onToast} />);
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
     const firstSelect = await screen.findByLabelText('Runtime override for gpt-4o-mini');
     const secondSelect = screen.getByLabelText('Runtime override for claude-3-5-sonnet');
@@ -230,7 +244,7 @@ describe('ModelVisibilitySection', () => {
         }),
     );
 
-    render(<ModelVisibilitySection onToast={onToast} />);
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
     const firstSelect = await screen.findByLabelText('Runtime override for gpt-4o-mini');
     const secondSelect = screen.getByLabelText('Runtime override for claude-3-5-sonnet');
@@ -281,7 +295,7 @@ describe('ModelVisibilitySection', () => {
         }),
     );
 
-    render(<ModelVisibilitySection onToast={onToast} />);
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
     const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
     fireEvent.change(select, { target: { value: 'internal' } });
@@ -305,13 +319,44 @@ describe('ModelVisibilitySection', () => {
     });
     vi.mocked(updateModelVisibility).mockRejectedValue(new Error('write failed'));
 
-    render(<ModelVisibilitySection onToast={onToast} />);
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
     const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
     fireEvent.change(select, { target: { value: 'internal' } });
 
     await waitFor(() => {
       expect(onToast).toHaveBeenCalledWith('Failed to update gpt-4o-mini: write failed');
+    });
+  });
+
+  it('invalidates the dashboard model list after a successful update', async () => {
+    const queryClient = createTestQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+    vi.mocked(listModelVisibility).mockResolvedValue({
+      models: [
+        {
+          model_id: 'gpt-4o-mini',
+          baseline_required_role: 'admin',
+          override_required_role: null,
+          effective_required_role: 'admin',
+        },
+      ],
+    });
+    vi.mocked(updateModelVisibility).mockResolvedValue({
+      model_id: 'gpt-4o-mini',
+      baseline_required_role: 'admin',
+      override_required_role: 'free',
+      effective_required_role: 'free',
+    });
+
+    renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />, queryClient);
+
+    const select = await screen.findByLabelText('Runtime override for gpt-4o-mini');
+    fireEvent.change(select, { target: { value: 'free' } });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['user', 'models'] });
     });
   });
 });
