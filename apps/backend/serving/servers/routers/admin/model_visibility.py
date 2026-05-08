@@ -67,7 +67,7 @@ async def list_model_visibility(
     return ListModelVisibilityResponse(models=models)
 
 
-@router.patch("/models/{model_id}/visibility", response_model=ModelVisibilityItem)
+@router.patch("/models/{model_id:path}/visibility", response_model=ModelVisibilityItem)
 async def update_model_visibility(
     request: Request,
     model_id: str,
