@@ -1,0 +1,23 @@
+name: Sync dev to main
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Fast-forward main to dev
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fast-forward main to dev
+        run: |
+          git checkout main
+          git merge --ff-only origin/dev
+          git push origin main
