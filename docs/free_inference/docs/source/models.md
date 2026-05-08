@@ -7,10 +7,8 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 | Model ID | Name | Context Length | Max Output | Features |
 |----------|------|----------------|------------|----------|
 | `glm-5.1` | GLM-5.1 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
-| `glm-5` | GLM-5 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-4.7` | GLM-4.7 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-5-turbo` | GLM-5 Turbo | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
-| `kimi-k2.6` | Kimi K2.6 | 262K tokens | 131K tokens | Function calling, Structured output, Thinking mode, Multimodal (text+image) |
 | `qwen3.6-35b` | Qwen3.6 35B | 135K tokens | 8K tokens | Function calling, Structured output |
 | `minimax-m2.7` | MiniMax M2.7 | 196K tokens | 8K tokens | Function calling, Structured output |
 | `minimax-m2.5` | MiniMax M2.5 | 196K tokens | 131K tokens | Function calling, Structured output, Thinking mode, Multimodal (text+image) |
@@ -24,25 +22,6 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 **Model ID:** `glm-5.1`
 
 **Aliases:** `freeinference-glm-5.1`
-
-- Context length: 200,000 tokens
-- Max output: 128,000 tokens
-- Quantization: fp8
-- Input modalities: text
-- Output modalities: text
-- Language support: Chinese, English
-- Function calling: Yes
-- Structured output: Yes
-- Thinking mode: Yes
-- Tool streaming: Yes
-
----
-
-### GLM-5
-
-**Model ID:** `glm-5`
-
-**Aliases:** `freeinference-glm-5`
 
 - Context length: 200,000 tokens
 - Max output: 128,000 tokens
@@ -92,23 +71,6 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 - Structured output: Yes
 - Thinking mode: Yes
 - Tool streaming: Yes
-
----
-
-### Kimi K2.6
-
-**Model ID:** `kimi-k2.6`
-
-**Aliases:** `Kimi-K2.6`
-
-- Context length: 262,144 tokens
-- Max output: 131,072 tokens
-- Quantization: int4
-- Input modalities: text, image
-- Output modalities: text
-- Function calling: Yes
-- Structured output: Yes
-- Thinking mode: Yes
 
 ---
 
@@ -206,6 +168,78 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 - Output modalities: text
 - Function calling: Yes
 - Structured output: Yes
+- Reasoning effort: Yes
+
+---
+
+### GPT-5.4
+
+**Model ID:** `gpt-5.4`
+
+- Context length: 1,050,000 tokens
+- Max output: 128,000 tokens
+- Input modalities: text, image
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
+- Reasoning effort: Yes
+
+---
+
+### GPT-5.4 Mini
+
+**Model ID:** `gpt-5.4-mini`
+
+- Context length: 1,050,000 tokens
+- Max output: 128,000 tokens
+- Input modalities: text, image
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
+- Reasoning effort: Yes
+
+---
+
+### GPT-5.3 Codex Spark
+
+**Model ID:** `gpt-5.3-spark`
+
+- Context length: 120,800 tokens
+- Max output: 8,000 tokens
+- Input modalities: text, image
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
+- Reasoning effort: Yes
+
+---
+
+### DeepSeek V4 Flash
+
+**Model ID:** `deepseek-v4-flash`
+
+- Context length: 1,000,000 tokens
+- Max output: 393,216 tokens
+- Input modalities: text
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
+- Thinking mode: Yes
+- Reasoning effort: Yes
+
+---
+
+### DeepSeek V4 Pro
+
+**Model ID:** `deepseek-v4-pro`
+
+- Context length: 1,000,000 tokens
+- Max output: 393,216 tokens
+- Input modalities: text
+- Output modalities: text
+- Function calling: Yes
+- Structured output: Yes
+- Thinking mode: Yes
 - Reasoning effort: Yes
 
 ---

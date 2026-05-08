@@ -80,7 +80,7 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
 | `claude-opus-4.6` | High-capability Opus generation |
 | `claude-opus-4.7` | Latest Opus (1M context) |
 
-> **Note:** Claude models require internal role access. Publicly available models (`glm-5`, `minimax-m2.5`, etc.) are not compatible with Claude Code since it only supports Anthropic-format APIs. The list above is a curated set — query `https://freeinference.org/anthropic/v1/models` (with your API key) for the live registry.
+> **Note:** Claude models require internal role access. Publicly available models (`glm-5.1`, `minimax-m2.5`, etc.) are not compatible with Claude Code since it only supports Anthropic-format APIs. The list above is a curated set — query `https://freeinference.org/anthropic/v1/models` (with your API key) for the live registry.
 
 ---
 
@@ -138,13 +138,13 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
        "model": "glm-5-turbo",
        "apiBase": "https://freeinference.org/v1",
        "apiKey": "your-api-key-here"
-     },
-     "embeddingsProvider": {
-       "provider": "openai",
-       "model": "bge-m3",
-       "apiBase": "https://freeinference.org/v1",
-       "apiKey": "your-api-key-here"
-     }
+      },
+      "embeddingsProvider": {
+        "provider": "openai",
+        "model": "your-embedding-model-id",
+        "apiBase": "https://freeinference.org/v1",
+        "apiKey": "your-api-key-here"
+      }
    }
    ```
 
@@ -229,7 +229,7 @@ GitHub Copilot does not support custom OpenAI-compatible endpoints. However, you
    | Default coding assistant | `glm-5.1` |
    | Faster edit loops | `glm-5-turbo` |
    | Long context or image input | `minimax-m2.5` |
-   | Strong bilingual coding | `glm-5` |
+   | Strong bilingual coding | `glm-4.7` |
 
 7. Save the settings.
 
@@ -261,7 +261,7 @@ GitHub Copilot does not support custom OpenAI-compatible endpoints. However, you
    API Key: your-api-key-here
    ```
 
-5. Select your preferred model such as `glm-5.1`, `glm-5`, `glm-4.7`, or `minimax-m2.5`.
+5. Select your preferred model such as `glm-5.1`, `glm-5-turbo`, `glm-4.7`, or `minimax-m2.5`.
 
 6. Save settings and start using FreeInference.
 
@@ -359,7 +359,7 @@ console.log(response.choices[0].message.content);
 
 FreeInference exposes an embedding endpoint at `/v1/embeddings` and a Qdrant proxy at `/v1/qdrant` for codebase indexing in supported IDEs.
 
-> **Note:** Embedding model availability changes over time. Check `https://freeinference.org/v1/models` for the currently registered embedding model id and substitute it for `bge-m3` in the examples below if needed.
+> **Note:** Embedding model availability changes over time. Check `https://freeinference.org/v1/models` for the currently registered embedding model ID and substitute it in the examples below.
 
 ### Roo Code
 
@@ -374,8 +374,8 @@ Roo Code natively supports OpenAI-compatible embedding providers.
 | **Embedder Provider** | OpenAI Compatible |
 | **Base URL** | `https://freeinference.org/v1` |
 | **API Key** | Your FreeInference API key |
-| **Model** | `bge-m3` |
-| **Model Dimension** | `1024` |
+| **Model** | `your-embedding-model-id` |
+| **Model Dimension** | Matching model dimension |
 | **Qdrant URL** | `https://freeinference.org/v1/qdrant` |
 | **Qdrant API Key** | Your FreeInference API key |
 
@@ -396,8 +396,8 @@ Kilo Code supports OpenAI-compatible embedding configuration. To use FreeInferen
 | **Embedder Provider** | OpenAI Compatible |
 | **Base URL** | `https://freeinference.org/v1` |
 | **API Key** | Your FreeInference API key |
-| **Model** | `bge-m3` |
-| **Model Dimension** | `1024` |
+| **Model** | `your-embedding-model-id` |
+| **Model Dimension** | Matching model dimension |
 | **Qdrant URL** | `https://freeinference.org/v1/qdrant` |
 | **Qdrant API Key** | Your FreeInference API key |
 
@@ -409,7 +409,7 @@ Continue supports embeddings for codebase indexing. Add an `embeddingsProvider` 
 {
   "embeddingsProvider": {
     "provider": "openai",
-    "model": "bge-m3",
+    "model": "your-embedding-model-id",
     "apiBase": "https://freeinference.org/v1",
     "apiKey": "your-api-key-here"
   }
@@ -440,7 +440,7 @@ client = OpenAI(
 )
 
 response = client.embeddings.create(
-    model="bge-m3",
+    model="your-embedding-model-id",
     input=["def hello():", "function greet() {"],
 )
 
@@ -452,7 +452,7 @@ for item in response.data:
 curl -X POST https://freeinference.org/v1/embeddings \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-here" \
-  -d '{"model": "bge-m3", "input": "hello world"}'
+  -d '{"model": "your-embedding-model-id", "input": "hello world"}'
 ```
 
 ---
@@ -474,7 +474,7 @@ If you get "model not found" errors:
 
 - Check the [available models](models.md) list
 - Ensure the model name is exactly as listed (case-sensitive)
-- Try switching to a different model like `glm-5` or `glm-4.7`
+- Try switching to a different model like `glm-5.1` or `glm-4.7`
 
 ### Cursor-Specific Issues
 
