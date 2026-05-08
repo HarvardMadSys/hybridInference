@@ -122,4 +122,23 @@ describe('ProviderKeysTab cookie upload', () => {
     expect(await screen.findByText(/did not include a session cookie/i)).toBeInTheDocument();
     expect(api.addProviderKey).not.toHaveBeenCalled();
   });
+
+  it('keeps cookie upload outside the generic add-key form', async () => {
+    const api = await import('@/lib/api/admin');
+    render(<ProviderKeysTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /upload cookie/i }));
+    fireEvent.change(screen.getByLabelText(/^api key$/i), {
+      target: { value: 'generic-key-should-not-submit' },
+    });
+    const cookieLabelInput = screen.getByLabelText(/cookie label/i);
+    fireEvent.change(cookieLabelInput, { target: { value: 'team account' } });
+    fireEvent.keyDown(cookieLabelInput, { key: 'Enter', code: 'Enter' });
+
+    expect(api.addProviderKey).not.toHaveBeenCalled();
+
+    const genericForm = screen.getByRole('form', { name: /add a new key/i });
+    const cookieInput = screen.getByLabelText(/cookie input/i);
+    expect(genericForm).not.toContainElement(cookieInput);
+  });
 });
