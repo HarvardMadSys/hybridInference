@@ -1028,9 +1028,12 @@ class TestProviderQuotasRoute:
     def admin_app(self):
         """Build a minimal FastAPI app with the admin router mounted."""
         app = FastAPI(title="Admin Provider Quotas Test")
+        op_store = MagicMock(name="operational_store")
+        op_store.list_provider_keys_full = AsyncMock(return_value=[])
         services = AppServices(
             router=MagicMock(),
             db_logger=None,
+            operational_store=op_store,
             routing_manager=None,
         )
         app.state.services = services  # type: ignore[attr-defined]
@@ -1074,6 +1077,28 @@ class TestProviderQuotasRoute:
             "featherless",
             "chatgpt",
         }
+
+    @pytest.mark.asyncio
+    async def test_route_passes_operational_store_to_gather_all(self, admin_app, monkeypatch):
+        async def _fake_admin() -> str:
+            return "admin@test"
+
+        seen = {}
+
+        async def fake_gather_all(op_store=None):
+            seen["op_store"] = op_store
+            return []
+
+        admin_app.dependency_overrides[verify_admin_access] = _fake_admin
+        monkeypatch.setattr("serving.servers.routers.admin.providers.gather_all", fake_gather_all)
+
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/admin/provider-quotas")
+
+        admin_app.dependency_overrides.clear()
+        assert resp.status_code == 200
+        assert seen["op_store"] is admin_app.state.services.operational_store
 
 
 class TestNextReset:
