@@ -1056,6 +1056,7 @@ class TestProviderQuotasRoute:
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
 
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1064,13 +1065,14 @@ class TestProviderQuotasRoute:
         assert resp.status_code == 200
         body = resp.json()
         assert "generated_at" in body
-        assert len(body["providers"]) == 5
+        assert len(body["providers"]) == 6
         assert {p["name"] for p in body["providers"]} == {
             "chutes",
             "zai",
             "minimax",
             "ollama",
             "featherless",
+            "chatgpt",
         }
 
 
