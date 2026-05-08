@@ -18,7 +18,7 @@ from serving.schemas_admin import (
     ProviderTokenUsageTotals,
     ProviderTokenUsageWindow,
 )
-from serving.servers.deps import get_db_logger, verify_admin_access
+from serving.servers.deps import get_db_logger, get_operational_store, verify_admin_access
 from serving.servers.routers.admin._common import _require_aware_utc, _truncate_hour
 
 router = APIRouter(prefix="/admin")
@@ -42,9 +42,10 @@ _ROLLUP_MINUTE_OFFSET = 5
 @router.get("/provider-quotas", response_model=AdminProviderQuotasResponse)
 async def admin_provider_quotas(
     _admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
 ) -> AdminProviderQuotasResponse:
     """Return current quota status for each upstream LLM provider."""
-    providers = await gather_all()
+    providers = await gather_all(op_store=op_store)
     return AdminProviderQuotasResponse(
         generated_at=datetime.now(timezone.utc),
         providers=providers,

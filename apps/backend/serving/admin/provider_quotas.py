@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,7 @@ from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 8
+_CHATGPT_MODELS_URL = "https://chatgpt.com/backend-api/models"
 
 
 def _mask_key(key: str) -> str:
@@ -63,6 +65,32 @@ def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, s
             break
         keys.append((i, val))
     return keys
+
+
+async def _discover_chatgpt_credentials(op_store: Any | None = None) -> list[tuple[int, str]]:
+    """Discover ChatGPT session credentials from env and DB provider keys.
+
+    Env credentials are ordered before DB credentials. Duplicate raw values are
+    removed so one account is not fetched twice.
+    """
+    raw_values = [
+        value for _, value in _discover_env_keys("CHATGPT_SESSION_COOKIE", "CHATGPT_SESSION_COOKIE")
+    ]
+
+    if op_store is not None:
+        try:
+            raw_values.extend(await op_store.list_provider_keys_full("chatgpt"))
+        except Exception:
+            logger.exception("fetch_chatgpt: failed to load DB provider keys")
+
+    seen: set[str] = set()
+    out: list[tuple[int, str]] = []
+    for value in raw_values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append((len(out) + 1, value))
+    return out
 
 
 def _process_multi_key_results(
@@ -163,6 +191,123 @@ def _parse_epoch_ms(value: Any) -> datetime | None:
         return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
     except (OverflowError, OSError, ValueError):
         return None
+
+
+def _as_float(value: Any) -> float | None:
+    """Convert a JSON number to float while rejecting bool and non-finite values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        converted = float(value)
+        return converted if math.isfinite(converted) else None
+    return None
+
+
+def _chatgpt_usage_from_block(label: str, block: Any) -> ProviderQuotaUsage | None:
+    """Parse one ChatGPT message-cap block into a generic usage row."""
+    if not isinstance(block, dict):
+        return None
+
+    numeric_keys = (
+        "limit",
+        "total",
+        "cap",
+        "message_cap",
+        "used",
+        "current",
+        "current_value",
+        "messages_used",
+        "remaining",
+    )
+    if any(
+        isinstance(block.get(key), (int, float))
+        and not isinstance(block.get(key), bool)
+        and not math.isfinite(float(block[key]))
+        for key in numeric_keys
+    ):
+        return None
+
+    limit = next(
+        (
+            value
+            for value in (
+                _as_float(block.get("limit")),
+                _as_float(block.get("total")),
+                _as_float(block.get("cap")),
+                _as_float(block.get("message_cap")),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    used = next(
+        (
+            value
+            for value in (
+                _as_float(block.get("used")),
+                _as_float(block.get("current")),
+                _as_float(block.get("current_value")),
+                _as_float(block.get("messages_used")),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    remaining = _as_float(block.get("remaining"))
+    if used is None and limit is not None and remaining is not None:
+        used = limit - remaining
+
+    if used is None and limit is None:
+        return None
+
+    reset_at = (
+        _parse_iso(block.get("reset_at"))
+        or _parse_iso(block.get("resets_at"))
+        or _parse_iso(block.get("reset_time"))
+        or _parse_iso(block.get("reset_after"))
+    )
+    usage_label = label if label.lower().endswith("messages") else f"{label} messages"
+    return ProviderQuotaUsage(
+        label=usage_label,
+        used=used,
+        limit=limit,
+        unit="messages",
+        reset_at=reset_at,
+    )
+
+
+def _parse_chatgpt_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
+    """Parse recognized ChatGPT quota payload shapes into usage rows.
+
+    ChatGPT web payloads are not a public stable API. Keep this parser
+    conservative and return an empty list for unknown shapes.
+    """
+    usages: list[ProviderQuotaUsage] = []
+
+    for mapping_key in ("message_caps", "message_cap"):
+        mapping = data.get(mapping_key)
+        if isinstance(mapping, dict):
+            for label, block in mapping.items():
+                usage = _chatgpt_usage_from_block(str(label), block)
+                if usage is not None:
+                    usages.append(usage)
+
+    models = data.get("models")
+    if isinstance(models, list):
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            label = str(model.get("title") or model.get("slug") or model.get("id") or "Messages")
+            block = None
+            for block_key in ("message_cap", "message_caps", "quota", "usage"):
+                if block_key in model:
+                    block = model.get(block_key)
+                    break
+            usage = _chatgpt_usage_from_block(label, block)
+            if usage is not None:
+                usages.append(usage)
+
+    return usages
 
 
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
@@ -716,11 +861,84 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
     return usages
 
 
-async def gather_all() -> list[ProviderQuotaResult]:
+async def _fetch_chatgpt_for_key(cookie: str) -> ProviderQuotaResult:
+    """Fetch ChatGPT message quota for a single session cookie."""
+    headers = {
+        "Cookie": cookie,
+        "User-Agent": "Mozilla/5.0 (compatible; freeinference-admin/1.0)",
+        "Accept": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(_CHATGPT_MODELS_URL, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("chatgpt", "ChatGPT", cookie, "auth_failed")
+            if resp.status >= 400:
+                return _err("chatgpt", "ChatGPT", cookie, "unexpected")
+            try:
+                raw = await resp.json()
+            except Exception:
+                return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+            if not isinstance(raw, dict):
+                return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+            data: dict[str, Any] = raw
+    except asyncio.TimeoutError:
+        return _err("chatgpt", "ChatGPT", cookie, "timeout")
+    except aiohttp.ClientError:
+        return _err("chatgpt", "ChatGPT", cookie, "unexpected")
+    except Exception:
+        logger.exception("fetch_chatgpt: unexpected error")
+        return _err("chatgpt", "ChatGPT", cookie, "unexpected")
+
+    usages = _parse_chatgpt_usage(data)
+    if not usages:
+        return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+
+    return ProviderQuotaResult(
+        name="chatgpt",
+        display_name="ChatGPT",
+        key_configured=True,
+        key_masked=_mask_key(cookie),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
+
+
+async def fetch_chatgpt(op_store: Any | None = None) -> list[ProviderQuotaResult]:
+    """Fetch ChatGPT quota usage for env and DB-backed session cookies."""
+    keys = await _discover_chatgpt_credentials(op_store)
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="chatgpt",
+                display_name="ChatGPT",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_chatgpt_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+    return _process_multi_key_results("chatgpt", "ChatGPT", keys, results)
+
+
+async def gather_all(op_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Run all provider fetchers in parallel; never raise.
 
     Each fetcher returns a ``list[ProviderQuotaResult]`` (one per key).
-    Results are flattened into a single list.  If a fetcher raises, the
+    Results are flattened into a single list. If a fetcher raises, the
     exception is caught and converted to a single error result.
     """
     fetchers = [
@@ -729,6 +947,7 @@ async def gather_all() -> list[ProviderQuotaResult]:
         ("minimax", "MiniMax", fetch_minimax),
         ("ollama", "Ollama Cloud", fetch_ollama),
         ("featherless", "Featherless", fetch_featherless),
+        ("chatgpt", "ChatGPT", lambda: fetch_chatgpt(op_store)),
     ]
     raw = await asyncio.gather(
         *(f() for _, _, f in fetchers),
