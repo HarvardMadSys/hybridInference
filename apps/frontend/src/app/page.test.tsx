@@ -5,16 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import HomePage from './page';
 
-const replace = vi.fn();
 let authState = {
   loading: false,
   isAuthenticated: false,
   user: null as { id: string; email: string; role: string; user_name?: string | null } | null,
 };
-
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace }),
-}));
 
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({
@@ -43,7 +38,6 @@ describe('HomePage', () => {
   });
 
   beforeEach(() => {
-    replace.mockClear();
     authState = {
       loading: false,
       isAuthenticated: false,
@@ -65,7 +59,7 @@ describe('HomePage', () => {
     expect(container).toHaveTextContent(/provided without guarantee/i);
   });
 
-  it('shows dashboard content on the homepage for authenticated users without redirecting', async () => {
+  it('shows the public homepage for authenticated users without redirecting', () => {
     authState = {
       loading: false,
       isAuthenticated: true,
@@ -79,9 +73,11 @@ describe('HomePage', () => {
 
     render(<HomePage />);
 
-    expect(await screen.findByLabelText(/dashboard view/i)).toBeInTheDocument();
+    [/hero/i, /features/i, /how it works/i, /code example/i].forEach((pattern) => {
+      expect(screen.getByLabelText(pattern)).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText(/dashboard view/i)).not.toBeInTheDocument();
     expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
     expect(screen.getByText(/all prompts and responses are logged/i)).toBeInTheDocument();
-    expect(replace).not.toHaveBeenCalled();
   });
 });
