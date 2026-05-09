@@ -10,8 +10,10 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
-from serving.servers.deps import AppServices
-from serving.servers.routers import models
+from serving.servers import registry
+from serving.servers.auth import optional_verify_api_key
+from serving.servers.deps import AppServices, get_current_user
+from serving.servers.routers import models, user_routes
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -29,6 +31,14 @@ class _Adapter(BaseAdapter):
         self, messages: list[dict[str, Any]], **params
     ):  # pragma: no cover
         yield self.format_stream_chunk(model=self.config.id, content=self._content)
+
+
+class _VisibilityResolver:
+    def __init__(self, overrides: dict[str, str]):
+        self._overrides = overrides
+
+    async def get_effective_required_role(self, model_id: str, default_role: str) -> str:
+        return self._overrides.get(model_id, default_role)
 
 
 def _cfg(
@@ -149,6 +159,64 @@ async def test_models_single_adapter_no_aggregation():
 
 
 @pytest.mark.asyncio
+async def test_models_openai_provider_is_preserved_for_gpt_style_entry(tmp_path, monkeypatch):
+    from serving.servers.auth import optional_verify_api_key
+
+    yaml_text = (
+        "models:\n"
+        "  - id: gpt-5.5\n"
+        "    name: GPT-5.5\n"
+        "    provider: openai\n"
+        "    required_role: internal\n"
+        "    provider_model_id: gpt-5.5\n"
+        "    quantization: none\n"
+        "    context_length: 1050000\n"
+        "    max_output_length: 128000\n"
+        "    supports_tools: true\n"
+        "    supports_structured_output: true\n"
+        "    supported_params: [max_tokens, stream, tools, tool_choice, reasoning_effort]\n"
+        "    input_modalities: [text, image]\n"
+        "    output_modalities: [text]\n"
+        "    pricing:\n"
+        "      prompt: '5.00'\n"
+        "      completion: '30.00'\n"
+        "      image: '0'\n"
+        "      request: '0'\n"
+        "      input_cache_reads: '5.00'\n"
+        "      input_cache_writes: '0.00'\n"
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: ${CLI_PROXY_BASE_URL}\n"
+        "        api_key: ${CLI_PROXY_API_KEY}\n"
+        "        provider_model_id: gpt-5.5\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("CLI_PROXY_BASE_URL", "http://cliproxy.local/v1")
+    monkeypatch.setenv("CLI_PROXY_API_KEY", "sk-test")
+
+    router = RouteExecutor()
+    registry.register_from_models_yaml(router, p)
+
+    app = FastAPI()
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
+    app.dependency_overrides[optional_verify_api_key] = lambda: {
+        "is_admin": True,
+        "role": "admin",
+        "user_id": "admin-user",
+    }
+    app.include_router(models.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+
+    item = next(m for m in resp.json()["data"] if m["id"] == "gpt-5.5")
+    assert item["owned_by"] == "openai"
+
+
+@pytest.mark.asyncio
 async def test_models_pricing_primary_config_behavior():
     router = RouteExecutor()
     p_primary = {"prompt": "1", "completion": "2"}
@@ -235,3 +303,93 @@ async def test_admin_only_visible_to_admin():
         ids = [m["id"] for m in resp.json()["data"]]
         assert "public-model" in ids
         assert "secret-model" in ids
+
+
+@pytest.mark.asyncio
+async def test_models_runtime_visibility_override_hides_model_for_free_user():
+    router = RouteExecutor()
+    visible = _Adapter(_cfg(id="visible-model"))
+    hidden = _Adapter(_cfg(id="runtime-hidden-model"))
+    router.register_route("visible-model", [(visible, 1.0)])
+    router.register_route("runtime-hidden-model", [(hidden, 1.0)])
+
+    app = FastAPI()
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=None,
+        model_visibility_resolver=_VisibilityResolver({"runtime-hidden-model": "admin"}),
+    )
+    app.dependency_overrides[optional_verify_api_key] = lambda: {
+        "authenticated": True,
+        "role": "free",
+        "user_id": "free-user",
+    }
+    app.include_router(models.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+
+    assert resp.status_code == status.HTTP_200_OK
+    ids = [m["id"] for m in resp.json()["data"]]
+    assert "visible-model" in ids
+    assert "runtime-hidden-model" not in ids
+
+
+@pytest.mark.asyncio
+async def test_models_runtime_visibility_override_uses_canonical_model_id_for_aliases():
+    router = RouteExecutor()
+    aliased = _Adapter(_cfg(id="canonical-model"))
+    router.register_route("alias-model", [(aliased, 1.0)], aliases=["secondary-alias"])
+
+    app = FastAPI()
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=None,
+        model_visibility_resolver=_VisibilityResolver({"canonical-model": "admin"}),
+    )
+    app.dependency_overrides[optional_verify_api_key] = lambda: {
+        "authenticated": True,
+        "role": "free",
+        "user_id": "free-user",
+    }
+    app.include_router(models.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+
+    assert resp.status_code == status.HTTP_200_OK
+    ids = [m["id"] for m in resp.json()["data"]]
+    assert "canonical-model" not in ids
+
+
+@pytest.mark.asyncio
+async def test_user_models_runtime_visibility_override_hides_model_for_free_user():
+    router = RouteExecutor()
+    visible = _Adapter(_cfg(id="visible-model"))
+    hidden = _Adapter(_cfg(id="runtime-hidden-model"))
+    router.register_route("visible-model", [(visible, 1.0)])
+    router.register_route("runtime-hidden-model", [(hidden, 1.0)])
+
+    app = FastAPI()
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=None,
+        model_visibility_resolver=_VisibilityResolver({"runtime-hidden-model": "admin"}),
+    )
+    app.dependency_overrides[get_current_user] = lambda: {
+        "authenticated": True,
+        "role": "free",
+        "user_id": "free-user",
+    }
+    app.include_router(user_routes.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/user/models")
+
+    assert resp.status_code == status.HTTP_200_OK
+    ids = [m["id"] for m in resp.json()["data"]]
+    assert "visible-model" in ids
+    assert "runtime-hidden-model" not in ids

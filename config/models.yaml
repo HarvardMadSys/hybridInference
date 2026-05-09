@@ -7,7 +7,7 @@
 models:
   - id: glm-4.7
     name: GLM-4.7
-    provider: zhipu
+    provider: zai
     quantization: "fp8"
     context_length: 200000
     max_output_length: 128000
@@ -26,7 +26,7 @@ models:
       input_cache_reads: "0.11"
       input_cache_writes: "0"
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
         api_keys:
@@ -35,21 +35,21 @@ models:
         provider_model_id: "glm-4.7"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 1.0
+        weight: 0.64
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "glm-4.7"
       # Chutes fallback
       - kind: chutes
-        weight: 0.01
+        weight: 0.64
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
-        provider_model_id: "zai-org/GLM-4.7-FP8"
+        provider_model_id: "zai-org/GLM-4.7-TEE"
       # Featherless fallback
       - kind: featherless
-        weight: 0
+        weight: 1.0
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}
@@ -57,7 +57,7 @@ models:
 
   # - id: glm-4.7-flash
   #   name: GLM-4.7-Flash
-  #   provider: zhipu
+  #   provider: zai
   #   quantization: "q8"
   #   context_length: 200000
   #   max_output_length: 128000
@@ -84,7 +84,7 @@ models:
   #         prompt: "0"
   #         completion: "0"
   #     # Remote Zhipu API (disabled, set weight > 0 to re-enable)
-  #     - kind: zhipu
+  #     - kind: zai
   #       weight: 0
   #       base_url: https://api.z.ai/api/coding/paas/v4/
   #       api_keys:
@@ -102,8 +102,8 @@ models:
   #         completion: "0"
 
   - id: glm-5
-    name: GLM-5
-    provider: zhipu
+    name: GLM-5 (please use GLM-5.1 or GLM-5 Turbo if possible; GLM-5 is an older version that may be less cost-effective)
+    provider: zai
     quantization: "fp8"
     context_length: 200000
     max_output_length: 128000
@@ -122,29 +122,30 @@ models:
       input_cache_reads: "0.2"
       input_cache_writes: "0"
     route:
-      - kind: zhipu
-        weight: 1.0
+      - kind: zai
+        weight: 0.64
         base_url: ${ZAI_BASE_URL}
         api_keys:
           - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
         provider_model_id: "glm-5"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 1.0
+        weight: 0.64
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "glm-5"
-      # Chutes fallback
+      # # Chutes fallback
       - kind: chutes
-        weight: 0.01
+        weight: 0.64
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "zai-org/GLM-5-TEE"
       # Featherless fallback
       - kind: featherless
-        weight: 0
+        weight: 0.64
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}
@@ -152,7 +153,7 @@ models:
 
   - id: glm-5.1
     name: GLM-5.1
-    provider: zhipu
+    provider: zai
     quantization: "fp8"
     context_length: 200000
     max_output_length: 128000
@@ -164,14 +165,14 @@ models:
     aliases: ["freeinference-glm-5.1"]
     # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
-      prompt: "1.4"
-      completion: "4.4"
+      prompt: "1.6"
+      completion: "4.8"
       image: "0"
       request: "0"
-      input_cache_reads: "0.26"
+      input_cache_reads: "0.4"
       input_cache_writes: "0"
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
         api_keys:
@@ -180,7 +181,7 @@ models:
 
   - id: glm-5-turbo
     name: GLM-5 Turbo
-    provider: zhipu
+    provider: zai
     quantization: "fp8"
     context_length: 200000
     max_output_length: 128000
@@ -199,12 +200,25 @@ models:
       input_cache_reads: "0.24"
       input_cache_writes: "0"
     route:
-      - kind: zhipu
+      - kind: zai
         weight: 1.0
         base_url: ${ZAI_BASE_URL}
         api_keys:
           - ${ZAI_API_KEY}
         provider_model_id: "glm-5-turbo"
+      - kind: chutes
+        weight: 0.05
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "zai-org/GLM-5-Turbo"
+      # # Featherless fallback
+      # - kind: featherless
+      #   weight: 0
+      #   base_url: ${FEATHERLESS_BASE_URL}
+      #   api_keys:
+      #     - ${FEATHERLESS_API_KEY}
+      #   provider_model_id: "MiniMaxAI/MiniMax-M2.5"
 
 
   - id: minimax-m2.5
@@ -213,7 +227,7 @@ models:
     quantization: "bf16"
     input_modalities: ["text", "image"]
     output_modalities: ["text"]
-    context_length: 196608
+    context_length: 204800
     max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
@@ -237,21 +251,21 @@ models:
         provider_model_id: "MiniMax-M2.5"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 1.0
+        weight: 0.24
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.5"
       # Chutes fallback
       - kind: chutes
-        weight: 0.01
+        weight: 0.24
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
       # Featherless fallback
       - kind: featherless
-        weight: 0
+        weight: 0.64
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}
@@ -261,9 +275,9 @@ models:
     name: MiniMax M2.7
     provider: minimax
     quantization: "bf16"
-    input_modalities: ["text"]
+    input_modalities: ["text", "image"]
     output_modalities: ["text"]
-    context_length: 196608
+    context_length: 204800
     max_output_length: 8192
     supports_tools: true
     supports_structured_output: true
@@ -287,147 +301,401 @@ models:
         provider_model_id: "MiniMax-M2.7"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 1.0
+        weight: 0.24
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.7"
 
-
-  # ===== External Provider =====
-  # - id: deepseek-r1
-  #   name: DeepSeek R1 (via Chutes)
+  # - id: kimi-k2.6
+  #   name: Kimi K2.6
   #   provider: chutes
-  #   quantization: "bf16"
-  #   input_modalities: ["text"]
+  #   quantization: "int4"
+  #   input_modalities: ["text", "image"]
   #   output_modalities: ["text"]
-  #   context_length: 64000
-  #   max_output_length: 8000
+  #   context_length: 262144
+  #   max_output_length: 131072
   #   supports_tools: true
   #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop]
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+  #   aliases: ["Kimi-K2.6"]
+  #   pricing:
+  #     prompt: "0.2"
+  #     completion: "0.8"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.2"
+  #     input_cache_writes: "0"
   #   route:
   #     - kind: chutes
   #       weight: 1.0
   #       base_url: ${CHUTES_BASE_URL}
   #       api_keys:
   #         - ${CHUTES_API_KEY}
-  #       provider_model_id: "deepseek-ai/DeepSeek-R1-0528"
-  #       pricing:
-  #         prompt: "0"
-  #         completion: "0"
+  #       provider_model_id: "moonshotai/Kimi-K2.6-TEE"
 
-  # - id: glm-4.6-featherless
-  #   name: GLM-4.6 (via Featherless)
-  #   provider: featherless
-  #   quantization: "bf16"
-  #   input_modalities: ["text"]
-  #   output_modalities: ["text"]
-  #   context_length: 32768
-  #   max_output_length: 32768
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop]
-  #   route:
-  #     - kind: featherless
-  #       weight: 1.0
-  #       base_url: ${FEATHERLESS_BASE_URL}
-  #       api_keys:
-  #         - ${FEATHERLESS_API_KEY}
-  #       provider_model_id: "zai-org/GLM-4.6"
-  #       pricing:
-  #         prompt: "0"
-  #         completion: "0"
-
-  # - id: qwen3.5-27b
-  #   name: Qwen3.5 27B
-  #   provider: qwen
-  #   quantization: "unknown"
-  #   input_modalities: ["text"]
-  #   output_modalities: ["text"]
-  #   context_length: 65536
-  #   max_output_length: 8192
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop]
-  #   aliases: ["Qwen3.5-27B"]
-  #   pricing:
-  #     prompt: "0"
-  #     completion: "0"
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0"
-  #     input_cache_writes: "0"
-  #   route:
-  #     - kind: sglang
-  #       weight: 1.0
-  #       base_url: "http://host.docker.internal:8007"
-  #       provider_model_id: "Qwen3.5-27B"
-  #       pricing:
-  #         prompt: "0"
-  #         completion: "0"
-  #     # Featherless fallback
-  #     - kind: featherless
-  #       weight: 0
-  #       base_url: ${FEATHERLESS_BASE_URL}
-  #       api_keys:
-  #         - ${FEATHERLESS_API_KEY}
-  #       provider_model_id: "Qwen/Qwen3.5-27B"
-  #       pricing:
-  #         prompt: "0"
-  #         completion: "0"
-
-  - id: qwen3.6-27b
-    name: Qwen3.6 27B # (Ollama 8001)
-    provider: vllm
-    quantization: "unknown"
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    context_length: 135168
-    max_output_length: 8192
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop, stream]
-    aliases: ["qwen3.6:27b"]
-    # Self-hosted: no third-party per-token bill (log cost as zero).
-    pricing:
-      prompt: "0"
-      completion: "0"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0"
-      input_cache_writes: "0"
-    route:
-      - kind: vllm
-        weight: 1.0
-        base_url: http://host.docker.internal:10800
-        provider_model_id: "qwen3.6:27b"
 
   - id: qwen3.6-35b
-    name: Qwen3.6 35B # (Ollama 8001)
-    provider: vllm
-    quantization: "unknown"
+    name: Qwen3.6 35B
+    provider: sglang
+    quantization: "fp8"
     input_modalities: ["text"]
     output_modalities: ["text"]
-    context_length: 135168
+    context_length: 262144
     max_output_length: 8192
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream]
     aliases: ["qwen3.6:35b"]
-    # Self-hosted: no third-party per-token bill (log cost as zero).
     pricing:
-      prompt: "0"
-      completion: "0"
+      prompt: "0.01"
+      completion: "0.08"
       image: "0"
       request: "0"
-      input_cache_reads: "0"
+      input_cache_reads: "0.01"
       input_cache_writes: "0"
     route:
-      - kind: vllm
+      - kind: sglang
         weight: 1.0
-        base_url: http://host.docker.internal:10801
-        provider_model_id: "qwen3.6:35b"
+        base_url: ${LOCAL_DEPLOYMENT_URL}
+        provider_model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
+        api_keys:
+          - ${LOCAL_API_KEY}
+
+
+
+  # ── OpenRouter examples ────────────────────────────────────
+  # Bare `kind: openrouter` lets OpenRouter pick the upstream provider
+  # freely; `kind: openrouter[<provider_slug>]` pins to one OpenRouter
+  # upstream via provider.order=[<slug>], allow_fallbacks=false. See
+  # docs/openrouter.md for the full list of supported provider slugs.
+  #
+  # - id: llama-3.3-70b
+  #   name: Llama 3.3 70B (via OpenRouter)
+  #   provider: openrouter
+  #   provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #   context_length: 131072
+  #   max_output_length: 8192
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream]
+  #   input_modalities: ["text"]
+  #   output_modalities: ["text"]
+  #   pricing:
+  #     prompt: "0.13"
+  #     completion: "0.39"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0"
+  #     input_cache_writes: "0"
+  #   route:
+  #     # Pinned to DeepInfra: deterministic upstream, distinct endpoint_id.
+  #     - kind: openrouter[deepinfra]
+  #       weight: 1.0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #     # Bare openrouter — let OpenRouter pick. Different endpoint_id
+  #     # from the pinned leg so circuit-breaker stats stay separate.
+  #     - kind: openrouter
+  #       weight: 0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
+
+
+
+  # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
+  - id: deepseek-v4-flash
+    name: DeepSeek V4 Flash
+    provider: deepseek
+    required_role: internal
+    provider_model_id: "deepseek-v4-flash"
+    context_length: 1000000
+    max_output_length: 393216
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    quantization: "none"
+    # Pricing (original): prompt $0.14/M, cache-hit $0.0028/M, completion $0.28/M
+    # Pricing (promo 75% off): prompt $0.035/M, cache-hit $0.0007/M, completion $0.07/M
+    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    pricing:
+      prompt: "0.14"
+      completion: "0.28"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.0028"
+      input_cache_writes: "0"
+    route:
+      - kind: deepseek
+        weight: 1.0
+        base_url: ${DEEPSEEK_BASE_URL}
+        api_keys:
+          - ${DEEPSEEK_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
+
+  - id: deepseek-v4-pro
+    name: DeepSeek V4 Pro
+    provider: deepseek
+    required_role: internal
+    provider_model_id: "deepseek-v4-pro"
+    context_length: 1000000
+    max_output_length: 393216
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    quantization: "none"
+    # Pricing (original): prompt $1.74/M, cache-hit $0.0145/M, completion $3.48/M
+    # Pricing (promo 75% off): prompt $0.435/M, cache-hit $0.0036/M, completion $0.87/M
+    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    pricing:
+      prompt: "1.74"
+      completion: "3.48"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.0145"
+      input_cache_writes: "0"
+    route:
+      - kind: deepseek
+        weight: 1.0
+        base_url: https://api.deepseek.com
+        api_keys:
+          - ${DEEPSEEK_API_KEY}
+        provider_model_id: "deepseek-v4-pro"
+
+
+
+
+
+
+
+  # ── OpenRouter examples ────────────────────────────────────
+  # Bare `kind: openrouter` lets OpenRouter pick the upstream provider
+  # freely; `kind: openrouter[<provider_slug>]` pins to one OpenRouter
+  # upstream via provider.order=[<slug>], allow_fallbacks=false. See
+  # docs/openrouter.md for the full list of supported provider slugs.
+  #
+  # - id: llama-3.3-70b
+  #   name: Llama 3.3 70B (via OpenRouter)
+  #   provider: openrouter
+  #   provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #   context_length: 131072
+  #   max_output_length: 8192
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream]
+  #   input_modalities: ["text"]
+  #   output_modalities: ["text"]
+  #   pricing:
+  #     prompt: "0.13"
+  #     completion: "0.39"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0"
+  #     input_cache_writes: "0"
+  #   route:
+  #     # Pinned to DeepInfra: deterministic upstream, distinct endpoint_id.
+  #     - kind: openrouter[deepinfra]
+  #       weight: 1.0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #     # Bare openrouter — let OpenRouter pick. Different endpoint_id
+  #     # from the pinned leg so circuit-breaker stats stay separate.
+  #     - kind: openrouter
+  #       weight: 0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
+
+
+
+  # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
+  - id: deepseek-v4-flash
+    name: DeepSeek V4 Flash
+    provider: deepseek
+    required_role: internal
+    provider_model_id: "deepseek-v4-flash"
+    context_length: 1000000
+    max_output_length: 393216
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    quantization: "none"
+    # Pricing (original): prompt $0.14/M, cache-hit $0.0028/M, completion $0.28/M
+    # Pricing (promo 75% off): prompt $0.035/M, cache-hit $0.0007/M, completion $0.07/M
+    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    pricing:
+      prompt: "0.14"
+      completion: "0.28"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.0028"
+      input_cache_writes: "0"
+    route:
+      - kind: deepseek
+        weight: 1.0
+        base_url: https://api.deepseek.com
+        api_keys:
+          - ${DEEPSEEK_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
+
+  - id: deepseek-v4-pro
+    name: DeepSeek V4 Pro
+    provider: deepseek
+    required_role: internal
+    provider_model_id: "deepseek-v4-pro"
+    context_length: 1000000
+    max_output_length: 393216
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    quantization: "none"
+    # Pricing (original): prompt $1.74/M, cache-hit $0.0145/M, completion $3.48/M
+    # Pricing (promo 75% off): prompt $0.435/M, cache-hit $0.0036/M, completion $0.87/M
+    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    pricing:
+      prompt: "1.74"
+      completion: "3.48"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.0145"
+      input_cache_writes: "0"
+    route:
+      - kind: deepseek
+        weight: 1.0
+        base_url: https://api.deepseek.com
+        api_keys:
+          - ${DEEPSEEK_API_KEY}
+        provider_model_id: "deepseek-v4-pro"
+
+
+
+
+
+
+
+  # ── OpenRouter examples ────────────────────────────────────
+  # Bare `kind: openrouter` lets OpenRouter pick the upstream provider
+  # freely; `kind: openrouter[<provider_slug>]` pins to one OpenRouter
+  # upstream via provider.order=[<slug>], allow_fallbacks=false. See
+  # docs/openrouter.md for the full list of supported provider slugs.
+  #
+  # - id: llama-3.3-70b
+  #   name: Llama 3.3 70B (via OpenRouter)
+  #   provider: openrouter
+  #   provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #   context_length: 131072
+  #   max_output_length: 8192
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream]
+  #   input_modalities: ["text"]
+  #   output_modalities: ["text"]
+  #   pricing:
+  #     prompt: "0.13"
+  #     completion: "0.39"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0"
+  #     input_cache_writes: "0"
+  #   route:
+  #     # Pinned to DeepInfra: deterministic upstream, distinct endpoint_id.
+  #     - kind: openrouter[deepinfra]
+  #       weight: 1.0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #     # Bare openrouter — let OpenRouter pick. Different endpoint_id
+  #     # from the pinned leg so circuit-breaker stats stay separate.
+  #     - kind: openrouter
+  #       weight: 0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
+
+
+
+  # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
+  - id: deepseek-v4-flash
+    name: DeepSeek V4 Flash
+    provider: deepseek
+    required_role: internal
+    provider_model_id: "deepseek-v4-flash"
+    context_length: 1000000
+    max_output_length: 393216
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    quantization: "none"
+    # Pricing (original): prompt $0.14/M, cache-hit $0.0028/M, completion $0.28/M
+    # Pricing (promo 75% off): prompt $0.035/M, cache-hit $0.0007/M, completion $0.07/M
+    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    pricing:
+      prompt: "0.14"
+      completion: "0.28"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.0028"
+      input_cache_writes: "0"
+    route:
+      - kind: deepseek
+        weight: 1.0
+        base_url: https://api.deepseek.com
+        api_keys:
+          - ${DEEPSEEK_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
+
+  - id: deepseek-v4-pro
+    name: DeepSeek V4 Pro
+    provider: deepseek
+    required_role: internal
+    provider_model_id: "deepseek-v4-pro"
+    context_length: 1000000
+    max_output_length: 393216
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    quantization: "none"
+    # Pricing (original): prompt $1.74/M, cache-hit $0.0145/M, completion $3.48/M
+    # Pricing (promo 75% off): prompt $0.435/M, cache-hit $0.0036/M, completion $0.87/M
+    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    pricing:
+      prompt: "1.74"
+      completion: "3.48"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.0145"
+      input_cache_writes: "0"
+    route:
+      - kind: deepseek
+        weight: 1.0
+        base_url: https://api.deepseek.com
+        api_keys:
+          - ${DEEPSEEK_API_KEY}
+        provider_model_id: "deepseek-v4-pro"
+
+
+
 
   # ===== Embedding Models =====
 
@@ -457,7 +725,7 @@ models:
     provider: anthropic
     required_role: internal
     provider_model_id: "claude-sonnet-4-6"
-    context_length: 200000
+    context_length: 1000000
     max_output_length: 64000
     supports_tools: true
     supports_structured_output: true
@@ -479,13 +747,13 @@ models:
         base_url: ${CLI_PROXY_BASE_URL}
         api_key: ${CLI_PROXY_API_KEY}
         provider_model_id: "claude-sonnet-4-6"
-  #
+
   - id: claude-opus-4.6
     name: Claude Opus 4.6
     provider: anthropic
     required_role: internal
     provider_model_id: "claude-opus-4-6"
-    context_length: 200000
+    context_length: 1000000
     max_output_length: 128000
     supports_tools: true
     supports_structured_output: true
@@ -535,52 +803,114 @@ models:
         base_url: ${CLI_PROXY_BASE_URL}
         api_key: ${CLI_PROXY_API_KEY}
         provider_model_id: "claude-opus-4-7"
-  # ── OpenRouter examples ────────────────────────────────────
-  # Bare `kind: openrouter` lets OpenRouter pick the upstream provider
-  # freely; `kind: openrouter[<provider_slug>]` pins to one OpenRouter
-  # upstream via provider.order=[<slug>], allow_fallbacks=false. See
-  # docs/openrouter.md for the full list of supported provider slugs.
-  #
-  # - id: llama-3.3-70b
-  #   name: Llama 3.3 70B (via OpenRouter)
-  #   provider: openrouter
-  #   provider_model_id: meta-llama/llama-3.3-70b-instruct
-  #   context_length: 131072
-  #   max_output_length: 8192
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop, stream]
-  #   input_modalities: ["text"]
-  #   output_modalities: ["text"]
-  #   pricing:
-  #     prompt: "0.13"
-  #     completion: "0.39"
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0"
-  #     input_cache_writes: "0"
-  #   route:
-  #     # Pinned to DeepInfra: deterministic upstream, distinct endpoint_id.
-  #     - kind: openrouter[deepinfra]
-  #       weight: 1.0
-  #       base_url: https://openrouter.ai/api/v1
-  #       api_keys:
-  #         - ${OPENROUTER_API_KEY}
-  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
-  #     # Bare openrouter — let OpenRouter pick. Different endpoint_id
-  #     # from the pinned leg so circuit-breaker stats stay separate.
-  #     - kind: openrouter
-  #       weight: 0
-  #       base_url: https://openrouter.ai/api/v1
-  #       api_keys:
-  #         - ${OPENROUTER_API_KEY}
-  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
 
+  - id: gpt-5.4
+    name: GPT-5.4
+    provider: openai
+    required_role: internal
+    provider_model_id: "gpt-5.4"
+    context_length: 1050000
+    max_output_length: 128000
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, response_format, seed, reasoning_effort]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    quantization: "none"
+    pricing:
+      prompt: "2.50"
+      completion: "15.00"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.50"
+      input_cache_writes: "0.00"
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: ${CLI_PROXY_BASE_URL}
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "gpt-5.4"
 
+  - id: gpt-5.4-mini
+    name: GPT-5.4-mini
+    provider: openai
+    required_role: internal
+    provider_model_id: "gpt-5.4-mini"
+    context_length: 1050000
+    max_output_length: 128000
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, response_format, seed, reasoning_effort]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    quantization: "none"
+    pricing:
+      prompt: "0.75"
+      completion: "6.00"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.25"
+      input_cache_writes: "0.00"
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: ${CLI_PROXY_BASE_URL}
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "gpt-5.4-mini"
 
+  - id: gpt-5.3-spark
+    name: GPT-5.3-Codex-Spark
+    provider: openai
+    required_role: internal
+    provider_model_id: "gpt-5.3-spark"
+    context_length: 120800
+    max_output_length: 8000
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, response_format, seed, reasoning_effort]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    quantization: "none"
+    pricing:
+      prompt: "5.00"
+      completion: "30.00"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.80"
+      input_cache_writes: "0.00"
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: ${CLI_PROXY_BASE_URL}
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "gpt-5.3-codex-spark"
 
-
-
+  - id: gpt-5.5
+    name: GPT-5.5
+    provider: openai
+    required_role: internal
+    provider_model_id: "gpt-5.5"
+    context_length: 1050000
+    max_output_length: 128000
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, response_format, seed, reasoning_effort]
+    input_modalities: [text, image]
+    output_modalities: [text]
+    quantization: "none"
+    pricing:
+      prompt: "5.00"
+      completion: "30.00"
+      image: "0"
+      request: "0"
+      input_cache_reads: "2.00"
+      input_cache_writes: "0.00"
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: ${CLI_PROXY_BASE_URL}
+        api_key: ${CLI_PROXY_API_KEY}
+        provider_model_id: "gpt-5.5"
 
 
   # - id: gemini-2.5-flash
@@ -612,4 +942,3 @@ models:
   #       api_keys:
   #         - ${GEMINI_API_KEY}
   #       provider_model_id: "gemini-2.5-flash"
-

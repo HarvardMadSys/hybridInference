@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -12,6 +13,9 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
+from serving.observability.tracked_tasks import _TRACKED_TASKS
+from serving.servers.auth import verify_api_key
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import completions
@@ -34,6 +38,7 @@ class TrackingAdapter(BaseAdapter):
         self._stream_usage = stream_usage
 
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        """Return a deterministic non-streaming response with usage."""
         usage = UsageInfo(
             prompt_tokens=100,
             completion_tokens=50,
@@ -47,6 +52,7 @@ class TrackingAdapter(BaseAdapter):
         )
 
     async def stream_chat_completion(self, messages: list[dict[str, Any]], **params) -> Any:
+        """Yield deterministic streaming chunks with final usage."""
         yield self.format_stream_chunk("Streamed", self.config.id)
         chunk = {
             "id": "stream-usage",
@@ -64,8 +70,15 @@ class TrackingAdapter(BaseAdapter):
         yield "data: [DONE]\n\n"
 
 
+@pytest.fixture(autouse=True)
+def disable_auth_for_cost_tracking_tests(monkeypatch):
+    """Disable auth for cost tracking tests; auth has independent coverage."""
+    monkeypatch.setattr("serving.servers.auth.is_user_auth_enabled", lambda: False)
+
+
 @pytest.fixture
 async def tracking_app(monkeypatch, mock_db_logger) -> FastAPI:
+    """Build a minimal completions app for cost logging assertions."""
     # Disable auth for cost tracking tests; auth has independent coverage.
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
@@ -98,6 +111,20 @@ async def tracking_app(monkeypatch, mock_db_logger) -> FastAPI:
         log_store=mock_log_store,
     )
 
+    async def fake_verify_api_key() -> dict[str, Any]:
+        return {
+            "user_id": "test-user",
+            "role": "admin",
+            "authenticated": True,
+            "is_admin": True,
+        }
+
+    async def fake_concurrency_slot() -> None:
+        return None
+
+    app.dependency_overrides[verify_api_key] = fake_verify_api_key
+    app.dependency_overrides[enforce_user_concurrency] = fake_concurrency_slot
+
     install_error_handlers(app)
     app.include_router(completions.router)
     yield app
@@ -105,13 +132,25 @@ async def tracking_app(monkeypatch, mock_db_logger) -> FastAPI:
 
 @pytest.fixture
 async def tracking_client(tracking_app: FastAPI):
+    """Return an ASGI client bound to the tracking test app."""
     transport = ASGITransport(app=tracking_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client, tracking_app
 
 
+async def _drain_background_logs(app: FastAPI | None = None) -> None:
+    tasks: list[asyncio.Task[Any]] = list(_TRACKED_TASKS)
+    if app is not None:
+        cl = getattr(app.state.services, "completions_logger", None)
+        if cl is not None:
+            tasks.extend(cl._background_tasks)
+    if tasks:
+        await asyncio.gather(*tasks)
+
+
 @pytest.mark.asyncio
 async def test_non_streaming_logs_pricing_and_usage(tracking_client):
+    """Assert non-streaming completions log pricing and usage."""
     client, app = tracking_client
     log_store = app.state.services.log_store
     log_store.log_request.reset_mock()
@@ -125,6 +164,7 @@ async def test_non_streaming_logs_pricing_and_usage(tracking_client):
     )
 
     assert response.status_code == 200
+    await _drain_background_logs(app)
     log_store.log_request.assert_awaited_once()
     call = log_store.log_request.await_args
     kwargs = call.kwargs
@@ -136,6 +176,7 @@ async def test_non_streaming_logs_pricing_and_usage(tracking_client):
 
 @pytest.mark.asyncio
 async def test_streaming_logs_usage(tracking_client):
+    """Assert streaming completions log usage after consumption."""
     client, app = tracking_client
     log_store = app.state.services.log_store
     log_store.log_request.reset_mock()
@@ -153,6 +194,7 @@ async def test_streaming_logs_usage(tracking_client):
         async for _line in resp.aiter_lines():
             pass
 
+    await _drain_background_logs(app)
     log_store.log_request.assert_awaited_once()
     kwargs = log_store.log_request.await_args.kwargs
     assert kwargs["usage"]["completion_tokens"] == 30

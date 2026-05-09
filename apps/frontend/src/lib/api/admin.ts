@@ -397,6 +397,12 @@ export interface AdminRecentRequestItem {
   user_name?: string | null;
   user_email?: string | null;
   user_ip?: string | null;
+  peer_ip?: string | null;
+  ip_source?: string | null;
+  x_forwarded_for?: string | null;
+  user_agent?: string | null;
+  session_id?: string | null;
+  request_surface?: string | null;
   model_id: string;
   provider: string;
   timestamp: string;
@@ -672,6 +678,7 @@ export interface ProviderQuotaUsage {
 export interface ProviderQuotaResult {
   name: string;
   display_name: string;
+  key_index: number | null;
   key_configured: boolean;
   key_masked: string | null;
   fetched_at: string | null;
@@ -843,6 +850,8 @@ export interface RuntimeSettingItem {
   value_type: string;
   default_value: unknown;
   description: string;
+  min?: number | null;
+  max?: number | null;
 }
 
 export interface ListSettingsResponse {
@@ -864,4 +873,137 @@ export async function updateRuntimeSetting(
     body: JSON.stringify({ value }),
   });
   return jsonOrThrow<RuntimeSettingItem>(resp);
+}
+
+// ========================================
+// Per-Role Daily Quota
+// ========================================
+
+export type Role = 'free' | 'pro' | 'internal' | 'admin';
+
+export interface AdminModelVisibilityItem {
+  model_id: string;
+  baseline_required_role: Role;
+  override_required_role: Role | null;
+  effective_required_role: Role;
+}
+
+export interface ListAdminModelVisibilityResponse {
+  models: AdminModelVisibilityItem[];
+}
+
+export interface RoleQuotaPreview {
+  role: Role;
+  quota: number;
+  keys_affected: number;
+  users_affected: number;
+}
+
+export interface RoleQuotaApplyResult {
+  role: Role;
+  quota: number;
+  keys_updated: number;
+}
+
+export async function previewRoleQuotaApply(role: Role): Promise<RoleQuotaPreview> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/quota/role-apply-preview?role=${encodeURIComponent(role)}`,
+  );
+  return jsonOrThrow<RoleQuotaPreview>(resp);
+}
+
+export async function applyRoleQuota(role: Role): Promise<RoleQuotaApplyResult> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/quota/role-apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role }),
+  });
+  return jsonOrThrow<RoleQuotaApplyResult>(resp);
+}
+
+export async function listModelVisibility(): Promise<ListAdminModelVisibilityResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/models/visibility');
+  return jsonOrThrow<ListAdminModelVisibilityResponse>(resp);
+}
+
+export async function updateModelVisibility(
+  modelId: string,
+  requiredRole: Role | null,
+): Promise<AdminModelVisibilityItem> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/models/${encodeURIComponent(modelId)}/visibility`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ required_role: requiredRole }),
+    },
+  );
+  return jsonOrThrow<AdminModelVisibilityItem>(resp);
+}
+
+// ========================================
+// Provider API Keys (admin-managed runtime credentials)
+// ========================================
+
+export type ProviderKeySource = 'env' | 'db';
+
+export interface ProviderApiKeyItem {
+  id: string | null;
+  provider: string;
+  key_prefix: string;
+  label: string | null;
+  source: ProviderKeySource;
+  status: string;
+  created_at: string | null;
+}
+
+export interface ListProviderApiKeysResponse {
+  provider: string | null;
+  keys: ProviderApiKeyItem[];
+}
+
+export interface AddProviderApiKeyResponse {
+  key: ProviderApiKeyItem;
+  pools_updated: number;
+}
+
+export interface DeleteProviderApiKeyResponse {
+  id: string;
+  provider: string;
+  pools_updated: number;
+}
+
+export async function listProviderKeys(provider?: string): Promise<ListProviderApiKeysResponse> {
+  const params = new URLSearchParams();
+  if (provider) params.set('provider', provider);
+  const qs = params.toString();
+  const path = qs ? `/admin/provider-keys?${qs}` : '/admin/provider-keys';
+  const resp = await fetchWithAuth(API_BASE, path);
+  return jsonOrThrow<ListProviderApiKeysResponse>(resp);
+}
+
+export async function addProviderKey(
+  provider: string,
+  apiKey: string,
+  label?: string,
+): Promise<AddProviderApiKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider,
+      api_key: apiKey,
+      ...(label ? { label } : {}),
+    }),
+  });
+  return jsonOrThrow<AddProviderApiKeyResponse>(resp);
+}
+
+export async function deleteProviderKey(id: string): Promise<DeleteProviderApiKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/provider-keys/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  return jsonOrThrow<DeleteProviderApiKeyResponse>(resp);
 }

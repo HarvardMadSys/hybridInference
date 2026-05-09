@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import re
 import time
 import uuid
 from contextlib import suppress
@@ -17,13 +18,6 @@ from routing.executor import ProviderPinError
 from routing.routers import AllCircuitsOpenError
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
-from serving.observability.metrics import (
-    API_MODEL_REQUESTS,
-    API_TOKEN_ANOMALIES,
-    API_TOKENS,
-    normalize_model_label,
-    normalize_provider_label,
-)
 from serving.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -36,6 +30,7 @@ from serving.servers.deps import (
     get_cost_tracker,
     get_log_store,
     get_model_router_registry,
+    get_model_visibility_resolver,
     get_pricing_lookup,
     get_router,
 )
@@ -46,7 +41,7 @@ from serving.servers.routers.routing_info import (
     merge_adapter_routing,
 )
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip_info
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
@@ -55,6 +50,65 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 router = APIRouter()
+_MAX_DB_ERROR_LENGTH = 4000
+_SECRET_VALUE_RE = re.compile(
+    r'(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization)"?\s*[:=]\s*)'
+    r'("?)[^"\s,}]+("?)'
+)
+_BEARER_TOKEN_RE = re.compile(r"(?i)bearer\s+[a-z0-9._~+/=-]+")
+
+
+def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
+    """Compute the per-request affinity key used by FixedRouter.
+
+    Authenticated users are keyed by their auth_key_hash; anonymous traffic
+    by their client IP. The "ip:" prefix prevents collisions with hash values.
+    """
+    if auth_key_hash:
+        return auth_key_hash
+    return f"ip:{client_ip}"
+
+
+def _redact_error_text(value: str) -> str:
+    redacted = _SECRET_VALUE_RE.sub(r"\1\2[REDACTED]\3", value)
+    return _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
+
+
+def _format_exception_for_db(exc: BaseException) -> str:
+    """Return capped, redacted operator-facing error text for api_logs.error."""
+    exc_text = str(exc)
+    upstream_body = getattr(exc, "error_body", None)
+    if upstream_body is None:
+        value = exc_text
+    else:
+        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
+        value = f"{exc_text} | upstream_body={body_text}"
+
+    value = _redact_error_text(value)
+    if len(value) > _MAX_DB_ERROR_LENGTH:
+        return value[: _MAX_DB_ERROR_LENGTH - 14] + "...[truncated]"
+    return value
+
+
+def _redact_error_text(value: str) -> str:
+    redacted = _SECRET_VALUE_RE.sub(r"\1\2[REDACTED]\3", value)
+    return _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
+
+
+def _format_exception_for_db(exc: BaseException) -> str:
+    """Return capped, redacted operator-facing error text for api_logs.error."""
+    exc_text = str(exc)
+    upstream_body = getattr(exc, "error_body", None)
+    if upstream_body is None:
+        value = exc_text
+    else:
+        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
+        value = f"{exc_text} | upstream_body={body_text}"
+
+    value = _redact_error_text(value)
+    if len(value) > _MAX_DB_ERROR_LENGTH:
+        return value[: _MAX_DB_ERROR_LENGTH - 14] + "...[truncated]"
+    return value
 
 
 @router.post(
@@ -77,6 +131,7 @@ async def chat_completions(
     router_exec=Depends(get_router),
     log_store=Depends(get_log_store),
     model_router_registry=Depends(get_model_router_registry),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
     completions_logger: CompletionsLogger = Depends(get_completions_logger),
     pricing_lookup: PricingLookup = Depends(get_pricing_lookup),
     cost_tracker: CostTracker = Depends(get_cost_tracker),
@@ -92,25 +147,9 @@ async def chat_completions(
         body = await request.json()
         payload = ChatCompletionRequest.model_validate(body)
     except Exception as e:
-        # Record 400 error for request parsing failures
-        if request.headers.get("x-probe", "").lower() != "synthetic":
-            API_MODEL_REQUESTS.labels(
-                model=normalize_model_label("unknown"),
-                provider=normalize_provider_label("router"),
-                status_code="400",
-            ).inc()
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
-
-    def record_model_request(status_code: str, provider_name: str) -> None:
-        if is_synthetic_probe:
-            return
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(model),
-            provider=normalize_provider_label(provider_name),
-            status_code=status_code,
-        ).inc()
 
     model = payload.model
     messages = [m.model_dump() for m in payload.messages]
@@ -130,13 +169,19 @@ async def chat_completions(
     is_authenticated = bool(user_ctx.get("authenticated"))
     provider = "router"
     session_id = request.headers.get("X-Session-ID")
+    ip_info = get_client_ip_info(request)
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
-        "ip": get_client_ip(request),
+        "ip": ip_info.client_ip,
+        "peer_ip": ip_info.peer_ip,
+        "ip_source": ip_info.source,
+        "x_forwarded_for": ip_info.x_forwarded_for,
+        "x_real_ip": ip_info.x_real_ip,
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
+        "surface": "openai_chat_completions",
     }
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
@@ -149,7 +194,6 @@ async def chat_completions(
 
     # Check if model has routing configured
     if model not in router_exec.routes:
-        record_model_request("404", "router")
         if log_store and not is_synthetic_probe:
             completions_logger.schedule_log(
                 request_id,
@@ -174,12 +218,16 @@ async def chat_completions(
     route = router_exec.routes[model]
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = user_ctx.get("role", "free")
+    if model_visibility_resolver is not None:
+        canonical_id = route.adapters[0][0].config.id if route.adapters else model
+        required = await model_visibility_resolver.get_effective_required_role(
+            canonical_id, required
+        )
     if not has_role(user_role, required):
         logger.info(
             "Insufficient role for model",
             extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
-        record_model_request("404", "router")
         if log_store and not is_synthetic_probe:
             completions_logger.schedule_log(
                 request_id,
@@ -238,7 +286,14 @@ async def chat_completions(
 
     from serving.utils import context as req_ctx
 
-    req_ctx.update({"auth_key_hash": user_ctx.get("auth_key_hash") or "_anon"})
+    auth_key_hash = user_ctx.get("auth_key_hash")
+    affinity_key = derive_affinity_key(auth_key_hash, ip_info.client_ip)
+    req_ctx.update(
+        {
+            "auth_key_hash": auth_key_hash or "_anon",
+            "affinity_key": affinity_key,
+        }
+    )
 
     # Provider pinning: allows the harness (or admin tooling) to force routing
     # to a specific backend.  Only honoured for admin users to prevent abuse.
@@ -277,6 +332,41 @@ async def chat_completions(
         config = getattr(adapter, "config", None)
         return getattr(config, "provider", None)
 
+    # Pre-flight: reject image content when the model does not support it.
+    # This check is placed before routing so both streaming and non-streaming
+    # paths get a clean 400 instead of silently stripping image blocks.
+    route_config = router_exec.routes.get(model)
+    model_modalities = route_config.adapters[0][0].config.input_modalities if route_config else []
+    if "image" not in (model_modalities or []):
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image_url":
+                    if log_store and not is_synthetic_probe:
+                        completions_logger.schedule_log(
+                            request_id,
+                            {
+                                "request_id": request_id,
+                                "model_id": model,
+                                "provider": "router",
+                                "prompt": messages,
+                                "response": None,
+                                "usage": None,
+                                "latency_ms": int((time.time() - start_time) * 1000),
+                                "status_code": 400,
+                                "error": f"Model '{model}' does not support image input",
+                                "params": early_params,
+                                "metadata": metadata,
+                                "pricing": None,
+                            },
+                        )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model '{model}' does not support image input",
+                    )
+
     # Pre-flight: validate pin_provider before routing.  For streaming this is
     # critical (HTTP 200 is already committed once StreamingResponse starts),
     # but we check unconditionally so non-stream also gets a clean 400.
@@ -291,7 +381,6 @@ async def chat_completions(
             and weight > 0
             for adapter, weight in route.adapters
         ):
-            record_model_request("400", "router")
             raise HTTPException(
                 status_code=400,
                 detail=f"Pinned provider '{pin_provider}' not found for model {model}",
@@ -418,10 +507,20 @@ async def chat_completions(
                                         f"Extracted usage from chunk {chunk_count}: {usage_data}"
                                     )
                                 if result.routing_info:
-                                    routing_info = result.routing_info
+                                    # Merge so the synthetic routing chunk emitted at the
+                                    # start (provider/base_url/endpoint_id) isn't overwritten
+                                    # by a later metadata-only chunk (e.g., RouteWise's
+                                    # decision_info chunk emitted just before [DONE]).
+                                    if routing_info is None:
+                                        routing_info = dict(result.routing_info)
+                                    else:
+                                        routing_info.update(result.routing_info)
                                     stream_routing = merge_adapter_routing(
-                                        stream_routing, routing_info
+                                        stream_routing, result.routing_info
                                     )
+                                    _ri_provider = routing_info.get("provider")
+                                    if _ri_provider:
+                                        req_ctx.update({"provider": _ri_provider})
                                     logger.debug(
                                         f"Extracted routing from chunk {chunk_count}: {routing_info}"
                                     )
@@ -684,6 +783,7 @@ async def chat_completions(
 
                 ctx = req_ctx.get()
                 provider_for_error = ctx.get("provider", "router") if ctx else "router"
+                stream_status_code = _status_code_from_exception(exc)
 
                 if log_store and not is_synthetic_probe:
                     completions_logger.schedule_log(
@@ -696,8 +796,8 @@ async def chat_completions(
                             "response": None,
                             "usage": None,
                             "latency_ms": int((time.time() - start_time) * 1000),
-                            "status_code": 500,
-                            "error": str(exc),
+                            "status_code": stream_status_code,
+                            "error": _format_exception_for_db(exc),
                             "params": params,
                             "metadata": metadata,
                             "ttft_ms": ttft_ms,
@@ -705,16 +805,20 @@ async def chat_completions(
                         },
                     )
 
-                user_msg = scrub_error_for_user(exc, request_id, 500)
-                error_chunk = {"error": {"message": user_msg, "type": "server_error", "code": 500}}
+                user_msg = scrub_error_for_user(exc, request_id, stream_status_code)
+                error_chunk = {
+                    "error": {
+                        "message": user_msg,
+                        "type": "server_error",
+                        "code": stream_status_code,
+                    }
+                }
                 error_msg = f"data: {json.dumps(error_chunk)}\n\n"
                 logger.error(f"Yielding error chunk: {error_msg}")
                 yield error_msg
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
 
-        # Record 200 for streaming response (HTTP layer success)
-        record_model_request("200", provider)
         response_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         if is_synthetic_probe:
             provider_header = get_single_route_provider()
@@ -752,6 +856,8 @@ async def chat_completions(
                 base_url = routing.base_url
                 # See comment above: strip upstream_cost_usd before merging into metadata JSONB.
                 metadata.update({k: v for k, v in routing_info.items() if k != "upstream_cost_usd"})  # type: ignore[arg-type]
+                if provider != "router":
+                    req_ctx.update({"provider": provider})
         else:
             # Fallback: get provider from request context when response is not a dict
             from serving.utils import context as req_ctx
@@ -832,11 +938,6 @@ async def chat_completions(
                     total_tokens_raw or (prompt_tokens + completion_tokens + reasoning_tokens)
                 )
             except Exception:
-                API_TOKEN_ANOMALIES.labels(
-                    model=normalize_model_label(model),
-                    provider=normalize_provider_label(provider),
-                    reason="non_integer",
-                ).inc()
                 logger.warning(f"Invalid token usage types for {model}/{provider}: {usage}")
                 prompt_tokens = completion_tokens = reasoning_tokens = total_tokens = 0
 
@@ -850,31 +951,7 @@ async def chat_completions(
                 and total_tokens >= prompt_tokens + completion_tokens + reasoning_tokens
             )
             if not sane:
-                API_TOKEN_ANOMALIES.labels(
-                    model=normalize_model_label(model),
-                    provider=normalize_provider_label(provider),
-                    reason="invalid_values",
-                ).inc()
                 logger.warning(f"Token usage anomaly for {model}/{provider}: {usage}")
-            else:
-                if prompt_tokens:
-                    API_TOKENS.labels(
-                        model=normalize_model_label(model),
-                        provider=normalize_provider_label(provider),
-                        direction="prompt",
-                    ).inc(prompt_tokens)
-                if completion_tokens:
-                    API_TOKENS.labels(
-                        model=normalize_model_label(model),
-                        provider=normalize_provider_label(provider),
-                        direction="completion",
-                    ).inc(completion_tokens)
-                if reasoning_tokens:
-                    API_TOKENS.labels(
-                        model=normalize_model_label(model),
-                        provider=normalize_provider_label(provider),
-                        direction="reasoning",
-                    ).inc(reasoning_tokens)
 
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
@@ -890,14 +967,11 @@ async def chat_completions(
                 success=True,
             )
 
-        # Record 200 for non-streaming response
-        record_model_request("200", provider)
         if is_synthetic_probe and provider != "router":
             http_response.headers["X-Provider"] = provider
         return response
 
     except ProviderPinError as exc:
-        record_model_request("400", "router")
         raise HTTPException(
             status_code=400,
             detail=scrub_error_for_user(exc, request_id, 400),
@@ -908,7 +982,6 @@ async def chat_completions(
         # Surface this as 503 Service Unavailable so clients can distinguish
         # "we're temporarily overloaded / all upstreams down" from a generic
         # 500 server error.
-        record_model_request("503", "router")
         raise HTTPException(
             status_code=503,
             detail=scrub_error_for_user(exc, request_id, 503),
@@ -957,15 +1030,12 @@ async def chat_completions(
                     "usage": None,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": exc_status_code,
-                    "error": str(exc),
+                    "error": _format_exception_for_db(exc),
                     "params": params,
                     "metadata": metadata,
                     "pricing": None,  # Error case - no pricing available
                 },
             )
-        # Record error status code
-        record_model_request(str(exc_status_code), provider_for_error)
-
         raise HTTPException(
             exc_status_code,
             scrub_error_for_user(exc, request_id, exc_status_code),

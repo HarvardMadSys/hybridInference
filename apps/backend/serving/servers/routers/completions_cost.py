@@ -18,11 +18,14 @@ The handler keeps a single source of truth for the raw adapter pricing dict
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    import asyncio
 
 logger = get_logger(__name__)
 
@@ -261,8 +264,9 @@ class CostTracker:
                 await self._op_store.increment_user_cost(user_id, cost)
             except Exception as exc:
                 logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
+                raise  # let tracked_task record the failure
 
-        task = asyncio.create_task(_increment())
+        task = tracked_task(_increment(), name="cost_increment")
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return enriched

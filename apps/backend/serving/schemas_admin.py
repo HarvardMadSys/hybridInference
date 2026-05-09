@@ -538,6 +538,12 @@ class AdminRecentRequestItem(BaseModel):
     user_name: str | None = None
     user_email: str | None = None
     user_ip: str | None = None
+    peer_ip: str | None = None
+    ip_source: str | None = None
+    x_forwarded_for: str | None = None
+    user_agent: str | None = None
+    session_id: str | None = None
+    request_surface: str | None = None
     model_id: str
     provider: str
     timestamp: datetime
@@ -634,6 +640,10 @@ class ProviderQuotaResult(BaseModel):
 
     name: str = Field(..., description="Lowercase identifier: chutes | zai | minimax | ollama")
     display_name: str = Field(..., description="Human-readable name")
+    key_index: int | None = Field(
+        None,
+        description="1-based key index when provider has multiple keys; None for single-key providers",
+    )
     key_configured: bool = Field(..., description="True if credentials are present in env")
     key_masked: str | None = Field(None, description="Masked key/cookie (None if not configured)")
     fetched_at: datetime | None = Field(None, description="When the quota was fetched (UTC)")
@@ -660,6 +670,8 @@ class RuntimeSettingItem(BaseModel):
     value_type: str
     default_value: Any
     description: str
+    min: float | None = None
+    max: float | None = None
 
 
 class ListSettingsResponse(BaseModel):
@@ -672,6 +684,27 @@ class UpdateSettingRequest(BaseModel):
     """Request payload for updating a runtime setting."""
 
     value: Any
+
+
+class ModelVisibilityItem(BaseModel):
+    """Current visibility requirements for a canonical model."""
+
+    model_id: str
+    baseline_required_role: str
+    override_required_role: str | None = None
+    effective_required_role: str
+
+
+class ListModelVisibilityResponse(BaseModel):
+    """Response payload for listing model visibility."""
+
+    models: list[ModelVisibilityItem]
+
+
+class UpdateModelVisibilityRequest(BaseModel):
+    """Request payload for updating a model visibility override."""
+
+    required_role: Literal["free", "pro", "internal", "admin"] | None
 
 
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
@@ -708,9 +741,11 @@ __all__ = [
     "HardDeleteUserResponse",
     "ListAPIKeysResponse",
     "ListAuditLogResponse",
+    "ListModelVisibilityResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
+    "ModelVisibilityItem",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
     "RegenerateAPIKeyResponse",
@@ -726,6 +761,7 @@ __all__ = [
     "SummaryUserItem",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
+    "UpdateModelVisibilityRequest",
     "UpdateSettingRequest",
     "UpdateUserRequest",
     "UpdateUserResponse",
@@ -913,3 +949,56 @@ class AddSignupAllowedDomainRequest(BaseModel):  # type: ignore[no-any-unimporte
     """Request body for ``POST /admin/signup-domains``."""
 
     domain: str = Field(..., min_length=1, max_length=255)
+
+
+# ---------------------------------------------------------------------------
+# Provider API keys (admin-managed runtime credentials)
+# ---------------------------------------------------------------------------
+
+
+class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]
+    """Single masked provider API key row in the admin list view."""
+
+    id: str | None = Field(
+        None,
+        description="Row id (None for env-var-sourced entries)",
+    )
+    provider: str
+    key_prefix: str
+    label: str | None = None
+    source: Literal["env", "db"]
+    status: str = "active"
+    created_at: datetime | None = None
+
+
+class ListProviderApiKeysResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``GET /admin/provider-keys``."""
+
+    provider: str | None = None
+    keys: list[ProviderApiKeyItem]
+
+
+class AddProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for ``POST /admin/provider-keys``."""
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    api_key: str = Field(..., min_length=1, max_length=4096)
+    label: str | None = Field(None, max_length=255)
+
+
+class AddProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys``."""
+
+    key: ProviderApiKeyItem
+    pools_updated: int = Field(
+        ...,
+        description="Number of in-process key pools the new key was injected into",
+    )
+
+
+class DeleteProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``DELETE /admin/provider-keys/{id}``."""
+
+    id: str
+    provider: str
+    pools_updated: int

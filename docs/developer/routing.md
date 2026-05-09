@@ -38,7 +38,7 @@ health_check: 30
 logging:
   output: output.log
 local_deployment:
-  - endpoint: ${LOCAL_BASE_URL:-http://localhost:8000}
+  - endpoint: ${LOCAL_DEPLOYMENT_URL:-http://localhost:8000}
     models:
 remote_deployment:
     models:
@@ -92,6 +92,42 @@ specs under `docs/agents/specs/`.
 ### Health Monitoring
 
 Health checks are optional and can be enabled by setting `health_check > 0` in the configuration. The system performs simple GET requests to `/health` endpoints and adjusts weights accordingly.
+
+## Session affinity
+
+`FixedRouter` keeps a per-(user, model) pin to the last-selected provider for
+five minutes (sliding TTL). Goals:
+
+- Keep one conversation on one backend so prompt caches stay warm and latency
+  stays consistent.
+- Drop the pin the moment that backend errors, so users don't get stuck on a
+  failing provider.
+
+**Affinity key:**
+- Authenticated requests: the user's `auth_key_hash`.
+- Anonymous requests: `f"ip:{client_ip}"`.
+
+**Pin lifecycle:**
+1. First request from `(key, model)` → weighted random pick → entry stored.
+2. Subsequent requests within 300 s on the same `(key, model)` reuse the same
+   endpoint and refresh the TTL.
+3. Any exception from the pinned provider drops the entry; fallback runs;
+   the next request creates a fresh pin.
+4. If the pinned endpoint is no longer in the allowed pool (weight-0 in
+   `routing.yaml` or its circuit is open), the entry is dropped and a fresh
+   weighted-random pick runs.
+5. After 300 s of inactivity the entry expires.
+
+**Scope and limits:**
+- State is in-process. Each Uvicorn worker tracks its own table. Same as
+  `key_pool.py`.
+- Affinity does not survive a restart.
+- `pin_provider` (admin override via `X-Route-Pin`) bypasses affinity.
+
+**Kill switch:** set `ROUTING_AFFINITY_ENABLED=0` to disable.
+
+**Metrics:** `routing_affinity_events_total{event,model}` with events
+`hit | miss | created | expired | dropped_error | dropped_unavailable`.
 
 ## Migration Notes
 

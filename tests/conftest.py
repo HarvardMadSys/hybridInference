@@ -28,3 +28,39 @@ def _reset_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_settings_singleton():
+    """Reset the global ``RuntimeSettings`` singleton between tests.
+
+    ``bootstrap.initialize()`` warms the singleton from the (possibly
+    mocked) operational store; without this reset, a later test calling
+    ``is_user_auth_enabled()`` reads stale Mock values from the previous
+    test and 401s on requests that should be auth-disabled.
+    """
+    import serving.config.runtime_settings as rs_mod
+
+    rs_mod._runtime_settings = None
+    yield
+    rs_mod._runtime_settings = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_dynamic_keys_registry():
+    """Clear the in-process provider-key adapter registry between tests.
+
+    ``serving.adapters.dynamic_keys`` keeps a process-global registry of
+    adapters and known providers populated during model registration.
+    Tests that call ``bootstrap.initialize()`` or otherwise build
+    adapters would otherwise leak entries between cases.
+    """
+    try:
+        from serving.adapters import dynamic_keys
+    except ImportError:
+        yield
+        return
+
+    dynamic_keys.reset()
+    yield
+    dynamic_keys.reset()
