@@ -16,9 +16,9 @@ concurrency:
 jobs:
   docker-build:
     name: Docker Build (${{ matrix.image }})
-    # Buildx requires Docker daemon access, which is not available on all
-    # self-hosted runners in the default pool.
-    runs-on: ubuntu-latest
+    # Buildx needs Docker daemon access; route these builds to the ARM64
+    # self-hosted pool that already passes docker-based jobs.
+    runs-on: [self-hosted, Linux, ARM64]
     strategy:
       fail-fast: false
       matrix:
