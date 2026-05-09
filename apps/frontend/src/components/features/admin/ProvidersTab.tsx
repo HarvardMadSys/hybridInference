@@ -5,11 +5,13 @@ import toast from 'react-hot-toast';
 import { ProviderQuotaResult, getProviderQuotas } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { PerformanceTab } from '@/components/features/admin/PerformanceTab';
+import { ProviderKeysTab } from '@/app/dashboard/admin/ProviderKeysTab';
 
-type SubTab = 'quotas' | 'performance';
+type SubTab = 'quotas' | 'keys' | 'performance';
 
 const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'quotas', label: 'Quotas' },
+  { key: 'keys', label: 'Keys' },
   { key: 'performance', label: 'Performance' },
 ];
 
@@ -186,7 +188,13 @@ export function ProvidersTab() {
         })}
       </div>
 
-      {active === 'quotas' ? <QuotasSection /> : <PerformanceTab />}
+      {active === 'quotas' ? (
+        <QuotasSection />
+      ) : active === 'keys' ? (
+        <ProviderKeysTab />
+      ) : (
+        <PerformanceTab />
+      )}
     </div>
   );
 }
