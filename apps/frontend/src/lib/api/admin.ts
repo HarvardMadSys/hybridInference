@@ -720,6 +720,8 @@ export interface ProviderStatsRow {
   prompt_tokens_avg: number | null;
   completion_tokens_avg: number | null;
   total_completion_tokens: number;
+  total_prompt_tokens: number | null;
+  total_reasoning_tokens: number | null;
 }
 
 export interface ProviderModelPair {
