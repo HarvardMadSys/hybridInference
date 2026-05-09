@@ -19,6 +19,7 @@ describe('auth schemas', () => {
       password: 'SecurePass123',
       confirmPassword: 'DifferentPass123',
       userName: 'Example User',
+      acceptTerms: true,
     });
 
     expect(result.success).toBe(false);
@@ -27,6 +28,35 @@ describe('auth schemas', () => {
         'Passwords do not match',
       );
     }
+  });
+
+  it('requires signup ToS acceptance', () => {
+    const result = signupSchema.safeParse({
+      email: 'user@example.org',
+      password: 'SecurePass123',
+      confirmPassword: 'SecurePass123',
+      userName: 'Example User',
+      acceptTerms: false,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.flatten().fieldErrors.acceptTerms).toContain(
+        'You must agree to the Terms of Service',
+      );
+    }
+  });
+
+  it('accepts signup input when ToS is agreed', () => {
+    const result = signupSchema.safeParse({
+      email: 'user@example.org',
+      password: 'SecurePass123',
+      confirmPassword: 'SecurePass123',
+      userName: 'Example User',
+      acceptTerms: true,
+    });
+
+    expect(result.success).toBe(true);
   });
 
   it('accepts valid login input', () => {

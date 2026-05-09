@@ -8,6 +8,7 @@ export interface SignupRequest {
   password: string;
   user_name: string;
   use_case?: string;
+  accepted_tos: boolean;
   turnstileToken?: string;
 }
 

@@ -142,6 +142,12 @@ async def signup(
             headers={"Retry-After": retry_after},
         )
 
+    if not body.accepted_tos:
+        raise HTTPException(
+            status_code=400,
+            detail="You must agree to the Terms of Service to create an account",
+        )
+
     if not await verify_turnstile_token(body.turnstile_token, client_ip):
         raise HTTPException(status_code=400, detail="Captcha verification failed")
 
