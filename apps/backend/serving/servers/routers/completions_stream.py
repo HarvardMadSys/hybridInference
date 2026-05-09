@@ -224,6 +224,9 @@ class StreamSession:
             get_adapter_config_for_provider: Closure from the handler that
                 resolves the adapter config for a given provider+base_url.
                 Captured so the session can reconstruct DB params.
+            request_payload: Original raw request payload, retained for
+                downstream logging and replay reconstruction; ``None`` when
+                the caller does not need to preserve it.
         """
         self._routing: RoutingInfo = routing
         self._model = model
