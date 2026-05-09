@@ -111,7 +111,12 @@ class UserOverrun(BaseModel):
     check_interval_sec: int = 300
     cooldown_sec: int = 86400
     thresholds_per_role: dict[str, float] = Field(
-        default_factory=lambda: {"free": 5.0, "pro": 50.0, "internal": 500.0}
+        default_factory=lambda: {
+            "trial": 1.0,
+            "free": 5.0,
+            "pro": 50.0,
+            "internal": 500.0,
+        }
     )
 
 

@@ -321,8 +321,8 @@ class DatabaseLogger:
                     password_hash TEXT NOT NULL,
                     user_name TEXT,
                     preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    role TEXT NOT NULL DEFAULT 'free'
-                        CHECK (role IN ('free', 'pro', 'internal', 'admin')),
+                    role TEXT NOT NULL DEFAULT 'trial'
+                        CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin')),
                     email_verified BOOLEAN DEFAULT FALSE,
                     status TEXT DEFAULT 'active'
                         CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
@@ -404,7 +404,7 @@ class DatabaseLogger:
                 ON users(created_at DESC) WHERE status = 'pending_approval'
             """)
 
-            # Add role column for permission levels (free/pro/internal/admin)
+            # Add role column for permission levels (trial/free/pro/internal/admin)
             await conn.execute("""
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS role TEXT
@@ -412,7 +412,7 @@ class DatabaseLogger:
 
             await conn.execute("""
                 ALTER TABLE users
-                ALTER COLUMN role SET DEFAULT 'free'
+                ALTER COLUMN role SET DEFAULT 'trial'
             """)
 
             updated_roles_tag = await conn.execute("""
@@ -432,10 +432,10 @@ class DatabaseLogger:
                 ALTER COLUMN role SET NOT NULL
             """)
 
-            # Migrate old 4-role hierarchy to 3-role: internal_group/developer → internal.
-            # The constraint must be dropped BEFORE the UPDATE — on an existing DB the
-            # old CHECK (role IN ('free','internal_group','developer','admin')) would
-            # reject the new 'internal' value.
+            # Migrate legacy roles and rebuild users_role_check to the current
+            # allowed set (trial, free, pro, internal, admin). The constraint
+            # must be dropped BEFORE the UPDATE — older DBs may have CHECK
+            # constraints that reject 'internal' or 'trial'.
             try:
                 async with conn.transaction():
                     await conn.execute("""
@@ -455,49 +455,19 @@ class DatabaseLogger:
                     await conn.execute("""
                         ALTER TABLE users
                         ADD CONSTRAINT users_role_check
-                        CHECK (role IN ('free', 'pro', 'internal', 'admin'))
+                        CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin'))
                     """)
             except asyncpg.PostgresError as exc:
                 invalid_role_rows = await conn.fetch("""
                     SELECT id, email, role
                     FROM users
-                    WHERE role NOT IN ('free', 'pro', 'internal', 'admin')
+                    WHERE role NOT IN ('trial', 'free', 'pro', 'internal', 'admin')
                     ORDER BY created_at DESC
                     LIMIT 10
                 """)
                 logger.error(
                     "Failed to rebuild users_role_check; transaction rolled back. "
                     "Sample invalid rows=%s error=%s",
-                    [dict(row) for row in invalid_role_rows],
-                    exc,
-                )
-                raise
-
-            # Expand the role CHECK constraint to include the "pro" tier.
-            # The old constraint allowed (free, internal, admin); the new set
-            # adds "pro" so the admin API can assign that role. The constraint
-            # must be dropped first because the new value is not in the old set.
-            try:
-                async with conn.transaction():
-                    await conn.execute("""
-                        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check
-                    """)
-                    await conn.execute("""
-                        ALTER TABLE users
-                        ADD CONSTRAINT users_role_check
-                        CHECK (role IN ('free', 'pro', 'internal', 'admin'))
-                    """)
-            except asyncpg.PostgresError as exc:
-                invalid_role_rows = await conn.fetch("""
-                    SELECT id, email, role
-                    FROM users
-                    WHERE role NOT IN ('free', 'pro', 'internal', 'admin')
-                    ORDER BY created_at DESC
-                    LIMIT 10
-                """)
-                logger.error(
-                    "Failed to expand users_role_check to include pro; "
-                    "transaction rolled back. Sample invalid rows=%s error=%s",
                     [dict(row) for row in invalid_role_rows],
                     exc,
                 )
@@ -510,7 +480,7 @@ class DatabaseLogger:
                     UPDATE users
                     SET role = 'admin'
                     WHERE lower(trim(email)) = ANY($1::text[])
-                      AND role = 'free'
+                      AND role IN ('trial', 'free')
                     """,
                     admin_emails,
                 )
