@@ -633,6 +633,16 @@ async def get_usage(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
+    # Resolve per-user concurrency cap (applies regardless of API-key state).
+    try:
+        rt = get_runtime_settings_instance()
+    except RuntimeError:
+        rt = None
+    max_concurrency = await get_user_concurrency_for_role(
+        current_user.get("role") or "free",
+        rt,
+    )
+
     # Get user's quota
     key_row = await op_store.get_active_key_by_account(current_user["user_id"])
 
@@ -646,6 +656,7 @@ async def get_usage(
                 spent_today_usd=None,
                 spent_month_usd=None,
                 remaining_today_usd=None,
+                max_concurrency=max_concurrency,
                 reset_at=_get_daily_quota_reset_at(),
                 reset_timezone="UTC",
                 contact_email=QUOTA_CONTACT_EMAIL,
@@ -705,6 +716,7 @@ async def get_usage(
             spent_today_usd=spent_today,
             spent_month_usd=spent_month,
             remaining_today_usd=remaining_today,
+            max_concurrency=max_concurrency,
             reset_at=quota_reset_at,
             reset_timezone="UTC",
             contact_email=QUOTA_CONTACT_EMAIL,
