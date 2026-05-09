@@ -523,6 +523,7 @@ async def auth_client_test_user_fixture(auth_client):
         "email": f"test_{os.urandom(4).hex()}@signuptest.dev",
         "password": "TestPass123!",
         "user_name": "Test User",
+        "accepted_tos": True,
     }
 
     response = await auth_client.post("/auth/signup", json=user_data)

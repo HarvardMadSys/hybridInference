@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import Script from 'next/script';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -220,9 +221,9 @@ export default function SignupPage() {
               />
               <span>
                 I agree to the{' '}
-                <a className="font-medium text-blue-600 hover:text-blue-700" href="/terms">
+                <Link className="font-medium text-blue-600 hover:text-blue-700" href="/terms">
                   Terms of Service
-                </a>
+                </Link>
                 .
               </span>
             </label>

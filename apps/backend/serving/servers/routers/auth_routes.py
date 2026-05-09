@@ -131,12 +131,6 @@ async def signup(
             detail="Public signup is currently disabled. Please contact administrator.",
         )
 
-    if not body.accepted_tos:
-        raise HTTPException(
-            status_code=400,
-            detail="You must agree to the Terms of Service to create an account",
-        )
-
     # Record on entry so probing with varied payloads cannot bypass the limit.
     client_ip = get_client_ip(request)
     allowed, reason = await check_and_record_signup(client_ip)
@@ -146,6 +140,12 @@ async def signup(
             status_code=429,
             detail="Too many signup attempts. Please try again later.",
             headers={"Retry-After": retry_after},
+        )
+
+    if not body.accepted_tos:
+        raise HTTPException(
+            status_code=400,
+            detail="You must agree to the Terms of Service to create an account",
         )
 
     if not await verify_turnstile_token(body.turnstile_token, client_ip):

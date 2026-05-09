@@ -200,6 +200,24 @@ class TestSignup:
             == "You must agree to the Terms of Service to create an account"
         )
 
+    @pytest.mark.asyncio
+    async def test_signup_rejects_false_tos_after_rate_limit_recording(
+        self, auth_app_client: AsyncClient
+    ):
+        signup_data = create_signup_request(accepted_tos=False)
+
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+        assert response.status_code == 400
+
+        for _ in range(4):
+            response = await auth_app_client.post("/auth/signup", json=create_signup_request())
+            assert response.status_code in (201, 409)
+
+        response = await auth_app_client.post("/auth/signup", json=create_signup_request())
+
+        assert response.status_code == 429
+        assert "Retry-After" in response.headers
+
 
 class TestSignupAbuseProtection:
     """Rate limit, captcha, and email-domain blocklist on /auth/signup."""
