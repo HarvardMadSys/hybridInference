@@ -112,7 +112,11 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
       100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000,
       2000000, 5000000,
     ];
-    return candidates.filter((t) => t >= visibleXMin && t <= visibleXMax);
+    const visible = candidates.filter((t) => t >= visibleXMin && t <= visibleXMax);
+    const MAX_TICKS = 8;
+    if (visible.length <= MAX_TICKS) return visible;
+    const stride = Math.ceil(visible.length / MAX_TICKS);
+    return visible.filter((_, i) => i % stride === 0);
   }, [visibleXMin, visibleXMax]);
   const visibleYMin = yDomain[0] === 'auto' ? dataYMin : (yDomain[0] as number);
   const visibleYMax = yDomain[1] === 'auto' ? dataYMax : (yDomain[1] as number);
@@ -178,7 +182,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
       const xMeaningful =
         xScale === 'log'
           ? x2 / Math.max(x1, 1) > 1.05
-          : x2 - x1 > Math.max(dataXMax - dataXMin, 1) * 0.05;
+          : x2 - x1 > Math.max(visibleXMax - visibleXMin, 1) * 0.05;
       if (xMeaningful) {
         setXDomain([xScale === 'log' ? Math.max(x1, 1) : x1, x2]);
       }
@@ -189,7 +193,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
       const yMeaningful =
         yScale === 'log'
           ? y2 / Math.max(y1, 1) > 1.05
-          : y2 - y1 > Math.max(dataYMax - dataYMin, 1) * 0.05;
+          : y2 - y1 > Math.max(visibleYMax - visibleYMin, 1) * 0.05;
       if (yMeaningful) {
         setYDomain([yScale === 'log' ? Math.max(y1, 1) : y1, y2]);
       }
@@ -319,7 +323,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               name="TTFT"
               width={Y_AXIS_WIDTH}
               scale={yScale}
-              domain={yDomain}
+              domain={yScale === 'log' ? [Math.max(visibleYMin, 1), visibleYMax] : yDomain}
               allowDataOverflow
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
