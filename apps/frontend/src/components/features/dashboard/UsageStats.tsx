@@ -85,6 +85,11 @@ export function UsageStats(): JSX.Element {
                   <div className="mt-1 text-sm text-blue-800">
                     Resets at {formatResetAt(quota.reset_at)}.
                   </div>
+                  {quota.max_concurrency != null && (
+                    <div className="mt-1 text-sm text-blue-800">
+                      Max concurrent requests: {quota.max_concurrency}
+                    </div>
+                  )}
                 </div>
                 <div className="max-w-md text-sm text-blue-800">
                   Need more quota? Email{' '}
