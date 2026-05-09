@@ -134,7 +134,6 @@ async def _init_pg_backend():
     log_store = PostgresLogStore(
         logger.pool,
         store_full_prompts=settings.db_store_full_content,
-        use_chunked_hash=True,
     )
 
     return logger, operational_store, log_store

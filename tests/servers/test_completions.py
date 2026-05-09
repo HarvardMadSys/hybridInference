@@ -139,6 +139,14 @@ class RoutingAwareAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+class VisibilityResolver:
+    def __init__(self, overrides: dict[str, str]):
+        self._overrides = overrides
+
+    async def get_effective_required_role(self, model_id: str, default_role: str) -> str:
+        return self._overrides.get(model_id, default_role)
+
+
 def _mk_cfg(model_id: str) -> ModelConfig:
     return ModelConfig(
         id=model_id,
@@ -231,6 +239,29 @@ async def test_model_not_found_returns_404(completions_client: AsyncClient):
     assert resp.status_code == status.HTTP_404_NOT_FOUND
     data = resp.json()
     assert "error" in data
+
+
+@pytest.mark.asyncio
+async def test_model_hidden_by_runtime_visibility_returns_404(completions_app: FastAPI):
+    completions_app.state.services.model_visibility_resolver = VisibilityResolver(
+        {"gpt-4": "admin"}
+    )
+    completions_app.dependency_overrides[verify_api_key] = lambda: {
+        "user_id": "free-user",
+        "role": "free",
+        "authenticated": True,
+        "is_admin": False,
+    }
+
+    transport = ASGITransport(app=completions_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    assert resp.status_code == status.HTTP_404_NOT_FOUND
+    assert "error" in resp.json()
 
 
 @pytest.mark.asyncio

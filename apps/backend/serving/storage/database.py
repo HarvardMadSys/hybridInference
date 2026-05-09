@@ -4,9 +4,8 @@ This module provides a simple database logger that writes API requests,
 responses, and usage metrics into PostgreSQL tables. It is intended for
 production or staging environments where PostgreSQL is available.
 
-Pure utility functions (``calculate_cost``, ``compute_prompt_hash``, etc.)
-have been moved to ``serving.storage.utils`` so they can be imported without
-pulling in asyncpg. They are re-exported here for backward compatibility.
+Pure utility functions (``calculate_cost``, etc.) have been moved to
+``serving.storage.utils`` so they can be imported without pulling in asyncpg.
 """
 
 import json
@@ -15,11 +14,7 @@ from typing import Any
 
 import asyncpg
 
-from serving.storage.utils import (
-    calculate_cost,
-    compute_prompt_hash,
-    compute_prompt_hash_chunked,
-)
+from serving.storage.utils import calculate_cost
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -48,22 +43,15 @@ class DatabaseLogger:
         self,
         db_config: dict[str, str],
         store_full_prompts: bool = True,
-        use_chunked_hash: bool = False,
     ):
         """Initialize the logger with a DSN/config mapping.
 
         Args:
             db_config: Mapping with asyncpg pool connection arguments.
-            store_full_prompts: If False, only store prompt_hash for privacy.
-                When disabled, prompt and response fields will be NULL and only
-                hashes are stored for analytics.
-            use_chunked_hash: If True, use 4-token chunked hashing instead of
-                full prompt hashing. Both methods provide equivalent privacy
-                protection but chunked hashing may enable future optimizations.
+            store_full_prompts: If False, prompt and response fields will be NULL.
         """
         self.db_config = db_config
         self.store_full_prompts = store_full_prompts
-        self.use_chunked_hash = use_chunked_hash
         # Use Any to avoid mypy issues when asyncpg types are unavailable.
         self.pool: Any | None = None
 
@@ -108,8 +96,7 @@ class DatabaseLogger:
                     -- Request/response content
                     prompt TEXT,
                     response TEXT,
-                    prompt_hash TEXT,
-                    response_hash TEXT,
+                    request_payload JSONB,
 
                     -- Additional metadata (kept for compatibility)
                     status_code INTEGER,
@@ -168,19 +155,18 @@ class DatabaseLogger:
                 WHERE error IS NOT NULL
             """)
 
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_prompt_hash
-                ON api_logs(prompt_hash)
-                WHERE prompt_hash IS NOT NULL
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_response_hash
-                ON api_logs(response_hash)
-                WHERE response_hash IS NOT NULL
-            """)
-
             # Migrations for existing databases
+            await conn.execute("DROP INDEX IF EXISTS idx_api_logs_prompt_hash")
+            await conn.execute("DROP INDEX IF EXISTS idx_api_logs_response_hash")
+            await conn.execute("""
+                ALTER TABLE api_logs
+                DROP COLUMN IF EXISTS prompt_hash
+            """)
+            await conn.execute("""
+                ALTER TABLE api_logs
+                DROP COLUMN IF EXISTS response_hash
+            """)
+
             await conn.execute("""
                 ALTER TABLE api_logs
                 ADD COLUMN IF NOT EXISTS reasoning_tokens INTEGER
@@ -194,16 +180,6 @@ class DatabaseLogger:
             await conn.execute("""
                 ALTER TABLE api_logs
                 ADD COLUMN IF NOT EXISTS ttft_ms INTEGER
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS prompt_hash TEXT
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS response_hash TEXT
             """)
 
             await conn.execute("""
@@ -224,6 +200,11 @@ class DatabaseLogger:
             await conn.execute("""
                 ALTER TABLE api_logs
                 ADD COLUMN IF NOT EXISTS upstream_cost_usd DECIMAL(12, 8)
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS request_payload JSONB
             """)
 
             # Aggregated stats table
@@ -340,8 +321,8 @@ class DatabaseLogger:
                     password_hash TEXT NOT NULL,
                     user_name TEXT,
                     preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    role TEXT NOT NULL DEFAULT 'free'
-                        CHECK (role IN ('free', 'pro', 'internal', 'admin')),
+                    role TEXT NOT NULL DEFAULT 'trial'
+                        CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin')),
                     email_verified BOOLEAN DEFAULT FALSE,
                     status TEXT DEFAULT 'active'
                         CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
@@ -423,7 +404,7 @@ class DatabaseLogger:
                 ON users(created_at DESC) WHERE status = 'pending_approval'
             """)
 
-            # Add role column for permission levels (free/pro/internal/admin)
+            # Add role column for permission levels (trial/free/pro/internal/admin)
             await conn.execute("""
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS role TEXT
@@ -431,7 +412,7 @@ class DatabaseLogger:
 
             await conn.execute("""
                 ALTER TABLE users
-                ALTER COLUMN role SET DEFAULT 'free'
+                ALTER COLUMN role SET DEFAULT 'trial'
             """)
 
             updated_roles_tag = await conn.execute("""
@@ -451,10 +432,10 @@ class DatabaseLogger:
                 ALTER COLUMN role SET NOT NULL
             """)
 
-            # Migrate old 4-role hierarchy to 3-role: internal_group/developer → internal.
-            # The constraint must be dropped BEFORE the UPDATE — on an existing DB the
-            # old CHECK (role IN ('free','internal_group','developer','admin')) would
-            # reject the new 'internal' value.
+            # Migrate legacy roles and rebuild users_role_check to the current
+            # allowed set (trial, free, pro, internal, admin). The constraint
+            # must be dropped BEFORE the UPDATE — older DBs may have CHECK
+            # constraints that reject 'internal' or 'trial'.
             try:
                 async with conn.transaction():
                     await conn.execute("""
@@ -474,49 +455,19 @@ class DatabaseLogger:
                     await conn.execute("""
                         ALTER TABLE users
                         ADD CONSTRAINT users_role_check
-                        CHECK (role IN ('free', 'pro', 'internal', 'admin'))
+                        CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin'))
                     """)
             except asyncpg.PostgresError as exc:
                 invalid_role_rows = await conn.fetch("""
                     SELECT id, email, role
                     FROM users
-                    WHERE role NOT IN ('free', 'pro', 'internal', 'admin')
+                    WHERE role NOT IN ('trial', 'free', 'pro', 'internal', 'admin')
                     ORDER BY created_at DESC
                     LIMIT 10
                 """)
                 logger.error(
                     "Failed to rebuild users_role_check; transaction rolled back. "
                     "Sample invalid rows=%s error=%s",
-                    [dict(row) for row in invalid_role_rows],
-                    exc,
-                )
-                raise
-
-            # Expand the role CHECK constraint to include the "pro" tier.
-            # The old constraint allowed (free, internal, admin); the new set
-            # adds "pro" so the admin API can assign that role. The constraint
-            # must be dropped first because the new value is not in the old set.
-            try:
-                async with conn.transaction():
-                    await conn.execute("""
-                        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check
-                    """)
-                    await conn.execute("""
-                        ALTER TABLE users
-                        ADD CONSTRAINT users_role_check
-                        CHECK (role IN ('free', 'pro', 'internal', 'admin'))
-                    """)
-            except asyncpg.PostgresError as exc:
-                invalid_role_rows = await conn.fetch("""
-                    SELECT id, email, role
-                    FROM users
-                    WHERE role NOT IN ('free', 'pro', 'internal', 'admin')
-                    ORDER BY created_at DESC
-                    LIMIT 10
-                """)
-                logger.error(
-                    "Failed to expand users_role_check to include pro; "
-                    "transaction rolled back. Sample invalid rows=%s error=%s",
                     [dict(row) for row in invalid_role_rows],
                     exc,
                 )
@@ -529,7 +480,7 @@ class DatabaseLogger:
                     UPDATE users
                     SET role = 'admin'
                     WHERE lower(trim(email)) = ANY($1::text[])
-                      AND role = 'free'
+                      AND role IN ('trial', 'free')
                     """,
                     admin_emails,
                 )
@@ -851,11 +802,10 @@ class DatabaseLogger:
         params: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         ttft_ms: int | None = None,
-        prompt_hash: str | None = None,
-        response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,
+        request_payload: dict[str, Any] | None = None,
     ) -> None:
         """Insert a single request log row.
 
@@ -872,38 +822,18 @@ class DatabaseLogger:
             params: Request parameters (temperature, max_tokens, stream, etc.).
             metadata: Additional metadata (user_id, session_id, etc.).
             ttft_ms: Time to first token in milliseconds.
-            prompt_hash: Hash of prompt for deduplication/caching (auto-computed if None).
-            response_hash: Hash of response for deduplication/caching (auto-computed if None).
             store_full_content: Override instance default for storing full prompt/response.
-                If None, uses self.store_full_prompts. Set False for privacy mode (hash only).
+                If None, uses self.store_full_prompts. Set False for privacy mode.
             pricing: Model pricing config for cost calculation (per 1M tokens).
             upstream_cost_usd: OpenRouter-reported per-request upstream cost (USD).
                 Internal accounting only — orthogonal to user-billed `cost_usd`.
                 None for non-OpenRouter routes.
+            request_payload: Raw incoming request body (dict). Stored as JSONB
+                in the ``request_payload`` column when full-content logging
+                is enabled; nulled in privacy mode.
         """
         if not self.pool:
             raise RuntimeError("DatabaseLogger not initialized")
-
-        # Auto-compute prompt_hash if not provided
-        if prompt_hash is None:
-            if self.use_chunked_hash:
-                prompt_hash = compute_prompt_hash_chunked(prompt)
-            else:
-                prompt_hash = compute_prompt_hash(prompt)
-
-        # Auto-compute response_hash if not provided
-        if response_hash is None and response is not None:
-            # Normalize response to string for hashing
-            # Use same normalization strategy as prompt for consistency
-            response_for_hash = (
-                json.dumps(response, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-                if isinstance(response, dict)
-                else str(response)
-            )
-            if self.use_chunked_hash:
-                response_hash = compute_prompt_hash_chunked(response_for_hash)
-            else:
-                response_hash = compute_prompt_hash(response_for_hash)
 
         # Privacy control: use per-request override or instance default
         should_store_full = (
@@ -920,10 +850,14 @@ class DatabaseLogger:
                 if response is not None
                 else None
             )
+            request_payload_str = (
+                json.dumps(request_payload) if request_payload is not None else None
+            )
         else:
-            # Privacy mode: only store hash, not content
+            # Privacy mode: do not persist request/response content.
             prompt_str = None
             response_str = None
+            request_payload_str = None
 
         # Calculate cost based on usage and pricing
         cost_usd = calculate_cost(usage, pricing)
@@ -937,7 +871,7 @@ class DatabaseLogger:
                     ttft_ms, latency_ms,
                     prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
                     cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response, prompt_hash, response_hash,
+                    prompt, response, request_payload,
                     status_code, error, user_id, session_id, metadata,
                     tools, upstream_cost_usd
                 )
@@ -947,9 +881,9 @@ class DatabaseLogger:
                     $9, $10,
                     $11, $12, $13, $14,
                     $15, $16, $17,
-                    $18, $19, $20, $21,
-                    $22, $23, $24, $25, $26::jsonb,
-                    $27::jsonb, $28
+                    $18, $19, $20::jsonb,
+                    $21, $22, $23, $24, $25::jsonb,
+                    $26::jsonb, $27
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -977,8 +911,7 @@ class DatabaseLogger:
                 # Content
                 prompt_str,
                 response_str,
-                prompt_hash,
-                response_hash,
+                request_payload_str,
                 # Metadata
                 status_code,
                 error,

@@ -44,10 +44,18 @@ async def _export_jsonl(pool: asyncpg.Pool, output_path: str) -> int:
     return count
 
 
-async def main(output_path: str = "api_logs_export.jsonl") -> None:
+async def main(output_path: str = "api_logs_export.jsonl") -> int:
+    db_user = os.environ.get("DB_USER")
+    db_password = os.environ.get("DB_PASSWORD", "")
+    if not db_user:
+        print(
+            "ERROR: DB_USER is not set. Load the .env file or set the environment variable.",
+            flush=True,
+        )
+        return 1
     dsn = (
-        f"postgresql://{os.environ.get('DB_USER', 'postgres')}"
-        f":{os.environ.get('DB_PASSWORD', '')}"
+        f"postgresql://{db_user}"
+        f":{db_password}"
         f"@{os.environ.get('DB_HOST', 'localhost')}"
         f":{os.environ.get('DB_PORT', '5432')}"
         f"/{os.environ.get('DB_NAME', 'freeinference_db')}"
@@ -57,8 +65,9 @@ async def main(output_path: str = "api_logs_export.jsonl") -> None:
         count = await _export_jsonl(pool, output_path)
         if count == 0:
             print("No rows found in api_logs.")
-            return
+            return 0
         print(f"Exported {count} rows to {output_path}")
+        return 0
     finally:
         await pool.close()
 
@@ -78,7 +87,9 @@ def cli() -> None:
     )
     args = parser.parse_args()
     _load_env(args.env_file)
-    asyncio.run(main(output_path=args.output))
+    ret = asyncio.run(main(output_path=args.output))
+    if ret != 0:
+        exit(ret)
 
 
 if __name__ == "__main__":

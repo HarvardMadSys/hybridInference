@@ -65,30 +65,24 @@ Available Models
    * - Model
      - Context Length
      - Best For
-   * - **GLM-5** :sup:`recommended`
-     - 200K tokens
-     - Most capable, bilingual
    * - GLM-5.1
      - 200K tokens
      - Latest GLM-5 generation
-   * - GLM-5 Turbo
+   * - **GLM-5 Turbo** :sup:`recommended`
      - 200K tokens
      - Faster GLM-5 variant
    * - GLM-4.7
      - 200K tokens
      - Long context, bilingual
-   * - **MiniMax M2.5** :sup:`new`
-     - 1M tokens
+   * - MiniMax M2.5
+     - 205K tokens
      - Ultra-long context, multimodal
    * - MiniMax M2.7
-     - 196K tokens
+     - 205K tokens
      - Large codebases
-   * - Qwen3.6 27B
-     - 65K tokens
-     - Self-hosted code generation
-   * - Qwen3.6 35B
-     - 65K tokens
-     - Self-hosted code generation
+   * - Qwen3.6 35B :sup:`fastest`
+     - 262K tokens
+     - Strong reasoning and coding intelligence
 
 See the complete :doc:`models` list for all available models.
 

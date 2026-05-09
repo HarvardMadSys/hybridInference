@@ -38,7 +38,7 @@ from serving.observability.metrics import (
 from serving.observability.rejection_log import log_rejection
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
-from serving.servers.deps import get_log_store, get_router
+from serving.servers.deps import get_log_store, get_model_visibility_resolver, get_router
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip_info
 
@@ -131,7 +131,9 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
 # --- Model resolution ------------------------------------------------------
 
 
-def _resolve(model_id: str, router_exec, user_ctx: dict | None):
+async def _resolve(
+    model_id: str, router_exec, user_ctx: dict | None, model_visibility_resolver=None
+):
     """Return (canonical_model_id, route, adapter)."""
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
@@ -139,6 +141,8 @@ def _resolve(model_id: str, router_exec, user_ctx: dict | None):
         raise HTTPException(404, f"Model '{model_id}' not found")
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = (user_ctx or {}).get("role", "free")
+    if model_visibility_resolver is not None:
+        required = await model_visibility_resolver.get_effective_required_role(canonical, required)
     if not has_role(user_role, required):
         raise HTTPException(404, f"Model '{model_id}' not found")
     if not route.adapters:
@@ -215,6 +219,7 @@ def _schedule_log_store_task(
     params: dict[str, Any],
     prompt: list[dict[str, Any]] | str | None = None,
     response: dict[str, Any] | str | None = None,
+    request_payload: dict[str, Any] | None = None,
     ttft_ms: int | None = None,
     error: str | None = None,
 ) -> None:
@@ -261,6 +266,7 @@ def _schedule_log_store_task(
                 pricing=pricing,
                 ttft_ms=ttft_ms,
                 error=error,
+                request_payload=request_payload,
             )
         except Exception:
             logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
@@ -398,6 +404,7 @@ def _log_failure(
     metadata: dict[str, Any],
     params_for_log: dict[str, Any],
     messages_for_log,
+    request_payload_for_log: dict[str, Any] | None,
     start: float,
     status_code: int,
     error_message: str,
@@ -423,6 +430,7 @@ def _log_failure(
             prompt=messages_for_log,
             response=None,
             error=error_message,
+            request_payload=request_payload_for_log,
         )
 
 
@@ -479,6 +487,7 @@ async def anthropic_messages(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     log_store=Depends(get_log_store),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
     _conc=Depends(enforce_user_concurrency),
 ):
     """Handle Anthropic Messages API requests (non-streaming)."""
@@ -499,7 +508,12 @@ async def anthropic_messages(
         return _anthropic_error(400, "Missing required field: max_tokens")
 
     try:
-        canonical, _route, adapter = _resolve(model_id, router_exec, user_ctx)
+        canonical, _route, adapter = await _resolve(
+            model_id,
+            router_exec,
+            user_ctx,
+            model_visibility_resolver,
+        )
     except HTTPException as exc:
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
@@ -515,6 +529,8 @@ async def anthropic_messages(
             )
         )
         return _anthropic_error(exc.status_code, str(exc.detail))
+
+    request_payload_for_log = copy.deepcopy(body)
 
     body["model"] = canonical
 
@@ -550,6 +566,7 @@ async def anthropic_messages(
         if k in body:
             params_for_log[k] = body[k]
     if body.get("tools"):
+        params_for_log["tools"] = request_payload_for_log["tools"]
         params_for_log["tool_count"] = len(body["tools"])
 
     is_streaming = bool(body.get("stream"))
@@ -647,6 +664,7 @@ async def anthropic_messages(
                         params=params_for_log,
                         prompt=messages_for_log,
                         response=_finalize_response_acc(response_acc),
+                        request_payload=request_payload_for_log,
                         ttft_ms=ttft_ms,
                         error=stream_error_message if stream_failed else None,
                     )
@@ -665,6 +683,7 @@ async def anthropic_messages(
             metadata=metadata,
             params_for_log=params_for_log,
             messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
             start=start,
             status_code=exc.status_code,
             error_message=error_message,
@@ -681,6 +700,7 @@ async def anthropic_messages(
             metadata=metadata,
             params_for_log=params_for_log,
             messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
             start=start,
             status_code=exc.status,
             error_message=error_message,
@@ -697,6 +717,7 @@ async def anthropic_messages(
             metadata=metadata,
             params_for_log=params_for_log,
             messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
             start=start,
             status_code=502,
             error_message=error_message,
@@ -731,5 +752,6 @@ async def anthropic_messages(
             params=params_for_log,
             prompt=messages_for_log,
             response=resp if isinstance(resp, dict) else None,
+            request_payload=request_payload_for_log,
         )
     return JSONResponse(content=resp)

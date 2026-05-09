@@ -194,6 +194,7 @@ class StreamSession:
         completions_logger: CompletionsLogger,
         pricing_lookup: PricingLookup,
         get_adapter_config_for_provider: Callable[[str, str | None], Any],
+        request_payload: Any | None = None,
     ) -> None:
         """Capture per-request state and dependencies.
 
@@ -240,6 +241,7 @@ class StreamSession:
         self._completions_logger = completions_logger
         self._pricing_lookup = pricing_lookup
         self._get_adapter_config_for_provider = get_adapter_config_for_provider
+        self._request_payload = request_payload
 
         # Streaming-loop state
         self._yielded_first_chunk = False
@@ -578,6 +580,7 @@ class StreamSession:
                     "ttft_ms": self._ttft.ttft_ms,
                     "pricing": pricing,
                     "upstream_cost_usd": self._routing.upstream_cost_usd,
+                    "request_payload": self._request_payload,
                 },
             )
 
@@ -633,6 +636,7 @@ class StreamSession:
                     "metadata": self._metadata,
                     "ttft_ms": self._ttft.ttft_ms,
                     "pricing": None,
+                    "request_payload": self._request_payload,
                 },
             )
 

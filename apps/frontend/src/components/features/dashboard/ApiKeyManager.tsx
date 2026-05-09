@@ -80,12 +80,6 @@ export function ApiKeyManager(): JSX.Element {
     }
   }
 
-  function copyToClipboard(value: string | null | undefined): void {
-    if (!value) return;
-    void navigator.clipboard.writeText(value);
-    toast.success('API Key copied to clipboard');
-  }
-
   const apiKeys = apiKeysResponse?.keys ?? [];
   const activeKeys = apiKeys.filter((key) => key.status === 'active');
   const hasActiveKey = activeKeys.length > 0;
@@ -117,14 +111,9 @@ export function ApiKeyManager(): JSX.Element {
           <p className="text-sm font-medium text-yellow-800 mb-2">
             Save this key now. It will only be shown once.
           </p>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
-              {newApiKey}
-            </code>
-            <Button onClick={() => copyToClipboard(newApiKey)} size="sm" variant="secondary">
-              Copy
-            </Button>
-          </div>
+          <code className="break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
+            {newApiKey}
+          </code>
         </div>
       )}
 
@@ -183,14 +172,6 @@ export function ApiKeyManager(): JSX.Element {
                   {formatDate(apiKey.last_used_at)}
                 </div>
                 <div className="flex gap-2 md:justify-end">
-                  <Button
-                    onClick={() => copyToClipboard(apiKey.api_key)}
-                    disabled={!apiKey.api_key || isLoading}
-                    size="sm"
-                    variant="secondary"
-                  >
-                    Copy
-                  </Button>
                   {apiKey.status === 'active' ? (
                     <Button
                       onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}

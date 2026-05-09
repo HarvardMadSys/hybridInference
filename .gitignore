@@ -209,10 +209,6 @@ openrouter_logs.db
 !.env.test
 
 
-# Docs for AI agents
-CLAUDE.md
-AGENTS.md
-
 # uv lockfile
 # uv.lock
 
@@ -338,6 +334,7 @@ storybook-static/
 
 .MEMORY/
 
-llm-prober-state.json
-server.log
 .worktrees/
+.kilo/workspaces
+api_log*.jsonl
+api_log*.jsonl.zst

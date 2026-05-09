@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Hybrid inference server, provide local deployment and offline API to openrouter"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
-license = { text = "Proprietary" }
+license = { file = "LICENSE" }
 authors = [{ name = "HarvardSys" }]
 dependencies = [
     "aiohttp>=3.8.0",
@@ -32,6 +32,7 @@ dependencies = [
     "uvloop>=0.19.0",
     "httpx>=0.28.1",
     "cryptography>=47.0.0",
+    "tiktoken>=0.3.0",
 ]
 
 [tool.setuptools]
@@ -44,8 +45,6 @@ include = [
   "serving.*",
   "routing",
   "routing.*",
-  "benchmark",
-  "benchmark.*",
   "utils",
   "utils.*",
 ]

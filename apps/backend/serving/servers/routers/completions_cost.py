@@ -18,11 +18,14 @@ The handler keeps a single source of truth for the raw adapter pricing dict
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    import asyncio
 
 logger = get_logger(__name__)
 
@@ -34,11 +37,6 @@ class PricingLookup:
     lives for the lifetime of the process. ``invalidate()`` is a future-only
     extension if hot-reload ever lands.
     """
-
-    # Sentinel marking "we tried to look up this key and got nothing" so a
-    # repeated query for an unpriced endpoint doesn't re-walk the adapter
-    # list every request.
-    _MISS: Any = object()
 
     def __init__(self, *, router: Any) -> None:
         """Construct with the active route executor.
@@ -62,17 +60,22 @@ class PricingLookup:
 
         1. Adapter-emitted dict in ``routing.extra["pricing"]`` (some
            adapters override their registered pricing per-call).
-        2. Registry walk by ``routing.endpoint_id``.
-        3. Registry walk by ``(provider, base_url)``.
+        2. Registry walk by ``routing.endpoint_id`` / ``(provider, base_url)``
+           — typed result is cached so float parsing only happens once.
         """
         embedded = self._embedded_pricing_dict(routing)
         if embedded is not None:
             return _pricing_from_dict(embedded)
 
+        key = self._cache_key(routing)
+        if key is not None and key in self._typed_cache:
+            return self._typed_cache[key]
+
         raw = self._lookup_raw_dict(routing)
-        if raw is None:
-            return None
-        return _pricing_from_dict(raw)
+        typed = _pricing_from_dict(raw) if raw is not None else None
+        if key is not None:
+            self._typed_cache[key] = typed
+        return typed
 
     def raw_dict_for_routing(self, routing: RoutingInfo) -> dict[str, str] | None:
         """Return the raw adapter pricing dict for the api_logs payload.
@@ -164,10 +167,9 @@ class PricingLookup:
 def _pricing_from_dict(raw: dict[str, Any]) -> Pricing | None:
     """Convert an adapter pricing dict to typed :class:`Pricing`.
 
-    Returns ``None`` when ``prompt`` or ``completion`` is missing or fails
-    to parse as a float — matches the defensive behavior of
-    ``serving.storage.utils.calculate_cost`` which returns ``None`` on
-    parse failure.
+    Returns ``None`` when both ``prompt`` and ``completion`` are absent, or
+    when any value fails to parse as a float. A dict with only one of the two
+    keys present is accepted (the missing key defaults to 0).
     """
     try:
         prompt = float(raw.get("prompt", "0"))
@@ -257,19 +259,14 @@ class CostTracker:
         if cost is None or cost <= 0 or self._op_store is None:
             return enriched
 
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            logger.debug(f"No event loop; dropping cost increment for {user_id}")
-            return enriched
-
         async def _increment() -> None:
             try:
                 await self._op_store.increment_user_cost(user_id, cost)
             except Exception as exc:
                 logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
+                raise  # let tracked_task record the failure
 
-        task = loop.create_task(_increment())
+        task = tracked_task(_increment(), name="cost_increment")
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return enriched

@@ -33,6 +33,7 @@ from serving.servers.deps import (
     get_cost_tracker,
     get_log_store,
     get_model_router_registry,
+    get_model_visibility_resolver,
     get_pricing_lookup,
     get_router,
 )
@@ -86,6 +87,7 @@ async def chat_completions(
     router_exec=Depends(get_router),
     log_store=Depends(get_log_store),
     model_router_registry=Depends(get_model_router_registry),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
     completions_logger: CompletionsLogger = Depends(get_completions_logger),
     pricing_lookup: PricingLookup = Depends(get_pricing_lookup),
     cost_tracker: CostTracker = Depends(get_cost_tracker),
@@ -175,6 +177,7 @@ async def chat_completions(
                     "params": early_params,
                     "metadata": metadata,
                     "pricing": None,
+                    "request_payload": body,
                 },
             )
         raise HTTPException(404, f"Model '{model}' not found")
@@ -183,6 +186,11 @@ async def chat_completions(
     route = router_exec.routes[model]
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = user_ctx.get("role", "free")
+    if model_visibility_resolver is not None:
+        canonical_id = route.adapters[0][0].config.id if route.adapters else model
+        required = await model_visibility_resolver.get_effective_required_role(
+            canonical_id, required
+        )
     if not has_role(user_role, required):
         logger.info(
             "Insufficient role for model",
@@ -205,6 +213,7 @@ async def chat_completions(
                     "params": early_params,
                     "metadata": metadata,
                     "pricing": None,
+                    "request_payload": body,
                 },
             )
         raise HTTPException(404, f"Model '{model}' not found")
@@ -322,6 +331,7 @@ async def chat_completions(
                                 "params": early_params,
                                 "metadata": metadata,
                                 "pricing": None,
+                                "request_payload": body,
                             },
                         )
                     raise HTTPException(
@@ -381,6 +391,7 @@ async def chat_completions(
             completions_logger=completions_logger,
             pricing_lookup=pricing_lookup,
             get_adapter_config_for_provider=get_adapter_config_for_provider,
+            request_payload=body,
         )
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
@@ -478,6 +489,7 @@ async def chat_completions(
                     "metadata": metadata,
                     "pricing": pricing,
                     "upstream_cost_usd": routing.upstream_cost_usd,
+                    "request_payload": body,
                 },
             )
             _background_tasks.clear()
@@ -626,6 +638,7 @@ async def chat_completions(
                     "params": params,
                     "metadata": metadata,
                     "pricing": None,  # Error case - no pricing available
+                    "request_payload": body,
                 },
             )
         # Record error status code

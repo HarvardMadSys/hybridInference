@@ -61,6 +61,20 @@ class LatencyRule(BaseModel):
     overrides: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
+class TrackedTaskFailureRateConfig(BaseModel):
+    """Config for TrackedTaskFailureRateRule.
+
+    Fires when per-task-name failure rate over ``window_sec`` exceeds
+    ``threshold_pct`` and at least ``min_samples`` completions are observed.
+    """
+
+    enabled: bool = True
+    window_sec: int = 300
+    threshold_pct: float = 5.0
+    min_samples: int = 50
+    cooldown_sec: int = 1800
+
+
 class Rules(BaseModel):
     """Container for log-stream rules."""
 
@@ -70,6 +84,9 @@ class Rules(BaseModel):
     auth_failure_spike: CountRule = Field(default_factory=CountRule)
     concurrency_exhausted: CountRule = Field(
         default_factory=lambda: CountRule(window_sec=300, threshold_count=100, cooldown_sec=1800)
+    )
+    tracked_task_failure_rate: TrackedTaskFailureRateConfig = Field(
+        default_factory=TrackedTaskFailureRateConfig
     )
 
 
@@ -94,7 +111,12 @@ class UserOverrun(BaseModel):
     check_interval_sec: int = 300
     cooldown_sec: int = 86400
     thresholds_per_role: dict[str, float] = Field(
-        default_factory=lambda: {"free": 5.0, "pro": 50.0, "internal": 500.0}
+        default_factory=lambda: {
+            "trial": 1.0,
+            "free": 5.0,
+            "pro": 50.0,
+            "internal": 500.0,
+        }
     )
 
 

@@ -689,6 +689,27 @@ class OperationalStore(ABC):
     async def list_settings(self) -> list[Row]:
         """Return all site_settings rows."""
 
+    @abstractmethod
+    async def get_model_visibility_override(self, model_id: str) -> Row | None:
+        """Fetch a single model visibility override row by model_id."""
+
+    @abstractmethod
+    async def set_model_visibility_override(
+        self,
+        model_id: str,
+        required_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model visibility override row."""
+
+    @abstractmethod
+    async def delete_model_visibility_override(self, model_id: str) -> bool:
+        """Delete a model visibility override row. Returns True if removed."""
+
+    @abstractmethod
+    async def list_model_visibility_overrides(self) -> list[Row]:
+        """Return all model visibility override rows ordered by model_id."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod
@@ -793,11 +814,10 @@ class LogStore(ABC):
         params: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         ttft_ms: int | None = None,
-        prompt_hash: str | None = None,
-        response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,
+        request_payload: dict[str, Any] | None = None,
     ) -> None:
         """Insert a single request log row. Idempotent (ON CONFLICT DO NOTHING)."""
 
