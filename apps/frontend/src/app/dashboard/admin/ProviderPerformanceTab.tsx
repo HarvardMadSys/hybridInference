@@ -66,6 +66,7 @@ const CHART_MARGIN_RIGHT = 12;
 const CHART_MARGIN_TOP = 8;
 const CHART_MARGIN_BOTTOM = 24;
 const X_AXIS_HEIGHT = 30;
+const THROUGHPUT_Y_MAX = 280;
 
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
@@ -443,7 +444,12 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt2} />
+                <YAxis
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={fmt2}
+                  domain={[0, THROUGHPUT_Y_MAX]}
+                  allowDataOverflow
+                />
                 <Tooltip formatter={(v) => fmt2(v)} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="thru_avg" stroke="#10b981" dot={false} name="avg" />
