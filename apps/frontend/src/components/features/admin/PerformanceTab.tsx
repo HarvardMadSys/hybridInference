@@ -29,17 +29,6 @@ function formatThroughput(n: number): string {
   return `${n.toFixed(1)} tok/s`;
 }
 
-function formatBucketEdge(value: number, kind: 'tokens' | 'ms' | 'tps'): string {
-  const formatK = (v: number): string => `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k`;
-  if (kind === 'tokens') {
-    return value >= 1000 ? formatK(value) : value.toLocaleString();
-  }
-  if (kind === 'tps') {
-    return formatThroughput(value);
-  }
-  return value >= 1000 ? `${formatK(value)}s` : `${value}ms`;
-}
-
 function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWindow }) {
   const rows: Array<{
     title: string;
@@ -73,75 +62,26 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
             <th className="py-1 text-right">p50</th>
             <th className="py-1 text-right">p95</th>
             <th className="py-1 text-right">p99</th>
-            <th className="py-1 text-right">Dist</th>
           </tr>
         </thead>
         <tbody className="[&>tr+tr>td]:border-t [&>tr+tr>td]:border-gray-100">
-          {rows.map((row) => {
-            const maxBucket = Math.max(...row.dist.histogram.map((b) => b.count), 1);
-            return (
-              <tr key={row.title}>
-                <td className="py-1.5 text-[11px] text-gray-600">{row.title}</td>
-                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                  {row.dist.count.toLocaleString()}
-                </td>
-                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                  {formatValue(row.dist.p50, row.kind)}
-                </td>
-                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                  {formatValue(row.dist.p95, row.kind)}
-                </td>
-                <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
-                  {formatValue(row.dist.p99, row.kind)}
-                </td>
-                <td className="py-1.5 text-right">
-                  {(() => {
-                    const peakIdx = row.dist.histogram.reduce(
-                      (best, b, i, arr) => (b.count > arr[best].count ? i : best),
-                      0,
-                    );
-                    const peak = row.dist.histogram[peakIdx];
-                    const peakLower = peak ? formatBucketEdge(peak.lower_bound, row.kind) : '';
-                    const peakUpper =
-                      peak == null
-                        ? ''
-                        : peak.upper_bound == null
-                          ? '∞'
-                          : formatBucketEdge(peak.upper_bound, row.kind);
-                    const srSummary =
-                      peak && peak.count > 0
-                        ? `Distribution peak [${peakLower}, ${peakUpper}) with ${peak.count.toLocaleString()} samples across ${row.dist.histogram.length} buckets`
-                        : 'Distribution: no samples';
-                    return (
-                      <>
-                        <span className="sr-only">{srSummary}</span>
-                        <div aria-hidden="true" className="ml-auto flex h-5 w-20 items-end gap-px">
-                          {row.dist.histogram.map((b, idx) => {
-                            const height = b.count === 0 ? 2 : (b.count / maxBucket) * 100;
-                            const upperLabel =
-                              b.upper_bound == null
-                                ? '∞'
-                                : formatBucketEdge(b.upper_bound, row.kind);
-                            const lowerLabel = formatBucketEdge(b.lower_bound, row.kind);
-                            return (
-                              <div
-                                key={`${idx}-${b.lower_bound}`}
-                                className={`min-w-0 flex-1 rounded-t-[1px] ${
-                                  b.count === 0 ? 'bg-gray-200' : 'bg-gray-700'
-                                }`}
-                                style={{ height: `${height}%` }}
-                                title={`[${lowerLabel}, ${upperLabel}): ${b.count.toLocaleString()}`}
-                              />
-                            );
-                          })}
-                        </div>
-                      </>
-                    );
-                  })()}
-                </td>
-              </tr>
-            );
-          })}
+          {rows.map((row) => (
+            <tr key={row.title}>
+              <td className="py-1.5 text-[11px] text-gray-600">{row.title}</td>
+              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                {row.dist.count.toLocaleString()}
+              </td>
+              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                {formatValue(row.dist.p50, row.kind)}
+              </td>
+              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                {formatValue(row.dist.p95, row.kind)}
+              </td>
+              <td className="py-1.5 text-right text-[11px] tabular-nums text-gray-900 font-medium">
+                {formatValue(row.dist.p99, row.kind)}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
