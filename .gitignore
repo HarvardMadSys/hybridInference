@@ -336,3 +336,4 @@ storybook-static/
 
 .worktrees/
 .kilo/workspaces
+api_log*.jsonl
