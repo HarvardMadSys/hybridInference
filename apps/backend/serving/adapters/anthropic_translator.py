@@ -365,9 +365,7 @@ class OpenAIToAnthropicStreamTranslator:
         if "cache_read_input_tokens" in self._usage:
             delta_usage["cache_read_input_tokens"] = self._usage["cache_read_input_tokens"]
         if "cache_creation_input_tokens" in self._usage:
-            delta_usage["cache_creation_input_tokens"] = self._usage[
-                "cache_creation_input_tokens"
-            ]
+            delta_usage["cache_creation_input_tokens"] = self._usage["cache_creation_input_tokens"]
         yield self._sse(
             "message_delta",
             {
