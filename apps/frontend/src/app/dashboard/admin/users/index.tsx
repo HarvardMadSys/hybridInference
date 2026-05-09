@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import toast from 'react-hot-toast';
 import { getErrorMessage } from '@/lib/utils/errors';
 import {
   approveUser,
@@ -25,19 +26,7 @@ import type { SummaryCardId } from './SummaryCards';
 
 const DENSITY_KEY = 'admin.users.density';
 
-export interface UsersTabProps {
-  setError: (msg: string | null) => void;
-  setToast: (msg: string | null) => void;
-  onLoadingChange?: (loading: boolean) => void;
-  refreshNonce?: number;
-}
-
-export default function UsersTab({
-  setError,
-  setToast,
-  onLoadingChange,
-  refreshNonce,
-}: UsersTabProps) {
+export default function UsersTab() {
   // Filter state — initialized from URL on mount so reload + shared links
   // preserve filters. `applyFilterState` (below) keeps state and URL in sync.
   const router = useRouter();
@@ -82,28 +71,12 @@ export default function UsersTab({
   // Data
   const usersQuery = useUsers(filterState);
 
-  // Notify parent of loading state
-  useEffect(() => {
-    onLoadingChange?.(usersQuery.isLoading);
-  }, [usersQuery.isLoading, onLoadingChange]);
-
-  // Refetch when refreshNonce changes
-  const prevNonce = useRef(refreshNonce);
-  useEffect(() => {
-    if (refreshNonce !== undefined && refreshNonce !== prevNonce.current) {
-      prevNonce.current = refreshNonce;
-      usersQuery.refetch();
-    }
-  }, [refreshNonce, usersQuery]);
-
-  // Surface query errors to parent's banner
+  // Surface query errors via toast (non-fatal — table also shows inline error)
   useEffect(() => {
     if (usersQuery.error) {
-      setError(getErrorMessage(usersQuery.error));
-    } else if (usersQuery.isSuccess) {
-      setError(null);
+      toast.error(getErrorMessage(usersQuery.error));
     }
-  }, [usersQuery.error, usersQuery.isSuccess, setError]);
+  }, [usersQuery.error]);
 
   const users = usersQuery.data?.users ?? [];
 
@@ -137,68 +110,68 @@ export default function UsersTab({
       try {
         const user = users.find((u) => u.id === id);
         await approveUser(id);
-        setToast(`Approved ${user?.email ?? id}`);
+        toast.success(`Approved ${user?.email ?? id}`);
         usersQuery.refetch();
       } catch (e) {
-        setError(getErrorMessage(e));
+        toast.error(getErrorMessage(e));
       }
     },
     onReject: async (id: string, reason: string) => {
       try {
         const user = users.find((u) => u.id === id);
         await rejectUser(id, reason);
-        setToast(`Rejected ${user?.email ?? id}`);
+        toast.success(`Rejected ${user?.email ?? id}`);
         usersQuery.refetch();
       } catch (e) {
-        setError(getErrorMessage(e));
+        toast.error(getErrorMessage(e));
       }
     },
     onUpdate: async (id: string, patch: Record<string, unknown>) => {
       try {
         await updateUser(id, patch);
-        setToast('Saved');
+        toast.success('Saved');
         usersQuery.refetch();
       } catch (e) {
-        setError(getErrorMessage(e));
+        toast.error(getErrorMessage(e));
       }
     },
     onSuspend: async (id: string) => {
       try {
         await updateUser(id, { status: 'suspended' });
-        setToast('Suspended');
+        toast.success('Suspended');
         usersQuery.refetch();
       } catch (e) {
-        setError(getErrorMessage(e));
+        toast.error(getErrorMessage(e));
       }
     },
     onResume: async (id: string) => {
       try {
         const user = users.find((u) => u.id === id);
         await resumeUser(id);
-        setToast(`Resumed ${user?.email ?? id}`);
+        toast.success(`Resumed ${user?.email ?? id}`);
         usersQuery.refetch();
       } catch (e) {
-        setError(getErrorMessage(e));
+        toast.error(getErrorMessage(e));
       }
     },
     onDelete: async (id: string, reason: string) => {
       try {
         const user = users.find((u) => u.id === id);
         await deleteUser(id, reason);
-        setToast(`Deleted ${user?.email ?? id}`);
+        toast.success(`Deleted ${user?.email ?? id}`);
         usersQuery.refetch();
       } catch (e) {
-        setError(getErrorMessage(e));
+        toast.error(getErrorMessage(e));
       }
     },
     onHardDelete: async (id: string, reason: string) => {
       try {
         const user = users.find((u) => u.id === id);
         await hardDeleteUser(id, reason || undefined);
-        setToast(`Permanently deleted ${user?.email ?? id}`);
+        toast.success(`Permanently deleted ${user?.email ?? id}`);
         usersQuery.refetch();
       } catch (e) {
-        setError(getErrorMessage(e));
+        toast.error(getErrorMessage(e));
       }
     },
     onRegenerateKey: async (id: string) => {
@@ -207,7 +180,7 @@ export default function UsersTab({
         setNewKey(r.api_key);
         usersQuery.refetch();
       } catch (e) {
-        setError(getErrorMessage(e));
+        toast.error(getErrorMessage(e));
       }
     },
   };
