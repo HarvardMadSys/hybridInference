@@ -96,6 +96,7 @@ class DatabaseLogger:
                     -- Request/response content
                     prompt TEXT,
                     response TEXT,
+                    request_payload JSONB,
 
                     -- Additional metadata (kept for compatibility)
                     status_code INTEGER,
@@ -199,6 +200,11 @@ class DatabaseLogger:
             await conn.execute("""
                 ALTER TABLE api_logs
                 ADD COLUMN IF NOT EXISTS upstream_cost_usd DECIMAL(12, 8)
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS request_payload JSONB
             """)
 
             # Aggregated stats table
@@ -829,6 +835,7 @@ class DatabaseLogger:
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,
+        request_payload: dict[str, Any] | None = None,
     ) -> None:
         """Insert a single request log row.
 
@@ -851,6 +858,9 @@ class DatabaseLogger:
             upstream_cost_usd: OpenRouter-reported per-request upstream cost (USD).
                 Internal accounting only — orthogonal to user-billed `cost_usd`.
                 None for non-OpenRouter routes.
+            request_payload: Raw incoming request body (dict). Stored as JSONB
+                in the ``request_payload`` column when full-content logging
+                is enabled; nulled in privacy mode.
         """
         if not self.pool:
             raise RuntimeError("DatabaseLogger not initialized")
@@ -870,10 +880,14 @@ class DatabaseLogger:
                 if response is not None
                 else None
             )
+            request_payload_str = (
+                json.dumps(request_payload) if request_payload is not None else None
+            )
         else:
             # Privacy mode: do not persist request/response content.
             prompt_str = None
             response_str = None
+            request_payload_str = None
 
         # Calculate cost based on usage and pricing
         cost_usd = calculate_cost(usage, pricing)
@@ -887,7 +901,7 @@ class DatabaseLogger:
                     ttft_ms, latency_ms,
                     prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
                     cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response,
+                    prompt, response, request_payload,
                     status_code, error, user_id, session_id, metadata,
                     tools, upstream_cost_usd
                 )
@@ -897,9 +911,9 @@ class DatabaseLogger:
                     $9, $10,
                     $11, $12, $13, $14,
                     $15, $16, $17,
-                    $18, $19,
-                    $20, $21, $22, $23, $24::jsonb,
-                    $25::jsonb, $26
+                    $18, $19, $20::jsonb,
+                    $21, $22, $23, $24, $25::jsonb,
+                    $26::jsonb, $27
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -927,6 +941,7 @@ class DatabaseLogger:
                 # Content
                 prompt_str,
                 response_str,
+                request_payload_str,
                 # Metadata
                 status_code,
                 error,

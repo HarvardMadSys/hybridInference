@@ -148,7 +148,6 @@ async def chat_completions(
         payload = ChatCompletionRequest.model_validate(body)
     except Exception as e:
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
-
     is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
 
     model = payload.model
@@ -210,6 +209,7 @@ async def chat_completions(
                     "params": early_params,
                     "metadata": metadata,
                     "pricing": None,
+                    "request_payload": body,
                 },
             )
         raise HTTPException(404, f"Model '{model}' not found")
@@ -244,6 +244,7 @@ async def chat_completions(
                     "params": early_params,
                     "metadata": metadata,
                     "pricing": None,
+                    "request_payload": body,
                 },
             )
         raise HTTPException(404, f"Model '{model}' not found")
@@ -360,6 +361,7 @@ async def chat_completions(
                                 "params": early_params,
                                 "metadata": metadata,
                                 "pricing": None,
+                                "request_payload": body,
                             },
                         )
                     raise HTTPException(
@@ -742,6 +744,7 @@ async def chat_completions(
                             "ttft_ms": ttft_ms,
                             "pricing": pricing,
                             "upstream_cost_usd": stream_routing.upstream_cost_usd,
+                            "request_payload": body,
                         },
                     )
 
@@ -802,6 +805,7 @@ async def chat_completions(
                             "metadata": metadata,
                             "ttft_ms": ttft_ms,
                             "pricing": None,  # Error case - no pricing available
+                            "request_payload": body,
                         },
                     )
 
@@ -917,6 +921,7 @@ async def chat_completions(
                     "metadata": metadata,
                     "pricing": pricing,
                     "upstream_cost_usd": routing.upstream_cost_usd,
+                    "request_payload": body,
                 },
             )
 
@@ -1034,6 +1039,7 @@ async def chat_completions(
                     "params": params,
                     "metadata": metadata,
                     "pricing": None,  # Error case - no pricing available
+                    "request_payload": body,
                 },
             )
         raise HTTPException(
