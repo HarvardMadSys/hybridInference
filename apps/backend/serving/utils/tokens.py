@@ -17,7 +17,6 @@ def _get_tiktoken_encoding():
     Returns:
         tiktoken.Encoding object or None if tiktoken is not available.
     """
-
     return tiktoken.get_encoding("cl100k_base")
 
 
