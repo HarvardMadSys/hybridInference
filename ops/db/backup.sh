@@ -244,7 +244,7 @@ upload_to_s3() {
         log_info "Uploading ${basename} ..."
         if aws s3 cp "$file" "$s3_key" --quiet; then
             log_success "Uploaded: ${s3_key}"
-            ((upload_count++))
+            upload_count=$((upload_count + 1))
         else
             log_error "Failed to upload: ${basename}"
             upload_failed=true
@@ -305,7 +305,7 @@ compute_keep_set() {
     for d in "${dates[@]}"; do
         if [[ $daily_count -lt $KEEP_DAILY ]]; then
             keep_set["$d"]=1
-            ((daily_count++))
+            daily_count=$((daily_count + 1))
         fi
     done
 
@@ -320,7 +320,7 @@ compute_keep_set() {
         if [[ -z "${seen_weeks[$iso_week]:-}" ]]; then
             seen_weeks["$iso_week"]=1
             keep_set["$d"]=1
-            ((weekly_count++))
+            weekly_count=$((weekly_count + 1))
             [[ $weekly_count -ge $KEEP_WEEKLY ]] && break
         fi
     done
@@ -334,7 +334,7 @@ compute_keep_set() {
         if [[ -z "${seen_months[$month]:-}" ]]; then
             seen_months["$month"]=1
             keep_set["$d"]=1
-            ((monthly_count++))
+            monthly_count=$((monthly_count + 1))
             [[ $monthly_count -ge $KEEP_MONTHLY ]] && break
         fi
     done
@@ -396,7 +396,7 @@ cleanup_old_s3_backups() {
             for filename in ${file_by_date[$d]}; do
                 log_info "Deleting S3 backup: ${filename} (date: ${d})"
                 if aws s3 rm "${S3_BUCKET}/${filename}" --quiet; then
-                    ((deleted_count++))
+                    deleted_count=$((deleted_count + 1))
                 fi
             done
         fi
@@ -410,7 +410,7 @@ cleanup_old_s3_backups() {
 
     # Show what's kept
     local kept_count=0
-    for _ in "${!keep_dates[@]}"; do ((kept_count++)); done
+    for _ in "${!keep_dates[@]}"; do kept_count=$((kept_count + 1)); done
     log_info "Keeping ${kept_count} S3 backup date(s)"
 }
 
@@ -468,7 +468,7 @@ cleanup_old_backups() {
             for dir in ${dir_by_date[$d]}; do
                 log_info "Deleting local backup: ${dir} (date: ${d})"
                 rm -rf "$dir"
-                ((deleted_count++))
+                deleted_count=$((deleted_count + 1))
             done
         fi
     done
