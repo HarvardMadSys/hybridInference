@@ -842,7 +842,7 @@ export function RequestsTab() {
                     User
                   </th>
                   <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
-                    IP
+                    User agent
                   </th>
                   <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                     Status
@@ -921,8 +921,17 @@ export function RequestsTab() {
                             <span className="text-gray-300">—</span>
                           )}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2.5 text-[12px] font-mono text-gray-500">
-                          {req.user_ip ?? <span className="text-gray-300">—</span>}
+                        <td className="px-3 py-2.5 text-[12px] text-gray-500">
+                          {req.user_agent ? (
+                            <span
+                              className="block max-w-[220px] truncate"
+                              title={req.user_agent}
+                            >
+                              {req.user_agent}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-[12px]">
                           {req.status_code != null ? (
