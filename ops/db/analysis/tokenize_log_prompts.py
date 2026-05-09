@@ -6,13 +6,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 
 from transformers import AutoTokenizer
 
 DEFAULT_TOKENIZER = "zai-org/GLM-5.1"
+DEFAULT_WORKERS = min(4, os.cpu_count() or 1)
+_PROCESS_TOKENIZER: ChatTokenizer | None = None
 
 
 def _stable_json(value: Any) -> str:
@@ -216,15 +220,17 @@ def _write_converted_rows(
     input_path: Path,
     output: TextIO,
     *,
-    tokenizer: ChatTokenizer,
+    tokenizer_name_or_path: str,
+    trust_remote_code: bool,
     add_generation_prompt: bool,
     include_token_ids: bool,
     include_text: bool,
     id_filter: set[int] | None,
     hash_n: int | None,
-) -> tuple[int, int]:
-    converted = 0
+    workers: int,
+) -> tuple[list[dict[str, Any]], int]:
     skipped = 0
+    records: list[tuple[int, dict[str, Any]]] = []
     with input_path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             text = line.strip()
@@ -245,7 +251,12 @@ def _write_converted_rows(
                 continue
             if id_filter is not None and record.get("id") not in id_filter:
                 continue
-            row = convert_record(
+            records.append((line_number, record))
+
+    if workers == 1 or len(records) <= 1:
+        tokenizer = load_tokenizer(tokenizer_name_or_path, trust_remote_code=trust_remote_code)
+        rows = [
+            convert_record(
                 record,
                 tokenizer=tokenizer,
                 line_number=line_number,
@@ -254,10 +265,100 @@ def _write_converted_rows(
                 include_text=include_text,
                 hash_n=hash_n,
             )
-            output.write(json.dumps(row, ensure_ascii=False))
-            output.write("\n")
-            converted += 1
-    return converted, skipped
+            for line_number, record in records
+        ]
+    else:
+        tasks = [
+            (
+                line_number,
+                record,
+                add_generation_prompt,
+                include_token_ids,
+                include_text,
+                hash_n,
+            )
+            for line_number, record in records
+        ]
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_process_tokenizer,
+            initargs=(tokenizer_name_or_path, trust_remote_code),
+        ) as executor:
+            rows = list(executor.map(_convert_record_in_process, tasks))
+
+    for row in rows:
+        output.write(json.dumps(row, ensure_ascii=False))
+        output.write("\n")
+
+    return rows, skipped
+
+
+def prompt_delta_stats(rows: list[dict[str, Any]]) -> dict[str, int | float] | None:
+    """Return summary stats for rows with numeric prompt_tokens_delta values."""
+    deltas = [
+        int(row["prompt_tokens_delta"])
+        for row in rows
+        if isinstance(row.get("prompt_tokens_delta"), int)
+    ]
+    if not deltas:
+        return None
+    ordered = sorted(deltas)
+    return {
+        "count": len(ordered),
+        "min": ordered[0],
+        "p50": _percentile(ordered, 0.50),
+        "p90": _percentile(ordered, 0.90),
+        "p95": _percentile(ordered, 0.95),
+        "p99": _percentile(ordered, 0.99),
+        "max": ordered[-1],
+        "mean": sum(ordered) / len(ordered),
+    }
+
+
+def _percentile(ordered_values: list[int], percentile: float) -> int:
+    index = round((len(ordered_values) - 1) * percentile)
+    return ordered_values[index]
+
+
+def _print_prompt_delta_stats(rows: list[dict[str, Any]]) -> None:
+    stats = prompt_delta_stats(rows)
+    if stats is None:
+        print("prompt_tokens_delta stats: no numeric deltas", file=sys.stderr)
+        return
+    print(
+        "prompt_tokens_delta stats: "
+        f"count={stats['count']} "
+        f"min={stats['min']} "
+        f"p50={stats['p50']} "
+        f"p90={stats['p90']} "
+        f"p95={stats['p95']} "
+        f"p99={stats['p99']} "
+        f"max={stats['max']} "
+        f"mean={stats['mean']:.2f}",
+        file=sys.stderr,
+    )
+
+
+def _init_process_tokenizer(tokenizer_name_or_path: str, trust_remote_code: bool) -> None:
+    global _PROCESS_TOKENIZER
+    _PROCESS_TOKENIZER = load_tokenizer(tokenizer_name_or_path, trust_remote_code=trust_remote_code)
+
+
+def _convert_record_in_process(
+    task: tuple[int, dict[str, Any], bool, bool, bool, int | None],
+) -> dict[str, Any]:
+    line_number, record, add_generation_prompt, include_token_ids, include_text, hash_n = task
+    if _PROCESS_TOKENIZER is None:
+        raise RuntimeError("process tokenizer is not initialized")
+    return convert_record(
+        record,
+        tokenizer=_PROCESS_TOKENIZER,
+        line_number=line_number,
+        add_generation_prompt=add_generation_prompt,
+        include_token_ids=include_token_ids,
+        include_text=include_text,
+        hash_n=hash_n,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -306,6 +407,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Replace each N token IDs in prompt_token_ids with a chained SHA-256 hash",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f"Number of log rows to tokenize in parallel (default: {DEFAULT_WORKERS})",
+    )
     parser.add_argument("--id", type=int, nargs="*", help="Only convert records with these IDs")
     return parser
 
@@ -327,40 +434,47 @@ def main(argv: list[str] | None = None) -> int:
     if args.hash_n is not None and args.hash_n <= 0:
         print("ERROR: --hash-n must be > 0", file=sys.stderr)
         return 1
+    if args.workers <= 0:
+        print("ERROR: --workers must be > 0", file=sys.stderr)
+        return 1
 
     id_filter = set(args.id) if args.id is not None else None
     try:
-        tokenizer = load_tokenizer(args.tokenizer, trust_remote_code=args.trust_remote_code)
         if args.output is None:
-            converted, skipped = _write_converted_rows(
+            rows, skipped = _write_converted_rows(
                 args.input,
                 sys.stdout,
-                tokenizer=tokenizer,
+                tokenizer_name_or_path=args.tokenizer,
+                trust_remote_code=args.trust_remote_code,
                 add_generation_prompt=not args.no_add_generation_prompt,
                 include_token_ids=not args.count_only,
                 include_text=args.include_text,
                 id_filter=id_filter,
                 hash_n=args.hash_n,
+                workers=args.workers,
             )
         else:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("w", encoding="utf-8") as output:
-                converted, skipped = _write_converted_rows(
+                rows, skipped = _write_converted_rows(
                     args.input,
                     output,
-                    tokenizer=tokenizer,
+                    tokenizer_name_or_path=args.tokenizer,
+                    trust_remote_code=args.trust_remote_code,
                     add_generation_prompt=not args.no_add_generation_prompt,
                     include_token_ids=not args.count_only,
                     include_text=args.include_text,
                     id_filter=id_filter,
                     hash_n=args.hash_n,
+                    workers=args.workers,
                 )
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     destination = str(args.output) if args.output is not None else "stdout"
-    print(f"Wrote {converted} tokenized prompts to {destination}", file=sys.stderr)
+    print(f"Wrote {len(rows)} tokenized prompts to {destination}", file=sys.stderr)
+    _print_prompt_delta_stats(rows)
     if skipped:
         print(f"Skipped {skipped} invalid rows", file=sys.stderr)
     return 0
