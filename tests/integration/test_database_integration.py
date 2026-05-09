@@ -67,6 +67,8 @@ async def test_api_logs_schema_contains_cost_columns(db_logger: DatabaseLogger):
         column_names = {row["column_name"] for row in rows}
 
     assert {"cache_read_tokens", "cache_write_tokens", "cost_usd"}.issubset(column_names)
+    assert "prompt_hash" not in column_names
+    assert "response_hash" not in column_names
 
 
 @pytest.mark.asyncio
@@ -161,7 +163,7 @@ async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger, m
     # Build store abstractions from the pool
     op_store = PostgresOperationalStore(db_logger.pool)
     await op_store.initialize()
-    log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False, use_chunked_hash=True)
+    log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
 
     # Increment the daily cost counter (verify_api_key reads from user_daily_cost,
     # not api_logs)

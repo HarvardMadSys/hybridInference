@@ -28,9 +28,34 @@ env:
   GITLEAKS_VERSION: "8.30.1"
 
 jobs:
-  lint:
-    name: Lint & Format Check
+  pytest-shards:
+    name: Prepare Pytest Shards
     runs-on: self-hosted
+    outputs:
+      count: ${{ steps.shards.outputs.count }}
+      shards: ${{ steps.shards.outputs.shards }}
+    steps:
+      - name: Set shard matrix
+        id: shards
+        run: |
+          shards='[1,2,3,4]'
+          count=$(SHARDS="${shards}" python3 -c 'import json, os; print(len(json.loads(os.environ["SHARDS"])))')
+          echo "shards=${shards}" >> "${GITHUB_OUTPUT}"
+          echo "count=${count}" >> "${GITHUB_OUTPUT}"
+
+  backend-lint:
+    name: Backend ${{ matrix.check.name }}
+    runs-on: self-hosted
+    strategy:
+      fail-fast: false
+      matrix:
+        check:
+          - name: Ruff Format
+            command: uv run ruff format --check .
+          - name: Ruff Lint
+            command: uv run ruff check --no-fix .
+          - name: Pydocstyle
+            command: uv run pydocstyle
     steps:
       - uses: actions/checkout@v6
 
@@ -56,22 +81,29 @@ jobs:
           uv venv
           uv sync --group dev
 
-      - name: Run ruff format check
-        run: uv run ruff format --check .
+      - name: Run ${{ matrix.check.name }}
+        run: ${{ matrix.check.command }}
 
-      - name: Run ruff lint
-        run: uv run ruff check --no-fix .
-
-      - name: Run pydocstyle
-        run: uv run pydocstyle
-
-  frontend-lint-test:
-    name: Frontend Lint & Test
+  frontend-check:
+    name: Frontend ${{ matrix.check.name }}
     runs-on: self-hosted
     defaults:
       run:
         working-directory: ./apps/frontend
-
+    strategy:
+      fail-fast: false
+      matrix:
+        check:
+          - name: Audit
+            command: npm audit --omit=dev --audit-level=high
+          - name: ESLint
+            command: npm run lint
+          - name: Prettier
+            command: npm run format:check
+          - name: TypeScript
+            command: npm run type-check
+          - name: Tests
+            command: npm run test
     steps:
       - uses: actions/checkout@v6
 
@@ -94,26 +126,18 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
-      - name: npm audit (high/critical)
-        working-directory: apps/frontend
-        run: npm audit --omit=dev --audit-level=high
-        continue-on-error: false
-
-      - name: Run ESLint
-        run: npm run lint
-
-      - name: Run Prettier format check
-        run: npm run format:check
-
-      - name: Run TypeScript type check
-        run: npm run type-check
-
-      - name: Run tests
-        run: npm run test
+      - name: Run ${{ matrix.check.name }}
+        run: ${{ matrix.check.command }}
 
   test:
-    name: Test
+    name: Test (shard ${{ matrix.shard }}/${{ needs.pytest-shards.outputs.count }})
     runs-on: self-hosted
+    needs: pytest-shards
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.pytest-shards.outputs.shards) }}
 
     services:
       postgres:
@@ -123,7 +147,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: freeinference_test_db
         ports:
-          - 5433:5432
+          - 5432/tcp
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -155,42 +179,44 @@ jobs:
           uv venv
           uv sync --group dev
 
-      - name: Run tests (PR, no coverage)
-        if: github.event_name == 'pull_request'
+      - name: Prepare pytest shard
+        id: pytest-shard
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          # Database configuration for auth tests
-          DB_HOST: localhost
-          DB_PORT: 5433
-          DB_NAME: freeinference_test_db
-          DB_USER: postgres
-          DB_PASSWORD: postgres
-          # Auth system configuration
-          JWT_SECRET_KEY: test-secret-key-for-ci-only-do-not-use-in-production
-          JWT_ALGORITHM: HS256
-          JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 15
-          JWT_REFRESH_TOKEN_EXPIRE_DAYS: 30
-          SIGNUP_ENABLED: "1"
-          SIGNUP_DEFAULT_TIER: free
-          SIGNUP_DEFAULT_DAILY_QUOTA_USD: "100.00"
-          SIGNUP_REQUIRE_EMAIL_VERIFICATION: "0"
-          COOKIE_SECURE: "0"
-          COOKIE_SAMESITE: lax
-          BASE_URL: http://localhost:8000
+          PYTEST_SHARD: ${{ matrix.shard }}
+          PYTEST_SHARDS: ${{ needs.pytest-shards.outputs.count }}
+          PYTEST_SHARD_FILE: ${{ runner.temp }}/pytest-shard-${{ matrix.shard }}.txt
         run: |
-          uv run pytest -n auto --dist=loadfile -v -m "not external"
+          uv run python - <<'PY' > "${PYTEST_SHARD_FILE}"
+          import os
+          import pathlib
+          import sys
+          import zlib
 
-      - name: Run tests (push, with coverage)
-        if: github.event_name == 'push'
+          shard = int(os.environ["PYTEST_SHARD"])
+          total = int(os.environ["PYTEST_SHARDS"])
+          paths = sorted(pathlib.Path("tests").rglob("test_*.py"))
+          selected = [str(path) for path in paths if zlib.crc32(str(path).encode()) % total == shard - 1]
+          print("\n".join(selected))
+          print(f"Selected {len(selected)} of {len(paths)} test files for shard {shard}/{total}", file=sys.stderr)
+          PY
+          cat "${PYTEST_SHARD_FILE}"
+          echo "file=${PYTEST_SHARD_FILE}" >> "${GITHUB_OUTPUT}"
+          if [ -s "${PYTEST_SHARD_FILE}" ]; then
+            echo "has_tests=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_tests=false" >> "${GITHUB_OUTPUT}"
+            echo "No tests selected for this shard"
+          fi
+
+      - name: Run tests (PR, sharded, no coverage)
+        if: github.event_name == 'pull_request' && steps.pytest-shard.outputs.has_tests == 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Database configuration for auth tests
           DB_HOST: localhost
-          DB_PORT: 5433
+          DB_PORT: ${{ job.services.postgres.ports[5432] }}
           DB_NAME: freeinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
@@ -207,39 +233,44 @@ jobs:
           COOKIE_SAMESITE: lax
           BASE_URL: http://localhost:8000
         run: |
-          uv run pytest -n auto --dist=loadfile --cov=. --cov-report=term-missing --cov-report=xml -v -m "not external"
+          uv run pytest -n auto --dist=loadfile -v -m "not external" $(cat "${{ steps.pytest-shard.outputs.file }}")
+
+      - name: Run tests (push, coverage shard)
+        if: github.event_name == 'push' && steps.pytest-shard.outputs.has_tests == 'true'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          # Database configuration for auth tests
+          DB_HOST: localhost
+          DB_PORT: ${{ job.services.postgres.ports[5432] }}
+          DB_NAME: freeinference_test_db
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          # Auth system configuration
+          JWT_SECRET_KEY: test-secret-key-for-ci-only-do-not-use-in-production
+          JWT_ALGORITHM: HS256
+          JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 15
+          JWT_REFRESH_TOKEN_EXPIRE_DAYS: 30
+          SIGNUP_ENABLED: "1"
+          SIGNUP_DEFAULT_TIER: free
+          SIGNUP_DEFAULT_DAILY_QUOTA_USD: "100.00"
+          SIGNUP_REQUIRE_EMAIL_VERIFICATION: "0"
+          COOKIE_SECURE: "0"
+          COOKIE_SAMESITE: lax
+          BASE_URL: http://localhost:8000
+          PYTEST_SHARD: ${{ matrix.shard }}
+        run: |
+          uv run pytest -n auto --dist=loadfile --cov=. --cov-report=term-missing --cov-report=xml:coverage-${PYTEST_SHARD}.xml -v -m "not external" $(cat "${{ steps.pytest-shard.outputs.file }}")
 
       - name: Upload coverage to Codecov
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.pytest-shard.outputs.has_tests == 'true'
         uses: codecov/codecov-action@v6
         with:
-          file: ./coverage.xml
+          files: ./coverage-${{ matrix.shard }}.xml
+          flags: backend-shard-${{ matrix.shard }}
           fail_ci_if_error: false
           verbose: true
-        continue-on-error: true
-
-  docker-build:
-    name: Docker Build (${{ matrix.image }})
-    runs-on: self-hosted
-    if: github.event_name == 'pull_request'
-    strategy:
-      fail-fast: false
-      matrix:
-        image: [frontend, backend]
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build ${{ matrix.image }} image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/docker/Dockerfile.${{ matrix.image }}
-          push: false
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=min,scope=${{ matrix.image }}
 
   security:
     name: Security Scan
@@ -250,7 +281,12 @@ jobs:
       - name: Install gitleaks
         run: |
           set -euo pipefail
-          asset="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          case "$(uname -m)" in
+            x86_64) arch="x64" ;;
+            aarch64|arm64) arch="arm64" ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          asset="gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz"
           base_url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
           curl -fsSLO "${base_url}/${asset}"
           curl -fsSLO "${base_url}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
@@ -269,11 +305,9 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Security audit
         run: |
           uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
-          uvx --python "$(which python)" pip-audit --progress-spinner off -r /tmp/audit-requirements.txt
+          uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt

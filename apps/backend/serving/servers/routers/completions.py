@@ -8,22 +8,15 @@ import re
 import time
 import uuid
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from routing.executor import ProviderPinError
-from routing.routers import AllCircuitsOpenError, RoutingObservation
+from routing.routers import AllCircuitsOpenError
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
-from serving.observability.metrics import (
-    API_MODEL_REQUESTS,
-    API_TOKEN_ANOMALIES,
-    API_TOKENS,
-    normalize_model_label,
-    normalize_provider_label,
-)
 from serving.observability.tracked_tasks import tracked_task
 from serving.schemas import (
     ChatCompletionRequest,
@@ -33,18 +26,28 @@ from serving.schemas import (
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
+    get_completions_logger,
     get_log_store,
     get_model_router_registry,
+    get_model_visibility_resolver,
     get_operational_store,
     get_router,
+)
+from serving.servers.routers.routing_info import (
+    RoutingInfo,
+    _status_code_from_exception,
+    build_initial_routing_info,
+    merge_adapter_routing,
 )
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip_info
 from serving.utils.token_utils import normalize_usage
 
+if TYPE_CHECKING:
+    from serving.servers.routers.completions_logging import CompletionsLogger
+
 logger = get_logger(__name__)
 router = APIRouter()
-_background_tasks: set = set()
 _MAX_DB_ERROR_LENGTH = 4000
 _SECRET_VALUE_RE = re.compile(
     r'(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization)"?\s*[:=]\s*)'
@@ -64,32 +67,6 @@ def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
     return f"ip:{client_ip}"
 
 
-def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) -> None:
-    """Schedule a background task to log request to database without blocking HTTP response.
-
-    Args:
-        log_store: LogStore instance
-        request_id: Request identifier for logging
-        log_data: Dictionary containing all log request parameters
-    """
-
-    async def log_to_db_background() -> None:
-        """Background task to log request to database."""
-        try:
-            await log_store.log_request(**log_data)
-            logger.debug(f"Background DB logging completed for request {request_id}")
-        except Exception as e:
-            # Log error context here (request_id) but re-raise so the
-            # tracked_task wrapper records this as a failure event.
-            logger.error(
-                f"Background DB logging failed for request {request_id}: {e}",
-                exc_info=True,
-            )
-            raise
-
-    tracked_task(log_to_db_background(), name="request_log")
-
-
 def _schedule_cost_increment(
     op_store: Any,
     user_id: str,
@@ -100,6 +77,8 @@ def _schedule_cost_increment(
 
     Only called for successful responses where cost > 0. Runs as a
     fire-and-forget background task to avoid blocking the response.
+
+    PR B (issue #2 of 6) replaces this with ``CostTracker.schedule_increment``.
     """
     from serving.storage.utils import calculate_cost
 
@@ -117,82 +96,25 @@ def _schedule_cost_increment(
     tracked_task(_increment(), name="cost_increment")
 
 
-def _record_routing_observation(
-    active_router,
-    model_id: str,
-    routing_info: dict[str, Any] | None,
-    *,
-    ttft_ms: float | None,
-    total_latency_ms: float,
-    prompt_tokens: int,
-    completion_tokens: int,
-    success: bool,
-) -> None:
-    """Emit a RoutingObservation for online learning routers (RouteWise)."""
-    ri = routing_info or {}
-    # Prefer endpoint_id (RouteWise profile key) > base_url > provider as fallback.
-    endpoint_id = ri.get("endpoint_id") or ri.get("base_url") or ri.get("provider", "unknown")
-    rw = (routing_info or {}).get("routewise", {})
-    obs = RoutingObservation(
-        model_id=model_id,
-        endpoint_id=endpoint_id,
-        ttft_ms=ttft_ms,
-        total_latency_ms=total_latency_ms,
-        token_count=prompt_tokens + completion_tokens,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        success=success,
-        quota_committed=rw.get("quota_committed", 0.0),
-        selected_tier=rw.get("selected_tier"),
-        sc_committed=rw.get("sc_committed", False),
-        hedged=rw.get("hedged", False),
-        backup_won=rw.get("backup_won", False),
-        lp_status=rw.get("lp_status"),
-    )
-    active_router.record_observation(obs)
+def _redact_error_text(value: str) -> str:
+    redacted = _SECRET_VALUE_RE.sub(r"\1\2[REDACTED]\3", value)
+    return _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
 
 
-def _build_db_params(
-    params: dict[str, Any],
-    provider: str,
-    base_url: str | None,
-    get_adapter_config_for_provider: Any,
-) -> dict[str, Any]:
-    _params = dict(params)
-    if _params.get("max_tokens") is None:
-        # ``get_adapter_config_for_provider`` returns ``None`` for unregistered
-        # providers (e.g., the synthetic "router" placeholder). ``getattr(None,
-        # "x", default)`` raises ``AttributeError`` rather than returning the
-        # default, so guard explicitly before reading the attribute.
-        config = get_adapter_config_for_provider(provider, base_url)
-        if config is not None:
-            _params["max_tokens"] = getattr(config, "max_output_length", None)
-    return _params
+def _format_exception_for_db(exc: BaseException) -> str:
+    """Return capped, redacted operator-facing error text for api_logs.error."""
+    exc_text = str(exc)
+    upstream_body = getattr(exc, "error_body", None)
+    if upstream_body is None:
+        value = exc_text
+    else:
+        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
+        value = f"{exc_text} | upstream_body={body_text}"
 
-
-def _extract_exception_status_code(exc: BaseException, default: int = 500) -> int:
-    """Return the HTTP status carried by common upstream exception shapes."""
-    status_code = None
-
-    if hasattr(exc, "status_code") and exc.status_code is not None:
-        status_code = exc.status_code
-    elif hasattr(exc, "response") and exc.response is not None:
-        if hasattr(exc.response, "status_code"):
-            status_code = exc.response.status_code
-        elif hasattr(exc.response, "status"):
-            status_code = exc.response.status
-    elif hasattr(exc, "status") and exc.status is not None:
-        status_code = exc.status
-    elif hasattr(exc, "code") and exc.code is not None:
-        status_code = exc.code
-
-    if status_code is None:
-        return default
-
-    try:
-        return int(status_code)
-    except (TypeError, ValueError):
-        return default
+    value = _redact_error_text(value)
+    if len(value) > _MAX_DB_ERROR_LENGTH:
+        return value[: _MAX_DB_ERROR_LENGTH - 14] + "...[truncated]"
+    return value
 
 
 def _redact_error_text(value: str) -> str:
@@ -237,6 +159,8 @@ async def chat_completions(
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
     model_router_registry=Depends(get_model_router_registry),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
+    completions_logger: CompletionsLogger = Depends(get_completions_logger),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
@@ -249,25 +173,9 @@ async def chat_completions(
         body = await request.json()
         payload = ChatCompletionRequest.model_validate(body)
     except Exception as e:
-        # Record 400 error for request parsing failures
-        if request.headers.get("x-probe", "").lower() != "synthetic":
-            API_MODEL_REQUESTS.labels(
-                model=normalize_model_label("unknown"),
-                provider=normalize_provider_label("router"),
-                status_code="400",
-            ).inc()
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
-
-    def record_model_request(status_code: str, provider_name: str) -> None:
-        if is_synthetic_probe:
-            return
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(model),
-            provider=normalize_provider_label(provider_name),
-            status_code=status_code,
-        ).inc()
 
     model = payload.model
     messages = [m.model_dump() for m in payload.messages]
@@ -312,10 +220,8 @@ async def chat_completions(
 
     # Check if model has routing configured
     if model not in router_exec.routes:
-        record_model_request("404", "router")
         if log_store and not is_synthetic_probe:
-            _schedule_db_log_task(
-                log_store,
+            completions_logger.schedule_log(
                 request_id,
                 {
                     "request_id": request_id,
@@ -338,15 +244,18 @@ async def chat_completions(
     route = router_exec.routes[model]
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = user_ctx.get("role", "free")
+    if model_visibility_resolver is not None:
+        canonical_id = route.adapters[0][0].config.id if route.adapters else model
+        required = await model_visibility_resolver.get_effective_required_role(
+            canonical_id, required
+        )
     if not has_role(user_role, required):
         logger.info(
             "Insufficient role for model",
             extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
-        record_model_request("404", "router")
         if log_store and not is_synthetic_probe:
-            _schedule_db_log_task(
-                log_store,
+            completions_logger.schedule_log(
                 request_id,
                 {
                     "request_id": request_id,
@@ -416,7 +325,14 @@ async def chat_completions(
     # to a specific backend.  Only honoured for admin users to prevent abuse.
     pin_provider = request.headers.get("X-Route-Pin")
     if pin_provider and not user_ctx.get("is_admin", False):
-        pin_provider = None
+        pin_provider = None  # silently ignore for non-admin
+
+    # Typed routing context. Enriched once the adapter response surfaces its
+    # ``_routing`` dict via ``merge_adapter_routing``. Frozen — every
+    # enrichment returns a new instance.
+    routing: RoutingInfo = build_initial_routing_info(
+        payload, request_id=request_id, pin_provider=pin_provider
+    )
 
     # Helper function to get pricing for a specific provider
     def get_pricing_for_provider(
@@ -480,10 +396,8 @@ async def chat_completions(
                 continue
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "image_url":
-                    record_model_request("400", "router")
                     if log_store and not is_synthetic_probe:
-                        _schedule_db_log_task(
-                            log_store,
+                        completions_logger.schedule_log(
                             request_id,
                             {
                                 "request_id": request_id,
@@ -519,7 +433,6 @@ async def chat_completions(
             and weight > 0
             for adapter, weight in route.adapters
         ):
-            record_model_request("400", "router")
             raise HTTPException(
                 status_code=400,
                 detail=f"Pinned provider '{pin_provider}' not found for model {model}",
@@ -536,7 +449,12 @@ async def chat_completions(
 
         async def stream_generator():
             usage_data = None
-            routing_info = None
+            # ``routing_info`` is the adapter's raw ``_routing`` dict — kept
+            # as a dict because the metadata-merge below relies on its
+            # exact key set. The typed ``stream_routing`` mirrors it for
+            # field-access; both are kept in sync.
+            routing_info: dict[str, Any] | None = None
+            stream_routing: RoutingInfo = routing
             chunk_count = 0
             # Accumulate streamed content for DB logging
             final_text = ""
@@ -649,6 +567,9 @@ async def chat_completions(
                                         routing_info = dict(result.routing_info)
                                     else:
                                         routing_info.update(result.routing_info)
+                                    stream_routing = merge_adapter_routing(
+                                        stream_routing, result.routing_info
+                                    )
                                     _ri_provider = routing_info.get("provider")
                                     if _ri_provider:
                                         req_ctx.update({"provider": _ri_provider})
@@ -807,13 +728,11 @@ async def chat_completions(
                 provider = "router"
                 pricing = None
                 if routing_info:
-                    provider = routing_info.get("provider", "router")
-                    base_url = routing_info.get("base_url")
+                    provider = stream_routing.provider or "router"
+                    base_url = stream_routing.base_url
                     # Prefer embedded pricing (e.g. adapter-internal fallback)
                     # before looking up from registered routes
-                    pricing = routing_info.get("pricing") or get_pricing_for_provider(
-                        provider, base_url
-                    )
+                    pricing = stream_routing.pricing or get_pricing_for_provider(provider, base_url)
                     # Strip upstream_cost_usd from metadata JSONB; the dedicated column
                     # api_logs.upstream_cost_usd is the canonical store. Avoids leaking the
                     # internal cost into any future admin route that returns raw metadata.
@@ -828,8 +747,7 @@ async def chat_completions(
 
                 # Prepare data for background database logging (don't await here!)
                 if log_store and not is_synthetic_probe:
-                    _schedule_db_log_task(
-                        log_store,
+                    completions_logger.schedule_log(
                         request_id,
                         {
                             "request_id": request_id,
@@ -842,34 +760,34 @@ async def chat_completions(
                             else usage_data,
                             "latency_ms": int((time.time() - start_time) * 1000),
                             "status_code": 200,
-                            "params": _build_db_params(
+                            "params": completions_logger.build_db_params(
                                 params,
                                 provider,
-                                routing_info.get("base_url") if routing_info else None,
+                                stream_routing.base_url,
                                 get_adapter_config_for_provider,
                             ),
                             "metadata": metadata,
                             "ttft_ms": ttft_ms,
                             "pricing": pricing,
-                            "upstream_cost_usd": (routing_info or {}).get("upstream_cost_usd"),
+                            "upstream_cost_usd": stream_routing.upstream_cost_usd,
                         },
                     )
 
                 # Increment daily cost counter for billed requests
                 if not is_synthetic_probe and routing_info:
                     _usage = response_for_db.get("usage") if response_for_db else usage_data
-                    _s_pricing = routing_info.get("pricing") or get_pricing_for_provider(
-                        provider, routing_info.get("base_url")
+                    _s_pricing = stream_routing.pricing or get_pricing_for_provider(
+                        provider, stream_routing.base_url
                     )
                     _schedule_cost_increment(op_store, user_id, _usage, _s_pricing)
 
                 # Record routing observation for online learning (RouteWise)
                 if not is_synthetic_probe:
                     stream_usage = normalize_usage(usage_data) if usage_data else {}
-                    _record_routing_observation(
+                    completions_logger.record_routing_observation(
                         active_router,
                         model,
-                        routing_info,
+                        stream_routing,
                         ttft_ms=float(ttft_ms) if ttft_ms is not None else None,
                         total_latency_ms=(time.time() - start_time) * 1000,
                         prompt_tokens=int(stream_usage.get("prompt_tokens", 0) or 0),
@@ -880,11 +798,14 @@ async def chat_completions(
             except Exception as exc:
                 # Record failure observation for online learning (RouteWise)
                 if not is_synthetic_probe:
+                    # ``exception._routing`` is still a raw dict from the
+                    # routing layer; ``record_routing_observation`` accepts
+                    # both shapes so we don't need to coerce here.
                     exc_routing = getattr(exc, "_routing", None)
-                    _record_routing_observation(
+                    completions_logger.record_routing_observation(
                         active_router,
                         model,
-                        exc_routing or routing_info,
+                        exc_routing or stream_routing,
                         ttft_ms=float(ttft_ms) if ttft_ms is not None else None,
                         total_latency_ms=(time.time() - start_time) * 1000,
                         prompt_tokens=0,
@@ -898,11 +819,10 @@ async def chat_completions(
 
                 ctx = req_ctx.get()
                 provider_for_error = ctx.get("provider", "router") if ctx else "router"
-                stream_status_code = _extract_exception_status_code(exc)
+                stream_status_code = _status_code_from_exception(exc)
 
                 if log_store and not is_synthetic_probe:
-                    _schedule_db_log_task(
-                        log_store,
+                    completions_logger.schedule_log(
                         request_id,
                         {
                             "request_id": request_id,
@@ -935,8 +855,6 @@ async def chat_completions(
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
 
-        # Record 200 for streaming response (HTTP layer success)
-        record_model_request("200", provider)
         response_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         if is_synthetic_probe:
             provider_header = get_single_route_provider()
@@ -970,9 +888,11 @@ async def chat_completions(
             response = sanitize_result.response_json
             routing_info = sanitize_result.routing_info
             if routing_info:
-                provider = routing_info.get("provider", "router")
-                base_url = routing_info.get("base_url")
-                routing_pricing = routing_info.get("pricing")
+                routing = merge_adapter_routing(routing, routing_info)
+                provider = routing.provider or "router"
+                base_url = routing.base_url
+                routing_pricing = routing.pricing
+                # See comment above: strip upstream_cost_usd before merging into metadata JSONB.
                 metadata.update({k: v for k, v in routing_info.items() if k != "upstream_cost_usd"})  # type: ignore[arg-type]
                 if provider != "router":
                     req_ctx.update({"provider": provider})
@@ -992,8 +912,7 @@ async def chat_completions(
         if log_store and not is_synthetic_probe:
             # Prefer embedded pricing (e.g. adapter-internal fallback)
             pricing = routing_pricing or get_pricing_for_provider(provider, base_url)
-            _schedule_db_log_task(
-                log_store,
+            completions_logger.schedule_log(
                 request_id,
                 {
                     "request_id": request_id,
@@ -1006,7 +925,7 @@ async def chat_completions(
                     else None,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": 200,
-                    "params": _build_db_params(
+                    "params": completions_logger.build_db_params(
                         params,
                         provider,
                         base_url,
@@ -1014,7 +933,7 @@ async def chat_completions(
                     ),
                     "metadata": metadata,
                     "pricing": pricing,
-                    "upstream_cost_usd": (routing_info or {}).get("upstream_cost_usd"),
+                    "upstream_cost_usd": routing.upstream_cost_usd,
                 },
             )
 
@@ -1044,11 +963,6 @@ async def chat_completions(
                     total_tokens_raw or (prompt_tokens + completion_tokens + reasoning_tokens)
                 )
             except Exception:
-                API_TOKEN_ANOMALIES.labels(
-                    model=normalize_model_label(model),
-                    provider=normalize_provider_label(provider),
-                    reason="non_integer",
-                ).inc()
                 logger.warning(f"Invalid token usage types for {model}/{provider}: {usage}")
                 prompt_tokens = completion_tokens = reasoning_tokens = total_tokens = 0
 
@@ -1062,39 +976,15 @@ async def chat_completions(
                 and total_tokens >= prompt_tokens + completion_tokens + reasoning_tokens
             )
             if not sane:
-                API_TOKEN_ANOMALIES.labels(
-                    model=normalize_model_label(model),
-                    provider=normalize_provider_label(provider),
-                    reason="invalid_values",
-                ).inc()
                 logger.warning(f"Token usage anomaly for {model}/{provider}: {usage}")
-            else:
-                if prompt_tokens:
-                    API_TOKENS.labels(
-                        model=normalize_model_label(model),
-                        provider=normalize_provider_label(provider),
-                        direction="prompt",
-                    ).inc(prompt_tokens)
-                if completion_tokens:
-                    API_TOKENS.labels(
-                        model=normalize_model_label(model),
-                        provider=normalize_provider_label(provider),
-                        direction="completion",
-                    ).inc(completion_tokens)
-                if reasoning_tokens:
-                    API_TOKENS.labels(
-                        model=normalize_model_label(model),
-                        provider=normalize_provider_label(provider),
-                        direction="reasoning",
-                    ).inc(reasoning_tokens)
 
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
             ns_usage = normalize_usage(raw_usage) or {}
-            _record_routing_observation(
+            completions_logger.record_routing_observation(
                 active_router,
                 model,
-                routing_info if isinstance(response, dict) else None,
+                routing if isinstance(response, dict) else None,
                 ttft_ms=None,
                 total_latency_ms=(time.time() - start_time) * 1000,
                 prompt_tokens=int(ns_usage.get("prompt_tokens", 0) or 0),
@@ -1102,14 +992,11 @@ async def chat_completions(
                 success=True,
             )
 
-        # Record 200 for non-streaming response
-        record_model_request("200", provider)
         if is_synthetic_probe and provider != "router":
             http_response.headers["X-Provider"] = provider
         return response
 
     except ProviderPinError as exc:
-        record_model_request("400", "router")
         raise HTTPException(
             status_code=400,
             detail=scrub_error_for_user(exc, request_id, 400),
@@ -1120,7 +1007,6 @@ async def chat_completions(
         # Surface this as 503 Service Unavailable so clients can distinguish
         # "we're temporarily overloaded / all upstreams down" from a generic
         # 500 server error.
-        record_model_request("503", "router")
         raise HTTPException(
             status_code=503,
             detail=scrub_error_for_user(exc, request_id, 503),
@@ -1129,8 +1015,10 @@ async def chat_completions(
     except Exception as exc:
         # Record failure observation for online learning (RouteWise)
         if not is_synthetic_probe:
+            # ``exc._routing`` is still a raw dict from the routing layer;
+            # ``record_routing_observation`` accepts both shapes.
             exc_routing = getattr(exc, "_routing", None)
-            _record_routing_observation(
+            completions_logger.record_routing_observation(
                 active_router,
                 model,
                 exc_routing,
@@ -1141,7 +1029,11 @@ async def chat_completions(
                 success=False,
             )
 
-        exc_status_code = _extract_exception_status_code(exc)
+        # Best-effort extraction of status code from exception. The 6-attribute
+        # fallback chain (status_code → response.status_code → response.status →
+        # status → code → 500) lives in ``routing_info._status_code_from_exception``;
+        # see that function for the per-library mapping.
+        exc_status_code = _status_code_from_exception(exc)
 
         # Move log_store.log_request() out of the stream_generator
         # and into a background task that runs after the response is sent.
@@ -1152,8 +1044,7 @@ async def chat_completions(
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
         if log_store and not is_synthetic_probe:
-            _schedule_db_log_task(
-                log_store,
+            completions_logger.schedule_log(
                 request_id,
                 {
                     "request_id": request_id,
@@ -1170,9 +1061,6 @@ async def chat_completions(
                     "pricing": None,  # Error case - no pricing available
                 },
             )
-        # Record error status code
-        record_model_request(str(exc_status_code), provider_for_error)
-
         raise HTTPException(
             exc_status_code,
             scrub_error_for_user(exc, request_id, exc_status_code),

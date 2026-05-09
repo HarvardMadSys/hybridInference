@@ -686,6 +686,27 @@ class UpdateSettingRequest(BaseModel):
     value: Any
 
 
+class ModelVisibilityItem(BaseModel):
+    """Current visibility requirements for a canonical model."""
+
+    model_id: str
+    baseline_required_role: str
+    override_required_role: str | None = None
+    effective_required_role: str
+
+
+class ListModelVisibilityResponse(BaseModel):
+    """Response payload for listing model visibility."""
+
+    models: list[ModelVisibilityItem]
+
+
+class UpdateModelVisibilityRequest(BaseModel):
+    """Request payload for updating a model visibility override."""
+
+    required_role: Literal["free", "pro", "internal", "admin"] | None
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -720,9 +741,11 @@ __all__ = [
     "HardDeleteUserResponse",
     "ListAPIKeysResponse",
     "ListAuditLogResponse",
+    "ListModelVisibilityResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
+    "ModelVisibilityItem",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
     "RegenerateAPIKeyResponse",
@@ -738,6 +761,7 @@ __all__ = [
     "SummaryUserItem",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
+    "UpdateModelVisibilityRequest",
     "UpdateSettingRequest",
     "UpdateUserRequest",
     "UpdateUserResponse",

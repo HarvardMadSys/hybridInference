@@ -15,6 +15,7 @@ from serving.servers.routers.admin import (
     export,
     login_events,
     metrics,
+    model_visibility,
     provider_keys,
     providers,
     quota,
@@ -32,6 +33,7 @@ router.include_router(broadcast.router)
 router.include_router(export.router)
 router.include_router(login_events.router)
 router.include_router(metrics.router)
+router.include_router(model_visibility.router)
 router.include_router(provider_keys.router)
 router.include_router(providers.router)
 router.include_router(quota.router)

@@ -652,6 +652,27 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_settings()
 
+    async def get_model_visibility_override(self, model_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_model_visibility_override(model_id)
+
+    async def set_model_visibility_override(
+        self,
+        model_id: str,
+        required_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_model_visibility_override(model_id, required_role, updated_by)
+
+    async def delete_model_visibility_override(self, model_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_model_visibility_override(model_id)
+
+    async def list_model_visibility_overrides(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_model_visibility_overrides()
+
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(

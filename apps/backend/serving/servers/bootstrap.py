@@ -11,12 +11,14 @@ from __future__ import annotations
 import contextlib
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
@@ -66,15 +68,10 @@ def _init_db_logger() -> DatabaseLogger | None:
             f"Initializing PostgreSQL logger: "
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )
-        logger.info(
-            f"Database privacy: store_full_content={settings.db_store_full_content}, "
-            f"4-token chunked hash enabled"
-        )
-        # Always use 4-token chunked hash
+        logger.info(f"Database privacy: store_full_content={settings.db_store_full_content}")
         return DatabaseLogger(
             db_config,
             store_full_prompts=settings.db_store_full_content,
-            use_chunked_hash=True,
         )
     except Exception as exc:
         logger.warning(f"Failed to create database logger: {exc}")
@@ -104,7 +101,10 @@ async def _init_router_and_models(
             logger.warning(f"Models config not found: {models_path}")
         elif models_path.exists():
             registered, model_infos = register_from_models_yaml(
-                router, models_path, embedding_adapters=embedding_adapters
+                router,
+                models_path,
+                embedding_adapters=embedding_adapters,
+                continue_on_missing_env=True,
             )
             if registered:
                 logger.info(f"Registered {registered} routes from {models_path}")
@@ -267,36 +267,73 @@ async def initialize() -> AppServices:
     # Routing manager (optional)
     routing_manager = _apply_routing_manager(router)
 
-    # RouteWise router (optional, per-model opt-in via models.yaml routing_strategy)
-    model_router_registry: ModelRouterRegistry | None = None
+    # Per-model router registry — config-driven from models.yaml.
+    # Each model's `router:` field selects a strategy from the registry in
+    # routing.strategies; `router_params:` is validated by the strategy's
+    # Pydantic model.  Models that omit `router:` fall back to
+    # routing.yaml's `default_router`.
     settings = get_settings()
-    needs_routewise = settings.enable_routewise or any(
-        info.strategy == "routewise" for info in model_infos
-    )
-    if needs_routewise:
-        try:
-            from routing.routewise import RouteWiseRouter, load_routewise_config
+    models_config: dict[str, dict[str, Any]] = {}
+    for info in model_infos:
+        # Effective router: explicit `router:` wins; otherwise the legacy
+        # `routing_strategy:` (one-release shim) maps onto `router`.
+        effective_router = info.router or info.strategy
+        entry: dict[str, Any] = {}
+        if effective_router is not None:
+            entry["router"] = effective_router
+        if info.router_params is not None:
+            entry["router_params"] = info.router_params
+        # Aliases share the canonical model's config.
+        models_config[info.model_id] = entry
+        for alias in info.aliases:
+            models_config[alias] = entry
 
-            rw_config = load_routewise_config()
-            routewise_router = RouteWiseRouter(
-                fixed_router=router,
-                config=rw_config,
-            )
-            model_router_registry = ModelRouterRegistry(default_router=router)
-            for info in model_infos:
-                if info.strategy == "routewise":
-                    model_router_registry.register(info.model_id, routewise_router)
-                    for alias in info.aliases:
-                        model_router_registry.register(alias, routewise_router)
-            # TODO: Wire canary rollout from routewise.yaml canary section.
-            # Currently configure_canary() is never called; canary config is dead.
-            # rw_config has canary fields; call model_router_registry.configure_canary()
-            # once canary rollout is ready for production.
-            rw_models = [i.model_id for i in model_infos if i.strategy == "routewise"]
-            logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
+    # Load routing.yaml to read `default_router`.  RoutingManager loads the
+    # same file internally for weight assignment but does not expose its
+    # parsed RoutingConfig; we re-load here cheaply (small YAML).
+    default_router_name = "fixed"
+    try:
+        from routing.config import load_routing_config
+
+        routing_env = os.getenv("ROUTING_CONFIG")
+        routing_cfg_path = Path(routing_env or "config/routing.yaml")
+        if routing_cfg_path.exists():
+            routing_cfg = load_routing_config(routing_cfg_path)
+            default_router_name = routing_cfg.default_router
+    except Exception as exc:
+        logger.warning(f"Failed to read default_router from routing.yaml: {exc}; using 'fixed'.")
+
+    # ENABLE_ROUTEWISE legacy: opts every model into routewise as the default.
+    if settings.enable_routewise and default_router_name == "fixed":
+        default_router_name = "routewise"
+
+    model_router_registry: ModelRouterRegistry | None = ModelRouterRegistry(
+        models_config=models_config,
+        default_router_name=default_router_name,
+    )
+    model_router_registry.bind_fixed_router(router)
+
+    # Eagerly construct routers for every known model so config errors
+    # (bad strategy name, bad router_params) surface at boot, not on the
+    # first request. Fail-fast per-model: a bad config for one model must
+    # not silently disable the registry for all models.
+    for info in model_infos:
+        try:
+            model_router_registry.get_router(info.model_id)
+            for alias in info.aliases:
+                model_router_registry.get_router(alias)
         except Exception as exc:
-            logger.warning(f"RouteWise initialization failed: {exc}. Using fixed routing.")
-            model_router_registry = None
+            logger.error(
+                f"ModelRouterRegistry initialization failed for model '{info.model_id}': {exc}"
+            )
+            raise
+    rw_models = [
+        i.model_id
+        for i in model_infos
+        if type(model_router_registry.get_router(i.model_id)).__name__ == "RouteWiseRouter"
+    ]
+    if rw_models:
+        logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
 
     # Build store abstractions
     operational_store = None
@@ -309,7 +346,6 @@ async def initialize() -> AppServices:
         log_store = PostgresLogStore(
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
-            use_chunked_hash=True,
         )
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
@@ -384,6 +420,14 @@ async def initialize() -> AppServices:
         except Exception as exc:
             logger.warning(f"Runtime settings initialization failed: {exc}")
 
+    model_visibility_resolver = None
+    if operational_store is not None:
+        try:
+            model_visibility_resolver = ModelVisibilityResolver(operational_store)
+            logger.info("Model visibility resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Model visibility resolver initialization failed: {exc}")
+
     # Per-user concurrency limiter — reads live caps from RuntimeSettings so
     # operators can tune them at runtime. Falls back to registry defaults
     # when runtime_settings is unavailable (e.g., DB not configured).
@@ -412,6 +456,17 @@ async def initialize() -> AppServices:
             "(runtime_settings unavailable)"
         )
 
+    # CompletionsLogger — encapsulates DB-log scheduling and RouteWise
+    # observation forwarding for /v1/chat/completions. Always constructed
+    # (it tolerates ``log_store=None``); the handler depends on a live
+    # instance via ``deps.get_completions_logger``.
+    from serving.servers.routers.completions_logging import CompletionsLogger
+
+    completions_logger = CompletionsLogger(
+        log_store=log_store,
+        model_router_registry=model_router_registry,
+    )
+
     return AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
@@ -420,9 +475,11 @@ async def initialize() -> AppServices:
         log_store=log_store,
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
+        model_visibility_resolver=model_visibility_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
+        completions_logger=completions_logger,
     )
 
 

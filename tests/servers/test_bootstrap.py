@@ -12,6 +12,7 @@ import pytest
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
+from serving.config.model_visibility import ModelVisibilityResolver
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
 
@@ -36,6 +37,7 @@ class TestBootstrapInitialization:
             assert isinstance(services.router, RouteExecutor)
             assert services.db_logger is None  # Disabled in mock_env
             assert services.routing_manager is None
+            assert services.model_visibility_resolver is None
 
     @pytest.mark.asyncio
     async def test_initialize_with_database(self, mock_env, monkeypatch):
@@ -66,12 +68,76 @@ class TestBootstrapInitialization:
             assert services.db_logger is not None
             mock_logger.initialize.assert_called_once()
             mock_pg_op.initialize.assert_called_once()
+            assert isinstance(services.model_visibility_resolver, ModelVisibilityResolver)
+
+    @pytest.mark.asyncio
+    async def test_initialize_attaches_model_visibility_resolver_when_operational_store_exists(
+        self, mock_env
+    ):
+        """Operational store-backed boot should expose a model visibility resolver."""
+        mock_db_logger = AsyncMock()
+        mock_db_logger.pool = object()
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=mock_db_logger),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
+            patch("serving.servers.bootstrap.CachedOperationalStore") as MockCachedStore,
+        ):
+            mock_pg_op = AsyncMock()
+            MockPGOp.return_value = mock_pg_op
+            cached_store = MagicMock()
+            MockCachedStore.return_value = cached_store
+
+            services = await bootstrap.initialize()
+
+            assert services.operational_store is cached_store
+            assert isinstance(services.model_visibility_resolver, ModelVisibilityResolver)
+            assert services.model_visibility_resolver._store is cached_store
+
+    @pytest.mark.asyncio
+    async def test_initialize_logs_warning_when_model_visibility_resolver_init_fails(
+        self, mock_env
+    ):
+        """Resolver initialization failures should be non-fatal."""
+        mock_db_logger = AsyncMock()
+        mock_db_logger.pool = object()
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=mock_db_logger),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
+            patch("serving.servers.bootstrap.CachedOperationalStore") as MockCachedStore,
+            patch(
+                "serving.servers.bootstrap.ModelVisibilityResolver",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("serving.servers.bootstrap.logger") as mock_logger,
+        ):
+            mock_pg_op = AsyncMock()
+            MockPGOp.return_value = mock_pg_op
+            MockCachedStore.return_value = MagicMock()
+
+            services = await bootstrap.initialize()
+
+            assert services.model_visibility_resolver is None
+            mock_logger.warning.assert_any_call(
+                "Model visibility resolver initialization failed: boom"
+            )
 
     @pytest.mark.asyncio
     async def test_initialize_loads_models_yaml(self, mock_env, temp_models_yaml, monkeypatch):
         """Test that models.yaml is loaded and registered."""
         monkeypatch.setenv("MODELS_CONFIG", temp_models_yaml)
-        monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
+        monkeypatch.setenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001")
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
@@ -116,7 +182,7 @@ class TestBootstrapInitialization:
     async def test_initialize_with_routing_manager(self, mock_env, temp_routing_yaml, monkeypatch):
         """Test initialization with routing manager."""
         monkeypatch.setenv("ROUTING_CONFIG", temp_routing_yaml)
-        monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:8001")
+        monkeypatch.setenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001")
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),

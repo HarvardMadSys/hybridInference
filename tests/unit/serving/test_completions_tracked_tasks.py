@@ -16,14 +16,16 @@ async def test_schedule_db_log_emits_tracked_task_completed(
 ) -> None:
     """The DB-log call-site emits a request_log success event."""
     from serving.observability.tracked_tasks import _TRACKED_TASKS
-    from serving.servers.routers.completions import _schedule_db_log_task
+    from serving.servers.routers.completions_logging import CompletionsLogger
 
     _TRACKED_TASKS.clear()
     log_store = MagicMock()
     log_store.log_request = AsyncMock(return_value=None)
 
+    cl = CompletionsLogger(log_store=log_store)
+
     with caplog.at_level(logging.INFO, logger="serving.observability.tracked_tasks"):
-        _schedule_db_log_task(log_store, "req-1", {"foo": "bar"})
+        cl.schedule_log("req-1", {"foo": "bar"})
         # Drain pending tasks.
         await asyncio.gather(*list(_TRACKED_TASKS), return_exceptions=True)
 
@@ -43,14 +45,16 @@ async def test_schedule_db_log_failure_emits_failure_event(
 ) -> None:
     """When the underlying log_request raises, a failure event is emitted."""
     from serving.observability.tracked_tasks import _TRACKED_TASKS
-    from serving.servers.routers.completions import _schedule_db_log_task
+    from serving.servers.routers.completions_logging import CompletionsLogger
 
     _TRACKED_TASKS.clear()
     log_store = MagicMock()
     log_store.log_request = AsyncMock(side_effect=RuntimeError("db down"))
 
+    cl = CompletionsLogger(log_store=log_store)
+
     with caplog.at_level(logging.WARNING, logger="serving.observability.tracked_tasks"):
-        _schedule_db_log_task(log_store, "req-2", {})
+        cl.schedule_log("req-2", {})
         await asyncio.gather(*list(_TRACKED_TASKS), return_exceptions=True)
 
     matching = [

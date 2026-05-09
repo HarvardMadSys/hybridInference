@@ -85,7 +85,10 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8001"))
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1200"))
 HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "600"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
-FREEINFERENCE_API_KEY = os.environ.get("FREEINFERENCE_API_KEY", "").strip()
+# Accept LOCAL_API_KEY as the canonical local upstream key, with FREEINFERENCE_API_KEY
+# as a compatibility fallback.
+LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "freeinference_api")
+LOCAL_API_KEY = LOCAL_API_KEY.strip()
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = _SCRIPT_DIR / "models.json"
@@ -387,28 +390,29 @@ WARMUP_THINKING_SSE_DONE = (
 class ProxyHandler(BaseHTTPRequestHandler):
     """Forwards requests to the correct sglang backend based on model name."""
 
-    def _check_api_key(self) -> None:
-        if not FREEINFERENCE_API_KEY:
-            return
+    def _check_api_key(self) -> bool:
+        if not LOCAL_API_KEY:
+            return True
 
         auth = self.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            auth = auth[7:]
-        else:
-            auth = self.headers.get("X-API-Key", "")
+        auth = auth[7:] if auth.startswith("Bearer ") else self.headers.get("X-API-Key", "")
 
-        if auth != FREEINFERENCE_API_KEY:
+        if auth != LOCAL_API_KEY:
             self.send_response(401)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"Missing or invalid API key")
+            return False
+
+        return True
 
     def _proxy(self) -> None:
         if self.path == "/v1/models" and self.command == "GET":
             self._handle_models_list()
             return
 
-        self._check_api_key()
+        if not self._check_api_key():
+            return
 
         body = self._read_body()
         backend = _get_backend(body, request_path=self.path, request_method=self.command)

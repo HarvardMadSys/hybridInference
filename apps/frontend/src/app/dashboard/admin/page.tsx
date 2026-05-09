@@ -4,6 +4,8 @@ import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
+import { AdminRecentRequestDetailPanel } from './AdminRecentRequestDetailPanel';
+import type { AdminRecentRequestContentState } from './AdminRecentRequestDetailPanel';
 import {
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
@@ -45,11 +47,6 @@ function relTime(s: string | null): string {
   return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function previewText(value: string, maxChars: number = 280): string {
-  if (value.length <= maxChars) return value;
-  return `${value.slice(0, maxChars)}...`;
-}
-
 function compactRequestSurface(surface?: string | null): string {
   if (surface === 'anthropic_messages') return 'Anthropic';
   if (surface === 'openai_chat_completions') return 'OpenAI';
@@ -83,434 +80,6 @@ function applyOffsetJump(
   const p = Math.min(Math.max(1, n), totalPages);
   setOffset((p - 1) * pageSize);
   clearInput();
-}
-
-type ParseResult = { ok: true; value: unknown } | { ok: false };
-
-function tryParseJson(value: string): ParseResult {
-  try {
-    return { ok: true, value: JSON.parse(value) as unknown };
-  } catch {
-    return { ok: false };
-  }
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-type ToolCall = {
-  id?: unknown;
-  type?: unknown;
-  function?: { name?: unknown; arguments?: unknown };
-};
-
-type ChatMessage = {
-  role: string;
-  content: unknown;
-  reasoning_content?: unknown;
-  reasoning?: unknown;
-  refusal?: unknown;
-  tool_calls?: unknown;
-  tool_call_id?: unknown;
-  name?: unknown;
-};
-
-function isChatMessage(v: unknown): v is ChatMessage {
-  return (
-    isRecord(v) &&
-    typeof v.role === 'string' &&
-    ('content' in v ||
-      'tool_calls' in v ||
-      'refusal' in v ||
-      'reasoning' in v ||
-      'reasoning_content' in v)
-  );
-}
-
-function isToolCall(v: unknown): v is ToolCall {
-  return isRecord(v);
-}
-
-function getToolCalls(message: ChatMessage): ToolCall[] {
-  if (!Array.isArray(message.tool_calls)) return [];
-  return message.tool_calls.filter(isToolCall);
-}
-
-function toolCallName(tc: ToolCall): string {
-  const fn = tc.function;
-  if (isRecord(fn) && typeof fn.name === 'string') return fn.name;
-  return '';
-}
-
-function toolCallArgs(tc: ToolCall): string {
-  const fn = tc.function;
-  if (!isRecord(fn)) return '';
-  const args = fn.arguments;
-  if (typeof args === 'string') {
-    const parsed = tryParseJson(args);
-    if (parsed.ok) return JSON.stringify(parsed.value, null, 2);
-    return args;
-  }
-  if (args == null) return '';
-  return JSON.stringify(args, null, 2);
-}
-
-function flattenContent(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === 'string') return part;
-        if (isRecord(part)) {
-          if (part.type === 'text' && typeof part.text === 'string') return part.text;
-          if (typeof part.type === 'string') return `[${part.type}]`;
-        }
-        return '';
-      })
-      .filter((s) => s.length > 0)
-      .join('\n');
-  }
-  if (content == null) return '';
-  return JSON.stringify(content);
-}
-
-function hasMessages(v: unknown): v is Record<string, unknown> & { messages: ChatMessage[] } {
-  if (!isRecord(v)) return false;
-  const m = v.messages;
-  return Array.isArray(m) && m.length > 0 && m.every(isChatMessage);
-}
-
-function isChatMessageArray(v: unknown): v is ChatMessage[] {
-  return Array.isArray(v) && v.every(isChatMessage);
-}
-
-type AnthropicMessageResponse = Record<string, unknown> & {
-  type: 'message';
-  role: string;
-  content: unknown;
-};
-
-function isAnthropicMessageResponse(v: unknown): v is AnthropicMessageResponse {
-  if (!isRecord(v)) return false;
-  if (v.type !== 'message') return false;
-  if (typeof v.role !== 'string') return false;
-  if (!('content' in v)) return false;
-  const c = v.content;
-  return typeof c === 'string' || Array.isArray(c);
-}
-
-type ChatChoice = { message: ChatMessage; finish_reason?: unknown; index?: unknown };
-
-function isChatChoice(v: unknown): v is ChatChoice {
-  return isRecord(v) && isChatMessage(v.message);
-}
-
-function hasChoices(v: unknown): v is Record<string, unknown> & { choices: ChatChoice[] } {
-  if (!isRecord(v)) return false;
-  const c = v.choices;
-  return Array.isArray(c) && c.length > 0 && c.every(isChatChoice);
-}
-
-const ROLE_BADGE: Record<string, string> = {
-  system: 'bg-gray-100 text-gray-700 border-gray-200',
-  user: 'bg-blue-50 text-blue-700 border-blue-200',
-  assistant: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  tool: 'bg-amber-50 text-amber-700 border-amber-200',
-};
-
-function roleBadgeClass(role: string): string {
-  return ROLE_BADGE[role] ?? 'bg-gray-100 text-gray-700 border-gray-200';
-}
-
-function formatScalar(v: unknown): string {
-  if (v == null) return String(v);
-  if (typeof v === 'string') return v;
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  return JSON.stringify(v);
-}
-
-function MetaList({ data, skip }: { data: Record<string, unknown>; skip: ReadonlyArray<string> }) {
-  const entries = Object.entries(data).filter(([k]) => !skip.includes(k));
-  if (entries.length === 0) return null;
-  return (
-    <dl className="mb-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[11px]">
-      {entries.map(([k, v]) => (
-        <Fragment key={k}>
-          <dt className="text-gray-500">{k}:</dt>
-          <dd className="text-gray-700 break-words font-mono">{formatScalar(v)}</dd>
-        </Fragment>
-      ))}
-    </dl>
-  );
-}
-
-function MessageBlock({ message }: { message: ChatMessage }) {
-  const text = flattenContent(message.content);
-  const reasoning = messageReasoning(message);
-  const refusal = messageRefusal(message);
-  const toolCalls = getToolCalls(message);
-  const toolCallId = typeof message.tool_call_id === 'string' ? message.tool_call_id : '';
-  const toolName = typeof message.name === 'string' ? message.name : '';
-  const showToolMeta = message.role === 'tool' && (toolCallId || toolName);
-  const rendered =
-    text.length > 0 ||
-    reasoning.length > 0 ||
-    refusal.length > 0 ||
-    toolCalls.length > 0 ||
-    showToolMeta;
-  return (
-    <div className="rounded-md border border-gray-200 bg-white px-2 py-1.5">
-      <div className="mb-1 flex items-center gap-2">
-        <span
-          className={`inline-block rounded border px-1.5 py-px text-[10px] font-medium uppercase tracking-wide ${roleBadgeClass(
-            message.role,
-          )}`}
-        >
-          {message.role}
-        </span>
-      </div>
-      {showToolMeta && (
-        <div className="mb-1 flex flex-wrap gap-x-3 text-[10px] text-gray-500 font-mono">
-          {toolName && (
-            <span>
-              name: <span className="text-gray-700">{toolName}</span>
-            </span>
-          )}
-          {toolCallId && (
-            <span>
-              tool_call_id: <span className="text-gray-700">{toolCallId}</span>
-            </span>
-          )}
-        </div>
-      )}
-      {text.length > 0 && (
-        <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-gray-700">
-          {text}
-        </pre>
-      )}
-      {reasoning.length > 0 && (
-        <div className="mt-1 rounded-md border border-gray-200 bg-white px-2 py-1">
-          <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500">
-            reasoning
-          </div>
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] italic text-gray-500">
-            {reasoning}
-          </pre>
-        </div>
-      )}
-      {refusal.length > 0 && (
-        <div className="mt-1 rounded-md border border-red-200 bg-white px-2 py-1">
-          <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-red-600">
-            refusal
-          </div>
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-red-700">
-            {refusal}
-          </pre>
-        </div>
-      )}
-      {toolCalls.length > 0 && (
-        <div className="mt-1 space-y-1">
-          {toolCalls.map((tc, i) => {
-            const name = toolCallName(tc);
-            const args = toolCallArgs(tc);
-            const id = typeof tc.id === 'string' ? tc.id : '';
-            return (
-              <div
-                key={id || `${i}-${name}`}
-                className="rounded-md border border-gray-200 bg-white px-2 py-1"
-              >
-                <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[10px]">
-                  <span className="font-medium uppercase tracking-wide text-gray-500">
-                    tool_call
-                  </span>
-                  {name && <span className="font-mono text-gray-700">{name}</span>}
-                  {id && <span className="font-mono text-gray-400">{id}</span>}
-                </div>
-                {args.length > 0 && (
-                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-gray-700">
-                    {args}
-                  </pre>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {!rendered && <div className="text-[11px] italic text-gray-400">(no content)</div>}
-    </div>
-  );
-}
-
-function JsonChatView({ data }: { data: unknown }) {
-  if (isChatMessageArray(data)) {
-    return (
-      <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
-        <div className="space-y-1.5">
-          {data.map((m, i) => (
-            <MessageBlock key={`${i}-${m.role}`} message={m} />
-          ))}
-        </div>
-      </div>
-    );
-  }
-  if (hasMessages(data)) {
-    return (
-      <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
-        <MetaList data={data} skip={['messages']} />
-        <div className="space-y-1.5">
-          {data.messages.map((m, i) => (
-            <MessageBlock key={`${i}-${m.role}`} message={m} />
-          ))}
-        </div>
-      </div>
-    );
-  }
-  if (hasChoices(data)) {
-    return (
-      <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
-        <MetaList data={data} skip={['choices']} />
-        <div className="space-y-1.5">
-          {data.choices.map((c, i) => (
-            <MessageBlock key={typeof c.index === 'number' ? c.index : i} message={c.message} />
-          ))}
-        </div>
-      </div>
-    );
-  }
-  if (isAnthropicMessageResponse(data)) {
-    const message: ChatMessage = { role: data.role, content: data.content };
-    return (
-      <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
-        <MetaList data={data} skip={['content', 'role', 'type']} />
-        <div className="space-y-1.5">
-          <MessageBlock message={message} />
-        </div>
-      </div>
-    );
-  }
-  return (
-    <pre className="mt-1 overflow-x-auto rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-700 whitespace-pre-wrap break-words">
-      {JSON.stringify(data, null, 2)}
-    </pre>
-  );
-}
-
-function toolCallsPreview(message: ChatMessage): string {
-  const calls = getToolCalls(message);
-  if (calls.length === 0) return '';
-  const names = calls.map(toolCallName).filter((n) => n.length > 0);
-  return names.length > 0 ? `[tool_calls: ${names.join(', ')}]` : '[tool_calls]';
-}
-
-function messageRefusal(m: ChatMessage): string {
-  return typeof m.refusal === 'string' ? m.refusal : '';
-}
-
-function messageReasoning(m: ChatMessage): string {
-  if (typeof m.reasoning_content === 'string') return m.reasoning_content;
-  if (typeof m.reasoning === 'string') return m.reasoning;
-  return '';
-}
-
-function previewFromMessages(messages: ChatMessage[]): string | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === 'user') {
-      const text = flattenContent(m.content);
-      if (text) return previewText(text);
-    }
-  }
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === 'assistant') {
-      const text = flattenContent(m.content);
-      if (text) return previewText(text);
-      const tc = toolCallsPreview(m);
-      if (tc) return previewText(tc);
-      const refusal = messageRefusal(m);
-      if (refusal) return previewText(`[refusal] ${refusal}`);
-      const reasoning = messageReasoning(m);
-      if (reasoning) return previewText(`[reasoning] ${reasoning}`);
-      break;
-    }
-  }
-  const last = messages[messages.length - 1];
-  if (last) {
-    const text = flattenContent(last.content);
-    if (text) return previewText(text);
-    const tc = toolCallsPreview(last);
-    if (tc) return previewText(tc);
-    const refusal = messageRefusal(last);
-    if (refusal) return previewText(`[refusal] ${refusal}`);
-    const reasoning = messageReasoning(last);
-    if (reasoning) return previewText(`[reasoning] ${reasoning}`);
-  }
-  return null;
-}
-
-function computePreview(parsed: unknown, fallback: string): string {
-  if (isChatMessageArray(parsed)) {
-    const p = previewFromMessages(parsed);
-    if (p !== null) return p;
-  }
-  if (hasMessages(parsed)) {
-    const p = previewFromMessages(parsed.messages);
-    if (p !== null) return p;
-  }
-  if (hasChoices(parsed)) {
-    const first = parsed.choices[0];
-    const m = first.message;
-    const text = flattenContent(m.content);
-    if (text) return previewText(text);
-    const tc = toolCallsPreview(m);
-    if (tc) return previewText(tc);
-    const refusal = messageRefusal(m);
-    if (refusal) return previewText(`[refusal] ${refusal}`);
-    const reasoning = messageReasoning(m);
-    if (reasoning) return previewText(`[reasoning] ${reasoning}`);
-  }
-  if (isAnthropicMessageResponse(parsed)) {
-    const p = previewFromMessages([{ role: parsed.role, content: parsed.content }]);
-    if (p !== null) return p;
-  }
-  return previewText(fallback);
-}
-
-function FoldedText({ label, value }: { label: string; value?: string | null }) {
-  const [open, setOpen] = useState(false);
-  if (!value) {
-    return (
-      <div className="col-span-full">
-        <span className="text-gray-500">{label}:</span> <span className="text-gray-700">—</span>
-      </div>
-    );
-  }
-
-  const parsed = tryParseJson(value);
-  const preview = parsed.ok ? computePreview(parsed.value, value) : previewText(value);
-
-  return (
-    <details
-      className="col-span-full group"
-      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
-    >
-      <summary className="cursor-pointer list-none text-gray-500 flex items-center gap-2">
-        <span>{label}:</span>
-        <span className="text-gray-700 whitespace-pre-wrap break-words">{preview}</span>
-        <span className="text-[10px] text-gray-400 group-open:hidden">(show more)</span>
-        <span className="text-[10px] text-gray-400 hidden group-open:inline">(show less)</span>
-      </summary>
-      {open &&
-        (parsed.ok ? (
-          <JsonChatView data={parsed.value} />
-        ) : (
-          <pre className="mt-1 overflow-x-auto rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-700 whitespace-pre-wrap break-words">
-            {value}
-          </pre>
-        ))}
-    </details>
-  );
 }
 
 function formatLatency(ms?: number | null): string {
@@ -866,10 +435,6 @@ export default function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
-  // Users tab loading state surfaced for the global Refresh button
-  const [usersLoading, setUsersLoading] = useState(false);
-  const [usersRefreshNonce, setUsersRefreshNonce] = useState(0);
-
   // Broadcast email state
   const [broadcasts, setBroadcasts] = useState<BroadcastListItem[]>([]);
   const [broadcastLoading, setBroadcastLoading] = useState(false);
@@ -913,16 +478,7 @@ export default function AdminPage() {
   const [reqErrorsOnly, setReqErrorsOnly] = useState(false);
   const [reqExpandedId, setReqExpandedId] = useState<string | null>(null);
   const [reqContentCache, setReqContentCache] = useState<
-    Map<
-      string,
-      {
-        prompt: string | null;
-        response: string | null;
-        reasoning_content: string | null;
-        loading: boolean;
-        error?: string;
-      }
-    >
+    Map<string, AdminRecentRequestContentState>
   >(() => new Map());
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
@@ -1142,10 +698,6 @@ export default function AdminPage() {
   };
 
   const refreshActiveTab = () => {
-    if (activeTab === 'users') {
-      setUsersRefreshNonce((n) => n + 1);
-      return;
-    }
     if (activeTab === 'audit') {
       loadAudit();
       return;
@@ -1204,20 +756,10 @@ export default function AdminPage() {
           </a>
           <button
             onClick={refreshActiveTab}
-            disabled={
-              usersLoading ||
-              auditLoading ||
-              reqLoading ||
-              reqMetricsLoading ||
-              providerQuotasLoading
-            }
+            disabled={auditLoading || reqLoading || reqMetricsLoading || providerQuotasLoading}
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
           >
-            {usersLoading ||
-            auditLoading ||
-            reqLoading ||
-            reqMetricsLoading ||
-            providerQuotasLoading
+            {auditLoading || reqLoading || reqMetricsLoading || providerQuotasLoading
               ? 'Loading...'
               : 'Refresh'}
           </button>
@@ -1287,14 +829,7 @@ export default function AdminPage() {
         )}
 
         {/* ========== Users Tab ========== */}
-        {activeTab === 'users' && (
-          <UsersTab
-            setError={setError}
-            setToast={setToast}
-            onLoadingChange={setUsersLoading}
-            refreshNonce={usersRefreshNonce}
-          />
-        )}
+        {activeTab === 'users' && <UsersTab />}
 
         {/* ========== Audit Log Tab ========== */}
         {activeTab === 'audit' && (
@@ -1713,11 +1248,6 @@ export default function AdminPage() {
                           req.status_code >= 200 &&
                           req.status_code < 400;
                         const isExpanded = reqExpandedId === req.request_id;
-                        const hasCacheTokens =
-                          req.cache_read_tokens != null || req.cache_write_tokens != null;
-                        const cachedTokens = hasCacheTokens
-                          ? (req.cache_read_tokens ?? 0) + (req.cache_write_tokens ?? 0)
-                          : null;
                         const sourceLabel = compactUserAgent(req.user_agent);
                         const surfaceLabel = compactRequestSurface(req.request_surface);
                         return (
@@ -1837,127 +1367,10 @@ export default function AdminPage() {
                             {isExpanded && (
                               <tr className="border-b border-gray-100 bg-gray-50/40">
                                 <td colSpan={9} className="px-4 py-3">
-                                  <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[11px] sm:grid-cols-4">
-                                    <div>
-                                      <span className="text-gray-500">Request ID:</span>{' '}
-                                      <span className="font-mono text-gray-700">
-                                        {req.request_id.length > 24
-                                          ? `${req.request_id.slice(0, 24)}…`
-                                          : req.request_id}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">TTFT:</span>{' '}
-                                      <span className="text-gray-700">
-                                        {req.ttft_ms != null ? `${req.ttft_ms}ms` : '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">User:</span>{' '}
-                                      <span className="text-gray-700">
-                                        {req.user_name || req.user_id || '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">Email:</span>{' '}
-                                      <span className="text-gray-700">{req.user_email || '—'}</span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">User IP:</span>{' '}
-                                      <span className="text-gray-700 font-mono">
-                                        {req.user_ip ?? '—'}
-                                      </span>
-                                    </div>
-                                    <div className="col-span-full">
-                                      <span className="text-gray-500">User agent:</span>{' '}
-                                      <span className="break-words text-gray-700">
-                                        {req.user_agent ?? '—'}
-                                      </span>
-                                    </div>
-                                    <details className="col-span-full group mt-1">
-                                      <summary className="list-none cursor-pointer text-gray-500 hover:text-gray-700 flex items-center gap-2">
-                                        <span className="text-xs">Network details</span>
-                                        <span className="text-[10px] text-gray-400 group-open:hidden">
-                                          (show)
-                                        </span>
-                                        <span className="text-[10px] text-gray-400 hidden group-open:inline">
-                                          (hide)
-                                        </span>
-                                      </summary>
-                                      <div className="mt-2 grid grid-cols-2 gap-x-8 gap-y-1 sm:grid-cols-4">
-                                        <div>
-                                          <span className="text-gray-500">Peer IP:</span>{' '}
-                                          <span className="text-gray-700 font-mono">
-                                            {req.peer_ip ?? '—'}
-                                          </span>
-                                        </div>
-                                        <div>
-                                          <span className="text-gray-500">IP source:</span>{' '}
-                                          <span className="text-gray-700">
-                                            {req.ip_source ?? '—'}
-                                          </span>
-                                        </div>
-                                        <div className="col-span-full">
-                                          <span className="text-gray-500">X-Forwarded-For:</span>{' '}
-                                          <span className="break-words font-mono text-gray-700">
-                                            {req.x_forwarded_for ?? '—'}
-                                          </span>
-                                        </div>
-                                      </div>
-                                    </details>
-                                    <div>
-                                      <span className="text-gray-500">Session:</span>{' '}
-                                      <span className="text-gray-700 font-mono">
-                                        {req.session_id ?? '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">Cached:</span>{' '}
-                                      <span className="text-gray-700">
-                                        {cachedTokens != null ? cachedTokens.toLocaleString() : '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-500">Stream:</span>{' '}
-                                      <span className="text-gray-700">
-                                        {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
-                                      </span>
-                                    </div>
-                                    {(() => {
-                                      const content = reqContentCache.get(req.request_id);
-                                      if (!content || content.loading) {
-                                        return (
-                                          <div className="col-span-full text-gray-400">
-                                            Loading prompt and response…
-                                          </div>
-                                        );
-                                      }
-                                      if (content.error) {
-                                        return (
-                                          <div className="col-span-full text-red-600">
-                                            Failed to load content: {content.error}
-                                          </div>
-                                        );
-                                      }
-                                      return (
-                                        <>
-                                          {content.reasoning_content && (
-                                            <FoldedText
-                                              label="Reasoning"
-                                              value={content.reasoning_content}
-                                            />
-                                          )}
-                                          <FoldedText label="Prompt" value={content.prompt} />
-                                          <FoldedText label="Response" value={content.response} />
-                                        </>
-                                      );
-                                    })()}
-                                    {req.error && (
-                                      <div className="col-span-full mt-1">
-                                        <span className="text-red-600">Error: {req.error}</span>
-                                      </div>
-                                    )}
-                                  </div>
+                                  <AdminRecentRequestDetailPanel
+                                    req={req}
+                                    content={reqContentCache.get(req.request_id)}
+                                  />
                                 </td>
                               </tr>
                             )}

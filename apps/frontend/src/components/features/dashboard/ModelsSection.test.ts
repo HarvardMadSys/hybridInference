@@ -23,23 +23,21 @@ function makeModel(overrides: Partial<ModelCatalogItem> = {}): ModelCatalogItem 
 }
 
 describe('isDashboardModelVisible', () => {
-  it('with showInternalModels=false, hides Anthropic-owned models case-insensitively', () => {
-    expect(isDashboardModelVisible(makeModel({ owned_by: 'Anthropic' }), false)).toBe(false);
+  it('shows an OpenAI-owned model returned by the user models API to free users', () => {
+    expect(isDashboardModelVisible(makeModel({ id: 'gpt-5.3-spark', owned_by: 'openai' }))).toBe(
+      true,
+    );
   });
 
-  it('with showInternalModels=false, hides OpenAI-owned models case-insensitively', () => {
-    expect(isDashboardModelVisible(makeModel({ owned_by: 'OpenAI' }), false)).toBe(false);
+  it('shows Anthropic-owned models returned by the user models API', () => {
+    expect(isDashboardModelVisible(makeModel({ owned_by: 'Anthropic' }))).toBe(true);
   });
 
-  it('with showInternalModels=true, shows an anthropic-owned model', () => {
-    expect(isDashboardModelVisible(makeModel({ owned_by: 'anthropic' }), true)).toBe(true);
+  it('shows OpenAI-owned models returned by the user models API', () => {
+    expect(isDashboardModelVisible(makeModel({ owned_by: 'OpenAI' }))).toBe(true);
   });
 
-  it('with showInternalModels=true, shows an openai-owned model', () => {
-    expect(isDashboardModelVisible(makeModel({ owned_by: 'openai' }), true)).toBe(true);
-  });
-
-  it('with showInternalModels=false, shows an unrelated third-party model', () => {
-    expect(isDashboardModelVisible(makeModel({ owned_by: 'mistral' }), false)).toBe(true);
+  it('shows unrelated third-party models returned by the user models API', () => {
+    expect(isDashboardModelVisible(makeModel({ owned_by: 'mistral' }))).toBe(true);
   });
 });
