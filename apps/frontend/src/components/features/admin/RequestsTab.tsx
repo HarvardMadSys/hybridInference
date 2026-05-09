@@ -28,6 +28,45 @@ function relTime(s: string | null): string {
   return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+function parseClientTool(ua: string | null | undefined): string | null {
+  if (!ua) return null;
+  const s = ua.trim();
+  if (!s) return null;
+  const patterns: Array<[RegExp, string]> = [
+    [/claude-cli\/|claude-code\//i, 'claude-code'],
+    [/kilo[-_ ]?code\//i, 'kilo-code'],
+    [/roo[-_ ]?code\//i, 'roo-code'],
+    [/cline\//i, 'cline'],
+    [/cursor[-_ ]?(ide|agent|cli)?\//i, 'cursor'],
+    [/aider\//i, 'aider'],
+    [/continue\//i, 'continue'],
+    [/codex[-_ ]?cli\//i, 'codex'],
+    [/openai[-_ ]?python\/|openai\/python/i, 'openai-python'],
+    [/openai[-_ ]?node\/|openai\/javascript/i, 'openai-node'],
+    [/anthropic[-_ ]?python\//i, 'anthropic-python'],
+    [/anthropic[-_ ]?(sdk|ts|js)\//i, 'anthropic-sdk'],
+    [/postmanruntime\//i, 'postman'],
+    [/insomnia\//i, 'insomnia'],
+    [/httpie\//i, 'httpie'],
+    [/curl\//i, 'curl'],
+    [/wget\//i, 'wget'],
+    [/python-requests\//i, 'python-requests'],
+    [/aiohttp\//i, 'aiohttp'],
+    [/httpx\//i, 'httpx'],
+    [/node-fetch\//i, 'node-fetch'],
+    [/axios\//i, 'axios'],
+    [/go-http-client\//i, 'go-http'],
+    [/okhttp\//i, 'okhttp'],
+  ];
+  for (const [re, name] of patterns) {
+    if (re.test(s)) return name;
+  }
+  if (/mozilla\/|chrome\/|safari\/|firefox\/|edg\//i.test(s)) return 'browser';
+  const m = s.match(/^([A-Za-z][\w.-]{1,32})\//);
+  if (m) return m[1].toLowerCase();
+  return null;
+}
+
 function previewText(value: string, maxChars: number = 280): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}...`;
@@ -842,7 +881,7 @@ export function RequestsTab() {
                     User
                   </th>
                   <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
-                    IP
+                    Client
                   </th>
                   <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                     Status
@@ -921,8 +960,31 @@ export function RequestsTab() {
                             <span className="text-gray-300">—</span>
                           )}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2.5 text-[12px] font-mono text-gray-500">
-                          {req.user_ip ?? <span className="text-gray-300">—</span>}
+                        <td className="px-3 py-2.5 text-[12px] text-gray-600">
+                          {(() => {
+                            const tool = parseClientTool(req.user_agent);
+                            if (tool) {
+                              return (
+                                <span
+                                  className="inline-flex max-w-[220px] truncate rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-700"
+                                  title={req.user_agent ?? undefined}
+                                >
+                                  {tool}
+                                </span>
+                              );
+                            }
+                            if (req.user_agent) {
+                              return (
+                                <span
+                                  className="block max-w-[220px] truncate text-gray-500"
+                                  title={req.user_agent}
+                                >
+                                  {req.user_agent}
+                                </span>
+                              );
+                            }
+                            return <span className="text-gray-300">—</span>;
+                          })()}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-[12px]">
                           {req.status_code != null ? (
