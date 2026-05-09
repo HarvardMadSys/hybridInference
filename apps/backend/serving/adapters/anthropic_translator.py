@@ -268,19 +268,17 @@ def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[st
     cache_read, cache_write = extract_cache_tokens(usage_in)
     prompt_tokens = int(usage_in.get("prompt_tokens", 0) or 0)
     # OpenAI prompt_tokens is cache-inclusive; Anthropic input_tokens is the
-    # non-cached remainder. Subtract cache subset so the translated shape is
-    # disjoint and matches Anthropic semantics.
-    input_tokens = prompt_tokens - int(cache_read or 0) - int(cache_write or 0)
-    if input_tokens < 0:
-        input_tokens = prompt_tokens
+    # non-cached remainder. Subtract cache subset and clamp to >= 0 so the
+    # translated shape stays disjoint when the upstream usage is inconsistent.
+    input_tokens = max(0, prompt_tokens - (cache_read or 0) - (cache_write or 0))
     anthropic_usage: dict[str, int] = {
         "input_tokens": input_tokens,
         "output_tokens": int(usage_in.get("completion_tokens", 0) or 0),
     }
-    if cache_read:
-        anthropic_usage["cache_read_input_tokens"] = int(cache_read)
-    if cache_write:
-        anthropic_usage["cache_creation_input_tokens"] = int(cache_write)
+    if cache_read is not None:
+        anthropic_usage["cache_read_input_tokens"] = cache_read
+    if cache_write is not None:
+        anthropic_usage["cache_creation_input_tokens"] = cache_write
 
     return {
         "id": msg_id,
@@ -398,19 +396,18 @@ class OpenAIToAnthropicStreamTranslator:
             cache_read, cache_write = extract_cache_tokens(usage)
             prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
             # OpenAI prompt_tokens is cache-inclusive; Anthropic input_tokens
-            # is the non-cached remainder.
-            input_tokens = prompt_tokens - int(cache_read or 0) - int(cache_write or 0)
-            if input_tokens < 0:
-                input_tokens = prompt_tokens
+            # is the non-cached remainder. Clamp to >= 0 if upstream usage is
+            # inconsistent.
+            input_tokens = max(0, prompt_tokens - (cache_read or 0) - (cache_write or 0))
             if "prompt_tokens" in usage:
                 self._usage["input_tokens"] = input_tokens
             self._usage["output_tokens"] = int(
                 usage.get("completion_tokens", self._usage["output_tokens"])
             )
             if cache_read is not None:
-                self._usage["cache_read_input_tokens"] = int(cache_read)
+                self._usage["cache_read_input_tokens"] = cache_read
             if cache_write is not None:
-                self._usage["cache_creation_input_tokens"] = int(cache_write)
+                self._usage["cache_creation_input_tokens"] = cache_write
 
         choices = obj.get("choices") or []
         if not choices:
