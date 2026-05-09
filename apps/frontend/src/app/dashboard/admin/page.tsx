@@ -847,14 +847,7 @@ export default function AdminPage() {
         )}
 
         {/* ========== Users Tab ========== */}
-        {activeTab === 'users' && (
-          <UsersTab
-            setError={setError}
-            setToast={setToast}
-            onLoadingChange={setUsersLoading}
-            refreshNonce={usersRefreshNonce}
-          />
-        )}
+        {activeTab === 'users' && <UsersTab />}
 
         {/* ========== Audit Log Tab ========== */}
         {activeTab === 'audit' && (
