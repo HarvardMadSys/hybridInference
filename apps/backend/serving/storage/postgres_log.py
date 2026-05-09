@@ -7,11 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
-from serving.storage.utils import (
-    calculate_cost,
-    compute_prompt_hash,
-    compute_prompt_hash_chunked,
-)
+from serving.storage.utils import calculate_cost
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -28,18 +24,15 @@ class PostgresLogStore(LogStore):
         pool: asyncpg.Pool,
         *,
         store_full_prompts: bool = True,
-        use_chunked_hash: bool = False,
     ) -> None:
         """Initialize with an existing asyncpg pool.
 
         Args:
             pool: Shared asyncpg connection pool.
-            store_full_prompts: If False, only store prompt_hash (privacy mode).
-            use_chunked_hash: Use 4-token chunked hashing instead of full hash.
+            store_full_prompts: If False, prompt and response fields will be NULL.
         """
         self.pool = pool
         self.store_full_prompts = store_full_prompts
-        self.use_chunked_hash = use_chunked_hash
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -66,8 +59,6 @@ class PostgresLogStore(LogStore):
                     total_tokens INTEGER,
                     prompt TEXT,
                     response TEXT,
-                    prompt_hash TEXT,
-                    response_hash TEXT,
                     status_code INTEGER,
                     error TEXT,
                     user_id TEXT,
@@ -91,19 +82,20 @@ class PostgresLogStore(LogStore):
                 "CREATE INDEX IF NOT EXISTS idx_api_logs_session ON api_logs(session_id, timestamp DESC) WHERE session_id IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS idx_api_logs_model_activity ON api_logs(timestamp DESC, model_id, provider) WHERE user_id IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS idx_api_logs_error ON api_logs(timestamp DESC) WHERE error IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_prompt_hash ON api_logs(prompt_hash) WHERE prompt_hash IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_response_hash ON api_logs(response_hash) WHERE response_hash IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost ON api_logs(user_id, timestamp, cost_usd)",
             ]:
                 await conn.execute(ddl)
 
             # Migrations for existing databases
+            await conn.execute("DROP INDEX IF EXISTS idx_api_logs_prompt_hash")
+            await conn.execute("DROP INDEX IF EXISTS idx_api_logs_response_hash")
+            await conn.execute("ALTER TABLE api_logs DROP COLUMN IF EXISTS prompt_hash")
+            await conn.execute("ALTER TABLE api_logs DROP COLUMN IF EXISTS response_hash")
+
             for col_ddl in [
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS reasoning_tokens INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS stream BOOLEAN",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS ttft_ms INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS prompt_hash TEXT",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS response_hash TEXT",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)",
@@ -177,8 +169,6 @@ class PostgresLogStore(LogStore):
         params: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         ttft_ms: int | None = None,
-        prompt_hash: str | None = None,
-        response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,
@@ -188,18 +178,6 @@ class PostgresLogStore(LogStore):
         upstream_cost_usd: OpenRouter-reported per-request upstream cost (USD),
         or None for non-OpenRouter routes.
         """
-        # Auto-compute hashes
-        hash_fn = compute_prompt_hash_chunked if self.use_chunked_hash else compute_prompt_hash
-        if prompt_hash is None:
-            prompt_hash = hash_fn(prompt)
-        if response_hash is None and response is not None:
-            resp_str = (
-                json.dumps(response, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-                if isinstance(response, dict)
-                else str(response)
-            )
-            response_hash = hash_fn(resp_str)
-
         should_store_full = (
             store_full_content if store_full_content is not None else self.store_full_prompts
         )
@@ -227,7 +205,7 @@ class PostgresLogStore(LogStore):
                     ttft_ms, latency_ms,
                     prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
                     cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response, prompt_hash, response_hash,
+                    prompt, response,
                     status_code, error, user_id, session_id, metadata,
                     tools, upstream_cost_usd
                 )
@@ -237,9 +215,9 @@ class PostgresLogStore(LogStore):
                     $9, $10,
                     $11, $12, $13, $14,
                     $15, $16, $17,
-                    $18, $19, $20, $21,
-                    $22, $23, $24, $25, $26::jsonb,
-                    $27::jsonb, $28
+                    $18, $19,
+                    $20, $21, $22, $23, $24::jsonb,
+                    $25::jsonb, $26
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -262,8 +240,6 @@ class PostgresLogStore(LogStore):
                 cost_usd,
                 prompt_str,
                 response_str,
-                prompt_hash,
-                response_hash,
                 status_code,
                 error,
                 (metadata or {}).get("user_id"),

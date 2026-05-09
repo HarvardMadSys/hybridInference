@@ -67,15 +67,10 @@ def _init_db_logger() -> DatabaseLogger | None:
             f"Initializing PostgreSQL logger: "
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )
-        logger.info(
-            f"Database privacy: store_full_content={settings.db_store_full_content}, "
-            f"4-token chunked hash enabled"
-        )
-        # Always use 4-token chunked hash
+        logger.info(f"Database privacy: store_full_content={settings.db_store_full_content}")
         return DatabaseLogger(
             db_config,
             store_full_prompts=settings.db_store_full_content,
-            use_chunked_hash=True,
         )
     except Exception as exc:
         logger.warning(f"Failed to create database logger: {exc}")
@@ -313,7 +308,6 @@ async def initialize() -> AppServices:
         log_store = PostgresLogStore(
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
-            use_chunked_hash=True,
         )
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")

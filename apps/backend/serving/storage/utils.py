@@ -6,72 +6,7 @@ without constructing storage clients.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any
-
-
-def compute_prompt_hash(prompt: list[dict[str, Any]] | str) -> str:
-    """Compute SHA256 hash of prompt for deduplication and caching.
-
-    Args:
-        prompt: Prompt messages (list of dicts) or string.
-
-    Returns:
-        Hex-encoded SHA256 hash (64 characters).
-    """
-    if isinstance(prompt, list | dict):
-        prompt_str = json.dumps(prompt, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    else:
-        prompt_str = str(prompt)
-
-    return hashlib.sha256(prompt_str.encode("utf-8")).hexdigest()
-
-
-def compute_prompt_hash_chunked(
-    prompt: list[dict[str, Any]] | str,
-    chunk_size: int = 4,
-) -> str:
-    """Compute hash of prompt using 4-token chunks for privacy protection.
-
-    This function tokenizes the prompt and computes a hash for every N tokens
-    (default 4), then combines all chunk hashes into a final hash.
-
-    Args:
-        prompt: Prompt messages (list of dicts) or string.
-        chunk_size: Number of tokens per chunk (default: 4).
-
-    Returns:
-        Hex-encoded SHA256 hash of all chunk hashes combined.
-
-    Raises:
-        ValueError: If chunk_size is <= 0.
-    """
-    if chunk_size <= 0:
-        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
-
-    from serving.utils.tokens import tokenize_text
-
-    if isinstance(prompt, list | dict):
-        prompt_str = json.dumps(prompt, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    else:
-        prompt_str = str(prompt)
-
-    tokens = tokenize_text(prompt_str)
-
-    if not tokens:
-        return hashlib.sha256(b"").hexdigest()
-
-    final_hasher = hashlib.sha256()
-    for i in range(0, len(tokens), chunk_size):
-        chunk = tokens[i : i + chunk_size]
-        chunk_bytes = b"".join(
-            token_id.to_bytes(4, byteorder="big", signed=False) for token_id in chunk
-        )
-        chunk_digest = hashlib.sha256(chunk_bytes).digest()
-        final_hasher.update(chunk_digest)
-
-    return final_hasher.hexdigest()
 
 
 def calculate_cost(
