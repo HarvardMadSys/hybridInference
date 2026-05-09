@@ -420,6 +420,50 @@ def test_response_cached_tokens_mapped():
     }
     out = openai_response_to_anthropic(resp, model="m")
     assert out["usage"]["cache_read_input_tokens"] == 80
+    assert out["usage"]["input_tokens"] == 20
+
+
+def test_response_top_level_cache_tokens_mapped():
+    """UsageInfo.to_dict emits cache fields at the top level — must be picked up."""
+    resp = {
+        "id": "x",
+        "model": "m",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "y"}, "finish_reason": "stop"}
+        ],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "cache_read_tokens": 60,
+            "cached_tokens": 60,
+            "cache_write_tokens": 10,
+        },
+    }
+    out = openai_response_to_anthropic(resp, model="m")
+    assert out["usage"]["cache_read_input_tokens"] == 60
+    assert out["usage"]["cache_creation_input_tokens"] == 10
+    # input_tokens disjoint from cache subsets.
+    assert out["usage"]["input_tokens"] == 30
+
+
+def test_response_cache_underflow_clamped_to_zero():
+    """Inconsistent upstream usage (cache > prompt) clamps input_tokens to 0."""
+    resp = {
+        "id": "x",
+        "model": "m",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "y"}, "finish_reason": "stop"}
+        ],
+        "usage": {
+            "prompt_tokens": 50,
+            "completion_tokens": 5,
+            "cache_read_tokens": 80,
+        },
+    }
+    out = openai_response_to_anthropic(resp, model="m")
+    assert out["usage"]["input_tokens"] == 0
+    assert out["usage"]["cache_read_input_tokens"] == 80
 
 
 def test_response_id_preserves_msg_prefix_if_present():
@@ -715,6 +759,30 @@ def test_extract_usage_from_anthropic_sse():
         "output_tokens": 99,
         "cache_creation_input_tokens": 3,
         "cache_read_input_tokens": 7,
+    }
+
+
+def test_extract_usage_cache_tokens_from_message_delta():
+    """Cache fields can also arrive on the final message_delta — must be extracted."""
+    chunk = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"x","usage":{"input_tokens":10}}}\n\n'
+        b"event: message_delta\n"
+        b'data: {"type":"message_delta","usage":{"output_tokens":99,'
+        b'"cache_read_input_tokens":40,"cache_creation_input_tokens":5}}\n\n'
+    )
+    usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    extract_anthropic_usage_from_sse(chunk, usage)
+    assert usage == {
+        "input_tokens": 10,
+        "output_tokens": 99,
+        "cache_creation_input_tokens": 5,
+        "cache_read_input_tokens": 40,
     }
 
 
