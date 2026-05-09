@@ -195,7 +195,10 @@ class TestSignup:
         response = await auth_app_client.post("/auth/signup", json=signup_data)
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "You must agree to the Terms of Service to create an account"
+        assert (
+            response.json()["detail"]
+            == "You must agree to the Terms of Service to create an account"
+        )
 
 
 class TestSignupAbuseProtection:
