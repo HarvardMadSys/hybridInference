@@ -103,6 +103,14 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
 
   const visibleXMin = xDomain[0] === 'auto' ? dataXMin : (xDomain[0] as number);
   const visibleXMax = xDomain[1] === 'auto' ? dataXMax : (xDomain[1] as number);
+
+  const xTicks = useMemo(() => {
+    const candidates = [
+      100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000,
+      2000000, 5000000,
+    ];
+    return candidates.filter((t) => t >= visibleXMin && t <= visibleXMax);
+  }, [visibleXMin, visibleXMax]);
   const visibleYMin = yDomain[0] === 'auto' ? dataYMin : (yDomain[0] as number);
   const visibleYMax = yDomain[1] === 'auto' ? dataYMax : (yDomain[1] as number);
 
@@ -275,6 +283,8 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               domain={xDomain}
               allowDataOverflow
               height={X_AXIS_HEIGHT}
+              ticks={xTicks.length > 0 ? xTicks : undefined}
+              tickFormatter={(v: number) => Number(v).toLocaleString()}
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
                 value: 'Input length (tokens)',
