@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   CartesianGrid,
   Line,
@@ -52,6 +59,10 @@ function fmt2(v: unknown): string {
 
 type AxisDomain = [number, number] | ['auto', 'auto'];
 
+const Y_AXIS_WIDTH = 48;
+const CHART_MARGIN_LEFT = 12;
+const CHART_MARGIN_RIGHT = 12;
+
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
   const cached = safePoints.filter((p) => p.cache_hit);
@@ -59,39 +70,67 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const heading = `${model.model_id} · ${model.provider}`;
 
   const [xDomain, setXDomain] = useState<AxisDomain>(['auto', 'auto']);
-  const [yDomain, setYDomain] = useState<AxisDomain>(['auto', 'auto']);
-  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
-  const [dragEnd, setDragEnd] = useState<{ x: number; y: number } | null>(null);
-  const zoomed = xDomain[0] !== 'auto' || yDomain[0] !== 'auto';
+  const [dragStartX, setDragStartX] = useState<number | null>(null);
+  const [dragEndX, setDragEndX] = useState<number | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const zoomed = xDomain[0] !== 'auto';
 
-  const onDown = (e: unknown) => {
-    const ev = e as { xValue?: number; yValue?: number } | null;
-    if (!ev || ev.xValue == null || ev.yValue == null) return;
-    setDragStart({ x: ev.xValue, y: ev.yValue });
-    setDragEnd({ x: ev.xValue, y: ev.yValue });
+  const dataXMin = useMemo(() => {
+    if (safePoints.length === 0) return 1;
+    return Math.max(
+      1,
+      safePoints.reduce((m, p) => Math.min(m, p.prompt_tokens), Infinity),
+    );
+  }, [safePoints]);
+  const dataXMax = useMemo(() => {
+    if (safePoints.length === 0) return 10;
+    return safePoints.reduce((m, p) => Math.max(m, p.prompt_tokens), 0);
+  }, [safePoints]);
+
+  const visibleXMin = xDomain[0] === 'auto' ? dataXMin : (xDomain[0] as number);
+  const visibleXMax = xDomain[1] === 'auto' ? dataXMax : (xDomain[1] as number);
+
+  const pixelToX = (clientX: number): number | null => {
+    const el = wrapperRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const innerLeft = CHART_MARGIN_LEFT + Y_AXIS_WIDTH;
+    const innerRight = rect.width - CHART_MARGIN_RIGHT;
+    const innerWidth = innerRight - innerLeft;
+    if (innerWidth <= 0) return null;
+    const px = clientX - rect.left;
+    const frac = Math.min(1, Math.max(0, (px - innerLeft) / innerWidth));
+    const lo = Math.log10(Math.max(visibleXMin, 1));
+    const hi = Math.log10(Math.max(visibleXMax, visibleXMin + 1));
+    return Math.pow(10, lo + frac * (hi - lo));
   };
-  const onMove = (e: unknown) => {
-    const ev = e as { xValue?: number; yValue?: number } | null;
-    if (!dragStart || !ev || ev.xValue == null || ev.yValue == null) return;
-    setDragEnd({ x: ev.xValue, y: ev.yValue });
+
+  const onDown = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const x = pixelToX(e.clientX);
+    if (x == null) return;
+    e.preventDefault();
+    setDragStartX(x);
+    setDragEndX(x);
+  };
+  const onMove = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (dragStartX == null) return;
+    const x = pixelToX(e.clientX);
+    if (x == null) return;
+    setDragEndX(x);
   };
   const onUp = () => {
-    if (dragStart && dragEnd) {
-      const x1 = Math.min(dragStart.x, dragEnd.x);
-      const x2 = Math.max(dragStart.x, dragEnd.x);
-      const y1 = Math.min(dragStart.y, dragEnd.y);
-      const y2 = Math.max(dragStart.y, dragEnd.y);
-      if (x2 > x1 && y2 > y1) {
+    if (dragStartX != null && dragEndX != null) {
+      const x1 = Math.min(dragStartX, dragEndX);
+      const x2 = Math.max(dragStartX, dragEndX);
+      if (x2 / Math.max(x1, 1) > 1.05) {
         setXDomain([Math.max(x1, 1), x2]);
-        setYDomain([y1, y2]);
       }
     }
-    setDragStart(null);
-    setDragEnd(null);
+    setDragStartX(null);
+    setDragEndX(null);
   };
   const reset = () => {
     setXDomain(['auto', 'auto']);
-    setYDomain(['auto', 'auto']);
   };
 
   return (
@@ -126,17 +165,20 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
         </span>
         <span className="text-gray-400">· drag to zoom</span>
       </div>
-      <div className="mt-3 h-[260px] select-none">
+      <div
+        ref={wrapperRef}
+        className="relative mt-3 h-[260px] select-none cursor-crosshair"
+        onMouseDown={onDown}
+        onMouseMove={onMove}
+        onMouseUp={onUp}
+        onMouseLeave={() => {
+          setDragStartX(null);
+          setDragEndX(null);
+        }}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart
-            margin={{ top: 8, right: 12, bottom: 24, left: 12 }}
-            onMouseDown={onDown}
-            onMouseMove={onMove}
-            onMouseUp={onUp}
-            onMouseLeave={() => {
-              setDragStart(null);
-              setDragEnd(null);
-            }}
+            margin={{ top: 8, right: CHART_MARGIN_RIGHT, bottom: 24, left: CHART_MARGIN_LEFT }}
           >
             <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
             <XAxis
@@ -158,8 +200,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               type="number"
               dataKey="ttft_ms"
               name="TTFT"
-              domain={yDomain}
-              allowDataOverflow
+              width={Y_AXIS_WIDTH}
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
                 value: 'TTFT (ms)',
@@ -190,12 +231,10 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               fillOpacity={0.6}
               shape="circle"
             />
-            {dragStart && dragEnd && (
+            {dragStartX != null && dragEndX != null && dragStartX !== dragEndX && (
               <ReferenceArea
-                x1={dragStart.x}
-                x2={dragEnd.x}
-                y1={dragStart.y}
-                y2={dragEnd.y}
+                x1={dragStartX}
+                x2={dragEndX}
                 fill="#3b82f6"
                 fillOpacity={0.1}
                 stroke="#3b82f6"
