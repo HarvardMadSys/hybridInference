@@ -16,7 +16,9 @@ concurrency:
 jobs:
   docker-build:
     name: Docker Build (${{ matrix.image }})
-    runs-on: self-hosted
+    # Buildx requires Docker daemon access, which is not available on all
+    # self-hosted runners in the default pool.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:

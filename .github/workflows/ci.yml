@@ -131,7 +131,9 @@ jobs:
 
   test:
     name: Test (shard ${{ matrix.shard }}/${{ needs.pytest-shards.outputs.count }})
-    runs-on: self-hosted
+    # Service containers require reliable Docker socket access, which is not
+    # guaranteed across the mixed self-hosted runner pool.
+    runs-on: ubuntu-latest
     needs: pytest-shards
 
     strategy:
