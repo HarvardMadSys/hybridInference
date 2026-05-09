@@ -57,6 +57,7 @@ def create_signup_request(**overrides: Any) -> dict[str, Any]:
         "email": f"newuser_{unique_id}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": f"New User {unique_id}",
+        "accepted_tos": True,
     }
 
     result = dict(defaults)
