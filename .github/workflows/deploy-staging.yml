@@ -57,16 +57,25 @@ jobs:
             LOOKUP_KEY="[${STAGING_HOST}]:${STAGING_PORT}"
           fi
 
-          if ! ssh-keygen -F "${LOOKUP_KEY}" -f "${HOME}/.ssh/known_hosts" >/dev/null; then
+          MATCHED_HOST_KEYS="$(ssh-keygen -F "${LOOKUP_KEY}" -f "${HOME}/.ssh/known_hosts" || true)"
+
+          if [ -z "${MATCHED_HOST_KEYS}" ]; then
             echo "::error title=Invalid STAGING_HOST_KEY::known_hosts has no entry for ${LOOKUP_KEY}"
             echo "Re-generate the secret with: ssh-keyscan -p ${STAGING_PORT} -t ed25519,rsa,ecdsa ${STAGING_HOST}"
             exit 1
           fi
 
-          if ! awk -v lookup_key="${LOOKUP_KEY}" '
-            NF >= 3 && $1 == lookup_key && $2 == "ssh-ed25519" { found = 1 }
+          if ! printf '%s\n' "${MATCHED_HOST_KEYS}" | awk '
+            /^#/ { next }
+            {
+              for (i = 1; i <= NF; i++) {
+                if ($i == "ssh-ed25519") {
+                  found = 1
+                }
+              }
+            }
             END { exit found ? 0 : 1 }
-          ' "${HOME}/.ssh/known_hosts"; then
+          '; then
             echo "::error title=Invalid STAGING_HOST_KEY::known_hosts has no ssh-ed25519 entry for ${LOOKUP_KEY}"
             echo "OpenSSH is requiring the server's ed25519 host key for strict host checking."
             echo "Re-generate the secret with: ssh-keyscan -p ${STAGING_PORT} -t ed25519,rsa,ecdsa ${STAGING_HOST}"
