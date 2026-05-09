@@ -118,7 +118,6 @@ def _format_exception_for_db(exc: BaseException) -> str:
     return value
 
 
-
 @router.post(
     "/v1/chat/completions",
     response_model=ChatCompletionResponse,
@@ -378,8 +377,7 @@ async def chat_completions(
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "image_url":
                     if log_store and not is_synthetic_probe:
-                        _schedule_db_log_task(
-                            log_store,
+                        completions_logger.schedule_log(
                             request_id,
                             {
                                 "request_id": request_id,
