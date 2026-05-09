@@ -1,6 +1,13 @@
 'use client';
 
-import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   CartesianGrid,
   Line,
@@ -170,7 +177,9 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
         }}
       >
         <ResponsiveContainer width="100%" height="100%">
-          <ScatterChart margin={{ top: 8, right: CHART_MARGIN_RIGHT, bottom: 24, left: CHART_MARGIN_LEFT }}>
+          <ScatterChart
+            margin={{ top: 8, right: CHART_MARGIN_RIGHT, bottom: 24, left: CHART_MARGIN_LEFT }}
+          >
             <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
             <XAxis
               type="number"
