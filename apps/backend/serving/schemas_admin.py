@@ -866,6 +866,8 @@ class ProviderStatsRow(BaseModel):
     prompt_tokens_avg: float | None = None
     completion_tokens_avg: float | None = None
     total_completion_tokens: int
+    total_prompt_tokens: int | None = None
+    total_reasoning_tokens: int | None = None
 
 
 class ProviderModelPair(BaseModel):

@@ -106,7 +106,8 @@ async def admin_provider_stats(
                        ttft_p50_ms, ttft_p95_ms, ttft_p99_ms,
                        latency_p50_ms, latency_p95_ms, latency_p99_ms,
                        throughput_avg_tps, throughput_p50_tps, throughput_p95_tps,
-                       prompt_tokens_avg, completion_tokens_avg, total_completion_tokens
+                       prompt_tokens_avg, completion_tokens_avg, total_completion_tokens,
+                       total_prompt_tokens, total_reasoning_tokens
                   FROM provider_hourly_stats
                  WHERE provider = $1
                    AND hour_bucket >= $2 AND hour_bucket < $3
@@ -124,7 +125,8 @@ async def admin_provider_stats(
                        ttft_p50_ms, ttft_p95_ms, ttft_p99_ms,
                        latency_p50_ms, latency_p95_ms, latency_p99_ms,
                        throughput_avg_tps, throughput_p50_tps, throughput_p95_tps,
-                       prompt_tokens_avg, completion_tokens_avg, total_completion_tokens
+                       prompt_tokens_avg, completion_tokens_avg, total_completion_tokens,
+                       total_prompt_tokens, total_reasoning_tokens
                   FROM provider_hourly_stats
                  WHERE provider = $1 AND model_id = $2
                    AND hour_bucket >= $3 AND hour_bucket < $4

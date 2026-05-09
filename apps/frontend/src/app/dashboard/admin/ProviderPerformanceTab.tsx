@@ -226,9 +226,12 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
   const totals = useMemo(() => {
     const requests = rows.reduce((acc, r) => acc + r.request_count, 0);
     const errors = rows.reduce((acc, r) => acc + r.error_count, 0);
-    const tokens = rows.reduce((acc, r) => acc + r.total_completion_tokens, 0);
+    const completion = rows.reduce((acc, r) => acc + r.total_completion_tokens, 0);
+    const prefill = rows.reduce((acc, r) => acc + (r.total_prompt_tokens ?? 0), 0);
+    const reasoning = rows.reduce((acc, r) => acc + (r.total_reasoning_tokens ?? 0), 0);
+    const decode = Math.max(completion - reasoning, 0);
     const errorRate = requests === 0 ? 0 : errors / requests;
-    return { requests, errors, errorRate, tokens };
+    return { requests, errors, errorRate, prefill, reasoning, decode };
   }, [rows]);
 
   if (rows.length === 0) return null;
@@ -236,13 +239,15 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <h3 className="text-[14px] font-semibold text-gray-900">{modelId}</h3>
+        <h3 className="text-lg font-semibold text-gray-900">{modelId}</h3>
       </div>
 
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[13px] text-gray-700">
         <Kpi label="Requests" value={totals.requests.toLocaleString()} />
         <Kpi label="Error rate" value={`${(totals.errorRate * 100).toFixed(2)}%`} />
-        <Kpi label="Completion tokens" value={totals.tokens.toLocaleString()} />
+        <Kpi label="Prefill" value={totals.prefill.toLocaleString()} />
+        <Kpi label="Reasoning" value={totals.reasoning.toLocaleString()} />
+        <Kpi label="Decode" value={totals.decode.toLocaleString()} />
       </div>
 
       <div
@@ -399,9 +404,12 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     const allRows = Object.values(modelRows).flat();
     const requests = allRows.reduce((acc, r) => acc + r.request_count, 0);
     const errors = allRows.reduce((acc, r) => acc + r.error_count, 0);
-    const tokens = allRows.reduce((acc, r) => acc + r.total_completion_tokens, 0);
+    const completion = allRows.reduce((acc, r) => acc + r.total_completion_tokens, 0);
+    const prefill = allRows.reduce((acc, r) => acc + (r.total_prompt_tokens ?? 0), 0);
+    const reasoning = allRows.reduce((acc, r) => acc + (r.total_reasoning_tokens ?? 0), 0);
+    const decode = Math.max(completion - reasoning, 0);
     const errorRate = requests === 0 ? 0 : errors / requests;
-    return { requests, errors, errorRate, tokens };
+    return { requests, errors, errorRate, prefill, reasoning, decode };
   }, [modelRows]);
 
   return (
@@ -444,7 +452,9 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border px-3 py-2 text-[13px]">
           <Kpi label="Total requests" value={overallTotals.requests.toLocaleString()} />
           <Kpi label="Error rate" value={`${(overallTotals.errorRate * 100).toFixed(2)}%`} />
-          <Kpi label="Completion tokens" value={overallTotals.tokens.toLocaleString()} />
+          <Kpi label="Prefill" value={overallTotals.prefill.toLocaleString()} />
+          <Kpi label="Reasoning" value={overallTotals.reasoning.toLocaleString()} />
+          <Kpi label="Decode" value={overallTotals.decode.toLocaleString()} />
         </div>
       )}
 
