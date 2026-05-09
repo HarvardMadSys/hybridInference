@@ -21,7 +21,8 @@ export function AdminTabNav() {
     <div className="mt-6 flex flex-wrap items-center gap-1">
       {TABS.map((tab) => {
         const href = `/dashboard/admin/${tab.slug}`;
-        const isActive = pathname === href || pathname.startsWith(`${href}/`);
+        const isUsersLanding = tab.slug === 'users' && pathname === '/dashboard/admin';
+        const isActive = isUsersLanding || pathname === href || pathname.startsWith(`${href}/`);
         return (
           <Link
             key={tab.slug}
