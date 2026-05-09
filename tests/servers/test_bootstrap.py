@@ -168,7 +168,7 @@ class TestBootstrapInitialization:
 
             assert isinstance(services.user_concurrency_limiter, UserConcurrencyLimiter)
             limiter = services.user_concurrency_limiter
-            for role in ("free", "pro", "internal", "admin"):
+            for role in ("trial", "free", "pro", "internal", "admin"):
                 granted, cap, _ = await limiter.try_acquire(f"u-{role}", role, False)
                 assert granted
                 assert cap >= 1
