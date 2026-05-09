@@ -288,7 +288,8 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         setAllProviders(resp.providers);
         setAllPairs(resp.pairs);
         if (resp.providers.length > 0) {
-          setProvider(resp.providers[0]);
+          const preferred = resp.providers.includes('minimax') ? 'minimax' : resp.providers[0];
+          setProvider(preferred);
         }
       } catch (exc) {
         if (!cancelled) setError(getErrorMessage(exc));

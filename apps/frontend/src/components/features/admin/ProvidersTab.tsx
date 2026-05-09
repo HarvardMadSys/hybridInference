@@ -4,6 +4,14 @@ import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { ProviderQuotaResult, getProviderQuotas } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { PerformanceTab } from '@/components/features/admin/PerformanceTab';
+
+type SubTab = 'quotas' | 'performance';
+
+const SUB_TABS: { key: SubTab; label: string }[] = [
+  { key: 'quotas', label: 'Quotas' },
+  { key: 'performance', label: 'Performance' },
+];
 
 function pct(used: number | null, limit: number | null): number | null {
   if (used == null || limit == null || limit <= 0) return null;
@@ -93,7 +101,7 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
   );
 }
 
-export function ProvidersTab() {
+function QuotasSection() {
   const [providerQuotas, setProviderQuotas] = useState<ProviderQuotaResult[]>([]);
   const [providerQuotasLoading, setProviderQuotasLoading] = useState(false);
 
@@ -114,7 +122,7 @@ export function ProvidersTab() {
   }, [loadProviderQuotas]);
 
   return (
-    <div className="mt-6">
+    <div>
       <div className="mb-3 flex items-center justify-end gap-2">
         {providerQuotasLoading && (
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
@@ -143,6 +151,42 @@ export function ProvidersTab() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+export function ProvidersTab() {
+  const [active, setActive] = useState<SubTab>('quotas');
+
+  return (
+    <div className="mt-6">
+      <div
+        role="tablist"
+        aria-label="Providers sub-tabs"
+        className="mb-4 flex flex-wrap items-center gap-1 border-b border-gray-200"
+      >
+        {SUB_TABS.map((tab) => {
+          const isActive = active === tab.key;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => setActive(tab.key)}
+              className={`-mb-px border-b-2 px-3.5 py-1.5 text-[13px] font-medium transition ${
+                isActive
+                  ? 'border-gray-900 text-gray-900'
+                  : 'border-transparent text-gray-500 hover:text-gray-900'
+              }`}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {active === 'quotas' ? <QuotasSection /> : <PerformanceTab />}
     </div>
   );
 }

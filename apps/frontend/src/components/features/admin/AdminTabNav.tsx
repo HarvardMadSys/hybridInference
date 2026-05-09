@@ -11,7 +11,6 @@ const TABS = [
   { slug: 'audit', label: 'Audit Log' },
   { slug: 'broadcast', label: 'Broadcast Email' },
   { slug: 'analytics', label: 'Analytics' },
-  { slug: 'performance', label: 'Performance' },
   { slug: 'settings', label: 'Settings' },
 ] as const;
 
