@@ -58,6 +58,7 @@ function fmt2(v: unknown): string {
 }
 
 type AxisDomain = [number, number] | ['auto', 'auto'];
+type Scale = 'linear' | 'log';
 
 const Y_AXIS_WIDTH = 48;
 const CHART_MARGIN_LEFT = 12;
@@ -74,6 +75,8 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
 
   const [xDomain, setXDomain] = useState<AxisDomain>(['auto', 'auto']);
   const [yDomain, setYDomain] = useState<AxisDomain>(['auto', 'auto']);
+  const [xScale, setXScale] = useState<Scale>('log');
+  const [yScale, setYScale] = useState<Scale>('linear');
   const [dragStartX, setDragStartX] = useState<number | null>(null);
   const [dragEndX, setDragEndX] = useState<number | null>(null);
   const [dragStartY, setDragStartY] = useState<number | null>(null);
@@ -103,6 +106,18 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
 
   const visibleXMin = xDomain[0] === 'auto' ? dataXMin : (xDomain[0] as number);
   const visibleXMax = xDomain[1] === 'auto' ? dataXMax : (xDomain[1] as number);
+
+  const xTicks = useMemo(() => {
+    const candidates = [
+      100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000,
+      2000000, 5000000,
+    ];
+    const visible = candidates.filter((t) => t >= visibleXMin && t <= visibleXMax);
+    const MAX_TICKS = 8;
+    if (visible.length <= MAX_TICKS) return visible;
+    const stride = Math.ceil(visible.length / MAX_TICKS);
+    return visible.filter((_, i) => i % stride === 0);
+  }, [visibleXMin, visibleXMax]);
   const visibleYMin = yDomain[0] === 'auto' ? dataYMin : (yDomain[0] as number);
   const visibleYMax = yDomain[1] === 'auto' ? dataYMax : (yDomain[1] as number);
 
@@ -116,9 +131,12 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
     if (innerWidth <= 0) return null;
     const px = clientX - rect.left;
     const frac = Math.min(1, Math.max(0, (px - innerLeft) / innerWidth));
-    const lo = Math.log10(Math.max(visibleXMin, 1));
-    const hi = Math.log10(Math.max(visibleXMax, visibleXMin + 1));
-    return Math.pow(10, lo + frac * (hi - lo));
+    if (xScale === 'log') {
+      const lo = Math.log10(Math.max(visibleXMin, 1));
+      const hi = Math.log10(Math.max(visibleXMax, visibleXMin + 1));
+      return Math.pow(10, lo + frac * (hi - lo));
+    }
+    return visibleXMin + frac * (visibleXMax - visibleXMin);
   };
 
   const pixelToY = (clientY: number): number | null => {
@@ -131,6 +149,11 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
     if (innerHeight <= 0) return null;
     const py = clientY - rect.top;
     const frac = Math.min(1, Math.max(0, (py - innerTop) / innerHeight));
+    if (yScale === 'log') {
+      const lo = Math.log10(Math.max(visibleYMin, 1));
+      const hi = Math.log10(Math.max(visibleYMax, visibleYMin + 1));
+      return Math.pow(10, hi - frac * (hi - lo));
+    }
     return visibleYMax - frac * (visibleYMax - visibleYMin);
   };
 
@@ -156,16 +179,23 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
     if (dragStartX != null && dragEndX != null) {
       const x1 = Math.min(dragStartX, dragEndX);
       const x2 = Math.max(dragStartX, dragEndX);
-      if (x2 / Math.max(x1, 1) > 1.05) {
-        setXDomain([Math.max(x1, 1), x2]);
+      const xMeaningful =
+        xScale === 'log'
+          ? x2 / Math.max(x1, 1) > 1.05
+          : x2 - x1 > Math.max(visibleXMax - visibleXMin, 1) * 0.05;
+      if (xMeaningful) {
+        setXDomain([xScale === 'log' ? Math.max(x1, 1) : x1, x2]);
       }
     }
     if (dragStartY != null && dragEndY != null) {
       const y1 = Math.min(dragStartY, dragEndY);
       const y2 = Math.max(dragStartY, dragEndY);
-      const yRange = Math.max(dataYMax - dataYMin, 1);
-      if (y2 - y1 > yRange * 0.05) {
-        setYDomain([y1, y2]);
+      const yMeaningful =
+        yScale === 'log'
+          ? y2 / Math.max(y1, 1) > 1.05
+          : y2 - y1 > Math.max(visibleYMax - visibleYMin, 1) * 0.05;
+      if (yMeaningful) {
+        setYDomain([yScale === 'log' ? Math.max(y1, 1) : y1, y2]);
       }
     }
     setDragStartX(null);
@@ -243,6 +273,8 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
           No cache ({uncached.length.toLocaleString()})
         </span>
         <span className="text-gray-400">· drag to zoom</span>
+        <ScaleToggle label="X" value={xScale} onChange={setXScale} />
+        <ScaleToggle label="Y" value={yScale} onChange={setYScale} />
       </div>
       <div
         ref={wrapperRef}
@@ -271,10 +303,12 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               type="number"
               dataKey="prompt_tokens"
               name="Input length"
-              scale="log"
+              scale={xScale}
               domain={xDomain}
               allowDataOverflow
               height={X_AXIS_HEIGHT}
+              ticks={xScale === 'log' && xTicks.length > 0 ? xTicks : undefined}
+              tickFormatter={(v: number) => Number(v).toLocaleString()}
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
                 value: 'Input length (tokens)',
@@ -288,7 +322,8 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               dataKey="ttft_ms"
               name="TTFT"
               width={Y_AXIS_WIDTH}
-              domain={yDomain}
+              scale={yScale}
+              domain={yScale === 'log' ? [Math.max(visibleYMin, 1), visibleYMax] : yDomain}
               allowDataOverflow
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
@@ -626,6 +661,38 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         ) : null}
       </div>
     </div>
+  );
+}
+
+function ScaleToggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: Scale;
+  onChange: (s: Scale) => void;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="text-gray-400">{label}:</span>
+      <span className="inline-flex overflow-hidden rounded border border-gray-200">
+        {(['linear', 'log'] as Scale[]).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => onChange(s)}
+            className={
+              value === s
+                ? 'bg-gray-900 px-1.5 py-0.5 text-[10px] text-white'
+                : 'px-1.5 py-0.5 text-[10px] text-gray-600 hover:bg-gray-50'
+            }
+          >
+            {s}
+          </button>
+        ))}
+      </span>
+    </span>
   );
 }
 
