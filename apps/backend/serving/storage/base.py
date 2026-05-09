@@ -817,6 +817,7 @@ class LogStore(ABC):
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,
+        request_payload: dict[str, Any] | None = None,
     ) -> None:
         """Insert a single request log row. Idempotent (ON CONFLICT DO NOTHING)."""
 
