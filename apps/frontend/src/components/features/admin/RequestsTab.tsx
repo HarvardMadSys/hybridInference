@@ -1073,6 +1073,12 @@ export function RequestsTab() {
                                   {req.user_ip ?? '—'}
                                 </span>
                               </div>
+                              <div className="col-span-full">
+                                <span className="text-gray-500">User agent:</span>{' '}
+                                <span className="text-gray-700 font-mono break-all">
+                                  {req.user_agent || '—'}
+                                </span>
+                              </div>
                               <div>
                                 <span className="text-gray-500">Cached:</span>{' '}
                                 <span className="text-gray-700">
