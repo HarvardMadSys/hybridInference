@@ -203,11 +203,12 @@ class BaseAdapter(ABC):
         for ant in translator.finalize():
             yield ant
         # Expose accumulated usage for the router's DB-logging step.
+        translator_usage = translator.usage
         final_usage = {
-            "input_tokens": translator.usage.get("input_tokens", 0),
-            "output_tokens": translator.usage.get("output_tokens", 0),
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
+            "input_tokens": translator_usage.get("input_tokens", 0),
+            "output_tokens": translator_usage.get("output_tokens", 0),
+            "cache_creation_input_tokens": translator_usage.get("cache_creation_input_tokens", 0),
+            "cache_read_input_tokens": translator_usage.get("cache_read_input_tokens", 0),
         }
         self.last_stream_usage = final_usage  # keep for backward-compat with tests
         if usage_sink is not None:

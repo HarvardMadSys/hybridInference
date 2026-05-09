@@ -13,6 +13,8 @@ import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from serving.utils.token_utils import extract_cache_tokens
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -263,13 +265,20 @@ def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[st
         msg_id = f"msg_{uuid.uuid4().hex[:24]}"
 
     usage_in = resp.get("usage") or {}
+    cache_read, cache_write = extract_cache_tokens(usage_in)
+    prompt_tokens = int(usage_in.get("prompt_tokens", 0) or 0)
+    # OpenAI prompt_tokens is cache-inclusive; Anthropic input_tokens is the
+    # non-cached remainder. Subtract cache subset and clamp to >= 0 so the
+    # translated shape stays disjoint when the upstream usage is inconsistent.
+    input_tokens = max(0, prompt_tokens - (cache_read or 0) - (cache_write or 0))
     anthropic_usage: dict[str, int] = {
-        "input_tokens": int(usage_in.get("prompt_tokens", 0)),
-        "output_tokens": int(usage_in.get("completion_tokens", 0)),
+        "input_tokens": input_tokens,
+        "output_tokens": int(usage_in.get("completion_tokens", 0) or 0),
     }
-    cached = (usage_in.get("prompt_tokens_details") or {}).get("cached_tokens")
-    if cached:
-        anthropic_usage["cache_read_input_tokens"] = int(cached)
+    if cache_read is not None:
+        anthropic_usage["cache_read_input_tokens"] = cache_read
+    if cache_write is not None:
+        anthropic_usage["cache_creation_input_tokens"] = cache_write
 
     return {
         "id": msg_id,
@@ -350,12 +359,17 @@ class OpenAIToAnthropicStreamTranslator:
         self._tool_blocks.clear()
         # Emit message_delta with stop_reason + final usage.
         stop_reason = _FINISH_REASON_MAP.get(self._finish_reason or "stop", "end_turn")
+        delta_usage: dict[str, int] = {"output_tokens": self._usage["output_tokens"]}
+        if "cache_read_input_tokens" in self._usage:
+            delta_usage["cache_read_input_tokens"] = self._usage["cache_read_input_tokens"]
+        if "cache_creation_input_tokens" in self._usage:
+            delta_usage["cache_creation_input_tokens"] = self._usage["cache_creation_input_tokens"]
         yield self._sse(
             "message_delta",
             {
                 "type": "message_delta",
                 "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                "usage": {"output_tokens": self._usage["output_tokens"]},
+                "usage": delta_usage,
             },
         )
         yield self._sse("message_stop", {"type": "message_stop"})
@@ -379,12 +393,21 @@ class OpenAIToAnthropicStreamTranslator:
     def _handle_chunk(self, obj: dict[str, Any]) -> Iterator[bytes]:
         usage = obj.get("usage")
         if usage:
-            self._usage["input_tokens"] = int(
-                usage.get("prompt_tokens", self._usage["input_tokens"])
-            )
+            cache_read, cache_write = extract_cache_tokens(usage)
+            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+            # OpenAI prompt_tokens is cache-inclusive; Anthropic input_tokens
+            # is the non-cached remainder. Clamp to >= 0 if upstream usage is
+            # inconsistent.
+            input_tokens = max(0, prompt_tokens - (cache_read or 0) - (cache_write or 0))
+            if "prompt_tokens" in usage:
+                self._usage["input_tokens"] = input_tokens
             self._usage["output_tokens"] = int(
                 usage.get("completion_tokens", self._usage["output_tokens"])
             )
+            if cache_read is not None:
+                self._usage["cache_read_input_tokens"] = cache_read
+            if cache_write is not None:
+                self._usage["cache_creation_input_tokens"] = cache_write
 
         choices = obj.get("choices") or []
         if not choices:
@@ -544,6 +567,9 @@ def extract_anthropic_usage_from_sse(raw: bytes, usage: dict[str, int]) -> None:
                 delta_usage = obj.get("usage") or {}
                 if "output_tokens" in delta_usage:
                     usage["output_tokens"] = int(delta_usage["output_tokens"])
+                for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+                    if k in delta_usage:
+                        usage[k] = int(delta_usage[k])
     except Exception:
         # Best-effort: never disturb the streaming pass-through. Failures
         # here only affect DB-logged usage counts.
