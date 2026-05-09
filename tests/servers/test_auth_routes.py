@@ -114,6 +114,7 @@ class TestSignup:
                 "email": test_user["email"],
                 "password": "SecurePass123!",
                 "user_name": "Duplicate User",
+                "accepted_tos": True,
             },
         )
 
@@ -128,6 +129,7 @@ class TestSignup:
                 "email": "weakpass@example.com",
                 "password": "123",
                 "user_name": "Weak Pass",
+                "accepted_tos": True,
             },
         )
 
@@ -142,6 +144,7 @@ class TestSignup:
                 "email": "not-an-email",
                 "password": "SecurePass123!",
                 "user_name": "Invalid Email",
+                "accepted_tos": True,
             },
         )
 
@@ -175,6 +178,24 @@ class TestSignup:
         )
 
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_signup_missing_tos_acceptance(self, auth_app_client: AsyncClient):
+        signup_data = create_signup_request()
+        signup_data.pop("accepted_tos")
+
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_signup_rejects_false_tos_acceptance(self, auth_app_client: AsyncClient):
+        signup_data = create_signup_request(accepted_tos=False)
+
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "You must agree to the Terms of Service to create an account"
 
 
 class TestSignupAbuseProtection:

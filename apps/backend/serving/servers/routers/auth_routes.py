@@ -131,6 +131,12 @@ async def signup(
             detail="Public signup is currently disabled. Please contact administrator.",
         )
 
+    if not body.accepted_tos:
+        raise HTTPException(
+            status_code=400,
+            detail="You must agree to the Terms of Service to create an account",
+        )
+
     # Record on entry so probing with varied payloads cannot bypass the limit.
     client_ip = get_client_ip(request)
     allowed, reason = await check_and_record_signup(client_ip)
