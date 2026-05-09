@@ -435,10 +435,6 @@ export default function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
-  // Users tab loading state surfaced for the global Refresh button
-  const [usersLoading, setUsersLoading] = useState(false);
-  const [usersRefreshNonce, setUsersRefreshNonce] = useState(0);
-
   // Broadcast email state
   const [broadcasts, setBroadcasts] = useState<BroadcastListItem[]>([]);
   const [broadcastLoading, setBroadcastLoading] = useState(false);
@@ -702,10 +698,6 @@ export default function AdminPage() {
   };
 
   const refreshActiveTab = () => {
-    if (activeTab === 'users') {
-      setUsersRefreshNonce((n) => n + 1);
-      return;
-    }
     if (activeTab === 'audit') {
       loadAudit();
       return;
@@ -764,20 +756,10 @@ export default function AdminPage() {
           </a>
           <button
             onClick={refreshActiveTab}
-            disabled={
-              usersLoading ||
-              auditLoading ||
-              reqLoading ||
-              reqMetricsLoading ||
-              providerQuotasLoading
-            }
+            disabled={auditLoading || reqLoading || reqMetricsLoading || providerQuotasLoading}
             className="text-[13px] text-gray-400 transition hover:text-gray-900 disabled:opacity-40"
           >
-            {usersLoading ||
-            auditLoading ||
-            reqLoading ||
-            reqMetricsLoading ||
-            providerQuotasLoading
+            {auditLoading || reqLoading || reqMetricsLoading || providerQuotasLoading
               ? 'Loading...'
               : 'Refresh'}
           </button>
