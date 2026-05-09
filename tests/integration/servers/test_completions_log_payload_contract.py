@@ -47,6 +47,7 @@ EXPECTED_SUCCESS_LOG_KEYS = frozenset(
         "metadata",
         "pricing",
         "upstream_cost_usd",
+        "request_payload",
     }
 )
 
@@ -69,6 +70,7 @@ EXPECTED_ERROR_LOG_KEYS = frozenset(
         "params",
         "metadata",
         "pricing",
+        "request_payload",
     }
 )
 

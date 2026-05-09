@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
@@ -32,6 +33,9 @@ def _make_mock_row(
     error: str | None = None,
     prompt: str = "Hello",
     response: str = "World",
+    tools: Any = None,
+    metadata: Any = None,
+    request_payload: Any = None,
 ) -> dict:
     return {
         "request_id": request_id,
@@ -54,6 +58,9 @@ def _make_mock_row(
         "error": error,
         "prompt": prompt,
         "response": response,
+        "tools": tools,
+        "metadata": metadata,
+        "request_payload": request_payload,
     }
 
 
@@ -124,7 +131,21 @@ def test_export_includes_content_when_requested():
     from serving.servers.app import app
     from serving.servers.deps import get_db_logger, verify_admin_access
 
-    row = _make_mock_row(prompt="Say hi", response="Hi there")
+    tools = [{"name": "lookup", "input_schema": {"type": "object"}}]
+    metadata = {"surface": "anthropic_messages"}
+    request_payload = {
+        "model": "claude-test",
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "Say hi"}],
+        "tools": tools,
+    }
+    row = _make_mock_row(
+        prompt="Say hi",
+        response="Hi there",
+        tools=json.dumps(tools),
+        metadata=json.dumps(metadata),
+        request_payload=json.dumps(request_payload),
+    )
     db = _make_mock_db([[row], []])
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
     app.dependency_overrides[get_db_logger] = lambda: db
@@ -143,6 +164,9 @@ def test_export_includes_content_when_requested():
     record = json.loads(lines[0])
     assert record["prompt"] == "Say hi"
     assert record["response"] == "Hi there"
+    assert record["tools"] == tools
+    assert record["metadata"] == metadata
+    assert record["request_payload"] == request_payload
 
 
 def test_export_streams_multiple_batches():

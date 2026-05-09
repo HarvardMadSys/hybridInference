@@ -219,6 +219,7 @@ def _schedule_log_store_task(
     params: dict[str, Any],
     prompt: list[dict[str, Any]] | str | None = None,
     response: dict[str, Any] | str | None = None,
+    request_payload: dict[str, Any] | None = None,
     ttft_ms: int | None = None,
     error: str | None = None,
 ) -> None:
@@ -265,6 +266,7 @@ def _schedule_log_store_task(
                 pricing=pricing,
                 ttft_ms=ttft_ms,
                 error=error,
+                request_payload=request_payload,
             )
         except Exception:
             logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
@@ -402,6 +404,7 @@ def _log_failure(
     metadata: dict[str, Any],
     params_for_log: dict[str, Any],
     messages_for_log,
+    request_payload_for_log: dict[str, Any] | None,
     start: float,
     status_code: int,
     error_message: str,
@@ -427,6 +430,7 @@ def _log_failure(
             prompt=messages_for_log,
             response=None,
             error=error_message,
+            request_payload=request_payload_for_log,
         )
 
 
@@ -526,6 +530,8 @@ async def anthropic_messages(
         )
         return _anthropic_error(exc.status_code, str(exc.detail))
 
+    request_payload_for_log = copy.deepcopy(body)
+
     body["model"] = canonical
 
     forwarded_headers = _extract_forwarded_headers(request)
@@ -560,6 +566,7 @@ async def anthropic_messages(
         if k in body:
             params_for_log[k] = body[k]
     if body.get("tools"):
+        params_for_log["tools"] = request_payload_for_log["tools"]
         params_for_log["tool_count"] = len(body["tools"])
 
     is_streaming = bool(body.get("stream"))
@@ -657,6 +664,7 @@ async def anthropic_messages(
                         params=params_for_log,
                         prompt=messages_for_log,
                         response=_finalize_response_acc(response_acc),
+                        request_payload=request_payload_for_log,
                         ttft_ms=ttft_ms,
                         error=stream_error_message if stream_failed else None,
                     )
@@ -675,6 +683,7 @@ async def anthropic_messages(
             metadata=metadata,
             params_for_log=params_for_log,
             messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
             start=start,
             status_code=exc.status_code,
             error_message=error_message,
@@ -691,6 +700,7 @@ async def anthropic_messages(
             metadata=metadata,
             params_for_log=params_for_log,
             messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
             start=start,
             status_code=exc.status,
             error_message=error_message,
@@ -707,6 +717,7 @@ async def anthropic_messages(
             metadata=metadata,
             params_for_log=params_for_log,
             messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
             start=start,
             status_code=502,
             error_message=error_message,
@@ -741,5 +752,6 @@ async def anthropic_messages(
             params=params_for_log,
             prompt=messages_for_log,
             response=resp if isinstance(resp, dict) else None,
+            request_payload=request_payload_for_log,
         )
     return JSONResponse(content=resp)

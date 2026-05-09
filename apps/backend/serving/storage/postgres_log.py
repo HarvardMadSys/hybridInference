@@ -59,6 +59,7 @@ class PostgresLogStore(LogStore):
                     total_tokens INTEGER,
                     prompt TEXT,
                     response TEXT,
+                    request_payload JSONB,
                     status_code INTEGER,
                     error TEXT,
                     user_id TEXT,
@@ -100,6 +101,7 @@ class PostgresLogStore(LogStore):
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS upstream_cost_usd DECIMAL(12, 8)",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS request_payload JSONB",
             ]:
                 await conn.execute(col_ddl)
 
@@ -172,6 +174,7 @@ class PostgresLogStore(LogStore):
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,
+        request_payload: dict[str, Any] | None = None,
     ) -> None:
         """Insert a single request log row.
 
@@ -190,9 +193,13 @@ class PostgresLogStore(LogStore):
                 if response is not None
                 else None
             )
+            request_payload_str = (
+                json.dumps(request_payload) if request_payload is not None else None
+            )
         else:
             prompt_str = None
             response_str = None
+            request_payload_str = None
 
         cost_usd = calculate_cost(usage, pricing)
 
@@ -205,7 +212,7 @@ class PostgresLogStore(LogStore):
                     ttft_ms, latency_ms,
                     prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
                     cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response,
+                    prompt, response, request_payload,
                     status_code, error, user_id, session_id, metadata,
                     tools, upstream_cost_usd
                 )
@@ -215,9 +222,9 @@ class PostgresLogStore(LogStore):
                     $9, $10,
                     $11, $12, $13, $14,
                     $15, $16, $17,
-                    $18, $19,
-                    $20, $21, $22, $23, $24::jsonb,
-                    $25::jsonb, $26
+                    $18, $19, $20::jsonb,
+                    $21, $22, $23, $24, $25::jsonb,
+                    $26::jsonb, $27
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -240,6 +247,7 @@ class PostgresLogStore(LogStore):
                 cost_usd,
                 prompt_str,
                 response_str,
+                request_payload_str,
                 status_code,
                 error,
                 (metadata or {}).get("user_id"),

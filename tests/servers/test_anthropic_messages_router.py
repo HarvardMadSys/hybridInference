@@ -706,13 +706,30 @@ async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
     services.log_store.log_request = fake_log_request
 
     messages = [{"role": "user", "content": "hello there"}]
-    body = {"model": NATIVE_MODEL, "max_tokens": 50, "messages": messages}
+    tools = [
+        {
+            "name": "lookup",
+            "description": "Lookup a thing",
+            "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+        }
+    ]
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "system": "Be concise.",
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": {"type": "auto"},
+    }
     r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
     assert r.status_code == 200
 
     await __import__("asyncio").wait_for(captured_event.wait(), timeout=2.0)
 
     assert captured["prompt"] == messages
+    assert captured["request_payload"] == body
+    assert captured["params"]["tools"] == tools
+    assert captured["params"]["tool_count"] == 1
     assert captured["response"] == upstream_resp
     usage = captured["usage"]
     # prompt_tokens = input_tokens + cache_read + cache_write (OpenAI semantic)
