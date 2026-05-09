@@ -25,7 +25,7 @@ from __future__ import annotations
 import pytest
 
 from serving.servers.auth import verify_api_key
-from serving.servers.concurrency import UserConcurrencyLimiter
+from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
 from serving.servers.deps import get_user_concurrency_limiter
 
 # ---------------------------- helpers ----------------------------------
@@ -43,7 +43,9 @@ def _stub_user(user_id: str, role: str, is_admin: bool = False) -> dict:
 
 
 def _make_limiter() -> UserConcurrencyLimiter:
-    return UserConcurrencyLimiter({"free": 1, "pro": 3, "internal": 10, "admin": 10})
+    return UserConcurrencyLimiter(
+        static_limits_provider({"free": 1, "pro": 3, "internal": 10, "admin": 10})
+    )
 
 
 # --------------------------- chat completions --------------------------

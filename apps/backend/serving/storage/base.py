@@ -1,8 +1,8 @@
 """Abstract base classes for the storage layer.
 
-Two separate store contracts reflecting the hybrid architecture:
-- OperationalStore: users, api_keys, auth_sessions, tokens, audit (may live in D1)
-- LogStore: api_logs, api_stats_hourly (always PostgreSQL)
+Two separate store contracts reflecting the gateway architecture:
+- OperationalStore: users, api_keys, auth_sessions, tokens, audit
+- LogStore: api_logs, api_stats_hourly
 
 No implementation details or SQL in this file — just the contracts.
 """
@@ -10,11 +10,24 @@ No implementation details or SQL in this file — just the contracts.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
+
+
+@dataclass
+class ProviderKeyRow:
+    """Masked row for a runtime-managed upstream provider API key."""
+
+    id: str
+    provider: str
+    key_prefix: str
+    label: str | None
+    status: str
+    created_at: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +247,7 @@ class OperationalStore(ABC):
           active key quota; ``"near"``/``"over"`` compare today's spend
           against quota.
         - ``provider``: keep only users who hit ``provider`` in api_logs in
-          the last 30 days. D1 deployments may treat this as a no-op.
+          the last 30 days.
         - ``active_within_hours``: ``last_login_at`` within the window.
         - ``anomaly``: when ``True``, keep only users whose today's spend is
           anomalously high vs. their prior 7-day average. Uses the same rule
@@ -401,6 +414,40 @@ class OperationalStore(ABC):
     async def delete_user_sessions(self, user_id: str) -> None:
         """Delete all sessions for a user (used during user deletion)."""
 
+    # -- login events (audit) ------------------------------------------------
+
+    @abstractmethod
+    async def record_login_event(
+        self,
+        *,
+        email: str,
+        outcome: str,
+        failure_reason: str | None,
+        user_id: str | None,
+        ip: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Insert one row into ``login_events``.
+
+        Best-effort for callers — callers may catch + log on exception so
+        audit failures don't break login. ``outcome`` must be one of
+        ``'success'`` | ``'failure'``.
+        """
+
+    @abstractmethod
+    async def purge_login_events_older_than(self, days: int) -> int:
+        """Delete ``login_events`` rows older than ``days``.
+
+        Returns the deleted row count.
+        """
+
+    @abstractmethod
+    async def purge_login_events_for_user(self, user_id: str) -> int:
+        """Delete all ``login_events`` rows for ``user_id``.
+
+        Returns the deleted row count.
+        """
+
     # -- email verification tokens -------------------------------------------
 
     @abstractmethod
@@ -530,6 +577,17 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def query_users_over_daily_threshold(
+        self,
+        thresholds: dict[str, float],
+    ) -> list[tuple[str, str, float]]:
+        """Return users whose UTC daily cost is above their role threshold.
+
+        Returns ``(user_id, role, daily_cost)`` tuples ordered by highest
+        daily cost first. Reads from the ``user_daily_cost`` counter table.
+        """
+
+    @abstractmethod
     async def get_batch_usage(
         self,
         user_ids: list[str],
@@ -631,6 +689,86 @@ class OperationalStore(ABC):
     async def list_settings(self) -> list[Row]:
         """Return all site_settings rows."""
 
+    @abstractmethod
+    async def get_model_visibility_override(self, model_id: str) -> Row | None:
+        """Fetch a single model visibility override row by model_id."""
+
+    @abstractmethod
+    async def set_model_visibility_override(
+        self,
+        model_id: str,
+        required_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model visibility override row."""
+
+    @abstractmethod
+    async def delete_model_visibility_override(self, model_id: str) -> bool:
+        """Delete a model visibility override row. Returns True if removed."""
+
+    @abstractmethod
+    async def list_model_visibility_overrides(self) -> list[Row]:
+        """Return all model visibility override rows ordered by model_id."""
+
+    # -- role quota ----------------------------------------------------------
+
+    @abstractmethod
+    async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
+        """Return ``(key_count, user_count)`` of active api_keys whose owner has this role.
+
+        Used by the admin "apply role quota" preview.
+        """
+
+    @abstractmethod
+    async def apply_role_quota(self, role: str, quota: Decimal) -> int:
+        """Set ``quota_daily_cost_usd`` on every active api_key for this role.
+
+        Returns the number of rows updated. Atomic: a failure rolls back.
+        Overwrites any per-key custom override.
+        """
+
+    # -- provider api keys ---------------------------------------------------
+
+    @abstractmethod
+    async def add_provider_key(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        label: str | None,
+        created_by: str | None,
+        key_id: str | None = None,
+    ) -> str:
+        """Insert a new upstream provider API key row.
+
+        When ``key_id`` is supplied the caller-provided UUID is used instead
+        of generating a new one. Returns the row id.
+        """
+
+    @abstractmethod
+    async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
+        """Return ``(provider, raw_key)`` for the row, or None if absent.
+
+        Used by the admin delete endpoint to identify the raw key that was
+        just removed without scanning every key for the provider.
+        """
+
+    @abstractmethod
+    async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
+        """Return masked rows for active provider keys.
+
+        Filters by ``provider`` when supplied. Raw secret material is never
+        returned — see ``list_provider_keys_full`` for the boot-time loader.
+        """
+
+    @abstractmethod
+    async def list_provider_keys_full(self, provider: str) -> list[str]:
+        """Return raw active API keys for ``provider`` (boot-time only)."""
+
+    @abstractmethod
+    async def delete_provider_key(self, key_id: str) -> bool:
+        """Hard-delete the provider key row. Returns True if a row was removed."""
+
 
 # ---------------------------------------------------------------------------
 # LogStore — api_logs, api_stats_hourly
@@ -642,7 +780,6 @@ class LogStore(ABC):
 
     Implementations:
     - ``PostgresLogStore``: full rows in PostgreSQL (prompt/response content).
-    - ``D1LogStore``: slim rows in Cloudflare D1 (no content, buffered writes).
     """
 
     # -- lifecycle -----------------------------------------------------------
@@ -677,8 +814,6 @@ class LogStore(ABC):
         params: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         ttft_ms: int | None = None,
-        prompt_hash: str | None = None,
-        response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,

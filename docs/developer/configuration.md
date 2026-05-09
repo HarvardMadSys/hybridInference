@@ -77,7 +77,7 @@ models:
 - `id`: Public model ID exposed by the API (what clients use to call the model)
 - `provider_model_id`: The actual model name sent to the backend provider (e.g., vLLM/freeinference's `/models/...`). If omitted, uses `id`
 - `aliases`: Additional public aliases that are registered alongside `id` to point to the same adapter
-- `provider`: Determines adapter type. Supported kinds (dispatched in `serving/servers/registry.py:_make_adapter`): `openai_compat`, `vllm`, `sglang`, `ollama`, `chutes`, `featherless`, `deepseek`, `zhipu`, `minimax`, `openrouter` (also `openrouter[<slug>]` to pin a sub-provider), `gemini`, `claude`, `anthropic`. See [adding-models.md](adding-models.md) for the full reference table.
+- `provider`: Determines adapter type. Supported kinds (dispatched in `serving/servers/registry.py:_make_adapter`): `openai_compat`, `vllm`, `sglang`, `ollama`, `chutes`, `featherless`, `deepseek`, `zai`, `minimax`, `cliproxy`, `openrouter` (also `openrouter[<slug>]` to pin a sub-provider), `gemini`, `claude`, `anthropic`. See [adding-models.md](adding-models.md) for the full reference table.
 - `/v1/models` endpoint dynamically generates its response from registered adapters
 
 ## 3. routing.yaml (Optional)
@@ -107,7 +107,7 @@ health_check: 30
 logging:
   output: output.log
 local_deployment:
-  - endpoint: ${LOCAL_BASE_URL:-http://localhost:8000}
+  - endpoint: ${LOCAL_DEPLOYMENT_URL:-http://localhost:8000}
     models:
 remote_deployment:
     models:
@@ -126,7 +126,7 @@ Simply omit `routing.yaml` to use default weights from `models.yaml` (typically 
 
 ### Set Environment Variables:
   ```bash
-  export LOCAL_BASE_URL=http://localhost:8000
+  export LOCAL_DEPLOYMENT_URL=http://localhost:8000
   ```
 
 ### Start the Server:

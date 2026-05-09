@@ -15,6 +15,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     user_name: UserName
+    use_case: str | None = Field(default=None, max_length=2000)
     turnstile_token: str | None = None
 
 
@@ -239,20 +240,6 @@ class ChangePasswordResponse(BaseModel):
     """Change password response."""
 
     message: str
-
-
-class ChangeEmailRequest(BaseModel):
-    """Change email request."""
-
-    new_email: EmailStr
-    password: str  # Require password confirmation
-
-
-class ChangeEmailResponse(BaseModel):
-    """Change email response."""
-
-    message: str
-    new_email: str
 
 
 # Recent requests schemas

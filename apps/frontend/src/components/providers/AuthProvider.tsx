@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { login as loginApi, logout as logoutApi } from '@/lib/api/auth';
+import { AUTH_EXPIRED_EVENT } from '@/lib/api/client';
 import { getMe } from '@/lib/api/user';
 
 interface User {
@@ -71,6 +72,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
   }, [refreshUser]);
 
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setState({ isAuthenticated: false, loading: false, user: null });
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  }, []);
+
   const login = useCallback(
     async (email: string, password: string) => {
       await loginApi({ email, password });
@@ -80,8 +89,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await logoutApi();
-    setState({ isAuthenticated: false, loading: false, user: null });
+    try {
+      await logoutApi();
+    } finally {
+      setState({ isAuthenticated: false, loading: false, user: null });
+    }
   }, []);
 
   const value: AuthContextValue = {

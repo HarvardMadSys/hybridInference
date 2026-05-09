@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from serving.config.settings import has_role
 from serving.observability.alerts import AlertSeverity, alert_slack
-from serving.observability.metrics import DATABASE_CONNECTED
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import get_log_store, get_operational_store, get_router, get_services
 
@@ -23,7 +22,6 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
         ``{"operational_store": {...}, "log_store": {...}, "healthy": bool}``
     """
     from serving.storage.cache import CachedOperationalStore
-    from serving.storage.d1_operational import D1OperationalStore
     from serving.storage.postgres_log import PostgresLogStore
     from serving.storage.postgres_operational import PostgresOperationalStore
 
@@ -36,9 +34,7 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
         result["database_configured"] = True
         # Resolve the underlying backend through CachedOperationalStore
         inner = getattr(op_store, "_store", op_store)
-        if isinstance(inner, D1OperationalStore):
-            op_status["backend"] = "d1"
-        elif isinstance(inner, PostgresOperationalStore):
+        if isinstance(inner, PostgresOperationalStore):
             op_status["backend"] = "postgres"
         try:
             op_status["status"] = "ok" if await op_store.health_check() else "error"
@@ -80,8 +76,6 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
         result["all_healthy"] = bool(configured_statuses) and all(
             s == "ok" for s in configured_statuses
         )
-    DATABASE_CONNECTED.set(1 if result["healthy"] else 0)
-
     # Fire DB disconnect alert when a configured store is unhealthy. dedupe_key
     # ensures we only alert once per cooldown per store kind.
     if op_store and op_status["status"] == "error":

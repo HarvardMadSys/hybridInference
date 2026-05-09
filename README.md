@@ -1,201 +1,46 @@
 # HybridInference
 
-A high-performance hybrid inference server providing local deployment and offline API access to various LLM providers.
+HybridInference is an open-source LLM inference gateway for routing requests across local inference servers and remote OpenAI-compatible providers. It powers FreeInference, but it can also be self-hosted as a standalone gateway for teams that need provider fallback, local/remote routing, observability, and a familiar API surface.
 
-**[User Documentation](https://doc.freeinference.org/)** | **[Developer Documentation](https://internaldoc.freeinference.org/)** | [Quick Start](#quick-start-with-uv-recommended)
+## Start Here
 
-## Project Structure
+- **Use the API or self-host the gateway:** [User README](README.user.md)
+- **Develop, operate, or contribute:** [Developer README](README.developer.md)
+- **Hosted service docs:** [doc.freeinference.org](https://doc.freeinference.org/)
+- **Developer docs:** [internaldoc.freeinference.org](https://internaldoc.freeinference.org/)
 
-```
-HybridInference/
-├── apps/
-│   ├── backend/             # FastAPI gateway (serving/), routing/, benchmark/
-│   └── frontend/            # Next.js web UI
-├── services/
-│   ├── llm-prober/          # LLM probing utilities (git submodule)
-│   ├── freeinference-harness/ # Standalone black-box API test harness
-│   └── alert-logger/        # Alertmanager webhook logger
-├── config/                  # Model + routing configuration files
-├── deploy/                  # Systemd units, Docker, observability manifests
-├── ops/                     # Operational tooling: deploy/, setup/, runtime/, admin/, perf/, db/, cloudflare/
-├── docs/                    # developer/, user/, agents/, reviews/
-├── tests/                   # Test suite (with fixtures/data/)
-├── var/                     # Runtime artifacts (e.g., SQLite logs)
-└── examples/                # Examples
-```
+## What It Does
 
-For service-specific deployment and routing details, refer to `docs/developer/openrouter.md`, `docs/developer/freeinference.md`, and `docs/developer/routing.md`. For extension guides (adding models or new providers), see `docs/developer/adding-models.md`.
+- Exposes an OpenAI-compatible API for chat/completions workflows.
+- Routes traffic across local backends such as vLLM, SGLang, and Ollama.
+- Connects to remote providers through provider-specific and OpenAI-compatible adapters.
+- Supports weighted routing, health-aware fallback, circuit breaking, and per-model routing configuration.
+- Includes a FastAPI backend, a Next.js dashboard, storage integrations, operational tooling, and documentation sites.
 
-## Development Setup
+## Repository Map
 
-### Prerequisites
-
-- Python 3.10-3.13 (3.12 recommended)
-- [uv](https://github.com/astral-sh/uv) (recommended) or conda
-
-### Quick Start with uv (Recommended)
-
-```bash
-# Clone the repository
-git clone https://github.com/HarvardMadSys/hybridInference.git
-cd hybridInference
-
-# Set up development environment
-make setup-dev
-
-# Or manually:
-uv venv -p 3.12
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv sync
-```
-
-### Alternative: conda Setup
-
-```bash
-# Create and activate conda environment
-conda create -n hybrid_inference python=3.12 -y
-conda activate hybrid_inference
-
-# Install dependencies from pyproject.toml
-pip install -e .
-```
-
-## Package Management
-
-This project uses `pyproject.toml` for dependency management (PEP 517/518 standard).
-
-### Adding Dependencies
-
-```bash
-# Add runtime dependency
-uv add fastapi httpx pydantic
-
-# Add development dependency
-uv add --group dev ruff mypy pydocstyle pytest
-
-# Sync all dependencies
-uv sync
-```
-
-### Development Workflow
-
-```bash
-# Format code
-make format
-
-# Run linters
-make lint
-
-# Run tests
-make test
-
-# Run all checks
-make check
-
-# Clean build artifacts
-make clean
-```
-
-## Configuration
-
-### 1. Environment Variables
-
-Create a `.env` file from the template:
-
-```bash
-cp .env.example .env
-```
-
-**IMPORTANT: Security Configuration**
-
-Edit `.env` and configure:
-
-1. **API Keys** (for external providers):
-```env
-OPENAI_API_KEY=your-actual-openai-api-key
-GEMINI_API_KEY=your-actual-gemini-api-key
-```
-
-2. **Database Credentials** (required, no defaults):
-```env
-DB_NAME=your_database_name
-DB_USER=your_database_user
-DB_PASSWORD=your_secure_password
-```
-
-⚠️ **Security Note**: Database credentials are **required** and have no default values. Services will fail to start without proper configuration.
-
-### 2. Config Local Model
-
-**Configure in `config/models.yaml`:**
-```yaml
-route:
-  - kind: vllm
-    base_url: <your-local-model-url>  # for example, http://localhost:8001/v1
-    provider_model_id: "<your-model-id>"  # must match served model name
-```
-
-**For SGLang:** Use `base_url: http://localhost:30000` and `kind: sglang` or `kind: openai_compat`
-
-### Pre-commit Hooks
-
-Pre-commit hooks run automatically on git commit:
-
-```bash
-# Install pre-commit hooks (done by make setup-dev)
-pre-commit install
-
-# Run manually on all files
-pre-commit run --all-files
-
-# Skip hooks temporarily
-git commit --no-verify
-```
-
-## Testing
-
-```bash
-# Run all tests
-make test
-
-# Verbose output
-make test-verbose
-
-# With coverage
-make test-cov
-
-# Specific test file
-uv run pytest tests/unit/routing/test_manager.py
-
-# Run tests with markers
-uv run pytest -m "not slow"  # Skip slow tests
-uv run pytest -m integration  # Only integration tests
+```text
+apps/
+  backend/
+    serving/      # FastAPI gateway, adapters, auth, storage, observability
+    routing/      # Routing strategies, routers, health, circuit breaker
+    benchmark/    # Benchmark utilities
+  frontend/       # Next.js web UI
+config/           # Model, routing, routewise, and alert configuration
+services/         # Prober, API harness, alert logger
+tests/            # Unit, API, integration, e2e, and external tests
+ops/              # Deployment, setup, runtime, admin, perf, DB, Cloudflare tooling
+deploy/           # Docker, systemd, observability manifests
+docs/             # User docs, developer docs, agent specs/plans, reviews
 ```
 
 ## Documentation
 
-- **User Documentation**: [https://doc.freeinference.org/](https://doc.freeinference.org/) - API reference, quick start guides, and usage examples
-- **Developer Documentation**: [https://internaldoc.freeinference.org/](https://internaldoc.freeinference.org/) - Architecture, deployment, and contribution guides
-
-### Building Documentation Locally
-
-```bash
-cd docs
-make html
-
-# View the documentation
-open build/html/index.html  # macOS
-# or
-xdg-open build/html/index.html  # Linux
-```
-
-## Contributing
-
-1. Create a feature branch
-2. Make your changes
-3. Run `make all` to format and validate code
-4. Submit a pull request
+- [README.user.md](README.user.md) explains how to use FreeInference, connect OpenAI-compatible clients, choose models, and run a self-hosted gateway.
+- [README.developer.md](README.developer.md) explains local setup, project structure, testing, formatting, architecture, configuration, and contribution workflow.
+- `docs/free_inference/` contains the hosted user documentation source.
+- `docs/developer/` contains deeper architecture, deployment, routing, configuration, and extension guides.
 
 ## License
 
-Proprietary - All rights reserved
+This repository is licensed under the [MIT License](LICENSE).

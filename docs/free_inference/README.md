@@ -4,7 +4,7 @@ Free LLM inference for coding agents and AI-powered IDEs.
 
 ## Overview
 
-FreeInference provides free access to state-of-the-art language models specifically designed for coding agents like Cursor, Roo Code, and other AI-powered development tools.
+FreeInference provides free access to state-of-the-art language models for coding agents and AI-powered IDEs, with a particularly smooth setup path for Kilo Code.
 
 ## Documentation
 
@@ -13,12 +13,27 @@ FreeInference provides free access to state-of-the-art language models specifica
 
 ## Supported IDEs & Coding Agents
 
+- **[Kilo Code](https://kilocode.ai)** - AI coding assistant with the recommended FreeInference setup path
 - **[Cursor](https://cursor.sh/)** - AI-powered code editor
 - **[Roo Code](https://roocode.com)** - VS Code & JetBrains extension
-- **[Kilo Code](https://kilocode.ai)** - AI coding assistant
 - And any tool that supports OpenAI-compatible APIs
 
 ## Quick Start
+
+### Kilo Code Setup (Recommended)
+
+1. Install the Kilo Code extension or plugin in your IDE
+2. Open the Kilo Code panel
+3. Open Kilo Code settings
+4. Set **API Provider** to **OpenAI Compatible**
+5. Configure:
+   - Base URL: `https://freeinference.org/v1`
+   - API Key: `your-api-key-here`
+6. Pick a model:
+   - `glm-5.1` for general coding work
+   - `glm-5-turbo` for faster iterations
+   - `minimax-m2.5` for long context or image input
+7. Save settings and start a new Kilo Code session
 
 ### Cursor Setup
 
@@ -29,7 +44,7 @@ FreeInference provides free access to state-of-the-art language models specifica
 5. Enter: `https://freeinference.org/v1`
 6. Enable the toggle and start coding!
 
-### Roo Code / Kilo Code Setup
+### Roo Code Setup
 
 1. Install the extension in your IDE
 2. Open settings
@@ -42,13 +57,11 @@ FreeInference provides free access to state-of-the-art language models specifica
 ## Available Models
 
 - **GLM-4.7** - 200K context, bilingual coding assistant
-- **GLM-5** - 200K context, latest generation
 - **GLM-5.1** - 200K context, enhanced version
 - **GLM-5 Turbo** - 200K context, performance variant
-- **Qwen3.6 27B** - 65K context, self-hosted
-- **Qwen3.6 35B** - 65K context, self-hosted
-- **MiniMax M2.7** - 196K context
-- **MiniMax M2.5** - 1M context, multimodal (text + image)
+- **Qwen3.6 35B** - 262K context, strong reasoning and coding intelligence
+- **MiniMax M2.7** - 205K context
+- **MiniMax M2.5** - 205K context, multimodal (text + image)
 
 See the [Models documentation](https://doc.freeinference.org/models.html) for the complete list.
 

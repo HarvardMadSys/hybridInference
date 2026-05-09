@@ -35,11 +35,12 @@ from serving.observability.metrics import (
     normalize_model_label,
     normalize_provider_label,
 )
+from serving.observability.rejection_log import log_rejection
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
-from serving.servers.deps import get_log_store, get_router
+from serving.servers.deps import get_log_store, get_model_visibility_resolver, get_router
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip_info
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -93,7 +94,8 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     from serving.utils.errors import categorize_exception
 
     err_type = categorize_exception(exc)
-    logger.error(
+    log_fn = logger.error if exc.status_code >= 500 else logger.warning
+    log_fn(
         "http_error",
         extra={
             "error_type": err_type,
@@ -101,7 +103,7 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
             "path": request.url.path,
             "method": request.method,
         },
-        exc_info=exc,
+        exc_info=exc if exc.status_code >= 500 else None,
     )
 
     path = request.url.path
@@ -129,7 +131,9 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
 # --- Model resolution ------------------------------------------------------
 
 
-def _resolve(model_id: str, router_exec, user_ctx: dict | None):
+async def _resolve(
+    model_id: str, router_exec, user_ctx: dict | None, model_visibility_resolver=None
+):
     """Return (canonical_model_id, route, adapter)."""
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
@@ -137,6 +141,8 @@ def _resolve(model_id: str, router_exec, user_ctx: dict | None):
         raise HTTPException(404, f"Model '{model_id}' not found")
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = (user_ctx or {}).get("role", "free")
+    if model_visibility_resolver is not None:
+        required = await model_visibility_resolver.get_effective_required_role(canonical, required)
     if not has_role(user_role, required):
         raise HTTPException(404, f"Model '{model_id}' not found")
     if not route.adapters:
@@ -477,6 +483,7 @@ async def anthropic_messages(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     log_store=Depends(get_log_store),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
     _conc=Depends(enforce_user_concurrency),
 ):
     """Handle Anthropic Messages API requests (non-streaming)."""
@@ -497,8 +504,26 @@ async def anthropic_messages(
         return _anthropic_error(400, "Missing required field: max_tokens")
 
     try:
-        canonical, _route, adapter = _resolve(model_id, router_exec, user_ctx)
+        canonical, _route, adapter = await _resolve(
+            model_id,
+            router_exec,
+            user_ctx,
+            model_visibility_resolver,
+        )
     except HTTPException as exc:
+        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+            log_rejection(
+                request=request,
+                status_code=exc.status_code,
+                error_code="model_not_found",
+                reason=str(exc.detail),
+                user={
+                    "user_id": user_ctx.get("user_id"),
+                    "role": user_ctx.get("role"),
+                },
+                model_id=model_id,
+            )
+        )
         return _anthropic_error(exc.status_code, str(exc.detail))
 
     body["model"] = canonical
@@ -516,9 +541,14 @@ async def anthropic_messages(
                 f"[{request_id}] Dropped Anthropic-only fields for OpenAI backend: {dropped}"
             )
 
+    ip_info = get_client_ip_info(request)
     metadata = {
         "user_agent": request.headers.get("user-agent"),
-        "ip": get_client_ip(request),
+        "ip": ip_info.client_ip,
+        "peer_ip": ip_info.peer_ip,
+        "ip_source": ip_info.source,
+        "x_forwarded_for": ip_info.x_forwarded_for,
+        "x_real_ip": ip_info.x_real_ip,
         "authenticated": bool(user_ctx.get("authenticated")),
         "user_id": user_ctx.get("user_id"),
         "surface": "anthropic_messages",

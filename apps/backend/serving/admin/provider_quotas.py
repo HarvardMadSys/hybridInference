@@ -1,13 +1,20 @@
 """Provider quota fetchers for the admin dashboard 'Providers' tab.
 
-Each public fetcher returns a `ProviderQuotaResult`. Errors are converted
-to structured results — fetchers never raise out of the gather.
+Each public fetcher returns a ``list[ProviderQuotaResult]`` — one entry per
+configured API key.  When a provider has a single key the list contains one
+element with ``key_index=None`` (backward compatible).  When multiple keys are
+configured via numbered env var suffixes (e.g. ``ZAI_API_KEY2``) the list
+contains one element per key with ``key_index=1, 2, …``.
+
+Errors are converted to structured results — fetchers never raise out of the
+gather.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -22,6 +29,8 @@ from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 8
+_CHATGPT_MODELS_URL = "https://chatgpt.com/backend-api/models"
+_CLAUDE_CODE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 
 
 def _mask_key(key: str) -> str:
@@ -33,6 +42,116 @@ def _mask_key(key: str) -> str:
     if len(key) >= 16:
         return f"{key[:8]}...{key[-4:]}"
     return "***configured***"
+
+
+_MAX_KEYS = 20
+
+
+def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, str]]:
+    """Discover all configured API keys via numbered env var suffixes.
+
+    Returns list of ``(index, value)``.  ``index=1`` for *base_var*,
+    ``index=N`` for ``{numbered_prefix}{N}``.  Numbered suffixes are
+    only scanned when the base var is set.  Stops at the first missing
+    numbered var.
+    """
+    keys: list[tuple[int, str]] = []
+    val = os.getenv(base_var, "")
+    if not val:
+        return keys
+    keys.append((1, val))
+    for i in range(2, _MAX_KEYS):
+        val = os.getenv(f"{numbered_prefix}{i}", "")
+        if not val:
+            break
+        keys.append((i, val))
+    return keys
+
+
+async def _discover_chatgpt_credentials(op_store: Any | None = None) -> list[tuple[int, str]]:
+    """Discover ChatGPT session credentials from env and DB provider keys.
+
+    Env credentials are ordered before DB credentials. Duplicate raw values are
+    removed so one account is not fetched twice.
+    """
+    raw_values = [
+        value for _, value in _discover_env_keys("CHATGPT_SESSION_COOKIE", "CHATGPT_SESSION_COOKIE")
+    ]
+
+    if op_store is not None:
+        try:
+            raw_values.extend(await op_store.list_provider_keys_full("chatgpt"))
+        except Exception:
+            logger.exception("fetch_chatgpt: failed to load DB provider keys")
+
+    seen: set[str] = set()
+    out: list[tuple[int, str]] = []
+    for value in raw_values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append((len(out) + 1, value))
+    return out
+
+
+async def _discover_claude_code_credentials(op_store: Any | None = None) -> list[tuple[int, str]]:
+    """Discover Claude Code OAuth tokens from env and DB provider keys."""
+    raw_values = [
+        value
+        for _, value in _discover_env_keys("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+    ]
+
+    if op_store is not None:
+        try:
+            raw_values.extend(await op_store.list_provider_keys_full("claude-code"))
+        except Exception:
+            logger.exception("fetch_claude_code: failed to load DB provider keys")
+
+    seen: set[str] = set()
+    out: list[tuple[int, str]] = []
+    for value in raw_values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append((len(out) + 1, value))
+    return out
+
+
+def _process_multi_key_results(
+    name: str,
+    display_name: str,
+    keys: list[tuple[int, str]],
+    results: list[ProviderQuotaResult | BaseException],
+) -> list[ProviderQuotaResult]:
+    """Process parallel fetch results into a list of ProviderQuotaResult."""
+    out: list[ProviderQuotaResult] = []
+    multi = len(keys) > 1
+    for (idx, _key), result in zip(keys, results, strict=True):
+        if isinstance(result, ProviderQuotaResult):
+            out.append(
+                result.model_copy(
+                    update={
+                        "key_index": idx if multi else None,
+                        "display_name": f"{display_name} #{idx}" if multi else display_name,
+                    }
+                )
+            )
+        else:
+            logger.error("fetch_%s: key #%d raised", name, idx, exc_info=result)
+            out.append(
+                ProviderQuotaResult(
+                    name=name,
+                    display_name=f"{display_name} #{idx}" if multi else display_name,
+                    key_index=idx if multi else None,
+                    key_configured=True,
+                    key_masked=_mask_key(_key),
+                    fetched_at=_now(),
+                    ok=False,
+                    error="unexpected",
+                    usages=[],
+                )
+            )
+    return out
 
 
 def _now() -> datetime:
@@ -98,6 +217,182 @@ def _parse_epoch_ms(value: Any) -> datetime | None:
         return None
 
 
+def _as_float(value: Any) -> float | None:
+    """Convert a JSON number to float while rejecting bool and non-finite values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        converted = float(value)
+        return converted if math.isfinite(converted) else None
+    return None
+
+
+def _chatgpt_usage_from_block(label: str, block: Any) -> ProviderQuotaUsage | None:
+    """Parse one ChatGPT message-cap block into a generic usage row."""
+    if not isinstance(block, dict):
+        return None
+
+    numeric_keys = (
+        "limit",
+        "total",
+        "cap",
+        "message_cap",
+        "used",
+        "current",
+        "current_value",
+        "messages_used",
+        "remaining",
+    )
+    if any(
+        isinstance(block.get(key), (int, float))
+        and not isinstance(block.get(key), bool)
+        and not math.isfinite(float(block[key]))
+        for key in numeric_keys
+    ):
+        return None
+
+    limit = next(
+        (
+            value
+            for value in (
+                _as_float(block.get("limit")),
+                _as_float(block.get("total")),
+                _as_float(block.get("cap")),
+                _as_float(block.get("message_cap")),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    used = next(
+        (
+            value
+            for value in (
+                _as_float(block.get("used")),
+                _as_float(block.get("current")),
+                _as_float(block.get("current_value")),
+                _as_float(block.get("messages_used")),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    remaining = _as_float(block.get("remaining"))
+    if used is None and limit is not None and remaining is not None:
+        used = limit - remaining
+
+    if used is None and limit is None:
+        return None
+
+    reset_at = (
+        _parse_iso(block.get("reset_at"))
+        or _parse_iso(block.get("resets_at"))
+        or _parse_iso(block.get("reset_time"))
+        or _parse_iso(block.get("reset_after"))
+    )
+    usage_label = label if label.lower().endswith("messages") else f"{label} messages"
+    return ProviderQuotaUsage(
+        label=usage_label,
+        used=used,
+        limit=limit,
+        unit="messages",
+        reset_at=reset_at,
+    )
+
+
+def _parse_chatgpt_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
+    """Parse recognized ChatGPT quota payload shapes into usage rows.
+
+    ChatGPT web payloads are not a public stable API. Keep this parser
+    conservative and return an empty list for unknown shapes.
+    """
+    usages: list[ProviderQuotaUsage] = []
+
+    for mapping_key in ("message_caps", "message_cap"):
+        mapping = data.get(mapping_key)
+        if isinstance(mapping, dict):
+            for label, block in mapping.items():
+                usage = _chatgpt_usage_from_block(str(label), block)
+                if usage is not None:
+                    usages.append(usage)
+
+    models = data.get("models")
+    if isinstance(models, list):
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            label = str(model.get("title") or model.get("slug") or model.get("id") or "Messages")
+            block = None
+            for block_key in ("message_cap", "message_caps", "quota", "usage"):
+                if block_key in model:
+                    block = model.get(block_key)
+                    break
+            usage = _chatgpt_usage_from_block(label, block)
+            if usage is not None:
+                usages.append(usage)
+
+    return usages
+
+
+_CLAUDE_CODE_USAGE_BUCKETS = (
+    ("five_hour", "5-hour usage"),
+    ("seven_day", "7-day usage"),
+    ("seven_day_oauth_apps", "7-day OAuth apps"),
+    ("seven_day_opus", "7-day Opus"),
+    ("seven_day_sonnet", "7-day Sonnet"),
+    ("seven_day_cowork", "7-day Cowork"),
+)
+
+
+def _parse_claude_code_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
+    """Parse Claude Code OAuth subscription usage buckets into quota rows."""
+    usages: list[ProviderQuotaUsage] = []
+    for key, label in _CLAUDE_CODE_USAGE_BUCKETS:
+        block = data.get(key)
+        if not isinstance(block, dict):
+            continue
+        utilization = _as_float(block.get("utilization"))
+        if utilization is None:
+            continue
+        usages.append(
+            ProviderQuotaUsage(
+                label=label,
+                used=utilization,
+                limit=100.0,
+                unit="%",
+                reset_at=_parse_iso(block.get("resets_at")),
+            )
+        )
+
+    extra_usage = data.get("extra_usage")
+    if isinstance(extra_usage, dict):
+        utilization = _as_float(extra_usage.get("utilization"))
+        if utilization is not None:
+            usages.append(
+                ProviderQuotaUsage(
+                    label="Extra usage",
+                    used=utilization,
+                    limit=100.0,
+                    unit="%",
+                    reset_at=None,
+                )
+            )
+        used_credits = _as_float(extra_usage.get("used_credits"))
+        monthly_limit = _as_float(extra_usage.get("monthly_limit"))
+        if used_credits is not None and monthly_limit is not None:
+            usages.append(
+                ProviderQuotaUsage(
+                    label="Extra usage credits",
+                    used=used_credits,
+                    limit=monthly_limit,
+                    unit="credits",
+                    reset_at=None,
+                )
+            )
+
+    return usages
+
+
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
     return ProviderQuotaResult(
         name=name,
@@ -111,21 +406,8 @@ def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaRe
     )
 
 
-async def fetch_chutes() -> ProviderQuotaResult:
-    """Fetch quota usage from Chutes via /users/me/subscription_usage."""
-    key = os.getenv("CHUTES_API_KEY", "")
-    if not key:
-        return ProviderQuotaResult(
-            name="chutes",
-            display_name="Chutes",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
-
+async def _fetch_chutes_for_key(key: str) -> ProviderQuotaResult:
+    """Fetch quota usage from Chutes for a single API key."""
     url = "https://api.chutes.ai/users/me/subscription_usage"
     headers = {"Authorization": f"Bearer {key}"}
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
@@ -161,6 +443,31 @@ async def fetch_chutes() -> ProviderQuotaResult:
         error=None,
         usages=usages,
     )
+
+
+async def fetch_chutes() -> list[ProviderQuotaResult]:
+    """Fetch quota usage from Chutes for all configured API keys."""
+    keys = _discover_env_keys("CHUTES_API_KEY", "CHUTES_API_KEY")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="chutes",
+                display_name="Chutes",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_chutes_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+
+    return _process_multi_key_results("chutes", "Chutes", keys, results)
 
 
 async def _fetch_chutes_request_counts(
@@ -285,26 +592,8 @@ def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
     return usages
 
 
-async def fetch_zai() -> ProviderQuotaResult:
-    """Fetch quota usage from ZAI via /api/monitor/usage/quota/limit.
-
-    Endpoint discovered from ZAI's official `glm-plan-usage` plugin. The
-    plugin uses `ANTHROPIC_AUTH_TOKEN`; we attempt with `ZAI_API_KEY`. If
-    the API key is rejected we surface `auth_failed`.
-    """
-    key = os.getenv("ZAI_API_KEY", "")
-    if not key:
-        return ProviderQuotaResult(
-            name="zai",
-            display_name="ZAI",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
-
+async def _fetch_zai_for_key(key: str) -> ProviderQuotaResult:
+    """Fetch quota for a single ZAI API key."""
     url = "https://api.z.ai/api/monitor/usage/quota/limit"
     headers = {
         "Authorization": f"Bearer {key}",
@@ -334,7 +623,6 @@ async def fetch_zai() -> ProviderQuotaResult:
         logger.exception("fetch_zai: unexpected error")
         return _err("zai", "ZAI", key, "unexpected")
 
-    # Some ZAI responses wrap data in a "data" key
     body = data.get("data") if isinstance(data.get("data"), dict) else data
     limits = body.get("limits") if isinstance(body, dict) else None
     if not isinstance(limits, list):
@@ -354,9 +642,8 @@ async def fetch_zai() -> ProviderQuotaResult:
 
         entry_reset_at = _parse_epoch_ms(entry.get("nextResetTime"))
         used_raw = entry.get("currentValue") if "currentValue" in entry else entry.get("used")
-        limit_raw = entry.get("usage")  # "usage" is the total cap in the ZAI API
+        limit_raw = entry.get("usage")
 
-        # For entries with no absolute values, fall back to percentage
         if used_raw is None and limit_raw is None and "percentage" in entry:
             pct = entry.get("percentage")
             usages.append(
@@ -392,25 +679,36 @@ async def fetch_zai() -> ProviderQuotaResult:
     )
 
 
-async def fetch_minimax() -> ProviderQuotaResult:
-    """Fetch coding-plan quota from MiniMax via cookie-authed endpoint.
+async def fetch_zai() -> list[ProviderQuotaResult]:
+    """Fetch quota usage from ZAI for all configured API keys.
 
-    The endpoint requires browser session cookies from minimax.io; API key
-    auth returns status_code 1004, and no active coding plan returns 2062.
+    Endpoint discovered from ZAI's official ``glm-plan-usage`` plugin.
     """
-    cookie = os.getenv("MINIMAX_SESSION_COOKIE", "")
-    if not cookie:
-        return ProviderQuotaResult(
-            name="minimax",
-            display_name="MiniMax",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
+    keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="zai",
+                display_name="ZAI",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
 
+    results = await asyncio.gather(
+        *[_fetch_zai_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+
+    return _process_multi_key_results("zai", "ZAI", keys, results)
+
+
+async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
+    """Fetch coding-plan quota for a single MiniMax session cookie."""
     url = "https://platform.minimax.io/v1/api/openplatform/coding_plan/remains"
     headers = {"Cookie": cookie}
     group_id = settings.minimax_group_id
@@ -515,33 +813,39 @@ async def fetch_minimax() -> ProviderQuotaResult:
     )
 
 
+async def fetch_minimax() -> list[ProviderQuotaResult]:
+    """Fetch coding-plan quota from MiniMax for all configured session cookies."""
+    keys = _discover_env_keys("MINIMAX_SESSION_COOKIE", "MINIMAX_SESSION_COOKIE")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="minimax",
+                display_name="MiniMax",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_minimax_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+
+    return _process_multi_key_results("minimax", "MiniMax", keys, results)
+
+
 _USAGE_PATTERN = re.compile(
     r"(?P<label>session|weekly|monthly|daily)\s+usage\s+(?P<pct>[\d.]+)%\s+used",
     re.IGNORECASE,
 )
 
 
-async def fetch_ollama() -> ProviderQuotaResult:
-    """Scrape Ollama Cloud usage from the settings page (cookie-authenticated).
-
-    Ollama exposes no quota API; we GET https://ollama.com/settings with the
-    admin's session cookie and parse usage figures from the HTML. If the
-    page structure changes, the fetcher returns parse_error so the admin
-    knows the parser needs updating.
-    """
-    cookie = os.getenv("OLLAMA_SESSION_COOKIE", "")
-    if not cookie:
-        return ProviderQuotaResult(
-            name="ollama",
-            display_name="Ollama Cloud",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
-
+async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
+    """Scrape Ollama Cloud usage for a single session cookie."""
     url = "https://ollama.com/settings"
     headers = {
         "Cookie": cookie,
@@ -570,8 +874,6 @@ async def fetch_ollama() -> ProviderQuotaResult:
 
     usages = _parse_ollama_html(html)
     if not usages:
-        # Authenticated pages have usage figures; their absence usually
-        # means cookie expired and we got a sign-in page instead.
         if "sign in" in html.lower() or "login" in html.lower():
             return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
         return _err("ollama", "Ollama Cloud", cookie, "parse_error")
@@ -586,6 +888,31 @@ async def fetch_ollama() -> ProviderQuotaResult:
         error=None,
         usages=usages,
     )
+
+
+async def fetch_ollama() -> list[ProviderQuotaResult]:
+    """Scrape Ollama Cloud usage for all configured session cookies."""
+    keys = _discover_env_keys("OLLAMA_SESSION_COOKIE", "OLLAMA_SESSION_COOKIE")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="ollama",
+                display_name="Ollama Cloud",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_ollama_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+
+    return _process_multi_key_results("ollama", "Ollama Cloud", keys, results)
 
 
 def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
@@ -617,19 +944,167 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
     return usages
 
 
-async def gather_all() -> list[ProviderQuotaResult]:
-    """Run all 4 provider fetchers in parallel; never raise.
+async def _fetch_chatgpt_for_key(cookie: str) -> ProviderQuotaResult:
+    """Fetch ChatGPT message quota for a single session cookie."""
+    headers = {
+        "Cookie": cookie,
+        "User-Agent": "Mozilla/5.0 (compatible; freeinference-admin/1.0)",
+        "Accept": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
 
-    If a fetcher raises (rather than returning an error result), the
-    exception is caught and converted to a `ProviderQuotaResult(ok=False,
-    error='unexpected')` so the admin endpoint can always respond with a
-    well-formed payload.
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(_CHATGPT_MODELS_URL, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("chatgpt", "ChatGPT", cookie, "auth_failed")
+            if resp.status >= 400:
+                return _err("chatgpt", "ChatGPT", cookie, "unexpected")
+            try:
+                raw = await resp.json()
+            except Exception:
+                return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+            if not isinstance(raw, dict):
+                return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+            data: dict[str, Any] = raw
+    except asyncio.TimeoutError:
+        return _err("chatgpt", "ChatGPT", cookie, "timeout")
+    except aiohttp.ClientError:
+        return _err("chatgpt", "ChatGPT", cookie, "unexpected")
+    except Exception:
+        logger.exception("fetch_chatgpt: unexpected error")
+        return _err("chatgpt", "ChatGPT", cookie, "unexpected")
+
+    usages = _parse_chatgpt_usage(data)
+    if not usages:
+        return _err("chatgpt", "ChatGPT", cookie, "parse_error")
+
+    return ProviderQuotaResult(
+        name="chatgpt",
+        display_name="ChatGPT",
+        key_configured=True,
+        key_masked=_mask_key(cookie),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
+
+
+async def fetch_chatgpt(op_store: Any | None = None) -> list[ProviderQuotaResult]:
+    """Fetch ChatGPT quota usage for env and DB-backed session cookies."""
+    keys = await _discover_chatgpt_credentials(op_store)
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="chatgpt",
+                display_name="ChatGPT",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_chatgpt_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+    return _process_multi_key_results("chatgpt", "ChatGPT", keys, results)
+
+
+async def _fetch_claude_code_for_key(token: str) -> ProviderQuotaResult:
+    """Fetch Claude Code subscription usage for a single OAuth token."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "Accept": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(_CLAUDE_CODE_USAGE_URL, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("claude-code", "Claude Code", token, "auth_failed")
+            if resp.status >= 400:
+                return _err("claude-code", "Claude Code", token, "unexpected")
+            try:
+                raw = await resp.json()
+            except Exception:
+                return _err("claude-code", "Claude Code", token, "parse_error")
+            if not isinstance(raw, dict):
+                return _err("claude-code", "Claude Code", token, "parse_error")
+            data: dict[str, Any] = raw
+    except asyncio.TimeoutError:
+        return _err("claude-code", "Claude Code", token, "timeout")
+    except aiohttp.ClientError:
+        return _err("claude-code", "Claude Code", token, "unexpected")
+    except Exception:
+        logger.exception("fetch_claude_code: unexpected error")
+        return _err("claude-code", "Claude Code", token, "unexpected")
+
+    usages = _parse_claude_code_usage(data)
+    if not usages:
+        return _err("claude-code", "Claude Code", token, "parse_error")
+
+    return ProviderQuotaResult(
+        name="claude-code",
+        display_name="Claude Code",
+        key_configured=True,
+        key_masked=_mask_key(token),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
+
+
+async def fetch_claude_code(op_store: Any | None = None) -> list[ProviderQuotaResult]:
+    """Fetch Claude Code subscription usage for env and DB-backed OAuth tokens."""
+    keys = await _discover_claude_code_credentials(op_store)
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="claude-code",
+                display_name="Claude Code",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_claude_code_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+    return _process_multi_key_results("claude-code", "Claude Code", keys, results)
+
+
+async def gather_all(op_store: Any | None = None) -> list[ProviderQuotaResult]:
+    """Run all provider fetchers in parallel; never raise.
+
+    Each fetcher returns a ``list[ProviderQuotaResult]`` (one per key).
+    Results are flattened into a single list. If a fetcher raises, the
+    exception is caught and converted to a single error result.
     """
     fetchers = [
         ("chutes", "Chutes", fetch_chutes),
         ("zai", "ZAI", fetch_zai),
         ("minimax", "MiniMax", fetch_minimax),
         ("ollama", "Ollama Cloud", fetch_ollama),
+        ("featherless", "Featherless", fetch_featherless),
+        ("chatgpt", "ChatGPT", lambda: fetch_chatgpt(op_store)),
+        ("claude-code", "Claude Code", lambda: fetch_claude_code(op_store)),
     ]
     raw = await asyncio.gather(
         *(f() for _, _, f in fetchers),
@@ -637,8 +1112,8 @@ async def gather_all() -> list[ProviderQuotaResult]:
     )
     out: list[ProviderQuotaResult] = []
     for (name, display_name, _), result in zip(fetchers, raw, strict=True):
-        if isinstance(result, ProviderQuotaResult):
-            out.append(result)
+        if isinstance(result, list):
+            out.extend(result)
         else:
             logger.error("gather_all: %s fetcher raised", name, exc_info=result)
             out.append(
@@ -654,3 +1129,27 @@ async def gather_all() -> list[ProviderQuotaResult]:
                 )
             )
     return out
+
+
+async def fetch_featherless() -> list[ProviderQuotaResult]:
+    """Return a stub result for Featherless (no public quota API)."""
+    keys = _discover_env_keys("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="featherless",
+                display_name="Featherless",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+    return _process_multi_key_results(
+        "featherless",
+        "Featherless",
+        keys,
+        [_err("featherless", "Featherless", k, "no_quota_api") for _, k in keys],
+    )

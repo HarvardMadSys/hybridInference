@@ -126,6 +126,37 @@ class TestRoleMigration:
                     )
 
     @pytest.mark.asyncio
+    async def test_create_tables_idempotent_with_existing_pro_rows(
+        self, migration_db: DatabaseLogger
+    ) -> None:
+        """Regression: rebuild must not fail when 'pro' rows already exist.
+
+        On a DB that has already gone through the full migration (constraint
+        includes 'pro' and rows exist with role='pro'), a subsequent restart
+        re-runs _create_tables() and must not crash. Previously the first
+        rebuild block re-added the constraint with ('free','internal','admin')
+        only, which rejected existing 'pro' rows and broke startup.
+        """
+        # First migration: legacy 4-role -> new set with 'pro'.
+        await migration_db._create_tables()
+
+        pool = migration_db.pool
+        assert pool is not None
+
+        # Promote a row to 'pro' to simulate post-migration state.
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET role = 'pro' WHERE email = 'free-user@test.example.com'"
+            )
+
+        # Restart should re-run migration cleanly without rejecting the pro row.
+        await migration_db._create_tables()
+
+        async with pool.acquire() as conn:
+            roles = {r["role"] for r in await conn.fetch("SELECT DISTINCT role FROM users")}
+        assert "pro" in roles
+
+    @pytest.mark.asyncio
     async def test_role_check_accepts_pro(self, auth_db_logger: DatabaseLogger) -> None:
         """Regression for Task 8 critical: DB CHECK constraint must accept pro role."""
         pool = auth_db_logger.pool

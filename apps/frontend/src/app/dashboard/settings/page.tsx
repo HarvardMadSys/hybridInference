@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
-import { updatePassword, changeEmail, updateProfile } from '@/lib/api/user';
+import { updatePassword, updateProfile } from '@/lib/api/user';
 import { profileUpdateSchema, ProfileUpdateData } from '@/lib/schemas/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
@@ -30,13 +30,7 @@ const changePasswordSchema = z
     path: ['confirmPassword'],
   });
 
-const changeEmailSchema = z.object({
-  newEmail: z.string().email('Please enter a valid email address'),
-  password: z.string().min(1, 'Password is required'),
-});
-
 type ChangePasswordFormData = z.infer<typeof changePasswordSchema>;
-type ChangeEmailFormData = z.infer<typeof changeEmailSchema>;
 
 function SettingsContent() {
   const { state, refreshUser } = useAuth();
@@ -48,16 +42,8 @@ function SettingsContent() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
 
-  const [emailLoading, setEmailLoading] = useState(false);
-  const [emailError, setEmailError] = useState<string | null>(null);
-  const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
-
   const passwordForm = useForm<ChangePasswordFormData>({
     resolver: zodResolver(changePasswordSchema),
-  });
-
-  const emailForm = useForm<ChangeEmailFormData>({
-    resolver: zodResolver(changeEmailSchema),
   });
 
   const profileForm = useForm<ProfileUpdateData>({
@@ -104,25 +90,6 @@ function SettingsContent() {
       toast.error(errorMsg);
     } finally {
       setPasswordLoading(false);
-    }
-  };
-
-  const onEmailSubmit = async (data: ChangeEmailFormData) => {
-    setEmailLoading(true);
-    setEmailError(null);
-    setEmailSuccess(null);
-
-    try {
-      const result = await changeEmail(data.newEmail, data.password);
-      setEmailSuccess(result.message);
-      toast.success('Email updated successfully! Please check your inbox for verification.');
-      emailForm.reset();
-    } catch (err) {
-      const errorMsg = getErrorMessage(err);
-      setEmailError(errorMsg);
-      toast.error(errorMsg);
-    } finally {
-      setEmailLoading(false);
     }
   };
 
@@ -238,52 +205,6 @@ function SettingsContent() {
               <div className="mt-auto flex justify-end">
                 <Button type="submit" isLoading={passwordLoading}>
                   Update Password
-                </Button>
-              </div>
-            </form>
-          </div>
-        </Card>
-
-        <Card>
-          <div className="flex flex-col h-full">
-            <div className="mb-2">
-              <h2 className="text-lg font-semibold">Change Email</h2>
-              <p className="text-sm text-gray-600">
-                Use a verified email to receive important notifications.
-              </p>
-            </div>
-            <form onSubmit={emailForm.handleSubmit(onEmailSubmit)} className="space-y-4 flex-1">
-              {emailError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md text-sm">
-                  {emailError}
-                </div>
-              )}
-              {emailSuccess && (
-                <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-md text-sm">
-                  {emailSuccess}
-                </div>
-              )}
-
-              <InputField
-                label="New Email"
-                type="email"
-                autoComplete="email"
-                error={emailForm.formState.errors.newEmail?.message}
-                {...emailForm.register('newEmail')}
-              />
-
-              <InputField
-                label="Confirm Password"
-                type="password"
-                hint="Enter your current password to confirm"
-                autoComplete="current-password"
-                error={emailForm.formState.errors.password?.message}
-                {...emailForm.register('password')}
-              />
-
-              <div className="mt-auto flex justify-end">
-                <Button type="submit" isLoading={emailLoading}>
-                  Update Email
                 </Button>
               </div>
             </form>

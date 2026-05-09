@@ -30,10 +30,10 @@ def test_api_keys_list_is_loaded(tmp_path, monkeypatch):
         models:
           - id: glm-test
             name: glm-test
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_keys:
@@ -64,10 +64,10 @@ def test_api_key_and_api_keys_both_set_raises(tmp_path, monkeypatch):
         models:
           - id: bad
             name: bad
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_key: ${ZAI_API_KEY_OTHER}
@@ -92,10 +92,10 @@ def test_blank_api_keys_are_dropped_with_warning(tmp_path, monkeypatch, caplog):
         models:
           - id: glm-test
             name: glm-test
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_keys:
@@ -122,10 +122,10 @@ def test_all_api_keys_blank_raises(tmp_path, monkeypatch):
         models:
           - id: glm-test
             name: glm-test
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_keys:
@@ -149,10 +149,10 @@ def test_single_api_key_form_still_works(tmp_path, monkeypatch):
         models:
           - id: glm-test
             name: glm-test
-            provider: zhipu
+            provider: zai
             base_url: https://api.example.com
             route:
-              - kind: zhipu
+              - kind: zai
                 weight: 1.0
                 base_url: https://api.example.com
                 api_key: ${ZAI_API_KEY}
@@ -164,3 +164,27 @@ def test_single_api_key_form_still_works(tmp_path, monkeypatch):
     cfg = router.routes["glm-test"].adapters[0][0].config
     assert cfg.api_key == "single-key"
     assert cfg.api_keys is None
+
+
+def test_missing_single_api_key_raises_in_strict_mode(tmp_path, monkeypatch):
+    monkeypatch.delenv("MISSING_SINGLE", raising=False)
+
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        models:
+          - id: glm-test
+            name: glm-test
+            provider: zai
+            base_url: https://api.example.com
+            route:
+              - kind: zai
+                weight: 1.0
+                base_url: https://api.example.com
+                api_key: ${MISSING_SINGLE}
+        """,
+    )
+
+    router = RouteExecutor()
+    with pytest.raises(ValueError, match="after env expansion"):
+        register_from_models_yaml(router, yaml_path)

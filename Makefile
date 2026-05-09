@@ -26,11 +26,12 @@ help:  ## Show this help message
 format:  ## Format code with ruff (configured for Google style)
 	@echo "$(YELLOW)Running formatter...$(RESET)"
 	$(UV_RUN) ruff format .
-	$(UV_RUN) ruff check --fix .
+	$(UV_RUN) ruff check --fix --unsafe-fixes .
 	@echo "$(GREEN)OK Code formatted$(RESET)"
 
-lint:  ## Run linters (ruff, pydocstyle)
+lint:  ## Run linters (ruff format check, ruff lint, pydocstyle)
 	@echo "$(YELLOW)Running linters...$(RESET)"
+	$(UV_RUN) ruff format --check .
 	$(UV_RUN) ruff check --no-fix .
 	$(UV_RUN) pydocstyle
 	@echo "$(GREEN)OK Linting passed$(RESET)"
@@ -50,11 +51,6 @@ test-db:  ## Run tests that require PostgreSQL (set TEST_DB_* env vars)
 	@echo "$(YELLOW)Running database-dependent tests...$(RESET)"
 	$(UV_RUN) pytest -vv -m "dbtest"
 	@echo "$(GREEN)OK Database tests passed$(RESET)"
-
-test-d1:  ## Run live Cloudflare D1 integration tests (requires D1_ACCOUNT_ID, D1_DATABASE_ID, D1_API_TOKEN in .env)
-	@echo "$(YELLOW)Running D1 integration tests...$(RESET)"
-	$(UV_RUN) pytest -vv -m "d1"
-	@echo "$(GREEN)OK D1 tests passed$(RESET)"
 
 test-all:  ## Run all tests except external (includes db-dependent)
 	@echo "$(YELLOW)Running all tests (not external)...$(RESET)"
@@ -133,8 +129,7 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 
 # ─── Docker / Production ─────────────────────────────────────────────────────
 COMPOSE := docker compose -f deploy/docker/docker-compose.yml --env-file .env
-DOCKER_VOLUMES := hybridinference_postgres_data \
-                  hybridinference_alertmanager_data hybridinference_alert_log_data
+DOCKER_VOLUMES := hybridinference_postgres_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose
 	@for volume in $(DOCKER_VOLUMES); do \

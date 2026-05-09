@@ -1,8 +1,4 @@
-"""Auth-specific fixtures for testing authentication system.
-
-Supports both PostgreSQL and Cloudflare D1 backends. The backend is selected
-automatically based on DB_BACKEND in the environment (or .env).
-"""
+"""Auth-specific fixtures for testing authentication system."""
 
 import os
 import sys
@@ -138,7 +134,6 @@ async def _init_pg_backend():
     log_store = PostgresLogStore(
         logger.pool,
         store_full_prompts=settings.db_store_full_content,
-        use_chunked_hash=True,
     )
 
     return logger, operational_store, log_store
@@ -158,115 +153,33 @@ async def _cleanup_pg_tables(pool):
 
 
 # ---------------------------------------------------------------------------
-# D1 helpers
-# ---------------------------------------------------------------------------
-
-
-async def _init_d1_backend():
-    """Initialize Cloudflare D1 backend for auth tests.
-
-    Returns (d1_client, operational_store, log_store) or raises to skip.
-    """
-    from serving.config.settings import get_settings
-    from serving.storage.cache import CachedOperationalStore, InMemoryCache
-    from serving.storage.d1_client import D1Client
-    from serving.storage.d1_log import D1LogStore
-    from serving.storage.d1_operational import D1OperationalStore
-
-    settings = get_settings()
-
-    if not all([settings.d1_account_id, settings.d1_database_id, settings.d1_api_token]):
-        pytest.skip("D1 credentials not configured")
-
-    client = D1Client(
-        account_id=settings.d1_account_id,
-        database_id=settings.d1_database_id,
-        api_token=settings.d1_api_token,
-    )
-
-    try:
-        if not await client.health_check():
-            pytest.skip("D1 not reachable")
-    except Exception as e:
-        await client.close()
-        pytest.skip(f"D1 not available: {e}")
-
-    d1_op = D1OperationalStore(client)
-    await d1_op.initialize()
-
-    d1_log = D1LogStore(client, flush_interval=1.0, flush_size=10)
-    await d1_log.initialize()
-
-    operational_store = CachedOperationalStore(d1_op, InMemoryCache())
-
-    return client, operational_store, d1_log
-
-
-async def _cleanup_d1_tables(client):
-    """Delete all rows from auth tables in D1."""
-    await client.batch(
-        [
-            ("DELETE FROM email_verification_tokens", None),
-            ("DELETE FROM password_reset_tokens", None),
-            ("DELETE FROM admin_audit_log", None),
-            ("DELETE FROM auth_sessions", None),
-            ("DELETE FROM user_daily_cost", None),
-            ("DELETE FROM api_keys WHERE account_id IS NOT NULL", None),
-            ("DELETE FROM signup_allowed_domains", None),
-            ("DELETE FROM users", None),
-        ]
-    )
-
-
-# ---------------------------------------------------------------------------
-# Backend-agnostic fixtures
+# PostgreSQL-backed fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
 async def auth_backend(auth_env):
-    """Initialize the appropriate storage backend for auth tests.
+    """Initialize PostgreSQL storage for auth tests.
 
     Yields (operational_store, log_store, db_logger_or_none).
-    Automatically selects D1 or PostgreSQL based on DB_BACKEND.
     """
-    from serving.config.settings import get_settings
-
-    settings = get_settings()
-
-    if settings.db_backend == "d1":
-        client, operational_store, log_store = await _init_d1_backend()
-        try:
-            yield operational_store, log_store, None, "d1"
-        finally:
-            await log_store.cleanup()
-            await client.close()
-    else:
-        logger, operational_store, log_store = await _init_pg_backend()
-        try:
-            yield operational_store, log_store, logger, "postgres"
-        finally:
-            await logger.cleanup()
+    logger, operational_store, log_store = await _init_pg_backend()
+    try:
+        yield operational_store, log_store, logger, "postgres"
+    finally:
+        await logger.cleanup()
 
 
 @pytest_asyncio.fixture
 async def clean_auth_tables(auth_backend):
     """Clean auth-related tables before and after each test."""
-    operational_store, _log_store, db_logger, backend = auth_backend
+    _operational_store, _log_store, db_logger, _backend = auth_backend
 
-    if backend == "d1":
-        d1_client = operational_store._store._d1  # CachedStore -> D1Store -> client
-        await _cleanup_d1_tables(d1_client)
-    else:
-        await _cleanup_pg_tables(db_logger.pool)
+    await _cleanup_pg_tables(db_logger.pool)
 
     yield
 
-    if backend == "d1":
-        d1_client = operational_store._store._d1
-        await _cleanup_d1_tables(d1_client)
-    else:
-        await _cleanup_pg_tables(db_logger.pool)
+    await _cleanup_pg_tables(db_logger.pool)
 
 
 @pytest_asyncio.fixture
@@ -418,7 +331,7 @@ def mock_email_service(monkeypatch):
 async def auth_db_logger(auth_backend):
     """Provide the DatabaseLogger for tests that need raw PG access.
 
-    Skips if backend is D1 (those tests need to be migrated to use stores).
+    This fixture is for tests that still need raw PostgreSQL access.
     """
     _, _, db_logger, backend = auth_backend
     if backend != "postgres":

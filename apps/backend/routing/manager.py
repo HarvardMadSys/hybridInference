@@ -118,6 +118,19 @@ class RoutingManager:
                 if adapter not in seen and adapter not in weights:
                     new_adapters.append((adapter, w))
             if new_adapters:
+                # Renormalize so the weight sum is 1.0. Without this, mixing
+                # strategy-assigned weights (which already sum to 1.0 over their
+                # subset) with the carried-over old weights of uncovered adapters
+                # produces a >1.0 total. FixedRouter's weighted-random walk
+                # then short-circuits on whichever adapter's cumulative weight
+                # first reaches the [0,1) random draw's upper bound, starving
+                # every later adapter (e.g. glm-5 only listing z.ai in
+                # routing.yaml gave zai weight 1.0 — its cumulative hit 1.0
+                # on iteration one, so ollama/chutes/featherless kept their
+                # carried-over weights but were never reached).
+                total = sum(w for _, w in new_adapters)
+                if total > 0:
+                    new_adapters = [(a, w / total) for a, w in new_adapters]
                 route_cfg.adapters = new_adapters  # mutate in-place to preserve alias sharing
                 updated += 1
         return updated
