@@ -858,6 +858,9 @@ class DatabaseLogger:
             upstream_cost_usd: OpenRouter-reported per-request upstream cost (USD).
                 Internal accounting only — orthogonal to user-billed `cost_usd`.
                 None for non-OpenRouter routes.
+            request_payload: Raw incoming request body (dict). Stored as JSONB
+                in the ``request_payload`` column when full-content logging
+                is enabled; nulled in privacy mode.
         """
         if not self.pool:
             raise RuntimeError("DatabaseLogger not initialized")
