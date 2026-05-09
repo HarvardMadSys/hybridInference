@@ -186,7 +186,7 @@ async def test_update_int_setting_at_min_succeeds(monkeypatch, admin_client):
 
 @pytest.mark.asyncio
 async def test_list_settings_includes_user_concurrency_keys(admin_client):
-    """All four user_concurrency_<role> keys are exposed via /admin/settings."""
+    """All five user_concurrency_<role> keys are exposed via /admin/settings."""
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(return_value=None)
 
@@ -197,6 +197,7 @@ async def test_list_settings_includes_user_concurrency_keys(admin_client):
     assert response.status_code == 200
     keys = {item["key"] for item in response.json()["settings"]}
     assert {
+        "user_concurrency_trial",
         "user_concurrency_free",
         "user_concurrency_pro",
         "user_concurrency_internal",
