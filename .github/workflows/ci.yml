@@ -281,7 +281,12 @@ jobs:
       - name: Install gitleaks
         run: |
           set -euo pipefail
-          asset="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          case "$(uname -m)" in
+            x86_64) arch="x64" ;;
+            aarch64|arm64) arch="arm64" ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          asset="gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz"
           base_url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
           curl -fsSLO "${base_url}/${asset}"
           curl -fsSLO "${base_url}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
