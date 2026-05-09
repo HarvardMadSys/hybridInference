@@ -43,6 +43,12 @@ function fmtHour(iso: string): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00`;
 }
 
+function fmt2(v: unknown): string {
+  if (v == null) return '';
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n.toFixed(2) : String(v);
+}
+
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
   const cached = safePoints.filter((p) => p.cache_hit);
@@ -104,6 +110,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               cursor={{ strokeDasharray: '3 3' }}
               contentStyle={{ fontSize: 11 }}
               labelFormatter={() => ''}
+              formatter={(v) => fmt2(v)}
               wrapperStyle={{ outline: 'none' }}
             />
             <Scatter
@@ -157,7 +164,7 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
         <h3 className="text-[14px] font-semibold text-gray-900">{modelId}</h3>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[13px] text-gray-700">
         <Kpi label="Requests" value={totals.requests.toLocaleString()} />
         <Kpi label="Error rate" value={`${(totals.errorRate * 100).toFixed(2)}%`} />
         <Kpi label="Completion tokens" value={totals.tokens.toLocaleString()} />
@@ -174,8 +181,8 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt2} />
+                <Tooltip formatter={(v) => fmt2(v)} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="ttft_p50" stroke="#3b82f6" dot={false} name="p50" />
                 <Line type="monotone" dataKey="ttft_p95" stroke="#f59e0b" dot={false} name="p95" />
@@ -191,8 +198,8 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt2} />
+                <Tooltip formatter={(v) => fmt2(v)} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="thru_avg" stroke="#10b981" dot={false} name="avg" />
                 <Line type="monotone" dataKey="thru_p50" stroke="#3b82f6" dot={false} name="p50" />
@@ -359,7 +366,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
       {loading || initializing ? <div className="text-gray-500 text-sm">Loading…</div> : null}
 
       {!initializing && !loading && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border px-3 py-2 text-[13px]">
           <Kpi label="Total requests" value={overallTotals.requests.toLocaleString()} />
           <Kpi label="Error rate" value={`${(overallTotals.errorRate * 100).toFixed(2)}%`} />
           <Kpi label="Completion tokens" value={overallTotals.tokens.toLocaleString()} />
@@ -409,9 +416,9 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
 
 function Kpi({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border p-4">
-      <p className="text-[11px] uppercase tracking-wide text-gray-400">{label}</p>
-      <p className="mt-1 text-2xl font-bold text-gray-900">{value}</p>
+    <div className="inline-flex items-baseline gap-1.5">
+      <span className="text-[11px] uppercase tracking-wide text-gray-400">{label}</span>
+      <span className="text-sm font-semibold tabular-nums text-gray-900">{value}</span>
     </div>
   );
 }
