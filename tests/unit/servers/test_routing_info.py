@@ -17,9 +17,9 @@ from serving.servers.routers.routing_info import (
 
 
 def test_pricing_frozen():
-    p = Pricing(input_per_1k=0.5, output_per_1k=1.5)
+    p = Pricing(prompt_price=0.5, completion_price=1.5)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        p.input_per_1k = 0.0  # type: ignore[misc]
+        p.prompt_price = 0.0  # type: ignore[misc]
 
 
 def test_routewise_decision_defaults():
@@ -101,7 +101,10 @@ def test_merge_adapter_routing_populates_known_fields():
     assert enriched.provider == "openai"
     assert enriched.base_url == "https://api.openai.com/v1"
     assert enriched.endpoint_id == "openai-prod"
-    assert enriched.pricing == {"prompt": "0.5", "completion": "1.5"}
+    # PR B: pricing is now a typed ``Pricing | None`` field; the raw adapter
+    # dict flows through ``extra["pricing"]`` for the log payload.
+    assert enriched.pricing is None
+    assert enriched.extra["pricing"] == {"prompt": "0.5", "completion": "1.5"}
     assert enriched.routewise == {"selected_tier": "A"}
     assert enriched.upstream_cost_usd == 0.012
     # Original is untouched (frozen + immutability invariant)

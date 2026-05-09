@@ -68,22 +68,39 @@ async def test_schedule_db_log_failure_emits_failure_event(
     assert matching[0].error_type == "RuntimeError"
 
 
+def _make_cost_tracker(op_store):
+    from serving.servers.routers.completions_cost import CostTracker, PricingLookup
+    from serving.servers.routers.routing_info import Pricing
+
+    pricing_lookup = MagicMock(spec=PricingLookup)
+    pricing_lookup.for_routing.return_value = Pricing(prompt_price=1.0, completion_price=2.0)
+    return CostTracker(op_store=op_store, pricing=pricing_lookup)
+
+
+def _routing_for_cost(provider: str = "openai"):
+    from serving.servers.routers.routing_info import RoutingInfo
+
+    return RoutingInfo(request_id="req-x", model="m", provider=provider)
+
+
 async def test_schedule_cost_increment_emits_tracked_task_completed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The cost-increment call-site emits a cost_increment success event."""
     from serving.observability.tracked_tasks import _TRACKED_TASKS
-    from serving.servers.routers.completions import _schedule_cost_increment
 
     _TRACKED_TASKS.clear()
     op_store = MagicMock()
     op_store.increment_user_cost = AsyncMock(return_value=None)
-
-    usage = {"prompt_tokens": 100, "completion_tokens": 50}
-    pricing = {"prompt": "1.0", "completion": "2.0"}  # nonzero so cost > 0
+    tracker = _make_cost_tracker(op_store)
 
     with caplog.at_level(logging.INFO, logger="serving.observability.tracked_tasks"):
-        _schedule_cost_increment(op_store, "user-1", usage, pricing)
+        await tracker.schedule_increment(
+            user_id="user-1",
+            routing=_routing_for_cost(),
+            prompt_tokens=100,
+            completion_tokens=50,
+        )
         await asyncio.gather(*list(_TRACKED_TASKS), return_exceptions=True)
 
     matching = [
@@ -100,18 +117,22 @@ async def test_schedule_cost_increment_emits_tracked_task_completed(
 async def test_schedule_cost_increment_skipped_when_zero_cost() -> None:
     """Zero-cost requests do not schedule any background work."""
     from serving.observability.tracked_tasks import _TRACKED_TASKS
-    from serving.servers.routers.completions import _schedule_cost_increment
+    from serving.servers.routers.completions_cost import CostTracker, PricingLookup
+    from serving.servers.routers.routing_info import Pricing
 
     _TRACKED_TASKS.clear()
     op_store = MagicMock()
     op_store.increment_user_cost = AsyncMock()
 
-    # Zero pricing -> cost == 0 -> no task scheduled.
-    _schedule_cost_increment(
-        op_store,
-        "user-2",
-        {"prompt_tokens": 1},
-        {"prompt": "0", "completion": "0"},
+    pricing_lookup = MagicMock(spec=PricingLookup)
+    pricing_lookup.for_routing.return_value = Pricing(prompt_price=0.0, completion_price=0.0)
+    tracker = CostTracker(op_store=op_store, pricing=pricing_lookup)
+
+    await tracker.schedule_increment(
+        user_id="user-2",
+        routing=_routing_for_cost(),
+        prompt_tokens=1,
+        completion_tokens=0,
     )
     assert len(_TRACKED_TASKS) == 0
     op_store.increment_user_cost.assert_not_awaited()
@@ -122,17 +143,19 @@ async def test_schedule_cost_increment_failure_emits_failure_event(
 ) -> None:
     """When increment_user_cost raises, a failure event is emitted."""
     from serving.observability.tracked_tasks import _TRACKED_TASKS
-    from serving.servers.routers.completions import _schedule_cost_increment
 
     _TRACKED_TASKS.clear()
     op_store = MagicMock()
     op_store.increment_user_cost = AsyncMock(side_effect=RuntimeError("billing down"))
-
-    usage = {"prompt_tokens": 100, "completion_tokens": 50}
-    pricing = {"prompt": "1.0", "completion": "2.0"}
+    tracker = _make_cost_tracker(op_store)
 
     with caplog.at_level(logging.WARNING, logger="serving.observability.tracked_tasks"):
-        _schedule_cost_increment(op_store, "user-3", usage, pricing)
+        await tracker.schedule_increment(
+            user_id="user-3",
+            routing=_routing_for_cost(),
+            prompt_tokens=100,
+            completion_tokens=50,
+        )
         await asyncio.gather(*list(_TRACKED_TASKS), return_exceptions=True)
 
     matching = [

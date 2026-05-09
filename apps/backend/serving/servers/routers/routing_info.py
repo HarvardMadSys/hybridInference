@@ -21,18 +21,20 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class Pricing:
-    """Per-provider, per-model upstream pricing in USD per 1k tokens.
+    """Per-provider, per-model upstream pricing.
 
-    Defined now for PR B's ``PricingLookup`` to consume. Not yet wired
-    into ``RoutingInfo`` since adapters today emit a string-valued dict
-    (``{"prompt": "...", "completion": "..."}``) that ``calculate_cost``
-    parses directly. PR B will introduce the typed runtime conversion.
+    Field values mirror the float-parsed values of the adapter pricing dict
+    keys (``prompt``/``completion``/``input_cache_reads``/
+    ``input_cache_writes``). Units match what ``serving.storage.utils.
+    calculate_cost`` consumes — i.e., USD per million tokens — so that
+    ``CostTracker._compute_cost`` produces byte-for-byte equivalent results
+    against the legacy dict-based path.
     """
 
-    input_per_1k: float
-    output_per_1k: float
-    cache_read_per_1k: float = 0.0
-    cache_write_per_1k: float = 0.0
+    prompt_price: float
+    completion_price: float
+    cache_read_price: float = 0.0
+    cache_write_price: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,10 +58,13 @@ class RouteWiseDecision:
 class RoutingInfo:
     """Per-request routing state carried through the handler pipeline.
 
-    ``pricing`` is intentionally typed as a raw dict (matching the adapter
-    wire format) rather than ``Pricing``; PR B introduces the typed
-    conversion at the lookup boundary without changing the on-the-wire
-    payload that downstream logging/cost-math depends on.
+    ``pricing`` is the typed in-process view used by
+    :class:`~serving.servers.routers.completions_cost.CostTracker`. The
+    adapter's raw pricing dict (string-valued, with keys ``prompt`` /
+    ``completion`` / ``input_cache_reads`` / ``input_cache_writes``)
+    flows through unchanged into ``extra["pricing"]`` so downstream
+    components — notably ``LogStore.log_request`` which consumes the dict
+    directly — keep working byte-for-byte.
     """
 
     request_id: str
@@ -67,7 +72,7 @@ class RoutingInfo:
     provider: str | None = None
     endpoint_id: str | None = None
     base_url: str | None = None
-    pricing: dict[str, Any] | None = None
+    pricing: Pricing | None = None
     routewise: dict[str, Any] | None = None
     upstream_cost_usd: float | None = None
     extra: dict[str, Any] = field(default_factory=dict)
@@ -117,13 +122,18 @@ def merge_adapter_routing(
     if not adapter_routing:
         return base
 
+    # ``pricing`` from adapters is a string-valued dict (e.g., ``{"prompt":
+    # "0.5", "completion": "1.5"}``). ``RoutingInfo.pricing`` is now a typed
+    # ``Pricing | None``, so we deliberately route the raw pricing dict into
+    # ``extra["pricing"]``; ``PricingLookup.for_routing`` reads it from there
+    # and does the typed conversion at the lookup boundary. This keeps the
+    # log payload (which still wants the raw dict) byte-for-byte stable.
     known: dict[str, Any] = {}
     extra: dict[str, Any] = dict(base.extra)
     field_names = {
         "provider",
         "base_url",
         "endpoint_id",
-        "pricing",
         "routewise",
         "upstream_cost_usd",
     }
