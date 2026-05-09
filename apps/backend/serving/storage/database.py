@@ -432,10 +432,10 @@ class DatabaseLogger:
                 ALTER COLUMN role SET NOT NULL
             """)
 
-            # Migrate old 4-role hierarchy to 3-role: internal_group/developer → internal.
-            # The constraint must be dropped BEFORE the UPDATE — on an existing DB the
-            # old CHECK (role IN ('free','internal_group','developer','admin')) would
-            # reject the new 'internal' value.
+            # Migrate legacy roles and rebuild users_role_check to the current
+            # allowed set (trial, free, pro, internal, admin). The constraint
+            # must be dropped BEFORE the UPDATE — older DBs may have CHECK
+            # constraints that reject 'internal' or 'trial'.
             try:
                 async with conn.transaction():
                     await conn.execute("""
@@ -455,36 +455,6 @@ class DatabaseLogger:
                     await conn.execute("""
                         ALTER TABLE users
                         ADD CONSTRAINT users_role_check
-                        CHECK (role IN ('free', 'pro', 'internal', 'admin'))
-                    """)
-            except asyncpg.PostgresError as exc:
-                invalid_role_rows = await conn.fetch("""
-                    SELECT id, email, role
-                    FROM users
-                    WHERE role NOT IN ('free', 'pro', 'internal', 'admin')
-                    ORDER BY created_at DESC
-                    LIMIT 10
-                """)
-                logger.error(
-                    "Failed to rebuild users_role_check; transaction rolled back. "
-                    "Sample invalid rows=%s error=%s",
-                    [dict(row) for row in invalid_role_rows],
-                    exc,
-                )
-                raise
-
-            # Expand the role CHECK constraint to include the "trial" and "pro"
-            # tiers. The original constraint allowed (free, internal, admin);
-            # we expand to (trial, free, pro, internal, admin). The constraint
-            # must be dropped first because new values are not in the old set.
-            try:
-                async with conn.transaction():
-                    await conn.execute("""
-                        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check
-                    """)
-                    await conn.execute("""
-                        ALTER TABLE users
-                        ADD CONSTRAINT users_role_check
                         CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin'))
                     """)
             except asyncpg.PostgresError as exc:
@@ -496,8 +466,8 @@ class DatabaseLogger:
                     LIMIT 10
                 """)
                 logger.error(
-                    "Failed to expand users_role_check to include trial/pro; "
-                    "transaction rolled back. Sample invalid rows=%s error=%s",
+                    "Failed to rebuild users_role_check; transaction rolled back. "
+                    "Sample invalid rows=%s error=%s",
                     [dict(row) for row in invalid_role_rows],
                     exc,
                 )

@@ -41,7 +41,7 @@ def test_has_role_existing_semantics_preserved():
     assert has_role("pro", "internal") is False
     # admin satisfies admin
     assert has_role("admin", "admin") is True
-    # pro satisfies free (any role >= rank 0 passes free)
+    # pro satisfies free (any role at/above free in rank passes free)
     assert has_role("pro", "free") is True
 
 
