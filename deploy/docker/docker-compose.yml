@@ -12,7 +12,7 @@
 #   docker compose -f deploy/docker/docker-compose.yml --env-file .env --profile admin up -d
 
 # Pin the project name so volume names are deterministic regardless of CWD.
-# Volumes will always be: hybridinference_postgres_data, hybridinference_alertmanager_data, etc.
+# Volumes will always be: hybridinference_postgres_data, hybridinference_pgadmin_data, etc.
 name: hybridinference
 
 services:
@@ -125,52 +125,12 @@ services:
     profiles:
       - admin
 
-  # ===== Observability =====
-
-  alertmanager:
-    image: prom/alertmanager:v0.31.1
-    container_name: hybridinference-alertmanager
-    restart: unless-stopped
-    command:
-      - "--config.file=/etc/alertmanager/alertmanager.yml"
-      - "--storage.path=/alertmanager"
-    ports:
-      - "127.0.0.1:9093:9093"
-    volumes:
-      - ../alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - alertmanager_data:/alertmanager
-    networks:
-      - hybridinference
-
-  alert-logger:
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.alert-logger
-    container_name: hybridinference-alert-logger
-    restart: unless-stopped
-    volumes:
-      - alert_log_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1',5001),2); s.close()\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-    networks:
-      - hybridinference
-
 volumes:
   postgres_data:
     external: true
     name: hybridinference_postgres_data
   pgadmin_data:
     driver: local
-  alertmanager_data:
-    external: true
-    name: hybridinference_alertmanager_data
-  alert_log_data:
-    external: true
-    name: hybridinference_alert_log_data
 
 networks:
   hybridinference:

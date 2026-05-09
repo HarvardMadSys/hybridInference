@@ -89,8 +89,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await logoutApi();
-    setState({ isAuthenticated: false, loading: false, user: null });
+    try {
+      await logoutApi();
+    } finally {
+      setState({ isAuthenticated: false, loading: false, user: null });
+    }
   }, []);
 
   const value: AuthContextValue = {

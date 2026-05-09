@@ -11,6 +11,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any, Literal
 
+from serving.config.settings import VALID_ROLES
 from serving.storage.base import OperationalStore, ProviderKeyRow, Row
 from serving.utils.logging import get_logger
 
@@ -65,8 +66,8 @@ class PostgresOperationalStore(OperationalStore):
                 password_hash TEXT NOT NULL,
                 user_name TEXT,
                 preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-                role TEXT NOT NULL DEFAULT 'free'
-                    CHECK (role IN ('free', 'pro', 'internal', 'admin')),
+                role TEXT NOT NULL DEFAULT 'trial'
+                    CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin')),
                 email_verified BOOLEAN DEFAULT FALSE,
                 status TEXT DEFAULT 'active'
                     CHECK (status IN ('active', 'suspended', 'deleted',
@@ -127,7 +128,7 @@ class PostgresOperationalStore(OperationalStore):
 
         # Role column & migration
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT")
-        await conn.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'")
+        await conn.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'trial'")
         tag = await conn.execute("UPDATE users SET role = 'free' WHERE role IS NULL")
         backfilled = _parse_command_tag_count(tag)
         if backfilled:
@@ -150,12 +151,12 @@ class PostgresOperationalStore(OperationalStore):
                     )
                 await conn.execute("""
                     ALTER TABLE users ADD CONSTRAINT users_role_check
-                    CHECK (role IN ('free', 'pro', 'internal', 'admin'))
+                    CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin'))
                 """)
         except _asyncpg.PostgresError as exc:
             invalid_rows = await conn.fetch(
                 "SELECT id, email, role FROM users "
-                "WHERE role NOT IN ('free','pro','internal','admin') "
+                "WHERE role NOT IN ('trial','free','pro','internal','admin') "
                 "ORDER BY created_at DESC LIMIT 10"
             )
             logger.error(
@@ -171,7 +172,8 @@ class PostgresOperationalStore(OperationalStore):
         if admin_emails:
             tag = await conn.execute(
                 "UPDATE users SET role = 'admin' "
-                "WHERE lower(trim(email)) = ANY($1::text[]) AND role = 'free'",
+                "WHERE lower(trim(email)) = ANY($1::text[]) "
+                "AND role IN ('trial', 'free')",
                 admin_emails,
             )
             seeded = _parse_command_tag_count(tag)
@@ -411,6 +413,15 @@ class PostgresOperationalStore(OperationalStore):
                 value TEXT NOT NULL,
                 value_type TEXT NOT NULL DEFAULT 'str',
                 updated_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_by TEXT
+            )
+        """)
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_visibility_overrides (
+                model_id TEXT PRIMARY KEY,
+                required_role TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_by TEXT
             )
         """)
@@ -1731,6 +1742,57 @@ class PostgresOperationalStore(OperationalStore):
             rows = await conn.fetch(
                 "SELECT key, value, value_type, updated_at, updated_by "
                 "FROM site_settings ORDER BY key"
+            )
+        return [dict(r) for r in rows]
+
+    async def get_model_visibility_override(self, model_id: str) -> Row | None:
+        """Fetch a single model_visibility_overrides row by model_id."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT model_id, required_role, updated_at, updated_by "
+                "FROM model_visibility_overrides WHERE model_id = $1",
+                model_id,
+            )
+        return dict(row) if row else None
+
+    async def set_model_visibility_override(
+        self,
+        model_id: str,
+        required_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model visibility override row."""
+        if required_role not in VALID_ROLES:
+            raise ValueError(f"Invalid required_role: {required_role}")
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO model_visibility_overrides "
+                "(model_id, required_role, updated_at, updated_by) "
+                "VALUES ($1, $2, NOW(), $3) "
+                "ON CONFLICT (model_id) DO UPDATE SET "
+                "required_role = EXCLUDED.required_role, "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                required_role,
+                updated_by,
+            )
+
+    async def delete_model_visibility_override(self, model_id: str) -> bool:
+        """Delete a model visibility override row. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM model_visibility_overrides WHERE model_id = $1",
+                model_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+    async def list_model_visibility_overrides(self) -> list[Row]:
+        """Return all model visibility override rows ordered by model_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, required_role, updated_at, updated_by "
+                "FROM model_visibility_overrides ORDER BY model_id"
             )
         return [dict(r) for r in rows]
 

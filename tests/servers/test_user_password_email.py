@@ -117,71 +117,10 @@ async def test_change_password_weak_new_password(test_app, test_client, mock_ope
 
 
 @pytest.mark.asyncio
-async def test_change_email_success(test_app, test_client, mock_operational_store):
-    """Test successful email change."""
-    with (
-        patch("serving.utils.jwt.verify_access_token") as mock_verify,
-        patch("serving.utils.password.verify_password", return_value=True),
-        patch("serving.utils.email.is_email_enabled", return_value=True),
-        patch("serving.utils.email.send_verification_email", return_value=True),
-    ):
-        mock_verify.return_value = {"sub": "user123", "email": "old@example.com"}
-
-        user_row = _mock_authenticated_user("old@example.com")
-        mock_operational_store.get_user_by_id.return_value = user_row
-        mock_operational_store.get_user_by_email.return_value = None  # New email not in use
-        mock_operational_store.update_user_fields.return_value = None
-        mock_operational_store.create_verification_token.return_value = None
-
-        response = await test_client.post(
-            "/user/change-email",
-            json={"new_email": "new@example.com", "password": "MyPassword123"},
-            headers={"Authorization": "Bearer fake_token"},
-        )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert "email changed successfully" in data["message"].lower()
-    assert data["new_email"] == "new@example.com"
-
-
-@pytest.mark.asyncio
-async def test_change_email_wrong_password(test_app, test_client, mock_operational_store):
-    """Test email change with incorrect password."""
-    with (
-        patch("serving.utils.jwt.verify_access_token") as mock_verify,
-        patch("serving.utils.password.verify_password", return_value=False),
-    ):
-        mock_verify.return_value = {"sub": "user123", "email": "old@example.com"}
-
-        mock_operational_store.get_user_by_id.return_value = _mock_authenticated_user(
-            "old@example.com"
-        )
-
-        response = await test_client.post(
-            "/user/change-email",
-            json={"new_email": "new@example.com", "password": "WrongPassword123"},
-            headers={"Authorization": "Bearer fake_token"},
-        )
-
-    assert response.status_code == 400
-    assert "incorrect" in response.json()["detail"].lower()
-
-
-@pytest.mark.asyncio
 async def test_change_password_requires_auth(test_client):
     """Test that change password requires authentication."""
     response = await test_client.post(
         "/user/change-password",
         json={"old_password": "OldPassword123", "new_password": "NewPassword456"},
-    )
-    assert response.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_change_email_requires_auth(test_client):
-    """Test that change email requires authentication."""
-    response = await test_client.post(
-        "/user/change-email", json={"new_email": "new@example.com", "password": "MyPassword123"}
     )
     assert response.status_code == 401

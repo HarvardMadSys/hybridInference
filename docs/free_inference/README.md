@@ -32,7 +32,7 @@ FreeInference provides free access to state-of-the-art language models for codin
 6. Pick a model:
    - `glm-5.1` for general coding work
    - `glm-5-turbo` for faster iterations
-   - `minimax-m2.5` for very long context or image input
+   - `minimax-m2.5` for long context or image input
 7. Save settings and start a new Kilo Code session
 
 ### Cursor Setup
@@ -57,13 +57,11 @@ FreeInference provides free access to state-of-the-art language models for codin
 ## Available Models
 
 - **GLM-4.7** - 200K context, bilingual coding assistant
-- **GLM-5** - 200K context, latest generation
 - **GLM-5.1** - 200K context, enhanced version
 - **GLM-5 Turbo** - 200K context, performance variant
-- **Qwen3.6 27B** - 65K context, self-hosted
-- **Qwen3.6 35B** - 65K context, self-hosted
-- **MiniMax M2.7** - 196K context
-- **MiniMax M2.5** - 1M context, multimodal (text + image)
+- **Qwen3.6 35B** - 262K context, strong reasoning and coding intelligence
+- **MiniMax M2.7** - 205K context
+- **MiniMax M2.5** - 205K context, multimodal (text + image)
 
 See the [Models documentation](https://doc.freeinference.org/models.html) for the complete list.
 

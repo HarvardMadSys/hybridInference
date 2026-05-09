@@ -4,7 +4,24 @@ import asyncio
 import gc
 from unittest.mock import AsyncMock, patch
 
-from routing.routers import _CircuitBreaker, _CircuitState
+from routing.routers import BaseRouter, _CircuitBreaker, _CircuitState
+
+
+def test_default_settings_keep_circuit_closed_until_third_failure(monkeypatch):
+    monkeypatch.delenv("CIRCUIT_FAILURE_THRESHOLD", raising=False)
+    monkeypatch.delenv("CIRCUIT_COOLDOWN_SECONDS", raising=False)
+    monkeypatch.delenv("CIRCUIT_MIN_AVAILABILITY", raising=False)
+    monkeypatch.delenv("ROUTER_HEALTH_EWMA_ALPHA", raising=False)
+
+    router = BaseRouter()
+    endpoint_id = "openai"
+
+    router._on_failure(endpoint_id, reason="upstream_500")
+    router._on_failure(endpoint_id, reason="upstream_500")
+    assert router.get_provider_status()[endpoint_id]["circuit_state"] == _CircuitState.CLOSED
+
+    router._on_failure(endpoint_id, reason="upstream_500")
+    assert router.get_provider_status()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
 
 
 async def test_circuit_open_fires_alert(monkeypatch):

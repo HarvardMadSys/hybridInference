@@ -28,10 +28,15 @@ export const signupSchema = z
       .max(2000, 'Use case cannot exceed 2000 characters')
       .optional()
       .or(z.literal('')),
+    acceptTerms: z.boolean(),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: 'Passwords do not match',
     path: ['confirmPassword'],
+  })
+  .refine((data) => data.acceptTerms, {
+    message: 'You must agree to the Terms of Service',
+    path: ['acceptTerms'],
   });
 
 export const loginSchema = z.object({

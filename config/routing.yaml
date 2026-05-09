@@ -1,4 +1,7 @@
-routing_strategy: fixed
+default_router: fixed
+# DEPRECATED: `routing_parameter:` is a one-release shim consumed by
+# RoutingManager for weight assignment; it will be removed once RoutingManager
+# moves to per-model `router_params:` in models.yaml.
 routing_parameter:
   local_fraction: 1
 timeout: 2
@@ -6,7 +9,7 @@ health_check: 300
 logging:
   output: output.log
 local_deployment:
-  - endpoint: http://host.docker.internal:8001
+  - endpoint: ${LOCAL_DEPLOYMENT_URL}
     models:
       - qwen3.6-35b
 remote_deployment:
@@ -25,7 +28,7 @@ remote_deployment:
       - glm-5
       - glm-5-turbo
       - glm-5.1
-  - endpoint: https://api.deepseek.com
+  - endpoint: ${DEEPSEEK_BASE_URL}
     models:
       - deepseek-v4-flash
       - deepseek-v4-pro

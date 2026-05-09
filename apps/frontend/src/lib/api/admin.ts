@@ -720,6 +720,8 @@ export interface ProviderStatsRow {
   prompt_tokens_avg: number | null;
   completion_tokens_avg: number | null;
   total_completion_tokens: number;
+  total_prompt_tokens: number | null;
+  total_reasoning_tokens: number | null;
 }
 
 export interface ProviderModelPair {
@@ -881,6 +883,17 @@ export async function updateRuntimeSetting(
 
 export type Role = 'free' | 'pro' | 'internal' | 'admin';
 
+export interface AdminModelVisibilityItem {
+  model_id: string;
+  baseline_required_role: Role;
+  override_required_role: Role | null;
+  effective_required_role: Role;
+}
+
+export interface ListAdminModelVisibilityResponse {
+  models: AdminModelVisibilityItem[];
+}
+
 export interface RoleQuotaPreview {
   role: Role;
   quota: number;
@@ -909,6 +922,27 @@ export async function applyRoleQuota(role: Role): Promise<RoleQuotaApplyResult> 
     body: JSON.stringify({ role }),
   });
   return jsonOrThrow<RoleQuotaApplyResult>(resp);
+}
+
+export async function listModelVisibility(): Promise<ListAdminModelVisibilityResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/models/visibility');
+  return jsonOrThrow<ListAdminModelVisibilityResponse>(resp);
+}
+
+export async function updateModelVisibility(
+  modelId: string,
+  requiredRole: Role | null,
+): Promise<AdminModelVisibilityItem> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/models/${encodeURIComponent(modelId)}/visibility`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ required_role: requiredRole }),
+    },
+  );
+  return jsonOrThrow<AdminModelVisibilityItem>(resp);
 }
 
 // ========================================

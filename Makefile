@@ -129,8 +129,7 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 
 # ─── Docker / Production ─────────────────────────────────────────────────────
 COMPOSE := docker compose -f deploy/docker/docker-compose.yml --env-file .env
-DOCKER_VOLUMES := hybridinference_postgres_data \
-                  hybridinference_alertmanager_data hybridinference_alert_log_data
+DOCKER_VOLUMES := hybridinference_postgres_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose
 	@for volume in $(DOCKER_VOLUMES); do \

@@ -203,7 +203,7 @@ class _ProviderHealth:
         self.provider = provider
         env_alpha = os.getenv("ROUTER_HEALTH_EWMA_ALPHA")
         self.alpha = (
-            float(env_alpha) if env_alpha is not None else (alpha if alpha is not None else 0.2)
+            float(env_alpha) if env_alpha is not None else (alpha if alpha is not None else 0.1)
         )
         self.ewma_success = 1.0
         self.ewma_total = 1.0
@@ -640,11 +640,21 @@ class FixedRouter(BaseRouter):
 
     Drop-in replacement for RouteExecutor. Selects adapters via weighted
     random selection and tries remaining adapters on failure.
+
+    Args:
+        params: Optional Pydantic ``FixedParams`` (passed by the strategy
+            registry).  ``None`` keeps existing call-site behavior.
+            ``params.local_fraction`` is currently informational; the existing
+            weighted-random selection over ``routes`` is unchanged.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, params: Any = None) -> None:
         super().__init__()
         self.routes: dict[str, RouteConfig] = {}
+        # Keep the validated params accessible for future use (e.g. honoring
+        # local_fraction in adapter selection).  Today FixedRouter ignores it
+        # because per-route weights already encode local-vs-remote balance.
+        self.params = params
 
     def register_route(
         self,

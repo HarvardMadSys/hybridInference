@@ -11,11 +11,25 @@ from fastapi.responses import StreamingResponse
 
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_db_logger, verify_admin_access
+from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+logger = get_logger(__name__)
+
 router = APIRouter(prefix="/admin")
+
+
+def _decode_jsonish(value: Any) -> Any:
+    """Return JSONB values as objects even when asyncpg gives us strings."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        logger.warning("admin export: malformed JSONB string, returning raw")
+        return value
 
 
 @router.get("/export/requests")
@@ -69,7 +83,9 @@ async def admin_export_requests(
             "OR l.status_code < 200 OR l.status_code >= 400)"
         )
 
-    content_cols = ", l.prompt, l.response" if include_content else ""
+    content_cols = (
+        ", l.prompt, l.response, l.tools, l.metadata, l.request_payload" if include_content else ""
+    )
     batch_size = 500
 
     start_str = start_time.strftime("%Y%m%d")
@@ -140,6 +156,9 @@ async def admin_export_requests(
                         if include_content:
                             record["prompt"] = row["prompt"]
                             record["response"] = row["response"]
+                            record["tools"] = _decode_jsonish(row["tools"])
+                            record["metadata"] = _decode_jsonish(row["metadata"])
+                            record["request_payload"] = _decode_jsonish(row["request_payload"])
                         yield json.dumps(record) + "\n"
                     if len(rows) < batch_size:
                         break

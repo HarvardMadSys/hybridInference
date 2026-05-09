@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
+from serving.observability.tracked_tasks import _TRACKED_TASKS
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import AppServices
@@ -137,8 +138,12 @@ async def tracking_client(tracking_app: FastAPI):
         yield client, tracking_app
 
 
-async def _drain_background_logs() -> None:
-    tasks = list(completions._background_tasks)
+async def _drain_background_logs(app: FastAPI | None = None) -> None:
+    tasks: list[asyncio.Task[Any]] = list(_TRACKED_TASKS)
+    if app is not None:
+        cl = getattr(app.state.services, "completions_logger", None)
+        if cl is not None:
+            tasks.extend(cl._background_tasks)
     if tasks:
         await asyncio.gather(*tasks)
 
@@ -159,7 +164,7 @@ async def test_non_streaming_logs_pricing_and_usage(tracking_client):
     )
 
     assert response.status_code == 200
-    await _drain_background_logs()
+    await _drain_background_logs(app)
     log_store.log_request.assert_awaited_once()
     call = log_store.log_request.await_args
     kwargs = call.kwargs
@@ -189,7 +194,7 @@ async def test_streaming_logs_usage(tracking_client):
         async for _line in resp.aiter_lines():
             pass
 
-    await _drain_background_logs()
+    await _drain_background_logs(app)
     log_store.log_request.assert_awaited_once()
     kwargs = log_store.log_request.await_args.kwargs
     assert kwargs["usage"]["completion_tokens"] == 30

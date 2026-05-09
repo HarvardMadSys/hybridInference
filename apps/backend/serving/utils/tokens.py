@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import tiktoken
+
 
 def _get_tiktoken_encoding():
     """Get tiktoken encoding, with fallback handling.
@@ -15,12 +17,7 @@ def _get_tiktoken_encoding():
     Returns:
         tiktoken.Encoding object or None if tiktoken is not available.
     """
-    try:
-        import tiktoken
-
-        return tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        return None
+    return tiktoken.get_encoding("cl100k_base")
 
 
 def _count_with_tiktoken(text: str) -> int:

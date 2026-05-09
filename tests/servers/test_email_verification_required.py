@@ -49,6 +49,7 @@ async def test_unverified_user_cannot_login(auth_client, require_db, email_verif
         "email": f"unverified_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Unverified User",
+        "accepted_tos": True,
     }
 
     response = await auth_client.post("/auth/signup", json=signup_data)
@@ -79,6 +80,7 @@ async def test_verified_user_can_login(auth_client, require_db, email_verificati
         "email": f"verified_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Verified User",
+        "accepted_tos": True,
     }
 
     response = await auth_client.post("/auth/signup", json=signup_data)
@@ -115,6 +117,7 @@ async def test_unverified_user_cannot_refresh_token(
         "email": f"unverified2_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Unverified User 2",
+        "accepted_tos": True,
     }
 
     response = await auth_client.post("/auth/signup", json=signup_data)
@@ -156,6 +159,7 @@ async def test_email_verification_can_be_disabled(auth_client, require_db, email
         "email": f"noverify_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "No Verify User",
+        "accepted_tos": True,
     }
 
     response = await auth_client.post("/auth/signup", json=signup_data)
@@ -182,6 +186,7 @@ async def test_unverified_user_cannot_access_protected_endpoint(
         "email": f"protected_{os.urandom(4).hex()}@signuptest.dev",
         "password": "SecurePass123!",
         "user_name": "Protected User",
+        "accepted_tos": True,
     }
     response = await auth_client.post("/auth/signup", json=signup_data)
     assert response.status_code == 201
