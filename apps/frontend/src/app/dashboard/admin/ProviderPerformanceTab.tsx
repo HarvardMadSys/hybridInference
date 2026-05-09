@@ -5,6 +5,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceArea,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -49,19 +50,69 @@ function fmt2(v: unknown): string {
   return Number.isFinite(n) ? n.toFixed(2) : String(v);
 }
 
+type AxisDomain = [number, number] | ['auto', 'auto'];
+
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
   const cached = safePoints.filter((p) => p.cache_hit);
   const uncached = safePoints.filter((p) => !p.cache_hit);
   const heading = `${model.model_id} · ${model.provider}`;
+
+  const [xDomain, setXDomain] = useState<AxisDomain>(['auto', 'auto']);
+  const [yDomain, setYDomain] = useState<AxisDomain>(['auto', 'auto']);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [dragEnd, setDragEnd] = useState<{ x: number; y: number } | null>(null);
+  const zoomed = xDomain[0] !== 'auto' || yDomain[0] !== 'auto';
+
+  const onDown = (e: unknown) => {
+    const ev = e as { xValue?: number; yValue?: number } | null;
+    if (!ev || ev.xValue == null || ev.yValue == null) return;
+    setDragStart({ x: ev.xValue, y: ev.yValue });
+    setDragEnd({ x: ev.xValue, y: ev.yValue });
+  };
+  const onMove = (e: unknown) => {
+    const ev = e as { xValue?: number; yValue?: number } | null;
+    if (!dragStart || !ev || ev.xValue == null || ev.yValue == null) return;
+    setDragEnd({ x: ev.xValue, y: ev.yValue });
+  };
+  const onUp = () => {
+    if (dragStart && dragEnd) {
+      const x1 = Math.min(dragStart.x, dragEnd.x);
+      const x2 = Math.max(dragStart.x, dragEnd.x);
+      const y1 = Math.min(dragStart.y, dragEnd.y);
+      const y2 = Math.max(dragStart.y, dragEnd.y);
+      if (x2 > x1 && y2 > y1) {
+        setXDomain([Math.max(x1, 1), x2]);
+        setYDomain([y1, y2]);
+      }
+    }
+    setDragStart(null);
+    setDragEnd(null);
+  };
+  const reset = () => {
+    setXDomain(['auto', 'auto']);
+    setYDomain(['auto', 'auto']);
+  };
+
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <div className="flex items-baseline justify-between gap-3">
         <div className="truncate text-[13px] font-semibold text-gray-900" title={heading}>
           {heading}
         </div>
-        <div className="shrink-0 text-[11px] text-gray-400 tabular-nums">
-          {safePoints.length.toLocaleString()} pts
+        <div className="flex items-center gap-2">
+          {zoomed && (
+            <button
+              type="button"
+              onClick={reset}
+              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 hover:bg-gray-50"
+            >
+              Reset zoom
+            </button>
+          )}
+          <div className="shrink-0 text-[11px] text-gray-400 tabular-nums">
+            {safePoints.length.toLocaleString()} pts
+          </div>
         </div>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-gray-600">
@@ -73,17 +124,27 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
           <span className="h-2 w-2 rounded-full bg-slate-500 opacity-60" aria-hidden="true" />
           No cache ({uncached.length.toLocaleString()})
         </span>
+        <span className="text-gray-400">· drag to zoom</span>
       </div>
-      <div className="mt-3 h-[260px]">
+      <div className="mt-3 h-[260px] select-none">
         <ResponsiveContainer width="100%" height="100%">
-          <ScatterChart margin={{ top: 8, right: 12, bottom: 24, left: 12 }}>
+          <ScatterChart
+            margin={{ top: 8, right: 12, bottom: 24, left: 12 }}
+            onMouseDown={onDown}
+            onMouseMove={onMove}
+            onMouseUp={onUp}
+            onMouseLeave={() => {
+              setDragStart(null);
+              setDragEnd(null);
+            }}
+          >
             <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
             <XAxis
               type="number"
               dataKey="prompt_tokens"
               name="Input length"
               scale="log"
-              domain={['auto', 'auto']}
+              domain={xDomain}
               allowDataOverflow
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
@@ -97,6 +158,8 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               type="number"
               dataKey="ttft_ms"
               name="TTFT"
+              domain={yDomain}
+              allowDataOverflow
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
                 value: 'TTFT (ms)',
@@ -127,6 +190,18 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               fillOpacity={0.6}
               shape="circle"
             />
+            {dragStart && dragEnd && (
+              <ReferenceArea
+                x1={dragStart.x}
+                x2={dragEnd.x}
+                y1={dragStart.y}
+                y2={dragEnd.y}
+                fill="#3b82f6"
+                fillOpacity={0.1}
+                stroke="#3b82f6"
+                strokeOpacity={0.4}
+              />
+            )}
           </ScatterChart>
         </ResponsiveContainer>
       </div>
