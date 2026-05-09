@@ -20,6 +20,7 @@ import asyncio
 from typing import Any
 
 from routing.routers import RoutingObservation
+from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import RoutingInfo
 from serving.utils.logging import get_logger
 
@@ -64,14 +65,14 @@ class CompletionsLogger:
         for assembling the dict; this method only owns the asyncio
         scheduling so the row write doesn't block the HTTP response.
 
-        Errors inside the background task are logged but never raised — the
-        client response has already been sent by the time this runs.
+        Failures are recorded by ``tracked_task`` via the
+        ``tracked_task_completed`` log event consumed by the alert engine.
         """
         if self._log_store is None:
             return
 
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             # No running event loop (e.g., synchronous context in tests).
             logger.debug(f"No event loop; dropping log payload for {request_id}")
@@ -86,8 +87,9 @@ class CompletionsLogger:
                     f"Background DB logging failed for request {request_id}: {exc}",
                     exc_info=True,
                 )
+                raise  # let tracked_task record the failure
 
-        task = loop.create_task(_log_to_db_background())
+        task = tracked_task(_log_to_db_background(), name="request_log")
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 

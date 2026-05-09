@@ -28,6 +28,12 @@ rules:
     window_sec: 300
     threshold_count: 100
     cooldown_sec: 1800
+  tracked_task_failure_rate:
+    enabled: true
+    window_sec: 300       # 5 min
+    threshold_pct: 5.0    # 5% failure rate
+    min_samples: 50       # need at least 50 completions before alerting
+    cooldown_sec: 1800    # 30 min per task_name
 
 state_changes:
   circuit_open:
