@@ -202,6 +202,34 @@ async def get_default_daily_quota_for_role(
     return Decimal(quota_str)
 
 
+async def get_user_concurrency_for_role(
+    role: str,
+    runtime_settings: "RuntimeSettings | None",
+) -> int:
+    """Return the per-user concurrency cap for ``role``.
+
+    Reads the ``user_concurrency_<role>`` runtime setting if registered.
+    Falls back to ``_FALLBACK_LIMITS`` from ``serving.servers.concurrency``
+    when runtime settings are unavailable or the role has no registered
+    setting. An unknown role degrades to the ``free`` fallback.
+    """
+    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+    from serving.servers.concurrency import _FALLBACK_LIMITS
+
+    role_key = (role or "free").lower()
+    setting_key = f"user_concurrency_{role_key}"
+
+    if runtime_settings is not None and setting_key in RUNTIME_SETTINGS_REGISTRY:
+        return await runtime_settings.get_int(setting_key)
+
+    if role_key not in _FALLBACK_LIMITS:
+        logger.warning(
+            "No concurrency runtime setting for role %r — falling back to free-tier cap",
+            role,
+        )
+    return _FALLBACK_LIMITS.get(role_key, _FALLBACK_LIMITS["free"])
+
+
 def mask_key_prefix(key_prefix: str) -> str:
     """Mask an API key using the stored prefix."""
     return f"{key_prefix}{'*' * 20}"
