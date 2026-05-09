@@ -36,7 +36,7 @@ def routing_info():
         provider="openai",
         endpoint_id="openai-prod",
         base_url="https://api.openai.com/v1",
-        pricing={"prompt": "0.5", "completion": "1.5"},
+        pricing=None,
         routewise=None,
         upstream_cost_usd=0.012,
     )
