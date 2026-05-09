@@ -1,4 +1,12 @@
-"""Weight assignment strategies for routing between local and remote adapters."""
+"""Weight assignment strategies for routing between local and remote adapters.
+
+This module hosts ``FixedRatioStrategy`` (used by ``RoutingManager`` to assign
+per-adapter weights based on routing.yaml's ``local_fraction``).  It is
+unrelated to the per-model router strategy registry exposed by the package
+``__init__`` (``register_strategy`` / ``build_router``); we re-export
+``FixedRatioStrategy`` from the package root for backward compatibility with
+``from routing.strategies import FixedRatioStrategy`` callers.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +27,7 @@ class FixedRatioStrategy:
         Args:
             local: List of (adapter, model_id) in local group
             remote: List of (adapter, model_id) in remote group
+
         Returns:
             Mapping of adapter -> weight in [0,1]
         """

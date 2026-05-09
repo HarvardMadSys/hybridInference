@@ -1,4 +1,4 @@
-routing_strategy: fixed
+default_router: fixed
 routing_parameter:
   local_fraction: 0.7
 timeout: 2

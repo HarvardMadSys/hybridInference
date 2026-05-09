@@ -37,6 +37,8 @@ _STRUCTURED_LOG_KEYS = (
     "latency_ms",
     "error",
     "error_type",
+    "strategy",
+    "param_keys",
 )
 
 
