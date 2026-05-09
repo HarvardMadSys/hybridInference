@@ -62,6 +62,9 @@ type AxisDomain = [number, number] | ['auto', 'auto'];
 const Y_AXIS_WIDTH = 48;
 const CHART_MARGIN_LEFT = 12;
 const CHART_MARGIN_RIGHT = 12;
+const CHART_MARGIN_TOP = 8;
+const CHART_MARGIN_BOTTOM = 24;
+const X_AXIS_HEIGHT = 30;
 
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
@@ -70,10 +73,13 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const heading = `${model.model_id} · ${model.provider}`;
 
   const [xDomain, setXDomain] = useState<AxisDomain>(['auto', 'auto']);
+  const [yDomain, setYDomain] = useState<AxisDomain>(['auto', 'auto']);
   const [dragStartX, setDragStartX] = useState<number | null>(null);
   const [dragEndX, setDragEndX] = useState<number | null>(null);
+  const [dragStartY, setDragStartY] = useState<number | null>(null);
+  const [dragEndY, setDragEndY] = useState<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const zoomed = xDomain[0] !== 'auto';
+  const zoomed = xDomain[0] !== 'auto' || yDomain[0] !== 'auto';
 
   const dataXMin = useMemo(() => {
     if (safePoints.length === 0) return 1;
@@ -86,9 +92,19 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
     if (safePoints.length === 0) return 10;
     return safePoints.reduce((m, p) => Math.max(m, p.prompt_tokens), 0);
   }, [safePoints]);
+  const dataYMin = useMemo(() => {
+    if (safePoints.length === 0) return 0;
+    return safePoints.reduce((m, p) => Math.min(m, p.ttft_ms), Infinity);
+  }, [safePoints]);
+  const dataYMax = useMemo(() => {
+    if (safePoints.length === 0) return 1;
+    return safePoints.reduce((m, p) => Math.max(m, p.ttft_ms), 0);
+  }, [safePoints]);
 
   const visibleXMin = xDomain[0] === 'auto' ? dataXMin : (xDomain[0] as number);
   const visibleXMax = xDomain[1] === 'auto' ? dataXMax : (xDomain[1] as number);
+  const visibleYMin = yDomain[0] === 'auto' ? dataYMin : (yDomain[0] as number);
+  const visibleYMax = yDomain[1] === 'auto' ? dataYMax : (yDomain[1] as number);
 
   const pixelToX = (clientX: number): number | null => {
     const el = wrapperRef.current;
@@ -105,18 +121,36 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
     return Math.pow(10, lo + frac * (hi - lo));
   };
 
+  const pixelToY = (clientY: number): number | null => {
+    const el = wrapperRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const innerTop = CHART_MARGIN_TOP;
+    const innerBottom = rect.height - CHART_MARGIN_BOTTOM - X_AXIS_HEIGHT;
+    const innerHeight = innerBottom - innerTop;
+    if (innerHeight <= 0) return null;
+    const py = clientY - rect.top;
+    const frac = Math.min(1, Math.max(0, (py - innerTop) / innerHeight));
+    return visibleYMax - frac * (visibleYMax - visibleYMin);
+  };
+
   const onDown = (e: ReactMouseEvent<HTMLDivElement>) => {
     const x = pixelToX(e.clientX);
-    if (x == null) return;
+    const y = pixelToY(e.clientY);
+    if (x == null || y == null) return;
     e.preventDefault();
     setDragStartX(x);
     setDragEndX(x);
+    setDragStartY(y);
+    setDragEndY(y);
   };
   const onMove = (e: ReactMouseEvent<HTMLDivElement>) => {
     if (dragStartX == null) return;
     const x = pixelToX(e.clientX);
-    if (x == null) return;
+    const y = pixelToY(e.clientY);
+    if (x == null || y == null) return;
     setDragEndX(x);
+    setDragEndY(y);
   };
   const onUp = () => {
     if (dragStartX != null && dragEndX != null) {
@@ -126,12 +160,49 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
         setXDomain([Math.max(x1, 1), x2]);
       }
     }
+    if (dragStartY != null && dragEndY != null) {
+      const y1 = Math.min(dragStartY, dragEndY);
+      const y2 = Math.max(dragStartY, dragEndY);
+      const yRange = Math.max(dataYMax - dataYMin, 1);
+      if (y2 - y1 > yRange * 0.05) {
+        setYDomain([y1, y2]);
+      }
+    }
     setDragStartX(null);
     setDragEndX(null);
+    setDragStartY(null);
+    setDragEndY(null);
   };
   const reset = () => {
     setXDomain(['auto', 'auto']);
+    setYDomain(['auto', 'auto']);
   };
+
+  const exportCsv = () => {
+    const header = 'timestamp,prompt_tokens,ttft_ms,cache_hit\n';
+    const body = safePoints
+      .map(
+        (p) => `${p.timestamp},${p.prompt_tokens},${p.ttft_ms},${p.cache_hit ? 'true' : 'false'}`,
+      )
+      .join('\n');
+    const blob = new Blob([`${header}${body}\n`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const safeName = `${model.model_id}_${model.provider}`.replace(/[^A-Za-z0-9._-]+/g, '_');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ttft_${safeName}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const showDragArea =
+    dragStartX != null &&
+    dragEndX != null &&
+    dragStartY != null &&
+    dragEndY != null &&
+    (dragStartX !== dragEndX || dragStartY !== dragEndY);
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -149,6 +220,14 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               Reset zoom
             </button>
           )}
+          <button
+            type="button"
+            onClick={exportCsv}
+            disabled={safePoints.length === 0}
+            className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 hover:bg-gray-50 disabled:opacity-50 disabled:hover:bg-white"
+          >
+            Export CSV
+          </button>
           <div className="shrink-0 text-[11px] text-gray-400 tabular-nums">
             {safePoints.length.toLocaleString()} pts
           </div>
@@ -174,11 +253,18 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
         onMouseLeave={() => {
           setDragStartX(null);
           setDragEndX(null);
+          setDragStartY(null);
+          setDragEndY(null);
         }}
       >
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart
-            margin={{ top: 8, right: CHART_MARGIN_RIGHT, bottom: 24, left: CHART_MARGIN_LEFT }}
+            margin={{
+              top: CHART_MARGIN_TOP,
+              right: CHART_MARGIN_RIGHT,
+              bottom: CHART_MARGIN_BOTTOM,
+              left: CHART_MARGIN_LEFT,
+            }}
           >
             <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
             <XAxis
@@ -188,6 +274,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               scale="log"
               domain={xDomain}
               allowDataOverflow
+              height={X_AXIS_HEIGHT}
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
                 value: 'Input length (tokens)',
@@ -201,6 +288,8 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               dataKey="ttft_ms"
               name="TTFT"
               width={Y_AXIS_WIDTH}
+              domain={yDomain}
+              allowDataOverflow
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
                 value: 'TTFT (ms)',
@@ -231,16 +320,18 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               fillOpacity={0.6}
               shape="circle"
             />
-            {dragStartX != null && dragEndX != null && dragStartX !== dragEndX && (
+            {showDragArea ? (
               <ReferenceArea
-                x1={dragStartX}
-                x2={dragEndX}
+                x1={dragStartX as number}
+                x2={dragEndX as number}
+                y1={dragStartY as number}
+                y2={dragEndY as number}
                 fill="#3b82f6"
                 fillOpacity={0.1}
                 stroke="#3b82f6"
                 strokeOpacity={0.4}
               />
-            )}
+            ) : null}
           </ScatterChart>
         </ResponsiveContainer>
       </div>
