@@ -212,7 +212,7 @@ make test
 ### 4c — Format and lint
 
 ```bash
-make format && make lint
+make format
 ```
 
 ### 4d — Check for side effects

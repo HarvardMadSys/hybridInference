@@ -4,6 +4,48 @@ Learn how to configure FreeInference with popular coding agents and IDEs.
 
 All agents use the same FreeInference API key. If you don't have one yet, see the [Quick Start](quickstart.md).
 
+If you are choosing one default setup path, use Kilo Code. It works directly with FreeInference's OpenAI-compatible endpoint and has the most detailed setup guide below.
+
+## Kilo Code
+
+[Kilo Code](https://kilocode.ai) is an AI coding assistant that works well with FreeInference through the standard OpenAI-compatible endpoint.
+
+### Configuration Steps
+
+1. Install the **Kilo Code** extension or plugin in your IDE.
+
+2. Open the Kilo Code panel.
+
+3. Open Kilo Code settings.
+
+4. In **API Provider**, select **OpenAI Compatible**.
+
+5. Configure the connection exactly as follows:
+
+   ```
+   Base URL: https://freeinference.org/v1
+   API Key: your-api-key-here
+   ```
+
+6. Choose a model based on the workflow you want:
+
+   | Use Case | Recommended Model |
+   |----------|-------------------|
+   | Default coding assistant | `glm-5.1` |
+   | Faster edit loops | `glm-5-turbo` |
+   | Long context or image input | `minimax-m2.5` |
+   | Strong bilingual coding | `glm-4.7` |
+
+7. Save the settings.
+
+8. Start a new Kilo Code session and send a simple prompt such as `Summarize this repository` to confirm the connection works.
+
+### Notes
+
+- Use the exact base URL `https://freeinference.org/v1` with no extra path segments.
+- If the model picker is empty, reopen the Kilo panel or paste the model ID manually.
+- If you want repository indexing, see the `Codebase Indexing` section below for the Kilo-specific embedding setup.
+
 ---
 
 ## Cursor
@@ -42,16 +84,7 @@ All agents use the same FreeInference API key. If you don't have one yet, see th
 ### Quick Setup (macOS / Linux)
 
 ```bash
-curl -fsSL -o setup_claude_code.sh https://raw.githubusercontent.com/HarvardMadSys/hybridInference/main/ops/setup/setup_claude_code.sh
-# Inspect the script before running it (recommended security practice):
-less setup_claude_code.sh
-bash setup_claude_code.sh
-```
-
-Or pass your key directly:
-
-```bash
-FREEINFERENCE_API_KEY="your-key-here" bash setup_claude_code.sh
+ANTHROPIC_API_KEY="your-key-here" bash setup_claude_code.sh
 ```
 
 > **Security note:** Always review remote shell scripts before executing them. You can also clone this repository and run `ops/setup/setup_claude_code.sh` from your local checkout instead of fetching it over the network.
@@ -63,22 +96,12 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://freeinference.org/anthropic",
+    "ANTHROPIC_BASE_URL": "https://freeinference.org/",
     "ANTHROPIC_AUTH_TOKEN": "<your-freeinference-api-key>",
     "API_TIMEOUT_MS": "600000"
   }
 }
 ```
-
-### Available Models
-
-| Model | Description |
-|-------|-------------|
-| `claude-sonnet-4.6` | Default model in Claude Code |
-| `claude-opus-4.6` | High-capability Opus generation |
-| `claude-opus-4.7` | Latest Opus (1M context) |
-
-> **Note:** Claude models require internal role access. Publicly available models (`glm-5`, `minimax-m2.5`, etc.) are not compatible with Claude Code since it only supports Anthropic-format APIs. The list above is a curated set — query `https://freeinference.org/anthropic/v1/models` (with your API key) for the live registry.
 
 ---
 
@@ -136,80 +159,33 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
        "model": "glm-5-turbo",
        "apiBase": "https://freeinference.org/v1",
        "apiKey": "your-api-key-here"
-     },
-     "embeddingsProvider": {
-       "provider": "openai",
-       "model": "bge-m3",
-       "apiBase": "https://freeinference.org/v1",
-       "apiKey": "your-api-key-here"
-     }
+      },
+      "embeddingsProvider": {
+        "provider": "openai",
+        "model": "your-embedding-model-id",
+        "apiBase": "https://freeinference.org/v1",
+        "apiKey": "your-api-key-here"
+      }
    }
    ```
 
 4. Save the config. FreeInference models will appear in the model dropdown.
 
+
+
 ---
 
-## Aider
+## Roo Code
 
-[Aider](https://aider.chat/) is a CLI-based AI pair programmer.
+[Roo Code](https://roocode.com) is an AI coding assistant for VS Code and JetBrains with a similar OpenAI-compatible setup.
 
 ### Configuration Steps
 
-```bash
-# Install aider if you haven't already
-pip install aider-chat
+1. Install the **Roo Code** extension or plugin in your IDE.
 
-# Set environment variables
-export OPENAI_API_BASE=https://freeinference.org/v1
-export OPENAI_API_KEY=your-api-key-here
+2. Open the Roo Code settings.
 
-# Launch aider with a FreeInference model
-aider --model openai/glm-5.1
-```
-
-Or set the variables in your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) for persistence.
-
----
-
-## Copilot Alternatives (via OpenAI-compatible proxy)
-
-GitHub Copilot does not support custom OpenAI-compatible endpoints. However, you can use FreeInference with these Copilot alternatives that do:
-
-### Twinny
-
-[Twinny](https://github.com/twinnydotdev/twinny) is an open-source VS Code extension for inline completions and chat.
-
-1. Install **Twinny** from the VS Code Marketplace
-2. Open settings → search for "twinny"
-3. Set **Twinny Provider** to **OpenAI**
-4. Set **API Base URL** to `https://freeinference.org/v1`
-5. Set **API Key** to your FreeInference API key
-6. Set **Model** to `glm-5-turbo` (for fast completions) or `glm-5.1` (for chat)
-
-### CodeGPT
-
-[CodeGPT](https://codegpt.co/) is another VS Code extension supporting custom OpenAI endpoints.
-
-1. Install **CodeGPT** from the VS Code Marketplace
-2. Open settings → select **Providers** → **OpenAI**
-3. Set **API Key** to your FreeInference API key
-4. Set **Base URL** to `https://freeinference.org/v1`
-5. Set **Model** to `glm-5.1`
-
----
-
-## Roo Code & Kilo Code
-
-[Roo Code](https://roocode.com) and [Kilo Code](https://kilocode.ai) are AI coding assistants with similar configuration.
-
-### Configuration Steps
-
-1. Install the Roo Code or Kilo Code extension/plugin in your IDE (VS Code or JetBrains)
-
-2. Open the settings (click the settings icon in the extension panel)
-
-3. In **API Provider**, select **OpenAI Compatible**
+3. In **API Provider**, select **OpenAI Compatible**.
 
 4. Configure the connection:
    ```
@@ -217,9 +193,9 @@ GitHub Copilot does not support custom OpenAI-compatible endpoints. However, you
    API Key: your-api-key-here
    ```
 
-5. Select your preferred model (e.g., `glm-5`, `glm-5.1`, `glm-4.7`, `minimax-m2.5`, etc.)
+5. Select your preferred model such as `glm-5.1`, `glm-5-turbo`, `glm-4.7`, or `minimax-m2.5`.
 
-6. Save settings and start using with FreeInference!
+6. Save settings and start using FreeInference.
 
 ---
 
@@ -315,7 +291,7 @@ console.log(response.choices[0].message.content);
 
 FreeInference exposes an embedding endpoint at `/v1/embeddings` and a Qdrant proxy at `/v1/qdrant` for codebase indexing in supported IDEs.
 
-> **Note:** Embedding model availability changes over time. Check `https://freeinference.org/v1/models` for the currently registered embedding model id and substitute it for `bge-m3` in the examples below if needed.
+> **Note:** Embedding model availability changes over time. Check `https://freeinference.org/v1/models` for the currently registered embedding model ID and substitute it in the examples below.
 
 ### Roo Code
 
@@ -330,8 +306,8 @@ Roo Code natively supports OpenAI-compatible embedding providers.
 | **Embedder Provider** | OpenAI Compatible |
 | **Base URL** | `https://freeinference.org/v1` |
 | **API Key** | Your FreeInference API key |
-| **Model** | `bge-m3` |
-| **Model Dimension** | `1024` |
+| **Model** | `your-embedding-model-id` |
+| **Model Dimension** | Matching model dimension |
 | **Qdrant URL** | `https://freeinference.org/v1/qdrant` |
 | **Qdrant API Key** | Your FreeInference API key |
 
@@ -352,8 +328,8 @@ Kilo Code supports OpenAI-compatible embedding configuration. To use FreeInferen
 | **Embedder Provider** | OpenAI Compatible |
 | **Base URL** | `https://freeinference.org/v1` |
 | **API Key** | Your FreeInference API key |
-| **Model** | `bge-m3` |
-| **Model Dimension** | `1024` |
+| **Model** | `your-embedding-model-id` |
+| **Model Dimension** | Matching model dimension |
 | **Qdrant URL** | `https://freeinference.org/v1/qdrant` |
 | **Qdrant API Key** | Your FreeInference API key |
 
@@ -365,7 +341,7 @@ Continue supports embeddings for codebase indexing. Add an `embeddingsProvider` 
 {
   "embeddingsProvider": {
     "provider": "openai",
-    "model": "bge-m3",
+    "model": "your-embedding-model-id",
     "apiBase": "https://freeinference.org/v1",
     "apiKey": "your-api-key-here"
   }
@@ -396,7 +372,7 @@ client = OpenAI(
 )
 
 response = client.embeddings.create(
-    model="bge-m3",
+    model="your-embedding-model-id",
     input=["def hello():", "function greet() {"],
 )
 
@@ -408,7 +384,7 @@ for item in response.data:
 curl -X POST https://freeinference.org/v1/embeddings \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-here" \
-  -d '{"model": "bge-m3", "input": "hello world"}'
+  -d '{"model": "your-embedding-model-id", "input": "hello world"}'
 ```
 
 ---
@@ -430,7 +406,7 @@ If you get "model not found" errors:
 
 - Check the [available models](models.md) list
 - Ensure the model name is exactly as listed (case-sensitive)
-- Try switching to a different model like `glm-5` or `glm-4.7`
+- Try switching to a different model like `glm-5.1` or `glm-4.7`
 
 ### Cursor-Specific Issues
 
@@ -453,12 +429,17 @@ If you get "model not found" errors:
 | 503 Accounts unavailable | Subscription pool exhausted | Wait a minute and retry |
 | Connection timeout | Network issue | Check connectivity to `freeinference.org` |
 
-### Roo Code / Kilo Code Issues
+### Kilo Code / Roo Code Issues
 
 **Provider not connecting:**
 - Verify **OpenAI Compatible** is selected as the provider
 - Check that the base URL and API key are correct
 - Try reloading the extension
+
+**Model list empty or stale:**
+- Reopen the Kilo Code or Roo Code panel
+- Paste a known model ID such as `glm-5.1` manually
+- Confirm the base URL is exactly `https://freeinference.org/v1`
 
 ---
 
@@ -473,8 +454,8 @@ If you get "model not found" errors:
 | Aider | OpenAI | `https://freeinference.org/v1` | Environment variables |
 | Twinny | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | CodeGPT | OpenAI | `https://freeinference.org/v1` | Extension settings |
-| Roo Code | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | Kilo Code | OpenAI | `https://freeinference.org/v1` | Extension settings |
+| Roo Code | OpenAI | `https://freeinference.org/v1` | Extension settings |
 | Windsurf | OpenAI | `https://freeinference.org/v1` | Cascade → Model Provider |
 | JetBrains AI | via plugin | `https://freeinference.org/v1` | Use Roo Code / Continue / CodeGPT plugin |
 | Any OpenAI client | OpenAI | `https://freeinference.org/v1` | Client config |

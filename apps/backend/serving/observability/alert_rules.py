@@ -206,7 +206,9 @@ class P95LatencyRule:
             return
         if record.name != _REQUEST_LOG_LOGGER:
             return
-        provider = getattr(record, "provider", None) or "unknown"
+        provider = getattr(record, "provider", None)
+        if not provider:
+            return
         duration_ms = getattr(record, "duration_ms", None)
         if duration_ms is None:
             return

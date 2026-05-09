@@ -35,7 +35,10 @@ python sglang_idle_proxy/sglang_idle_proxy.py
 ./sglang_idle_proxy/sglang_idle_service.sh start
 
 # With SSH reverse tunnel to a public LLM router
-SSH_HOST='spark2' REMOTE_PORT=8001 ./sglang_idle_proxy/sglang_idle_service.sh start
+SSH_HOST='spark2|internal.freeinference.org' REMOTE_PORT=8001 ./sglang_idle_proxy/sglang_idle_service.sh start
+
+# With API key auth
+LOCAL_API_KEY='your-secret-key' ./sglang_idle_proxy/sglang_idle_service.sh start
 
 # Check / stop
 ./sglang_idle_proxy/sglang_idle_service.sh status
@@ -64,13 +67,15 @@ resp = client.chat.completions.create(
 )
 ```
 
-The first request for a model after an idle period will block until the container is ready (~50s for non-streaming, or return a warm-up SSE for streaming). Subsequent requests are proxied immediately.
+If `LOCAL_API_KEY` is set, pass it as the `api_key` to the client or via `Authorization: Bearer` header.
+
+The first request for a model after an idle period will block until the container is ready (~120s for non-streaming, or return a warm-up SSE for streaming). Subsequent requests are proxied immediately.
 
 ## Warm-up UX
 
 When a model's backend is not running and a request comes in:
 
-- **Streaming chat** (`"stream": true`) — immediately returns an SSE stream with a "thinking" warm-up message, then starts the backend in the background. The client should retry after ~50s.
+- **Streaming chat** (`"stream": true`) — immediately returns an SSE stream with a "thinking" warm-up message, then starts the backend in the background. The client should retry after ~120s.
 - **Non-streaming / other endpoints** — blocks until the backend is ready, then proxies the response.
 
 ## Model configuration
@@ -124,6 +129,7 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 | `HEALTH_TIMEOUT` | `600` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
 | `MODELS_CONFIG` | `models.json` | Path to the models config JSON |
+| `LOCAL_API_KEY` | (none) | API key for request auth; accept `Authorization: Bearer` or `X-API-Key` header |
 
 ## GPU auto-selection
 

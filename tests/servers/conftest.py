@@ -255,7 +255,7 @@ def mock_env(monkeypatch):
         "DB_ENABLED": "false",  # Disable DB in tests by default
         "MODELS_CONFIG": "test/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
-        "LOCAL_BASE_URL": "http://localhost:8001",
+        "LOCAL_DEPLOYMENT_URL": "http://localhost:8001",
     }
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
@@ -569,14 +569,14 @@ models:
   - id: test-model-1
     name: Test Model 1
     provider: vllm
-    base_url: ${LOCAL_BASE_URL}
+    base_url: ${LOCAL_DEPLOYMENT_URL}
     context_length: 8192
     max_output_length: 4096
     aliases: ["test-alias-1"]
     route:
       - kind: vllm
         weight: 1.0
-        base_url: ${LOCAL_BASE_URL}
+        base_url: ${LOCAL_DEPLOYMENT_URL}
 
   - id: test-model-2
     name: Test Model 2
@@ -607,7 +607,7 @@ routing_parameter:
 timeout: 2
 health_check: 0
 local_deployment:
-  - endpoint: ${LOCAL_BASE_URL:-http://localhost:8001}
+  - endpoint: ${LOCAL_DEPLOYMENT_URL:-http://localhost:8001}
     models:
       - test-model-1
 remote_deployment:

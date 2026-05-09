@@ -1,5 +1,0 @@
-FROM python:3.12-slim
-WORKDIR /app
-COPY services/alert-logger/alert_logger.py .
-EXPOSE 5001
-CMD ["python", "alert_logger.py", "--port", "5001", "--bind", "0.0.0.0", "--log-dir", "/data"]

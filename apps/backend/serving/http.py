@@ -15,9 +15,11 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from serving.observability.metrics import API_RETRIES
 from serving.servers.sse import SSEParser
 from serving.utils import context as req_ctx
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -92,11 +94,16 @@ class AsyncHTTPClient:
                 if attempt == retries - 1:
                     raise
                 delay = backoff_base * (backoff_factor**attempt)
-                # metrics: retry with context provider label if available
                 ctx = req_ctx.get()
-                API_RETRIES.labels(
-                    provider=str(ctx.get("provider", "unknown")), reason=err.__class__.__name__
-                ).inc()
+                logger.info(
+                    "http_retry",
+                    extra={
+                        "event": "http_retry",
+                        "provider": str(ctx.get("provider", "unknown")),
+                        "reason": err.__class__.__name__,
+                        "attempt": attempt + 1,
+                    },
+                )
                 await asyncio.sleep(delay)
         # Should never reach here, but keep mypy happy.
         assert last_err is not None
@@ -173,10 +180,15 @@ class AsyncHTTPClient:
                 if attempt == max_attempts - 1:
                     raise
                 ctx = req_ctx.get()
-                API_RETRIES.labels(
-                    provider=str(ctx.get("provider", "unknown")),
-                    reason="ServerDisconnectedError",
-                ).inc()
+                logger.info(
+                    "http_retry",
+                    extra={
+                        "event": "http_retry",
+                        "provider": str(ctx.get("provider", "unknown")),
+                        "reason": "ServerDisconnectedError",
+                        "attempt": attempt + 1,
+                    },
+                )
                 logger.warning("Stale keep-alive socket on stream_post %s; retrying once", url)
 
         assert resp is not None and cm is not None

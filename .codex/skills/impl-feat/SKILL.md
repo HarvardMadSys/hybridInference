@@ -74,7 +74,6 @@ Fix any issues found.
 ## Step 5 — Format and verify
 
 ```bash
-make lint
 make format
 make test
 ```

@@ -9,8 +9,12 @@ from __future__ import annotations
 import random
 from typing import TYPE_CHECKING
 
+from serving.utils.logging import get_logger
+
 if TYPE_CHECKING:
     from routing.routers import BaseRouter
+
+log = get_logger(__name__)
 
 
 class ModelRouterRegistry:
@@ -80,19 +84,21 @@ class ModelRouterRegistry:
         return router
 
     def _emit_canary_metric(self, model_id: str, outcome: str) -> None:
-        """Emit canary decision counter.
+        """Emit a structured log event for each canary routing decision.
 
-        Uses a dedicated ``routewise_canary_decisions_total`` counter
-        separate from ``routing_strategy_selected_total`` to avoid
-        double-counting (RouteWise emits the latter in observation).
+        Surfaces the canary gate's choice (default vs experimental router)
+        as a log event so it can be aggregated by the alerting framework
+        or downstream log queries. Replaces the prior counter metric
+        (``routewise_canary_decisions_total``).
         """
-        from serving.observability.metrics import (
-            ROUTEWISE_CANARY_DECISIONS,
-            normalize_model_label,
+        log.info(
+            "canary_decision",
+            extra={
+                "event": "canary_decision",
+                "model": model_id,
+                "outcome": outcome,
+            },
         )
-
-        m = normalize_model_label(model_id)
-        ROUTEWISE_CANARY_DECISIONS.labels(model=m, outcome=outcome).inc()
 
     def registered_models(self) -> dict[str, str]:
         """Return a mapping of model_id -> router class name."""
