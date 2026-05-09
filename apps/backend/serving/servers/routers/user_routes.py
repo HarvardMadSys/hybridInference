@@ -202,6 +202,40 @@ async def get_default_daily_quota_for_role(
     return Decimal(quota_str)
 
 
+async def get_user_concurrency_for_role(
+    role: str,
+    runtime_settings: "RuntimeSettings | None",
+    *,
+    is_admin: bool = False,
+) -> int:
+    """Return the per-user concurrency cap for ``role``.
+
+    Reads the ``user_concurrency_<role>`` runtime setting if registered.
+    Falls back to ``_FALLBACK_LIMITS`` from ``serving.servers.concurrency``
+    when runtime settings are unavailable or the role has no registered
+    setting. An unknown role degrades to the ``free`` fallback.
+
+    Mirrors ``UserConcurrencyLimiter._limit_for``: when ``is_admin`` is
+    true, the admin cap is used regardless of ``role`` so the dashboard
+    matches what the limiter actually enforces.
+    """
+    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+    from serving.servers.concurrency import _FALLBACK_LIMITS
+
+    role_key = "admin" if is_admin else (role or "free").lower()
+    setting_key = f"user_concurrency_{role_key}"
+
+    if runtime_settings is not None and setting_key in RUNTIME_SETTINGS_REGISTRY:
+        return await runtime_settings.get_int(setting_key)
+
+    if role_key not in _FALLBACK_LIMITS:
+        logger.warning(
+            "No concurrency runtime setting for role %r — falling back to free-tier cap",
+            role,
+        )
+    return _FALLBACK_LIMITS.get(role_key, _FALLBACK_LIMITS["free"])
+
+
 def mask_key_prefix(key_prefix: str) -> str:
     """Mask an API key using the stored prefix."""
     return f"{key_prefix}{'*' * 20}"
@@ -605,6 +639,17 @@ async def get_usage(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
+    # Resolve per-user concurrency cap (applies regardless of API-key state).
+    try:
+        rt = get_runtime_settings_instance()
+    except RuntimeError:
+        rt = None
+    max_concurrency = await get_user_concurrency_for_role(
+        current_user.get("role") or "free",
+        rt,
+        is_admin=bool(current_user.get("is_admin", False)),
+    )
+
     # Get user's quota
     key_row = await op_store.get_active_key_by_account(current_user["user_id"])
 
@@ -618,6 +663,7 @@ async def get_usage(
                 spent_today_usd=None,
                 spent_month_usd=None,
                 remaining_today_usd=None,
+                max_concurrency=max_concurrency,
                 reset_at=_get_daily_quota_reset_at(),
                 reset_timezone="UTC",
                 contact_email=QUOTA_CONTACT_EMAIL,
@@ -677,6 +723,7 @@ async def get_usage(
             spent_today_usd=spent_today,
             spent_month_usd=spent_month,
             remaining_today_usd=remaining_today,
+            max_concurrency=max_concurrency,
             reset_at=quota_reset_at,
             reset_timezone="UTC",
             contact_email=QUOTA_CONTACT_EMAIL,
