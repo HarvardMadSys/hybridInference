@@ -19,11 +19,11 @@ make ps
 curl http://localhost:8080/health
 ```
 
-This starts 5 containers: backend (FastAPI), frontend (Next.js), PostgreSQL,
-Alertmanager, and alert-logger. Backend, PostgreSQL, and Alertmanager bind to
-`127.0.0.1` by default; the frontend binds to `0.0.0.0` (override with
-the `FRONTEND_HOST` env var) so it can be reached by Nginx on the host.
-pgAdmin is available but requires the `admin` profile (see below).
+This starts 3 containers: backend (FastAPI), frontend (Next.js), and
+PostgreSQL. Backend and PostgreSQL bind to `127.0.0.1` by default; the
+frontend binds to `0.0.0.0` (override with the `FRONTEND_HOST` env var)
+so it can be reached by Nginx on the host. pgAdmin is available but
+requires the `admin` profile (see below).
 
 ## Prerequisites
 
@@ -39,7 +39,6 @@ Client ──▶ Cloudflare (CDN + DDoS) ──▶ Nginx (:443) ──┬──�
 
 Docker internal network:
   backend ──▶ postgres (:5432)
-  alertmanager (:9093) ──▶ alert-logger (:5001)
   backend ──▶ host.docker.internal (GPU SSH tunnels on host)
 ```
 
@@ -112,10 +111,15 @@ curl http://localhost:8080/health
 
 ### Alerting
 
-Alertmanager and the local alert-logger run as part of the stack. They are
-preserved for future use, but with Prometheus removed they currently receive
-no alerts. Re-enable a metrics pipeline (or wire a different alert source)
-to start populating them again.
+The backend ships with an in-process alert engine that posts to Slack
+directly. Configuration lives in `config/alerts.yaml`; rules and
+thresholds are described in `apps/backend/serving/observability/`.
+Set `ALERTS_ENABLED=true` and `SLACK_ALERTS_WEBHOOK_URL=...` in `.env`
+to enable.
+
+External blackbox monitoring (a separate Prometheus + Alertmanager
+stack that probes the public API from outside) lives under
+`deploy/external-monitor/` and is unrelated to the in-process engine.
 
 ## Database
 
