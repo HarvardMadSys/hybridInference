@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [frontend, backend, alert-logger]
+        image: [frontend, backend]
     steps:
       - uses: actions/checkout@v6
 
