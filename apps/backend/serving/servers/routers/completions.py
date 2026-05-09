@@ -17,6 +17,7 @@ from routing.executor import ProviderPinError
 from routing.routers import AllCircuitsOpenError
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
+from serving.observability.tracked_tasks import tracked_task
 from serving.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -47,7 +48,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 router = APIRouter()
-_background_tasks: set = set()
 _MAX_DB_ERROR_LENGTH = 4000
 _SECRET_VALUE_RE = re.compile(
     r'(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization)"?\s*[:=]\s*)'
@@ -86,15 +86,35 @@ def _schedule_cost_increment(
     if not cost or cost <= 0 or not op_store:
         return
 
-    async def _increment():
+    async def _increment() -> None:
         try:
             await op_store.increment_user_cost(user_id, cost)
         except Exception as exc:
             logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
+            raise  # let tracked_task record the failure
 
-    _task = asyncio.create_task(_increment())
-    _background_tasks.add(_task)
-    _task.add_done_callback(_background_tasks.discard)
+    tracked_task(_increment(), name="cost_increment")
+
+
+def _redact_error_text(value: str) -> str:
+    redacted = _SECRET_VALUE_RE.sub(r"\1\2[REDACTED]\3", value)
+    return _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
+
+
+def _format_exception_for_db(exc: BaseException) -> str:
+    """Return capped, redacted operator-facing error text for api_logs.error."""
+    exc_text = str(exc)
+    upstream_body = getattr(exc, "error_body", None)
+    if upstream_body is None:
+        value = exc_text
+    else:
+        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
+        value = f"{exc_text} | upstream_body={body_text}"
+
+    value = _redact_error_text(value)
+    if len(value) > _MAX_DB_ERROR_LENGTH:
+        return value[: _MAX_DB_ERROR_LENGTH - 14] + "...[truncated]"
+    return value
 
 
 def _redact_error_text(value: str) -> str:
