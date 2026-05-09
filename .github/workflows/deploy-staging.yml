@@ -98,5 +98,7 @@ jobs:
             -p "${STAGING_PORT}" \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null \
             "${STAGING_USER}@${STAGING_HOST}" \
             "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && git fetch origin dev && git reset --hard ${DEPLOY_SHA} && DEPLOY_SHA=${DEPLOY_SHA} bash ops/deploy/deploy_staging.sh"
