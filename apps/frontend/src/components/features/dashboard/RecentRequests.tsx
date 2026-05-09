@@ -74,10 +74,7 @@ function DetailStat({ label, value }: { label: string; value: string }): JSX.Ele
 
 function RequestRow({ req }: { req: RecentRequestItem }) {
   const [expanded, setExpanded] = useState(false);
-  const cacheRead = req.cache_read_tokens ?? 0;
-  const cacheWrite = req.cache_write_tokens ?? 0;
-  const hasCacheTokens = req.cache_read_tokens != null || req.cache_write_tokens != null;
-  const cachedTokens = hasCacheTokens ? cacheRead + cacheWrite : null;
+  const cachedTokens = req.cache_read_tokens ?? null;
 
   const throughputTps =
     req.stream &&

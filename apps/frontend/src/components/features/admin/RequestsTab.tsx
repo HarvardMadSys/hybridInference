@@ -869,11 +869,7 @@ export function RequestsTab() {
                   const isSuccess =
                     req.status_code != null && req.status_code >= 200 && req.status_code < 400;
                   const isExpanded = reqExpandedId === req.request_id;
-                  const hasCacheTokens =
-                    req.cache_read_tokens != null || req.cache_write_tokens != null;
-                  const cachedTokens = hasCacheTokens
-                    ? (req.cache_read_tokens ?? 0) + (req.cache_write_tokens ?? 0)
-                    : null;
+                  const cachedTokens = req.cache_read_tokens ?? null;
                   return (
                     <Fragment key={req.request_id}>
                       <tr
