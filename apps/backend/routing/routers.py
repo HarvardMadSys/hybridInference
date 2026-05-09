@@ -203,7 +203,7 @@ class _ProviderHealth:
         self.provider = provider
         env_alpha = os.getenv("ROUTER_HEALTH_EWMA_ALPHA")
         self.alpha = (
-            float(env_alpha) if env_alpha is not None else (alpha if alpha is not None else 0.2)
+            float(env_alpha) if env_alpha is not None else (alpha if alpha is not None else 0.1)
         )
         self.ewma_success = 1.0
         self.ewma_total = 1.0
