@@ -173,6 +173,7 @@ class QuotaInfo(BaseModel):
     spent_today_usd: float | None = None
     spent_month_usd: float | None = None
     remaining_today_usd: float | None = None
+    max_concurrency: int | None = None
     reset_at: datetime | None = None
     reset_timezone: str = "UTC"
     contact_email: str = "admin@freeinference.org"
