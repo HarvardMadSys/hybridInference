@@ -10,7 +10,7 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 | `glm-4.7` | GLM-4.7 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-5-turbo` | GLM-5 Turbo | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `qwen3.6-35b` | Qwen3.6 35B | 262K tokens | 8K tokens | Function calling, Structured output |
-| `minimax-m2.7` | MiniMax M2.7 | 205K tokens | 8K tokens | Function calling, Structured output |
+| `minimax-m2.7` | MiniMax M2.7 | 205K tokens | 131K tokens | Function calling, Structured output |
 | `minimax-m2.5` | MiniMax M2.5 | 205K tokens | 131K tokens | Function calling, Structured output, Thinking mode, Multimodal (text+image) |
 
 ---
@@ -93,7 +93,7 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 **Model ID:** `minimax-m2.7`
 
 - Context length: 204,800 tokens
-- Max output: 8,192 tokens
+- Max output: 131,072 tokens
 - Quantization: bf16
 - Input modalities: text
 - Output modalities: text

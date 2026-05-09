@@ -278,7 +278,7 @@ models:
     input_modalities: ["text", "image"]
     output_modalities: ["text"]
     context_length: 204800
-    max_output_length: 8192
+    max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, top_k, max_tokens, stop, seed, stream]
