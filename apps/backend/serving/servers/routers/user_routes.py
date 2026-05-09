@@ -205,6 +205,8 @@ async def get_default_daily_quota_for_role(
 async def get_user_concurrency_for_role(
     role: str,
     runtime_settings: "RuntimeSettings | None",
+    *,
+    is_admin: bool = False,
 ) -> int:
     """Return the per-user concurrency cap for ``role``.
 
@@ -212,11 +214,15 @@ async def get_user_concurrency_for_role(
     Falls back to ``_FALLBACK_LIMITS`` from ``serving.servers.concurrency``
     when runtime settings are unavailable or the role has no registered
     setting. An unknown role degrades to the ``free`` fallback.
+
+    Mirrors ``UserConcurrencyLimiter._limit_for``: when ``is_admin`` is
+    true, the admin cap is used regardless of ``role`` so the dashboard
+    matches what the limiter actually enforces.
     """
     from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
     from serving.servers.concurrency import _FALLBACK_LIMITS
 
-    role_key = (role or "free").lower()
+    role_key = "admin" if is_admin else (role or "free").lower()
     setting_key = f"user_concurrency_{role_key}"
 
     if runtime_settings is not None and setting_key in RUNTIME_SETTINGS_REGISTRY:
@@ -641,6 +647,7 @@ async def get_usage(
     max_concurrency = await get_user_concurrency_for_role(
         current_user.get("role") or "free",
         rt,
+        is_admin=bool(current_user.get("is_admin", False)),
     )
 
     # Get user's quota

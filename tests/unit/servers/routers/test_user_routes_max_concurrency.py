@@ -55,16 +55,33 @@ async def test_helper_treats_missing_role_as_free(empty_role):
 
 
 @pytest.mark.asyncio
+async def test_helper_is_admin_overrides_role():
+    rt = AsyncMock()
+    rt.get_int.return_value = 42
+    cap = await get_user_concurrency_for_role("free", rt, is_admin=True)
+    rt.get_int.assert_awaited_once_with("user_concurrency_admin")
+    assert cap == 42
+
+
+@pytest.mark.asyncio
+async def test_helper_is_admin_uses_admin_fallback_when_runtime_unavailable():
+    from serving.servers.concurrency import _FALLBACK_LIMITS
+
+    cap = await get_user_concurrency_for_role("free", None, is_admin=True)
+    assert cap == _FALLBACK_LIMITS["admin"]
+
+
+@pytest.mark.asyncio
 async def test_get_usage_includes_max_concurrency_when_no_key(monkeypatch):
     from serving.servers.routers import user_routes
 
     op_store = AsyncMock()
     op_store.get_active_key_by_account.return_value = None
 
-    helper_calls: list[str] = []
+    helper_calls: list[tuple[str, bool]] = []
 
-    async def _fake_helper(role, rt):
-        helper_calls.append(role)
+    async def _fake_helper(role, rt, *, is_admin=False):
+        helper_calls.append((role, is_admin))
         return 99
 
     monkeypatch.setattr(user_routes, "get_user_concurrency_for_role", _fake_helper)
@@ -81,7 +98,7 @@ async def test_get_usage_includes_max_concurrency_when_no_key(monkeypatch):
     )
     assert resp.quota.has_key is False
     assert resp.quota.max_concurrency == 99
-    assert helper_calls == ["free"]
+    assert helper_calls == [("free", False)]
 
 
 @pytest.mark.asyncio
@@ -100,10 +117,10 @@ async def test_get_usage_includes_max_concurrency_when_has_key(monkeypatch):
         "month": {"cost_usd": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0},
     }
 
-    helper_calls: list[str] = []
+    helper_calls: list[tuple[str, bool]] = []
 
-    async def _fake_helper(role, rt):
-        helper_calls.append(role)
+    async def _fake_helper(role, rt, *, is_admin=False):
+        helper_calls.append((role, is_admin))
         return 12
 
     monkeypatch.setattr(user_routes, "get_user_concurrency_for_role", _fake_helper)
@@ -120,7 +137,7 @@ async def test_get_usage_includes_max_concurrency_when_has_key(monkeypatch):
     )
     assert resp.quota.has_key is True
     assert resp.quota.max_concurrency == 12
-    assert helper_calls == ["pro"]
+    assert helper_calls == [("pro", False)]
 
 
 @pytest.mark.asyncio
@@ -148,3 +165,32 @@ async def test_get_usage_concurrency_when_runtime_unavailable(monkeypatch):
     from serving.servers.concurrency import _FALLBACK_LIMITS
 
     assert resp.quota.max_concurrency == _FALLBACK_LIMITS["trial"]
+
+
+@pytest.mark.asyncio
+async def test_get_usage_propagates_is_admin_to_helper(monkeypatch):
+    from serving.servers.routers import user_routes
+
+    op_store = AsyncMock()
+    op_store.get_active_key_by_account.return_value = None
+
+    helper_calls: list[tuple[str, bool]] = []
+
+    async def _fake_helper(role, rt, *, is_admin=False):
+        helper_calls.append((role, is_admin))
+        return 50
+
+    monkeypatch.setattr(user_routes, "get_user_concurrency_for_role", _fake_helper)
+    monkeypatch.setattr(user_routes, "get_runtime_settings_instance", lambda: None)
+
+    current_user = {"user_id": "u1", "role": "free", "is_admin": True}
+
+    resp = await user_routes.get_usage(
+        period="today",
+        timezone_name="UTC",
+        current_user=current_user,
+        op_store=op_store,
+        log_store=None,
+    )
+    assert resp.quota.max_concurrency == 50
+    assert helper_calls == [("free", True)]
