@@ -131,7 +131,9 @@ jobs:
 
   test:
     name: Test (shard ${{ matrix.shard }}/${{ needs.pytest-shards.outputs.count }})
-    runs-on: self-hosted
+    # Service containers need Docker socket access; keep these jobs off the
+    # generic pool that includes gpu1, which lacks that access.
+    runs-on: [self-hosted, Linux, ARM64]
     needs: pytest-shards
 
     strategy:
