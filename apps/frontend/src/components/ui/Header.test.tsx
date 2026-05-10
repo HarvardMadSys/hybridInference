@@ -39,6 +39,16 @@ describe('Header', () => {
     expect(screen.queryByRole('link', { name: /dashboard/i })).not.toBeInTheDocument();
   });
 
+  it('shows a status link in the header', () => {
+    render(<Header />);
+
+    const statusLink = screen.getByRole('link', { name: 'Status' });
+
+    expect(statusLink).toHaveAttribute('href', 'https://status.freeinference.org/');
+    expect(statusLink).toHaveAttribute('target', '_blank');
+    expect(statusLink).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
   it('shows a dashboard link in the header for authenticated users', () => {
     authState = {
       isAuthenticated: true,
