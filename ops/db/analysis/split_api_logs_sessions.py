@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+DEFAULT_OUTPUT_DIR = Path("per_session")
+
 
 @dataclass(frozen=True)
 class InvalidLine:
@@ -266,6 +268,48 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _percentile(ordered_values: list[int], percentile: float) -> int:
+    """Return nearest-rank style percentile used by analysis summaries."""
+    index = int((len(ordered_values) - 1) * percentile + 0.5)
+    return ordered_values[index]
+
+
+def _print_split_stats(
+    result: SplitResult,
+    *,
+    match_threshold: float,
+    window_size: int,
+) -> None:
+    """Print a concise post-run summary for the splitter CLI."""
+    classified_rows = sum(len(session.rows) for session in result.sessions)
+    valid_rows = classified_rows + len(result.unclassified)
+    print(
+        f"Stats: total_lines={result.total_lines} valid_rows={valid_rows} "
+        f"invalid_lines={len(result.invalid_lines)} classified_rows={classified_rows} "
+        f"unclassified_rows={len(result.unclassified)}",
+        file=sys.stderr,
+    )
+    session_sizes = sorted(len(session.rows) for session in result.sessions)
+    if not session_sizes:
+        print("Stats: session_rows no sessions", file=sys.stderr)
+    else:
+        print(
+            "Stats: session_rows "
+            f"min={session_sizes[0]} "
+            f"p50={_percentile(session_sizes, 0.50)} "
+            f"p90={_percentile(session_sizes, 0.90)} "
+            f"p95={_percentile(session_sizes, 0.95)} "
+            f"p99={_percentile(session_sizes, 0.99)} "
+            f"max={session_sizes[-1]} "
+            f"mean={sum(session_sizes) / len(session_sizes):.2f}",
+            file=sys.stderr,
+        )
+    print(
+        f"Stats: thresholds match_threshold={match_threshold:g} window_size={window_size}",
+        file=sys.stderr,
+    )
+
+
 def _is_generated_output(path: Path) -> bool:
     """Return True for files this splitter may safely replace."""
     return (
@@ -386,13 +430,13 @@ def split_export(
 def build_parser() -> argparse.ArgumentParser:
     """Create the command-line parser."""
     parser = argparse.ArgumentParser(
-        description="Split an API log JSONL export into inferred prompt sessions."
+        description="Split tokenized API log JSONL rows into inferred prompt sessions."
     )
-    parser.add_argument("input", type=Path, help="Path to api_logs_export.jsonl")
+    parser.add_argument("input", type=Path, help="Path to tokenized prompt JSONL")
     parser.add_argument(
         "--output-dir",
         type=Path,
-        required=True,
+        default=DEFAULT_OUTPUT_DIR,
         help="Directory where session JSONL files will be written",
     )
     parser.add_argument(
@@ -435,6 +479,9 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: --match-threshold must be between 0.0 and 1.0", file=sys.stderr)
         return 1
     try:
+        output_dir = args.output_dir
+        if not output_dir.is_absolute():
+            output_dir = source_path.parent / output_dir
         result = split_export(
             source_path,
             window_size=args.window_size,
@@ -447,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         write_split_result(
             result,
-            output_dir=args.output_dir,
+            output_dir=output_dir,
             source_path=source_path,
             overwrite=args.overwrite,
             write_manifest=not args.no_manifest,
@@ -459,8 +506,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         f"Wrote {len(result.sessions)} sessions and {len(result.unclassified)} unclassified rows "
-        f"to {args.output_dir}",
+        f"to {output_dir}",
         file=sys.stderr,
+    )
+    _print_split_stats(
+        result,
+        match_threshold=args.match_threshold,
+        window_size=args.window_size,
     )
     return 0
 
