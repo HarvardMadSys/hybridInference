@@ -67,69 +67,6 @@ def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
     return f"ip:{client_ip}"
 
 
-def _redact_error_text(value: str) -> str:
-    redacted = _SECRET_VALUE_RE.sub(r"\1\2[REDACTED]\3", value)
-    return _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
-
-
-def _format_exception_for_db(exc: BaseException) -> str:
-    """Return capped, redacted operator-facing error text for api_logs.error."""
-    exc_text = str(exc)
-    upstream_body = getattr(exc, "error_body", None)
-    if upstream_body is None:
-        value = exc_text
-    else:
-        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
-        value = f"{exc_text} | upstream_body={body_text}"
-
-    value = _redact_error_text(value)
-    if len(value) > _MAX_DB_ERROR_LENGTH:
-        return value[: _MAX_DB_ERROR_LENGTH - 14] + "...[truncated]"
-    return value
-
-
-def _redact_error_text(value: str) -> str:
-    redacted = _SECRET_VALUE_RE.sub(r"\1\2[REDACTED]\3", value)
-    return _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
-
-
-def _format_exception_for_db(exc: BaseException) -> str:
-    """Return capped, redacted operator-facing error text for api_logs.error."""
-    exc_text = str(exc)
-    upstream_body = getattr(exc, "error_body", None)
-    if upstream_body is None:
-        value = exc_text
-    else:
-        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
-        value = f"{exc_text} | upstream_body={body_text}"
-
-    value = _redact_error_text(value)
-    if len(value) > _MAX_DB_ERROR_LENGTH:
-        return value[: _MAX_DB_ERROR_LENGTH - 14] + "...[truncated]"
-    return value
-
-
-def _redact_error_text(value: str) -> str:
-    redacted = _SECRET_VALUE_RE.sub(r"\1\2[REDACTED]\3", value)
-    return _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
-
-
-def _format_exception_for_db(exc: BaseException) -> str:
-    """Return capped, redacted operator-facing error text for api_logs.error."""
-    exc_text = str(exc)
-    upstream_body = getattr(exc, "error_body", None)
-    if upstream_body is None:
-        value = exc_text
-    else:
-        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
-        value = f"{exc_text} | upstream_body={body_text}"
-
-    value = _redact_error_text(value)
-    if len(value) > _MAX_DB_ERROR_LENGTH:
-        return value[: _MAX_DB_ERROR_LENGTH - 14] + "...[truncated]"
-    return value
-
-
 @router.post(
     "/v1/chat/completions",
     response_model=ChatCompletionResponse,
