@@ -4,12 +4,16 @@ const sponsors = [
     alt: 'NVIDIA logo',
     src: '/sponsors/nvidia.svg',
     className: 'h-10 sm:h-12',
+    width: 975,
+    height: 180,
   },
   {
     name: 'Harvard SEAS',
     alt: 'Harvard SEAS logo',
     src: '/sponsors/harvard-seas.svg',
     className: 'h-12 sm:h-14',
+    width: 307,
+    height: 86,
   },
 ];
 
@@ -26,6 +30,8 @@ export function Sponsors(): JSX.Element {
               key={sponsor.name}
               src={sponsor.src}
               alt={sponsor.alt}
+              width={sponsor.width}
+              height={sponsor.height}
               className={`${sponsor.className} w-auto grayscale opacity-70`}
             />
           ))}

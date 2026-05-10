@@ -218,6 +218,7 @@ openrouter_logs.db
 # VS Code / Cursor
 .vscode/
 .cursor/
+.superpowers/
 
 # macOS
 .DS_Store
