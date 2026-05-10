@@ -61,6 +61,10 @@ class TestExtractCacheTokens:
         usage = {"prompt_tokens_details": {"cached_tokens": 80}}
         assert extract_cache_tokens(usage) == (80, None)
 
+    def test_minimax_input_tokens_details_cached_tokens(self):
+        usage = {"input_tokens_details": {"cached_tokens": 80}}
+        assert extract_cache_tokens(usage) == (80, None)
+
     def test_nested_zero_cached_tokens(self):
         usage = {"prompt_tokens_details": {"cached_tokens": 0}}
         assert extract_cache_tokens(usage) == (0, None)
