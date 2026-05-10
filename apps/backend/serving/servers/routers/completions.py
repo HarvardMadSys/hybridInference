@@ -67,6 +67,29 @@ def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
     return f"ip:{client_ip}"
 
 
+def _fallback_error_summary(routing: RoutingInfo) -> str | None:
+    failed_attempts = routing.extra.get("failed_attempts")
+    if not isinstance(failed_attempts, list) or not failed_attempts:
+        return None
+    first = failed_attempts[0]
+    if not isinstance(first, dict):
+        return None
+    provider = first.get("endpoint_id") or first.get("provider") or "upstream"
+    error_type = first.get("error_type") or "error"
+    error = first.get("error") or "unknown"
+    return f"Upstream fallback after {provider}: {error_type}: {error}"
+
+
+def _metadata_with_fallback_diagnostic(
+    metadata: dict[str, Any],
+    routing: RoutingInfo,
+) -> dict[str, Any]:
+    fallback_error = _fallback_error_summary(routing)
+    if fallback_error is None:
+        return metadata
+    return {**metadata, "upstream_error": fallback_error}
+
+
 @router.post(
     "/v1/chat/completions",
     response_model=ChatCompletionResponse,
@@ -480,13 +503,14 @@ async def chat_completions(
                     else None,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": 200,
+                    "error": None,
                     "params": completions_logger.build_db_params(
                         params,
                         provider,
                         base_url,
                         get_adapter_config_for_provider,
                     ),
-                    "metadata": metadata,
+                    "metadata": _metadata_with_fallback_diagnostic(metadata, routing),
                     "pricing": pricing,
                     "upstream_cost_usd": routing.upstream_cost_usd,
                     "request_payload": body,

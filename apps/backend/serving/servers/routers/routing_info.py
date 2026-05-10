@@ -140,6 +140,9 @@ def merge_adapter_routing(
     for key, value in adapter_routing.items():
         if key in field_names:
             known[key] = value
+        elif key == "failed_attempts" and isinstance(value, list):
+            existing = extra.get(key)
+            extra[key] = [*(existing if isinstance(existing, list) else []), *value]
         else:
             extra[key] = value
 

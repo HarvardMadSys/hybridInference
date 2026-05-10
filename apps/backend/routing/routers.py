@@ -121,6 +121,15 @@ def _get_endpoint_id(adapter: BaseAdapter) -> str:
     return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
 
 
+def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
+    return {
+        "provider": adapter.config.provider,
+        "endpoint_id": _get_endpoint_id(adapter),
+        "error_type": exc.__class__.__name__,
+        "error": str(exc),
+    }
+
+
 def _routing_chunk(adapter: BaseAdapter, *, fallback: bool = False) -> str:
     """Build a synthetic SSE chunk carrying ``_routing`` metadata for streaming.
 
@@ -524,6 +533,7 @@ class BaseRouter:
                 return resp
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason=primary_error.__class__.__name__)
+                failed_attempts = [_failed_attempt(primary, primary_error)]
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
                 for adapter in fallback_adapters:
                     last_attempted = adapter
@@ -539,14 +549,16 @@ class BaseRouter:
                             "endpoint_id",
                             getattr(adapter.config, "endpoint_id", None),
                         )
+                        resp["_routing"].setdefault("failed_attempts", failed_attempts)
                         API_FALLBACKS.labels(
                             from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                             to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
                             reason=primary_error.__class__.__name__,
                         ).inc()
                         return resp
-                    except Exception:
+                    except Exception as fallback_error:
                         self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
+                        failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
                 raise primary_error
         except BaseException as e:
@@ -848,6 +860,7 @@ class FixedRouter(BaseRouter):
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
             self._on_failure(_get_endpoint_id(primary), reason="chat_exception")
+            failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — the caller explicitly requested this
             # provider, so a silent switch would produce misleading results.
             if pin_provider:
@@ -876,14 +889,16 @@ class FixedRouter(BaseRouter):
                             "fallback": True,
                         }
                     resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(adapter))
+                    resp["_routing"].setdefault("failed_attempts", failed_attempts)
                     API_FALLBACKS.labels(
                         from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                         to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
                         reason=primary_error.__class__.__name__,
                     ).inc()
                     return resp
-                except Exception:
+                except Exception as fallback_error:
                     self._on_failure(endpoint_id, reason="chat_exception")
+                    failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
             raise primary_error
 

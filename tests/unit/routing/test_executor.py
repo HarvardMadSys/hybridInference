@@ -119,6 +119,31 @@ async def test_fallback_on_primary_failure():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_fallback_response_records_failed_primary_attempt():
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="primary"))
+    backup = _EchoAdapter(_cfg("m", provider="backup"))
+    exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
+
+    random_state = random.random
+    try:
+        random.random = lambda: 0.01
+        resp = await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        random.random = random_state
+
+    assert resp["_routing"]["failed_attempts"] == [
+        {
+            "provider": "primary",
+            "endpoint_id": "primary",
+            "error_type": "RuntimeError",
+            "error": "fail",
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_no_route_configured_raises():
     exe = RouteExecutor()
     with pytest.raises(ValueError):

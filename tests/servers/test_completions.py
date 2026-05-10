@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
@@ -297,6 +298,53 @@ async def test_fallback_on_primary_failure(completions_app: FastAPI):
         # When fallback occurs, router strips _routing before returning to user in non-streaming
         # path; our server keeps _routing only internally for db logging. We validate content.
         assert data["choices"][0]["message"]["content"] == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_fallback_success_logs_failed_primary_attempt_as_diagnostic(
+    monkeypatch,
+    mock_log_store,
+):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+    router = RouteExecutor()
+    primary_cfg = _mk_cfg("gpt-4")
+    primary_cfg.provider = "primary"
+    primary_cfg.endpoint_id = "primary:endpoint"
+    backup_cfg = _mk_cfg("gpt-4")
+    backup_cfg.provider = "backup"
+    router.register_route(
+        "gpt-4", [(FailingAdapter(primary_cfg), 0.9), (DummyAdapter(backup_cfg), 0.1)]
+    )
+
+    app = FastAPI(title="Fallback Logging App")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=None,
+        log_store=mock_log_store,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    random_state = random.random
+    transport = ASGITransport(app=app)
+    try:
+        random.random = lambda: 0.01
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+            )
+    finally:
+        random.random = random_state
+
+    assert resp.status_code == status.HTTP_200_OK
+    kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert kwargs is not None, "log_request was never called"
+    assert kwargs["status_code"] == 200
+    assert kwargs["error"] is None
+    assert kwargs["metadata"]["upstream_error"] == (
+        "Upstream fallback after primary:endpoint: RuntimeError: Primary adapter failed"
+    )
 
 
 @pytest.mark.asyncio
