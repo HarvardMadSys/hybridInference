@@ -178,7 +178,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     elif kind == "zai":
         cfg = {**cfg, "provider_profile": "zai", "chat_path": "/chat/completions"}
     elif kind == "minimax":
-        cfg = {**cfg, "provider_profile": "minimax"}
+        cfg = {**cfg, "provider_profile": "minimax", "include_usage_in_stream": True}
     elif kind == "sglang":
         cfg = {**cfg, "include_usage_in_stream": True}
 
