@@ -12,13 +12,17 @@ Usage (from orchestrate.py):
     run_decode(engine="vllm", url="http://localhost:8000",
                concurrency=16, run_id=1)
 """
+
 from __future__ import annotations
 
 import shutil
 import subprocess
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from benchmark import config
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _genai_perf_exe() -> str:
@@ -27,7 +31,8 @@ def _genai_perf_exe() -> str:
     if exe is None:
         raise RuntimeError(
             "genai-perf not found on PATH. Install via `pip install genai-perf` "
-            "or fall back to the Triton SDK container.")
+            "or fall back to the Triton SDK container."
+        )
     return exe
 
 
@@ -43,9 +48,11 @@ def _output_path(engine: str, phase: str, param: int, run_id: int) -> Path:
     Returns:
         Path object pointing to the JSON output file.
     """
-    name = (f"prefill_input_{param}_run{run_id}.json"
-            if phase == "prefill"
-            else f"decode_concurrency_{param}_run{run_id}.json")
+    name = (
+        f"prefill_input_{param}_run{run_id}.json"
+        if phase == "prefill"
+        else f"decode_concurrency_{param}_run{run_id}.json"
+    )
     out = config.RESULTS_DIR / engine / name
     out.parent.mkdir(parents=True, exist_ok=True)
     return out
@@ -69,21 +76,35 @@ def build_prefill_args(url: str, input_len: int, output_path: Path) -> list[str]
         A list of strings suitable for passing to subprocess.run().
     """
     return [
-        _genai_perf_exe(), "profile",
-        "--model", config.MODEL_REPO,
-        "--endpoint-type", "completions",
+        _genai_perf_exe(),
+        "profile",
+        "--model",
+        config.MODEL_REPO,
+        "--endpoint-type",
+        "completions",
         "--streaming",
-        "--url", url,
-        "--tokenizer", config.MODEL_REPO,
-        "--synthetic-input-tokens-mean", str(input_len),
-        "--synthetic-input-tokens-stddev", "0",
-        "--output-tokens-mean", str(config.PREFILL_OUTPUT_LEN),
-        "--output-tokens-stddev", "0",
-        "--concurrency", str(config.PREFILL_CONCURRENCY),
-        "--request-count", str(config.MEASUREMENT_REQUESTS),
-        "--warmup-request-count", str(config.WARMUP_REQUESTS),
-        "--artifact-dir", str(output_path.parent),
-        "--profile-export-file", output_path.name,
+        "--url",
+        url,
+        "--tokenizer",
+        config.MODEL_REPO,
+        "--synthetic-input-tokens-mean",
+        str(input_len),
+        "--synthetic-input-tokens-stddev",
+        "0",
+        "--output-tokens-mean",
+        str(config.PREFILL_OUTPUT_LEN),
+        "--output-tokens-stddev",
+        "0",
+        "--concurrency",
+        str(config.PREFILL_CONCURRENCY),
+        "--request-count",
+        str(config.MEASUREMENT_REQUESTS),
+        "--warmup-request-count",
+        str(config.WARMUP_REQUESTS),
+        "--artifact-dir",
+        str(output_path.parent),
+        "--profile-export-file",
+        output_path.name,
     ]
 
 
@@ -105,21 +126,35 @@ def build_decode_args(url: str, concurrency: int, output_path: Path) -> list[str
         A list of strings suitable for passing to subprocess.run().
     """
     return [
-        _genai_perf_exe(), "profile",
-        "--model", config.MODEL_REPO,
-        "--endpoint-type", "completions",
+        _genai_perf_exe(),
+        "profile",
+        "--model",
+        config.MODEL_REPO,
+        "--endpoint-type",
+        "completions",
         "--streaming",
-        "--url", url,
-        "--tokenizer", config.MODEL_REPO,
-        "--synthetic-input-tokens-mean", str(config.DECODE_INPUT_LEN),
-        "--synthetic-input-tokens-stddev", "0",
-        "--output-tokens-mean", str(config.DECODE_OUTPUT_LEN),
-        "--output-tokens-stddev", "0",
-        "--concurrency", str(concurrency),
-        "--request-count", str(config.MEASUREMENT_REQUESTS),
-        "--warmup-request-count", str(config.WARMUP_REQUESTS),
-        "--artifact-dir", str(output_path.parent),
-        "--profile-export-file", output_path.name,
+        "--url",
+        url,
+        "--tokenizer",
+        config.MODEL_REPO,
+        "--synthetic-input-tokens-mean",
+        str(config.DECODE_INPUT_LEN),
+        "--synthetic-input-tokens-stddev",
+        "0",
+        "--output-tokens-mean",
+        str(config.DECODE_OUTPUT_LEN),
+        "--output-tokens-stddev",
+        "0",
+        "--concurrency",
+        str(concurrency),
+        "--request-count",
+        str(config.MEASUREMENT_REQUESTS),
+        "--warmup-request-count",
+        str(config.WARMUP_REQUESTS),
+        "--artifact-dir",
+        str(output_path.parent),
+        "--profile-export-file",
+        output_path.name,
     ]
 
 
@@ -151,8 +186,7 @@ def run_prefill(engine: str, url: str, input_len: int, run_id: int) -> Path:
     produced = next(out.parent.rglob(f"{out.stem}_genai_perf.json"), None)
     if produced is None:
         raise RuntimeError(
-            f"genai-perf produced no output matching {out.stem}_genai_perf.json "
-            f"under {out.parent}"
+            f"genai-perf produced no output matching {out.stem}_genai_perf.json under {out.parent}"
         )
     produced.replace(out)
     return out
@@ -186,8 +220,7 @@ def run_decode(engine: str, url: str, concurrency: int, run_id: int) -> Path:
     produced = next(out.parent.rglob(f"{out.stem}_genai_perf.json"), None)
     if produced is None:
         raise RuntimeError(
-            f"genai-perf produced no output matching {out.stem}_genai_perf.json "
-            f"under {out.parent}"
+            f"genai-perf produced no output matching {out.stem}_genai_perf.json under {out.parent}"
         )
     produced.replace(out)
     return out
