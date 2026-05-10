@@ -33,7 +33,7 @@ lint:  ## Run linters (ruff format check, ruff lint, pydocstyle)
 	@echo "$(YELLOW)Running linters...$(RESET)"
 	$(UV_RUN) ruff format --check .
 	$(UV_RUN) ruff check --no-fix .
-	$(UV_RUN) pydocstyle --match-dir='^((?!(tests|\.venv|node_modules|apps/frontend|ops|docs)).)*$'
+	$(UV_RUN) pydocstyle --match-dir="^((?!(tests|\.venv|node_modules|apps/frontend|ops|docs)).)*$$"
 	@echo "$(GREEN)OK Linting passed$(RESET)"
 
 test:  ## Run unit/integration tests (exclude external and db-dependent)
