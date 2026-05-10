@@ -30,6 +30,14 @@ export function Header() {
         </a>
       </div>
       <div className="flex items-center gap-2">
+        <a
+          href="https://status.freeinference.org/"
+          className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Status
+        </a>
         {state.isAuthenticated && (
           <>
             <Link
