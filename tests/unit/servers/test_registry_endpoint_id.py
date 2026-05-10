@@ -75,3 +75,20 @@ def test_sglang_routes_request_stream_usage() -> None:
     )
 
     assert adapter.config.include_usage_in_stream is True
+
+
+def test_minimax_routes_request_stream_usage() -> None:
+    # Regression: MiniMax requires stream_options.include_usage so cached
+    # tokens surface in recent requests (parity with sglang).
+    adapter = _make_adapter(
+        "minimax",
+        {
+            "id": "minimax-m2.7",
+            "name": "MiniMax M2.7",
+            "provider": "minimax",
+            "base_url": "https://api.minimax.io/v1",
+        },
+    )
+
+    assert adapter.config.include_usage_in_stream is True
+    assert adapter.config.provider_profile == "minimax"
