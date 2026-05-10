@@ -82,6 +82,7 @@ def extract_cache_tokens(
     - usage["prompt_cache_hit_tokens"] (DeepSeek)
     - usage["prompt_tokens_details"]["cached_tokens"] (OpenAI / Azure)
     - usage["input_tokens_details"]["cached_tokens"] (MiniMax)
+    - usage["input_token_details"]["cached_tokens"] (MiniMax)
     - usage["cache_creation_input_tokens"] (Anthropic Claude write)
     - usage["cache_write_tokens"] (direct/normalized)
 
@@ -116,8 +117,12 @@ def extract_cache_tokens(
             except (TypeError, ValueError):
                 pass
 
-    # Nested: OpenAI/Azure use prompt_tokens_details; MiniMax uses input_tokens_details.
-    for details_field in ("prompt_tokens_details", "input_tokens_details"):
+    # Nested: OpenAI/Azure use prompt_tokens_details; MiniMax may use input token details.
+    for details_field in (
+        "prompt_tokens_details",
+        "input_tokens_details",
+        "input_token_details",
+    ):
         if cache_read is not None or details_field not in usage:
             continue
         details = usage[details_field]
