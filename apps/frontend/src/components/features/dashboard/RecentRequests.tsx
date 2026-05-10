@@ -124,6 +124,17 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 </span>
               </>
             )}
+            {cachedTokens != null && cachedTokens > 0 && (
+              <>
+                <span className="mx-0.5 text-gray-300">/</span>
+                <span
+                  className="inline-flex items-center rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700"
+                  title={`${cachedTokens.toLocaleString()} cached tokens`}
+                >
+                  C {formatTokens(cachedTokens)}
+                </span>
+              </>
+            )}
           </div>
         </td>
         <td className="whitespace-nowrap px-3 py-3 text-sm text-gray-600">
