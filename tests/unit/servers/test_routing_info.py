@@ -123,6 +123,25 @@ def test_merge_adapter_routing_stashes_unknown_keys_in_extra():
     assert enriched.extra == {"fallback": True, "custom": {"a": 1}}
 
 
+def test_merge_adapter_routing_appends_failed_attempts():
+    base = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        extra={"failed_attempts": [{"provider": "primary"}]},
+    )
+    enriched = merge_adapter_routing(
+        base,
+        {
+            "failed_attempts": [{"provider": "backup"}],
+        },
+    )
+
+    assert enriched.extra["failed_attempts"] == [
+        {"provider": "primary"},
+        {"provider": "backup"},
+    ]
+
+
 def test_status_code_from_exception_status_code_attr():
     class _E(Exception):
         status_code = 502
