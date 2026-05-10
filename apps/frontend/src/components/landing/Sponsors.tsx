@@ -26,7 +26,7 @@ export function Sponsors(): JSX.Element {
               key={sponsor.name}
               src={sponsor.src}
               alt={sponsor.alt}
-              className={`${sponsor.className} w-auto grayscale opacity-70 transition-opacity`}
+              className={`${sponsor.className} w-auto grayscale opacity-70`}
             />
           ))}
         </div>
