@@ -39,7 +39,14 @@ jobs:
           printf '%s\n' "${STAGING_SSH_KEY}" > "${HOME}/.ssh/staging_deploy_key"
           chmod 600 "${HOME}/.ssh/staging_deploy_key"
 
-          printf '%s\n' "${STAGING_HOST_KEY}" > "${HOME}/.ssh/known_hosts"
+          # Sanitize: keep only well-formed known_hosts entries. The
+          # STAGING_HOST_KEY secret can include ssh-keyscan banner lines
+          # (e.g. "<host>:<port> SSH-2.0-OpenSSH_9.6p1") when stderr was
+          # captured alongside stdout. Those malformed lines cause ssh to
+          # fail with "No ED25519 host key is known" under strict checking.
+          printf '%s\n' "${STAGING_HOST_KEY}" \
+            | awk 'NF>=3 && $1 !~ /^#/ && ($2 == "ssh-rsa" || $2 == "ssh-ed25519" || $2 ~ /^ecdsa-sha2-/)' \
+            > "${HOME}/.ssh/known_hosts"
           chmod 600 "${HOME}/.ssh/known_hosts"
 
           for var in STAGING_HOST STAGING_HOST_KEY STAGING_USER STAGING_SSH_KEY; do
@@ -98,5 +105,7 @@ jobs:
             -p "${STAGING_PORT}" \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null \
             "${STAGING_USER}@${STAGING_HOST}" \
             "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && git fetch origin dev && git reset --hard ${DEPLOY_SHA} && DEPLOY_SHA=${DEPLOY_SHA} bash ops/deploy/deploy_staging.sh"

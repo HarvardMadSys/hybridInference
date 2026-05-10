@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   CartesianGrid,
   Line,
@@ -51,6 +58,15 @@ function fmt2(v: unknown): string {
 }
 
 type AxisDomain = [number, number] | ['auto', 'auto'];
+type Scale = 'linear' | 'log';
+
+const Y_AXIS_WIDTH = 48;
+const CHART_MARGIN_LEFT = 12;
+const CHART_MARGIN_RIGHT = 12;
+const CHART_MARGIN_TOP = 8;
+const CHART_MARGIN_BOTTOM = 24;
+const X_AXIS_HEIGHT = 30;
+const THROUGHPUT_Y_MAX = 280;
 
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
@@ -60,39 +76,164 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
 
   const [xDomain, setXDomain] = useState<AxisDomain>(['auto', 'auto']);
   const [yDomain, setYDomain] = useState<AxisDomain>(['auto', 'auto']);
-  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
-  const [dragEnd, setDragEnd] = useState<{ x: number; y: number } | null>(null);
+  const [xScale, setXScale] = useState<Scale>('log');
+  const [yScale, setYScale] = useState<Scale>('linear');
+  const [dragStartX, setDragStartX] = useState<number | null>(null);
+  const [dragEndX, setDragEndX] = useState<number | null>(null);
+  const [dragStartY, setDragStartY] = useState<number | null>(null);
+  const [dragEndY, setDragEndY] = useState<number | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const zoomed = xDomain[0] !== 'auto' || yDomain[0] !== 'auto';
 
-  const onDown = (e: unknown) => {
-    const ev = e as { xValue?: number; yValue?: number } | null;
-    if (!ev || ev.xValue == null || ev.yValue == null) return;
-    setDragStart({ x: ev.xValue, y: ev.yValue });
-    setDragEnd({ x: ev.xValue, y: ev.yValue });
+  const dataXMin = useMemo(() => {
+    if (safePoints.length === 0) return 1;
+    return Math.max(
+      1,
+      safePoints.reduce((m, p) => Math.min(m, p.prompt_tokens), Infinity),
+    );
+  }, [safePoints]);
+  const dataXMax = useMemo(() => {
+    if (safePoints.length === 0) return 10;
+    return safePoints.reduce((m, p) => Math.max(m, p.prompt_tokens), 0);
+  }, [safePoints]);
+  const dataYMin = useMemo(() => {
+    if (safePoints.length === 0) return 0;
+    return safePoints.reduce((m, p) => Math.min(m, p.ttft_ms), Infinity);
+  }, [safePoints]);
+  const dataYMax = useMemo(() => {
+    if (safePoints.length === 0) return 1;
+    return safePoints.reduce((m, p) => Math.max(m, p.ttft_ms), 0);
+  }, [safePoints]);
+
+  const visibleXMin = xDomain[0] === 'auto' ? dataXMin : (xDomain[0] as number);
+  const visibleXMax = xDomain[1] === 'auto' ? dataXMax : (xDomain[1] as number);
+
+  const xTicks = useMemo(() => {
+    const candidates = [
+      100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000,
+      2000000, 5000000,
+    ];
+    const visible = candidates.filter((t) => t >= visibleXMin && t <= visibleXMax);
+    const MAX_TICKS = 8;
+    if (visible.length <= MAX_TICKS) return visible;
+    const stride = Math.ceil(visible.length / MAX_TICKS);
+    return visible.filter((_, i) => i % stride === 0);
+  }, [visibleXMin, visibleXMax]);
+  const visibleYMin = yDomain[0] === 'auto' ? dataYMin : (yDomain[0] as number);
+  const visibleYMax = yDomain[1] === 'auto' ? dataYMax : (yDomain[1] as number);
+
+  const pixelToX = (clientX: number): number | null => {
+    const el = wrapperRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const innerLeft = CHART_MARGIN_LEFT + Y_AXIS_WIDTH;
+    const innerRight = rect.width - CHART_MARGIN_RIGHT;
+    const innerWidth = innerRight - innerLeft;
+    if (innerWidth <= 0) return null;
+    const px = clientX - rect.left;
+    const frac = Math.min(1, Math.max(0, (px - innerLeft) / innerWidth));
+    if (xScale === 'log') {
+      const lo = Math.log10(Math.max(visibleXMin, 1));
+      const hi = Math.log10(Math.max(visibleXMax, visibleXMin + 1));
+      return Math.pow(10, lo + frac * (hi - lo));
+    }
+    return visibleXMin + frac * (visibleXMax - visibleXMin);
   };
-  const onMove = (e: unknown) => {
-    const ev = e as { xValue?: number; yValue?: number } | null;
-    if (!dragStart || !ev || ev.xValue == null || ev.yValue == null) return;
-    setDragEnd({ x: ev.xValue, y: ev.yValue });
+
+  const pixelToY = (clientY: number): number | null => {
+    const el = wrapperRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const innerTop = CHART_MARGIN_TOP;
+    const innerBottom = rect.height - CHART_MARGIN_BOTTOM - X_AXIS_HEIGHT;
+    const innerHeight = innerBottom - innerTop;
+    if (innerHeight <= 0) return null;
+    const py = clientY - rect.top;
+    const frac = Math.min(1, Math.max(0, (py - innerTop) / innerHeight));
+    if (yScale === 'log') {
+      const lo = Math.log10(Math.max(visibleYMin, 1));
+      const hi = Math.log10(Math.max(visibleYMax, visibleYMin + 1));
+      return Math.pow(10, hi - frac * (hi - lo));
+    }
+    return visibleYMax - frac * (visibleYMax - visibleYMin);
+  };
+
+  const onDown = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const x = pixelToX(e.clientX);
+    const y = pixelToY(e.clientY);
+    if (x == null || y == null) return;
+    e.preventDefault();
+    setDragStartX(x);
+    setDragEndX(x);
+    setDragStartY(y);
+    setDragEndY(y);
+  };
+  const onMove = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (dragStartX == null) return;
+    const x = pixelToX(e.clientX);
+    const y = pixelToY(e.clientY);
+    if (x == null || y == null) return;
+    setDragEndX(x);
+    setDragEndY(y);
   };
   const onUp = () => {
-    if (dragStart && dragEnd) {
-      const x1 = Math.min(dragStart.x, dragEnd.x);
-      const x2 = Math.max(dragStart.x, dragEnd.x);
-      const y1 = Math.min(dragStart.y, dragEnd.y);
-      const y2 = Math.max(dragStart.y, dragEnd.y);
-      if (x2 > x1 && y2 > y1) {
-        setXDomain([Math.max(x1, 1), x2]);
-        setYDomain([y1, y2]);
+    if (dragStartX != null && dragEndX != null) {
+      const x1 = Math.min(dragStartX, dragEndX);
+      const x2 = Math.max(dragStartX, dragEndX);
+      const xMeaningful =
+        xScale === 'log'
+          ? x2 / Math.max(x1, 1) > 1.05
+          : x2 - x1 > Math.max(visibleXMax - visibleXMin, 1) * 0.05;
+      if (xMeaningful) {
+        setXDomain([xScale === 'log' ? Math.max(x1, 1) : x1, x2]);
       }
     }
-    setDragStart(null);
-    setDragEnd(null);
+    if (dragStartY != null && dragEndY != null) {
+      const y1 = Math.min(dragStartY, dragEndY);
+      const y2 = Math.max(dragStartY, dragEndY);
+      const yMeaningful =
+        yScale === 'log'
+          ? y2 / Math.max(y1, 1) > 1.05
+          : y2 - y1 > Math.max(visibleYMax - visibleYMin, 1) * 0.05;
+      if (yMeaningful) {
+        setYDomain([yScale === 'log' ? Math.max(y1, 1) : y1, y2]);
+      }
+    }
+    setDragStartX(null);
+    setDragEndX(null);
+    setDragStartY(null);
+    setDragEndY(null);
   };
   const reset = () => {
     setXDomain(['auto', 'auto']);
     setYDomain(['auto', 'auto']);
   };
+
+  const exportCsv = () => {
+    const header = 'timestamp,prompt_tokens,ttft_ms,cache_hit\n';
+    const body = safePoints
+      .map(
+        (p) => `${p.timestamp},${p.prompt_tokens},${p.ttft_ms},${p.cache_hit ? 'true' : 'false'}`,
+      )
+      .join('\n');
+    const blob = new Blob([`${header}${body}\n`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const safeName = `${model.model_id}_${model.provider}`.replace(/[^A-Za-z0-9._-]+/g, '_');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ttft_${safeName}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const showDragArea =
+    dragStartX != null &&
+    dragEndX != null &&
+    dragStartY != null &&
+    dragEndY != null &&
+    (dragStartX !== dragEndX || dragStartY !== dragEndY);
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -110,6 +251,14 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               Reset zoom
             </button>
           )}
+          <button
+            type="button"
+            onClick={exportCsv}
+            disabled={safePoints.length === 0}
+            className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 hover:bg-gray-50 disabled:opacity-50 disabled:hover:bg-white"
+          >
+            Export CSV
+          </button>
           <div className="shrink-0 text-[11px] text-gray-400 tabular-nums">
             {safePoints.length.toLocaleString()} pts
           </div>
@@ -125,17 +274,29 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
           No cache ({uncached.length.toLocaleString()})
         </span>
         <span className="text-gray-400">· drag to zoom</span>
+        <ScaleToggle label="X" value={xScale} onChange={setXScale} />
+        <ScaleToggle label="Y" value={yScale} onChange={setYScale} />
       </div>
-      <div className="mt-3 h-[260px] select-none">
+      <div
+        ref={wrapperRef}
+        className="relative mt-3 h-[260px] select-none cursor-crosshair"
+        onMouseDown={onDown}
+        onMouseMove={onMove}
+        onMouseUp={onUp}
+        onMouseLeave={() => {
+          setDragStartX(null);
+          setDragEndX(null);
+          setDragStartY(null);
+          setDragEndY(null);
+        }}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart
-            margin={{ top: 8, right: 12, bottom: 24, left: 12 }}
-            onMouseDown={onDown}
-            onMouseMove={onMove}
-            onMouseUp={onUp}
-            onMouseLeave={() => {
-              setDragStart(null);
-              setDragEnd(null);
+            margin={{
+              top: CHART_MARGIN_TOP,
+              right: CHART_MARGIN_RIGHT,
+              bottom: CHART_MARGIN_BOTTOM,
+              left: CHART_MARGIN_LEFT,
             }}
           >
             <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
@@ -143,9 +304,12 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               type="number"
               dataKey="prompt_tokens"
               name="Input length"
-              scale="log"
+              scale={xScale}
               domain={xDomain}
               allowDataOverflow
+              height={X_AXIS_HEIGHT}
+              ticks={xScale === 'log' && xTicks.length > 0 ? xTicks : undefined}
+              tickFormatter={(v: number) => Number(v).toLocaleString()}
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
                 value: 'Input length (tokens)',
@@ -158,7 +322,9 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               type="number"
               dataKey="ttft_ms"
               name="TTFT"
-              domain={yDomain}
+              width={Y_AXIS_WIDTH}
+              scale={yScale}
+              domain={yScale === 'log' ? [Math.max(visibleYMin, 1), visibleYMax] : yDomain}
               allowDataOverflow
               tick={{ fontSize: 10, fill: '#6b7280' }}
               label={{
@@ -190,18 +356,18 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               fillOpacity={0.6}
               shape="circle"
             />
-            {dragStart && dragEnd && (
+            {showDragArea ? (
               <ReferenceArea
-                x1={dragStart.x}
-                x2={dragEnd.x}
-                y1={dragStart.y}
-                y2={dragEnd.y}
+                x1={dragStartX as number}
+                x2={dragEndX as number}
+                y1={dragStartY as number}
+                y2={dragEndY as number}
                 fill="#3b82f6"
                 fillOpacity={0.1}
                 stroke="#3b82f6"
                 strokeOpacity={0.4}
               />
-            )}
+            ) : null}
           </ScatterChart>
         </ResponsiveContainer>
       </div>
@@ -278,7 +444,12 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt2} />
+                <YAxis
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={fmt2}
+                  domain={[0, THROUGHPUT_Y_MAX]}
+                  allowDataOverflow
+                />
                 <Tooltip formatter={(v) => fmt2(v)} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="thru_avg" stroke="#10b981" dot={false} name="avg" />
@@ -496,6 +667,38 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         ) : null}
       </div>
     </div>
+  );
+}
+
+function ScaleToggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: Scale;
+  onChange: (s: Scale) => void;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="text-gray-400">{label}:</span>
+      <span className="inline-flex overflow-hidden rounded border border-gray-200">
+        {(['linear', 'log'] as Scale[]).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => onChange(s)}
+            className={
+              value === s
+                ? 'bg-gray-900 px-1.5 py-0.5 text-[10px] text-white'
+                : 'px-1.5 py-0.5 text-[10px] text-gray-600 hover:bg-gray-50'
+            }
+          >
+            {s}
+          </button>
+        ))}
+      </span>
+    </span>
   );
 }
 
