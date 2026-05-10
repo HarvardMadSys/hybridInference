@@ -124,7 +124,7 @@ add-ignore = [
   "D107",  # __init__ docstring not required
 ]
 match = ".+\\.py"
-match-dir = "(?!tests|.venv|node_modules|apps/frontend|ops).*"
+match-dir = "(?!tests|.venv|node_modules|apps/frontend|ops|docs).*"
 
 [dependency-groups]
 dev = [
