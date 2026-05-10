@@ -897,7 +897,7 @@ class FixedRouter(BaseRouter):
                     ).inc()
                     return resp
                 except Exception as fallback_error:
-                    self._on_failure(endpoint_id, reason="chat_exception")
+                    self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
             raise primary_error

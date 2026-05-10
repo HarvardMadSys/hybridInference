@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -140,6 +141,46 @@ async def test_fallback_response_records_failed_primary_attempt():
             "error": "fail",
         }
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_failure_uses_current_adapter_endpoint_for_failure_recording(monkeypatch):
+    from routing import routers as routers_mod
+
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="primary"))
+    bad_fallback = _EchoAdapter(_cfg("m", provider="bad"))
+    backup = _EchoAdapter(_cfg("m", provider="backup"))
+    exe.register_route("m", [(primary, 0.8), (bad_fallback, 0.1), (backup, 0.1)])
+
+    recorded: list[str] = []
+    original_on_failure = exe._on_failure  # type: ignore[attr-defined]
+
+    def record_failure(endpoint_id: str, *, reason: str) -> None:
+        recorded.append(endpoint_id)
+        original_on_failure(endpoint_id, reason=reason)
+
+    original_push = routers_mod.req_ctx.push
+
+    @contextmanager
+    def raise_for_bad_provider(**values: Any):
+        if values.get("provider") == "bad":
+            raise RuntimeError("context setup failed")
+        with original_push(**values):
+            yield
+
+    random_state = random.random
+    try:
+        random.random = lambda: 0.01
+        monkeypatch.setattr(routers_mod.req_ctx, "push", raise_for_bad_provider)
+        exe._on_failure = record_failure  # type: ignore[method-assign]
+        await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        random.random = random_state
+        exe._on_failure = original_on_failure  # type: ignore[method-assign]
+
+    assert recorded[:2] == ["primary", "bad"]
 
 
 @pytest.mark.unit
