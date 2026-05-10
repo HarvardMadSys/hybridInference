@@ -1,6 +1,4 @@
-"""
-benchmark.plot
-==============
+"""Plot Qwen3.6 benchmark comparisons.
 
 Generate the four comparison plots from the tidy summary CSV. Applies the
 user's global plotting defaults (gridlines on, large fonts, distribution
@@ -15,28 +13,34 @@ Plots produced under `out_dir`:
 Usage:
     generate_all_plots(Path("results/summary.csv"), Path("results/plots"))
 """
+
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 def _apply_global_style() -> None:
     """User's global plotting defaults."""
-    plt.rcParams.update({
-        "axes.grid": True,
-        "axes.titlesize": 16,
-        "axes.labelsize": 16,
-        "xtick.labelsize": 12,
-        "ytick.labelsize": 12,
-        "legend.fontsize": 12,
-        "figure.figsize": (10, 6),
-        "savefig.bbox": "tight",
-        "savefig.dpi": 120,
-    })
+    plt.rcParams.update(
+        {
+            "axes.grid": True,
+            "axes.titlesize": 16,
+            "axes.labelsize": 16,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "legend.fontsize": 12,
+            "figure.figsize": (10, 6),
+            "savefig.bbox": "tight",
+            "savefig.dpi": 120,
+        }
+    )
 
 
 _ENGINE_COLORS = {"vllm": "#1f77b4", "sglang": "#ff7f0e", "trtllm": "#2ca02c"}
@@ -55,8 +59,7 @@ def _plot_prefill(df: pd.DataFrame, out_path: Path) -> None:
     fig, ax = plt.subplots()
     for engine, g in sub.groupby("engine"):
         med = g.groupby("input_len")["value"].median()
-        ax.plot(med.index, med.values, marker="o",
-                label=engine, color=_ENGINE_COLORS.get(engine))
+        ax.plot(med.index, med.values, marker="o", label=engine, color=_ENGINE_COLORS.get(engine))
     ax.set_xscale("log")
     ax.set_xlabel("Input length (tokens)")
     ax.set_ylabel("Prefill throughput (input tokens/sec)")
@@ -79,8 +82,7 @@ def _plot_decode(df: pd.DataFrame, out_path: Path) -> None:
     fig, ax = plt.subplots()
     for engine, g in sub.groupby("engine"):
         med = g.groupby("concurrency")["value"].median()
-        ax.plot(med.index, med.values, marker="o",
-                label=engine, color=_ENGINE_COLORS.get(engine))
+        ax.plot(med.index, med.values, marker="o", label=engine, color=_ENGINE_COLORS.get(engine))
     ax.set_xscale("log")
     ax.set_xlabel("Concurrency")
     ax.set_ylabel("Aggregate decode throughput (tokens/sec)")
@@ -97,8 +99,9 @@ def _plot_ttft_cdf(df: pd.DataFrame, out_path: Path) -> None:
     Shows both median (dashed) and mean (dotted) vertical lines per engine,
     per the global plotting defaults for distribution plots.
     """
-    sub = df[(df["phase"] == "decode") & (df["metric"] == "ttft_ms_p50")
-             & (df["concurrency"] == 16)]
+    sub = df[
+        (df["phase"] == "decode") & (df["metric"] == "ttft_ms_p50") & (df["concurrency"] == 16)
+    ]
     if sub.empty:
         return
     fig, ax = plt.subplots()
@@ -108,10 +111,8 @@ def _plot_ttft_cdf(df: pd.DataFrame, out_path: Path) -> None:
             continue
         cdf_y = np.arange(1, len(vals) + 1) / len(vals)
         ax.plot(vals, cdf_y, label=engine, color=_ENGINE_COLORS.get(engine))
-        ax.axvline(np.median(vals), color=_ENGINE_COLORS.get(engine),
-                   linestyle="--", alpha=0.5)
-        ax.axvline(np.mean(vals), color=_ENGINE_COLORS.get(engine),
-                   linestyle=":", alpha=0.7)
+        ax.axvline(np.median(vals), color=_ENGINE_COLORS.get(engine), linestyle="--", alpha=0.5)
+        ax.axvline(np.mean(vals), color=_ENGINE_COLORS.get(engine), linestyle=":", alpha=0.7)
     ax.set_xlabel("TTFT (ms)")
     ax.set_ylabel("CDF")
     ax.set_title("TTFT CDF at concurrency=16 (dashed=median, dotted=mean)")
@@ -127,8 +128,9 @@ def _plot_tpot_violin(df: pd.DataFrame, out_path: Path) -> None:
     Shows both median and mean per the global plotting defaults for
     distribution plots. X-tick labels rotated 90°.
     """
-    sub = df[(df["phase"] == "decode") & (df["metric"] == "tpot_ms_p50")
-             & (df["concurrency"] == 16)]
+    sub = df[
+        (df["phase"] == "decode") & (df["metric"] == "tpot_ms_p50") & (df["concurrency"] == 16)
+    ]
     if sub.empty:
         return
     fig, ax = plt.subplots()
@@ -137,7 +139,7 @@ def _plot_tpot_violin(df: pd.DataFrame, out_path: Path) -> None:
     if not any(len(d) > 0 for d in data):
         return
     parts = ax.violinplot(data, showmedians=True, showmeans=True)
-    for pc, e in zip(parts["bodies"], engines):
+    for pc, e in zip(parts["bodies"], engines, strict=False):
         pc.set_facecolor(_ENGINE_COLORS.get(e, "#888"))
         pc.set_alpha(0.6)
     ax.set_xticks(range(1, len(engines) + 1))

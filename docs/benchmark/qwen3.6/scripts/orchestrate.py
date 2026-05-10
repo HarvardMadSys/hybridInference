@@ -1,8 +1,4 @@
-"""
-benchmark.orchestrate
-=====================
-
-Top-level pipeline driver.
+"""Drive the Qwen3.6 benchmark pipeline.
 
 Pipeline stages (each gated by a sentinel under config.STATE_DIR):
     1. docker_installed       — host has Docker + NVIDIA Container Toolkit
@@ -21,6 +17,7 @@ Usage:
     python -m benchmark.orchestrate --engines vllm sglang
     python -m benchmark.orchestrate --rerun trtllm_decode_done   # force redo
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,15 +26,17 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING
 
 import requests
-
 from benchmark import config
 from benchmark.aggregate import aggregate_directory
 from benchmark.plot import generate_all_plots
-from benchmark.run_genai_perf import run_prefill, run_decode
+from benchmark.run_genai_perf import run_decode, run_prefill
 from benchmark.state import StateStore
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 def plan_steps(engines: Iterable[str], num_repeats: int) -> list[str]:
@@ -188,15 +187,19 @@ def _ensure_docker_installed(store: StateStore) -> None:
     if store.is_done("docker_installed"):
         return
     if shutil.which("docker") is None:
-        print("Docker not installed. Run benchmark/setup_docker.sh first "
-              "(requires sudo). Aborting.")
+        print(
+            "Docker not installed. Run benchmark/setup_docker.sh first (requires sudo). Aborting."
+        )
         sys.exit(1)
     # Verify NVIDIA runtime is wired up
-    r = subprocess.run(["docker", "info", "--format", "{{.Runtimes}}"],
-                        capture_output=True, text=True, check=True)
+    r = subprocess.run(
+        ["docker", "info", "--format", "{{.Runtimes}}"], capture_output=True, text=True, check=True
+    )
     if "nvidia" not in r.stdout:
-        print("Docker is installed but NVIDIA Container Toolkit is not configured. "
-              "Run benchmark/setup_docker.sh. Aborting.")
+        print(
+            "Docker is installed but NVIDIA Container Toolkit is not configured. "
+            "Run benchmark/setup_docker.sh. Aborting."
+        )
         sys.exit(1)
     store.mark_done("docker_installed")
 
@@ -212,8 +215,7 @@ def _ensure_model_downloaded(store: StateStore) -> None:
     if store.is_done("model_downloaded"):
         return
     if not config.MODEL_DIR.exists() or not any(config.MODEL_DIR.iterdir()):
-        print(f"Model not found at {config.MODEL_DIR}. Run "
-              f"benchmark/download_model.sh. Aborting.")
+        print(f"Model not found at {config.MODEL_DIR}. Run benchmark/download_model.sh. Aborting.")
         sys.exit(1)
     store.mark_done("model_downloaded")
 
@@ -299,11 +301,13 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--engines", nargs="+", default=list(config.ENGINES),
-                        choices=list(config.ENGINES))
+    parser.add_argument(
+        "--engines", nargs="+", default=list(config.ENGINES), choices=list(config.ENGINES)
+    )
     parser.add_argument("--num-repeats", type=int, default=config.NUM_REPEATS)
-    parser.add_argument("--rerun", action="append", default=[],
-                        help="Sentinel name(s) to clear before running")
+    parser.add_argument(
+        "--rerun", action="append", default=[], help="Sentinel name(s) to clear before running"
+    )
     args = parser.parse_args(argv)
 
     store = StateStore(config.STATE_DIR)

@@ -1,6 +1,4 @@
-"""
-benchmark.state
-===============
+"""Track Qwen3.6 benchmark pipeline state.
 
 Sentinel-file based resumability. Each pipeline step writes a small marker
 file under `results/.state/` when it completes successfully. Re-running the
@@ -12,6 +10,7 @@ Usage:
         run_vllm_prefill()
         store.mark_done("vllm_prefill_done")
 """
+
 from pathlib import Path
 
 

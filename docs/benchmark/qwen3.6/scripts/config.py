@@ -1,6 +1,4 @@
-"""
-benchmark.config
-================
+"""Configure the Qwen3.6 throughput benchmark.
 
 Central, immutable configuration for the Qwen3.6-35B-A3B-FP8 throughput
 benchmark. Every other module in `benchmark/` reads from here so the test
@@ -10,9 +8,9 @@ Usage:
     from benchmark import config
     print(config.MODEL_REPO, config.MAX_MODEL_LEN)
 """
+
 from pathlib import Path
 from typing import Final
-
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 
