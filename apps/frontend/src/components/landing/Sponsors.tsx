@@ -1,3 +1,5 @@
+import Image from 'next/image';
+
 const sponsors = [
   {
     name: 'NVIDIA',
@@ -26,7 +28,7 @@ export function Sponsors(): JSX.Element {
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-x-10 gap-y-6 sm:gap-x-14">
           {sponsors.map((sponsor) => (
-            <img
+            <Image
               key={sponsor.name}
               src={sponsor.src}
               alt={sponsor.alt}
