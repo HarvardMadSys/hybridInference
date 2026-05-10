@@ -77,6 +77,16 @@ class TestExtractCacheTokens:
         usage = {"input_tokens_details": {"cache_hit_tokens": 80}}
         assert extract_cache_tokens(usage) == (80, None)
 
+    def test_nested_cached_tokens_preferred_over_cache_read_tokens(self):
+        usage = {
+            "input_tokens_details": {
+                "cached_tokens": 80,
+                "cache_read_tokens": 60,
+                "cache_hit_tokens": 40,
+            }
+        }
+        assert extract_cache_tokens(usage) == (80, None)
+
     def test_nested_zero_cached_tokens(self):
         usage = {"prompt_tokens_details": {"cached_tokens": 0}}
         assert extract_cache_tokens(usage) == (0, None)

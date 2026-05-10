@@ -83,8 +83,8 @@ def extract_cache_tokens(
     - usage["prompt_tokens_details"]["cached_tokens"] (OpenAI / Azure)
     - usage["input_tokens_details"]["cached_tokens"] (MiniMax)
     - usage["input_token_details"]["cached_tokens"] (MiniMax)
-    - usage["input_tokens_details"]["cache_read_tokens"] (MiniMax)
-    - usage["input_tokens_details"]["cache_hit_tokens"] (MiniMax)
+    - usage["*_tokens_details"]["cache_read_tokens"] (MiniMax)
+    - usage["*_tokens_details"]["cache_hit_tokens"] (MiniMax)
     - usage["cache_creation_input_tokens"] (Anthropic Claude write)
     - usage["cache_write_tokens"] (direct/normalized)
 
