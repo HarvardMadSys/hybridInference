@@ -1,8 +1,4 @@
-"""
-benchmark.orchestrate
-=====================
-
-Top-level pipeline driver.
+"""Drive the Qwen3.6 benchmark pipeline.
 
 Pipeline stages (each gated by a sentinel under config.STATE_DIR):
     1. docker_installed       — host has Docker + NVIDIA Container Toolkit

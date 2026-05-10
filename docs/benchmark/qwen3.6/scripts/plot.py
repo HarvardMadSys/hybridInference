@@ -1,6 +1,4 @@
-"""
-benchmark.plot
-==============
+"""Plot Qwen3.6 benchmark comparisons.
 
 Generate the four comparison plots from the tidy summary CSV. Applies the
 user's global plotting defaults (gridlines on, large fonts, distribution

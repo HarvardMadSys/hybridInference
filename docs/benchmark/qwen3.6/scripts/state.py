@@ -1,6 +1,4 @@
-"""
-benchmark.state
-===============
+"""Track Qwen3.6 benchmark pipeline state.
 
 Sentinel-file based resumability. Each pipeline step writes a small marker
 file under `results/.state/` when it completes successfully. Re-running the

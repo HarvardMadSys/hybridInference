@@ -1,6 +1,4 @@
-"""
-benchmark.run_genai_perf
-========================
+"""Run genai-perf for Qwen3.6 benchmark points.
 
 Thin wrapper that builds and runs `genai-perf` invocations for prefill and
 decode batteries against an OpenAI-compatible server. Writes the JSON output

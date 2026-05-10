@@ -1,6 +1,4 @@
-"""
-benchmark.config
-================
+"""Configure the Qwen3.6 throughput benchmark.
 
 Central, immutable configuration for the Qwen3.6-35B-A3B-FP8 throughput
 benchmark. Every other module in `benchmark/` reads from here so the test

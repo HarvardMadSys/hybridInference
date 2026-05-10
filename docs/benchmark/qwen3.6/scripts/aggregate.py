@@ -1,6 +1,4 @@
-"""
-benchmark.aggregate
-===================
+"""Aggregate Qwen3.6 benchmark results.
 
 Convert genai-perf JSON outputs into a tidy long-format CSV ready for
 plotting. One row per (engine, phase, params, metric, run_id).
