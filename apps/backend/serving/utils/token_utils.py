@@ -83,6 +83,8 @@ def extract_cache_tokens(
     - usage["prompt_tokens_details"]["cached_tokens"] (OpenAI / Azure)
     - usage["input_tokens_details"]["cached_tokens"] (MiniMax)
     - usage["input_token_details"]["cached_tokens"] (MiniMax)
+    - usage["input_tokens_details"]["cache_read_tokens"] (MiniMax)
+    - usage["input_tokens_details"]["cache_hit_tokens"] (MiniMax)
     - usage["cache_creation_input_tokens"] (Anthropic Claude write)
     - usage["cache_write_tokens"] (direct/normalized)
 
@@ -127,8 +129,10 @@ def extract_cache_tokens(
             continue
         details = usage[details_field]
         if isinstance(details, dict):
-            val = details.get("cached_tokens")
-            if val is not None:
+            for nested_field in ("cached_tokens", "cache_read_tokens", "cache_hit_tokens"):
+                val = details.get(nested_field)
+                if val is None:
+                    continue
                 try:
                     val = int(val)
                     if val >= 0:
@@ -136,6 +140,8 @@ def extract_cache_tokens(
                         break
                 except (TypeError, ValueError):
                     pass
+            if cache_read is not None:
+                break
 
     # --- cache write tokens ---
     cache_write: int | None = None
