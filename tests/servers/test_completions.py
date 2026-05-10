@@ -341,7 +341,7 @@ async def test_fallback_success_logs_failed_primary_attempt_as_diagnostic(
     kwargs = await _wait_for_db_log_kwargs(mock_log_store)
     assert kwargs is not None, "log_request was never called"
     assert kwargs["status_code"] == 200
-    assert kwargs["error"] is None
+    assert "error" not in kwargs
     assert kwargs["metadata"]["upstream_error"] == (
         "Upstream fallback after primary:endpoint: RuntimeError: Primary adapter failed"
     )

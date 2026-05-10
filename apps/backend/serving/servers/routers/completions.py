@@ -503,7 +503,6 @@ async def chat_completions(
                     else None,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": 200,
-                    "error": None,
                     "params": completions_logger.build_db_params(
                         params,
                         provider,
