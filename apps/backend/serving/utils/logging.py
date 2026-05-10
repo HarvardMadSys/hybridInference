@@ -39,6 +39,22 @@ _STRUCTURED_LOG_KEYS = (
     "error_type",
     "strategy",
     "param_keys",
+    # Structured event extras emitted by observability + routing codepaths.
+    # When ``event`` is set, callers may attach any of these; serialize them
+    # so JSON-mode logs preserve signal that alert rules + downstream tools
+    # depend on.
+    "task_name",
+    "success",
+    "from_provider",
+    "to_provider",
+    "ttft_ms",
+    "endpoint_id",
+    "key_index",
+    "outcome",
+    "remaining",
+    "cooldown_sec",
+    "elapsed_ms",
+    "role",
 )
 
 
