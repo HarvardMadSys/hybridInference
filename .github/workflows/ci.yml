@@ -55,7 +55,7 @@ jobs:
           - name: Ruff Lint
             command: uv run ruff check --no-fix .
           - name: Pydocstyle
-            command: uv run pydocstyle --match-dir='^((?!(tests|\.venv|node_modules|apps/frontend|ops|docs)).)*$'
+            command: uv run pydocstyle
     steps:
       - uses: actions/checkout@v6
 

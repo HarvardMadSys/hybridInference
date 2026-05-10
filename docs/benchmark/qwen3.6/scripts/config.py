@@ -8,9 +8,9 @@ Usage:
     from benchmark import config
     print(config.MODEL_REPO, config.MAX_MODEL_LEN)
 """
-
 from pathlib import Path
 from typing import Final
+
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 

@@ -26,7 +26,6 @@ vi.mock('@/components/landing', () => ({
   Features: () => <section aria-label="features" />,
   Hero: () => <section aria-label="hero" />,
   HowItWorks: () => <section aria-label="how it works" />,
-  Sponsors: () => <section aria-label="sponsors" />,
 }));
 
 vi.mock('@/components/features/dashboard/DashboardView', () => ({
@@ -74,7 +73,7 @@ describe('HomePage', () => {
 
     render(<HomePage />);
 
-    [/hero/i, /features/i, /how it works/i, /code example/i, /sponsors/i].forEach((pattern) => {
+    [/hero/i, /features/i, /how it works/i, /code example/i].forEach((pattern) => {
       expect(screen.getByLabelText(pattern)).toBeInTheDocument();
     });
     expect(screen.queryByLabelText(/dashboard view/i)).not.toBeInTheDocument();
