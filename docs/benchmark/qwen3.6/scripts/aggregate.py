@@ -16,6 +16,7 @@ where param is `input_<len>` for prefill or `concurrency_<N>` for decode.
 Usage:
     aggregate_directory(Path("results"), Path("results/summary.csv"))
 """
+
 from __future__ import annotations
 
 import json
@@ -25,7 +26,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
 from benchmark.config import ENGINES
 
 # Map genai-perf JSON keys → our canonical metric names.
@@ -84,26 +84,28 @@ def parse_genai_perf(
     output_len = int(_safe_get(data, "output_sequence_length", "avg") or -1)
     concurrency = int(
         data.get("input_config", {})
-            .get("perf_analyzer", {})
-            .get("stimulus", {})
-            .get("concurrency", -1)
+        .get("perf_analyzer", {})
+        .get("stimulus", {})
+        .get("concurrency", -1)
     )
     timestamp = datetime.now(timezone.utc).isoformat()
 
     rows: list[dict[str, Any]] = []
 
     def _emit(metric_name: str, value: float) -> None:
-        rows.append({
-            "engine": engine,
-            "phase": phase,
-            "input_len": input_len,
-            "output_len": output_len,
-            "concurrency": concurrency,
-            "metric": metric_name,
-            "value": value,
-            "run_id": run_id,
-            "timestamp": timestamp,
-        })
+        rows.append(
+            {
+                "engine": engine,
+                "phase": phase,
+                "input_len": input_len,
+                "output_len": output_len,
+                "concurrency": concurrency,
+                "metric": metric_name,
+                "value": value,
+                "run_id": run_id,
+                "timestamp": timestamp,
+            }
+        )
 
     for top, sub, metric_name in _METRICS:
         value = _safe_get(data, top, sub)
@@ -135,8 +137,7 @@ def aggregate_directory(results_root: Path, out_csv: Path) -> None:
         out_csv: Destination CSV path (parent dirs are created if needed).
     """
     all_rows: list[dict[str, Any]] = []
-    for engine_dir in sorted(p for p in results_root.iterdir()
-                              if p.is_dir() and p.name in ENGINES):
+    for engine_dir in sorted(p for p in results_root.iterdir() if p.is_dir() and p.name in ENGINES):
         engine = engine_dir.name
         for json_path in sorted(engine_dir.glob("*.json")):
             m = _FNAME_RE.match(json_path.name)
@@ -146,9 +147,19 @@ def aggregate_directory(results_root: Path, out_csv: Path) -> None:
             run_id = int(m.group("run"))
             all_rows.extend(parse_genai_perf(json_path, engine, phase, run_id))
 
-    df = pd.DataFrame(all_rows, columns=[
-        "engine", "phase", "input_len", "output_len",
-        "concurrency", "metric", "value", "run_id", "timestamp",
-    ])
+    df = pd.DataFrame(
+        all_rows,
+        columns=[
+            "engine",
+            "phase",
+            "input_len",
+            "output_len",
+            "concurrency",
+            "metric",
+            "value",
+            "run_id",
+            "timestamp",
+        ],
+    )
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
