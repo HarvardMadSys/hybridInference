@@ -7,7 +7,7 @@ test and avoids hidden global state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import jwt
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
+    from routing.routewise.router import RouteWiseRouter
     from serving.config.model_visibility import ModelVisibilityResolver
     from serving.observability.alert_rules import AlertEngine
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
@@ -48,6 +49,7 @@ class AppServices:
     log_store: LogStore | None = None
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
+    routewise_routers: list[RouteWiseRouter] = field(default_factory=list)
     model_visibility_resolver: ModelVisibilityResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None

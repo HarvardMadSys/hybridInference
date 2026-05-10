@@ -95,7 +95,7 @@ class JsonFormatter(logging.Formatter):
         # Note: logging attaches items from ``extra`` into ``record.__dict__``.
         # Keys with hyphens (e.g., "x-session-id") are not valid attributes,
         # so ``hasattr`` will not work. We therefore read from ``__dict__``.
-        for key in (*_STRUCTURED_LOG_KEYS, "headers"):
+        for key in (*_STRUCTURED_LOG_KEYS, "headers", "age_sec"):
             if key in record.__dict__:
                 payload[key] = record.__dict__[key]
 

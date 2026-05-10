@@ -335,6 +335,18 @@ async def initialize() -> AppServices:
     if rw_models:
         logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
 
+    # Collect distinct RouteWiseRouter instances for lifecycle management
+    # (pending-decisions TTL sweep start/stop).
+    from routing.routewise.router import RouteWiseRouter as _RWR
+
+    seen_ids: set[int] = set()
+    routewise_routers: list[_RWR] = []
+    for info in model_infos:
+        r = model_router_registry.get_router(info.model_id)
+        if isinstance(r, _RWR) and id(r) not in seen_ids:
+            seen_ids.add(id(r))
+            routewise_routers.append(r)
+
     # Build store abstractions
     operational_store = None
     log_store = None
@@ -483,6 +495,15 @@ async def initialize() -> AppServices:
     pricing_lookup = PricingLookup(router=router)
     cost_tracker = CostTracker(op_store=operational_store, pricing=pricing_lookup)
 
+    # Start the periodic RouteWise pending-decision sweep only after the rest
+    # of bootstrap has succeeded, so a later startup failure cannot leave the
+    # background task running without a matching shutdown.
+    for rw in routewise_routers:
+        try:
+            await rw.start()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"RouteWiseRouter.start() failed: {exc}")
+
     return AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
@@ -491,6 +512,7 @@ async def initialize() -> AppServices:
         log_store=log_store,
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
+        routewise_routers=routewise_routers,
         model_visibility_resolver=model_visibility_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
@@ -554,6 +576,13 @@ async def shutdown(services: AppServices) -> None:
             await services.routing_manager.shutdown()
         except Exception as exc:
             logger.error(f"Routing manager shutdown failed: {exc}")
+
+    # RouteWise routers (cancels the _pending_decisions TTL sweep task)
+    for rw in services.routewise_routers:
+        try:
+            await rw.stop()
+        except Exception as exc:
+            logger.error(f"RouteWise router shutdown failed: {exc}")
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):
