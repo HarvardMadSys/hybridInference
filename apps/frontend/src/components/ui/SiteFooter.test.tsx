@@ -21,22 +21,14 @@ describe('SiteFooter', () => {
     const statusLink = screen.getByRole('link', { name: 'Status' });
     const termsLink = screen.getByRole('link', { name: /terms/i });
 
-    expect(statusLink).toHaveAttribute(
-      'href',
-      'https://status.freeinference.org/',
-    );
+    expect(statusLink).toHaveAttribute('href', 'https://status.freeinference.org/');
     expect(statusLink).toHaveAttribute('target', '_blank');
-    expect(statusLink).toHaveAttribute(
-      'rel',
-      'noopener noreferrer',
-    );
+    expect(statusLink).toHaveAttribute('rel', 'noopener noreferrer');
     expect(
-      docsLink.compareDocumentPosition(statusLink) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      docsLink.compareDocumentPosition(statusLink) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
-      statusLink.compareDocumentPosition(termsLink) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      statusLink.compareDocumentPosition(termsLink) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
