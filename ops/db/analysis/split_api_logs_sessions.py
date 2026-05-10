@@ -1,15 +1,27 @@
-"""Split exported API log JSONL rows into inferred prompt-thread sessions."""
+"""Split exported API log JSONL rows into inferred prompt-thread sessions.
+
+Algorithm (hash_ids based):
+- Maintain an LRU of the most recent ``window_size`` sessions, keyed by their
+  most recent request's ``hash_ids``.
+- For each new row, compute the longest common prefix length against every
+  session in the window. Score = LCP / max(len_row, len_session_last).
+- If the best score >= ``match_threshold``, append the row to that session
+  and rewrite ``parent_chat_id`` to the session's previous chat_id.
+- Otherwise start a new session; ``parent_chat_id`` is left at -1.
+- The newly updated/created session becomes the most-recent in the LRU. When
+  the window is full, the least-recently-updated session is evicted (its rows
+  are still kept in the final output).
+"""
 
 import argparse
+import contextlib
 import json
-import re
 import sys
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
 @dataclass(frozen=True)
@@ -21,23 +33,14 @@ class InvalidLine:
 
 
 @dataclass(frozen=True)
-class NormalizedPrompt:
-    """Comparable prompt representation used by the session assigner."""
-
-    kind: str
-    text: str
-    tokens: frozenset[str]
-    messages: tuple[tuple[str, str], ...] = ()
-
-
-@dataclass(frozen=True)
 class LogRow:
     """Valid API log row plus stable ordering metadata."""
 
     line_number: int
     row: dict[str, Any]
+    chat_id: int | None
+    hash_seq: tuple[int, ...]
     timestamp: datetime | None
-    prompt: NormalizedPrompt | None
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,8 @@ class Session:
 
     session_id: int
     rows: list[LogRow] = field(default_factory=list)
-    last_prompt: NormalizedPrompt | None = None
+    last_chat_id: int | None = None
+    last_hash_seq: tuple[int, ...] = ()
     last_timestamp: datetime | None = None
     updated_order: int = 0
 
@@ -70,18 +74,15 @@ class SplitResult:
     total_lines: int
 
 
-def _stable_json(value: Any) -> str:
-    """Return deterministic JSON text for arbitrary JSON-compatible values."""
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _tokens(text: str) -> frozenset[str]:
-    """Tokenize normalized text for deterministic overlap matching."""
-    return frozenset(match.group(0).lower() for match in TOKEN_RE.finditer(text))
-
-
 def _parse_timestamp(value: Any) -> datetime | None:
     """Parse an exported timestamp value when possible."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
@@ -96,74 +97,25 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return parsed
 
 
-def _message_content(message: dict[str, Any]) -> str:
-    """Extract stable textual content from a chat message dictionary."""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-            elif isinstance(item, str):
-                parts.append(item)
-        if parts:
-            return "\n".join(parts)
-    fallback = {key: value for key, value in message.items() if key not in {"id", "timestamp"}}
-    return _stable_json(fallback) if fallback else ""
-
-
-def _messages_from_list(value: list[Any]) -> tuple[tuple[str, str], ...] | None:
-    """Normalize a list of chat message dictionaries."""
-    if not value:
+def _coerce_hash_seq(value: Any) -> tuple[int, ...] | None:
+    """Convert a raw hash_ids list into an integer tuple."""
+    if not isinstance(value, list) or not value:
         return None
-    messages: list[tuple[str, str]] = []
+    out: list[int] = []
     for item in value:
-        if not isinstance(item, dict):
+        if isinstance(item, bool) or not isinstance(item, int):
             return None
-        role = str(item.get("role", ""))
-        content = _message_content(item)
-        if role or content:
-            messages.append((role, content))
-    return tuple(messages) if messages else None
+        out.append(item)
+    return tuple(out) if out else None
 
 
-def normalize_prompt(prompt: Any) -> NormalizedPrompt | None:
-    """Convert a prompt value into a comparable prompt signature."""
-    if prompt is None:
+def _coerce_chat_id(value: Any) -> int | None:
+    """Convert chat_id to int when possible."""
+    if isinstance(value, bool):
         return None
-    candidate = prompt
-    if isinstance(prompt, str):
-        stripped = prompt.strip()
-        if not stripped:
-            return None
-        candidate = stripped
-        if stripped[0] in "[{":
-            try:
-                candidate = json.loads(stripped)
-            except json.JSONDecodeError:
-                candidate = stripped
-    if isinstance(candidate, list):
-        if not candidate:
-            return None
-        messages = _messages_from_list(candidate)
-        if messages is not None:
-            text = "\n".join(f"{role}: {content}" for role, content in messages)
-            return NormalizedPrompt(
-                kind="messages",
-                text=text,
-                tokens=_tokens(text),
-                messages=messages,
-            )
-        text = _stable_json(candidate)
-    elif isinstance(candidate, str):
-        text = candidate.strip()
-    else:
-        text = _stable_json(candidate)
-    if not text:
-        return None
-    return NormalizedPrompt(kind="text", text=text, tokens=_tokens(text))
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def read_jsonl_rows(path: Path) -> RowReadResult:
@@ -189,49 +141,31 @@ def read_jsonl_rows(path: Path) -> RowReadResult:
                 LogRow(
                     line_number=line_number,
                     row=value,
+                    chat_id=_coerce_chat_id(value.get("chat_id")),
+                    hash_seq=_coerce_hash_seq(value.get("hash_ids")) or (),
                     timestamp=_parse_timestamp(value.get("timestamp")),
-                    prompt=normalize_prompt(value.get("prompt")),
                 )
             )
     return RowReadResult(rows=rows, invalid_lines=invalid_lines, total_lines=total_lines)
 
 
-def _is_prefix(previous: tuple[tuple[str, str], ...], current: tuple[tuple[str, str], ...]) -> bool:
-    """Return True when previous messages are a prefix of current messages."""
-    return bool(previous) and len(current) >= len(previous) and current[: len(previous)] == previous
+def _lcp_len(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    """Return the length of the longest common prefix between two sequences."""
+    limit = min(len(left), len(right))
+    i = 0
+    while i < limit and left[i] == right[i]:
+        i += 1
+    return i
 
 
-def _token_overlap(left: frozenset[str], right: frozenset[str]) -> float:
-    """Return normalized token overlap from 0.0 to 1.0."""
-    if not left or not right:
+def _match_score(row_seq: tuple[int, ...], session_seq: tuple[int, ...]) -> float:
+    """Return LCP / max(len_row, len_session)."""
+    if not row_seq or not session_seq:
         return 0.0
-    return len(left & right) / len(left | right)
-
-
-def _within_gap(current: datetime | None, previous: datetime | None, max_gap_minutes: int) -> bool:
-    """Return True when timestamps are missing or within the weak-match gap."""
-    if current is None or previous is None:
-        return True
-    gap_seconds = abs((current - previous).total_seconds())
-    return gap_seconds <= max_gap_minutes * 60
-
-
-def _candidate_score(
-    current: LogRow,
-    session: Session,
-    *,
-    max_gap_minutes: int,
-    overlap_threshold: float,
-) -> float:
-    """Score whether current row continues a session."""
-    if current.prompt is None or session.last_prompt is None:
+    denom = max(len(row_seq), len(session_seq))
+    if denom == 0:
         return 0.0
-    if _is_prefix(session.last_prompt.messages, current.prompt.messages):
-        return 2.0
-    if not _within_gap(current.timestamp, session.last_timestamp, max_gap_minutes):
-        return 0.0
-    overlap = _token_overlap(current.prompt.tokens, session.last_prompt.tokens)
-    return overlap if overlap >= overlap_threshold else 0.0
+    return _lcp_len(row_seq, session_seq) / denom
 
 
 def _sort_rows(rows: list[LogRow]) -> list[LogRow]:
@@ -246,66 +180,71 @@ def _sort_rows(rows: list[LogRow]) -> list[LogRow]:
     )
 
 
-def _select_candidate_session(
-    current: LogRow,
-    sessions: list[Session],
+def _select_candidate(
+    row_seq: tuple[int, ...],
+    window: deque[Session],
     *,
-    max_gap_minutes: int,
-    overlap_threshold: float,
+    match_threshold: float,
 ) -> Session | None:
-    """Return the unambiguous best matching session, if one exists."""
-    scored = [
-        (
-            _candidate_score(
-                current,
-                session,
-                max_gap_minutes=max_gap_minutes,
-                overlap_threshold=overlap_threshold,
-            ),
-            session.updated_order,
-            session,
-        )
-        for session in sessions
-    ]
-    scored = [item for item in scored if item[0] > 0.0]
-    if not scored:
-        return None
-    scored.sort(key=lambda item: (item[0], item[1], item[2].session_id), reverse=True)
-    best_score, best_updated_order, best_session = scored[0]
-    tied = [item for item in scored if item[0] == best_score and item[1] == best_updated_order]
-    return best_session if len(tied) == 1 else None
+    """Return the best-matching session in the LRU window, if any qualifies."""
+    best: Session | None = None
+    best_score = -1.0
+    best_lcp = -1
+    for session in window:
+        score = _match_score(row_seq, session.last_hash_seq)
+        if score < match_threshold:
+            continue
+        lcp = _lcp_len(row_seq, session.last_hash_seq)
+        if (
+            score > best_score
+            or (score == best_score and lcp > best_lcp)
+            or (
+                score == best_score
+                and lcp == best_lcp
+                and best is not None
+                and session.updated_order > best.updated_order
+            )
+        ):
+            best = session
+            best_score = score
+            best_lcp = lcp
+    return best
 
 
 def assign_sessions(
     rows: list[LogRow],
     *,
-    max_gap_minutes: int,
-    overlap_threshold: float,
+    window_size: int,
+    match_threshold: float,
     invalid_lines: list[InvalidLine] | None = None,
     total_lines: int | None = None,
 ) -> SplitResult:
-    """Assign prompt-bearing rows into inferred sessions."""
+    """Assign rows into sessions using an LRU window of recent sessions."""
     sessions: list[Session] = []
     unclassified: list[LogRow] = []
+    window: deque[Session] = deque()
     update_order = 0
     for row in _sort_rows(rows):
-        if row.prompt is None:
+        if not row.hash_seq:
             unclassified.append(row)
             continue
-        session = _select_candidate_session(
-            row,
-            sessions,
-            max_gap_minutes=max_gap_minutes,
-            overlap_threshold=overlap_threshold,
-        )
-        if session is None:
-            session = Session(session_id=len(sessions) + 1)
-            sessions.append(session)
+        candidate = _select_candidate(row.hash_seq, window, match_threshold=match_threshold)
+        if candidate is None:
+            candidate = Session(session_id=len(sessions) + 1)
+            sessions.append(candidate)
+        else:
+            row.row["parent_chat_id"] = candidate.last_chat_id if candidate.last_chat_id is not None else -1
         update_order += 1
-        session.rows.append(row)
-        session.last_prompt = row.prompt
-        session.last_timestamp = row.timestamp
-        session.updated_order = update_order
+        candidate.rows.append(row)
+        candidate.last_chat_id = row.chat_id
+        candidate.last_hash_seq = row.hash_seq
+        candidate.last_timestamp = row.timestamp
+        candidate.updated_order = update_order
+        with contextlib.suppress(ValueError):
+            window.remove(candidate)
+        window.append(candidate)
+        while len(window) > window_size:
+            window.popleft()
     return SplitResult(
         sessions=sessions,
         unclassified=unclassified,
@@ -315,7 +254,7 @@ def assign_sessions(
 
 
 def _write_jsonl(path: Path, rows: list[LogRow]) -> None:
-    """Write original row objects to JSONL without mutating them."""
+    """Write (possibly mutated) row objects to JSONL."""
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row.row, ensure_ascii=False, default=str))
@@ -340,8 +279,8 @@ def _manifest(
     result: SplitResult,
     *,
     source_path: Path,
-    max_gap_minutes: int,
-    overlap_threshold: float,
+    window_size: int,
+    match_threshold: float,
 ) -> dict[str, Any]:
     """Build a manifest document for one splitter run."""
     valid_rows = sum(len(session.rows) for session in result.sessions) + len(result.unclassified)
@@ -356,6 +295,7 @@ def _manifest(
                 "first_timestamp": _iso(min(timestamps)) if timestamps else None,
                 "last_timestamp": _iso(max(timestamps)) if timestamps else None,
                 "source_line_numbers": [row.line_number for row in session.rows],
+                "chat_ids": [row.chat_id for row in session.rows],
             }
         )
     return {
@@ -370,8 +310,8 @@ def _manifest(
         "session_count": len(result.sessions),
         "sessions": sessions,
         "thresholds": {
-            "max_gap_minutes": max_gap_minutes,
-            "overlap_threshold": overlap_threshold,
+            "window_size": window_size,
+            "match_threshold": match_threshold,
         },
     }
 
@@ -383,8 +323,8 @@ def write_split_result(
     source_path: Path,
     overwrite: bool,
     write_manifest: bool,
-    max_gap_minutes: int,
-    overlap_threshold: float,
+    window_size: int,
+    match_threshold: float,
 ) -> None:
     """Write session JSONL files, unclassified rows, and optional manifest."""
     if output_dir.exists() and not output_dir.is_dir():
@@ -411,8 +351,8 @@ def write_split_result(
         manifest = _manifest(
             result,
             source_path=source_path,
-            max_gap_minutes=max_gap_minutes,
-            overlap_threshold=overlap_threshold,
+            window_size=window_size,
+            match_threshold=match_threshold,
         )
         (output_dir / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -423,15 +363,15 @@ def write_split_result(
 def split_export(
     source_path: Path,
     *,
-    max_gap_minutes: int,
-    overlap_threshold: float,
+    window_size: int,
+    match_threshold: float,
 ) -> SplitResult:
     """Read a JSONL export and split valid rows into sessions."""
     read_result = read_jsonl_rows(source_path)
     split = assign_sessions(
         read_result.rows,
-        max_gap_minutes=max_gap_minutes,
-        overlap_threshold=overlap_threshold,
+        window_size=window_size,
+        match_threshold=match_threshold,
         invalid_lines=read_result.invalid_lines,
         total_lines=read_result.total_lines,
     )
@@ -461,16 +401,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replace an existing non-empty output directory",
     )
     parser.add_argument(
-        "--max-gap-minutes",
+        "--window-size",
         type=int,
-        default=120,
-        help="Maximum gap for weak text-overlap matches (default: 120)",
+        default=200,
+        help="Number of most-recent sessions to compare against (default: 200)",
     )
     parser.add_argument(
-        "--overlap-threshold",
+        "--match-threshold",
         type=float,
-        default=0.65,
-        help="Token-overlap threshold for weak matches (default: 0.65)",
+        default=0.80,
+        help="LCP/max-length ratio required to continue a session (default: 0.80)",
     )
     parser.add_argument(
         "--no-manifest",
@@ -488,17 +428,17 @@ def main(argv: list[str] | None = None) -> int:
     if not source_path.is_file():
         print(f"ERROR: input file does not exist: {source_path}", file=sys.stderr)
         return 1
-    if args.max_gap_minutes < 0:
-        print("ERROR: --max-gap-minutes must be >= 0", file=sys.stderr)
+    if args.window_size <= 0:
+        print("ERROR: --window-size must be > 0", file=sys.stderr)
         return 1
-    if not 0.0 <= args.overlap_threshold <= 1.0:
-        print("ERROR: --overlap-threshold must be between 0.0 and 1.0", file=sys.stderr)
+    if not 0.0 <= args.match_threshold <= 1.0:
+        print("ERROR: --match-threshold must be between 0.0 and 1.0", file=sys.stderr)
         return 1
     try:
         result = split_export(
             source_path,
-            max_gap_minutes=args.max_gap_minutes,
-            overlap_threshold=args.overlap_threshold,
+            window_size=args.window_size,
+            match_threshold=args.match_threshold,
         )
         for invalid_line in result.invalid_lines:
             print(
@@ -511,8 +451,8 @@ def main(argv: list[str] | None = None) -> int:
             source_path=source_path,
             overwrite=args.overwrite,
             write_manifest=not args.no_manifest,
-            max_gap_minutes=args.max_gap_minutes,
-            overlap_threshold=args.overlap_threshold,
+            window_size=args.window_size,
+            match_threshold=args.match_threshold,
         )
     except OSError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
