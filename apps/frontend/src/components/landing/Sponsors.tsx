@@ -3,13 +3,13 @@ const sponsors = [
     name: 'NVIDIA',
     alt: 'NVIDIA logo',
     src: '/sponsors/nvidia.svg',
-    className: 'h-10 w-auto',
+    className: 'h-10 sm:h-12',
   },
   {
     name: 'Harvard SEAS',
     alt: 'Harvard SEAS logo',
     src: '/sponsors/harvard-seas.svg',
-    className: 'h-12 w-auto',
+    className: 'h-12 sm:h-14',
   },
 ];
 
@@ -20,13 +20,13 @@ export function Sponsors(): JSX.Element {
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-gray-500">
           Sponsors
         </p>
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-8 sm:gap-10">
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-x-10 gap-y-6 sm:gap-x-14">
           {sponsors.map((sponsor) => (
             <img
               key={sponsor.name}
               src={sponsor.src}
               alt={sponsor.alt}
-              className={sponsor.className}
+              className={`${sponsor.className} w-auto grayscale opacity-70 transition-opacity`}
             />
           ))}
         </div>
