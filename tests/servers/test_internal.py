@@ -14,7 +14,6 @@ from httpx import ASGITransport, AsyncClient
 
 from serving.servers.routers import internal
 from serving.servers.routers.auth_routes import hash_refresh_token
-from tests.fixtures.auth_factories import create_test_user
 
 pytest_plugins = ["tests.servers.conftest_auth"]
 
@@ -36,24 +35,6 @@ async def _create_refresh_session(op_store, user_id: str, refresh_token: str) ->
         sid=str(uuid4()),
         expires_at=datetime.now(timezone.utc) + timedelta(days=1),
     )
-
-
-@pytest_asyncio.fixture
-async def auth_test_user(auth_backend, clean_auth_tables):
-    """Create a user backed by the auth-specific DB fixtures."""
-    operational_store, _, _, _ = auth_backend
-    user_data = create_test_user()
-
-    await operational_store.create_user(
-        user_id=user_data["id"],
-        email=user_data["email"],
-        password_hash=user_data["password_hash"],
-        user_name=user_data["user_name"],
-        email_verified=user_data["email_verified"],
-        status=user_data["status"],
-    )
-
-    yield user_data
 
 
 @pytest_asyncio.fixture
@@ -87,13 +68,13 @@ class TestVerifyAdmin:
         self,
         internal_client: AsyncClient,
         auth_backend,
-        auth_test_user,
+        test_user,
     ) -> None:
         """Admin sessions should pass the auth_request check."""
         operational_store, _, _, _ = auth_backend
         refresh_token = "test-refresh-admin"
-        await _set_user_role(operational_store, auth_test_user["id"], "admin")
-        await _create_refresh_session(operational_store, auth_test_user["id"], refresh_token)
+        await _set_user_role(operational_store, test_user["id"], "admin")
+        await _create_refresh_session(operational_store, test_user["id"], refresh_token)
 
         response = await internal_client.get(
             "/internal/verify-admin",
@@ -107,13 +88,13 @@ class TestVerifyAdmin:
         self,
         internal_client: AsyncClient,
         auth_backend,
-        auth_test_user,
+        test_user,
     ) -> None:
         """Internal sessions should not pass the admin auth_request check."""
         operational_store, _, _, _ = auth_backend
         refresh_token = "test-refresh-internal"
-        await _set_user_role(operational_store, auth_test_user["id"], "internal")
-        await _create_refresh_session(operational_store, auth_test_user["id"], refresh_token)
+        await _set_user_role(operational_store, test_user["id"], "internal")
+        await _create_refresh_session(operational_store, test_user["id"], refresh_token)
 
         response = await internal_client.get(
             "/internal/verify-admin",

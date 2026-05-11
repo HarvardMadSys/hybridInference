@@ -67,6 +67,18 @@ async def auth_test_user(auth_backend, clean_auth_tables):
     yield user_data
 
 
+@pytest.mark.asyncio
+async def test_auth_headers_fixture_logs_in_seeded_user(
+    auth_app_client: AsyncClient, test_user, auth_headers
+):
+    response = await auth_app_client.get("/user/me", headers=auth_headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == test_user["id"]
+    assert data["email"] == test_user["email"].lower()
+
+
 class TestSignup:
     """Test user signup endpoint."""
 
