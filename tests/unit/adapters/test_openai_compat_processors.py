@@ -231,6 +231,57 @@ async def test_deepseek_profile_streaming_usage_normalizes_cache_fields():
 
 
 @pytest.mark.asyncio
+async def test_minimax_streaming_usage_survives_think_block_processor():
+    """MiniMax final usage chunk must survive think-block stripping.
+
+    Regression: MiniMax streams can end with an empty-delta chunk that carries
+    usage only. If the ThinkBlockProcessor drops that chunk, the adapter falls
+    back to estimated usage and recent requests lose cached token accounting.
+    """
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(delta={"content": "visible answer"})
+        yield _make_chunk(
+            delta={},
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 200,
+                "completion_tokens": 12,
+                "total_tokens": 212,
+                "input_tokens_details": {"cached_tokens": 80},
+            },
+        )
+        yield "data: [DONE]"
+
+    config = ModelConfig(
+        id="minimax-m2.7",
+        name="MiniMax M2.7",
+        provider="minimax",
+        base_url="https://api.minimax.io/v1",
+        provider_model_id="minimax-m2.7",
+        provider_profile="minimax",
+        include_usage_in_stream=True,
+    )
+    adapter = OpenAICompatAdapter(config)
+    adapter.http = MagicMock()
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [c async for c in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])]
+
+    payloads = [
+        json.loads(c[6:]) for c in chunks[:-1] if c.startswith("data: ") and c != "data: [DONE]\n\n"
+    ]
+    usage_chunks = [p for p in payloads if "usage" in p]
+    assert len(usage_chunks) >= 1
+
+    usage = usage_chunks[-1]["usage"]
+    assert usage["prompt_tokens"] == 200
+    assert usage["completion_tokens"] == 12
+    assert usage["cache_read_tokens"] == 80
+    assert "input_tokens_details" not in usage
+
+
+@pytest.mark.asyncio
 async def test_default_profile_preserves_standard_usage():
     """Default profile passes through standard OpenAI usage unchanged."""
     response = {

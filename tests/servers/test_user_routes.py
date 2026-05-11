@@ -389,6 +389,38 @@ class TestRecentRequests:
         assert [request["request_id"] for request in data["requests"]] == [request_id_a]
         assert data["requests"][0]["model_id"] == model_a
 
+    @pytest.mark.asyncio
+    async def test_recent_requests_surfaces_minimax_cached_tokens(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """Nested MiniMax cache usage must surface as cache_read_tokens in recent requests."""
+        request_id = f"req-recent-minimax-cache-{test_user_with_key['id']}"
+
+        await auth_db_logger.log_request(
+            request_id=request_id,
+            model_id="minimax-m2.7",
+            provider="minimax",
+            prompt=[{"role": "user", "content": "hi"}],
+            response=None,
+            usage={
+                "prompt_tokens": 200,
+                "completion_tokens": 12,
+                "total_tokens": 212,
+                "input_tokens_details": {"cached_tokens": 80},
+            },
+            latency_ms=123,
+            status_code=200,
+            metadata={"user_id": test_user_with_key["id"]},
+        )
+
+        response = await auth_app_client.get("/user/recent-requests", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        matching = [request for request in data["requests"] if request["request_id"] == request_id]
+        assert len(matching) == 1
+        assert matching[0]["cache_read_tokens"] == 80
+
 
 class TestUserProfile:
     """Test user profile update endpoint."""

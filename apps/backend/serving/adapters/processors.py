@@ -509,6 +509,10 @@ class ThinkBlockProcessor(BaseProcessor):
         if delta.get("tool_calls"):
             return [chunk]
 
+        # Preserve terminal usage-bearing chunks even when they carry no text.
+        if chunk.get("usage") is not None:
+            return [chunk]
+
         content = delta.get("content")
 
         if not isinstance(content, str):
