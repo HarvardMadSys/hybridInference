@@ -8,6 +8,7 @@ free of HTTP concerns so it can be imported from multiple entry points
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
+from serving.config.weight_overrides import WeightOverrideResolver
 from serving.http import AsyncHTTPClient
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
@@ -38,6 +40,20 @@ logger = get_logger(__name__)
 # asyncio holds only weak refs to running tasks, so without this set the
 # garbage collector can cancel mid-flight tasks.
 _BACKGROUND_TASKS: set = set()
+
+
+async def _refresh_weight_override_snapshots(
+    resolver: WeightOverrideResolver,
+    *,
+    interval_seconds: float = 10.0,
+) -> None:
+    """Periodically reload route weight overrides so workers converge after admin edits."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await resolver.load_all()
+        except Exception:
+            logger.warning("Route weight override snapshot refresh failed", exc_info=True)
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -159,8 +175,6 @@ async def initialize() -> AppServices:
     Returns:
         AppServices: A typed container with initialized services.
     """
-    import asyncio
-
     # Load environment first so logging picks up LOG_FORMAT/LOG_LEVEL.
     load_dotenv()
     setup_logging()
@@ -433,12 +447,26 @@ async def initialize() -> AppServices:
             logger.warning(f"Runtime settings initialization failed: {exc}")
 
     model_visibility_resolver = None
+    weight_override_resolver = None
+    weight_override_refresh_task = None
     if operational_store is not None:
         try:
             model_visibility_resolver = ModelVisibilityResolver(operational_store)
             logger.info("Model visibility resolver initialized")
         except Exception as exc:
             logger.warning(f"Model visibility resolver initialization failed: {exc}")
+        try:
+            weight_override_resolver = WeightOverrideResolver(operational_store)
+            await weight_override_resolver.load_all()
+            router.weight_override_resolver = weight_override_resolver
+            weight_override_refresh_task = asyncio.create_task(
+                _refresh_weight_override_snapshots(weight_override_resolver)
+            )
+            _BACKGROUND_TASKS.add(weight_override_refresh_task)
+            weight_override_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
+            logger.info("Route weight override resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Route weight override resolver initialization failed: {exc}")
 
     # Per-user concurrency limiter — reads live caps from RuntimeSettings so
     # operators can tune them at runtime. Falls back to registry defaults
@@ -514,12 +542,14 @@ async def initialize() -> AppServices:
         model_router_registry=model_router_registry,
         routewise_routers=routewise_routers,
         model_visibility_resolver=model_visibility_resolver,
+        weight_override_resolver=weight_override_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        weight_override_refresh_task=weight_override_refresh_task,
     )
 
 
@@ -583,6 +613,11 @@ async def shutdown(services: AppServices) -> None:
             await rw.stop()
         except Exception as exc:
             logger.error(f"RouteWise router shutdown failed: {exc}")
+
+    if services.weight_override_refresh_task is not None:
+        services.weight_override_refresh_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.weight_override_refresh_task
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):

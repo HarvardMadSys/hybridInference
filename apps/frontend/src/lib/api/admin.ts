@@ -945,6 +945,56 @@ export async function updateModelVisibility(
   return jsonOrThrow<AdminModelVisibilityItem>(resp);
 }
 
+export interface RouteWeight {
+  model_id: string;
+  endpoint_id: string;
+  provider: string;
+  base_url: string | null;
+  yaml_weight: number;
+  override_weight: number | null;
+  effective_weight: number;
+}
+
+export interface ListRouteWeightsResponse {
+  model_id?: string;
+  routes: RouteWeight[];
+}
+
+export async function listRouteWeights(modelId?: string): Promise<RouteWeight[]> {
+  const path = modelId
+    ? `/admin/routing/weights/${encodeURIComponent(modelId)}`
+    : '/admin/routing/weights';
+  const resp = await fetchWithAuth(API_BASE, path);
+  const data = await jsonOrThrow<ListRouteWeightsResponse>(resp);
+  return data.routes;
+}
+
+export async function setRouteWeight(
+  modelId: string,
+  endpointId: string,
+  weight: number,
+): Promise<RouteWeight> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/weights/${encodeURIComponent(modelId)}/${encodeURIComponent(endpointId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ weight }),
+    },
+  );
+  return jsonOrThrow<RouteWeight>(resp);
+}
+
+export async function clearRouteWeight(modelId: string, endpointId: string): Promise<RouteWeight> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/weights/${encodeURIComponent(modelId)}/${encodeURIComponent(endpointId)}`,
+    { method: 'DELETE' },
+  );
+  return jsonOrThrow<RouteWeight>(resp);
+}
+
 // ========================================
 // Provider API Keys (admin-managed runtime credentials)
 // ========================================
