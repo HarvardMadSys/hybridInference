@@ -512,7 +512,12 @@ class ThinkBlockProcessor(BaseProcessor):
         content = delta.get("content")
 
         if not isinstance(content, str):
+            if chunk.get("usage"):
+                return [chunk]
             return []
+
+        if not content and chunk.get("usage"):
+            return [chunk]
 
         self.buffer += content
         self.model_id = chunk.get("model", self.model_id)
