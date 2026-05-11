@@ -116,7 +116,9 @@ describe('SettingsTab model visibility', () => {
     expect(replaceMock).toHaveBeenCalledWith('/dashboard/admin/settings?tab=routing', {
       scroll: false,
     });
-    expect(await screen.findByText('Routing Weights')).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 2, name: 'Routing Weights' }),
+    ).toBeInTheDocument();
     expect(await screen.findByText('gpt-4o-mini:remote')).toBeInTheDocument();
   });
 
