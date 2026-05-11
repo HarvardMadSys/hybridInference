@@ -97,7 +97,7 @@ async def login_and_get_auth_headers(
         "/auth/login",
         json={"email": email, "password": password},
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, f"Login failed ({response.status_code}): {response.text}"
     response_data = response.json()
     assert "access_token" in response_data, (
         f"Login response missing access_token: got keys {sorted(response_data.keys())}"

@@ -70,7 +70,7 @@ def test_build_auth_test_env_defaults_uses_test_db_inputs(monkeypatch):
     assert result["DB_USER"] == "db-user"
     assert result["DB_PASSWORD"] == "db-pass"
     assert result["API_KEY_SECRET"]
-    assert result["MODELS_CONFIG"] == "test/fixtures/test_models.yaml"
+    assert result["MODELS_CONFIG"] == "tests/fixtures/test_models.yaml"
 
 
 def test_build_auth_test_env_defaults_applies_overrides():
@@ -181,8 +181,8 @@ def build_auth_test_env_defaults(overrides: Mapping[str, str] | None = None) -> 
         "SMTP_USER": "",
         "SMTP_PASSWORD": "",
         "BASE_URL": "http://localhost:8000",
-        "MODELS_CONFIG": "test/fixtures/test_models.yaml",
-        "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
+        "MODELS_CONFIG": "tests/fixtures/test_models.yaml",
+        "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
     }
     if overrides:
         env.update(dict(overrides))
