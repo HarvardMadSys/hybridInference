@@ -15,6 +15,7 @@ from typing import Any
 import asyncpg
 
 from serving.storage.utils import calculate_cost
+from serving.utils.token_utils import normalize_usage
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -834,6 +835,8 @@ class DatabaseLogger:
         """
         if not self.pool:
             raise RuntimeError("DatabaseLogger not initialized")
+
+        usage = normalize_usage(usage) or usage
 
         # Privacy control: use per-request override or instance default
         should_store_full = (
