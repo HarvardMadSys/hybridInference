@@ -932,6 +932,54 @@ class TestThinkBlockProcessor:
         assert len(result) == expected_len
         assert result[0] is chunk
 
+    def test_usage_chunk_with_empty_content_preserved(self):
+        """Regression: MiniMax sends a final usage chunk with content="" and usage data.
+
+        ThinkBlockProcessor must pass it through so the adapter captures
+        prompt_tokens_details.cached_tokens and reasoning_tokens.
+        See: MiniMax streaming sends a 4th chunk with usage + empty delta.
+        """
+        proc = ThinkBlockProcessor()
+        chunk = {
+            "id": "test",
+            "choices": [
+                {"finish_reason": "stop", "index": 0, "delta": {"content": "", "role": "assistant"}}
+            ],
+            "usage": {
+                "prompt_tokens": 111,
+                "completion_tokens": 47,
+                "total_tokens": 158,
+                "completion_tokens_details": {"reasoning_tokens": 42},
+                "prompt_tokens_details": {"cached_tokens": 80},
+            },
+        }
+        result = proc.process_stream_chunk(chunk)
+        assert len(result) == 1
+        assert result[0] is chunk
+        assert result[0]["usage"]["prompt_tokens_details"]["cached_tokens"] == 80
+
+    def test_usage_chunk_with_none_content_preserved(self):
+        """Regression: chunk with usage and no content key in delta must be preserved."""
+        proc = ThinkBlockProcessor()
+        chunk = {
+            "id": "test",
+            "choices": [{"finish_reason": "stop", "index": 0, "delta": {}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+        }
+        result = proc.process_stream_chunk(chunk)
+        assert len(result) == 1
+        assert result[0] is chunk
+
+    def test_empty_chunk_without_usage_dropped(self):
+        """Chunk with empty content and no usage should still be dropped."""
+        proc = ThinkBlockProcessor()
+        chunk = {
+            "id": "test",
+            "choices": [{"finish_reason": "stop", "index": 0, "delta": {"content": ""}}],
+        }
+        result = proc.process_stream_chunk(chunk)
+        assert result == []
+
 
 # ---------------------------------------------------------------------------
 # DefaultProcessor Tests (D-01 .. D-03)
