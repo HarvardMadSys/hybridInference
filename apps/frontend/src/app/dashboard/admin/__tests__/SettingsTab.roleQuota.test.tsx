@@ -6,6 +6,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { SettingsTab } from '../SettingsTab';
 
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/dashboard/admin/settings',
+  useRouter: () => ({ replace: vi.fn() }),
+}));
+
 vi.mock('@/lib/api/admin', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/admin')>('@/lib/api/admin');
   return {

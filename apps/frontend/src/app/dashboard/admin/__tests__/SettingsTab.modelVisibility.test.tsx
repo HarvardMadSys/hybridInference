@@ -6,6 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SettingsTab } from '../SettingsTab';
 
+const replaceMock = vi.fn();
+
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/dashboard/admin/settings',
+  useRouter: () => ({ replace: replaceMock }),
+}));
+
 vi.mock('@/lib/api/admin', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/admin')>('@/lib/api/admin');
   return {
@@ -54,6 +61,7 @@ vi.mock('react-hot-toast', () => ({
 describe('SettingsTab model visibility', () => {
   afterEach(() => {
     cleanup();
+    replaceMock.mockClear();
   });
 
   it('renders the section inside Admin Settings and shows update toasts', async () => {
@@ -105,7 +113,59 @@ describe('SettingsTab model visibility', () => {
     fireEvent.click(routingTab);
 
     expect(routingTab).toHaveAttribute('aria-selected', 'true');
+    expect(replaceMock).toHaveBeenCalledWith('/dashboard/admin/settings?tab=routing', {
+      scroll: false,
+    });
     expect(await screen.findByText('Routing Weights')).toBeInTheDocument();
     expect(await screen.findByText('gpt-4o-mini:remote')).toBeInTheDocument();
+  });
+
+  it('renders a server-provided routing subtab without reading window location', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab initialSubtab="routing" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole('tab', { name: 'Routing' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText('Routing Weights')).toBeInTheDocument();
+  });
+
+  it('links tabs to accessible panels', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab />
+      </QueryClientProvider>,
+    );
+
+    const generalTab = await screen.findByRole('tab', { name: 'General' });
+    expect(generalTab).toHaveAttribute('aria-controls', 'admin-settings-general-panel');
+    expect(screen.getByRole('tabpanel', { name: 'General' })).toHaveAttribute(
+      'id',
+      'admin-settings-general-panel',
+    );
+
+    const routingTab = screen.getByRole('tab', { name: 'Routing' });
+    expect(routingTab).toHaveAttribute('aria-controls', 'admin-settings-routing-panel');
+    fireEvent.click(routingTab);
+
+    expect(screen.getByRole('tabpanel', { name: 'Routing' })).toHaveAttribute(
+      'id',
+      'admin-settings-routing-panel',
+    );
   });
 });

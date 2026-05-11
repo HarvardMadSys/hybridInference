@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   SignupAllowedDomain,
   addSignupAllowedDomain,
@@ -23,12 +24,10 @@ import { RoutingTab } from './RoutingTab';
 
 export type SettingsSubtab = 'general' | 'routing';
 
-function getInitialSubtabFromLocation(): SettingsSubtab {
-  if (typeof window === 'undefined') return 'general';
-  return new URLSearchParams(window.location.search).get('tab') === 'routing'
-    ? 'routing'
-    : 'general';
-}
+const GENERAL_TAB_ID = 'admin-settings-general-tab';
+const GENERAL_PANEL_ID = 'admin-settings-general-panel';
+const ROUTING_TAB_ID = 'admin-settings-routing-tab';
+const ROUTING_PANEL_ID = 'admin-settings-routing-panel';
 
 function relTime(iso: string | null): string {
   if (!iso) return '—';
@@ -52,9 +51,9 @@ interface SettingsTabProps {
 }
 
 export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
-  const [activeSubtab, setActiveSubtab] = useState<SettingsSubtab>(
-    () => initialSubtab ?? getInitialSubtabFromLocation(),
-  );
+  const router = useRouter();
+  const pathname = usePathname();
+  const [activeSubtab, setActiveSubtab] = useState<SettingsSubtab>(initialSubtab ?? 'general');
   const [domains, setDomains] = useState<SignupAllowedDomain[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -239,6 +238,11 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
     }
   };
 
+  const onSelectSubtab = (subtab: SettingsSubtab) => {
+    setActiveSubtab(subtab);
+    router.replace(subtab === 'routing' ? `${pathname}?tab=routing` : pathname, { scroll: false });
+  };
+
   return (
     <div className="mt-5 space-y-6">
       <div
@@ -247,9 +251,11 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
       >
         <button
           type="button"
+          id={GENERAL_TAB_ID}
           role="tab"
           aria-selected={activeSubtab === 'general'}
-          onClick={() => setActiveSubtab('general')}
+          aria-controls={GENERAL_PANEL_ID}
+          onClick={() => onSelectSubtab('general')}
           className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
             activeSubtab === 'general'
               ? 'bg-gray-900 text-white'
@@ -260,9 +266,11 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
         </button>
         <button
           type="button"
+          id={ROUTING_TAB_ID}
           role="tab"
           aria-selected={activeSubtab === 'routing'}
-          onClick={() => setActiveSubtab('routing')}
+          aria-controls={ROUTING_PANEL_ID}
+          onClick={() => onSelectSubtab('routing')}
           className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
             activeSubtab === 'routing'
               ? 'bg-gray-900 text-white'
@@ -274,9 +282,11 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
       </div>
 
       {activeSubtab === 'routing' ? (
-        <RoutingTab />
+        <div id={ROUTING_PANEL_ID} role="tabpanel" aria-labelledby={ROUTING_TAB_ID}>
+          <RoutingTab />
+        </div>
       ) : (
-        <>
+        <div id={GENERAL_PANEL_ID} role="tabpanel" aria-labelledby={GENERAL_TAB_ID}>
           {/* Feature Flags */}
           <div className="rounded-xl border border-gray-200 bg-white p-5">
             <div className="mb-3">
@@ -669,7 +679,7 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
               </div>
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
