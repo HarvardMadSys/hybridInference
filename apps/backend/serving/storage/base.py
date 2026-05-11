@@ -710,6 +710,28 @@ class OperationalStore(ABC):
     async def list_model_visibility_overrides(self) -> list[Row]:
         """Return all model visibility override rows ordered by model_id."""
 
+    @abstractmethod
+    async def list_weight_overrides_for_model(self, model_id: str) -> list[Row]:
+        """Return provider weight overrides for a model ordered by endpoint_id."""
+
+    @abstractmethod
+    async def list_all_weight_overrides(self) -> list[Row]:
+        """Return all provider weight override rows ordered by model_id and endpoint_id."""
+
+    @abstractmethod
+    async def upsert_weight_override(
+        self,
+        model_id: str,
+        endpoint_id: str,
+        weight: float,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a provider weight override row."""
+
+    @abstractmethod
+    async def delete_weight_override(self, model_id: str, endpoint_id: str) -> bool:
+        """Delete a provider weight override row. Returns True if removed."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod

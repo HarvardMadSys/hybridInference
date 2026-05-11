@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from routing.model_router_registry import ModelRouterRegistry
     from routing.routewise.router import RouteWiseRouter
     from serving.config.model_visibility import ModelVisibilityResolver
+    from serving.config.weight_overrides import WeightOverrideResolver
     from serving.observability.alert_rules import AlertEngine
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
@@ -51,6 +52,7 @@ class AppServices:
     model_router_registry: ModelRouterRegistry | None = None
     routewise_routers: list[RouteWiseRouter] = field(default_factory=list)
     model_visibility_resolver: ModelVisibilityResolver | None = None
+    weight_override_resolver: WeightOverrideResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None

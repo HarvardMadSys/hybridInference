@@ -707,6 +707,37 @@ class UpdateModelVisibilityRequest(BaseModel):
     required_role: Literal["trial", "free", "pro", "internal", "admin"] | None
 
 
+class RouteWeightItem(BaseModel):
+    """Current route weight state for one model endpoint."""
+
+    model_id: str
+    endpoint_id: str
+    provider: str
+    base_url: str | None = None
+    yaml_weight: float
+    override_weight: float | None = None
+    effective_weight: float
+
+
+class ListRouteWeightsResponse(BaseModel):
+    """Response payload for listing route weights for a model."""
+
+    model_id: str
+    routes: list[RouteWeightItem]
+
+
+class ListAllRouteWeightsResponse(BaseModel):
+    """Response payload for listing route weights across canonical models."""
+
+    routes: list[RouteWeightItem]
+
+
+class UpdateRouteWeightRequest(BaseModel):
+    """Request payload for upserting a route weight override."""
+
+    weight: float
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -740,8 +771,10 @@ __all__ = [
     "HardDeleteUserRequest",
     "HardDeleteUserResponse",
     "ListAPIKeysResponse",
+    "ListAllRouteWeightsResponse",
     "ListAuditLogResponse",
     "ListModelVisibilityResponse",
+    "ListRouteWeightsResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
@@ -754,6 +787,7 @@ __all__ = [
     "ResumeUserRequest",
     "ResumeUserResponse",
     "RevokeAPIKeyResponse",
+    "RouteWeightItem",
     "RuntimeSettingItem",
     "SparklineBucket",
     "StatusCounts",
@@ -762,6 +796,7 @@ __all__ = [
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
     "UpdateModelVisibilityRequest",
+    "UpdateRouteWeightRequest",
     "UpdateSettingRequest",
     "UpdateUserRequest",
     "UpdateUserResponse",

@@ -426,6 +426,20 @@ class PostgresOperationalStore(OperationalStore):
             )
         """)
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_weight_overrides (
+                model_id TEXT NOT NULL,
+                endpoint_id TEXT NOT NULL,
+                weight REAL NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT,
+                PRIMARY KEY (model_id, endpoint_id)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pwo_model ON provider_weight_overrides(model_id)"
+        )
+
         # --- provider_api_keys ---
         # Runtime-managed upstream provider credentials added by admins
         # through the dashboard. Augments env-var-sourced keys at boot.
@@ -1795,6 +1809,60 @@ class PostgresOperationalStore(OperationalStore):
                 "FROM model_visibility_overrides ORDER BY model_id"
             )
         return [dict(r) for r in rows]
+
+    async def list_weight_overrides_for_model(self, model_id: str) -> list[Row]:
+        """Return provider weight override rows for a model ordered by endpoint_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, endpoint_id, weight, updated_at, updated_by "
+                "FROM provider_weight_overrides WHERE model_id = $1 ORDER BY endpoint_id",
+                model_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def list_all_weight_overrides(self) -> list[Row]:
+        """Return all provider weight override rows ordered by model_id and endpoint_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, endpoint_id, weight, updated_at, updated_by "
+                "FROM provider_weight_overrides ORDER BY model_id, endpoint_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def upsert_weight_override(
+        self,
+        model_id: str,
+        endpoint_id: str,
+        weight: float,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a provider weight override row."""
+        if weight < 0:
+            raise ValueError("weight must be >= 0")
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO provider_weight_overrides "
+                "(model_id, endpoint_id, weight, updated_at, updated_by) "
+                "VALUES ($1, $2, $3, NOW(), $4) "
+                "ON CONFLICT (model_id, endpoint_id) DO UPDATE SET "
+                "weight = EXCLUDED.weight, "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                endpoint_id,
+                weight,
+                updated_by,
+            )
+
+    async def delete_weight_override(self, model_id: str, endpoint_id: str) -> bool:
+        """Delete a provider weight override row. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM provider_weight_overrides WHERE model_id = $1 AND endpoint_id = $2",
+                model_id,
+                endpoint_id,
+            )
+        return _parse_command_tag_count(tag) > 0
 
     # -- cost counters -------------------------------------------------------
 

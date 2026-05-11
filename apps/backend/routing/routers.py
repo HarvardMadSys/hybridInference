@@ -16,6 +16,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
+from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -67,6 +68,7 @@ class RouteConfig:
     """Weighted adapter list for a model."""
 
     adapters: list[tuple[BaseAdapter, float]]
+    raw_adapters: list[tuple[BaseAdapter, float, str]] | None = None
     admin_only: bool = False
     required_role: str = "free"
 
@@ -660,13 +662,49 @@ class FixedRouter(BaseRouter):
             weighted-random selection over ``routes`` is unchanged.
     """
 
-    def __init__(self, params: Any = None) -> None:
+    def __init__(self, params: Any = None, weight_override_resolver: Any | None = None) -> None:
         super().__init__()
         self.routes: dict[str, RouteConfig] = {}
         # Keep the validated params accessible for future use (e.g. honoring
         # local_fraction in adapter selection).  Today FixedRouter ignores it
         # because per-route weights already encode local-vs-remote balance.
         self.params = params
+        self.weight_override_resolver = weight_override_resolver
+
+    def _get_effective_adapters(
+        self, model_id: str, route: RouteConfig
+    ) -> list[tuple[BaseAdapter, float]]:
+        """Return raw route weights with runtime overrides applied when available."""
+        resolver = self.weight_override_resolver
+        raw_adapters = route.raw_adapters
+        if resolver is None or not raw_adapters:
+            return route.adapters
+
+        get_snapshot = getattr(resolver, "get_snapshot_for_model", None)
+        if get_snapshot is not None:
+            overrides = get_snapshot(model_id)
+            return [
+                (adapter, float(overrides.get(endpoint_id, raw_weight)))
+                for adapter, raw_weight, endpoint_id in raw_adapters
+            ]
+
+        result = resolver.get_for_model(model_id)
+        if isawaitable(result):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                overrides = asyncio.run(result)
+            else:
+                raise RuntimeError(
+                    "FixedRouter cannot await weight overrides during active event-loop selection"
+                ) from None
+        else:
+            overrides = result
+
+        return [
+            (adapter, float(overrides.get(endpoint_id, raw_weight)))
+            for adapter, raw_weight, endpoint_id in raw_adapters
+        ]
 
     def register_route(
         self,
@@ -693,6 +731,10 @@ class FixedRouter(BaseRouter):
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
             return
+        raw_adapters = [
+            (adapter, float(weight), _get_endpoint_id(adapter))
+            for adapter, weight in adapters_with_weights
+        ]
         normalized = [(adapter, weight / total_weight) for adapter, weight in adapters_with_weights]
         # Backward compat: admin_only=True implies required_role="admin"
         effective_role = required_role
@@ -700,6 +742,7 @@ class FixedRouter(BaseRouter):
             effective_role = "admin"
         route_cfg = RouteConfig(
             adapters=normalized,
+            raw_adapters=raw_adapters,
             admin_only=admin_only,
             required_role=effective_role,
         )
@@ -724,7 +767,7 @@ class FixedRouter(BaseRouter):
             return None
 
         if pin_provider:
-            for adapter, weight in route.adapters:
+            for adapter, weight in self._get_effective_adapters(model_id, route):
                 if weight <= 0:
                     continue
                 eid = _get_endpoint_id(adapter)
@@ -734,7 +777,7 @@ class FixedRouter(BaseRouter):
 
         with self._lock:
             snapshot: list[tuple[BaseAdapter, float, _CircuitBreaker]] = []
-            for adapter, weight in route.adapters:
+            for adapter, weight in self._get_effective_adapters(model_id, route):
                 endpoint_id = _get_endpoint_id(adapter)
                 cb = self._circuits.get(endpoint_id)
                 if not cb:
@@ -867,7 +910,7 @@ class FixedRouter(BaseRouter):
                 raise primary_error
             self._drop_affinity(model_id)
             route = self.routes[model_id]
-            for adapter, weight in route.adapters:
+            for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
                     continue
                 try:
@@ -979,7 +1022,7 @@ class FixedRouter(BaseRouter):
             if chunks_yielded:
                 raise primary_error
             route = self.routes[model_id]
-            for adapter, weight in route.adapters:
+            for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
                     continue
                 try:

@@ -20,6 +20,7 @@ from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
+from serving.config.weight_overrides import WeightOverrideResolver
 from serving.http import AsyncHTTPClient
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
@@ -433,12 +434,20 @@ async def initialize() -> AppServices:
             logger.warning(f"Runtime settings initialization failed: {exc}")
 
     model_visibility_resolver = None
+    weight_override_resolver = None
     if operational_store is not None:
         try:
             model_visibility_resolver = ModelVisibilityResolver(operational_store)
             logger.info("Model visibility resolver initialized")
         except Exception as exc:
             logger.warning(f"Model visibility resolver initialization failed: {exc}")
+        try:
+            weight_override_resolver = WeightOverrideResolver(operational_store)
+            await weight_override_resolver.load_all()
+            router.weight_override_resolver = weight_override_resolver
+            logger.info("Route weight override resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Route weight override resolver initialization failed: {exc}")
 
     # Per-user concurrency limiter — reads live caps from RuntimeSettings so
     # operators can tune them at runtime. Falls back to registry defaults
@@ -514,6 +523,7 @@ async def initialize() -> AppServices:
         model_router_registry=model_router_registry,
         routewise_routers=routewise_routers,
         model_visibility_resolver=model_visibility_resolver,
+        weight_override_resolver=weight_override_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,

@@ -31,6 +31,14 @@ def _cfg(mid: str, provider: str = "p") -> ModelConfig:
     )
 
 
+class _StaticWeightResolver:
+    def __init__(self, overrides: dict[str, dict[str, float]]) -> None:
+        self.overrides = overrides
+
+    async def get_for_model(self, model_id: str) -> dict[str, float]:
+        return self.overrides.get(model_id, {})
+
+
 class _EchoAdapter(BaseAdapter):
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         text = params.get("content", "ok")
@@ -362,6 +370,46 @@ def test_pin_skips_zero_weight():
 
     chosen = exe._select_adapter("m", pin_provider="featherless")
     assert chosen is None
+
+
+@pytest.mark.unit
+def test_runtime_weight_override_replaces_raw_yaml_weight():
+    resolver = _StaticWeightResolver({"m": {"b-endpoint": 4.0}})
+    exe = RouteExecutor(weight_override_resolver=resolver)
+    a_cfg = _cfg("m", provider="A")
+    a_cfg.endpoint_id = "a-endpoint"
+    b_cfg = _cfg("m", provider="B")
+    b_cfg.endpoint_id = "b-endpoint"
+    a = _EchoAdapter(a_cfg)
+    b = _EchoAdapter(b_cfg)
+    exe.register_route("m", [(a, 1.0), (b, 2.0)])
+
+    random_state = random.random
+    try:
+        random.random = lambda: 0.70
+        chosen = exe._select_adapter("m")
+    finally:
+        random.random = random_state
+
+    assert chosen is b
+
+
+@pytest.mark.unit
+def test_runtime_weight_override_zero_excludes_route_and_pin():
+    resolver = _StaticWeightResolver({"m": {"b-endpoint": 0.0}})
+    exe = RouteExecutor(weight_override_resolver=resolver)
+    a_cfg = _cfg("m", provider="A")
+    a_cfg.endpoint_id = "a-endpoint"
+    b_cfg = _cfg("m", provider="B")
+    b_cfg.endpoint_id = "b-endpoint"
+    a = _EchoAdapter(a_cfg)
+    b = _EchoAdapter(b_cfg)
+    exe.register_route("m", [(a, 1.0), (b, 1.0)])
+
+    for _ in range(25):
+        assert exe._select_adapter("m") is a
+
+    assert exe._select_adapter("m", pin_provider="b-endpoint") is None
 
 
 @pytest.mark.unit
