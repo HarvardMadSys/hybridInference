@@ -7,7 +7,6 @@ const TABS = [
   { slug: 'users', label: 'Users' },
   { slug: 'requests', label: 'Recent Requests' },
   { slug: 'providers', label: 'Providers' },
-  { slug: 'routing', label: 'Routing' },
   { slug: 'token-usage', label: 'Token Usage' },
   { slug: 'audit', label: 'Audit Log' },
   { slug: 'broadcast', label: 'Broadcast Email' },

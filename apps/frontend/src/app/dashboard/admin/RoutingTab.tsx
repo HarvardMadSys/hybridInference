@@ -115,7 +115,7 @@ export function RoutingTab() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-semibold text-gray-900">Routing Weights</h1>
+        <h2 className="text-[14px] font-semibold text-gray-900">Routing Weights</h2>
         <p className="mt-1 text-sm text-gray-500">
           Override per-model endpoint weights at runtime. Clearing an override restores the YAML
           default.
