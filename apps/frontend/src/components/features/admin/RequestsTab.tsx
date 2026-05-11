@@ -1058,6 +1058,18 @@ export function RequestsTab() {
                                 </span>
                               </div>
                               <div>
+                                <span className="text-gray-500">Cached:</span>{' '}
+                                <span className="text-gray-700">
+                                  {cachedTokens != null ? cachedTokens.toLocaleString() : '—'}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-gray-500">Stream:</span>{' '}
+                                <span className="text-gray-700">
+                                  {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
+                                </span>
+                              </div>
+                              <div>
                                 <span className="text-gray-500">User:</span>{' '}
                                 <span className="text-gray-700">
                                   {req.user_name || req.user_id || '—'}
@@ -1077,18 +1089,6 @@ export function RequestsTab() {
                                 <span className="text-gray-500">User agent:</span>{' '}
                                 <span className="text-gray-700 font-mono break-all">
                                   {req.user_agent || '—'}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-gray-500">Cached:</span>{' '}
-                                <span className="text-gray-700">
-                                  {cachedTokens != null ? cachedTokens.toLocaleString() : '—'}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-gray-500">Stream:</span>{' '}
-                                <span className="text-gray-700">
-                                  {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
                                 </span>
                               </div>
                               {(() => {
