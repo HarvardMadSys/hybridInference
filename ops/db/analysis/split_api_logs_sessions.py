@@ -235,7 +235,9 @@ def assign_sessions(
             candidate = Session(session_id=len(sessions) + 1)
             sessions.append(candidate)
         else:
-            row.row["parent_chat_id"] = candidate.last_chat_id if candidate.last_chat_id is not None else -1
+            row.row["parent_chat_id"] = (
+                candidate.last_chat_id if candidate.last_chat_id is not None else -1
+            )
         update_order += 1
         candidate.rows.append(row)
         candidate.last_chat_id = row.chat_id

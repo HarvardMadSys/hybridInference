@@ -8,6 +8,7 @@ import binascii
 import json
 import os
 import sys
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
 DEFAULT_TOKENIZER = "zai-org/GLM-5.1"
 DEFAULT_WORKERS = min(4, os.cpu_count() or 1)
 HASH_SEED = 0x4B1D5EED
+QWEN_TRACE_PARENT_HASH_OVERLAP_THRESHOLD = 0.8
 _PROCESS_TOKENIZER: ChatTokenizer | None = None
 _PROCESS_TOKENIZER_NAME_OR_PATH: str | None = None
 _PROCESS_TRUST_REMOTE_CODE = False
@@ -356,6 +358,68 @@ def _parse_timestamp_seconds(value: Any) -> float | None:
     return None
 
 
+def _coerce_hash_ids(value: Any) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, int) and not isinstance(item, bool))
+
+
+def _hash_id_overlap(left: tuple[int, ...], right: tuple[int, ...]) -> float:
+    if not left or not right:
+        return 0.0
+    overlap_count = sum((Counter(left) & Counter(right)).values())
+    return overlap_count / max(len(left), len(right))
+
+
+def _coerce_int_id(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def _coerce_turn(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
+def _assign_qwen_trace_session(
+    row: dict[str, Any],
+    session_last_rows: list[dict[str, Any]],
+) -> None:
+    current_hash_ids = _coerce_hash_ids(row.get("hash_ids"))
+    for index in range(len(session_last_rows) - 1, -1, -1):
+        previous = session_last_rows[index]
+        if (
+            _hash_id_overlap(current_hash_ids, _coerce_hash_ids(previous.get("hash_ids")))
+            >= QWEN_TRACE_PARENT_HASH_OVERLAP_THRESHOLD
+        ):
+            parent_chat_id = _coerce_int_id(previous.get("chat_id"))
+            row["parent_chat_id"] = parent_chat_id if parent_chat_id is not None else -1
+            row["session_id"] = previous["session_id"]
+            row["turn"] = _coerce_turn(previous.get("turn")) + 1
+            session_last_rows.pop(index)
+            session_last_rows.append(row)
+            return
+    row["parent_chat_id"] = -1
+    row["session_id"] = len(session_last_rows) + 1
+    row["turn"] = 1
+    session_last_rows.append(row)
+
+
+def _ordered_qwen_trace_row(row: dict[str, Any]) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for key, value in row.items():
+        if key == "session_id":
+            continue
+        if key == "hash_ids" and "session_id" in row:
+            output["session_id"] = row["session_id"]
+        output[key] = value
+    if "session_id" in row and "session_id" not in output:
+        output["session_id"] = row["session_id"]
+    return output
+
+
 def convert_record(
     record: dict[str, Any],
     *,
@@ -465,6 +529,7 @@ def _write_converted_rows(
     prompt_deltas: list[int] = []
     tokenizer: ChatTokenizer | None = None
     qwen_trace_start_seconds: float | None = None
+    qwen_trace_session_last_rows: list[dict[str, Any]] = []
 
     def write_row(row: dict[str, Any]) -> None:
         nonlocal row_count, qwen_trace_start_seconds
@@ -476,6 +541,11 @@ def _write_converted_rows(
                 qwen_trace_start_seconds = current_seconds
             row = dict(row)
             row["timestamp"] = round(current_seconds - qwen_trace_start_seconds, 3)
+            _assign_qwen_trace_session(
+                row,
+                qwen_trace_session_last_rows,
+            )
+            row = _ordered_qwen_trace_row(row)
         output.write(json.dumps(row, ensure_ascii=False))
         output.write("\n")
         row_count += 1
