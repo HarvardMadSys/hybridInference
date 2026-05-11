@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from serving.storage.base import LogStore, Row
 from serving.storage.utils import calculate_cost
 from serving.utils.logging import get_logger
+from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
     import asyncpg
@@ -164,7 +165,7 @@ class PostgresLogStore(LogStore):
         provider: str,
         prompt: list[dict[str, Any]] | str,
         response: dict[str, Any] | str | None,
-        usage: dict[str, int] | None,
+        usage: dict[str, Any] | None,
         latency_ms: int,
         status_code: int,
         error: str | None = None,
@@ -181,6 +182,8 @@ class PostgresLogStore(LogStore):
         upstream_cost_usd: OpenRouter-reported per-request upstream cost (USD),
         or None for non-OpenRouter routes.
         """
+        usage = normalize_usage(usage) or usage
+
         should_store_full = (
             store_full_content if store_full_content is not None else self.store_full_prompts
         )

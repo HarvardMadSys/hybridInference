@@ -807,7 +807,7 @@ class LogStore(ABC):
         provider: str,
         prompt: list[dict[str, Any]] | str,
         response: dict[str, Any] | str | None,
-        usage: dict[str, int] | None,
+        usage: dict[str, Any] | None,
         latency_ms: int,
         status_code: int,
         error: str | None = None,
