@@ -35,6 +35,26 @@ async def set_email_verified(op_store, user_id: str, verified: bool) -> None:
     await op_store.update_user_fields(user_id, email_verified=verified)
 
 
+@pytest.mark.asyncio
+async def test_auth_client_fixture_can_signup_and_login(auth_client):
+    signup_data = {
+        "email": f"fixture-login-{os.urandom(4).hex()}@signuptest.dev",
+        "password": "SecurePass123!",
+        "user_name": "Fixture Login",
+        "accepted_tos": True,
+    }
+
+    signup_response = await auth_client.post("/auth/signup", json=signup_data)
+    assert signup_response.status_code == 201
+
+    login_response = await auth_client.post(
+        "/auth/login",
+        json={"email": signup_data["email"], "password": signup_data["password"]},
+    )
+    assert login_response.status_code == 200
+    assert "access_token" in login_response.json()
+
+
 async def test_unverified_user_cannot_login(auth_client, require_db, email_verification_flag):
     """Test that users with unverified emails cannot login.
 

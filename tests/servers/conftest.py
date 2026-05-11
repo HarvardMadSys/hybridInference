@@ -21,6 +21,12 @@ from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices
 from serving.storage.base import LogStore, OperationalStore
 from serving.storage.database import DatabaseLogger
+from tests.fixtures.auth_helpers import (
+    assert_test_db_from_pool,
+    assert_test_db_name,
+    build_auth_test_env_defaults,
+    login_and_get_auth_headers,
+)
 
 # ============================================================================
 # Session-level fixtures
@@ -33,32 +39,6 @@ def event_loop() -> Generator:
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
-
-
-_ALLOWED_TEST_DB_PATTERN = "_test_"
-
-
-def _assert_test_db_name(db_name: str, context: str = "") -> None:
-    """Fail if *db_name* does not look like a dedicated test database.
-
-    Allowlist approach: the database name must contain '_test_' (e.g.
-    ``freeinference_test_db``).  This catches production, staging, copies,
-    and any other non-test database.
-    """
-    if _ALLOWED_TEST_DB_PATTERN not in (db_name or ""):
-        pytest.fail(
-            f"SAFETY: refusing to run tests against database '{db_name}' "
-            f"(name does not contain '{_ALLOWED_TEST_DB_PATTERN}')"
-            f"{f' [{context}]' if context else ''}. "
-            f"Set TEST_DB_NAME / DB_NAME to a dedicated test database."
-        )
-
-
-async def _assert_test_db_from_pool(pool, context: str = "") -> None:
-    """Query the connection pool and verify it points at a test database."""
-    async with pool.acquire() as conn:
-        db_name = await conn.fetchval("SELECT current_database()")
-    _assert_test_db_name(db_name, context)
 
 
 async def _skip_if_test_db_unavailable(context: str = "") -> None:
@@ -82,7 +62,7 @@ async def _skip_if_test_db_unavailable(context: str = "") -> None:
 
     try:
         db_name = await conn.fetchval("SELECT current_database()")
-        _assert_test_db_name(db_name, context)
+        assert_test_db_name(db_name, context)
     finally:
         await conn.close()
 
@@ -168,44 +148,31 @@ def auth_test_env():
         _ensure_worker_database(_db_name)
     _db_user = os.environ.get("TEST_DB_USER", "postgres")
     _db_pass = os.environ.get("TEST_DB_PASSWORD", "postgres")
-    _TEST_DB_VARS = {
-        "DB_HOST": _db_host,
-        "DB_PORT": _db_port,
-        "DB_NAME": _db_name,
-        "DB_USER": _db_user,
-        "DB_PASSWORD": _db_pass,
-        # Mirror for fixtures that read TEST_DB_* directly
-        "TEST_DB_HOST": _db_host,
-        "TEST_DB_PORT": _db_port,
-        "TEST_DB_NAME": _db_name,
-        "TEST_DB_USER": _db_user,
-        "TEST_DB_PASSWORD": _db_pass,
-    }
-    _AUTH_VARS = {
-        "JWT_SECRET_KEY": "test-secret-key-32-chars-long!!",
-        "API_KEY_SECRET": "test-api-key-secret",
-        "ADMIN_TOKEN": "test-admin-token",
-        "BASE_URL": "http://test",
-        "COOKIE_SECURE": "0",
-        "SIGNUP_ENABLED": "1",
-        "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "10.00",
-        # Disabled by default for backward compatibility with existing tests
-        "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
-        # Turnstile disabled by default; per-test setenv to enable verification.
-        "TURNSTILE_SECRET_KEY": "",
-        # Disable SMTP in tests to avoid sending real emails
-        "SMTP_HOST": "",
-        "SMTP_USER": "",
-        "SMTP_PASSWORD": "",
-    }
-    _SERVICE_VARS = {
-        "DB_ENABLED": "true",
-        "MODELS_CONFIG": "test/fixtures/test_models.yaml",
-        "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
-        "METRICS_ENABLED": "0",
-    }
-
-    all_vars = {**_TEST_DB_VARS, **_AUTH_VARS, **_SERVICE_VARS}
+    shared_defaults = build_auth_test_env_defaults(
+        {
+            "DB_HOST": _db_host,
+            "DB_PORT": _db_port,
+            "DB_NAME": _db_name,
+            "DB_USER": _db_user,
+            "DB_PASSWORD": _db_pass,
+            "TEST_DB_HOST": _db_host,
+            "TEST_DB_PORT": _db_port,
+            "TEST_DB_NAME": _db_name,
+            "TEST_DB_USER": _db_user,
+            "TEST_DB_PASSWORD": _db_pass,
+            "COOKIE_SECURE": "0",
+            "API_KEY_SECRET": "test-api-key-secret",
+            "JWT_SECRET_KEY": "test-secret-key-32-chars-long!!",
+            "BASE_URL": "http://test",
+            "METRICS_ENABLED": "0",
+            "MODELS_CONFIG": "tests/fixtures/test_models.yaml",
+            "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
+            "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "10.00",
+            "ADMIN_TOKEN": "test-admin-token",
+            "TURNSTILE_SECRET_KEY": "",
+        }
+    )
+    all_vars = dict(shared_defaults)
     saved = {k: os.environ.get(k) for k in all_vars}
 
     for key, value in all_vars.items():
@@ -253,8 +220,8 @@ def mock_env(monkeypatch):
     """Mock environment variables for testing."""
     test_env = {
         "DB_ENABLED": "false",  # Disable DB in tests by default
-        "MODELS_CONFIG": "test/fixtures/test_models.yaml",
-        "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
+        "MODELS_CONFIG": "tests/fixtures/test_models.yaml",
+        "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
         "LOCAL_DEPLOYMENT_URL": "http://localhost:8001",
     }
     for key, value in test_env.items():
@@ -433,7 +400,7 @@ async def auth_app(auth_test_env):
     """
     # Layer 2a: pre-flight check BEFORE create_app() / lifespan can run
     # DB init (CREATE TABLE, ALTER, admin seed) to prevent schema side-effects.
-    _assert_test_db_name(os.environ.get("DB_NAME", ""), context="auth_app pre-flight DB_NAME")
+    assert_test_db_name(os.environ.get("DB_NAME", ""), context="auth_app pre-flight DB_NAME")
     await _skip_if_test_db_unavailable(context="auth_app pre-flight connection")
 
     # Clear settings cache to pick up test environment variables
@@ -450,7 +417,7 @@ async def auth_app(auth_test_env):
         # in case settings/dotenv overrode the env var during bootstrap.
         db_logger = getattr(getattr(app.state, "services", None), "db_logger", None)
         if db_logger and getattr(db_logger, "pool", None):
-            await _assert_test_db_from_pool(db_logger.pool, context="auth_app fixture")
+            await assert_test_db_from_pool(db_logger.pool, context="auth_app fixture")
         yield app
 
 
@@ -543,17 +510,16 @@ async def auth_client_test_user_fixture(auth_client):
 @pytest_asyncio.fixture(name="auth_client_authenticated_user")
 async def auth_client_authenticated_user_fixture(auth_client, auth_client_test_user):
     """Create and authenticate a test user."""
-    login_response = await auth_client.post(
-        "/auth/login",
-        json={
-            "email": auth_client_test_user["email"],
-            "password": auth_client_test_user["password"],
-        },
+    headers = await login_and_get_auth_headers(
+        auth_client,
+        email=auth_client_test_user["email"],
+        password=auth_client_test_user["password"],
     )
 
-    assert login_response.status_code == 200
-
-    return {**auth_client_test_user, "access_token": login_response.json()["access_token"]}
+    return {
+        **auth_client_test_user,
+        "access_token": headers["Authorization"].removeprefix("Bearer "),
+    }
 
 
 # ============================================================================
