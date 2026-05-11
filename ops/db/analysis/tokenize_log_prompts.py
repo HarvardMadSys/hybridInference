@@ -335,8 +335,15 @@ def convert_record_to_qwen_trace(
 
 
 def _qwen_trace_output_length(record: dict[str, Any]) -> int:
+    output_length = _logged_output_tokens(record)
+    return output_length if output_length is not None else 0
+
+
+def _logged_output_tokens(record: dict[str, Any]) -> int | None:
     for key in ("completion_tokens", "output_tokens", "response_tokens"):
         value = record.get(key)
+        if isinstance(value, bool):
+            continue
         if isinstance(value, int):
             return value
         if value is not None:
@@ -344,7 +351,7 @@ def _qwen_trace_output_length(record: dict[str, Any]) -> int:
                 return int(value)
             except (TypeError, ValueError):
                 continue
-    return 0
+    return None
 
 
 def _parse_timestamp_seconds(value: Any) -> float | None:
@@ -462,6 +469,7 @@ def convert_record(
         "tokenizer": tokenizer.name_or_path,
         "tool_count": len(tools or []),
         "logged_prompt_tokens": record.get("prompt_tokens"),
+        "logged_output_tokens": _logged_output_tokens(record),
         "computed_prompt_tokens": len(token_ids),
     }
     if record.get("prompt_tokens") is not None:

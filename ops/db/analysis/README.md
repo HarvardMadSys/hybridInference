@@ -185,6 +185,7 @@ Example:
   "tokenizer": "zai-org/GLM-5.1",
   "tool_count": 1,
   "logged_prompt_tokens": 791,
+  "logged_output_tokens": 532,
   "computed_prompt_tokens": 812,
   "prompt_tokens_delta": 21,
   "prompt_token_ids": [151329, 151330, 42]
@@ -196,6 +197,7 @@ Optional fields:
 - `prompt_text` is included with `--include-text`
 - `prompt_token_ids` is omitted with `--count-only`
 - `prompt_tokens_delta` is only present when the input row has `prompt_tokens`
+- `logged_output_tokens` is the logged completion/output token count when present
 
 ### Hashed output with `--hash-n`
 
