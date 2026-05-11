@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
+from serving.config.settings import VALID_ROLES
 from serving.storage.base import OperationalStore, ProviderKeyRow, Row
 from serving.utils.logging import get_logger
 
@@ -31,11 +32,6 @@ def _parse_command_tag_count(command_tag: str) -> int:
         return int(parts[-1])
     except ValueError:
         return 0
-
-
-def _parse_admin_emails(raw: str) -> list[str]:
-    """Return normalized admin email addresses from a comma-separated env var."""
-    return [email.strip().lower() for email in raw.split(",") if email.strip()]
 
 
 class PostgresOperationalStore(OperationalStore):
@@ -1353,6 +1349,111 @@ class PostgresOperationalStore(OperationalStore):
                 "FROM site_settings ORDER BY key"
             )
         return [dict(r) for r in rows]
+
+    async def get_model_visibility_override(self, model_id: str) -> Row | None:
+        """Fetch a single model_visibility_overrides row by model_id."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT model_id, required_role, updated_at, updated_by "
+                "FROM model_visibility_overrides WHERE model_id = $1",
+                model_id,
+            )
+        return dict(row) if row else None
+
+    async def set_model_visibility_override(
+        self,
+        model_id: str,
+        required_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model visibility override row."""
+        if required_role not in VALID_ROLES:
+            raise ValueError(f"Invalid required_role: {required_role}")
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO model_visibility_overrides "
+                "(model_id, required_role, updated_at, updated_by) "
+                "VALUES ($1, $2, NOW(), $3) "
+                "ON CONFLICT (model_id) DO UPDATE SET "
+                "required_role = EXCLUDED.required_role, "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                required_role,
+                updated_by,
+            )
+
+    async def delete_model_visibility_override(self, model_id: str) -> bool:
+        """Delete a model visibility override row. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM model_visibility_overrides WHERE model_id = $1",
+                model_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+    async def list_model_visibility_overrides(self) -> list[Row]:
+        """Return all model visibility override rows ordered by model_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, required_role, updated_at, updated_by "
+                "FROM model_visibility_overrides ORDER BY model_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def list_weight_overrides_for_model(self, model_id: str) -> list[Row]:
+        """Return provider weight override rows for a model ordered by endpoint_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, endpoint_id, weight, updated_at, updated_by "
+                "FROM provider_weight_overrides WHERE model_id = $1 ORDER BY endpoint_id",
+                model_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def list_all_weight_overrides(self) -> list[Row]:
+        """Return all provider weight override rows ordered by model_id and endpoint_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, endpoint_id, weight, updated_at, updated_by "
+                "FROM provider_weight_overrides ORDER BY model_id, endpoint_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def upsert_weight_override(
+        self,
+        model_id: str,
+        endpoint_id: str,
+        weight: float,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a provider weight override row."""
+        if weight < 0:
+            raise ValueError("weight must be >= 0")
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO provider_weight_overrides "
+                "(model_id, endpoint_id, weight, updated_at, updated_by) "
+                "VALUES ($1, $2, $3, NOW(), $4) "
+                "ON CONFLICT (model_id, endpoint_id) DO UPDATE SET "
+                "weight = EXCLUDED.weight, "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                endpoint_id,
+                weight,
+                updated_by,
+            )
+
+    async def delete_weight_override(self, model_id: str, endpoint_id: str) -> bool:
+        """Delete a provider weight override row. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM provider_weight_overrides WHERE model_id = $1 AND endpoint_id = $2",
+                model_id,
+                endpoint_id,
+            )
+        return _parse_command_tag_count(tag) > 0
 
     # -- cost counters -------------------------------------------------------
 

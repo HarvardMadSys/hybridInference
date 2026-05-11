@@ -16,6 +16,7 @@ class SignupRequest(BaseModel):
     password: str = Field(..., min_length=8)
     user_name: UserName
     use_case: str | None = Field(default=None, max_length=2000)
+    accepted_tos: bool
     turnstile_token: str | None = None
 
 
@@ -172,6 +173,7 @@ class QuotaInfo(BaseModel):
     spent_today_usd: float | None = None
     spent_month_usd: float | None = None
     remaining_today_usd: float | None = None
+    max_concurrency: int | None = None
     reset_at: datetime | None = None
     reset_timezone: str = "UTC"
     contact_email: str = "admin@freeinference.org"
@@ -240,20 +242,6 @@ class ChangePasswordResponse(BaseModel):
     """Change password response."""
 
     message: str
-
-
-class ChangeEmailRequest(BaseModel):
-    """Change email request."""
-
-    new_email: EmailStr
-    password: str  # Require password confirmation
-
-
-class ChangeEmailResponse(BaseModel):
-    """Change email response."""
-
-    message: str
-    new_email: str
 
 
 # Recent requests schemas

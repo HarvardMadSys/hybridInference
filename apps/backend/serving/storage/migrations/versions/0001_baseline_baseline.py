@@ -62,8 +62,7 @@ def upgrade() -> None:
             total_tokens INTEGER,
             prompt TEXT,
             response TEXT,
-            prompt_hash TEXT,
-            response_hash TEXT,
+            request_payload JSONB,
             status_code INTEGER,
             error TEXT,
             user_id TEXT,
@@ -105,16 +104,6 @@ def upgrade() -> None:
         "WHERE error IS NOT NULL"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_logs_prompt_hash "
-        "ON api_logs(prompt_hash) "
-        "WHERE prompt_hash IS NOT NULL"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_logs_response_hash "
-        "ON api_logs(response_hash) "
-        "WHERE response_hash IS NOT NULL"
-    )
-    op.execute(
         "CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost "
         "ON api_logs(user_id, timestamp, cost_usd)"
     )
@@ -151,8 +140,8 @@ def upgrade() -> None:
             password_hash TEXT NOT NULL,
             user_name TEXT,
             preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-            role TEXT NOT NULL DEFAULT 'free'
-                CHECK (role IN ('free', 'pro', 'internal', 'admin')),
+            role TEXT NOT NULL DEFAULT 'trial'
+                CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin')),
             email_verified BOOLEAN DEFAULT FALSE,
             status TEXT DEFAULT 'active'
                 CHECK (status IN ('active', 'suspended', 'deleted',
@@ -238,6 +227,37 @@ def upgrade() -> None:
         "ON auth_sessions(refresh_token_hash) WHERE NOT revoked"
     )
     op.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti ON auth_sessions(jti)")
+
+    # ------------------------------------------------------------------
+    # login_events
+    # ------------------------------------------------------------------
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS login_events (
+            id BIGSERIAL PRIMARY KEY,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            user_id TEXT,
+            email TEXT NOT NULL,
+            outcome TEXT NOT NULL
+                CHECK (outcome IN ('success', 'failure')),
+            failure_reason TEXT,
+            ip TEXT,
+            user_agent TEXT
+        )
+    """)
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_login_events_user "
+        "ON login_events (user_id, created_at DESC) WHERE user_id IS NOT NULL"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_login_events_email ON login_events (email, created_at DESC)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_login_events_created ON login_events (created_at DESC)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_login_events_failures "
+        "ON login_events (created_at DESC) WHERE outcome = 'failure'"
+    )
 
     # ------------------------------------------------------------------
     # email_verification_tokens
@@ -347,6 +367,45 @@ def upgrade() -> None:
             updated_by TEXT
         )
     """)
+
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS model_visibility_overrides (
+            model_id TEXT PRIMARY KEY,
+            required_role TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_by TEXT
+        )
+    """)
+
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS provider_weight_overrides (
+            model_id TEXT NOT NULL,
+            endpoint_id TEXT NOT NULL,
+            weight DOUBLE PRECISION NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_by TEXT,
+            PRIMARY KEY (model_id, endpoint_id)
+        )
+    """)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_pwo_model ON provider_weight_overrides(model_id)")
+
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS provider_api_keys (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            api_key TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            label TEXT,
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active', 'disabled')),
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_status "
+        "ON provider_api_keys(provider, status)"
+    )
 
     # ------------------------------------------------------------------
     # email_broadcasts + email_broadcast_recipients

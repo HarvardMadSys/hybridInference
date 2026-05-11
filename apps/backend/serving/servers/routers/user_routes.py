@@ -27,8 +27,6 @@ from serving.schemas_auth import (
     APIKeyListResponse,
     APIKeyRegenerateResponse,
     APIKeyResponse,
-    ChangeEmailRequest,
-    ChangeEmailResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
     LLMProberLayoutResponse,
@@ -51,12 +49,12 @@ from serving.servers.deps import (
     get_db_logger,
     get_embedding_adapters,
     get_log_store,
+    get_model_visibility_resolver,
     get_operational_store,
     get_router,
 )
-from serving.servers.routers.models import build_model_list
+from serving.servers.routers.models import _build_model_list_async
 from serving.utils import password as password_utils
-from serving.utils.email import is_email_enabled
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
@@ -204,6 +202,40 @@ async def get_default_daily_quota_for_role(
     return Decimal(quota_str)
 
 
+async def get_user_concurrency_for_role(
+    role: str,
+    runtime_settings: "RuntimeSettings | None",
+    *,
+    is_admin: bool = False,
+) -> int:
+    """Return the per-user concurrency cap for ``role``.
+
+    Reads the ``user_concurrency_<role>`` runtime setting if registered.
+    Falls back to ``_FALLBACK_LIMITS`` from ``serving.servers.concurrency``
+    when runtime settings are unavailable or the role has no registered
+    setting. An unknown role degrades to the ``free`` fallback.
+
+    Mirrors ``UserConcurrencyLimiter._limit_for``: when ``is_admin`` is
+    true, the admin cap is used regardless of ``role`` so the dashboard
+    matches what the limiter actually enforces.
+    """
+    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+    from serving.servers.concurrency import _FALLBACK_LIMITS
+
+    role_key = "admin" if is_admin else (role or "free").lower()
+    setting_key = f"user_concurrency_{role_key}"
+
+    if runtime_settings is not None and setting_key in RUNTIME_SETTINGS_REGISTRY:
+        return await runtime_settings.get_int(setting_key)
+
+    if role_key not in _FALLBACK_LIMITS:
+        logger.warning(
+            "No concurrency runtime setting for role %r — falling back to free-tier cap",
+            role,
+        )
+    return _FALLBACK_LIMITS.get(role_key, _FALLBACK_LIMITS["free"])
+
+
 def mask_key_prefix(key_prefix: str) -> str:
     """Mask an API key using the stored prefix."""
     return f"{key_prefix}{'*' * 20}"
@@ -244,12 +276,14 @@ async def get_user_models(
     current_user=Depends(get_current_user),
     router_exec=Depends(get_router),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
 ) -> ModelList:
     """List models available to the current dashboard user."""
-    return build_model_list(
+    return await _build_model_list_async(
         router_exec=router_exec,
         embedding_adapters=embedding_adapters,
         user_role=current_user.get("role", "free"),
+        model_visibility_resolver=model_visibility_resolver,
     )
 
 
@@ -605,6 +639,17 @@ async def get_usage(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
+    # Resolve per-user concurrency cap (applies regardless of API-key state).
+    try:
+        rt = get_runtime_settings_instance()
+    except RuntimeError:
+        rt = None
+    max_concurrency = await get_user_concurrency_for_role(
+        current_user.get("role") or "free",
+        rt,
+        is_admin=bool(current_user.get("is_admin", False)),
+    )
+
     # Get user's quota
     key_row = await op_store.get_active_key_by_account(current_user["user_id"])
 
@@ -618,6 +663,7 @@ async def get_usage(
                 spent_today_usd=None,
                 spent_month_usd=None,
                 remaining_today_usd=None,
+                max_concurrency=max_concurrency,
                 reset_at=_get_daily_quota_reset_at(),
                 reset_timezone="UTC",
                 contact_email=QUOTA_CONTACT_EMAIL,
@@ -677,6 +723,7 @@ async def get_usage(
             spent_today_usd=spent_today,
             spent_month_usd=spent_month,
             remaining_today_usd=remaining_today,
+            max_concurrency=max_concurrency,
             reset_at=quota_reset_at,
             reset_timezone="UTC",
             contact_email=QUOTA_CONTACT_EMAIL,
@@ -766,66 +813,6 @@ async def change_password(
     logger.info(f"Password changed for user: {current_user['user_id']}")
 
     return ChangePasswordResponse(message="Password changed successfully.")
-
-
-@router.post("/change-email", response_model=ChangeEmailResponse)
-async def change_email(
-    request: Request,
-    body: ChangeEmailRequest,
-    current_user=Depends(get_current_user),
-    op_store=Depends(get_operational_store),
-) -> ChangeEmailResponse:
-    """Change email address for logged-in user.
-
-    Requires password verification and sends verification email to new address.
-    """
-    if not op_store:
-        raise HTTPException(status_code=500, detail="Database not available")
-
-    user_row = await op_store.get_user_by_id(current_user["user_id"])
-    if not user_row:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if not password_utils.verify_password(body.password, user_row["password_hash"]):
-        raise HTTPException(status_code=400, detail="Password is incorrect.")
-
-    if body.new_email.lower() == user_row["email"]:
-        raise HTTPException(
-            status_code=400, detail="New email must be different from current email."
-        )
-
-    existing_user = await op_store.get_user_by_email(body.new_email)
-    if existing_user:
-        raise HTTPException(status_code=409, detail="This email is already registered.")
-
-    # Update email and mark as unverified
-    await op_store.update_user_fields(
-        current_user["user_id"], email=body.new_email.lower(), email_verified=False
-    )
-
-    # Send verification email to new address
-    if is_email_enabled():
-        import secrets
-
-        from serving.utils.email import send_verification_email
-
-        verification_token = secrets.token_urlsafe(32)
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-        await op_store.create_verification_token(
-            token=verification_token, user_id=current_user["user_id"], expires_at=expires_at
-        )
-
-        base_url = os.getenv("BASE_URL") or f"{request.url.scheme}://{request.url.netloc}"
-        email_sent = send_verification_email(body.new_email, verification_token, base_url)
-        if not email_sent:
-            logger.warning(f"Failed to send verification email to {body.new_email}")
-
-    logger.info(f"Email changed for user: {current_user['user_id']} to {body.new_email}")
-
-    return ChangeEmailResponse(
-        message="Email changed successfully. Please verify your new email address.",
-        new_email=body.new_email,
-    )
 
 
 @router.get("/recent-requests", response_model=RecentRequestsResponse)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -28,6 +29,14 @@ def _cfg(mid: str, provider: str = "p") -> ModelConfig:
         context_length=8192,
         max_output_length=4096,
     )
+
+
+class _StaticWeightResolver:
+    def __init__(self, overrides: dict[str, dict[str, float]]) -> None:
+        self.overrides = overrides
+
+    async def get_for_model(self, model_id: str) -> dict[str, float]:
+        return self.overrides.get(model_id, {})
 
 
 class _EchoAdapter(BaseAdapter):
@@ -115,6 +124,71 @@ async def test_fallback_on_primary_failure():
     assert resp["choices"][0]["message"]["content"] == "ok"
     assert resp["_routing"]["provider"] == "backup"
     assert resp["_routing"].get("fallback") is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_response_records_failed_primary_attempt():
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="primary"))
+    backup = _EchoAdapter(_cfg("m", provider="backup"))
+    exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
+
+    random_state = random.random
+    try:
+        random.random = lambda: 0.01
+        resp = await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        random.random = random_state
+
+    assert resp["_routing"]["failed_attempts"] == [
+        {
+            "provider": "primary",
+            "endpoint_id": "primary",
+            "error_type": "RuntimeError",
+            "error": "fail",
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_failure_uses_current_adapter_endpoint_for_failure_recording(monkeypatch):
+    from routing import routers as routers_mod
+
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="primary"))
+    bad_fallback = _EchoAdapter(_cfg("m", provider="bad"))
+    backup = _EchoAdapter(_cfg("m", provider="backup"))
+    exe.register_route("m", [(primary, 0.8), (bad_fallback, 0.1), (backup, 0.1)])
+
+    recorded: list[str] = []
+    original_on_failure = exe._on_failure  # type: ignore[attr-defined]
+
+    def record_failure(endpoint_id: str, *, reason: str) -> None:
+        recorded.append(endpoint_id)
+        original_on_failure(endpoint_id, reason=reason)
+
+    original_push = routers_mod.req_ctx.push
+
+    @contextmanager
+    def raise_for_bad_provider(**values: Any):
+        if values.get("provider") == "bad":
+            raise RuntimeError("context setup failed")
+        with original_push(**values):
+            yield
+
+    random_state = random.random
+    try:
+        random.random = lambda: 0.01
+        monkeypatch.setattr(routers_mod.req_ctx, "push", raise_for_bad_provider)
+        exe._on_failure = record_failure  # type: ignore[method-assign]
+        await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        random.random = random_state
+        exe._on_failure = original_on_failure  # type: ignore[method-assign]
+
+    assert recorded[:2] == ["primary", "bad"]
 
 
 @pytest.mark.unit
@@ -296,6 +370,68 @@ def test_pin_skips_zero_weight():
 
     chosen = exe._select_adapter("m", pin_provider="featherless")
     assert chosen is None
+
+
+@pytest.mark.unit
+def test_runtime_weight_override_replaces_raw_yaml_weight():
+    resolver = _StaticWeightResolver({"m": {"b-endpoint": 4.0}})
+    exe = RouteExecutor(weight_override_resolver=resolver)
+    a_cfg = _cfg("m", provider="A")
+    a_cfg.endpoint_id = "a-endpoint"
+    b_cfg = _cfg("m", provider="B")
+    b_cfg.endpoint_id = "b-endpoint"
+    a = _EchoAdapter(a_cfg)
+    b = _EchoAdapter(b_cfg)
+    exe.register_route("m", [(a, 1.0), (b, 2.0)])
+
+    random_state = random.random
+    try:
+        random.random = lambda: 0.70
+        chosen = exe._select_adapter("m")
+    finally:
+        random.random = random_state
+
+    assert chosen is b
+
+
+@pytest.mark.unit
+def test_runtime_weight_override_zero_excludes_route_and_pin():
+    resolver = _StaticWeightResolver({"m": {"b-endpoint": 0.0}})
+    exe = RouteExecutor(weight_override_resolver=resolver)
+    a_cfg = _cfg("m", provider="A")
+    a_cfg.endpoint_id = "a-endpoint"
+    b_cfg = _cfg("m", provider="B")
+    b_cfg.endpoint_id = "b-endpoint"
+    a = _EchoAdapter(a_cfg)
+    b = _EchoAdapter(b_cfg)
+    exe.register_route("m", [(a, 1.0), (b, 1.0)])
+
+    for _ in range(25):
+        assert exe._select_adapter("m") is a
+
+    assert exe._select_adapter("m", pin_provider="b-endpoint") is None
+
+
+@pytest.mark.unit
+def test_runtime_weight_override_uses_canonical_model_id_for_aliases():
+    resolver = _StaticWeightResolver({"m": {"b-endpoint": 0.0}})
+    exe = RouteExecutor(weight_override_resolver=resolver)
+    a_cfg = _cfg("m", provider="A")
+    a_cfg.endpoint_id = "a-endpoint"
+    b_cfg = _cfg("m", provider="B")
+    b_cfg.endpoint_id = "b-endpoint"
+    a = _EchoAdapter(a_cfg)
+    b = _EchoAdapter(b_cfg)
+    exe.register_route("m", [(a, 1.0), (b, 1.0)], aliases=["m-alias"])
+
+    random_state = random.random
+    try:
+        random.random = lambda: 0.90
+        chosen = exe._select_adapter("m-alias")
+    finally:
+        random.random = random_state
+
+    assert chosen is a
 
 
 @pytest.mark.unit

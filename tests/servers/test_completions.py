@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
@@ -139,6 +140,14 @@ class RoutingAwareAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+class VisibilityResolver:
+    def __init__(self, overrides: dict[str, str]):
+        self._overrides = overrides
+
+    async def get_effective_required_role(self, model_id: str, default_role: str) -> str:
+        return self._overrides.get(model_id, default_role)
+
+
 def _mk_cfg(model_id: str) -> ModelConfig:
     return ModelConfig(
         id=model_id,
@@ -234,6 +243,29 @@ async def test_model_not_found_returns_404(completions_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_model_hidden_by_runtime_visibility_returns_404(completions_app: FastAPI):
+    completions_app.state.services.model_visibility_resolver = VisibilityResolver(
+        {"gpt-4": "admin"}
+    )
+    completions_app.dependency_overrides[verify_api_key] = lambda: {
+        "user_id": "free-user",
+        "role": "free",
+        "authenticated": True,
+        "is_admin": False,
+    }
+
+    transport = ASGITransport(app=completions_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    assert resp.status_code == status.HTTP_404_NOT_FOUND
+    assert "error" in resp.json()
+
+
+@pytest.mark.asyncio
 async def test_invalid_request_returns_400(completions_client: AsyncClient):
     # Missing required fields
     resp = await completions_client.post("/v1/chat/completions", json={"model": "gpt-4"})
@@ -266,6 +298,53 @@ async def test_fallback_on_primary_failure(completions_app: FastAPI):
         # When fallback occurs, router strips _routing before returning to user in non-streaming
         # path; our server keeps _routing only internally for db logging. We validate content.
         assert data["choices"][0]["message"]["content"] == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_fallback_success_logs_failed_primary_attempt_as_diagnostic(
+    monkeypatch,
+    mock_log_store,
+):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+    router = RouteExecutor()
+    primary_cfg = _mk_cfg("gpt-4")
+    primary_cfg.provider = "primary"
+    primary_cfg.endpoint_id = "primary:endpoint"
+    backup_cfg = _mk_cfg("gpt-4")
+    backup_cfg.provider = "backup"
+    router.register_route(
+        "gpt-4", [(FailingAdapter(primary_cfg), 0.9), (DummyAdapter(backup_cfg), 0.1)]
+    )
+
+    app = FastAPI(title="Fallback Logging App")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=None,
+        log_store=mock_log_store,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    random_state = random.random
+    transport = ASGITransport(app=app)
+    try:
+        random.random = lambda: 0.01
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+            )
+    finally:
+        random.random = random_state
+
+    assert resp.status_code == status.HTTP_200_OK
+    kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert kwargs is not None, "log_request was never called"
+    assert kwargs["status_code"] == 200
+    assert "error" not in kwargs
+    assert kwargs["metadata"]["upstream_error"] == (
+        "Upstream fallback after primary:endpoint: RuntimeError: Primary adapter failed"
+    )
 
 
 @pytest.mark.asyncio
@@ -924,7 +1003,10 @@ async def test_keepalive_emitted_without_cancelling_upstream(monkeypatch, mock_l
         shortened = 0.01 if timeout is not None and timeout > 0.01 else timeout
         return await real_wait_for(awaitable, timeout=shortened)
 
-    monkeypatch.setattr(completions.asyncio, "wait_for", fast_wait_for)
+    # Keepalive lives in StreamSession (completions_stream); patch its asyncio.
+    from serving.servers.routers import completions_stream
+
+    monkeypatch.setattr(completions_stream.asyncio, "wait_for", fast_wait_for)
 
     transport = ASGITransport(app=app)
     async with (

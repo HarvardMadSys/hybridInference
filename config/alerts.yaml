@@ -14,8 +14,8 @@ rules:
   p95_latency_per_provider:
     enabled: true
     window_sec: 600
-    threshold_ms: 30000
-    min_samples: 30
+    threshold_ms: 64000
+    min_samples: 80
     cooldown_sec: 1800
     overrides: {}
   auth_failure_spike:
@@ -28,6 +28,12 @@ rules:
     window_sec: 300
     threshold_count: 100
     cooldown_sec: 1800
+  tracked_task_failure_rate:
+    enabled: true
+    window_sec: 300       # 5 min
+    threshold_pct: 5.0    # 5% failure rate
+    min_samples: 50       # need at least 50 completions before alerting
+    cooldown_sec: 1800    # 30 min per task_name
 
 state_changes:
   circuit_open:
@@ -43,8 +49,8 @@ cost:
     check_interval_sec: 300
     cooldown_sec: 86400
     thresholds_per_role:
-      free: 5.00
-      pro: 50.00
+      free: 20.00
+      pro: 200.00
       internal: 500.00
   provider_hourly_spend:
     enabled: true

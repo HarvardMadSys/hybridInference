@@ -7,7 +7,7 @@ test and avoids hidden global state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import jwt
@@ -23,7 +23,12 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
+    from routing.routewise.router import RouteWiseRouter
+    from serving.config.model_visibility import ModelVisibilityResolver
+    from serving.config.weight_overrides import WeightOverrideResolver
     from serving.observability.alert_rules import AlertEngine
+    from serving.servers.routers.completions_cost import CostTracker, PricingLookup
+    from serving.servers.routers.completions_logging import CompletionsLogger
     from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
 
@@ -45,9 +50,16 @@ class AppServices:
     log_store: LogStore | None = None
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
+    routewise_routers: list[RouteWiseRouter] = field(default_factory=list)
+    model_visibility_resolver: ModelVisibilityResolver | None = None
+    weight_override_resolver: WeightOverrideResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None
+    completions_logger: CompletionsLogger | None = None
+    pricing_lookup: PricingLookup | None = None
+    cost_tracker: CostTracker | None = None
+    weight_override_refresh_task: Any | None = None
 
 
 def get_services(request: Request) -> AppServices:
@@ -100,6 +112,71 @@ def get_model_router_registry(
 ) -> ModelRouterRegistry | None:
     """Dependency to obtain the ModelRouterRegistry (if configured)."""
     return services.model_router_registry
+
+
+def get_model_visibility_resolver(
+    services: AppServices = Depends(get_services),
+) -> ModelVisibilityResolver | None:
+    """Dependency to obtain the ModelVisibilityResolver (if configured)."""
+    return getattr(services, "model_visibility_resolver", None)
+
+
+def get_completions_logger(
+    services: AppServices = Depends(get_services),
+) -> CompletionsLogger:
+    """Dependency to obtain the ``CompletionsLogger``.
+
+    Lazily constructs a logger if bootstrap didn't initialize one (e.g., in
+    tests that build ``AppServices`` directly without going through
+    ``bootstrap.initialize``), memoizing the instance on ``services`` so
+    subsequent requests reuse it. Returning a ready-to-use instance keeps
+    the handler free of None checks.
+    """
+    if services.completions_logger is None:
+        from serving.servers.routers.completions_logging import CompletionsLogger as _CL
+
+        services.completions_logger = _CL(
+            log_store=services.log_store,
+            model_router_registry=services.model_router_registry,
+        )
+    return services.completions_logger
+
+
+def get_pricing_lookup(
+    services: AppServices = Depends(get_services),
+) -> PricingLookup:
+    """Dependency to obtain the shared ``PricingLookup``.
+
+    Lazily constructs an instance if bootstrap didn't initialize one (mirrors
+    the ``get_completions_logger`` pattern so tests that build
+    ``AppServices`` directly stay simple).
+    """
+    if services.pricing_lookup is not None:
+        return services.pricing_lookup
+    from serving.servers.routers.completions_cost import PricingLookup as _PL
+
+    return _PL(router=services.router)
+
+
+def get_cost_tracker(
+    services: AppServices = Depends(get_services),
+) -> CostTracker:
+    """Dependency to obtain the shared ``CostTracker``.
+
+    Lazily constructs an instance (with a freshly built ``PricingLookup``)
+    if bootstrap didn't initialize one. The tracker tolerates
+    ``op_store=None`` so the cost-math pathway still runs in tests that
+    don't wire up a database.
+    """
+    if services.cost_tracker is not None:
+        return services.cost_tracker
+    from serving.servers.routers.completions_cost import (
+        CostTracker as _CT,
+        PricingLookup as _PL,
+    )
+
+    pricing = services.pricing_lookup or _PL(router=services.router)
+    return _CT(op_store=services.operational_store, pricing=pricing)
 
 
 def is_database_connected(db_logger: DatabaseLogger | None) -> bool:

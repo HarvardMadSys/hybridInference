@@ -8,16 +8,20 @@ free of HTTP concerns so it can be imported from multiple entry points
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
+from serving.config.weight_overrides import WeightOverrideResolver
 from serving.http import AsyncHTTPClient
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
@@ -73,7 +77,7 @@ async def _verify_schema_version(pool, settings) -> None:
     """
     import asyncpg
 
-    if settings.db_backend != "postgres":
+    if getattr(settings, "db_backend", "postgres") != "postgres":
         return
 
     from serving.storage._expected_alembic_version import (
@@ -95,6 +99,20 @@ async def _verify_schema_version(pool, settings) -> None:
             f"Schema version mismatch: code expects {EXPECTED_ALEMBIC_VERSION!r}, "
             f"DB at {current!r}. Run 'uv run alembic upgrade head' to fix."
         )
+
+
+async def _refresh_weight_override_snapshots(
+    resolver: WeightOverrideResolver,
+    *,
+    interval_seconds: float = 10.0,
+) -> None:
+    """Periodically reload route weight overrides so workers converge after admin edits."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await resolver.load_all()
+        except Exception:
+            logger.warning("Route weight override snapshot refresh failed", exc_info=True)
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -125,15 +143,10 @@ def _init_db_logger() -> DatabaseLogger | None:
             f"Initializing PostgreSQL logger: "
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )
-        logger.info(
-            f"Database privacy: store_full_content={settings.db_store_full_content}, "
-            f"4-token chunked hash enabled"
-        )
-        # Always use 4-token chunked hash
+        logger.info(f"Database privacy: store_full_content={settings.db_store_full_content}")
         return DatabaseLogger(
             db_config,
             store_full_prompts=settings.db_store_full_content,
-            use_chunked_hash=True,
         )
     except Exception as exc:
         logger.warning(f"Failed to create database logger: {exc}")
@@ -163,7 +176,10 @@ async def _init_router_and_models(
             logger.warning(f"Models config not found: {models_path}")
         elif models_path.exists():
             registered, model_infos = register_from_models_yaml(
-                router, models_path, embedding_adapters=embedding_adapters
+                router,
+                models_path,
+                embedding_adapters=embedding_adapters,
+                continue_on_missing_env=True,
             )
             if registered:
                 logger.info(f"Registered {registered} routes from {models_path}")
@@ -218,8 +234,6 @@ async def initialize() -> AppServices:
     Returns:
         AppServices: A typed container with initialized services.
     """
-    import asyncio
-
     # Load environment first so logging picks up LOG_FORMAT/LOG_LEVEL.
     load_dotenv()
     setup_logging()
@@ -337,36 +351,85 @@ async def initialize() -> AppServices:
     # Routing manager (optional)
     routing_manager = _apply_routing_manager(router)
 
-    # RouteWise router (optional, per-model opt-in via models.yaml routing_strategy)
-    model_router_registry: ModelRouterRegistry | None = None
+    # Per-model router registry — config-driven from models.yaml.
+    # Each model's `router:` field selects a strategy from the registry in
+    # routing.strategies; `router_params:` is validated by the strategy's
+    # Pydantic model.  Models that omit `router:` fall back to
+    # routing.yaml's `default_router`.
     settings = get_settings()
-    needs_routewise = settings.enable_routewise or any(
-        info.strategy == "routewise" for info in model_infos
-    )
-    if needs_routewise:
-        try:
-            from routing.routewise import RouteWiseRouter, load_routewise_config
+    models_config: dict[str, dict[str, Any]] = {}
+    for info in model_infos:
+        # Effective router: explicit `router:` wins; otherwise the legacy
+        # `routing_strategy:` (one-release shim) maps onto `router`.
+        effective_router = info.router or info.strategy
+        entry: dict[str, Any] = {}
+        if effective_router is not None:
+            entry["router"] = effective_router
+        if info.router_params is not None:
+            entry["router_params"] = info.router_params
+        # Aliases share the canonical model's config.
+        models_config[info.model_id] = entry
+        for alias in info.aliases:
+            models_config[alias] = entry
 
-            rw_config = load_routewise_config()
-            routewise_router = RouteWiseRouter(
-                fixed_router=router,
-                config=rw_config,
-            )
-            model_router_registry = ModelRouterRegistry(default_router=router)
-            for info in model_infos:
-                if info.strategy == "routewise":
-                    model_router_registry.register(info.model_id, routewise_router)
-                    for alias in info.aliases:
-                        model_router_registry.register(alias, routewise_router)
-            # TODO: Wire canary rollout from routewise.yaml canary section.
-            # Currently configure_canary() is never called; canary config is dead.
-            # rw_config has canary fields; call model_router_registry.configure_canary()
-            # once canary rollout is ready for production.
-            rw_models = [i.model_id for i in model_infos if i.strategy == "routewise"]
-            logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
+    # Load routing.yaml to read `default_router`.  RoutingManager loads the
+    # same file internally for weight assignment but does not expose its
+    # parsed RoutingConfig; we re-load here cheaply (small YAML).
+    default_router_name = "fixed"
+    try:
+        from routing.config import load_routing_config
+
+        routing_env = os.getenv("ROUTING_CONFIG")
+        routing_cfg_path = Path(routing_env or "config/routing.yaml")
+        if routing_cfg_path.exists():
+            routing_cfg = load_routing_config(routing_cfg_path)
+            default_router_name = routing_cfg.default_router
+    except Exception as exc:
+        logger.warning(f"Failed to read default_router from routing.yaml: {exc}; using 'fixed'.")
+
+    # ENABLE_ROUTEWISE legacy: opts every model into routewise as the default.
+    if settings.enable_routewise and default_router_name == "fixed":
+        default_router_name = "routewise"
+
+    model_router_registry: ModelRouterRegistry | None = ModelRouterRegistry(
+        models_config=models_config,
+        default_router_name=default_router_name,
+    )
+    model_router_registry.bind_fixed_router(router)
+
+    # Eagerly construct routers for every known model so config errors
+    # (bad strategy name, bad router_params) surface at boot, not on the
+    # first request. Fail-fast per-model: a bad config for one model must
+    # not silently disable the registry for all models.
+    for info in model_infos:
+        try:
+            model_router_registry.get_router(info.model_id)
+            for alias in info.aliases:
+                model_router_registry.get_router(alias)
         except Exception as exc:
-            logger.warning(f"RouteWise initialization failed: {exc}. Using fixed routing.")
-            model_router_registry = None
+            logger.error(
+                f"ModelRouterRegistry initialization failed for model '{info.model_id}': {exc}"
+            )
+            raise
+    rw_models = [
+        i.model_id
+        for i in model_infos
+        if type(model_router_registry.get_router(i.model_id)).__name__ == "RouteWiseRouter"
+    ]
+    if rw_models:
+        logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
+
+    # Collect distinct RouteWiseRouter instances for lifecycle management
+    # (pending-decisions TTL sweep start/stop).
+    from routing.routewise.router import RouteWiseRouter as _RWR
+
+    seen_ids: set[int] = set()
+    routewise_routers: list[_RWR] = []
+    for info in model_infos:
+        r = model_router_registry.get_router(info.model_id)
+        if isinstance(r, _RWR) and id(r) not in seen_ids:
+            seen_ids.add(id(r))
+            routewise_routers.append(r)
 
     # Build store abstractions
     operational_store = None
@@ -379,7 +442,6 @@ async def initialize() -> AppServices:
         log_store = PostgresLogStore(
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
-            use_chunked_hash=True,
         )
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
@@ -454,6 +516,28 @@ async def initialize() -> AppServices:
         except Exception as exc:
             logger.warning(f"Runtime settings initialization failed: {exc}")
 
+    model_visibility_resolver = None
+    weight_override_resolver = None
+    weight_override_refresh_task = None
+    if operational_store is not None:
+        try:
+            model_visibility_resolver = ModelVisibilityResolver(operational_store)
+            logger.info("Model visibility resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Model visibility resolver initialization failed: {exc}")
+        try:
+            weight_override_resolver = WeightOverrideResolver(operational_store)
+            await weight_override_resolver.load_all()
+            router.weight_override_resolver = weight_override_resolver
+            weight_override_refresh_task = asyncio.create_task(
+                _refresh_weight_override_snapshots(weight_override_resolver)
+            )
+            _BACKGROUND_TASKS.add(weight_override_refresh_task)
+            weight_override_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
+            logger.info("Route weight override resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Route weight override resolver initialization failed: {exc}")
+
     # Per-user concurrency limiter — reads live caps from RuntimeSettings so
     # operators can tune them at runtime. Falls back to registry defaults
     # when runtime_settings is unavailable (e.g., DB not configured).
@@ -463,24 +547,60 @@ async def initialize() -> AppServices:
         rt = runtime_settings  # capture for closure
 
         async def _read_concurrency_limits() -> dict[str, int]:
-            free, pro, internal, admin = await asyncio.gather(
+            trial, free, pro, internal, admin = await asyncio.gather(
+                rt.get_int("user_concurrency_trial"),
                 rt.get_int("user_concurrency_free"),
                 rt.get_int("user_concurrency_pro"),
                 rt.get_int("user_concurrency_internal"),
                 rt.get_int("user_concurrency_admin"),
             )
-            return {"free": free, "pro": pro, "internal": internal, "admin": admin}
+            return {
+                "trial": trial,
+                "free": free,
+                "pro": pro,
+                "internal": internal,
+                "admin": admin,
+            }
 
         user_concurrency_limiter = UserConcurrencyLimiter(_read_concurrency_limits)
         logger.info("User concurrency limiter initialized (runtime-tunable)")
     else:
         user_concurrency_limiter = UserConcurrencyLimiter(
-            static_limits_provider({"free": 3, "pro": 3, "internal": 10, "admin": 10})
+            static_limits_provider({"trial": 1, "free": 3, "pro": 3, "internal": 10, "admin": 10})
         )
         logger.warning(
             "User concurrency limiter initialized with static defaults "
             "(runtime_settings unavailable)"
         )
+
+    # CompletionsLogger — encapsulates DB-log scheduling and RouteWise
+    # observation forwarding for /v1/chat/completions. Always constructed
+    # (it tolerates ``log_store=None``); the handler depends on a live
+    # instance via ``deps.get_completions_logger``.
+    from serving.servers.routers.completions_logging import CompletionsLogger
+
+    completions_logger = CompletionsLogger(
+        log_store=log_store,
+        model_router_registry=model_router_registry,
+    )
+
+    # PricingLookup + CostTracker — encapsulate the four pricing-lookup
+    # blocks and the ``_schedule_cost_increment`` helper that previously
+    # lived in completions.py. Both tolerate ``op_store=None``, so this is
+    # always safe to construct even when the operational store is offline.
+    from serving.servers.routers.completions_cost import CostTracker, PricingLookup
+
+    pricing_lookup = PricingLookup(router=router)
+    cost_tracker = CostTracker(op_store=operational_store, pricing=pricing_lookup)
+
+    # Start the periodic RouteWise pending-decision sweep only after the rest
+    # of bootstrap has succeeded, so a later startup failure cannot leave the
+    # background task running without a matching shutdown.
+    for rw in routewise_routers:
+        try:
+            await rw.start()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"RouteWiseRouter.start() failed: {exc}")
 
     return AppServices(
         router=router,
@@ -490,9 +610,16 @@ async def initialize() -> AppServices:
         log_store=log_store,
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
+        routewise_routers=routewise_routers,
+        model_visibility_resolver=model_visibility_resolver,
+        weight_override_resolver=weight_override_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
+        completions_logger=completions_logger,
+        pricing_lookup=pricing_lookup,
+        cost_tracker=cost_tracker,
+        weight_override_refresh_task=weight_override_refresh_task,
     )
 
 
@@ -549,6 +676,18 @@ async def shutdown(services: AppServices) -> None:
             await services.routing_manager.shutdown()
         except Exception as exc:
             logger.error(f"Routing manager shutdown failed: {exc}")
+
+    # RouteWise routers (cancels the _pending_decisions TTL sweep task)
+    for rw in services.routewise_routers:
+        try:
+            await rw.stop()
+        except Exception as exc:
+            logger.error(f"RouteWise router shutdown failed: {exc}")
+
+    if services.weight_override_refresh_task is not None:
+        services.weight_override_refresh_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.weight_override_refresh_task
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):

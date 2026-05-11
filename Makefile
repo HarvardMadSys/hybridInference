@@ -27,14 +27,14 @@ help:  ## Show this help message
 format:  ## Format code with ruff (configured for Google style)
 	@echo "$(YELLOW)Running formatter...$(RESET)"
 	$(UV_RUN) ruff format .
-	$(UV_RUN) ruff check --fix .
+	$(UV_RUN) ruff check --fix --unsafe-fixes .
 	@echo "$(GREEN)OK Code formatted$(RESET)"
 
 lint:  ## Run linters (ruff format check, ruff lint, pydocstyle)
 	@echo "$(YELLOW)Running linters...$(RESET)"
 	$(UV_RUN) ruff format --check .
 	$(UV_RUN) ruff check --no-fix .
-	$(UV_RUN) pydocstyle
+	$(UV_RUN) pydocstyle --match-dir='^((?!(tests|\.venv|node_modules|apps/frontend|ops|docs)).)*$'
 	@echo "$(GREEN)OK Linting passed$(RESET)"
 
 test:  ## Run unit/integration tests (exclude external and db-dependent)
@@ -132,8 +132,7 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 
 # ─── Docker / Production ─────────────────────────────────────────────────────
 COMPOSE := docker compose -f deploy/docker/docker-compose.yml --env-file .env
-DOCKER_VOLUMES := hybridinference_postgres_data \
-                  hybridinference_alertmanager_data hybridinference_alert_log_data
+DOCKER_VOLUMES := hybridinference_postgres_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose
 	@for volume in $(DOCKER_VOLUMES); do \

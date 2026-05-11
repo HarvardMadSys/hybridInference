@@ -689,6 +689,49 @@ class OperationalStore(ABC):
     async def list_settings(self) -> list[Row]:
         """Return all site_settings rows."""
 
+    @abstractmethod
+    async def get_model_visibility_override(self, model_id: str) -> Row | None:
+        """Fetch a single model visibility override row by model_id."""
+
+    @abstractmethod
+    async def set_model_visibility_override(
+        self,
+        model_id: str,
+        required_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model visibility override row."""
+
+    @abstractmethod
+    async def delete_model_visibility_override(self, model_id: str) -> bool:
+        """Delete a model visibility override row. Returns True if removed."""
+
+    @abstractmethod
+    async def list_model_visibility_overrides(self) -> list[Row]:
+        """Return all model visibility override rows ordered by model_id."""
+
+    @abstractmethod
+    async def list_weight_overrides_for_model(self, model_id: str) -> list[Row]:
+        """Return provider weight overrides for a model ordered by endpoint_id."""
+
+    @abstractmethod
+    async def list_all_weight_overrides(self) -> list[Row]:
+        """Return all provider weight override rows ordered by model_id and endpoint_id."""
+
+    @abstractmethod
+    async def upsert_weight_override(
+        self,
+        model_id: str,
+        endpoint_id: str,
+        weight: float,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a provider weight override row."""
+
+    @abstractmethod
+    async def delete_weight_override(self, model_id: str, endpoint_id: str) -> bool:
+        """Delete a provider weight override row. Returns True if removed."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod
@@ -786,18 +829,17 @@ class LogStore(ABC):
         provider: str,
         prompt: list[dict[str, Any]] | str,
         response: dict[str, Any] | str | None,
-        usage: dict[str, int] | None,
+        usage: dict[str, Any] | None,
         latency_ms: int,
         status_code: int,
         error: str | None = None,
         params: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         ttft_ms: int | None = None,
-        prompt_hash: str | None = None,
-        response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,
+        request_payload: dict[str, Any] | None = None,
     ) -> None:
         """Insert a single request log row. Idempotent (ON CONFLICT DO NOTHING)."""
 

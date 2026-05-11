@@ -253,7 +253,7 @@ async def test_p95_latency_per_provider_fires(monkeypatch):
             await engine.stop()
 
 
-async def test_p95_latency_uses_unknown_when_provider_missing(monkeypatch):
+async def test_p95_latency_skips_records_without_provider(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     from serving.observability.alerts import reset_dedupe_state
 
@@ -284,12 +284,10 @@ async def test_p95_latency_uses_unknown_when_provider_missing(monkeypatch):
     ) as mock_alert:
         await engine.start()
         try:
-            for ms in range(1000, 31000, 1000):
+            for ms in range(1000, 32000, 1000):
                 handler.queue.put_nowait(_fake_record(200, provider=None, duration_ms=ms))
             await _drain_until(handler, mock_alert)
-            assert mock_alert.await_count >= 1
-            args, _ = mock_alert.call_args
-            assert "unknown" in args[1]
+            assert mock_alert.await_count == 0
         finally:
             await engine.stop()
 
@@ -490,3 +488,303 @@ async def test_provider_hourly_spend_job_fires(monkeypatch):
         assert mock_alert.await_count == 1
         args, _ = mock_alert.call_args
         assert "openai" in args[1]
+
+
+# ---------------------------------------------------------------------------
+# PendingDecisionsLeakRule (PR 2 of issue #4)
+# ---------------------------------------------------------------------------
+
+
+def _make_eviction_record(request_id: str = "r", age_sec: int = 400) -> logging.LogRecord:
+    """Build a synthetic routewise_decision_evicted log record for rule tests."""
+    rec = logging.LogRecord(
+        name="routing.routewise.router",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="routewise_decision_evicted",
+        args=None,
+        exc_info=None,
+    )
+    rec.event = "routewise_decision_evicted"
+    rec.request_id = request_id
+    rec.age_sec = age_sec
+    return rec
+
+
+def test_pending_decisions_leak_config_parses() -> None:
+    """The Pydantic config accepts the documented fields with documented defaults."""
+    from serving.observability.alert_config import PendingDecisionsLeakConfig
+
+    cfg = PendingDecisionsLeakConfig()
+    assert cfg.enabled is True
+    assert cfg.window_sec == 600
+    assert cfg.threshold_count == 20
+    assert cfg.cooldown_sec == 3600
+
+    explicit = PendingDecisionsLeakConfig(
+        enabled=False,
+        window_sec=120,
+        threshold_count=5,
+        cooldown_sec=60,
+    )
+    assert explicit.enabled is False
+    assert explicit.window_sec == 120
+    assert explicit.threshold_count == 5
+    assert explicit.cooldown_sec == 60
+
+
+async def test_leak_rule_fires_above_threshold() -> None:
+    """The rule fires once the in-window count exceeds threshold_count."""
+    from serving.observability.alert_config import PendingDecisionsLeakConfig
+    from serving.observability.alert_rules import PendingDecisionsLeakRule
+
+    cfg = PendingDecisionsLeakConfig(
+        enabled=True,
+        window_sec=600,
+        threshold_count=20,
+        cooldown_sec=0,
+    )
+    rule = PendingDecisionsLeakRule(cfg)
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for i in range(21):
+            await rule.on_record(_make_eviction_record(request_id=f"r{i}"))
+
+    assert mock_alert.await_count >= 1
+    payload = mock_alert.call_args_list[0].args[2]
+    assert payload["evicted_count"] == 21
+    assert payload["window_sec"] == 600
+
+
+async def test_leak_rule_does_not_fire_at_threshold() -> None:
+    """At exactly threshold_count events the rule stays silent (strict >)."""
+    from serving.observability.alert_config import PendingDecisionsLeakConfig
+    from serving.observability.alert_rules import PendingDecisionsLeakRule
+
+    cfg = PendingDecisionsLeakConfig(
+        enabled=True,
+        window_sec=600,
+        threshold_count=20,
+        cooldown_sec=0,
+    )
+    rule = PendingDecisionsLeakRule(cfg)
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for i in range(20):
+            await rule.on_record(_make_eviction_record(request_id=f"r{i}"))
+
+    assert mock_alert.await_count == 0
+
+
+async def test_leak_rule_ignores_other_events() -> None:
+    """Records that are not routewise_decision_evicted must not advance the window."""
+    from serving.observability.alert_config import PendingDecisionsLeakConfig
+    from serving.observability.alert_rules import PendingDecisionsLeakRule
+
+    cfg = PendingDecisionsLeakConfig(
+        enabled=True,
+        window_sec=600,
+        threshold_count=1,
+        cooldown_sec=0,
+    )
+    rule = PendingDecisionsLeakRule(cfg)
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        rec = _make_eviction_record()
+        rec.event = "something_else"
+        await rule.on_record(rec)
+        await rule.on_record(rec)
+
+    assert mock_alert.await_count == 0
+
+
+async def test_leak_rule_disabled_does_not_fire() -> None:
+    """When disabled the rule never invokes alert_slack."""
+    from serving.observability.alert_config import PendingDecisionsLeakConfig
+    from serving.observability.alert_rules import PendingDecisionsLeakRule
+
+    cfg = PendingDecisionsLeakConfig(
+        enabled=False,
+        window_sec=600,
+        threshold_count=0,
+        cooldown_sec=0,
+    )
+    rule = PendingDecisionsLeakRule(cfg)
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for i in range(10):
+            await rule.on_record(_make_eviction_record(request_id=f"r{i}"))
+
+    assert mock_alert.await_count == 0
+
+
+def test_alerts_yaml_loads_with_pending_decisions_leak() -> None:
+    """``config/alerts.yaml`` parses cleanly and the leak block matches defaults."""
+    from pathlib import Path
+
+    import yaml
+
+    from serving.observability.alert_config import AlertConfig
+
+    # tests/unit/observability/<file>.py -> repo root
+    repo_root = Path(__file__).resolve().parents[3]
+    yaml_path = repo_root / "config" / "alerts.yaml"
+    with yaml_path.open() as f:
+        data = yaml.safe_load(f)
+
+    cfg = AlertConfig.model_validate(data)
+    leak = cfg.rules.pending_decisions_leak
+    assert leak.enabled is True
+    assert leak.window_sec == 600
+    assert leak.threshold_count == 20
+    assert leak.cooldown_sec == 3600
+
+
+# ----------------------------------------------------------------------
+# TrackedTaskFailureRateRule
+# ----------------------------------------------------------------------
+
+
+def _make_tracked_record(task_name: str, success: bool) -> logging.LogRecord:
+    """Build a synthetic tracked_task_completed log record."""
+    record = logging.LogRecord(
+        name="serving.observability.tracked_tasks",
+        level=logging.INFO if success else logging.WARNING,
+        pathname=__file__,
+        lineno=0,
+        msg="tracked_task_completed",
+        args=(),
+        exc_info=None,
+    )
+    record.event = "tracked_task_completed"
+    record.task_name = task_name
+    record.success = success
+    return record
+
+
+def test_tracked_task_failure_rate_config_parses_yaml_defaults() -> None:
+    """The Pydantic model accepts the spec's default values."""
+    from serving.observability.alert_config import TrackedTaskFailureRateConfig
+
+    cfg = TrackedTaskFailureRateConfig(
+        enabled=True,
+        window_sec=300,
+        threshold_pct=5.0,
+        min_samples=50,
+        cooldown_sec=1800,
+    )
+    assert cfg.enabled is True
+    assert cfg.window_sec == 300
+    assert cfg.threshold_pct == 5.0
+    assert cfg.min_samples == 50
+    assert cfg.cooldown_sec == 1800
+
+
+async def test_failure_rate_rule_fires_per_task_name() -> None:
+    """A failing task_name fires; an unrelated task_name with low failures does not."""
+    from serving.observability.alert_config import TrackedTaskFailureRateConfig
+    from serving.observability.alert_rules import TrackedTaskFailureRateRule
+
+    cfg = TrackedTaskFailureRateConfig(
+        enabled=True,
+        window_sec=600,
+        threshold_pct=5.0,
+        min_samples=50,
+        cooldown_sec=0,
+    )
+    rule = TrackedTaskFailureRateRule(cfg)
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack", new_callable=AsyncMock
+    ) as mock_alert:
+        # 100 records for request_log: 10 fail (10% > 5% threshold).
+        for i in range(100):
+            await rule.on_record(_make_tracked_record("request_log", success=(i >= 10)))
+        # 100 records for cost_increment: 1 fails (1% < 5% threshold).
+        for i in range(100):
+            await rule.on_record(_make_tracked_record("cost_increment", success=(i != 0)))
+
+    triggered_names = [call.args[2]["task_name"] for call in mock_alert.call_args_list]
+    assert "request_log" in triggered_names
+    assert "cost_increment" not in triggered_names
+
+
+async def test_failure_rate_rule_skips_when_disabled() -> None:
+    """A disabled rule never fires."""
+    from serving.observability.alert_config import TrackedTaskFailureRateConfig
+    from serving.observability.alert_rules import TrackedTaskFailureRateRule
+
+    cfg = TrackedTaskFailureRateConfig(
+        enabled=False,
+        window_sec=300,
+        threshold_pct=5.0,
+        min_samples=1,
+        cooldown_sec=0,
+    )
+    rule = TrackedTaskFailureRateRule(cfg)
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack", new_callable=AsyncMock
+    ) as mock_alert:
+        for _ in range(10):
+            await rule.on_record(_make_tracked_record("anything", success=False))
+    assert mock_alert.await_count == 0
+
+
+async def test_failure_rate_rule_skips_below_min_samples() -> None:
+    """Below min_samples completions, the rule never fires."""
+    from serving.observability.alert_config import TrackedTaskFailureRateConfig
+    from serving.observability.alert_rules import TrackedTaskFailureRateRule
+
+    cfg = TrackedTaskFailureRateConfig(
+        enabled=True,
+        window_sec=300,
+        threshold_pct=5.0,
+        min_samples=50,
+        cooldown_sec=0,
+    )
+    rule = TrackedTaskFailureRateRule(cfg)
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack", new_callable=AsyncMock
+    ) as mock_alert:
+        # 49 failures (below min_samples=50): no alert.
+        for _ in range(49):
+            await rule.on_record(_make_tracked_record("request_log", success=False))
+    assert mock_alert.await_count == 0
+
+
+def test_alerts_yaml_loads_with_tracked_task_failure_rate() -> None:
+    """The committed alerts.yaml parses cleanly into AlertConfig with our defaults."""
+    from pathlib import Path
+
+    import yaml
+
+    from serving.observability.alert_config import AlertConfig
+
+    # tests/unit/observability -> repo root is parents[3].
+    repo_root = Path(__file__).resolve().parents[3]
+    yaml_path = repo_root / "config" / "alerts.yaml"
+    with yaml_path.open() as f:
+        data = yaml.safe_load(f)
+
+    cfg = AlertConfig(**data)
+    rule_cfg = cfg.rules.tracked_task_failure_rate
+    assert rule_cfg.enabled is True
+    assert rule_cfg.window_sec == 300
+    assert rule_cfg.threshold_pct == 5.0
+    assert rule_cfg.min_samples == 50
+    assert rule_cfg.cooldown_sec == 1800

@@ -22,8 +22,10 @@ if TYPE_CHECKING:
         AlertConfig,
         CountRule,
         LatencyRule,
+        PendingDecisionsLeakConfig,
         ProviderHourlySpend,
         RateRule,
+        TrackedTaskFailureRateConfig,
         UserOverrun,
     )
     from serving.observability.log_handler import AlertingLogHandler
@@ -206,7 +208,9 @@ class P95LatencyRule:
             return
         if record.name != _REQUEST_LOG_LOGGER:
             return
-        provider = getattr(record, "provider", None) or "unknown"
+        provider = getattr(record, "provider", None)
+        if not provider:
+            return
         duration_ms = getattr(record, "duration_ms", None)
         if duration_ms is None:
             return
@@ -338,6 +342,93 @@ class ConcurrencyExhaustedRule:
                 ),
             },
             dedupe_key="concurrency_exhausted",
+            cooldown_sec=self._cfg.cooldown_sec,
+        )
+
+
+class PendingDecisionsLeakRule:
+    """Alert when RouteWise pending-decision evictions exceed a threshold.
+
+    Fires when more than ``threshold_count`` ``routewise_decision_evicted``
+    events arrive within ``window_sec``. A sustained crossing means
+    ``RouteWiseRouter._pending_decisions`` is leaking entries (likely
+    because some code path constructs a decision but never reaches the
+    consume site in ``chat_completion`` / ``stream_chat_completion``).
+    """
+
+    name = "pending_decisions_leak"
+
+    def __init__(self, cfg: PendingDecisionsLeakConfig) -> None:
+        self._cfg = cfg
+        self._window = _SlidingWindow(cfg.window_sec)
+
+    async def on_record(self, record: logging.LogRecord) -> None:
+        """Update the count window from a routewise_decision_evicted event."""
+        if not self._cfg.enabled:
+            return
+        if getattr(record, "event", None) != "routewise_decision_evicted":
+            return
+        now = time.time()
+        self._window.add(now, {})
+        items = self._window.items(now)
+        if len(items) <= self._cfg.threshold_count:
+            return
+        await alert_slack(
+            AlertSeverity.WARN,
+            "RouteWise pending-decisions leaking",
+            {
+                "evicted_count": len(items),
+                "window_sec": self._cfg.window_sec,
+            },
+            dedupe_key="pending_decisions_leak",
+            cooldown_sec=self._cfg.cooldown_sec,
+        )
+
+
+class TrackedTaskFailureRateRule:
+    """Alert when a tracked task type fails at a sustained rate.
+
+    Reads ``tracked_task_completed`` log records emitted by the
+    ``serving.observability.tracked_tasks.tracked_task`` helper and
+    keeps a per-``task_name`` sliding window. Fires once the failure
+    rate over the window exceeds ``threshold_pct`` and at least
+    ``min_samples`` completions are observed.
+    """
+
+    name = "tracked_task_failure_rate"
+
+    def __init__(self, cfg: TrackedTaskFailureRateConfig) -> None:
+        self._cfg = cfg
+        self._windows: dict[str, _SlidingWindow] = {}
+
+    async def on_record(self, record: logging.LogRecord) -> None:
+        """Update the per-task-name window from a tracked_task_completed event."""
+        if not self._cfg.enabled:
+            return
+        if getattr(record, "event", None) != "tracked_task_completed":
+            return
+        task_name = getattr(record, "task_name", None) or "unknown"
+        success = bool(getattr(record, "success", True))
+        win = self._windows.setdefault(task_name, _SlidingWindow(self._cfg.window_sec))
+        now = time.time()
+        win.add(now, {"success": success})
+        items = win.items(now)
+        if len(items) < self._cfg.min_samples:
+            return
+        failed = sum(1 for it in items if not it["success"])
+        pct = (failed / len(items)) * 100.0
+        if pct < self._cfg.threshold_pct:
+            return
+        await alert_slack(
+            AlertSeverity.ERROR,
+            f"Tracked-task failure rate exceeded for {task_name}",
+            {
+                "task_name": task_name,
+                "rate": (
+                    f"{pct:.1f}% ({failed} of {len(items)} tasks, last {self._cfg.window_sec}s)"
+                ),
+            },
+            dedupe_key=f"tracked_task_failure:{task_name}",
             cooldown_sec=self._cfg.cooldown_sec,
         )
 
@@ -474,6 +565,8 @@ class AlertEngine:
         self._rules.append(P95LatencyRule(self._config.rules.p95_latency_per_provider))
         self._rules.append(AuthFailureSpikeRule(self._config.rules.auth_failure_spike))
         self._rules.append(ConcurrencyExhaustedRule(self._config.rules.concurrency_exhausted))
+        self._rules.append(PendingDecisionsLeakRule(self._config.rules.pending_decisions_leak))
+        self._rules.append(TrackedTaskFailureRateRule(self._config.rules.tracked_task_failure_rate))
 
     def _schedule_periodic_jobs(self) -> None:
         if self._scheduler is None:

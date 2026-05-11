@@ -320,8 +320,8 @@ class UpdateUserRequest(BaseModel):
 
     role: str | None = Field(
         None,
-        pattern="^(free|pro|internal|admin)$",
-        description="One of: free, pro, internal, admin",
+        pattern="^(trial|free|pro|internal|admin)$",
+        description="One of: trial, free, pro, internal, admin",
     )
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
@@ -686,6 +686,58 @@ class UpdateSettingRequest(BaseModel):
     value: Any
 
 
+class ModelVisibilityItem(BaseModel):
+    """Current visibility requirements for a canonical model."""
+
+    model_id: str
+    baseline_required_role: str
+    override_required_role: str | None = None
+    effective_required_role: str
+
+
+class ListModelVisibilityResponse(BaseModel):
+    """Response payload for listing model visibility."""
+
+    models: list[ModelVisibilityItem]
+
+
+class UpdateModelVisibilityRequest(BaseModel):
+    """Request payload for updating a model visibility override."""
+
+    required_role: Literal["trial", "free", "pro", "internal", "admin"] | None
+
+
+class RouteWeightItem(BaseModel):
+    """Current route weight state for one model endpoint."""
+
+    model_id: str
+    endpoint_id: str
+    provider: str
+    base_url: str | None = None
+    yaml_weight: float
+    override_weight: float | None = None
+    effective_weight: float
+
+
+class ListRouteWeightsResponse(BaseModel):
+    """Response payload for listing route weights for a model."""
+
+    model_id: str
+    routes: list[RouteWeightItem]
+
+
+class ListAllRouteWeightsResponse(BaseModel):
+    """Response payload for listing route weights across canonical models."""
+
+    routes: list[RouteWeightItem]
+
+
+class UpdateRouteWeightRequest(BaseModel):
+    """Request payload for upserting a route weight override."""
+
+    weight: float
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -719,10 +771,14 @@ __all__ = [
     "HardDeleteUserRequest",
     "HardDeleteUserResponse",
     "ListAPIKeysResponse",
+    "ListAllRouteWeightsResponse",
     "ListAuditLogResponse",
+    "ListModelVisibilityResponse",
+    "ListRouteWeightsResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
+    "ModelVisibilityItem",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
     "RegenerateAPIKeyResponse",
@@ -731,6 +787,7 @@ __all__ = [
     "ResumeUserRequest",
     "ResumeUserResponse",
     "RevokeAPIKeyResponse",
+    "RouteWeightItem",
     "RuntimeSettingItem",
     "SparklineBucket",
     "StatusCounts",
@@ -738,6 +795,8 @@ __all__ = [
     "SummaryUserItem",
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
+    "UpdateModelVisibilityRequest",
+    "UpdateRouteWeightRequest",
     "UpdateSettingRequest",
     "UpdateUserRequest",
     "UpdateUserResponse",
@@ -842,6 +901,8 @@ class ProviderStatsRow(BaseModel):
     prompt_tokens_avg: float | None = None
     completion_tokens_avg: float | None = None
     total_completion_tokens: int
+    total_prompt_tokens: int | None = None
+    total_reasoning_tokens: int | None = None
 
 
 class ProviderModelPair(BaseModel):

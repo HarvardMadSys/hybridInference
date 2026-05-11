@@ -16,6 +16,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
+from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -67,6 +68,8 @@ class RouteConfig:
     """Weighted adapter list for a model."""
 
     adapters: list[tuple[BaseAdapter, float]]
+    raw_adapters: list[tuple[BaseAdapter, float, str]] | None = None
+    canonical_model_id: str | None = None
     admin_only: bool = False
     required_role: str = "free"
 
@@ -119,6 +122,15 @@ def _get_endpoint_id(adapter: BaseAdapter) -> str:
     Uses endpoint_id if set, otherwise falls back to provider.
     """
     return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
+
+
+def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
+    return {
+        "provider": adapter.config.provider,
+        "endpoint_id": _get_endpoint_id(adapter),
+        "error_type": exc.__class__.__name__,
+        "error": str(exc),
+    }
 
 
 def _routing_chunk(adapter: BaseAdapter, *, fallback: bool = False) -> str:
@@ -203,7 +215,7 @@ class _ProviderHealth:
         self.provider = provider
         env_alpha = os.getenv("ROUTER_HEALTH_EWMA_ALPHA")
         self.alpha = (
-            float(env_alpha) if env_alpha is not None else (alpha if alpha is not None else 0.2)
+            float(env_alpha) if env_alpha is not None else (alpha if alpha is not None else 0.1)
         )
         self.ewma_success = 1.0
         self.ewma_total = 1.0
@@ -524,6 +536,7 @@ class BaseRouter:
                 return resp
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason=primary_error.__class__.__name__)
+                failed_attempts = [_failed_attempt(primary, primary_error)]
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
                 for adapter in fallback_adapters:
                     last_attempted = adapter
@@ -539,14 +552,16 @@ class BaseRouter:
                             "endpoint_id",
                             getattr(adapter.config, "endpoint_id", None),
                         )
+                        resp["_routing"].setdefault("failed_attempts", failed_attempts)
                         API_FALLBACKS.labels(
                             from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                             to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
                             reason=primary_error.__class__.__name__,
                         ).inc()
                         return resp
-                    except Exception:
+                    except Exception as fallback_error:
                         self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
+                        failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
                 raise primary_error
         except BaseException as e:
@@ -640,11 +655,58 @@ class FixedRouter(BaseRouter):
 
     Drop-in replacement for RouteExecutor. Selects adapters via weighted
     random selection and tries remaining adapters on failure.
+
+    Args:
+        params: Optional Pydantic ``FixedParams`` (passed by the strategy
+            registry).  ``None`` keeps existing call-site behavior.
+            ``params.local_fraction`` is currently informational; the existing
+            weighted-random selection over ``routes`` is unchanged.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, params: Any = None, weight_override_resolver: Any | None = None) -> None:
         super().__init__()
         self.routes: dict[str, RouteConfig] = {}
+        # Keep the validated params accessible for future use (e.g. honoring
+        # local_fraction in adapter selection).  Today FixedRouter ignores it
+        # because per-route weights already encode local-vs-remote balance.
+        self.params = params
+        self.weight_override_resolver = weight_override_resolver
+
+    def _get_effective_adapters(
+        self, model_id: str, route: RouteConfig
+    ) -> list[tuple[BaseAdapter, float]]:
+        """Return raw route weights with runtime overrides applied when available."""
+        resolver = self.weight_override_resolver
+        raw_adapters = route.raw_adapters
+        override_model_id = route.canonical_model_id or model_id
+        if resolver is None or not raw_adapters:
+            return route.adapters
+
+        get_snapshot = getattr(resolver, "get_snapshot_for_model", None)
+        if get_snapshot is not None:
+            overrides = get_snapshot(override_model_id)
+            return [
+                (adapter, float(overrides.get(endpoint_id, raw_weight)))
+                for adapter, raw_weight, endpoint_id in raw_adapters
+            ]
+
+        result = resolver.get_for_model(override_model_id)
+        if isawaitable(result):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                overrides = asyncio.run(result)
+            else:
+                raise RuntimeError(
+                    "FixedRouter cannot await weight overrides during active event-loop selection"
+                ) from None
+        else:
+            overrides = result
+
+        return [
+            (adapter, float(overrides.get(endpoint_id, raw_weight)))
+            for adapter, raw_weight, endpoint_id in raw_adapters
+        ]
 
     def register_route(
         self,
@@ -671,6 +733,10 @@ class FixedRouter(BaseRouter):
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
             return
+        raw_adapters = [
+            (adapter, float(weight), _get_endpoint_id(adapter))
+            for adapter, weight in adapters_with_weights
+        ]
         normalized = [(adapter, weight / total_weight) for adapter, weight in adapters_with_weights]
         # Backward compat: admin_only=True implies required_role="admin"
         effective_role = required_role
@@ -678,6 +744,8 @@ class FixedRouter(BaseRouter):
             effective_role = "admin"
         route_cfg = RouteConfig(
             adapters=normalized,
+            raw_adapters=raw_adapters,
+            canonical_model_id=model_id,
             admin_only=admin_only,
             required_role=effective_role,
         )
@@ -702,7 +770,7 @@ class FixedRouter(BaseRouter):
             return None
 
         if pin_provider:
-            for adapter, weight in route.adapters:
+            for adapter, weight in self._get_effective_adapters(model_id, route):
                 if weight <= 0:
                     continue
                 eid = _get_endpoint_id(adapter)
@@ -712,7 +780,7 @@ class FixedRouter(BaseRouter):
 
         with self._lock:
             snapshot: list[tuple[BaseAdapter, float, _CircuitBreaker]] = []
-            for adapter, weight in route.adapters:
+            for adapter, weight in self._get_effective_adapters(model_id, route):
                 endpoint_id = _get_endpoint_id(adapter)
                 cb = self._circuits.get(endpoint_id)
                 if not cb:
@@ -838,13 +906,14 @@ class FixedRouter(BaseRouter):
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
             self._on_failure(_get_endpoint_id(primary), reason="chat_exception")
+            failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — the caller explicitly requested this
             # provider, so a silent switch would produce misleading results.
             if pin_provider:
                 raise primary_error
             self._drop_affinity(model_id)
             route = self.routes[model_id]
-            for adapter, weight in route.adapters:
+            for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
                     continue
                 try:
@@ -866,14 +935,16 @@ class FixedRouter(BaseRouter):
                             "fallback": True,
                         }
                     resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(adapter))
+                    resp["_routing"].setdefault("failed_attempts", failed_attempts)
                     API_FALLBACKS.labels(
                         from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                         to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
                         reason=primary_error.__class__.__name__,
                     ).inc()
                     return resp
-                except Exception:
-                    self._on_failure(endpoint_id, reason="chat_exception")
+                except Exception as fallback_error:
+                    self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
+                    failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
             raise primary_error
 
@@ -954,7 +1025,7 @@ class FixedRouter(BaseRouter):
             if chunks_yielded:
                 raise primary_error
             route = self.routes[model_id]
-            for adapter, weight in route.adapters:
+            for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
                     continue
                 try:

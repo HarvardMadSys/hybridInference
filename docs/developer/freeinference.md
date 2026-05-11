@@ -22,9 +22,9 @@ Nginx path routing:
 - `/pgadmin/` → pgAdmin — gated by `auth_request` against FastAPI's `/internal/verify-admin` endpoint, so only admins reach it
 - everything else → frontend
 
-Docker Compose manages all services (backend, frontend, PostgreSQL, Alertmanager,
-alert-logger, plus pgAdmin behind the `admin` profile) with automatic restarts
-via `restart: unless-stopped`.
+Docker Compose manages all services (backend, frontend, PostgreSQL, plus
+pgAdmin behind the `admin` profile) with automatic restarts via
+`restart: unless-stopped`.
 
 ### Deployment
 

@@ -7,12 +7,9 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
-from serving.storage.utils import (
-    calculate_cost,
-    compute_prompt_hash,
-    compute_prompt_hash_chunked,
-)
+from serving.storage.utils import calculate_cost
 from serving.utils.logging import get_logger
+from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
     import asyncpg
@@ -28,18 +25,15 @@ class PostgresLogStore(LogStore):
         pool: asyncpg.Pool,
         *,
         store_full_prompts: bool = True,
-        use_chunked_hash: bool = False,
     ) -> None:
         """Initialize with an existing asyncpg pool.
 
         Args:
             pool: Shared asyncpg connection pool.
-            store_full_prompts: If False, only store prompt_hash (privacy mode).
-            use_chunked_hash: Use 4-token chunked hashing instead of full hash.
+            store_full_prompts: If False, prompt and response fields will be NULL.
         """
         self.pool = pool
         self.store_full_prompts = store_full_prompts
-        self.use_chunked_hash = use_chunked_hash
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -91,35 +85,24 @@ class PostgresLogStore(LogStore):
         provider: str,
         prompt: list[dict[str, Any]] | str,
         response: dict[str, Any] | str | None,
-        usage: dict[str, int] | None,
+        usage: dict[str, Any] | None,
         latency_ms: int,
         status_code: int,
         error: str | None = None,
         params: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         ttft_ms: int | None = None,
-        prompt_hash: str | None = None,
-        response_hash: str | None = None,
         store_full_content: bool | None = None,
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,
+        request_payload: dict[str, Any] | None = None,
     ) -> None:
         """Insert a single request log row.
 
         upstream_cost_usd: OpenRouter-reported per-request upstream cost (USD),
         or None for non-OpenRouter routes.
         """
-        # Auto-compute hashes
-        hash_fn = compute_prompt_hash_chunked if self.use_chunked_hash else compute_prompt_hash
-        if prompt_hash is None:
-            prompt_hash = hash_fn(prompt)
-        if response_hash is None and response is not None:
-            resp_str = (
-                json.dumps(response, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-                if isinstance(response, dict)
-                else str(response)
-            )
-            response_hash = hash_fn(resp_str)
+        usage = normalize_usage(usage) or usage
 
         should_store_full = (
             store_full_content if store_full_content is not None else self.store_full_prompts
@@ -133,9 +116,13 @@ class PostgresLogStore(LogStore):
                 if response is not None
                 else None
             )
+            request_payload_str = (
+                json.dumps(request_payload) if request_payload is not None else None
+            )
         else:
             prompt_str = None
             response_str = None
+            request_payload_str = None
 
         cost_usd = calculate_cost(usage, pricing)
 
@@ -148,7 +135,7 @@ class PostgresLogStore(LogStore):
                     ttft_ms, latency_ms,
                     prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
                     cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response, prompt_hash, response_hash,
+                    prompt, response, request_payload,
                     status_code, error, user_id, session_id, metadata,
                     tools, upstream_cost_usd
                 )
@@ -158,9 +145,9 @@ class PostgresLogStore(LogStore):
                     $9, $10,
                     $11, $12, $13, $14,
                     $15, $16, $17,
-                    $18, $19, $20, $21,
-                    $22, $23, $24, $25, $26::jsonb,
-                    $27::jsonb, $28
+                    $18, $19, $20::jsonb,
+                    $21, $22, $23, $24, $25::jsonb,
+                    $26::jsonb, $27
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -183,8 +170,7 @@ class PostgresLogStore(LogStore):
                 cost_usd,
                 prompt_str,
                 response_str,
-                prompt_hash,
-                response_hash,
+                request_payload_str,
                 status_code,
                 error,
                 (metadata or {}).get("user_id"),

@@ -1,9 +1,15 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SettingsTab } from '../SettingsTab';
+
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/dashboard/admin/settings',
+  useRouter: () => ({ replace: vi.fn() }),
+}));
 
 vi.mock('@/lib/api/admin', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/admin')>('@/lib/api/admin');
@@ -37,7 +43,18 @@ vi.mock('@/lib/api/admin', async () => {
 describe('SettingsTab role quota', () => {
   it('renders Apply button only on quota settings and runs the confirm flow', async () => {
     const api = await import('@/lib/api/admin');
-    render(<SettingsTab />);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab />
+      </QueryClientProvider>,
+    );
 
     const applyBtn = await screen.findByRole('button', { name: /apply to existing users/i });
     fireEvent.click(applyBtn);

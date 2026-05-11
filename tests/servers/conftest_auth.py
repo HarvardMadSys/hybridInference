@@ -17,7 +17,14 @@ from httpx import AsyncClient
 
 from serving.servers.deps import AppServices
 from serving.storage.database import DatabaseLogger
-from tests.fixtures.auth_factories import create_test_user
+from tests.fixtures.auth_helpers import (
+    assert_test_db_from_pool,
+    assert_test_db_name,
+    build_auth_test_env_defaults,
+    cleanup_auth_tables,
+    login_and_get_auth_headers,
+    seed_test_user,
+)
 
 # ---------------------------------------------------------------------------
 # Environment
@@ -31,64 +38,18 @@ def auth_env(monkeypatch):
 
     get_settings.cache_clear()
 
-    test_env = {
-        # Database
-        "DB_ENABLED": "true",
-        "DB_HOST": os.getenv("TEST_DB_HOST", "localhost"),
-        "DB_PORT": os.getenv("TEST_DB_PORT", "5432"),
-        "DB_NAME": os.getenv("TEST_DB_NAME", "freeinference_test_db"),
-        "DB_USER": os.getenv("TEST_DB_USER", "postgres"),
-        "DB_PASSWORD": os.getenv("TEST_DB_PASSWORD", "postgres"),
-        # JWT
-        "JWT_SECRET_KEY": "test-secret-key-for-testing-only-do-not-use-in-production",
-        "JWT_ALGORITHM": "HS256",
-        "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": "15",
-        "JWT_REFRESH_TOKEN_EXPIRE_DAYS": "30",
-        # API Key
-        "API_KEY_SECRET": "test-api-key-secret-for-testing-only",
-        # Cookie
-        "COOKIE_SECURE": "false",
-        "COOKIE_SAMESITE": "lax",
-        # Signup
-        "SIGNUP_ENABLED": "1",
-        "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "100.00",
-        "SIGNUP_REQUIRE_EMAIL_VERIFICATION": "0",
-        # Email (disabled in tests)
-        "SMTP_HOST": "",
-        "SMTP_USER": "",
-        "SMTP_PASSWORD": "",
-        # Base URL
-        "BASE_URL": "http://localhost:8000",
-        # Disable other features
-        "MODELS_CONFIG": "test/fixtures/test_models.yaml",
-        "ROUTING_CONFIG": "test/fixtures/test_routing.yaml",
-    }
-
+    test_env = build_auth_test_env_defaults(
+        {
+            "MODELS_CONFIG": "tests/fixtures/test_models.yaml",
+            "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
+        }
+    )
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
 
     get_settings.cache_clear()
 
     return test_env
-
-
-# ---------------------------------------------------------------------------
-# PostgreSQL helpers
-# ---------------------------------------------------------------------------
-
-_ALLOWED_TEST_DB_PATTERN = "_test_"
-
-
-async def _guard_test_db_only(conn) -> None:
-    """Fail fast unless the connection points at a dedicated test database."""
-    db_name = await conn.fetchval("SELECT current_database()")
-    if _ALLOWED_TEST_DB_PATTERN not in (db_name or ""):
-        pytest.fail(
-            f"SAFETY: refusing to run destructive operations against "
-            f"database '{db_name}' (name does not contain "
-            f"'{_ALLOWED_TEST_DB_PATTERN}'). "
-            f"Set TEST_DB_NAME to a dedicated test database."
-        )
 
 
 async def _init_pg_backend():
@@ -102,12 +63,7 @@ async def _init_pg_backend():
     from serving.storage.postgres_operational import PostgresOperationalStore
 
     test_db_name = os.getenv("TEST_DB_NAME", "freeinference_test_db")
-
-    if _ALLOWED_TEST_DB_PATTERN not in (test_db_name or ""):
-        pytest.fail(
-            f"SAFETY: TEST_DB_NAME='{test_db_name}' does not contain "
-            f"'{_ALLOWED_TEST_DB_PATTERN}'. Refusing to initialize."
-        )
+    assert_test_db_name(test_db_name, context="auth_backend init")
 
     db_config = {
         "host": os.getenv("TEST_DB_HOST", "localhost"),
@@ -125,8 +81,7 @@ async def _init_pg_backend():
         pytest.skip(f"PostgreSQL not available: {e}")
 
     if logger.pool:
-        async with logger.pool.acquire() as conn:
-            await _guard_test_db_only(conn)
+        await assert_test_db_from_pool(logger.pool, context="auth_backend pool")
 
     settings = get_settings()
     pg_op = PostgresOperationalStore(logger.pool)
@@ -134,23 +89,9 @@ async def _init_pg_backend():
     log_store = PostgresLogStore(
         logger.pool,
         store_full_prompts=settings.db_store_full_content,
-        use_chunked_hash=True,
     )
 
     return logger, operational_store, log_store
-
-
-async def _cleanup_pg_tables(pool):
-    """Delete all rows from auth tables in PostgreSQL."""
-    async with pool.acquire() as conn:
-        await _guard_test_db_only(conn)
-        await conn.execute("DELETE FROM email_verification_tokens")
-        await conn.execute("DELETE FROM password_reset_tokens")
-        await conn.execute("DELETE FROM auth_sessions")
-        await conn.execute("DELETE FROM api_keys WHERE account_id IS NOT NULL")
-        # signup_allowed_domains references users(id); clear it before users.
-        await conn.execute("DELETE FROM signup_allowed_domains")
-        await conn.execute("DELETE FROM users")
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +117,10 @@ async def clean_auth_tables(auth_backend):
     """Clean auth-related tables before and after each test."""
     _operational_store, _log_store, db_logger, _backend = auth_backend
 
-    await _cleanup_pg_tables(db_logger.pool)
-
+    await cleanup_auth_tables(db_logger.pool)
     yield
 
-    await _cleanup_pg_tables(db_logger.pool)
+    await cleanup_auth_tables(db_logger.pool)
 
 
 @pytest_asyncio.fixture
@@ -191,18 +131,7 @@ async def test_user(auth_backend, clean_auth_tables):
         dict with user data including plain text password
     """
     operational_store, _, _, _ = auth_backend
-    user_data = create_test_user()
-
-    await operational_store.create_user(
-        user_id=user_data["id"],
-        email=user_data["email"],
-        password_hash=user_data["password_hash"],
-        user_name=user_data["user_name"],
-        email_verified=user_data["email_verified"],
-        status=user_data["status"],
-    )
-
-    return user_data
+    return await seed_test_user(operational_store)
 
 
 @pytest_asyncio.fixture
@@ -241,19 +170,11 @@ async def auth_headers(test_user, auth_app_client):
     Returns:
         dict with Authorization header
     """
-    response = await auth_app_client.post(
-        "/auth/login",
-        json={
-            "email": test_user["email"],
-            "password": test_user["password"],
-        },
+    return await login_and_get_auth_headers(
+        auth_app_client,
+        email=test_user["email"],
+        password=test_user["password"],
     )
-
-    assert response.status_code == 200
-    data = response.json()
-    access_token = data["access_token"]
-
-    return {"Authorization": f"Bearer {access_token}"}
 
 
 # ---------------------------------------------------------------------------

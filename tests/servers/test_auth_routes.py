@@ -67,6 +67,18 @@ async def auth_test_user(auth_backend, clean_auth_tables):
     yield user_data
 
 
+@pytest.mark.asyncio
+async def test_auth_headers_fixture_logs_in_seeded_user(
+    auth_app_client: AsyncClient, test_user, auth_headers
+):
+    response = await auth_app_client.get("/user/me", headers=auth_headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == test_user["id"]
+    assert data["email"] == test_user["email"].lower()
+
+
 class TestSignup:
     """Test user signup endpoint."""
 
@@ -114,6 +126,7 @@ class TestSignup:
                 "email": test_user["email"],
                 "password": "SecurePass123!",
                 "user_name": "Duplicate User",
+                "accepted_tos": True,
             },
         )
 
@@ -128,6 +141,7 @@ class TestSignup:
                 "email": "weakpass@example.com",
                 "password": "123",
                 "user_name": "Weak Pass",
+                "accepted_tos": True,
             },
         )
 
@@ -142,6 +156,7 @@ class TestSignup:
                 "email": "not-an-email",
                 "password": "SecurePass123!",
                 "user_name": "Invalid Email",
+                "accepted_tos": True,
             },
         )
 
@@ -175,6 +190,45 @@ class TestSignup:
         )
 
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_signup_missing_tos_acceptance(self, auth_app_client: AsyncClient):
+        signup_data = create_signup_request()
+        signup_data.pop("accepted_tos")
+
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_signup_rejects_false_tos_acceptance(self, auth_app_client: AsyncClient):
+        signup_data = create_signup_request(accepted_tos=False)
+
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+
+        assert response.status_code == 400
+        assert (
+            response.json()["detail"]
+            == "You must agree to the Terms of Service to create an account"
+        )
+
+    @pytest.mark.asyncio
+    async def test_signup_rejects_false_tos_after_rate_limit_recording(
+        self, auth_app_client: AsyncClient
+    ):
+        signup_data = create_signup_request(accepted_tos=False)
+
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+        assert response.status_code == 400
+
+        for _ in range(4):
+            response = await auth_app_client.post("/auth/signup", json=create_signup_request())
+            assert response.status_code in (201, 409)
+
+        response = await auth_app_client.post("/auth/signup", json=create_signup_request())
+
+        assert response.status_code == 429
+        assert "Retry-After" in response.headers
 
 
 class TestSignupAbuseProtection:

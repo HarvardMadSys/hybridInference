@@ -73,6 +73,24 @@ describe('RecentRequests', () => {
     expect(screen.queryByText('Request Details')).not.toBeInTheDocument();
   });
 
+  it('shows cached tokens in the collapsed token summary', async () => {
+    const { useRecentRequests } = await import('@/lib/hooks');
+    vi.mocked(useRecentRequests).mockReturnValue({
+      data: {
+        requests: [makeRequest({ cache_read_tokens: 913, reasoning_tokens: null })],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useRecentRequests>);
+
+    render(<RecentRequests />);
+
+    expect(screen.getByTitle('913 cached tokens')).toHaveTextContent('C 913');
+  });
+
   it('rounds sub-second latencies consistently across metrics', async () => {
     const { useRecentRequests } = await import('@/lib/hooks');
     vi.mocked(useRecentRequests).mockReturnValue({

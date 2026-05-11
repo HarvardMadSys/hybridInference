@@ -54,6 +54,17 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+# TTL for non-streaming entries in RouteWiseRouter._pending_decisions. If
+# ``chat_completion`` / ``stream_chat_completion`` doesn't consume an entry
+# within this window — typically because the request was aborted, timed out,
+# or hit a code-path bug — the periodic sweep evicts it and emits a
+# ``routewise_decision_evicted`` log event. Active streaming requests are
+# intentionally excluded because they can legitimately remain in-flight for
+# longer than the fixed TTL.
+PENDING_DECISIONS_TTL_SECONDS: float = 300.0
+PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
+
+
 class SubscriptionType(Enum):
     """Subscription tier for an adapter endpoint.
 
@@ -90,20 +101,46 @@ class RouteWiseRouter(BaseRouter):
 
     def __init__(
         self,
-        fixed_router: Any,
-        config: RouteWiseConfig,
+        fixed_router: Any = None,
+        config: RouteWiseConfig | None = None,
+        params: Any = None,
     ) -> None:
+        """Initialize RouteWiseRouter.
+
+        Two construction shapes are supported:
+
+        1. Direct (legacy): pass ``fixed_router`` + ``config`` (a
+           ``RouteWiseConfig`` dataclass).  Used by the existing bootstrap
+           path and tests.
+        2. Strategy-registry: pass ``params`` (a ``RouteWiseParams`` Pydantic
+           model from the strategy registry).  ``params`` is translated to
+           ``RouteWiseConfig`` via ``model_dump()``.  ``fixed_router`` is
+           bound later by ``ModelRouterRegistry`` via
+           :meth:`attach_fixed_router`.
+
+        Exactly one of ``config`` or ``params`` should be provided.  When
+        constructed via the registry without a ``fixed_router``, post-init
+        classification is deferred until ``attach_fixed_router`` runs.
+        """
         super().__init__()
+
+        if config is None and params is not None:
+            # Translate Pydantic params -> RouteWiseConfig dataclass.
+            from .config import RouteWiseConfig as _RWC
+
+            config = _RWC(**params.model_dump())
+        if config is None:
+            from .config import RouteWiseConfig as _RWC
+
+            config = _RWC()
         self.fixed_router = fixed_router
         self.config = config
 
         # Per-model adapter classification.
         self.classified: dict[str, list[tuple[Any, float, SubscriptionType]]] = {}
-        self._classify_all()
 
         # Reverse lookup: adapter id(obj) -> SubscriptionType.
         self._adapter_sub_type: dict[int, SubscriptionType] = {}
-        self._build_adapter_sub_type_map()
 
         # Online predictors and quota tracking.
         self.predictor = EMAOutputPredictor(
@@ -122,16 +159,12 @@ class RouteWiseRouter(BaseRouter):
         # Populated in _select_adapter(), consumed in chat_completion() /
         # stream_chat_completion().  Same pattern as NimbusRouter.
         self._pending_decisions: dict[str, dict[str, Any]] = {}
+        # Periodic TTL-cleanup task; populated by start(), cancelled by stop().
+        self._sweep_task: asyncio.Task[None] | None = None
 
         # Precomputed per-token prices for all S_A adapters, keyed by model.
         # Each entry: (adapter, price_prompt_per_token, price_completion_per_token).
         self._api_adapter_prices: dict[str, list[tuple[Any, float, float]]] = {}
-        self._precompute_api_prices()
-
-        # Validate that every model has at least one S_A baseline adapter.
-        # Without S_A, v_t (the API cost savings) is undefined and the
-        # fallthrough path has no safe adapter to return.
-        self._validate_api_baseline()
 
         # Layer 2: Latency-aware provider selection state.
         # Latency profiles are keyed by endpoint_id.  This dict is router-global,
@@ -152,6 +185,48 @@ class RouteWiseRouter(BaseRouter):
         self._api_endpoint_map: dict[str, tuple[Any, float, float]] = {}
         # Track in-flight LP solves to avoid duplicate concurrent solves.
         self._pending_lp_solves: set[str] = set()
+
+        # Run post-init classification when a fixed_router is available.
+        # When constructed via the registry without one, defer to
+        # attach_fixed_router (ModelRouterRegistry calls it immediately).
+        if self.fixed_router is not None:
+            self._classify_all()
+            self._build_adapter_sub_type_map()
+            self._precompute_api_prices()
+            self._validate_api_baseline()
+            self._init_latency_profiles()
+
+    def attach_fixed_router(self, fixed_router: Any) -> None:
+        """Bind a ``FixedRouter`` after construction.
+
+        Used by ``ModelRouterRegistry`` when a model is configured with
+        ``router: routewise`` in YAML — the registry constructs the router
+        via ``build_router("routewise", params)`` first, then attaches the
+        shared ``FixedRouter`` so classification and latency-profile init
+        can run.
+
+        Safe to call more than once: this method rebuilds classification and
+        clears any derived state tied to the previously attached router. In
+        normal use it is called exactly once, immediately after
+        ``build_router`` returns.
+        """
+        self.fixed_router = fixed_router
+        self.classified = {}
+        self._adapter_sub_type = {}
+        self._pending_decisions = {}
+        self._api_adapter_prices = {}
+        self._latency_profiles = {}
+        self._swrr_samplers = {}
+        self._last_lp_times = {}
+        self._last_lp_weights = {}
+        self._last_lp_statuses = {}
+        self._shadow_hedge_log = []
+        self._api_endpoint_map = {}
+        self._pending_lp_solves = set()
+        self._classify_all()
+        self._build_adapter_sub_type_map()
+        self._precompute_api_prices()
+        self._validate_api_baseline()
         self._init_latency_profiles()
 
     # ------------------------------------------------------------------
@@ -854,23 +929,9 @@ class RouteWiseRouter(BaseRouter):
                 "quota_remaining": self.quota_mgr.remaining,
                 "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
                 "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
+                # Wall-clock timestamp for TTL eviction (see _sweep_pending_decisions_once).
+                "timestamp": time.time(),
             }
-
-        # -- Pre-decision gauges ------------------------------------------
-        from serving.observability.metrics import (
-            ROUTEWISE_QUOTA_REMAINING,
-            ROUTEWISE_SC_ACTIVE,
-            ROUTEWISE_VALUE_ESTIMATE,
-            normalize_model_label,
-        )
-
-        model_label = normalize_model_label(model_id)
-        # Quota and concurrency are router-global shared resources (no model label).
-        ROUTEWISE_QUOTA_REMAINING.set(self.quota_mgr.remaining)
-        if self.conc_mgr is not None:
-            ROUTEWISE_SC_ACTIVE.set(self.conc_mgr.active)
-        if v_t < float("inf"):
-            ROUTEWISE_VALUE_ESTIMATE.labels(model=model_label).observe(v_t)
 
         # -- Tier selection (S_C > S_Q > S_A) -----------------------------
         best_gain = max(gain_c, gain_q, gain_a)
@@ -888,6 +949,7 @@ class RouteWiseRouter(BaseRouter):
                 if request_id:
                     self._pending_decisions[request_id] = {
                         **_base_decision(),
+                        "is_streaming": False,
                         "selected_tier": "concurrency",
                         "quota_committed": 0.0,
                         "sc_committed": True,
@@ -913,6 +975,7 @@ class RouteWiseRouter(BaseRouter):
             if request_id:
                 self._pending_decisions[request_id] = {
                     **_base_decision(),
+                    "is_streaming": False,
                     "selected_tier": "quota",
                     "quota_committed": 0.0,
                     "sc_committed": False,
@@ -940,6 +1003,7 @@ class RouteWiseRouter(BaseRouter):
             if request_id:
                 self._pending_decisions[request_id] = {
                     **_base_decision(),
+                    "is_streaming": False,
                     "selected_tier": "api",
                     "quota_committed": 0.0,
                     "sc_committed": False,
@@ -958,6 +1022,7 @@ class RouteWiseRouter(BaseRouter):
                 if request_id:
                     self._pending_decisions[request_id] = {
                         **_base_decision(),
+                        "is_streaming": False,
                         "selected_tier": "api",
                         "quota_committed": 0.0,
                         "sc_committed": False,
@@ -1010,9 +1075,6 @@ class RouteWiseRouter(BaseRouter):
             ttft = obs.ttft_ms if obs.ttft_ms is not None else -1.0
             self._latency_profiles[obs.endpoint_id].record(now, ttft, error_type)
 
-        # Emit metrics for this observation (no-op shims today).
-        self._emit_metrics(obs)
-
         logger.debug(
             "RouteWise observation: model=%s endpoint=%s completion_tokens=%d success=%s",
             obs.model_id,
@@ -1020,36 +1082,6 @@ class RouteWiseRouter(BaseRouter):
             obs.completion_tokens,
             obs.success,
         )
-
-    def _emit_metrics(self, obs: RoutingObservation) -> None:
-        """Emit routing metrics from a completed observation.
-
-        The metric symbols are no-op shims after Prometheus was removed,
-        but the call structure is preserved so that re-introducing real
-        metrics later requires no callsite changes. Uses lazy imports to
-        avoid circular dependency (routing -> serving -> routing).
-        """
-        from serving.observability.metrics import (
-            ROUTEWISE_BACKUP_WINS,
-            ROUTEWISE_HEDGE_DECISIONS,
-            ROUTEWISE_LP_STATUS,
-            ROUTEWISE_TIER_DECISIONS,
-            ROUTING_STRATEGY_SELECTED,
-            normalize_model_label,
-        )
-
-        m = normalize_model_label(obs.model_id)
-        ROUTING_STRATEGY_SELECTED.labels(model=m, strategy="routewise").inc()
-        if obs.selected_tier:
-            ROUTEWISE_TIER_DECISIONS.labels(model=m, tier=obs.selected_tier).inc()
-        if obs.hedged:
-            ROUTEWISE_HEDGE_DECISIONS.labels(model=m, outcome="hedged").inc()
-            if obs.backup_won:
-                ROUTEWISE_BACKUP_WINS.labels(model=m).inc()
-        else:
-            ROUTEWISE_HEDGE_DECISIONS.labels(model=m, outcome="no_hedge").inc()
-        if obs.lp_status:
-            ROUTEWISE_LP_STATUS.labels(model=m, status=obs.lp_status).inc()
 
     # ------------------------------------------------------------------
     # Execution overrides: S_C slot lifecycle
@@ -1159,6 +1191,9 @@ class RouteWiseRouter(BaseRouter):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
 
+        if request_id in self._pending_decisions:
+            self._pending_decisions[request_id]["is_streaming"] = True
+
         done_chunk: str | None = None
 
         try:
@@ -1185,3 +1220,88 @@ class RouteWiseRouter(BaseRouter):
 
         if done_chunk:
             yield done_chunk
+
+    # ------------------------------------------------------------------
+    # Lifecycle: TTL sweep for _pending_decisions
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Start the periodic ``_pending_decisions`` TTL sweep task.
+
+        Idempotent — calling it again while the sweep task is already running
+        is a no-op so AppServices restart paths don't double-schedule.
+        """
+        if self._sweep_task is not None and not self._sweep_task.done():
+            return
+        self._sweep_task = asyncio.create_task(
+            self._sweep_pending_decisions_loop(),
+            name="RouteWiseRouter.sweep_pending_decisions",
+        )
+
+    async def stop(self) -> None:
+        """Cancel the periodic ``_pending_decisions`` sweep task cleanly."""
+        import contextlib
+
+        task = self._sweep_task
+        self._sweep_task = None
+        if task is None:
+            return
+        task.cancel()
+        # Cancellation is the expected exit path; swallow other errors so
+        # shutdown can proceed even if the loop raised on its way out.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    async def _sweep_pending_decisions_loop(self) -> None:
+        """Run the TTL sweep on a fixed interval until cancelled."""
+        try:
+            while True:
+                await asyncio.sleep(PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS)
+                try:
+                    await self._sweep_pending_decisions_once()
+                except Exception:
+                    logger.exception("RouteWise pending-decisions sweep failed")
+        except asyncio.CancelledError:
+            return
+
+    async def _sweep_pending_decisions_once(self) -> int:
+        """Evict stale ``_pending_decisions`` entries; return count evicted.
+
+        Entries whose ``timestamp`` is older than
+        :data:`PENDING_DECISIONS_TTL_SECONDS` are removed and a
+        ``routewise_decision_evicted`` log event is emitted for each.
+        Active streaming requests are skipped because their generator may
+        legitimately remain open longer than the fixed TTL.
+        """
+        now = time.time()
+        cutoff = now - PENDING_DECISIONS_TTL_SECONDS
+        evicted = 0
+        stale: list[tuple[str, float]] = []
+        for request_id, decision in self._pending_decisions.items():
+            if decision.get("is_streaming"):
+                continue
+            ts = decision.get("timestamp")
+            if not isinstance(ts, (int, float)):
+                # Defensive: skip entries with no usable timestamp rather
+                # than evicting them (can't compute an age).
+                continue
+            if ts < cutoff:
+                stale.append((request_id, float(ts)))
+        for request_id, ts in stale:
+            # Only count + log an actual eviction. Completion paths pop
+            # without coordinating with the sweep, so an entry we picked up
+            # in ``stale`` may already have been consumed by a finishing
+            # request by the time we reach this pop. Treat that race as
+            # "not evicted" rather than emitting a misleading event.
+            if self._pending_decisions.pop(request_id, None) is None:
+                continue
+            evicted += 1
+            logger.info(
+                "routewise_decision_evicted",
+                extra={
+                    "event": "routewise_decision_evicted",
+                    "request_id": request_id,
+                    "age_sec": int(now - ts),
+                },
+            )
+        return evicted
