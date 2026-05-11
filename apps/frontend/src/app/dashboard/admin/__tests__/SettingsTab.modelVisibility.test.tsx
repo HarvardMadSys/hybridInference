@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SettingsTab } from '../SettingsTab';
 
@@ -28,10 +28,34 @@ vi.mock('@/lib/api/admin', async () => {
       override_required_role: 'internal',
       effective_required_role: 'internal',
     })),
+    listRouteWeights: vi.fn(async () => [
+      {
+        model_id: 'gpt-4o-mini',
+        endpoint_id: 'gpt-4o-mini:remote',
+        provider: 'remote',
+        base_url: 'https://api.example.test',
+        yaml_weight: 2,
+        override_weight: null,
+        effective_weight: 2,
+      },
+    ]),
+    setRouteWeight: vi.fn(),
+    clearRouteWeight: vi.fn(),
   };
 });
 
+vi.mock('react-hot-toast', () => ({
+  default: {
+    error: vi.fn(),
+    success: vi.fn(),
+  },
+}));
+
 describe('SettingsTab model visibility', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   it('renders the section inside Admin Settings and shows update toasts', async () => {
     const api = await import('@/lib/api/admin');
     const queryClient = new QueryClient({
@@ -55,5 +79,33 @@ describe('SettingsTab model visibility', () => {
       expect(api.updateModelVisibility).toHaveBeenCalledWith('gpt-4o-mini', 'internal');
     });
     expect(await screen.findByText('Updated visibility for gpt-4o-mini.')).toBeInTheDocument();
+  });
+
+  it('renders routing weights behind a Settings subtab', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('tab', { name: 'General' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    const routingTab = screen.getByRole('tab', { name: 'Routing' });
+    expect(routingTab).toHaveAttribute('aria-selected', 'false');
+
+    fireEvent.click(routingTab);
+
+    expect(routingTab).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText('Routing Weights')).toBeInTheDocument();
+    expect(await screen.findByText('gpt-4o-mini:remote')).toBeInTheDocument();
   });
 });

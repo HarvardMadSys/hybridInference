@@ -1,5 +1,5 @@
-import { RoutingTab } from '../../RoutingTab';
+import { redirect } from 'next/navigation';
 
 export default function RoutingAdminPage() {
-  return <RoutingTab />;
+  redirect('/dashboard/admin/settings?tab=routing');
 }
