@@ -69,6 +69,7 @@ class RouteConfig:
 
     adapters: list[tuple[BaseAdapter, float]]
     raw_adapters: list[tuple[BaseAdapter, float, str]] | None = None
+    canonical_model_id: str | None = None
     admin_only: bool = False
     required_role: str = "free"
 
@@ -677,18 +678,19 @@ class FixedRouter(BaseRouter):
         """Return raw route weights with runtime overrides applied when available."""
         resolver = self.weight_override_resolver
         raw_adapters = route.raw_adapters
+        override_model_id = route.canonical_model_id or model_id
         if resolver is None or not raw_adapters:
             return route.adapters
 
         get_snapshot = getattr(resolver, "get_snapshot_for_model", None)
         if get_snapshot is not None:
-            overrides = get_snapshot(model_id)
+            overrides = get_snapshot(override_model_id)
             return [
                 (adapter, float(overrides.get(endpoint_id, raw_weight)))
                 for adapter, raw_weight, endpoint_id in raw_adapters
             ]
 
-        result = resolver.get_for_model(model_id)
+        result = resolver.get_for_model(override_model_id)
         if isawaitable(result):
             try:
                 asyncio.get_running_loop()
@@ -743,6 +745,7 @@ class FixedRouter(BaseRouter):
         route_cfg = RouteConfig(
             adapters=normalized,
             raw_adapters=raw_adapters,
+            canonical_model_id=model_id,
             admin_only=admin_only,
             required_role=effective_role,
         )

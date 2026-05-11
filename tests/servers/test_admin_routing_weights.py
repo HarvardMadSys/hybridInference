@@ -48,6 +48,9 @@ async def admin_client(monkeypatch):
     )
     slash = _adapter("provider/model", "remote", "provider/model:remote")
     router.register_route("provider/model", [(slash, 3.0)])
+    disabled = _adapter("zero-model", "disabled", "zero-model:disabled")
+    active = _adapter("zero-model", "active", "zero-model:active")
+    router.register_route("zero-model", [(disabled, 0.0), (active, 1.0)])
 
     app = FastAPI()
     resolver = WeightOverrideResolver(op_store)
@@ -106,7 +109,11 @@ async def test_get_route_weights_returns_yaml_override_and_effective_weights(adm
 
 @pytest.mark.asyncio
 async def test_get_all_route_weights_returns_canonical_models_only(admin_client):
-    client, _op_store, _ = admin_client
+    client, op_store, _ = admin_client
+    op_store.list_all_weight_overrides.return_value = [
+        {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.0}
+    ]
+    op_store.list_weight_overrides_for_model.reset_mock()
 
     response = await client.get(
         "/admin/routing/weights",
@@ -116,7 +123,11 @@ async def test_get_all_route_weights_returns_canonical_models_only(admin_client)
     assert response.status_code == 200
     rows = response.json()["routes"]
     model_ids = {row["model_id"] for row in rows}
-    assert model_ids == {"public-model", "provider/model"}
+    remote = _row_by_endpoint(rows, "public-model:remote")
+    assert model_ids == {"public-model", "provider/model", "zero-model"}
+    assert remote["override_weight"] == 4.0
+    op_store.list_all_weight_overrides.assert_awaited_once_with()
+    op_store.list_weight_overrides_for_model.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -209,6 +220,24 @@ async def test_delete_route_weight_clears_override(admin_client):
     assert row["endpoint_id"] == "public-model:remote"
     assert row["override_weight"] is None
     assert row["effective_weight"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_delete_route_weight_rejects_all_zero_effective_weights(admin_client):
+    client, op_store, _ = admin_client
+    op_store.list_weight_overrides_for_model.return_value = [
+        {"model_id": "zero-model", "endpoint_id": "zero-model:disabled", "weight": 1.0},
+        {"model_id": "zero-model", "endpoint_id": "zero-model:active", "weight": 0.0},
+    ]
+
+    response = await client.delete(
+        "/admin/routing/weights/zero-model/zero-model:disabled",
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "cannot zero all routes for model"
+    op_store.delete_weight_override.assert_not_awaited()
 
 
 @pytest.mark.asyncio

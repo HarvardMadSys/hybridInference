@@ -32,6 +32,10 @@ def _raw_route_entries(route) -> list[tuple[object, float, str]]:
 
 async def _overrides_for_model(op_store, model_id: str) -> dict[str, float]:
     rows = await op_store.list_weight_overrides_for_model(model_id)
+    return _overrides_from_rows(rows)
+
+
+def _overrides_from_rows(rows) -> dict[str, float]:
     return {str(row["endpoint_id"]): float(row["weight"]) for row in rows}
 
 
@@ -73,8 +77,9 @@ def _entry_for_endpoint(route, endpoint_id: str):
     raise HTTPException(status_code=400, detail="unknown endpoint for model")
 
 
-async def _build_routes_for_model(model_id: str, route, op_store) -> list[RouteWeightItem]:
-    overrides = await _overrides_for_model(op_store, model_id)
+def _build_routes_for_model(
+    model_id: str, route, overrides: dict[str, float]
+) -> list[RouteWeightItem]:
     return [
         _route_row(model_id, adapter, yaml_weight, overrides.get(endpoint_id))
         for adapter, yaml_weight, endpoint_id in _raw_route_entries(route)
@@ -110,9 +115,10 @@ async def list_route_weights(
         raise HTTPException(status_code=500, detail="Database not configured")
 
     route = _validate_canonical_route(services, model_id)
+    overrides = await _overrides_for_model(op_store, model_id)
     return ListRouteWeightsResponse(
         model_id=model_id,
-        routes=await _build_routes_for_model(model_id, route, op_store),
+        routes=_build_routes_for_model(model_id, route, overrides),
     )
 
 
@@ -126,12 +132,20 @@ async def list_all_route_weights(
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
+    override_rows = await op_store.list_all_weight_overrides()
+    overrides_by_model: dict[str, dict[str, float]] = {}
+    for row in override_rows:
+        model_id = str(row["model_id"])
+        overrides_by_model.setdefault(model_id, {})[str(row["endpoint_id"])] = float(row["weight"])
+
     all_rows: list[RouteWeightItem] = []
     for model_id in sorted(services.router.routes):
         route = services.router.routes[model_id]
         if not _is_canonical_model(model_id, route):
             continue
-        all_rows.extend(await _build_routes_for_model(model_id, route, op_store))
+        all_rows.extend(
+            _build_routes_for_model(model_id, route, overrides_by_model.get(model_id, {}))
+        )
     return ListAllRouteWeightsResponse(routes=all_rows)
 
 
@@ -193,6 +207,14 @@ async def clear_route_weight(
     adapter, yaml_weight, endpoint_id = _entry_for_endpoint(route, endpoint_id)
     overrides = await _overrides_for_model(op_store, model_id)
     old_override = overrides.get(endpoint_id)
+    effective = {
+        adapter_endpoint_id: float(overrides.get(adapter_endpoint_id, raw_weight))
+        for _, raw_weight, adapter_endpoint_id in _raw_route_entries(route)
+    }
+    effective[endpoint_id] = float(yaml_weight)
+    if sum(effective.values()) <= 0:
+        raise HTTPException(status_code=400, detail="cannot zero all routes for model")
+
     await op_store.delete_weight_override(model_id, endpoint_id)
     _clear_weight_override_snapshot(services, model_id, endpoint_id)
     await log_admin_action(

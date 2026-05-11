@@ -12,7 +12,7 @@ function rowKey(row: Pick<RouteWeight, 'model_id' | 'endpoint_id'>) {
 }
 
 function formatWeight(value: number) {
-  return Number.isInteger(value) ? String(value) : String(value);
+  return String(value);
 }
 
 export function RoutingTab() {

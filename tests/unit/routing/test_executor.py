@@ -413,6 +413,28 @@ def test_runtime_weight_override_zero_excludes_route_and_pin():
 
 
 @pytest.mark.unit
+def test_runtime_weight_override_uses_canonical_model_id_for_aliases():
+    resolver = _StaticWeightResolver({"m": {"b-endpoint": 0.0}})
+    exe = RouteExecutor(weight_override_resolver=resolver)
+    a_cfg = _cfg("m", provider="A")
+    a_cfg.endpoint_id = "a-endpoint"
+    b_cfg = _cfg("m", provider="B")
+    b_cfg.endpoint_id = "b-endpoint"
+    a = _EchoAdapter(a_cfg)
+    b = _EchoAdapter(b_cfg)
+    exe.register_route("m", [(a, 1.0), (b, 1.0)], aliases=["m-alias"])
+
+    random_state = random.random
+    try:
+        random.random = lambda: 0.90
+        chosen = exe._select_adapter("m-alias")
+    finally:
+        random.random = random_state
+
+    assert chosen is a
+
+
+@pytest.mark.unit
 def test_pin_miss_returns_none():
     """pin_provider with unknown name returns None."""
     exe = RouteExecutor()

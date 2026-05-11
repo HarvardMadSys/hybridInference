@@ -430,7 +430,7 @@ class PostgresOperationalStore(OperationalStore):
             CREATE TABLE IF NOT EXISTS provider_weight_overrides (
                 model_id TEXT NOT NULL,
                 endpoint_id TEXT NOT NULL,
-                weight REAL NOT NULL,
+                weight DOUBLE PRECISION NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_by TEXT,
                 PRIMARY KEY (model_id, endpoint_id)

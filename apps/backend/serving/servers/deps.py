@@ -59,6 +59,7 @@ class AppServices:
     completions_logger: CompletionsLogger | None = None
     pricing_lookup: PricingLookup | None = None
     cost_tracker: CostTracker | None = None
+    weight_override_refresh_task: Any | None = None
 
 
 def get_services(request: Request) -> AppServices:
