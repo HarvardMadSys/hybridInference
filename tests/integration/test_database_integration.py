@@ -161,6 +161,49 @@ async def test_log_request_normalizes_nested_cached_tokens(db_logger: DatabaseLo
 
 
 @pytest.mark.asyncio
+async def test_postgres_log_store_normalizes_nested_cached_tokens(db_logger: DatabaseLogger):
+    usage: dict[str, Any] = {
+        "prompt_tokens": 13528,
+        "completion_tokens": 98,
+        "total_tokens": 13626,
+        "prompt_tokens_details": {"cached_tokens": 13520},
+        "completion_tokens_details": {"reasoning_tokens": 17},
+    }
+
+    log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
+
+    await log_store.log_request(
+        request_id="req-postgres-log-store-minimax-cache",
+        model_id="minimax-m2.1",
+        provider="minimax",
+        prompt=[{"role": "user", "content": "hi"}],
+        response={"message": "ok"},
+        usage=usage,
+        latency_ms=123,
+        status_code=200,
+        params={},
+        metadata={"user_id": "integration-user"},
+        pricing={"prompt": "0.15", "completion": "1.25", "input_cache_reads": "0.05"},
+    )
+
+    assert db_logger.pool is not None
+    async with db_logger.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT prompt_tokens, completion_tokens, reasoning_tokens, cache_read_tokens
+            FROM api_logs WHERE request_id=$1
+            """,
+            "req-postgres-log-store-minimax-cache",
+        )
+
+    assert row is not None
+    assert row["prompt_tokens"] == 13528
+    assert row["completion_tokens"] == 98
+    assert row["reasoning_tokens"] == 17
+    assert row["cache_read_tokens"] == 13520
+
+
+@pytest.mark.asyncio
 async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger, monkeypatch):
     assert db_logger.pool is not None
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")

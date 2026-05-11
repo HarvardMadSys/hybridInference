@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
 from serving.storage.utils import calculate_cost
-from serving.utils.token_utils import normalize_usage
 from serving.utils.logging import get_logger
+from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
     import asyncpg
@@ -165,7 +165,7 @@ class PostgresLogStore(LogStore):
         provider: str,
         prompt: list[dict[str, Any]] | str,
         response: dict[str, Any] | str | None,
-        usage: dict[str, int] | None,
+        usage: dict[str, Any] | None,
         latency_ms: int,
         status_code: int,
         error: str | None = None,

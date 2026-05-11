@@ -15,8 +15,8 @@ from typing import Any
 import asyncpg
 
 from serving.storage.utils import calculate_cost
-from serving.utils.token_utils import normalize_usage
 from serving.utils.logging import get_logger
+from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
 
@@ -796,7 +796,7 @@ class DatabaseLogger:
         provider: str,
         prompt: list[dict[str, Any]] | str,
         response: dict[str, Any] | str | None,
-        usage: dict[str, int] | None,
+        usage: dict[str, Any] | None,
         latency_ms: int,
         status_code: int,
         error: str | None = None,
