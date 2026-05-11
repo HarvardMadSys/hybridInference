@@ -16,7 +16,8 @@ concurrency:
 jobs:
   docker-build:
     name: Docker Build (${{ matrix.image }})
-    runs-on: self-hosted
+    # Buildx requires a runner with a usable Docker daemon/socket.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:

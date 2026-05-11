@@ -131,9 +131,9 @@ jobs:
 
   test:
     name: Test (shard ${{ matrix.shard }}/${{ needs.pytest-shards.outputs.count }})
-    # This job still relies on service-container/Docker support; broadening
-    # runner selection may surface capability gaps on some self-hosted runners.
-    runs-on: self-hosted
+    # Service containers need Docker support that is not guaranteed across the
+    # shared self-hosted runner pool.
+    runs-on: ubuntu-latest
     needs: pytest-shards
 
     strategy:
