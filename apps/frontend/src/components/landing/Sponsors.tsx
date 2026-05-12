@@ -34,7 +34,7 @@ export function Sponsors(): JSX.Element {
               alt={sponsor.alt}
               width={sponsor.width}
               height={sponsor.height}
-              className={`${sponsor.className} w-auto grayscale opacity-70`}
+              className={`${sponsor.className} w-auto`}
             />
           ))}
         </div>
