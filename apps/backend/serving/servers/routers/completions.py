@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -11,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from routing.executor import ProviderPinError
 from routing.routers import AllCircuitsOpenError
+from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
 from serving.observability.metrics import (
@@ -58,6 +60,124 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 router = APIRouter()
 _background_tasks: set[asyncio.Task[Any]] = set()
+
+
+async def _should_force_chat_completions_streaming(
+    runtime_settings: RuntimeSettings | None,
+    requested_stream: bool,
+) -> bool:
+    if requested_stream or runtime_settings is None:
+        return False
+    if not hasattr(runtime_settings, "get_bool"):
+        return False
+    try:
+        return await runtime_settings.get_bool("force_chat_completions_streaming")
+    except KeyError:
+        return False
+
+
+def _merge_tool_call_delta(
+    tool_calls: dict[int, dict[str, Any]],
+    deltas: list[dict[str, Any]],
+) -> None:
+    for tc_delta in deltas:
+        idx = tc_delta.get("index", 0)
+        if idx not in tool_calls:
+            tool_calls[idx] = {
+                "index": idx,
+                "id": tc_delta.get("id", ""),
+                "type": tc_delta.get("type", "function"),
+                "function": {"name": "", "arguments": ""},
+            }
+        if "id" in tc_delta:
+            tool_calls[idx]["id"] = tc_delta["id"]
+        if "type" in tc_delta:
+            tool_calls[idx]["type"] = tc_delta["type"]
+        if "function" in tc_delta:
+            fn_delta = tc_delta["function"]
+            if "name" in fn_delta:
+                tool_calls[idx]["function"]["name"] = fn_delta["name"]
+            if "arguments" in fn_delta:
+                tool_calls[idx]["function"]["arguments"] += fn_delta["arguments"]
+
+
+async def _buffer_streaming_response_for_non_stream_client(
+    stream_chunks: Any,
+    *,
+    request_id: str,
+    model: str,
+    request_headers: Any,
+) -> dict[str, Any]:
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_calls: dict[int, dict[str, Any]] = {}
+    usage: dict[str, Any] | None = None
+    finish_reason: str | None = None
+    response_id = request_id
+    created = int(time.time())
+
+    async for chunk in stream_chunks:
+        if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
+            continue
+        try:
+            chunk_json = json.loads(chunk[6:])
+        except json.JSONDecodeError:
+            continue
+
+        error = chunk_json.get("error")
+        if isinstance(error, dict):
+            code = error.get("code")
+            status_code = code if isinstance(code, int) else 500
+            raise HTTPException(
+                status_code=status_code,
+                detail=error.get("message") or "Stream failed",
+            )
+
+        response_id = chunk_json.get("id") or response_id
+        created = int(chunk_json.get("created") or created)
+        if chunk_json.get("usage"):
+            usage = normalize_usage(chunk_json.get("usage")) or chunk_json.get("usage")
+
+        choices = chunk_json.get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0]
+        finish_reason = choice.get("finish_reason") or finish_reason
+        delta = choice.get("delta") or {}
+        content = delta.get("content")
+        if isinstance(content, str) and content:
+            content_parts.append(content)
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if isinstance(reasoning, str) and reasoning:
+            reasoning_parts.append(reasoning)
+        if delta.get("tool_calls"):
+            _merge_tool_call_delta(tool_calls, delta["tool_calls"])
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(content_parts),
+    }
+    if reasoning_parts:
+        message["reasoning_content"] = "".join(reasoning_parts)
+    if tool_calls:
+        message["tool_calls"] = [tc for _, tc in sorted(tool_calls.items())]
+
+    response: dict[str, Any] = {
+        "id": response_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason or "stop",
+            }
+        ],
+    }
+    if usage:
+        response["usage"] = usage
+    return sanitize_response(response, resolve_mode(request_headers)).response_json
 
 
 def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
@@ -111,6 +231,7 @@ async def chat_completions(
     log_store=Depends(get_log_store),
     model_router_registry=Depends(get_model_router_registry),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
+    runtime_settings: RuntimeSettings | None = Depends(get_runtime_settings),
     completions_logger: CompletionsLogger = Depends(get_completions_logger),
     pricing_lookup: PricingLookup = Depends(get_pricing_lookup),
     cost_tracker: CostTracker = Depends(get_cost_tracker),
@@ -164,6 +285,12 @@ async def chat_completions(
     is_authenticated = bool(user_ctx.get("authenticated"))
     provider = "router"
     session_id = request.headers.get("X-Session-ID")
+    requested_stream = bool(payload.stream)
+    force_streaming = await _should_force_chat_completions_streaming(
+        runtime_settings,
+        requested_stream,
+    )
+    effective_stream = requested_stream or force_streaming
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
@@ -177,7 +304,7 @@ async def chat_completions(
     if session_id:
         metadata["session_id"] = session_id
 
-    early_params: dict[str, Any] = {"stream": bool(payload.stream)}
+    early_params: dict[str, Any] = {"stream": effective_stream}
     if session_id:
         early_params["session_id"] = session_id
 
@@ -242,7 +369,7 @@ async def chat_completions(
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Extract parameters
-    params: dict[str, Any] = {"stream": bool(payload.stream)}
+    params: dict[str, Any] = {"stream": effective_stream}
     if payload.temperature is not None:
         params["temperature"] = payload.temperature
     if payload.top_p is not None:
@@ -389,7 +516,7 @@ async def chat_completions(
         active_router = model_router_registry.get_router(model)
 
     # Streaming path
-    if payload.stream:
+    if effective_stream:
         if active_router is router_exec:
             adapter_chunks = router_exec.stream_chat_completion(
                 model, messages, pin_provider=pin_provider, **params
@@ -418,6 +545,20 @@ async def chat_completions(
         )
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
+
+        if force_streaming:
+            try:
+                response = await _buffer_streaming_response_for_non_stream_client(
+                    session.stream(adapter_chunks),
+                    request_id=request_id,
+                    model=model,
+                    request_headers=request.headers,
+                )
+            except HTTPException as exc:
+                record_model_request(str(exc.status_code), provider)
+                raise
+            record_model_request("200", provider)
+            return response
 
         # Record 200 for streaming response (HTTP layer success)
         record_model_request("200", provider)

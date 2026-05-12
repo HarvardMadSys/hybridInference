@@ -45,6 +45,8 @@ def disable_auth_for_completions_tests(monkeypatch):
 
 
 class DummyAdapter(BaseAdapter):
+    stream_calls = 0
+
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         content = params.get("content", "Test response")
         resp = self.format_response(content=content, model=self.config.id)
@@ -53,6 +55,7 @@ class DummyAdapter(BaseAdapter):
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
+        type(self).stream_calls += 1
         # Emit role and content chunks then final usage
         yield self.format_stream_chunk(model=self.config.id, content="Test ")
         yield self.format_stream_chunk(model=self.config.id, content="response")
@@ -70,6 +73,7 @@ class FailingAdapter(BaseAdapter):
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
         raise RuntimeError("Primary adapter failed")
+        yield ""  # pragma: no cover
 
 
 class AdapterWithReasoningContent(BaseAdapter):
@@ -229,6 +233,165 @@ async def test_streaming_sse_format(completions_client: AsyncClient):
             if line != "data: [DONE]" and line != "data: {}"
         )
         assert content == "Test response"
+
+
+def _content_from_sse_lines(lines: list[str]) -> str:
+    content_parts: list[str] = []
+    for line in lines:
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        chunk = json.loads(line[6:])
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        delta = choices[0].get("delta") or {}
+        content_parts.append(delta.get("content") or "")
+    return "".join(content_parts)
+
+
+@pytest.mark.asyncio
+async def test_runtime_setting_streams_upstream_and_buffers_non_stream_response(
+    completions_app: FastAPI,
+):
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=True)
+    completions_app.state.services.runtime_settings = runtime_settings
+    DummyAdapter.stream_calls = 0
+
+    transport = ASGITransport(app=completions_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": False,
+            },
+        )
+
+    runtime_settings.get_bool.assert_awaited_once_with("force_chat_completions_streaming")
+    assert DummyAdapter.stream_calls == 1
+    assert resp.status_code == status.HTTP_200_OK
+    assert resp.headers["content-type"].startswith("application/json")
+    body = resp.json()
+    assert body["object"] == "chat.completion"
+    assert body["choices"][0]["message"]["content"] == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_runtime_forced_buffered_stream_returns_error_when_all_upstreams_fail(
+    monkeypatch,
+    mock_log_store,
+):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=True)
+    router = RouteExecutor()
+    router.register_route(
+        "fail-model",
+        [(UpstreamStatusErrorAdapter(_mk_cfg("fail-model"), status_code=503), 1.0)],
+    )
+
+    app = FastAPI(title="Forced Buffered Failure App")
+    app.state.services = AppServices(
+        router=router,
+        db_logger=None,
+        log_store=mock_log_store,
+        runtime_settings=runtime_settings,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "fail-model", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    assert resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert db_kwargs is not None, "DB log_request should have been called on error path"
+    assert db_kwargs["status_code"] == 503
+
+
+@pytest.mark.asyncio
+async def test_runtime_forced_buffered_stream_uses_router_fallback_before_content():
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=True)
+    router = RouteExecutor()
+    primary_cfg = _mk_cfg("gpt-4")
+    primary_cfg.provider = "primary"
+    backup_cfg = _mk_cfg("gpt-4")
+    backup_cfg.provider = "backup"
+    router.register_route(
+        "gpt-4", [(FailingAdapter(primary_cfg), 0.9), (DummyAdapter(backup_cfg), 0.1)]
+    )
+
+    app = FastAPI(title="Forced Buffered Fallback App")
+    app.state.services = AppServices(
+        router=router,
+        db_logger=None,
+        log_store=None,
+        runtime_settings=runtime_settings,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    random_state = random.random
+    transport = ASGITransport(app=app)
+    try:
+        random.random = lambda: 0.01
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+            )
+    finally:
+        random.random = random_state
+
+    assert resp.status_code == status.HTTP_200_OK
+    assert resp.json()["choices"][0]["message"]["content"] == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_runtime_forced_buffered_stream_preserves_all_circuits_open_503(
+    monkeypatch,
+    mock_log_store,
+):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=True)
+    router = RouteExecutor()
+    adapter = DummyAdapter(_mk_cfg("circuit-open-model"))
+    router.register_route("circuit-open-model", [(adapter, 1.0)])
+    router._circuits[adapter.config.provider] = MagicMock()
+    router._circuits[adapter.config.provider].allow_request.return_value = False
+
+    app = FastAPI(title="Forced Buffered Circuit Open App")
+    app.state.services = AppServices(
+        router=router,
+        db_logger=None,
+        log_store=mock_log_store,
+        runtime_settings=runtime_settings,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "circuit-open-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+
+    assert resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert db_kwargs is not None, "DB log_request should have been called on error path"
+    assert db_kwargs["status_code"] == 503
 
 
 @pytest.mark.asyncio

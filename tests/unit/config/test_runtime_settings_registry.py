@@ -45,3 +45,10 @@ def test_trial_concurrency_default_is_one():
     assert entry["type"] == "int"
     assert entry["default"] == 1
     assert entry["min"] == 1
+
+
+def test_force_chat_completions_streaming_registered():
+    entry = RUNTIME_SETTINGS_REGISTRY["force_chat_completions_streaming"]
+    assert entry["type"] == "bool"
+    assert entry["default"] is False
+    assert entry.get("description")
