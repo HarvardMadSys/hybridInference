@@ -1023,6 +1023,13 @@ class AddProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     label: str | None = Field(None, max_length=255)
 
 
+class DisableProviderEnvKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for disabling an env-sourced provider API key."""
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    env_key_id: str = Field(..., min_length=1, max_length=128)
+
+
 class AddProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     """Response for ``POST /admin/provider-keys``."""
 
@@ -1035,6 +1042,14 @@ class AddProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
 
 class DeleteProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     """Response for ``DELETE /admin/provider-keys/{id}``."""
+
+    id: str
+    provider: str
+    pools_updated: int
+
+
+class DisableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys/disable-env``."""
 
     id: str
     provider: str

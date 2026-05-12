@@ -15,6 +15,7 @@ vi.mock('react-hot-toast', () => ({
 vi.mock('@/lib/api/admin', () => ({
   addProviderKey: vi.fn(async () => ({ pools_updated: 0 })),
   deleteProviderKey: vi.fn(),
+  disableProviderEnvKey: vi.fn(async () => ({ pools_updated: 1 })),
   getProviderQuotas: vi.fn(async () => ({
     generated_at: '2026-05-07T00:00:00Z',
     providers: [
@@ -154,5 +155,32 @@ describe('ProviderKeysTab cookie upload', () => {
     const genericForm = screen.getByRole('form', { name: /add a new key/i });
     const cookieInput = screen.getByLabelText(/cookie input/i);
     expect(genericForm).not.toContainElement(cookieInput);
+  });
+
+  it('disables an env-sourced key from the configured keys table', async () => {
+    const api = await import('@/lib/api/admin');
+    vi.mocked(api.listProviderKeys).mockResolvedValue({
+      provider: 'chatgpt',
+      keys: [
+        {
+          id: 'env:abc123',
+          provider: 'chatgpt',
+          key_prefix: 'env-key...1234',
+          label: null,
+          source: 'env',
+          status: 'active',
+          created_at: null,
+        },
+      ],
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<ProviderKeysTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /disable/i }));
+
+    await waitFor(() => {
+      expect(api.disableProviderEnvKey).toHaveBeenCalledWith('chatgpt', 'env:abc123');
+    });
   });
 });

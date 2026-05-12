@@ -1027,6 +1027,12 @@ export interface DeleteProviderApiKeyResponse {
   pools_updated: number;
 }
 
+export interface DisableProviderEnvKeyResponse {
+  id: string;
+  provider: string;
+  pools_updated: number;
+}
+
 export async function listProviderKeys(provider?: string): Promise<ListProviderApiKeysResponse> {
   const params = new URLSearchParams();
   if (provider) params.set('provider', provider);
@@ -1058,4 +1064,16 @@ export async function deleteProviderKey(id: string): Promise<DeleteProviderApiKe
     method: 'DELETE',
   });
   return jsonOrThrow<DeleteProviderApiKeyResponse>(resp);
+}
+
+export async function disableProviderEnvKey(
+  provider: string,
+  envKeyId: string,
+): Promise<DisableProviderEnvKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/disable-env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, env_key_id: envKeyId }),
+  });
+  return jsonOrThrow<DisableProviderEnvKeyResponse>(resp);
 }

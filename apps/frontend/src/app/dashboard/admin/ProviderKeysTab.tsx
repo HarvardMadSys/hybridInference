@@ -6,6 +6,7 @@ import {
   ProviderApiKeyItem,
   addProviderKey,
   deleteProviderKey,
+  disableProviderEnvKey,
   getProviderQuotas,
   listProviderKeys,
 } from '@/lib/api/admin';
@@ -44,6 +45,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
   const [specialInputError, setSpecialInputError] = useState<string | null>(null);
   const [submittingSpecialInput, setSubmittingSpecialInput] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [disablingEnvId, setDisablingEnvId] = useState<string | null>(null);
 
   // Populate the provider dropdown from the existing provider-quotas
   // endpoint to avoid adding a new "list providers" endpoint.
@@ -159,6 +161,22 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
     }
   };
 
+  const onDisableEnv = async (provider: string, id: string) => {
+    if (!window.confirm('Disable this env provider key? It will stop being used immediately.')) {
+      return;
+    }
+    setDisablingEnvId(id);
+    try {
+      await disableProviderEnvKey(provider, id);
+      toast.success('Env key disabled');
+      await loadKeys(selectedProvider);
+    } catch (err) {
+      toast.error(`Disable failed: ${getErrorMessage(err)}`);
+    } finally {
+      setDisablingEnvId(null);
+    }
+  };
+
   const sortedKeys = useMemo(
     () => [...keys].sort((a, b) => (a.source === b.source ? 0 : a.source === 'db' ? -1 : 1)),
     [keys],
@@ -234,14 +252,25 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                     </td>
                     <td className="px-3 py-2 text-gray-500">{formatRelative(k.created_at)}</td>
                     <td className="px-3 py-2 text-right">
-                      <button
-                        type="button"
-                        onClick={() => k.id && onDelete(k.id)}
-                        disabled={k.source !== 'db' || !k.id || deletingId === k.id}
-                        className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
-                      >
-                        {deletingId === k.id ? 'Deleting…' : 'Delete'}
-                      </button>
+                      {k.source === 'env' ? (
+                        <button
+                          type="button"
+                          onClick={() => k.id && onDisableEnv(k.provider, k.id)}
+                          disabled={!k.id || disablingEnvId === k.id}
+                          className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                        >
+                          {disablingEnvId === k.id ? 'Disabling…' : 'Disable'}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => k.id && onDelete(k.id)}
+                          disabled={!k.id || deletingId === k.id}
+                          className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                        >
+                          {deletingId === k.id ? 'Deleting…' : 'Delete'}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
