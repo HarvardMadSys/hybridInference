@@ -1,7 +1,7 @@
 """Pydantic schemas for authentication and user management."""
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints
 
@@ -255,7 +255,7 @@ class RecentRequestItem(BaseModel):
     status_code: int | None = None
     latency_ms: int | None = None
     ttft_ms: int | None = None
-    stream: bool | None = None
+    stream: bool | Literal["force-streaming"] | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     reasoning_tokens: int | None = None

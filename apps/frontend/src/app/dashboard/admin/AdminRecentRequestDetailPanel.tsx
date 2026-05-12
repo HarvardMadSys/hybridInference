@@ -485,7 +485,14 @@ export function AdminRecentRequestDetailPanel({
   content?: AdminRecentRequestContentState;
 }) {
   const status = req.status_code != null ? String(req.status_code) : '—';
-  const stream = req.stream != null ? (req.stream ? 'Yes' : 'No') : '—';
+  const stream =
+    req.stream === 'force-streaming'
+      ? 'Force-streaming'
+      : req.stream != null
+        ? req.stream
+          ? 'Yes'
+          : 'No'
+        : '—';
   const decode =
     req.decode_throughput_tps != null ? `${req.decode_throughput_tps.toFixed(1)} tok/s` : '—';
   return (

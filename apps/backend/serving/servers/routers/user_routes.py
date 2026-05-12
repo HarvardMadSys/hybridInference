@@ -853,6 +853,7 @@ async def get_recent_requests(
                 SELECT
                     request_id, model_id, provider, timestamp,
                     status_code, latency_ms, ttft_ms, stream,
+                    metadata->>'stream_mode' AS stream_mode,
                     prompt_tokens, completion_tokens, reasoning_tokens,
                     cache_read_tokens, cache_write_tokens,
                     total_tokens, cost_usd, error
@@ -880,7 +881,7 @@ async def get_recent_requests(
             status_code=row["status_code"],
             latency_ms=row["latency_ms"],
             ttft_ms=row["ttft_ms"],
-            stream=row["stream"],
+            stream="force-streaming" if row["stream_mode"] == "force-streaming" else row["stream"],
             prompt_tokens=row["prompt_tokens"],
             completion_tokens=row["completion_tokens"],
             reasoning_tokens=row["reasoning_tokens"],

@@ -421,6 +421,33 @@ class TestRecentRequests:
         assert len(matching) == 1
         assert matching[0]["cache_read_tokens"] == 80
 
+    @pytest.mark.asyncio
+    async def test_recent_requests_surfaces_force_streaming_mode(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        request_id = f"req-recent-force-streaming-{test_user_with_key['id']}"
+
+        await auth_db_logger.log_request(
+            request_id=request_id,
+            model_id="gpt-4",
+            provider="test-provider",
+            prompt=[{"role": "user", "content": "hi"}],
+            response=None,
+            usage=None,
+            latency_ms=123,
+            status_code=200,
+            params={"stream": True},
+            metadata={"user_id": test_user_with_key["id"], "stream_mode": "force-streaming"},
+        )
+
+        response = await auth_app_client.get("/user/recent-requests", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        matching = [request for request in data["requests"] if request["request_id"] == request_id]
+        assert len(matching) == 1
+        assert matching[0]["stream"] == "force-streaming"
+
 
 class TestUserProfile:
     """Test user profile update endpoint."""

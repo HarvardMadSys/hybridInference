@@ -182,6 +182,7 @@ async def test_list_response_omits_prompt_and_response(admin_client_capture):
                     "latency_ms": 100,
                     "ttft_ms": 10,
                     "stream": False,
+                    "stream_mode": None,
                     "prompt_tokens": 1,
                     "completion_tokens": 1,
                     "reasoning_tokens": None,
@@ -217,6 +218,55 @@ async def test_list_response_omits_prompt_and_response(admin_client_capture):
     item = body["requests"][0]
     assert "prompt" not in item
     assert "response" not in item
+
+
+@pytest.mark.asyncio
+async def test_list_surfaces_force_streaming_mode(admin_client_capture):
+    client, _calls, logger = admin_client_capture
+
+    async def _fake_fetch(query: str, *_args: Any) -> list[Any]:
+        if "FROM api_logs l" in query:
+            return [
+                {
+                    "request_id": "req-force-streaming",
+                    "user_id": "user-1",
+                    "user_name": "u",
+                    "user_email": "u@example.com",
+                    "model_id": "m",
+                    "provider": "p",
+                    "timestamp": datetime.now(timezone.utc),
+                    "status_code": 200,
+                    "latency_ms": 100,
+                    "ttft_ms": 10,
+                    "stream": True,
+                    "stream_mode": "force-streaming",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "reasoning_tokens": None,
+                    "cache_read_tokens": None,
+                    "cache_write_tokens": None,
+                    "total_tokens": 2,
+                    "cost_usd": None,
+                    "error": None,
+                    "user_ip": None,
+                    "peer_ip": None,
+                    "ip_source": None,
+                    "x_forwarded_for": None,
+                    "user_agent": None,
+                    "session_id": None,
+                    "request_surface": None,
+                }
+            ]
+        return []
+
+    conn = await logger.pool.acquire().__aenter__()
+    conn.fetch = AsyncMock(side_effect=_fake_fetch)
+
+    resp = await client.get("/admin/recent-requests")
+
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["requests"][0]
+    assert item["stream"] == "force-streaming"
 
 
 # ---------------------------------------------------------------------------

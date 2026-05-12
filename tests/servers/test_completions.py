@@ -337,7 +337,8 @@ async def test_runtime_forced_buffered_stream_logs_force_streaming_param(
     assert resp.status_code == status.HTTP_200_OK
     kwargs = await _wait_for_db_log_kwargs(mock_log_store)
     assert kwargs is not None, "log_request was never called"
-    assert kwargs["params"]["stream"] == "force-streaming"
+    assert kwargs["params"]["stream"] is True
+    assert kwargs["metadata"]["stream_mode"] == "force-streaming"
 
 
 @pytest.mark.asyncio

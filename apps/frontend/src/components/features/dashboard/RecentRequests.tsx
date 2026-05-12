@@ -76,8 +76,11 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
   const [expanded, setExpanded] = useState(false);
   const cachedTokens = req.cache_read_tokens ?? null;
 
+  const isStreaming = req.stream === true || req.stream === 'force-streaming';
+  const streamLabel = req.stream === 'force-streaming' ? 'force-streaming' : 'stream';
+
   const throughputTps =
-    req.stream &&
+    isStreaming &&
     req.completion_tokens != null &&
     req.completion_tokens > 1 &&
     req.ttft_ms != null &&
@@ -95,9 +98,9 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
         <td className="py-3 pl-4 pr-3 text-sm">
           <div className="flex items-center gap-2">
             <span className="font-medium text-gray-900 whitespace-nowrap">{req.model_id}</span>
-            {req.stream && (
+            {isStreaming && (
               <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20">
-                stream
+                {streamLabel}
               </span>
             )}
           </div>
@@ -171,7 +174,15 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 <DetailStat label="Cached Tokens" value={formatTokens(cachedTokens)} />
                 <DetailStat
                   label="Streaming"
-                  value={req.stream != null ? (req.stream ? 'Enabled' : 'Disabled') : '—'}
+                  value={
+                    req.stream === 'force-streaming'
+                      ? 'Force-streaming'
+                      : req.stream != null
+                        ? req.stream
+                          ? 'Enabled'
+                          : 'Disabled'
+                        : '—'
+                  }
                 />
                 <DetailStat
                   label="Prompt / Output"

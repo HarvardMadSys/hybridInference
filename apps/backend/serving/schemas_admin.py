@@ -551,7 +551,7 @@ class AdminRecentRequestItem(BaseModel):
     latency_ms: int | None = None
     ttft_ms: int | None = None
     decode_throughput_tps: float | None = None
-    stream: bool | None = None
+    stream: bool | Literal["force-streaming"] | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     reasoning_tokens: int | None = None
