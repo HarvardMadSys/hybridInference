@@ -35,8 +35,17 @@ def test_minimax_fast_uses_routewise() -> None:
 
     minimax_fast = next((model for model in models if model["id"] == "minimax-fast"), None)
 
-    assert minimax_fast is not None
+    assert minimax_fast is not None, "Model 'minimax-fast' not found in config/models.yaml"
     assert minimax_fast["name"] == "MiniMax Fast"
+    assert minimax_fast["supported_params"] == [
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_tokens",
+        "stop",
+        "seed",
+        "stream",
+    ]
     assert minimax_fast["router"] == "routewise"
     assert minimax_fast["router_params"]["predictor"] == "histogram"
     assert minimax_fast["router_params"]["latency_cost_budget_alpha"] == 0.5

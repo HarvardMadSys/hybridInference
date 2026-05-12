@@ -281,7 +281,7 @@ models:
     max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    supported_params: [temperature, top_p, top_k, max_tokens, stop, seed, stream]
     aliases: ["MiniMax-Fast"]
     router: routewise
     router_params:
