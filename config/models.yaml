@@ -113,12 +113,6 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5"]
-    router: routewise
-    router_params:
-      predictor: histogram
-      latency_cost_budget_alpha: 0.5
-      latency_hedge_mode: probability
-      latency_hedge_success_target: 0.99
     # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
       prompt: "1.0"
@@ -135,7 +129,6 @@ models:
           - ${ZAI_API_KEY}
           - ${ZAI_API_KEY2}
         provider_model_id: "glm-5"
-        subscription_type: api
       # Ollama Cloud fallback
       - kind: ollama
         weight: 0.64
@@ -143,7 +136,6 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "glm-5"
-        subscription_type: api
       # # Chutes fallback
       - kind: chutes
         weight: 0.64
@@ -151,7 +143,6 @@ models:
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "zai-org/GLM-5-TEE"
-        subscription_type: api
       # Featherless fallback
       - kind: featherless
         weight: 0.64
@@ -159,7 +150,6 @@ models:
         api_keys:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "zai-org/GLM-5"
-        subscription_type: api
 
   - id: glm-5.1
     name: GLM-5.1

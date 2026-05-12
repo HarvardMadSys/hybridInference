@@ -29,19 +29,6 @@ def test_routing_local_deployment_uses_local_deployment_url() -> None:
     assert "${LOCAL_BASE_URL}" not in endpoints
 
 
-def test_glm5_uses_routewise_with_api_routes() -> None:
-    """GLM-5 should use RouteWise without subscription-only routes."""
-    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())["models"]
-
-    glm5 = next((model for model in models if model["id"] == "glm-5"), None)
-
-    assert glm5 is not None
-    assert glm5["router"] == "routewise"
-    assert glm5["router_params"]["predictor"] == "histogram"
-    assert glm5["router_params"]["latency_hedge_mode"] == "probability"
-    assert {route["subscription_type"] for route in glm5["route"]} == {"api"}
-
-
 def test_minimax_fast_uses_routewise() -> None:
     """minimax-fast should exist as a RouteWise-routed model."""
     models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())["models"]
