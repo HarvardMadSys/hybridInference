@@ -460,6 +460,20 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_status "
             "ON provider_api_keys(provider, status)"
         )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS disabled_provider_env_keys (
+                provider TEXT NOT NULL,
+                key_hash TEXT NOT NULL,
+                key_prefix TEXT NOT NULL,
+                disabled_by TEXT,
+                disabled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (provider, key_hash)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_disabled_provider_env_keys_provider "
+            "ON disabled_provider_env_keys(provider)"
+        )
 
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
@@ -2338,6 +2352,39 @@ class PostgresOperationalStore(OperationalStore):
                 key_id,
             )
         return _parse_command_tag_count(tag) > 0
+
+    async def disable_provider_env_key(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        disabled_by: str | None,
+    ) -> None:
+        """Persist a tombstone for an env-sourced provider key."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO disabled_provider_env_keys "
+                "(provider, key_hash, key_prefix, disabled_by) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (provider, key_hash) DO UPDATE SET "
+                "key_prefix = EXCLUDED.key_prefix, "
+                "disabled_by = EXCLUDED.disabled_by, "
+                "disabled_at = NOW()",
+                provider,
+                key_hash,
+                key_prefix,
+                disabled_by,
+            )
+
+    async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Return disabled env-sourced provider key hashes for *provider*."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key_hash FROM disabled_provider_env_keys WHERE provider = $1",
+                provider,
+            )
+        return {r["key_hash"] for r in rows}
 
 
 def _mask_provider_key(api_key: str) -> str:

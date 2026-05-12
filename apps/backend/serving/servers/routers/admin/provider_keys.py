@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys
@@ -9,6 +11,8 @@ from serving.schemas_admin import (
     AddProviderApiKeyRequest,
     AddProviderApiKeyResponse,
     DeleteProviderApiKeyResponse,
+    DisableProviderEnvKeyRequest,
+    DisableProviderEnvKeyResponse,
     ListProviderApiKeysResponse,
     ProviderApiKeyItem,
 )
@@ -23,6 +27,15 @@ def _mask(api_key: str) -> str:
     if len(api_key) >= 16:
         return f"{api_key[:8]}...{api_key[-4:]}"
     return "***configured***"
+
+
+def _env_key_hash(api_key: str) -> str:
+    """Return a non-reversible stable identifier for env-sourced keys."""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def _env_key_id(api_key: str) -> str:
+    return f"env:{_env_key_hash(api_key)[:32]}"
 
 
 def _validate_provider(provider: str) -> None:
@@ -72,6 +85,13 @@ async def list_provider_keys(
         except Exception:
             db_raw_keys[prov] = set()
 
+    disabled_hashes: dict[str, set[str]] = {}
+    for prov in providers_to_inspect:
+        try:
+            disabled_hashes[prov] = set(await op_store.list_disabled_provider_env_key_hashes(prov))
+        except Exception:
+            disabled_hashes[prov] = set()
+
     keys: list[ProviderApiKeyItem] = []
     for row in db_rows:
         keys.append(
@@ -93,12 +113,18 @@ async def list_provider_keys(
             for raw in pool.snapshot_keys():
                 if raw in db_raw_keys.get(prov, set()):
                     continue
+                raw_hash = _env_key_hash(raw)
+                if raw_hash in disabled_hashes.get(prov, set()) or dynamic_keys.is_env_key_disabled(
+                    prov,
+                    raw_hash,
+                ):
+                    continue
                 if raw in seen:
                     continue
                 seen.add(raw)
                 keys.append(
                     ProviderApiKeyItem(
-                        id=None,
+                        id=_env_key_id(raw),
                         provider=prov,
                         key_prefix=_mask(raw),
                         label=None,
@@ -165,6 +191,71 @@ async def add_provider_key(
             status=new_row.status,
             created_at=new_row.created_at,
         ),
+        pools_updated=pools_updated,
+    )
+
+
+@router.post("/provider-keys/disable-env", response_model=DisableProviderEnvKeyResponse)
+async def disable_provider_env_key(
+    payload: DisableProviderEnvKeyRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> DisableProviderEnvKeyResponse:
+    """Persistently disable an env-sourced provider API key."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    _validate_provider(payload.provider)
+
+    try:
+        db_raw_keys = set(await op_store.list_provider_keys_full(payload.provider))
+    except Exception:
+        db_raw_keys = set()
+
+    target_key: str | None = None
+    for pool in dynamic_keys.get_pools_for_provider(payload.provider):
+        for raw in pool.snapshot_keys():
+            if raw in db_raw_keys:
+                continue
+            if _env_key_id(raw) == payload.env_key_id:
+                target_key = raw
+                break
+        if target_key is not None:
+            break
+
+    if target_key is None:
+        raise HTTPException(404, "Env provider key not found")
+
+    key_hash = _env_key_hash(target_key)
+    key_prefix = _mask(target_key)
+    await op_store.disable_provider_env_key(
+        provider=payload.provider,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        disabled_by=admin_id,
+    )
+    pools_updated = dynamic_keys.disable_env_key_for_provider(
+        payload.provider,
+        target_key,
+        key_hash,
+    )
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "disable_provider_env_key",
+        None,
+        {
+            "id": payload.env_key_id,
+            "provider": payload.provider,
+            "key_prefix": key_prefix,
+            "pools_updated": pools_updated,
+        },
+    )
+
+    return DisableProviderEnvKeyResponse(
+        id=payload.env_key_id,
+        provider=payload.provider,
         pools_updated=pools_updated,
     )
 

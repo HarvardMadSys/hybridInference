@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,6 +28,7 @@ class _StubStore:
     def __init__(self) -> None:
         self.rows: dict[str, ProviderKeyRow] = {}
         self.raw: dict[str, list[str]] = {}
+        self.disabled: set[tuple[str, str]] = set()
         self.audit: list[dict] = []
 
     async def add_provider_key(
@@ -77,6 +79,19 @@ class _StubStore:
                 break
         return True
 
+    async def disable_provider_env_key(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        disabled_by: str | None,
+    ) -> None:
+        self.disabled.add((provider, key_hash))
+
+    async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
+        return {key_hash for prov, key_hash in self.disabled if prov == provider}
+
     async def log_admin_action(self, **kwargs):
         self.audit.append(kwargs)
 
@@ -120,6 +135,8 @@ async def client(monkeypatch, store):
         "list_provider_keys_full",
         "get_provider_key_full",
         "delete_provider_key",
+        "disable_provider_env_key",
+        "list_disabled_provider_env_key_hashes",
         "log_admin_action",
     ):
         setattr(store_mock, attr, getattr(store, attr))
@@ -205,6 +222,108 @@ async def test_list_combines_env_and_db_keys(client):
     payload_text = resp.text
     assert env_key not in payload_text
     assert db_key not in payload_text
+
+
+@pytest.mark.asyncio
+async def test_env_key_can_be_disabled_from_admin_dashboard(client):
+    """Env-sourced keys get opaque ids and can be disabled without exposing raw secrets."""
+    http, store = client
+    env_key = "env-zai-disable-me-aaaaaaaaaaaa"
+    pool = KeyPool(keys=[env_key], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    listed = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    assert listed.status_code == 200, listed.text
+    env_row = next(item for item in listed.json()["keys"] if item["source"] == "env")
+    assert env_row["id"]
+    assert env_row["id"].startswith("env:")
+    assert env_key not in listed.text
+
+    resp = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": env_row["id"]},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["provider"] == "zai"
+    assert body["pools_updated"] == 1
+    assert env_key not in pool.snapshot_keys()
+    assert store.disabled
+    assert store.audit and store.audit[-1]["action"] == "disable_provider_env_key"
+
+    relisted = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    assert relisted.status_code == 200, relisted.text
+    assert relisted.json()["keys"] == []
+
+
+@pytest.mark.asyncio
+async def test_disable_env_key_rejects_unknown_opaque_id(client):
+    """The disable endpoint rejects ids that do not match a live env-sourced key."""
+    http, _store = client
+    pool = KeyPool(keys=["env-zai-real-key-aaaaaaaaaaaa"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    resp = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": "env:not-a-real-key"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_disable_env_key_rejects_db_sourced_key(client):
+    """The env disable endpoint must not tombstone active DB-backed keys."""
+    http, store = client
+    db_key = "sk-zai-db-backed-aaaaaaaaaaaaaa"
+    key_id = await store.add_provider_key(
+        provider="zai",
+        api_key=db_key,
+        label=None,
+        created_by="admin",
+    )
+    pool = KeyPool(keys=[db_key], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    env_key_id = f"env:{hashlib.sha256(db_key.encode('utf-8')).hexdigest()[:32]}"
+    resp = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": env_key_id},
+        headers=AUTH,
+    )
+
+    assert resp.status_code == 404
+    assert db_key in pool.snapshot_keys()
+    assert key_id in store.rows
+
+
+@pytest.mark.asyncio
+async def test_disabled_env_key_is_removed_when_db_keys_apply_at_boot(store):
+    """Disabled env key tombstones are applied to pools during boot reload."""
+    disabled_key = "env-zai-disabled-at-boot-aaaaaaaa"
+    live_key = "env-zai-live-at-boot-bbbbbbbbbbbb"
+    disabled_hash = hashlib.sha256(disabled_key.encode("utf-8")).hexdigest()
+    await store.disable_provider_env_key(
+        provider="zai",
+        key_hash=disabled_hash,
+        key_prefix="env-zai...aaaa",
+        disabled_by="admin",
+    )
+    pool = KeyPool(keys=[disabled_key, live_key], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    assert pool.snapshot_keys() == [live_key]
 
 
 @pytest.mark.asyncio

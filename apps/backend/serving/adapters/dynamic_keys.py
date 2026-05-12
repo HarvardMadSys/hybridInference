@@ -25,6 +25,7 @@ _known_providers: set[str] = set()
 # Used by ``remove_key_from_provider`` to ensure we never tombstone an
 # env-configured key that happens to share its raw value with a deleted DB row.
 _db_injected_keys: dict[str, set[str]] = {}
+_disabled_env_key_hashes: dict[str, set[str]] = {}
 
 
 def reset() -> None:
@@ -33,6 +34,7 @@ def reset() -> None:
         _adapters_by_provider.clear()
         _known_providers.clear()
         _db_injected_keys.clear()
+        _disabled_env_key_hashes.clear()
 
 
 def register_adapter_for_provider(provider: str, adapter: object) -> None:
@@ -73,6 +75,30 @@ def get_pools_for_provider(provider: str) -> list[KeyPool]:
     """Return the live KeyPool instances configured for *provider*."""
     with _lock:
         return _pools_for_provider_locked(provider)
+
+
+def is_env_key_disabled(provider: str, key_hash: str) -> bool:
+    """Return True when an env-sourced key hash has been disabled."""
+    with _lock:
+        return key_hash in _disabled_env_key_hashes.get(provider, set())
+
+
+def mark_env_key_disabled(provider: str, key_hash: str) -> None:
+    """Record an in-process tombstone for an env-sourced provider key."""
+    with _lock:
+        _disabled_env_key_hashes.setdefault(provider, set()).add(key_hash)
+
+
+def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
+    """Disable an env-sourced key in all live pools for *provider*.
+
+    The hash is tracked so the admin list view can continue filtering the key
+    after the raw key has been removed from the pools.
+    """
+    with _lock:
+        _disabled_env_key_hashes.setdefault(provider, set()).add(key_hash)
+        pools = _pools_for_provider_locked(provider)
+        return sum(1 for pool in pools if pool.remove_key(key))
 
 
 def add_key_to_provider(provider: str, key: str) -> int:
@@ -126,6 +152,25 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
 
     for provider in providers:
         try:
+            disabled_hashes = await operational_store.list_disabled_provider_env_key_hashes(
+                provider
+            )
+        except Exception as exc:
+            logger.warning(
+                "dynamic_keys: failed to load disabled env keys for provider=%s: %s",
+                provider,
+                exc,
+            )
+            disabled_hashes = set()
+        if disabled_hashes:
+            with _lock:
+                _disabled_env_key_hashes[provider] = set(disabled_hashes)
+            for pool in get_pools_for_provider(provider):
+                for key in pool.snapshot_keys():
+                    if _env_key_hash(key) in disabled_hashes:
+                        pool.remove_key(key)
+
+        try:
             keys = await operational_store.list_provider_keys_full(provider)
         except Exception as exc:
             logger.warning(
@@ -145,3 +190,9 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
                 len(keys),
                 provider,
             )
+
+
+def _env_key_hash(key: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()

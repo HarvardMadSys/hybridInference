@@ -791,6 +791,21 @@ class OperationalStore(ABC):
     async def delete_provider_key(self, key_id: str) -> bool:
         """Hard-delete the provider key row. Returns True if a row was removed."""
 
+    @abstractmethod
+    async def disable_provider_env_key(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        disabled_by: str | None,
+    ) -> None:
+        """Persist a tombstone for an env-sourced provider API key."""
+
+    @abstractmethod
+    async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Return disabled env-sourced provider key hashes for ``provider``."""
+
 
 # ---------------------------------------------------------------------------
 # LogStore — api_logs, api_stats_hourly
