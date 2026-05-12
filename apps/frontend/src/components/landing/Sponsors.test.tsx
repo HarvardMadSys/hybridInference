@@ -17,4 +17,15 @@ describe('Sponsors', () => {
     expect(screen.getByAltText('NVIDIA logo')).toBeInTheDocument();
     expect(screen.getByAltText('Harvard SEAS logo')).toBeInTheDocument();
   });
+
+  it('shows sponsor logos in full color', () => {
+    render(<Sponsors />);
+
+    [screen.getByAltText('NVIDIA logo'), screen.getByAltText('Harvard SEAS logo')].forEach(
+      (logo) => {
+        expect(logo).not.toHaveClass('grayscale');
+        expect(logo).not.toHaveClass('opacity-70');
+      },
+    );
+  });
 });
