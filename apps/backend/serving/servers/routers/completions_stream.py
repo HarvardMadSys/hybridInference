@@ -13,7 +13,7 @@ Public surface:
 - ``yielded_first_chunk`` — bool property telling the router whether a
   fallback is still safe (no fallback after the first SSE byte).
 
-Internal helpers (private to module): ``_ToolCallAccumulator`` for
+Internal helpers: ``ToolCallAccumulator`` for
 delta-merging tool_calls across chunks, ``_TTFTTracker`` for the
 time-to-first-token measurement.
 
@@ -32,6 +32,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
+from routing.routers import AllCircuitsOpenError
 from serving.exceptions import scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
 from serving.servers.routers.routing_info import RoutingInfo, merge_adapter_routing
@@ -57,6 +58,9 @@ _SENTINEL: Any = object()
 
 def _extract_exception_status_code(exc: BaseException, default: int = 500) -> int:
     """Return the HTTP status carried by common upstream exception shapes."""
+    if isinstance(exc, AllCircuitsOpenError):
+        return 503
+
     status_code = None
 
     if hasattr(exc, "status_code") and exc.status_code is not None:
@@ -101,7 +105,7 @@ def _format_exception_for_db(exc: BaseException, max_len: int = 4000) -> str:
     return value
 
 
-class _ToolCallAccumulator:
+class ToolCallAccumulator:
     """Merge tool_calls deltas indexed by ``index`` into complete tool calls.
 
     Adapters emit tool_calls as deltas; the public response (and the DB log
@@ -130,7 +134,7 @@ class _ToolCallAccumulator:
             if "function" in tc_delta:
                 fn_delta = tc_delta["function"]
                 if "name" in fn_delta:
-                    self._calls[idx]["function"]["name"] = fn_delta["name"]
+                    self._calls[idx]["function"]["name"] += fn_delta["name"]
                 if "arguments" in fn_delta:
                     self._calls[idx]["function"]["arguments"] += fn_delta["arguments"]
 
@@ -140,6 +144,9 @@ class _ToolCallAccumulator:
     def to_list(self) -> list[dict[str, Any]]:
         """Return tool_calls sorted by ``index`` for the final message."""
         return [tc for _, tc in sorted(self._calls.items())]
+
+
+_ToolCallAccumulator = ToolCallAccumulator
 
 
 class _TTFTTracker:
@@ -252,7 +259,7 @@ class StreamSession:
         self._final_text = ""
         self._final_reasoning = ""
         self._finish_reason_for_db = "stop"
-        self._tool_calls = _ToolCallAccumulator()
+        self._tool_calls = ToolCallAccumulator()
         self._ttft = _TTFTTracker(start_time)
         self._usage_data: dict[str, Any] | None = None
         # Most recent adapter ``_routing`` dict (raw); ``None`` until first

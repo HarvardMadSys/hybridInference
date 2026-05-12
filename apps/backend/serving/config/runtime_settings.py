@@ -51,6 +51,14 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "model-not-found) to api_logs with metadata.rejection=true."
         ),
     },
+    "force_chat_completions_streaming": {
+        "type": "bool",
+        "default": False,
+        "description": (
+            "Send non-streaming chat completions upstream as streaming requests, "
+            "then buffer and return a normal non-streaming response to clients."
+        ),
+    },
     "user_concurrency_trial": {
         "type": "int",
         "default": 1,
