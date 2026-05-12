@@ -7,6 +7,7 @@ provider and add or remove keys at runtime without restarting the process.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from typing import TYPE_CHECKING
 
@@ -83,10 +84,9 @@ def is_env_key_disabled(provider: str, key_hash: str) -> bool:
         return key_hash in _disabled_env_key_hashes.get(provider, set())
 
 
-def mark_env_key_disabled(provider: str, key_hash: str) -> None:
-    """Record an in-process tombstone for an env-sourced provider key."""
-    with _lock:
-        _disabled_env_key_hashes.setdefault(provider, set()).add(key_hash)
+def env_key_hash(key: str) -> str:
+    """Return the stable hash used to identify env-sourced provider keys."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
@@ -167,7 +167,7 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
                 _disabled_env_key_hashes[provider] = set(disabled_hashes)
             for pool in get_pools_for_provider(provider):
                 for key in pool.snapshot_keys():
-                    if _env_key_hash(key) in disabled_hashes:
+                    if env_key_hash(key) in disabled_hashes:
                         pool.remove_key(key)
 
         try:
@@ -190,9 +190,3 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
                 len(keys),
                 provider,
             )
-
-
-def _env_key_hash(key: str) -> str:
-    import hashlib
-
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()

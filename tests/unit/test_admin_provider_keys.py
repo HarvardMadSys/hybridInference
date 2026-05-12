@@ -30,6 +30,8 @@ class _StubStore:
         self.raw: dict[str, list[str]] = {}
         self.disabled: set[tuple[str, str]] = set()
         self.audit: list[dict] = []
+        self.fail_full_for: set[str] = set()
+        self.fail_disabled_for: set[str] = set()
 
     async def add_provider_key(
         self,
@@ -59,6 +61,8 @@ class _StubStore:
         return list(out)
 
     async def list_provider_keys_full(self, provider: str) -> list[str]:
+        if provider in self.fail_full_for:
+            raise RuntimeError(f"boom-full-{provider}")
         return [raw for _id, raw in self.raw.get(provider, [])]
 
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
@@ -90,6 +94,8 @@ class _StubStore:
         self.disabled.add((provider, key_hash))
 
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
+        if provider in self.fail_disabled_for:
+            raise RuntimeError(f"boom-disabled-{provider}")
         return {key_hash for prov, key_hash in self.disabled if prov == provider}
 
     async def log_admin_action(self, **kwargs):
@@ -225,6 +231,30 @@ async def test_list_combines_env_and_db_keys(client):
 
 
 @pytest.mark.asyncio
+async def test_list_fails_closed_when_db_key_classification_lookup_fails(client):
+    """The list endpoint should not misclassify DB keys as env keys on DB read errors."""
+    http, store = client
+    store.fail_full_for.add("zai")
+
+    resp = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+
+    assert resp.status_code == 503
+    assert "Failed to load provider keys" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_fails_closed_when_disabled_hash_lookup_fails(client):
+    """The list endpoint should not surface stale env rows when tombstone lookup fails."""
+    http, store = client
+    store.fail_disabled_for.add("zai")
+
+    resp = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+
+    assert resp.status_code == 503
+    assert "Failed to load provider keys" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_env_key_can_be_disabled_from_admin_dashboard(client):
     """Env-sourced keys get opaque ids and can be disabled without exposing raw secrets."""
     http, store = client
@@ -302,6 +332,26 @@ async def test_disable_env_key_rejects_db_sourced_key(client):
     assert resp.status_code == 404
     assert db_key in pool.snapshot_keys()
     assert key_id in store.rows
+
+
+@pytest.mark.asyncio
+async def test_disable_env_key_fails_closed_when_db_key_lookup_fails(client):
+    """The disable endpoint should not proceed when DB-backed key lookup fails."""
+    http, store = client
+    store.fail_full_for.add("zai")
+    pool = KeyPool(keys=["env-zai-real-key-aaaaaaaaaaaa"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    resp = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": "env:not-a-real-key"},
+        headers=AUTH,
+    )
+
+    assert resp.status_code == 503
+    assert "Failed to load provider keys" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

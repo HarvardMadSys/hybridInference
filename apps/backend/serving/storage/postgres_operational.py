@@ -470,10 +470,7 @@ class PostgresOperationalStore(OperationalStore):
                 PRIMARY KEY (provider, key_hash)
             )
         """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_disabled_provider_env_keys_provider "
-            "ON disabled_provider_env_keys(provider)"
-        )
+        await conn.execute("DROP INDEX IF EXISTS idx_disabled_provider_env_keys_provider")
 
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
