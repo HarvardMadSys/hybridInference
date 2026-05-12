@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from routing.routers import ManagedRouter
 from routing.strategies import build_router
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from routing.routers import BaseRouter, ManagedRouter
+    from routing.routers import BaseRouter
 
 logger = get_logger(__name__)
 
@@ -121,7 +122,7 @@ class ModelRouterRegistry:
         for router in self._cache.values():
             if id(router) in seen_ids:
                 continue
-            if hasattr(router, "start") and hasattr(router, "stop"):
+            if isinstance(router, ManagedRouter):
                 seen_ids.add(id(router))
-                managed.append(router)  # type: ignore[arg-type]
+                managed.append(router)
         return managed

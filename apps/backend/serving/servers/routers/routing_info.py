@@ -24,7 +24,7 @@ from typing import Any
 _ROUTEWISE_UNSET = object()
 
 
-def _merge_strategy_metadata(
+def merge_strategy_metadata(
     base: dict[str, Any] | None,
     incoming: dict[str, Any],
 ) -> dict[str, Any]:
@@ -103,7 +103,7 @@ class RoutingInfo:
                 if not strategy_metadata:
                     strategy_metadata = None
         elif isinstance(routewise, dict):
-            strategy_metadata = _merge_strategy_metadata(
+            strategy_metadata = merge_strategy_metadata(
                 strategy_metadata,
                 {"routewise": routewise},
             )
@@ -194,7 +194,7 @@ def merge_adapter_routing(
         if key in field_names:
             known[key] = value
         elif key == "strategy_metadata" and isinstance(value, dict):
-            strategy_metadata = _merge_strategy_metadata(strategy_metadata, value)
+            strategy_metadata = merge_strategy_metadata(strategy_metadata, value)
         elif key == "routewise" and isinstance(value, dict):
             routewise = value
         elif key == "failed_attempts" and isinstance(value, list):
@@ -204,7 +204,7 @@ def merge_adapter_routing(
             extra[key] = value
 
     if routewise is not None:
-        strategy_metadata = _merge_strategy_metadata(
+        strategy_metadata = merge_strategy_metadata(
             strategy_metadata,
             {"routewise": routewise},
         )

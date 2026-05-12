@@ -21,7 +21,7 @@ from typing import Any
 
 from routing.routers import RoutingObservation
 from serving.observability.tracked_tasks import tracked_task
-from serving.servers.routers.routing_info import RoutingInfo
+from serving.servers.routers.routing_info import RoutingInfo, merge_strategy_metadata
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -175,13 +175,10 @@ def _extract_observation_keys(
     strategy_metadata: dict[str, Any] = {}
     raw_strategy_metadata = routing.get("strategy_metadata")
     if isinstance(raw_strategy_metadata, dict):
-        strategy_metadata.update(raw_strategy_metadata)
+        strategy_metadata = merge_strategy_metadata(strategy_metadata, raw_strategy_metadata)
     routewise = routing.get("routewise")
     if isinstance(routewise, dict):
-        existing_routewise = strategy_metadata.get("routewise")
-        merged_routewise = dict(existing_routewise) if isinstance(existing_routewise, dict) else {}
-        merged_routewise.update(routewise)
-        strategy_metadata["routewise"] = merged_routewise
+        strategy_metadata = merge_strategy_metadata(strategy_metadata, {"routewise": routewise})
     return (
         routing.get("provider"),
         endpoint,
