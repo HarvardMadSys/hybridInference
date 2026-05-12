@@ -233,7 +233,12 @@ class HistogramOutputPredictor:
         self._global_samples.append(value)
 
     def predict(self, model_id: str, prompt_tokens: int) -> QuantilePrediction:
-        """Predict output-token quantiles for a model and prompt size."""
+        """Predict output-token quantiles for a model and prompt size.
+
+        ``q50`` intentionally carries the bucket mean for RouteWise value
+        estimation; histogram users want a stable expected output length rather
+        than the empirical median for cost prediction.
+        """
         bucket = self._bucket_for_prompt(prompt_tokens)
         samples = list(self._buckets.get((model_id, bucket), ()))
         is_warmed = len(samples) >= self._min_samples

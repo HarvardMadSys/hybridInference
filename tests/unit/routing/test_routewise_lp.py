@@ -250,13 +250,6 @@ class TestPreFilter:
         assert "fast" in eligible
         assert "slow" not in eligible
 
-
-@pytest.mark.unit
-def test_provider_profile_mean_ttft_sec():
-    profile = _make_profile("ep", [100.0, 300.0, 500.0], timestamp=100.0)
-
-    assert profile.mean_ttft_sec(100.0) == pytest.approx(0.3)
-
     def test_healthy_pass(self):
         """All healthy providers pass the filter."""
         profiles = {
@@ -270,3 +263,10 @@ def test_provider_profile_mean_ttft_sec():
         """Empty profiles return empty list."""
         eligible = pre_filter_providers({}, current_time=100.0)
         assert eligible == []
+
+
+@pytest.mark.unit
+def test_provider_profile_mean_ttft_sec():
+    profile = _make_profile("ep", [100.0, 300.0, 500.0], timestamp=100.0)
+
+    assert profile.mean_ttft_sec(100.0) == pytest.approx(0.3)

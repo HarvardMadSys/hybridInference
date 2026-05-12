@@ -459,9 +459,9 @@ class RouteWiseRouter(BaseRouter):
 
     def _predict_output_tokens(self, model_id: str, prompt_tokens: int) -> float:
         """Predict output length using the configured value estimator."""
-        try:
-            prediction = self.predictor.predict(model_id, prompt_tokens)  # type: ignore[call-arg]
-        except TypeError:
+        if isinstance(self.predictor, HistogramOutputPredictor):
+            prediction = self.predictor.predict(model_id, prompt_tokens)
+        else:
             prediction = self.predictor.predict(model_id)
         return prediction.lcb if self.config.decision_rule == "lapd" else prediction.median
 
@@ -1052,6 +1052,17 @@ class RouteWiseRouter(BaseRouter):
             now,
         )
         if selected_candidate is not None and self._commit_candidate_resource(selected_candidate):
+            gain_c = (
+                v_t
+                if selected_candidate.sub_type is SubscriptionType.CONCURRENCY
+                else float("-inf")
+            )
+            gain_q = (
+                v_t - selected_candidate.effective_cost
+                if selected_candidate.sub_type is SubscriptionType.QUOTA
+                else float("-inf")
+            )
+            gain_a = 0.0
             if selected_candidate.sub_type is SubscriptionType.API:
                 model_eids = [
                     c.endpoint_id for c in candidates if c.sub_type is SubscriptionType.API
@@ -1077,9 +1088,9 @@ class RouteWiseRouter(BaseRouter):
             if request_id:
                 self._pending_decisions[request_id] = {
                     "v_t": v_t,
-                    "gain_c": None,
-                    "gain_q": None,
-                    "gain_a": 0.0,
+                    "gain_c": gain_c,
+                    "gain_q": gain_q,
+                    "gain_a": gain_a,
                     "theta_q": self.quota_mgr.get_shadow_price(),
                     "quota_remaining": self.quota_mgr.remaining,
                     "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
@@ -1267,13 +1278,13 @@ class RouteWiseRouter(BaseRouter):
             routewise_metadata = {}
 
         if obs.completion_tokens > 0:
-            try:
+            if isinstance(self.predictor, HistogramOutputPredictor):
                 self.predictor.update(
                     obs.model_id,
                     prompt_tokens=obs.prompt_tokens,
                     output_tokens=obs.completion_tokens,
                 )
-            except TypeError:
+            else:
                 self.predictor.update(obs.model_id, obs.completion_tokens)
 
         # Layer 2: update latency profile for the endpoint.

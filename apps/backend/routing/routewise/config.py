@@ -54,7 +54,8 @@ class RouteWiseConfig:
         latency_lp_interval_sec: Minimum seconds between LP re-solves.
         latency_swrr_alpha: Smoothing factor for SWRR weight updates.
         latency_relaxation_factors: Comma-separated SLO relaxation factors.
-        latency_hedge_mode: Hedge mode -- "shadow" | "economic" | "disabled".
+        latency_hedge_mode: Hedge mode -- "shadow" | "economic" |
+            "probability" | "disabled".
         latency_hedge_cost_ratio: C_b/V for SMART_ECONOMIC hedge threshold.
         latency_hedge_dispatch_overhead_sec: Backup launch overhead (seconds).
     """
@@ -89,7 +90,7 @@ class RouteWiseConfig:
     latency_lp_interval_sec: float = 60.0  # LP re-solve interval
     latency_swrr_alpha: float = 0.3
     latency_relaxation_factors: str = "1.2,1.5,2.0"
-    latency_hedge_mode: str = "shadow"  # "shadow" | "economic" | "disabled"
+    latency_hedge_mode: str = "shadow"  # "shadow" | "economic" | "probability" | "disabled"
     latency_cost_budget_alpha: float = 0.5
     latency_hedge_success_target: float = 0.99
     latency_hedge_cost_ratio: float = 0.1  # C_b/V for SMART_ECONOMIC

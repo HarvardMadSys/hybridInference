@@ -123,6 +123,7 @@ class ProviderProfile:
 
     def mean_ttft_sec(self, current_time: float) -> float:
         """Return mean successful TTFT in seconds within the current window."""
+        self._prune(current_time)
         samples_sec = self._get_latency_samples_sec(current_time)
         if not samples_sec:
             return float("inf")
