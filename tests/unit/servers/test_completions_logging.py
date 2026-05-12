@@ -218,22 +218,25 @@ def test_record_routing_observation_accepts_legacy_dict(cl_logger):
     )
     obs = active_router.record_observation.call_args[0][0]
     assert obs.endpoint_id == "anthropic-prod"
-    assert obs.selected_tier == "B"
-    assert obs.quota_committed == 1.5
-    assert obs.sc_committed is True
-    assert obs.hedged is True
-    assert obs.backup_won is False
-    assert obs.lp_status == "ok"
+    assert obs.strategy_metadata == {
+        "routewise": {
+            "selected_tier": "B",
+            "quota_committed": 1.5,
+            "sc_committed": True,
+            "hedged": True,
+            "backup_won": False,
+            "lp_status": "ok",
+        }
+    }
 
 
-def test_record_routing_observation_no_routewise_dict(cl_logger):
-    """When routing has no ``routewise`` field, defaults pass through."""
+def test_record_routing_observation_no_strategy_metadata(cl_logger):
     routing = RoutingInfo(
         request_id="rid",
         model="gpt-4",
         provider="openai",
         endpoint_id="openai-prod",
-        routewise=None,
+        strategy_metadata=None,
     )
     active_router = MagicMock()
     cl_logger.record_routing_observation(
@@ -247,12 +250,134 @@ def test_record_routing_observation_no_routewise_dict(cl_logger):
         success=True,
     )
     obs = active_router.record_observation.call_args[0][0]
-    assert obs.quota_committed == 0.0
-    assert obs.selected_tier is None
-    assert obs.sc_committed is False
-    assert obs.hedged is False
-    assert obs.backup_won is False
-    assert obs.lp_status is None
+    assert obs.strategy_metadata == {}
+
+
+def test_record_routing_observation_accepts_typed_strategy_metadata(cl_logger):
+    routing = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        provider="openai",
+        endpoint_id="openai-prod",
+        strategy_metadata={"routewise": {"selected_tier": "api"}, "other": {"x": 1}},
+    )
+    active_router = MagicMock()
+    cl_logger.record_routing_observation(
+        active_router,
+        "gpt-4",
+        routing,
+        ttft_ms=10.0,
+        total_latency_ms=20.0,
+        prompt_tokens=3,
+        completion_tokens=4,
+        success=True,
+    )
+    obs = active_router.record_observation.call_args[0][0]
+    assert obs.strategy_metadata == {"routewise": {"selected_tier": "api"}, "other": {"x": 1}}
+    assert obs.token_count == 7
+
+
+def test_routing_observation_accepts_legacy_routewise_kwargs():
+    from routing.routers import RoutingObservation
+
+    obs = RoutingObservation(
+        model_id="gpt-4",
+        endpoint_id="openai-prod",
+        ttft_ms=None,
+        total_latency_ms=1.0,
+        token_count=3,
+        success=True,
+        prompt_tokens=1,
+        completion_tokens=2,
+        selected_tier="api",
+        quota_committed=1.5,
+        sc_committed=True,
+        hedged=True,
+        backup_won=False,
+        lp_status="optimal",
+    )
+
+    assert obs.strategy_metadata == {
+        "routewise": {
+            "selected_tier": "api",
+            "quota_committed": 1.5,
+            "sc_committed": True,
+            "hedged": True,
+            "backup_won": False,
+            "lp_status": "optimal",
+        }
+    }
+
+
+def test_routing_observation_accepts_legacy_positional_quota_committed():
+    from routing.routers import RoutingObservation
+
+    obs = RoutingObservation(
+        "gpt-4",
+        "openai-prod",
+        None,
+        1.0,
+        3,
+        True,
+        1.5,
+        prompt_tokens=1,
+        completion_tokens=2,
+    )
+
+    assert obs.prompt_tokens == 1
+    assert obs.completion_tokens == 2
+    assert obs.strategy_metadata == {"routewise": {"quota_committed": 1.5}}
+
+
+def test_routing_observation_accepts_full_legacy_positional_tail():
+    from routing.routers import RoutingObservation
+
+    obs = RoutingObservation(
+        "gpt-4",
+        "openai-prod",
+        None,
+        1.0,
+        3,
+        True,
+        1.5,
+        1,
+        2,
+        "api",
+        True,
+        True,
+        False,
+        "optimal",
+    )
+
+    assert obs.prompt_tokens == 1
+    assert obs.completion_tokens == 2
+    assert obs.strategy_metadata == {
+        "routewise": {
+            "quota_committed": 1.5,
+            "selected_tier": "api",
+            "sc_committed": True,
+            "hedged": True,
+            "backup_won": False,
+            "lp_status": "optimal",
+        }
+    }
+
+
+def test_routing_observation_rejects_duplicate_legacy_positional_and_keyword():
+    from routing.routers import RoutingObservation
+
+    with pytest.raises(TypeError):
+        RoutingObservation(
+            "gpt-4",
+            "openai-prod",
+            None,
+            1.0,
+            3,
+            True,
+            1.5,
+            1,
+            prompt_tokens=1,
+        )
 
 
 # -- build_db_params -------------------------------------------------------

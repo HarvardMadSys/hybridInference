@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
-    from routing.routewise.router import RouteWiseRouter
+    from routing.routers import ManagedRouter
     from serving.config.model_visibility import ModelVisibilityResolver
     from serving.config.weight_overrides import WeightOverrideResolver
     from serving.observability.alert_rules import AlertEngine
@@ -50,7 +50,7 @@ class AppServices:
     log_store: LogStore | None = None
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
-    routewise_routers: list[RouteWiseRouter] = field(default_factory=list)
+    managed_routers: list[ManagedRouter] = field(default_factory=list)
     model_visibility_resolver: ModelVisibilityResolver | None = None
     weight_override_resolver: WeightOverrideResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from routing.routers import ManagedRouter
 from routing.strategies import build_router
 from serving.utils.logging import get_logger
 
@@ -113,3 +114,15 @@ class ModelRouterRegistry:
     def registered_models(self) -> dict[str, str]:
         """Return ``{model_id: router_class_name}`` for every cached entry."""
         return {mid: type(r).__name__ for mid, r in self._cache.items()}
+
+    def managed_routers(self) -> list[ManagedRouter]:
+        """Return unique cached routers with async lifecycle hooks."""
+        seen_ids: set[int] = set()
+        managed: list[ManagedRouter] = []
+        for router in self._cache.values():
+            if id(router) in seen_ids:
+                continue
+            if isinstance(router, ManagedRouter):
+                seen_ids.add(id(router))
+                managed.append(router)
+        return managed
