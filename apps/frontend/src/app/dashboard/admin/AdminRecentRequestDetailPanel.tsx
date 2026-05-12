@@ -486,7 +486,7 @@ export function AdminRecentRequestDetailPanel({
 }) {
   const status = req.status_code != null ? String(req.status_code) : '—';
   const stream =
-    req.stream === 'force-streaming'
+    req.stream_mode === 'force-streaming'
       ? 'Force-streaming'
       : req.stream != null
         ? req.stream

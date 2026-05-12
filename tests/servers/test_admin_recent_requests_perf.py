@@ -266,7 +266,8 @@ async def test_list_surfaces_force_streaming_mode(admin_client_capture):
 
     assert resp.status_code == 200, resp.text
     item = resp.json()["requests"][0]
-    assert item["stream"] == "force-streaming"
+    assert item["stream"] is True
+    assert item["stream_mode"] == "force-streaming"
 
 
 # ---------------------------------------------------------------------------

@@ -446,7 +446,8 @@ class TestRecentRequests:
         data = response.json()
         matching = [request for request in data["requests"] if request["request_id"] == request_id]
         assert len(matching) == 1
-        assert matching[0]["stream"] == "force-streaming"
+        assert matching[0]["stream"] is True
+        assert matching[0]["stream_mode"] == "force-streaming"
 
 
 class TestUserProfile:

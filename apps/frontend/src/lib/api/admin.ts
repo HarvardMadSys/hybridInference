@@ -410,7 +410,8 @@ export interface AdminRecentRequestItem {
   latency_ms?: number | null;
   ttft_ms?: number | null;
   decode_throughput_tps?: number | null;
-  stream?: boolean | 'force-streaming' | null;
+  stream?: boolean | null;
+  stream_mode?: 'force-streaming' | null;
   prompt_tokens?: number | null;
   completion_tokens?: number | null;
   reasoning_tokens?: number | null;

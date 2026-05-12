@@ -1066,7 +1066,7 @@ export function RequestsTab() {
                               <div>
                                 <span className="text-gray-500">Stream:</span>{' '}
                                 <span className="text-gray-700">
-                                  {req.stream === 'force-streaming'
+                                  {req.stream_mode === 'force-streaming'
                                     ? 'Force-streaming'
                                     : req.stream != null
                                       ? req.stream

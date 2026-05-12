@@ -76,8 +76,8 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
   const [expanded, setExpanded] = useState(false);
   const cachedTokens = req.cache_read_tokens ?? null;
 
-  const isStreaming = req.stream === true || req.stream === 'force-streaming';
-  const streamLabel = req.stream === 'force-streaming' ? 'force-streaming' : 'stream';
+  const isStreaming = req.stream === true;
+  const streamLabel = req.stream_mode === 'force-streaming' ? 'force-streaming' : 'stream';
 
   const throughputTps =
     isStreaming &&
@@ -175,7 +175,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 <DetailStat
                   label="Streaming"
                   value={
-                    req.stream === 'force-streaming'
+                    req.stream_mode === 'force-streaming'
                       ? 'Force-streaming'
                       : req.stream != null
                         ? req.stream

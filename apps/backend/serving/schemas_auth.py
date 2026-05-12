@@ -255,7 +255,8 @@ class RecentRequestItem(BaseModel):
     status_code: int | None = None
     latency_ms: int | None = None
     ttft_ms: int | None = None
-    stream: bool | Literal["force-streaming"] | None = None
+    stream: bool | None = None
+    stream_mode: Literal["force-streaming"] | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     reasoning_tokens: int | None = None
