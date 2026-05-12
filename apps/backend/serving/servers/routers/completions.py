@@ -375,6 +375,7 @@ async def chat_completions(
         params["response_format"] = payload.response_format.model_dump(by_alias=True)
     if session_id:
         params["session_id"] = session_id
+    log_params = {**params, "stream": "force-streaming"} if force_streaming else params
 
     # Stable user identifier used by cost tracking
     user_id: str = user_ctx.get("user_id") or "anonymous"
@@ -503,7 +504,7 @@ async def chat_completions(
             routing=routing,
             model=model,
             messages=messages,
-            params=params,
+            params=log_params,
             request_id=request_id,
             start_time=start_time,
             request_headers=request.headers,

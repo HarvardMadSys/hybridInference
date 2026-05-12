@@ -305,6 +305,42 @@ async def test_runtime_setting_streams_upstream_and_buffers_non_stream_response(
 
 
 @pytest.mark.asyncio
+async def test_runtime_forced_buffered_stream_logs_force_streaming_param(
+    mock_log_store,
+):
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=True)
+    router = RouteExecutor()
+    router.register_route("gpt-4", [(DummyAdapter(_mk_cfg("gpt-4")), 1.0)])
+
+    app = FastAPI(title="Forced Buffered Log Params App")
+    app.state.services = AppServices(
+        router=router,
+        db_logger=None,
+        log_store=mock_log_store,
+        runtime_settings=runtime_settings,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": False,
+            },
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert kwargs is not None, "log_request was never called"
+    assert kwargs["params"]["stream"] == "force-streaming"
+
+
+@pytest.mark.asyncio
 async def test_runtime_forced_buffered_probe_preserves_provider_header():
     runtime_settings = MagicMock()
     runtime_settings.get_bool = AsyncMock(return_value=True)
