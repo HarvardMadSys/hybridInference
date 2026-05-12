@@ -65,6 +65,31 @@ class DummyAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+class SplitToolCallNameAdapter(BaseAdapter):
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        raise RuntimeError("not implemented")
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        yield (
+            'data: {"id":"tool-1","object":"chat.completion.chunk",'
+            '"created":123,"model":"gpt-4",'
+            '"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+            '"id":"call_1","type":"function","function":{"name":"get_",'
+            '"arguments":"{\\"city"}}]},"finish_reason":null}]}\n\n'
+        )
+        yield (
+            'data: {"id":"tool-1","object":"chat.completion.chunk",'
+            '"created":123,"model":"gpt-4",'
+            '"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+            '"function":{"name":"weather","arguments":"\\":\\"Boston\\"}"}}]},'
+            '"finish_reason":"tool_calls"}]}\n\n'
+        )
+        yield make_final_usage_chunk(model=self.config.id, messages=messages, total_content="")
+        yield done_sentinel()
+
+
 class FailingAdapter(BaseAdapter):
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         raise RuntimeError("Primary adapter failed")
@@ -73,7 +98,8 @@ class FailingAdapter(BaseAdapter):
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
         raise RuntimeError("Primary adapter failed")
-        yield ""  # pragma: no cover
+        if False:  # pragma: no cover
+            yield ""
 
 
 class AdapterWithReasoningContent(BaseAdapter):
@@ -276,6 +302,67 @@ async def test_runtime_setting_streams_upstream_and_buffers_non_stream_response(
     body = resp.json()
     assert body["object"] == "chat.completion"
     assert body["choices"][0]["message"]["content"] == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_runtime_forced_buffered_probe_preserves_provider_header():
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=True)
+    router = RouteExecutor()
+    cfg = _mk_cfg("gpt-4")
+    cfg.provider = "single-provider"
+    router.register_route("gpt-4", [(DummyAdapter(cfg), 1.0)])
+
+    app = FastAPI(title="Forced Buffered Probe Header App")
+    app.state.services = AppServices(
+        router=router,
+        db_logger=None,
+        log_store=None,
+        runtime_settings=runtime_settings,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers={"X-Probe": "synthetic"},
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    assert resp.headers["X-Provider"] == "single-provider"
+
+
+@pytest.mark.asyncio
+async def test_runtime_forced_buffered_stream_merges_split_tool_call_names():
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=True)
+    router = RouteExecutor()
+    router.register_route("gpt-4", [(SplitToolCallNameAdapter(_mk_cfg("gpt-4")), 1.0)])
+
+    app = FastAPI(title="Forced Buffered Tool Call App")
+    app.state.services = AppServices(
+        router=router,
+        db_logger=None,
+        log_store=None,
+        runtime_settings=runtime_settings,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    tool_call = resp.json()["choices"][0]["message"]["tool_calls"][0]
+    assert tool_call["function"]["name"] == "get_weather"
+    assert tool_call["function"]["arguments"] == '{"city":"Boston"}'
 
 
 @pytest.mark.asyncio

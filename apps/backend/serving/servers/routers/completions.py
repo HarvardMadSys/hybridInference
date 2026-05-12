@@ -39,7 +39,7 @@ from serving.servers.deps import (
     get_pricing_lookup,
     get_router,
 )
-from serving.servers.routers.completions_stream import StreamSession
+from serving.servers.routers.completions_stream import StreamSession, ToolCallAccumulator
 from serving.servers.routers.routing_info import (
     RoutingInfo,
     _status_code_from_exception,
@@ -76,31 +76,6 @@ async def _should_force_chat_completions_streaming(
         return False
 
 
-def _merge_tool_call_delta(
-    tool_calls: dict[int, dict[str, Any]],
-    deltas: list[dict[str, Any]],
-) -> None:
-    for tc_delta in deltas:
-        idx = tc_delta.get("index", 0)
-        if idx not in tool_calls:
-            tool_calls[idx] = {
-                "index": idx,
-                "id": tc_delta.get("id", ""),
-                "type": tc_delta.get("type", "function"),
-                "function": {"name": "", "arguments": ""},
-            }
-        if "id" in tc_delta:
-            tool_calls[idx]["id"] = tc_delta["id"]
-        if "type" in tc_delta:
-            tool_calls[idx]["type"] = tc_delta["type"]
-        if "function" in tc_delta:
-            fn_delta = tc_delta["function"]
-            if "name" in fn_delta:
-                tool_calls[idx]["function"]["name"] = fn_delta["name"]
-            if "arguments" in fn_delta:
-                tool_calls[idx]["function"]["arguments"] += fn_delta["arguments"]
-
-
 async def _buffer_streaming_response_for_non_stream_client(
     stream_chunks: Any,
     *,
@@ -110,7 +85,7 @@ async def _buffer_streaming_response_for_non_stream_client(
 ) -> dict[str, Any]:
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
-    tool_calls: dict[int, dict[str, Any]] = {}
+    tool_calls = ToolCallAccumulator()
     usage: dict[str, Any] | None = None
     finish_reason: str | None = None
     response_id = request_id
@@ -151,7 +126,7 @@ async def _buffer_streaming_response_for_non_stream_client(
         if isinstance(reasoning, str) and reasoning:
             reasoning_parts.append(reasoning)
         if delta.get("tool_calls"):
-            _merge_tool_call_delta(tool_calls, delta["tool_calls"])
+            tool_calls.add(delta["tool_calls"])
 
     message: dict[str, Any] = {
         "role": "assistant",
@@ -160,7 +135,7 @@ async def _buffer_streaming_response_for_non_stream_client(
     if reasoning_parts:
         message["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:
-        message["tool_calls"] = [tc for _, tc in sorted(tool_calls.items())]
+        message["tool_calls"] = tool_calls.to_list()
 
     response: dict[str, Any] = {
         "id": response_id,
@@ -558,6 +533,10 @@ async def chat_completions(
                 record_model_request(str(exc.status_code), provider)
                 raise
             record_model_request("200", provider)
+            if is_synthetic_probe:
+                provider_header = get_single_route_provider()
+                if provider_header:
+                    http_response.headers["X-Provider"] = provider_header
             return response
 
         # Record 200 for streaming response (HTTP layer success)
