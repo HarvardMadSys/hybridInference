@@ -252,7 +252,13 @@ class RouteWiseRouter(BaseRouter):
             for adapter, weight in route_cfg.adapters:
                 if weight <= 0:
                     continue  # Respect FixedRouter's disabled-route convention
-                sub_str = getattr(adapter.config, "subscription_type", "api")
+                metadata = getattr(adapter.config, "route_metadata", None)
+                if isinstance(metadata, dict):
+                    sub_str = metadata.get(
+                        "subscription_type", getattr(adapter.config, "subscription_type", "api")
+                    )
+                else:
+                    sub_str = getattr(adapter.config, "subscription_type", "api")
                 try:
                     sub_type = SubscriptionType(sub_str)
                 except ValueError:
@@ -1065,6 +1071,11 @@ class RouteWiseRouter(BaseRouter):
         Args:
             obs: Observation from the completed request.
         """
+        strategy_metadata = obs.strategy_metadata if isinstance(obs.strategy_metadata, dict) else {}
+        routewise_metadata = strategy_metadata.get("routewise")
+        if not isinstance(routewise_metadata, dict):
+            routewise_metadata = {}
+
         if obs.completion_tokens > 0:
             self.predictor.update(obs.model_id, obs.completion_tokens)
 
@@ -1076,11 +1087,14 @@ class RouteWiseRouter(BaseRouter):
             self._latency_profiles[obs.endpoint_id].record(now, ttft, error_type)
 
         logger.debug(
-            "RouteWise observation: model=%s endpoint=%s completion_tokens=%d success=%s",
+            "RouteWise observation: model=%s endpoint=%s completion_tokens=%d success=%s "
+            "selected_tier=%s lp_status=%s",
             obs.model_id,
             obs.endpoint_id,
             obs.completion_tokens,
             obs.success,
+            routewise_metadata.get("selected_tier"),
+            routewise_metadata.get("lp_status"),
         )
 
     # ------------------------------------------------------------------

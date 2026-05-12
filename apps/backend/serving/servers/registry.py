@@ -280,6 +280,7 @@ def register_from_models_yaml(
                     "supports_structured_output",
                     "supported_params",
                     "pricing",
+                    "route_metadata",
                 )
             }
             if top_cfg.get("base_url"):
@@ -403,8 +404,14 @@ def register_from_models_yaml(
                     adapter_cfg["processor"] = r["processor"]
 
                 # RouteWise subscription classification
+                route_metadata = dict(adapter_cfg.get("route_metadata") or {})
+                if isinstance(r.get("route_metadata"), dict):
+                    route_metadata.update(r["route_metadata"])
                 if "subscription_type" in r:
                     adapter_cfg["subscription_type"] = r["subscription_type"]
+                    route_metadata["subscription_type"] = r["subscription_type"]
+                if route_metadata:
+                    adapter_cfg["route_metadata"] = route_metadata
 
                 adapter = _make_adapter(kind, adapter_cfg)
                 adapters_with_weights.append((adapter, weight))

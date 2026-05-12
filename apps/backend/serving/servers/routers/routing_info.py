@@ -2,8 +2,11 @@
 
 Replaces the prior untyped ``routing_info: dict[str, Any]`` that carried
 magic keys (``endpoint_id``, ``base_url``, ``provider``, ``pricing``,
-``routewise``, ``upstream_cost_usd``) between layers of the chat-completions
+``strategy_metadata``, ``upstream_cost_usd``) between layers of the chat-completions
 handler.
+
+Legacy adapter metadata may still arrive under ``routewise``; it is translated
+into ``strategy_metadata["routewise"]`` for compatibility.
 
 PR A introduces the type and the centralized exception-status-code helper.
 PR B will introduce ``PricingLookup`` / ``CostTracker`` and start using the
@@ -17,6 +20,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+
+_ROUTEWISE_UNSET = object()
+
+
+def _merge_strategy_metadata(
+    base: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    """Shallow-merge strategy metadata, preserving nested routewise keys."""
+    merged = dict(base) if isinstance(base, dict) else {}
+    existing_routewise = merged.get("routewise")
+    incoming_routewise = incoming.get("routewise")
+    merged.update(incoming)
+    if isinstance(incoming_routewise, dict):
+        merged["routewise"] = {
+            **(existing_routewise if isinstance(existing_routewise, dict) else {}),
+            **incoming_routewise,
+        }
+    return merged
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,24 +59,7 @@ class Pricing:
     cache_write_price: float = 0.0
 
 
-@dataclass(frozen=True, slots=True)
-class RouteWiseDecision:
-    """RouteWise telemetry forwarded to ``record_routing_observation``.
-
-    Opaque to the handler; only ``CompletionsLogger`` reads its fields.
-    Mirrors the keys today's adapters write into ``_routing["routewise"]``.
-    """
-
-    selected_tier: str | None = None
-    quota_committed: float = 0.0
-    sc_committed: bool = False
-    hedged: bool = False
-    backup_won: bool = False
-    lp_status: str | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class RoutingInfo:
     """Per-request routing state carried through the handler pipeline.
 
@@ -73,9 +78,53 @@ class RoutingInfo:
     endpoint_id: str | None = None
     base_url: str | None = None
     pricing: Pricing | None = None
-    routewise: dict[str, Any] | None = None
+    strategy_metadata: dict[str, Any] | None = None
     upstream_cost_usd: float | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        request_id: str,
+        model: str,
+        provider: str | None = None,
+        endpoint_id: str | None = None,
+        base_url: str | None = None,
+        pricing: Pricing | None = None,
+        strategy_metadata: dict[str, Any] | None = None,
+        routewise: dict[str, Any] | None | object = _ROUTEWISE_UNSET,
+        upstream_cost_usd: float | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        if isinstance(strategy_metadata, dict):
+            strategy_metadata = dict(strategy_metadata)
+        if routewise is None:
+            if isinstance(strategy_metadata, dict):
+                strategy_metadata.pop("routewise", None)
+                if not strategy_metadata:
+                    strategy_metadata = None
+        elif isinstance(routewise, dict):
+            strategy_metadata = _merge_strategy_metadata(
+                strategy_metadata,
+                {"routewise": routewise},
+            )
+
+        object.__setattr__(self, "request_id", request_id)
+        object.__setattr__(self, "model", model)
+        object.__setattr__(self, "provider", provider)
+        object.__setattr__(self, "endpoint_id", endpoint_id)
+        object.__setattr__(self, "base_url", base_url)
+        object.__setattr__(self, "pricing", pricing)
+        object.__setattr__(self, "strategy_metadata", strategy_metadata)
+        object.__setattr__(self, "upstream_cost_usd", upstream_cost_usd)
+        object.__setattr__(self, "extra", extra if extra is not None else {})
+
+    @property
+    def routewise(self) -> dict[str, Any] | None:
+        """Legacy compatibility view of RouteWise strategy metadata."""
+        if not isinstance(self.strategy_metadata, dict):
+            return None
+        routewise = self.strategy_metadata.get("routewise")
+        return routewise if isinstance(routewise, dict) else None
 
 
 def build_initial_routing_info(
@@ -111,13 +160,14 @@ def merge_adapter_routing(
             "base_url": "https://api.openai.com/v1",
             "endpoint_id": "openai-prod",
             "pricing": {"prompt": "0.5", "completion": "1.5"},
-            "routewise": {"selected_tier": "A", ...},
+            "strategy_metadata": {"custom_strategy": {...}},
             "upstream_cost_usd": 0.012,
             ...
         }
 
     Unknown keys are stashed under :attr:`RoutingInfo.extra` to preserve
     the existing behavior of merging the dict into request metadata.
+    Legacy ``routewise`` dicts are stored as ``strategy_metadata["routewise"]``.
     """
     if not adapter_routing:
         return base
@@ -130,21 +180,34 @@ def merge_adapter_routing(
     # log payload (which still wants the raw dict) byte-for-byte stable.
     known: dict[str, Any] = {}
     extra: dict[str, Any] = dict(base.extra)
+    strategy_metadata = (
+        dict(base.strategy_metadata) if isinstance(base.strategy_metadata, dict) else None
+    )
+    routewise: dict[str, Any] | None = None
     field_names = {
         "provider",
         "base_url",
         "endpoint_id",
-        "routewise",
         "upstream_cost_usd",
     }
     for key, value in adapter_routing.items():
         if key in field_names:
             known[key] = value
+        elif key == "strategy_metadata" and isinstance(value, dict):
+            strategy_metadata = _merge_strategy_metadata(strategy_metadata, value)
+        elif key == "routewise" and isinstance(value, dict):
+            routewise = value
         elif key == "failed_attempts" and isinstance(value, list):
             existing = extra.get(key)
             extra[key] = [*(existing if isinstance(existing, list) else []), *value]
         else:
             extra[key] = value
+
+    if routewise is not None:
+        strategy_metadata = _merge_strategy_metadata(
+            strategy_metadata,
+            {"routewise": routewise},
+        )
 
     import dataclasses as _dc
 
@@ -152,6 +215,8 @@ def merge_adapter_routing(
     for fname in field_names:
         if fname in known:
             replacements[fname] = known[fname]
+    if strategy_metadata != base.strategy_metadata:
+        replacements["strategy_metadata"] = strategy_metadata
     if extra != base.extra:
         replacements["extra"] = extra
     return _dc.replace(base, **replacements) if replacements else base

@@ -114,8 +114,7 @@ class CompletionsLogger:
         exception path — which today receives a raw dict from the adapter —
         keeps working without further plumbing changes.
         """
-        provider, endpoint_id, routewise = _extract_observation_keys(routing)
-        rw = routewise or {}
+        provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
         obs = RoutingObservation(
             model_id=model_id,
             endpoint_id=endpoint_id or provider or "unknown",
@@ -125,12 +124,7 @@ class CompletionsLogger:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             success=success,
-            quota_committed=rw.get("quota_committed", 0.0),
-            selected_tier=rw.get("selected_tier"),
-            sc_committed=rw.get("sc_committed", False),
-            hedged=rw.get("hedged", False),
-            backup_won=rw.get("backup_won", False),
-            lp_status=rw.get("lp_status"),
+            strategy_metadata=strategy_metadata,
         )
         active_router.record_observation(obs)
 
@@ -165,21 +159,31 @@ class CompletionsLogger:
 
 def _extract_observation_keys(
     routing: RoutingInfo | dict[str, Any] | None,
-) -> tuple[str | None, str | None, dict[str, Any] | None]:
-    """Return ``(provider, endpoint_id, routewise)`` from either type.
+) -> tuple[str | None, str | None, dict[str, Any]]:
+    """Return ``(provider, endpoint_id, strategy_metadata)`` from either type.
 
     Mirrors the legacy lookup precedence the handler used:
     ``endpoint_id`` > ``base_url`` > ``provider`` for the observation key.
     """
     if routing is None:
-        return None, None, None
+        return None, None, {}
     if isinstance(routing, RoutingInfo):
         endpoint = routing.endpoint_id or routing.base_url
-        return routing.provider, endpoint, routing.routewise
+        return routing.provider, endpoint, dict(routing.strategy_metadata or {})
     # Legacy dict shape (used by exception._routing).
     endpoint = routing.get("endpoint_id") or routing.get("base_url")
+    strategy_metadata: dict[str, Any] = {}
+    raw_strategy_metadata = routing.get("strategy_metadata")
+    if isinstance(raw_strategy_metadata, dict):
+        strategy_metadata.update(raw_strategy_metadata)
+    routewise = routing.get("routewise")
+    if isinstance(routewise, dict):
+        existing_routewise = strategy_metadata.get("routewise")
+        merged_routewise = dict(existing_routewise) if isinstance(existing_routewise, dict) else {}
+        merged_routewise.update(routewise)
+        strategy_metadata["routewise"] = merged_routewise
     return (
         routing.get("provider"),
         endpoint,
-        routing.get("routewise"),
+        strategy_metadata,
     )

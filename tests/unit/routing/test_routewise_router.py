@@ -148,6 +148,19 @@ class TestRouteWiseRouterScaffold:
         assert SubscriptionType.QUOTA in types
         assert SubscriptionType.API in types
 
+    def test_routewise_classification_prefers_route_metadata_subscription_type(self):
+        """Route metadata subscription_type takes precedence over compatibility field."""
+        adapter = _make_adapter(subscription_type="api")
+        adapter.config.route_metadata = {"subscription_type": "quota"}
+
+        fr = _FakeFixedRouter()
+        fr.add("glm-4.7", [(adapter, 1.0)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        assert router.classified["glm-4.7"][0][2] is SubscriptionType.QUOTA
+        assert router._adapter_sub_type[id(adapter)] is SubscriptionType.QUOTA
+
     def test_pd_selects_quota_when_value_high(self):
         """PD selects S_Q when estimated API cost exceeds shadow price.
 
@@ -537,7 +550,6 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
         )
         router.record_observation(obs)
 
@@ -568,7 +580,6 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
         )
         router.record_observation(obs)
 
@@ -591,7 +602,6 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
         )
         router.record_observation(obs)
 
@@ -610,7 +620,6 @@ class TestRouteWiseObservation:
             prompt_tokens=0,
             completion_tokens=0,
             success=False,
-            quota_committed=0.0,
         )
         router.record_observation(obs)  # Should not raise.
 
@@ -618,6 +627,28 @@ class TestRouteWiseObservation:
 # ---------------------------------------------------------------------------
 # Layer 2: Latency-aware provider selection tests (PR-4)
 # ---------------------------------------------------------------------------
+
+
+def test_record_observation_reads_routewise_metadata_for_debug_compatibility():
+    from routing.routers import RoutingObservation
+    from routing.routewise.router import RouteWiseRouter
+
+    router = RouteWiseRouter()
+    obs = RoutingObservation(
+        model_id="glm-4.7",
+        endpoint_id="openai-prod",
+        ttft_ms=None,
+        total_latency_ms=123.0,
+        token_count=12,
+        prompt_tokens=5,
+        completion_tokens=7,
+        success=True,
+        strategy_metadata={"routewise": {"selected_tier": "api", "lp_status": "optimal"}},
+    )
+
+    router.record_observation(obs)
+
+    assert router.predictor._model_states["glm-4.7"].mean > 0
 
 
 def _make_router_with_two_api(
@@ -706,7 +737,6 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
         )
         router.record_observation(obs)
 
@@ -785,7 +815,6 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=0,
             success=False,
-            quota_committed=0.0,
         )
         router.record_observation(obs)
 

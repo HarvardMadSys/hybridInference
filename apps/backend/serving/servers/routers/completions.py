@@ -576,6 +576,9 @@ async def chat_completions(
                 provider = routing.provider or "router"
                 base_url = routing.base_url
                 # See comment above: strip upstream_cost_usd before merging into metadata JSONB.
+                # Persisted metadata intentionally keeps adapter-emitted legacy keys like
+                # routewise for DB log compatibility; RoutingInfo.strategy_metadata is
+                # only the in-process isolation boundary.
                 metadata.update({k: v for k, v in routing_info.items() if k != "upstream_cost_usd"})  # type: ignore[arg-type]
         else:
             # Fallback: get provider from request context when response is not a dict

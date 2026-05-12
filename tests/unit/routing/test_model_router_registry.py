@@ -154,3 +154,27 @@ class TestModelRouterRegistry:
         assert router is shared_fixed
         # Routes registered on the shared instance are visible.
         assert "glm-4.7" in router.routes
+
+    def test_managed_routers_returns_unique_start_stop_capable_routers(self):
+        from routing.model_router_registry import ModelRouterRegistry
+        from routing.routers import FixedRouter
+
+        reg = ModelRouterRegistry(
+            models_config={
+                "glm-4.7": {"router": "routewise"},
+                "glm-4.7-alias": {"router": "routewise"},
+                "fixed-model": {},
+            },
+            default_router_name="fixed",
+        )
+        reg.bind_fixed_router(FixedRouter())
+        first = reg.get_router("glm-4.7")
+        second = reg.get_router("glm-4.7-alias")
+        reg.get_router("fixed-model")
+
+        managed = reg.managed_routers()
+
+        assert first in managed
+        assert second in managed
+        assert all(hasattr(router, "start") and hasattr(router, "stop") for router in managed)
+        assert len({id(router) for router in managed}) == len(managed)

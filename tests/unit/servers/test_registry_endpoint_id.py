@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from serving.servers.registry import _make_adapter, _make_provider_id
+from routing.routers import FixedRouter
+from routing.routewise.router import RouteWiseRouter, SubscriptionType
+from serving.servers.registry import _make_adapter, _make_provider_id, register_from_models_yaml
 
 # ---------------------------------------------------------------------------
 # Local endpoints — must include port to avoid collisions
@@ -92,3 +94,41 @@ def test_minimax_routes_request_stream_usage() -> None:
 
     assert adapter.config.include_usage_in_stream is True
     assert adapter.config.provider_profile == "minimax"
+
+
+def test_register_from_models_yaml_merges_route_entry_route_metadata(tmp_path) -> None:
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        """
+models:
+  - id: glm-4.7
+    name: GLM 4.7
+    provider: openai_compat
+    base_url: https://api.example.test/v1
+    route_metadata:
+      owner: model-level
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: https://api.example.test/v1
+        subscription_type: quota
+        route_metadata:
+          subscription_type: api
+          lane: quota-tier
+"""
+    )
+    fixed = FixedRouter()
+
+    register_from_models_yaml(fixed, path)
+
+    adapter = fixed.routes["glm-4.7"].adapters[0][0]
+    assert adapter.config.route_metadata == {
+        "owner": "model-level",
+        "subscription_type": "quota",
+        "lane": "quota-tier",
+    }
+    assert adapter.config.subscription_type == "quota"
+
+    routewise = RouteWiseRouter()
+    routewise.attach_fixed_router(fixed)
+    assert routewise.classified["glm-4.7"][0][2] is SubscriptionType.QUOTA

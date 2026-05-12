@@ -542,6 +542,9 @@ class StreamSession:
             # Strip upstream_cost_usd from metadata JSONB; the dedicated column
             # api_logs.upstream_cost_usd is the canonical store. Avoids leaking the
             # internal cost into any future admin route that returns raw metadata.
+            # Persisted metadata intentionally keeps adapter-emitted legacy keys like
+            # routewise for DB log compatibility; RoutingInfo.strategy_metadata is
+            # only the in-process isolation boundary.
             self._metadata.update(
                 {k: v for k, v in self._adapter_routing.items() if k != "upstream_cost_usd"}
             )
