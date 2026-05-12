@@ -7,6 +7,7 @@ import pytest
 from routing.routewise.latency import ProviderProfile
 from routing.routewise.lp_solver import (
     pre_filter_providers,
+    solve_cost_budgeted_latency_lp,
     solve_provider_lp,
     solve_provider_lp_with_relaxation,
 )
@@ -95,6 +96,33 @@ class TestSolveProviderLP:
             target_cdf=0.99,
         )
         assert result is None
+
+
+@pytest.mark.unit
+class TestCostBudgetedLatencyLP:
+    def test_cost_budgeted_lp_selects_fast_provider_when_budget_allows(self):
+        weights, status = solve_cost_budgeted_latency_lp(
+            endpoint_ids=["cheap", "fast"],
+            mean_latencies_sec={"cheap": 1.0, "fast": 0.1},
+            costs={"cheap": 1.0, "fast": 10.0},
+            alpha=1.0,
+        )
+
+        assert status == "optimal"
+        assert weights == {"fast": pytest.approx(1.0)}
+
+    def test_cost_budgeted_lp_respects_alpha_budget(self):
+        weights, status = solve_cost_budgeted_latency_lp(
+            endpoint_ids=["cheap", "fast"],
+            mean_latencies_sec={"cheap": 1.0, "fast": 0.1},
+            costs={"cheap": 1.0, "fast": 10.0},
+            alpha=0.5,
+        )
+
+        assert status == "optimal"
+        actual_cost = sum(weights[eid] * {"cheap": 1.0, "fast": 10.0}[eid] for eid in weights)
+        assert actual_cost <= 5.5 + 1e-6
+        assert 0.0 < weights.get("fast", 0.0) < 1.0
 
     def test_error_penalty(self):
         """kappa > 0 shifts weights away from high-error providers."""
@@ -221,6 +249,13 @@ class TestPreFilter:
         eligible = pre_filter_providers(profiles, current_time=100.0)
         assert "fast" in eligible
         assert "slow" not in eligible
+
+
+@pytest.mark.unit
+def test_provider_profile_mean_ttft_sec():
+    profile = _make_profile("ep", [100.0, 300.0, 500.0], timestamp=100.0)
+
+    assert profile.mean_ttft_sec(100.0) == pytest.approx(0.3)
 
     def test_healthy_pass(self):
         """All healthy providers pass the filter."""

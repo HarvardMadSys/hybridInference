@@ -29,6 +29,7 @@ import asyncio
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -40,10 +41,18 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
 
 from .concurrency import ConcurrencyManager
-from .hedging import HedgedAdapter, compute_hedge_threshold
+from .hedging import (
+    HedgedAdapter,
+    compute_hedge_threshold,
+    compute_probability_targeted_hedge_threshold,
+)
 from .latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
-from .lp_solver import pre_filter_providers, solve_provider_lp_with_relaxation
-from .predictor import EMAOutputPredictor
+from .lp_solver import (
+    pre_filter_providers,
+    solve_cost_budgeted_latency_lp,
+    solve_provider_lp_with_relaxation,
+)
+from .predictor import EMAOutputPredictor, HistogramOutputPredictor
 from .quota import QuotaManager
 
 if TYPE_CHECKING:
@@ -76,6 +85,16 @@ class SubscriptionType(Enum):
     QUOTA = "quota"  # S_Q: daily quota subscription
     CONCURRENCY = "concurrency"  # S_C: concurrency-limited subscription
     API = "api"  # S_A: pay-per-token (default)
+
+
+@dataclass(frozen=True)
+class _ProviderCandidate:
+    """Per-provider paper-design candidate snapshot."""
+
+    adapter: Any
+    endpoint_id: str
+    sub_type: SubscriptionType
+    effective_cost: float
 
 
 class RouteWiseRouter(BaseRouter):
@@ -143,11 +162,17 @@ class RouteWiseRouter(BaseRouter):
         self._adapter_sub_type: dict[int, SubscriptionType] = {}
 
         # Online predictors and quota tracking.
-        self.predictor = EMAOutputPredictor(
-            alpha=0.1,
-            min_samples=20,
-            default_output=500.0,
-        )
+        if self.config.predictor == "histogram":
+            self.predictor = HistogramOutputPredictor(
+                min_samples=20,
+                default_output=500.0,
+            )
+        else:
+            self.predictor = EMAOutputPredictor(
+                alpha=0.1,
+                min_samples=20,
+                default_output=500.0,
+            )
         self.quota_mgr = QuotaManager(config)
 
         # S_C concurrency manager (None when concurrency_enabled=False).
@@ -332,10 +357,15 @@ class RouteWiseRouter(BaseRouter):
         for model_id, entries in self.classified.items():
             has_api = False
             for adapter, _w, sub in entries:
+                eid = adapter.config.endpoint_id or adapter.config.id
                 if sub is not SubscriptionType.API:
+                    if eid not in self._latency_profiles:
+                        self._latency_profiles[eid] = ProviderProfile(
+                            endpoint_id=eid,
+                            window_sec=self.config.latency_window_sec,
+                        )
                     continue
                 has_api = True
-                eid = adapter.config.endpoint_id or adapter.config.id
                 if eid not in self._latency_profiles:
                     self._latency_profiles[eid] = ProviderProfile(
                         endpoint_id=eid,
@@ -426,6 +456,106 @@ class RouteWiseRouter(BaseRouter):
                 return hedged, cost
 
         return adapter, cost
+
+    def _predict_output_tokens(self, model_id: str, prompt_tokens: int) -> float:
+        """Predict output length using the configured value estimator."""
+        try:
+            prediction = self.predictor.predict(model_id, prompt_tokens)  # type: ignore[call-arg]
+        except TypeError:
+            prediction = self.predictor.predict(model_id)
+        return prediction.lcb if self.config.decision_rule == "lapd" else prediction.median
+
+    def _build_effective_cost_candidates(
+        self,
+        model_id: str,
+        prompt_tokens: int,
+        predicted_output: float,
+    ) -> list[_ProviderCandidate]:
+        """Compute finite-cost provider candidates across all subscription categories."""
+        candidates: list[_ProviderCandidate] = []
+        theta_q = self.quota_mgr.get_shadow_price()
+        for adapter, _weight, sub_type in self.classified.get(model_id, []):
+            endpoint_id = adapter.config.endpoint_id or adapter.config.id
+            effective_cost = float("inf")
+            if sub_type is SubscriptionType.API:
+                pricing = adapter.config.pricing
+                p_in = float(pricing.get("prompt", "0")) / 1_000_000.0
+                p_out = float(pricing.get("completion", "0")) / 1_000_000.0
+                effective_cost = p_in * prompt_tokens + p_out * predicted_output
+            elif sub_type is SubscriptionType.QUOTA:
+                if self.quota_mgr.remaining > 0:
+                    effective_cost = theta_q
+            elif (
+                sub_type is SubscriptionType.CONCURRENCY
+                and self.conc_mgr is not None
+                and self.conc_mgr.available > 0
+            ):
+                effective_cost = self.config.shadow_price_L_seed
+            if effective_cost < float("inf"):
+                candidates.append(
+                    _ProviderCandidate(
+                        adapter=adapter,
+                        endpoint_id=endpoint_id,
+                        sub_type=sub_type,
+                        effective_cost=effective_cost,
+                    )
+                )
+        return candidates
+
+    def _commit_candidate_resource(self, candidate: _ProviderCandidate) -> bool:
+        """Commit selected quota/concurrency resources after final selection."""
+        if candidate.sub_type is SubscriptionType.CONCURRENCY:
+            return self.conc_mgr is not None and self.conc_mgr.try_acquire()
+        if candidate.sub_type is SubscriptionType.QUOTA:
+            if self.quota_mgr.remaining <= 0:
+                return False
+            self.quota_mgr.consume()
+        return True
+
+    def _choose_cost_budgeted_candidate(
+        self,
+        model_id: str,
+        candidates: list[_ProviderCandidate],
+        current_time: float,
+    ) -> tuple[_ProviderCandidate | None, str]:
+        """Choose a candidate via min-latency LP under normalized cost budget."""
+        if not candidates:
+            return None, "no_providers"
+        warm = [
+            c
+            for c in candidates
+            if c.endpoint_id in self._latency_profiles
+            and self._latency_profiles[c.endpoint_id].sample_count(current_time)
+            >= self.config.latency_min_samples
+        ]
+        if len(warm) < 2:
+            return min(candidates, key=lambda c: c.effective_cost), "cold_cost_fallback"
+
+        endpoint_ids = [c.endpoint_id for c in warm]
+        mean_latencies = {
+            c.endpoint_id: self._latency_profiles[c.endpoint_id].mean_ttft_sec(current_time)
+            for c in warm
+        }
+        costs = {c.endpoint_id: c.effective_cost for c in warm}
+        weights, status = solve_cost_budgeted_latency_lp(
+            endpoint_ids=endpoint_ids,
+            mean_latencies_sec=mean_latencies,
+            costs=costs,
+            alpha=self.config.latency_cost_budget_alpha,
+        )
+        if not weights:
+            return min(candidates, key=lambda c: c.effective_cost), status
+
+        sampler = self._swrr_samplers.get(model_id)
+        if sampler is None:
+            sampler = SWRRSampler(alpha=self.config.latency_swrr_alpha)
+            self._swrr_samplers[model_id] = sampler
+        sampler.update_weights(weights)
+        self._last_lp_weights[model_id] = weights
+        self._last_lp_statuses[model_id] = status
+        selected_eid = sampler.sample()
+        by_eid = {c.endpoint_id: c for c in warm}
+        return by_eid.get(selected_eid), status
 
     def _maybe_update_lp(
         self,
@@ -656,14 +786,24 @@ class RouteWiseRouter(BaseRouter):
             )
             return
 
-        h_star = compute_hedge_threshold(
-            primary_profile=primary_profile,
-            backup_profile=backup_profile,
-            slo_sec=self.config.latency_slo_sec,
-            cost_ratio=self.config.latency_hedge_cost_ratio,
-            dispatch_overhead_sec=self.config.latency_hedge_dispatch_overhead_sec,
-            current_time=current_time,
-        )
+        if self.config.latency_hedge_mode == "probability":
+            h_star = compute_probability_targeted_hedge_threshold(
+                primary_profile=primary_profile,
+                backup_profile=backup_profile,
+                slo_sec=self.config.latency_slo_sec,
+                success_target=self.config.latency_hedge_success_target,
+                dispatch_overhead_sec=self.config.latency_hedge_dispatch_overhead_sec,
+                current_time=current_time,
+            )
+        else:
+            h_star = compute_hedge_threshold(
+                primary_profile=primary_profile,
+                backup_profile=backup_profile,
+                slo_sec=self.config.latency_slo_sec,
+                cost_ratio=self.config.latency_hedge_cost_ratio,
+                dispatch_overhead_sec=self.config.latency_hedge_dispatch_overhead_sec,
+                current_time=current_time,
+            )
 
         if h_star == float("inf"):
             reason = "hedge_not_justified"
@@ -834,8 +974,7 @@ class RouteWiseRouter(BaseRouter):
         Returns:
             Estimated API cost in dollars.
         """
-        prediction = self.predictor.predict(model_id)
-        predicted_out = prediction.lcb if self.config.decision_rule == "lapd" else prediction.median
+        predicted_out = self._predict_output_tokens(model_id, prompt_tokens)
         _, cost = self._cheapest_api_for_request(model_id, prompt_tokens, predicted_out)
         return cost if cost < float("inf") else 0.0
 
@@ -893,8 +1032,7 @@ class RouteWiseRouter(BaseRouter):
             prompt_tokens = estimate_prompt_tokens(context.get("messages") or [])
 
         # -- Output prediction --------------------------------------------
-        prediction = self.predictor.predict(model_id)
-        predicted_out = prediction.lcb if self.config.decision_rule == "lapd" else prediction.median
+        predicted_out = self._predict_output_tokens(model_id, prompt_tokens)
 
         # -- Value estimation for Layer 1 (uses cheapest API baseline) ------
         _, v_t = self._cheapest_api_for_request(
@@ -902,6 +1040,61 @@ class RouteWiseRouter(BaseRouter):
             prompt_tokens,
             predicted_out,
         )
+
+        # -- Request ID for decision metadata --------------------------------
+        request_id = context.get("request_id")
+
+        candidates = self._build_effective_cost_candidates(model_id, prompt_tokens, predicted_out)
+        now = time.time()
+        selected_candidate, lp_status = self._choose_cost_budgeted_candidate(
+            model_id,
+            candidates,
+            now,
+        )
+        if selected_candidate is not None and self._commit_candidate_resource(selected_candidate):
+            if selected_candidate.sub_type is SubscriptionType.API:
+                model_eids = [
+                    c.endpoint_id for c in candidates if c.sub_type is SubscriptionType.API
+                ]
+                if self.config.latency_hedge_mode == "shadow":
+                    self._compute_shadow_hedge(
+                        model_id, selected_candidate.endpoint_id, model_eids, now
+                    )
+                elif self.config.latency_hedge_mode in {"economic", "probability"}:
+                    hedged = self._maybe_create_hedged_adapter(
+                        model_id,
+                        selected_candidate.endpoint_id,
+                        model_eids,
+                        now,
+                    )
+                    if hedged is not None:
+                        selected_candidate = _ProviderCandidate(
+                            adapter=hedged,
+                            endpoint_id=selected_candidate.endpoint_id,
+                            sub_type=selected_candidate.sub_type,
+                            effective_cost=selected_candidate.effective_cost,
+                        )
+            if request_id:
+                self._pending_decisions[request_id] = {
+                    "v_t": v_t,
+                    "gain_c": None,
+                    "gain_q": None,
+                    "gain_a": 0.0,
+                    "theta_q": self.quota_mgr.get_shadow_price(),
+                    "quota_remaining": self.quota_mgr.remaining,
+                    "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
+                    "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
+                    "timestamp": now,
+                    "is_streaming": False,
+                    "selected_tier": selected_candidate.sub_type.value,
+                    "effective_cost": selected_candidate.effective_cost,
+                    "quota_committed": 0.0,
+                    "sc_committed": selected_candidate.sub_type is SubscriptionType.CONCURRENCY,
+                    "hedged": isinstance(selected_candidate.adapter, HedgedAdapter),
+                    "backup_won": False,
+                    "lp_status": lp_status,
+                }
+            return selected_candidate.adapter
 
         # -- Classify adapters by tier ------------------------------------
         conc_adapters = [a for a, _w, s in entries if s is SubscriptionType.CONCURRENCY]
@@ -920,9 +1113,6 @@ class RouteWiseRouter(BaseRouter):
                 gain_q = v_t - theta_q
 
         gain_a = 0.0
-
-        # -- Request ID for decision metadata --------------------------------
-        request_id = context.get("request_id")
 
         # Shared decision metadata fields reused across all tiers.
         def _base_decision() -> dict[str, Any]:
@@ -1077,7 +1267,14 @@ class RouteWiseRouter(BaseRouter):
             routewise_metadata = {}
 
         if obs.completion_tokens > 0:
-            self.predictor.update(obs.model_id, obs.completion_tokens)
+            try:
+                self.predictor.update(
+                    obs.model_id,
+                    prompt_tokens=obs.prompt_tokens,
+                    output_tokens=obs.completion_tokens,
+                )
+            except TypeError:
+                self.predictor.update(obs.model_id, obs.completion_tokens)
 
         # Layer 2: update latency profile for the endpoint.
         if obs.endpoint_id and obs.endpoint_id in self._latency_profiles:

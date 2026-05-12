@@ -90,6 +90,8 @@ class RouteWiseConfig:
     latency_swrr_alpha: float = 0.3
     latency_relaxation_factors: str = "1.2,1.5,2.0"
     latency_hedge_mode: str = "shadow"  # "shadow" | "economic" | "disabled"
+    latency_cost_budget_alpha: float = 0.5
+    latency_hedge_success_target: float = 0.99
     latency_hedge_cost_ratio: float = 0.1  # C_b/V for SMART_ECONOMIC
     latency_hedge_dispatch_overhead_sec: float = 0.05  # backup launch overhead
 
@@ -180,6 +182,8 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "swrr_alpha": "latency_swrr_alpha",
             "relaxation_factors": "latency_relaxation_factors",
             "hedge_mode": "latency_hedge_mode",
+            "cost_budget_alpha": "latency_cost_budget_alpha",
+            "hedge_success_target": "latency_hedge_success_target",
             "hedge_cost_ratio": "latency_hedge_cost_ratio",
             "hedge_dispatch_overhead_sec": "latency_hedge_dispatch_overhead_sec",
         },

@@ -121,6 +121,13 @@ class ProviderProfile:
         frac = idx - lower
         return samples_sec[lower] * (1.0 - frac) + samples_sec[upper] * frac
 
+    def mean_ttft_sec(self, current_time: float) -> float:
+        """Return mean successful TTFT in seconds within the current window."""
+        samples_sec = self._get_latency_samples_sec(current_time)
+        if not samples_sec:
+            return float("inf")
+        return sum(samples_sec) / len(samples_sec)
+
     def sample_count(self, current_time: float) -> int:
         """Return number of latency samples in the current window.
 

@@ -12,7 +12,7 @@ here for production use without importing simulation code.
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 
 from serving.utils.logging import get_logger
@@ -195,3 +195,75 @@ class EMAOutputPredictor:
         value = float(output_tokens)
         self._model_states[model_id].update(value, self._alpha)
         self._global_state.update(value, self._alpha)
+
+
+class HistogramOutputPredictor:
+    """Bucketed rolling-window output-token predictor.
+
+    Buckets are based on prompt token count.  Predictions use the bucket mean
+    as the stable value estimate while still returning empirical q10/q50/q90
+    for callers that need conservative bounds.
+    """
+
+    def __init__(
+        self,
+        min_samples: int = 20,
+        default_output: float = 500.0,
+        max_samples_per_bucket: int = 1000,
+    ) -> None:
+        self._min_samples = min_samples
+        self._default_output = default_output
+        self._max_samples_per_bucket = max_samples_per_bucket
+        self._buckets: dict[tuple[str, int], deque[float]] = defaultdict(
+            lambda: deque(maxlen=max_samples_per_bucket)
+        )
+        self._global_samples: deque[float] = deque(maxlen=max_samples_per_bucket)
+
+    def _bucket_for_prompt(self, prompt_tokens: int) -> int:
+        """Return a stable power-of-two prompt-size bucket."""
+        return max(1, int(prompt_tokens)).bit_length() - 1
+
+    def update(self, model_id: str, prompt_tokens: int, output_tokens: int) -> None:
+        """Record observed completion tokens for a prompt-size bucket."""
+        if output_tokens <= 0:
+            return
+        value = float(output_tokens)
+        bucket = self._bucket_for_prompt(prompt_tokens)
+        self._buckets[(model_id, bucket)].append(value)
+        self._global_samples.append(value)
+
+    def predict(self, model_id: str, prompt_tokens: int) -> QuantilePrediction:
+        """Predict output-token quantiles for a model and prompt size."""
+        bucket = self._bucket_for_prompt(prompt_tokens)
+        samples = list(self._buckets.get((model_id, bucket), ()))
+        is_warmed = len(samples) >= self._min_samples
+        if not is_warmed:
+            samples = list(self._global_samples)
+            is_warmed = len(samples) >= self._min_samples
+        if not is_warmed:
+            return QuantilePrediction(
+                q10=self._default_output * 0.3,
+                q50=self._default_output,
+                q90=self._default_output * 2.0,
+                is_warmed_up=False,
+            )
+
+        sorted_samples = sorted(samples)
+        mean = sum(sorted_samples) / len(sorted_samples)
+        return QuantilePrediction(
+            q10=_empirical_quantile(sorted_samples, 0.10),
+            q50=mean,
+            q90=_empirical_quantile(sorted_samples, 0.90),
+            is_warmed_up=True,
+        )
+
+
+def _empirical_quantile(sorted_samples: list[float], q: float) -> float:
+    """Return linearly interpolated empirical quantile from sorted samples."""
+    if not sorted_samples:
+        return 0.0
+    idx = q * (len(sorted_samples) - 1)
+    lower = math.floor(idx)
+    upper = min(lower + 1, len(sorted_samples) - 1)
+    frac = idx - lower
+    return sorted_samples[lower] * (1.0 - frac) + sorted_samples[upper] * frac
