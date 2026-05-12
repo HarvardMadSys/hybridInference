@@ -27,3 +27,32 @@ def test_routing_local_deployment_uses_local_deployment_url() -> None:
 
     assert "${LOCAL_DEPLOYMENT_URL}" in endpoints
     assert "${LOCAL_BASE_URL}" not in endpoints
+
+
+def test_glm5_uses_routewise_with_api_routes() -> None:
+    """GLM-5 should use RouteWise without subscription-only routes."""
+    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())["models"]
+
+    glm5 = next((model for model in models if model["id"] == "glm-5"), None)
+
+    assert glm5 is not None
+    assert glm5["router"] == "routewise"
+    assert glm5["router_params"]["predictor"] == "histogram"
+    assert glm5["router_params"]["latency_hedge_mode"] == "probability"
+    assert {route["subscription_type"] for route in glm5["route"]} == {"api"}
+
+
+def test_minimax_fast_uses_routewise() -> None:
+    """minimax-fast should exist as a RouteWise-routed model."""
+    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())["models"]
+
+    minimax_fast = next((model for model in models if model["id"] == "minimax-fast"), None)
+
+    assert minimax_fast is not None
+    assert minimax_fast["name"] == "MiniMax Fast"
+    assert minimax_fast["router"] == "routewise"
+    assert minimax_fast["router_params"]["predictor"] == "histogram"
+    assert minimax_fast["router_params"]["latency_cost_budget_alpha"] == 0.5
+    assert minimax_fast["router_params"]["latency_hedge_success_target"] == 0.99
+    assert minimax_fast["aliases"] == ["MiniMax-Fast"]
+    assert {route["subscription_type"] for route in minimax_fast["route"]} == {"api"}

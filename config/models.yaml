@@ -113,6 +113,12 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5"]
+    router: routewise
+    router_params:
+      predictor: histogram
+      latency_cost_budget_alpha: 0.5
+      latency_hedge_mode: probability
+      latency_hedge_success_target: 0.99
     # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
       prompt: "1.0"
@@ -129,6 +135,7 @@ models:
           - ${ZAI_API_KEY}
           - ${ZAI_API_KEY2}
         provider_model_id: "glm-5"
+        subscription_type: api
       # Ollama Cloud fallback
       - kind: ollama
         weight: 0.64
@@ -136,6 +143,7 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "glm-5"
+        subscription_type: api
       # # Chutes fallback
       - kind: chutes
         weight: 0.64
@@ -143,6 +151,7 @@ models:
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "zai-org/GLM-5-TEE"
+        subscription_type: api
       # Featherless fallback
       - kind: featherless
         weight: 0.64
@@ -150,6 +159,7 @@ models:
         api_keys:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "zai-org/GLM-5"
+        subscription_type: api
 
   - id: glm-5.1
     name: GLM-5.1
@@ -270,6 +280,66 @@ models:
         api_keys:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
+
+  - id: minimax-fast
+    name: MiniMax Fast
+    provider: minimax
+    quantization: "bf16"
+    input_modalities: ["text", "image"]
+    output_modalities: ["text"]
+    context_length: 204800
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    aliases: ["MiniMax-Fast"]
+    router: routewise
+    router_params:
+      predictor: histogram
+      latency_cost_budget_alpha: 0.5
+      latency_hedge_mode: probability
+      latency_hedge_success_target: 0.99
+    # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
+    pricing:
+      prompt: "0.3"
+      completion: "1.2"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.03"
+      input_cache_writes: "0.375"
+    route:
+      # Remote MiniMax API endpoint
+      - kind: minimax
+        weight: 1.0
+        base_url: ${MINIMAX_BASE_URL}
+        api_keys:
+          - ${MINIMAX_API_KEY}
+        provider_model_id: "MiniMax-Fast"
+        subscription_type: api
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.24
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "minimax-fast"
+        subscription_type: api
+      # Chutes fallback
+      - kind: chutes
+        weight: 0.24
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "MiniMaxAI/MiniMax-Fast-TEE"
+        subscription_type: api
+      # Featherless fallback
+      - kind: featherless
+        weight: 0.64
+        base_url: ${FEATHERLESS_BASE_URL}
+        api_keys:
+          - ${FEATHERLESS_API_KEY}
+        provider_model_id: "MiniMaxAI/MiniMax-Fast"
+        subscription_type: api
 
   - id: minimax-m2.7
     name: MiniMax M2.7
