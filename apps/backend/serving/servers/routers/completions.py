@@ -164,10 +164,10 @@ async def _streaming_response_with_keepalive(
     model: str,
     request_headers: Any,
 ) -> Any:
-    """Buffer a streaming response internally while yielding whitespace keepalive
-    bytes to keep intermediate proxies (e.g. Cloudflare) from timing out.
+    """Buffer a streaming response while yielding whitespace keepalive bytes.
 
-    Yields ``b" "`` every ``_FORCE_STREAMING_KEEPALIVE_S`` seconds while
+    Keeps intermediate proxies (e.g. Cloudflare) from timing out by
+    yielding ``b" "`` every ``_FORCE_STREAMING_KEEPALIVE_S`` seconds while
     accumulating SSE chunks, then yields the final ``application/json`` body.
     The leading whitespace before the JSON object is harmless — all standard
     JSON parsers ignore it.
