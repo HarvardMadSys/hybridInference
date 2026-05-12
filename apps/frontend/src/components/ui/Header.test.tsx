@@ -39,6 +39,16 @@ describe('Header', () => {
     expect(screen.queryByRole('link', { name: /dashboard/i })).not.toBeInTheDocument();
   });
 
+  it('shows the FreeInference logo in the header', () => {
+    render(<Header />);
+
+    const homeLink = screen.getByRole('link', { name: /freeinference home/i });
+
+    expect(homeLink).toHaveAttribute('href', '/');
+    expect(screen.getByText('FI')).toBeInTheDocument();
+    expect(screen.getByText('FreeInference')).toBeInTheDocument();
+  });
+
   it('shows a status link in the header', () => {
     render(<Header />);
 

@@ -16,9 +16,16 @@ export function Header() {
 
   return (
     <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-6">
-      <div className="flex items-baseline gap-2">
-        <Link href="/" className="text-xl font-bold tracking-tight">
-          {config.appName}
+      <div className="flex items-center gap-3">
+        <Link
+          href="/"
+          aria-label={`${config.appName} home`}
+          className="flex items-center gap-2 text-xl font-bold tracking-tight"
+        >
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-crimson font-serif text-sm font-bold text-white shadow-sm">
+            FI
+          </span>
+          <span>{config.appName}</span>
         </Link>
         <a
           href="https://madsys.seas.harvard.edu"
