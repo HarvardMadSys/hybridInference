@@ -43,3 +43,42 @@ def test_minimax_fast_uses_routewise() -> None:
     assert minimax_fast["router_params"]["latency_hedge_success_target"] == 0.99
     assert minimax_fast["aliases"] == ["MiniMax-Fast"]
     assert {route["subscription_type"] for route in minimax_fast["route"]} == {"api"}
+
+
+def test_minimax_fast_lists_routewise_options_in_comments() -> None:
+    """RouteWise example config should keep all tunable options visible."""
+    text = (ROOT / "config" / "models.yaml").read_text()
+
+    for option in [
+        "decision_rule",
+        "predictor",
+        "risk_quantile",
+        "daily_quota",
+        "quota_monthly_fee",
+        "reset_timezone",
+        "concurrency_enabled",
+        "concurrency_limit",
+        "concurrency_monthly_fee",
+        "shadow_price_L_seed",
+        "shadow_price_U_seed",
+        "shadow_price_adaptive",
+        "shadow_price_window_hours",
+        "shadow_price_min_ratio",
+        "latency_slo_sec",
+        "latency_target_cdf",
+        "latency_error_penalty",
+        "latency_window_sec",
+        "latency_min_samples",
+        "latency_lp_interval_sec",
+        "latency_swrr_alpha",
+        "latency_relaxation_factors",
+        "latency_hedge_mode",
+        "latency_cost_budget_alpha",
+        "latency_hedge_success_target",
+        "latency_hedge_cost_ratio",
+        "latency_hedge_dispatch_overhead_sec",
+        "canary_enabled",
+        "canary_enabled_models",
+        "canary_traffic_fraction",
+    ]:
+        assert option in text

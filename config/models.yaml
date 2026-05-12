@@ -285,10 +285,38 @@ models:
     aliases: ["MiniMax-Fast"]
     router: routewise
     router_params:
+      # RouteWise options reference:
+      # decision_rule: pd                  # pd | lapd
       predictor: histogram
+      # risk_quantile: 0.10
+      # daily_quota: 5000
+      # quota_monthly_fee: 20.0
+      # reset_timezone: UTC
+      # concurrency_enabled: false
+      # concurrency_limit: 8
+      # concurrency_monthly_fee: 25.0
+      # shadow_price_L_seed: 0.001
+      # shadow_price_U_seed: 0.500
+      # shadow_price_adaptive: true
+      # shadow_price_window_hours: 24
+      # shadow_price_min_ratio: 10
+      # latency_slo_sec: 3.0
+      # latency_target_cdf: 0.99
+      # latency_error_penalty: 0.0
+      # latency_window_sec: 900.0
+      # latency_min_samples: 10
+      # latency_lp_interval_sec: 60.0
+      # latency_swrr_alpha: 0.3
+      # latency_relaxation_factors: "1.2,1.5,2.0"
+      # latency_hedge_mode: shadow         # shadow | economic | probability | disabled
       latency_cost_budget_alpha: 0.5
       latency_hedge_mode: probability
       latency_hedge_success_target: 0.99
+      # latency_hedge_cost_ratio: 0.1
+      # latency_hedge_dispatch_overhead_sec: 0.05
+      # canary_enabled: false
+      # canary_enabled_models: null        # null = all routewise models
+      # canary_traffic_fraction: 1.0
     # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
     pricing:
       prompt: "0.3"
