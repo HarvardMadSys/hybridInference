@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from routing.routewise.predictor import EMAOutputPredictor, EMAState, QuantilePrediction
+from routing.routewise.predictor import (
+    EMAOutputPredictor,
+    EMAState,
+    HistogramOutputPredictor,
+    QuantilePrediction,
+)
 
 
 @pytest.mark.unit
@@ -144,3 +149,27 @@ class TestEMAOutputPredictor:
         # Cold start still in effect.
         pred = predictor.predict("m")
         assert pred.is_warmed_up is False
+
+
+@pytest.mark.unit
+class TestHistogramOutputPredictor:
+    def test_histogram_predictor_uses_bucket_mean(self):
+        predictor = HistogramOutputPredictor(min_samples=2, default_output=500.0)
+        predictor.update("m", prompt_tokens=100, output_tokens=80)
+        predictor.update("m", prompt_tokens=120, output_tokens=120)
+
+        pred = predictor.predict("m", prompt_tokens=110)
+
+        assert pred.median == pytest.approx(100.0)
+        assert pred.q50 == pytest.approx(100.0)
+        assert pred.is_warmed_up is True
+
+    def test_histogram_predictor_falls_back_to_global_mean(self):
+        predictor = HistogramOutputPredictor(min_samples=2, default_output=500.0)
+        predictor.update("m", prompt_tokens=1000, output_tokens=200)
+        predictor.update("m", prompt_tokens=1200, output_tokens=300)
+
+        pred = predictor.predict("m", prompt_tokens=10)
+
+        assert pred.median == pytest.approx(250.0)
+        assert pred.is_warmed_up is True

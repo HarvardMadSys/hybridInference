@@ -16,6 +16,7 @@ from routing.routewise.hedging import (
     ProviderEventSink,
     cdf_separate_at,
     compute_hedge_threshold,
+    compute_probability_targeted_hedge_threshold,
     survival_at,
 )
 from routing.routewise.latency import ProviderProfile
@@ -225,6 +226,47 @@ class TestComputeHedgeThreshold:
             dispatch_overhead_sec=0.05,
             current_time=now,
         )
+        assert h == float("inf")
+
+
+@pytest.mark.unit
+class TestProbabilityTargetedHedgeThreshold:
+    def test_probability_threshold_returns_latest_feasible_time(self):
+        primary = _make_profile(endpoint_id="primary")
+        backup = _make_profile(endpoint_id="backup")
+        now = time.time()
+        _populate_profile(primary, [1000.0] * 5 + [4000.0] * 5, now)
+        _populate_profile(backup, [500.0] * 10, now)
+
+        h = compute_probability_targeted_hedge_threshold(
+            primary_profile=primary,
+            backup_profile=backup,
+            slo_sec=3.0,
+            success_target=0.9,
+            dispatch_overhead_sec=0.05,
+            current_time=now,
+            resolution_sec=0.1,
+        )
+
+        assert 0.0 <= h < 3.0
+
+    def test_probability_threshold_returns_inf_when_target_unachievable(self):
+        primary = _make_profile(endpoint_id="primary")
+        backup = _make_profile(endpoint_id="backup")
+        now = time.time()
+        _populate_profile(primary, [4000.0] * 10, now)
+        _populate_profile(backup, [4000.0] * 10, now)
+
+        h = compute_probability_targeted_hedge_threshold(
+            primary_profile=primary,
+            backup_profile=backup,
+            slo_sec=3.0,
+            success_target=0.99,
+            dispatch_overhead_sec=0.05,
+            current_time=now,
+            resolution_sec=0.1,
+        )
+
         assert h == float("inf")
 
     def test_primary_slow_backup_fast(self):

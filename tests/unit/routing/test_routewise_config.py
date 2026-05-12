@@ -42,6 +42,8 @@ class TestRouteWiseConfigDefaults:
         assert cfg.latency_swrr_alpha == 0.3
         assert cfg.latency_relaxation_factors == "1.2,1.5,2.0"
         assert cfg.latency_hedge_mode == "shadow"
+        assert cfg.latency_cost_budget_alpha == 0.5
+        assert cfg.latency_hedge_success_target == 0.99
 
 
 @pytest.mark.unit
@@ -184,6 +186,8 @@ class TestLoadFromYAML:
             "    swrr_alpha: 0.5\n"
             '    relaxation_factors: "1.5,2.0"\n'
             "    hedge_mode: disabled\n"
+            "    cost_budget_alpha: 0.75\n"
+            "    hedge_success_target: 0.975\n"
         )
         p = tmp_path / "routewise.yaml"
         p.write_text(yaml_content)
@@ -198,6 +202,8 @@ class TestLoadFromYAML:
         assert cfg.latency_swrr_alpha == 0.5
         assert cfg.latency_relaxation_factors == "1.5,2.0"
         assert cfg.latency_hedge_mode == "disabled"
+        assert cfg.latency_cost_budget_alpha == 0.75
+        assert cfg.latency_hedge_success_target == 0.975
 
     def test_load_flat_latency_keys(self, tmp_path: Path):
         """Flat latency_* keys also load correctly."""

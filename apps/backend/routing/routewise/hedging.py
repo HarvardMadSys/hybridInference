@@ -146,6 +146,35 @@ def compute_hedge_threshold(
     return float("inf")
 
 
+def compute_probability_targeted_hedge_threshold(
+    primary_profile: ProviderProfile,
+    backup_profile: ProviderProfile,
+    slo_sec: float,
+    success_target: float,
+    dispatch_overhead_sec: float,
+    current_time: float,
+    resolution_sec: float = 0.1,
+) -> float:
+    """Find latest elapsed time where primary-plus-backup SLO success meets target."""
+    s_primary_slo = survival_at(primary_profile, slo_sec, current_time)
+    latest: float | None = None
+    steps = int(slo_sec / resolution_sec)
+    for i in range(steps + 1):
+        elapsed = i * resolution_sec
+        remaining = slo_sec - elapsed - dispatch_overhead_sec
+        if remaining <= 0:
+            break
+        s_primary_elapsed = survival_at(primary_profile, elapsed, current_time)
+        conditional_primary_miss = (
+            1.0 if s_primary_elapsed < 1e-6 else min(1.0, s_primary_slo / s_primary_elapsed)
+        )
+        backup_miss = survival_at(backup_profile, remaining, current_time)
+        p_success = 1.0 - conditional_primary_miss * backup_miss
+        if p_success >= success_target:
+            latest = elapsed
+    return latest if latest is not None else float("inf")
+
+
 # ---------------------------------------------------------------------------
 # ProviderEventSink protocol
 # ---------------------------------------------------------------------------
