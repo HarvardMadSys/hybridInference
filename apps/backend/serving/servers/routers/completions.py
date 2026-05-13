@@ -914,6 +914,12 @@ async def chat_completions(
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
         if log_store and not is_synthetic_probe:
+            metadata_for_error = metadata
+            if isinstance(exc_routing, dict):
+                metadata_for_error = {
+                    **metadata,
+                    **{k: v for k, v in exc_routing.items() if k != "upstream_cost_usd"},
+                }
             completions_logger.schedule_log(
                 request_id,
                 {
@@ -927,7 +933,7 @@ async def chat_completions(
                     "status_code": exc_status_code,
                     "error": str(exc),
                     "params": params,
-                    "metadata": metadata,
+                    "metadata": metadata_for_error,
                     "pricing": None,  # Error case - no pricing available
                     "request_payload": body,
                 },

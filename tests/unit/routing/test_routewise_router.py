@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,7 @@ from routing.routers import RoutingObservation
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import HedgedAdapter
 from routing.routewise.router import RouteWiseRouter, SubscriptionType
+from serving.utils.logging import JsonFormatter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1489,6 +1491,140 @@ class TestRouteWiseDecisionMetadata:
         assert meta["hedged"] is False
         assert meta["backup_won"] is False
 
+    def test_routewise_decision_log_emits_selected_provider(self, caplog: pytest.LogCaptureFixture):
+        """Decision logs include selected provider and hedge metadata."""
+        quota = _make_adapter(
+            subscription_type="quota",
+            provider="quota-provider",
+            endpoint_id="test-model:quota-provider",
+        )
+        api = _make_adapter(
+            subscription_type="api",
+            provider="api-provider",
+            endpoint_id="test-model:api-provider",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota, 0.5), (api, 0.5)])
+
+        config = RouteWiseConfig(
+            shadow_price_L_seed=0.0000001,
+            shadow_price_U_seed=0.001,
+        )
+        router = RouteWiseRouter(fixed_router=fr, config=config)
+
+        # Warm predictor so routewise decision is deterministic.
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        with caplog.at_level(logging.INFO, logger="routing.routewise.router"):
+            selected = router._select_adapter("test-model", {"request_id": "req-log-provider"})
+
+        assert selected is quota
+        events = [rec for rec in caplog.records if getattr(rec, "event", None) == "routewise_decision"]
+        assert len(events) == 1
+        event = events[0]
+
+        assert event.selected_provider == "quota-provider"
+        assert event.hedging_triggered is False
+        assert event.selected_endpoint_id == "test-model:quota-provider"
+        assert event.hedge_backup_provider is None
+
+    def test_routewise_decision_log_survives_json_formatting(self, caplog: pytest.LogCaptureFixture):
+        """The routewise_decision log record keeps all structured keys through JsonFormatter."""
+        quota = _make_adapter(
+            subscription_type="quota",
+            provider="quota-provider",
+            endpoint_id="test-model:quota-provider",
+        )
+        api = _make_adapter(
+            subscription_type="api",
+            provider="api-provider",
+            endpoint_id="test-model:api-provider",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota, 0.5), (api, 0.5)])
+
+        config = RouteWiseConfig(shadow_price_L_seed=0.0000001, shadow_price_U_seed=0.001)
+        router = RouteWiseRouter(fixed_router=fr, config=config)
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        with caplog.at_level(logging.INFO, logger="routing.routewise.router"):
+            router._select_adapter("test-model", {"request_id": "req-json-fmt"})
+
+        record = next(
+            r for r in caplog.records if getattr(r, "event", None) == "routewise_decision"
+        )
+        payload = json.loads(JsonFormatter().format(record))
+        assert payload["selected_provider"] == "quota-provider"
+        assert payload["selected_tier"] == "quota"
+        assert payload["hedging_triggered"] is False
+        assert payload["hedge_backup_provider"] is None
+        assert "v_t" in payload
+        assert "gain_c" in payload
+        assert "gain_q" in payload
+        assert "gain_a" in payload
+
+    def test_routewise_decision_log_indicates_hedged_backup(self, caplog: pytest.LogCaptureFixture):
+        """Hedged decisions report the backup provider in decision logs."""
+        primary = _make_adapter(
+            subscription_type="api",
+            provider="primary-provider",
+            endpoint_id="test-model:primary",
+        )
+        backup = _make_adapter(
+            subscription_type="api",
+            provider="backup-provider",
+            endpoint_id="test-model:backup",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(primary, 0.5), (backup, 0.5)])
+
+        config = RouteWiseConfig(
+            latency_hedge_mode="economic",
+            latency_min_samples=1,
+        )
+        router = RouteWiseRouter(fixed_router=fr, config=config)
+
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        # Make both providers warm for layer2 and force a hedged adapter.
+        now = time.time()
+        router._latency_profiles["test-model:primary"] = router._latency_profiles[primary.config.endpoint_id]
+        router._latency_profiles["test-model:backup"] = router._latency_profiles[backup.config.endpoint_id]
+        for _ in range(10):
+            router._latency_profiles["test-model:primary"].record(now, 200.0)
+            router._latency_profiles["test-model:backup"].record(now, 400.0)
+
+        fake_hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=0.01,
+            event_sink=router,
+        )
+
+        with (
+            patch.object(
+                router,
+                "_maybe_create_hedged_adapter",
+                return_value=fake_hedged,
+            ),
+            caplog.at_level(logging.INFO, logger="routing.routewise.router"),
+        ):
+            selected = router._select_adapter("test-model", {"request_id": "req-log-hedged"})
+
+        assert isinstance(selected, HedgedAdapter)
+        events = [
+            rec for rec in caplog.records if getattr(rec, "event", None) == "routewise_decision"
+        ]
+        assert len(events) == 1
+        event = events[0]
+
+        assert event.hedging_triggered is True
+        assert event.hedge_backup_provider == "backup-provider"
+        assert event.selected_provider == "primary-provider"
+
     def test_sq_decision_stores_metadata(self):
         """S_Q selection stores metadata with selected_tier='quota'."""
         router, quota, _api = _make_router_with_quota_and_api()
@@ -1555,6 +1691,14 @@ class TestRouteWiseDecisionMetadata:
         assert "routewise" in resp["_routing"]
         rw = resp["_routing"]["routewise"]
         assert rw["selected_tier"] in ("quota", "api")
+        assert rw["selected_provider"] == "openai_compat"
+        assert rw["selected_endpoint_id"] in (
+            "test-model:quota-provider",
+            "test-model:api-provider",
+        )
+        assert rw["hedging_triggered"] is False
+        assert rw["hedge_backup_provider"] is None
+        assert rw["hedge_backup_endpoint_id"] is None
         assert "v_t" in rw
         # _pending_decisions should be cleaned up
         assert "req-merge-test" not in router._pending_decisions

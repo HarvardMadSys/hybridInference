@@ -661,6 +661,80 @@ class RouteWiseRouter(BaseRouter):
             factors,
         )
 
+    def _log_routewise_decision(
+        self,
+        model_id: str,
+        request_id: str | None,
+        selected_tier: str,
+        selected_adapter: Any,
+        selected_endpoint_id: str | None,
+        lp_status: str | None,
+        v_t: float,
+        gain_c: float,
+        gain_q: float,
+        gain_a: float,
+        theta_q: float | None,
+    ) -> None:
+        """Emit a structured routewise decision log with provider/hedge details."""
+        decision_fields = self._routewise_provider_fields(
+            selected_adapter,
+            selected_endpoint_id,
+        )
+
+        logger.info(
+            "RouteWise decision: model=%s request_id=%s tier=%s provider=%s endpoint=%s hedged=%s backup=%s",
+            model_id,
+            request_id,
+            selected_tier,
+            decision_fields["selected_provider"],
+            selected_endpoint_id,
+            decision_fields["hedging_triggered"],
+            decision_fields["hedge_backup_provider"],
+            extra={
+                "event": "routewise_decision",
+                "model_id": model_id,
+                "request_id": request_id,
+                "selected_tier": selected_tier,
+                **decision_fields,
+                "v_t": v_t,
+                "gain_c": gain_c,
+                "gain_q": gain_q,
+                "gain_a": gain_a,
+                "theta_q": theta_q,
+                "lp_status": lp_status,
+            },
+        )
+
+    def _routewise_provider_fields(
+        self,
+        selected_adapter: Any,
+        selected_endpoint_id: str | None,
+    ) -> dict[str, Any]:
+        """Return provider/hedging fields shared by logs and persisted metadata."""
+        config = getattr(selected_adapter, "config", None)
+        selected_provider = getattr(config, "provider", None) if config is not None else None
+
+        backup_provider = None
+        backup_endpoint_id = None
+        is_hedged = isinstance(selected_adapter, HedgedAdapter)
+        if is_hedged:
+            backup_config = getattr(selected_adapter.backup, "config", None)
+            backup_provider = getattr(backup_config, "provider", None) if backup_config is not None else None
+            backup_endpoint_id = (
+                getattr(backup_config, "endpoint_id", None)
+                if backup_config is not None
+                else None
+            )
+
+        return {
+            "selected_provider": selected_provider,
+            "selected_endpoint_id": selected_endpoint_id,
+            "selected_endpoint": selected_endpoint_id,
+            "hedging_triggered": is_hedged,
+            "hedge_backup_provider": backup_provider,
+            "hedge_backup_endpoint_id": backup_endpoint_id,
+        }
+
     def _run_lp_solve(
         self,
         eligible: list[str],
@@ -1044,6 +1118,39 @@ class RouteWiseRouter(BaseRouter):
         # -- Request ID for decision metadata --------------------------------
         request_id = context.get("request_id")
 
+        def _build_base_entry(
+            selected_tier: str,
+            *,
+            hedged: bool,
+            lp_status: str | None,
+            sc_committed: bool,
+            selected_adapter: Any,
+            selected_endpoint_id: str | None,
+        ) -> dict[str, Any]:
+            return {
+                "v_t": v_t,
+                "gain_c": gain_c,
+                "gain_q": gain_q,
+                "gain_a": gain_a,
+                "theta_q": theta_q if theta_q < float("inf") else None,
+                "quota_remaining": self.quota_mgr.remaining,
+                "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
+                "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
+                # Wall-clock timestamp for TTL eviction (see _sweep_pending_decisions_once).
+                "timestamp": time.time(),
+                "is_streaming": False,
+                "selected_tier": selected_tier,
+                "quota_committed": 0.0,
+                "sc_committed": sc_committed,
+                "hedged": hedged,
+                "backup_won": False,
+                "lp_status": lp_status,
+                **self._routewise_provider_fields(
+                    selected_adapter,
+                    selected_endpoint_id,
+                ),
+            }
+
         candidates = self._build_effective_cost_candidates(model_id, prompt_tokens, predicted_out)
         now = time.time()
         selected_candidate, lp_status = self._choose_cost_budgeted_candidate(
@@ -1085,27 +1192,53 @@ class RouteWiseRouter(BaseRouter):
                             sub_type=selected_candidate.sub_type,
                             effective_cost=selected_candidate.effective_cost,
                         )
+
+            selected_adapter = selected_candidate.adapter
+            selected_tier = selected_candidate.sub_type.value
+            selected_endpoint_id = selected_candidate.endpoint_id
+            is_hedged = isinstance(selected_adapter, HedgedAdapter)
+
             if request_id:
                 self._pending_decisions[request_id] = {
                     "v_t": v_t,
                     "gain_c": gain_c,
                     "gain_q": gain_q,
                     "gain_a": gain_a,
-                    "theta_q": self.quota_mgr.get_shadow_price(),
+                    "theta_q": self.quota_mgr.get_shadow_price()
+                    if self.quota_mgr.get_shadow_price() < float("inf")
+                    else None,
                     "quota_remaining": self.quota_mgr.remaining,
                     "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
                     "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
                     "timestamp": now,
                     "is_streaming": False,
-                    "selected_tier": selected_candidate.sub_type.value,
+                    "selected_tier": selected_tier,
                     "effective_cost": selected_candidate.effective_cost,
                     "quota_committed": 0.0,
                     "sc_committed": selected_candidate.sub_type is SubscriptionType.CONCURRENCY,
-                    "hedged": isinstance(selected_candidate.adapter, HedgedAdapter),
+                    "hedged": is_hedged,
                     "backup_won": False,
                     "lp_status": lp_status,
+                    **self._routewise_provider_fields(
+                        selected_adapter,
+                        selected_endpoint_id,
+                    ),
                 }
-            return selected_candidate.adapter
+
+            self._log_routewise_decision(
+                model_id=model_id,
+                request_id=request_id,
+                selected_tier=selected_tier,
+                selected_adapter=selected_adapter,
+                selected_endpoint_id=selected_endpoint_id,
+                lp_status=lp_status,
+                v_t=v_t,
+                gain_c=gain_c,
+                gain_q=gain_q,
+                gain_a=gain_a,
+                theta_q=self.quota_mgr.get_shadow_price(),
+            )
+            return selected_adapter
 
         # -- Classify adapters by tier ------------------------------------
         conc_adapters = [a for a, _w, s in entries if s is SubscriptionType.CONCURRENCY]
@@ -1125,21 +1258,6 @@ class RouteWiseRouter(BaseRouter):
 
         gain_a = 0.0
 
-        # Shared decision metadata fields reused across all tiers.
-        def _base_decision() -> dict[str, Any]:
-            return {
-                "v_t": v_t,
-                "gain_c": gain_c,
-                "gain_q": gain_q,
-                "gain_a": gain_a,
-                "theta_q": theta_q if theta_q < float("inf") else None,
-                "quota_remaining": self.quota_mgr.remaining,
-                "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
-                "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
-                # Wall-clock timestamp for TTL eviction (see _sweep_pending_decisions_once).
-                "timestamp": time.time(),
-            }
-
         # -- Tier selection (S_C > S_Q > S_A) -----------------------------
         best_gain = max(gain_c, gain_q, gain_a)
 
@@ -1153,18 +1271,39 @@ class RouteWiseRouter(BaseRouter):
                     self.conc_mgr.active,
                     self.conc_mgr.limit,
                 )
+
+                selected_adapter = conc_adapters[0]
+                selected_endpoint_id = getattr(
+                    getattr(selected_adapter, "config", None),
+                    "endpoint_id",
+                    None,
+                )
+
                 if request_id:
-                    self._pending_decisions[request_id] = {
-                        **_base_decision(),
-                        "is_streaming": False,
-                        "selected_tier": "concurrency",
-                        "quota_committed": 0.0,
-                        "sc_committed": True,
-                        "hedged": False,
-                        "backup_won": False,
-                        "lp_status": None,
-                    }
-                return conc_adapters[0]
+                    self._pending_decisions[request_id] = _build_base_entry(
+                        selected_tier="concurrency",
+                        hedged=False,
+                        lp_status=None,
+                        sc_committed=True,
+                        selected_adapter=selected_adapter,
+                        selected_endpoint_id=selected_endpoint_id,
+                    )
+
+                self._log_routewise_decision(
+                    model_id=model_id,
+                    request_id=request_id,
+                    selected_tier="concurrency",
+                    selected_adapter=selected_adapter,
+                    selected_endpoint_id=selected_endpoint_id,
+                    lp_status=None,
+                    v_t=v_t,
+                    gain_c=gain_c,
+                    gain_q=gain_q,
+                    gain_a=gain_a,
+                    theta_q=theta_q if theta_q < float("inf") else None,
+                )
+                return selected_adapter
+
             # Race lost -- fall through to S_Q.
             logger.debug(
                 "PD decision: S_C race lost, falling through to S_Q/S_A",
@@ -1179,18 +1318,36 @@ class RouteWiseRouter(BaseRouter):
                 theta_q,
                 self.quota_mgr.remaining,
             )
+            selected_adapter = quota_adapters[0]
+            selected_endpoint_id = getattr(
+                getattr(selected_adapter, "config", None),
+                "endpoint_id",
+                None,
+            )
             if request_id:
-                self._pending_decisions[request_id] = {
-                    **_base_decision(),
-                    "is_streaming": False,
-                    "selected_tier": "quota",
-                    "quota_committed": 0.0,
-                    "sc_committed": False,
-                    "hedged": False,
-                    "backup_won": False,
-                    "lp_status": None,
-                }
-            return quota_adapters[0]
+                self._pending_decisions[request_id] = _build_base_entry(
+                    selected_tier="quota",
+                    hedged=False,
+                    lp_status=None,
+                    sc_committed=False,
+                    selected_adapter=selected_adapter,
+                    selected_endpoint_id=selected_endpoint_id,
+                )
+
+            self._log_routewise_decision(
+                model_id=model_id,
+                request_id=request_id,
+                selected_tier="quota",
+                selected_adapter=selected_adapter,
+                selected_endpoint_id=selected_endpoint_id,
+                lp_status=None,
+                v_t=v_t,
+                gain_c=gain_c,
+                gain_q=gain_q,
+                gain_a=gain_a,
+                theta_q=theta_q if theta_q < float("inf") else None,
+            )
+            return selected_adapter
 
         if quota_adapters:
             logger.debug(
@@ -1207,17 +1364,34 @@ class RouteWiseRouter(BaseRouter):
             predicted_out,
         )
         if api_adapter is not None:
+            selected_endpoint_id = getattr(
+                getattr(api_adapter, "config", None),
+                "endpoint_id",
+                None,
+            )
             if request_id:
-                self._pending_decisions[request_id] = {
-                    **_base_decision(),
-                    "is_streaming": False,
-                    "selected_tier": "api",
-                    "quota_committed": 0.0,
-                    "sc_committed": False,
-                    "hedged": isinstance(api_adapter, HedgedAdapter),
-                    "backup_won": False,
-                    "lp_status": self._last_lp_statuses.get(model_id),
-                }
+                self._pending_decisions[request_id] = _build_base_entry(
+                    selected_tier="api",
+                    hedged=isinstance(api_adapter, HedgedAdapter),
+                    lp_status=self._last_lp_statuses.get(model_id),
+                    sc_committed=False,
+                    selected_adapter=api_adapter,
+                    selected_endpoint_id=selected_endpoint_id,
+                )
+
+            self._log_routewise_decision(
+                model_id=model_id,
+                request_id=request_id,
+                selected_tier="api",
+                selected_adapter=api_adapter,
+                selected_endpoint_id=selected_endpoint_id,
+                lp_status=self._last_lp_statuses.get(model_id),
+                v_t=v_t,
+                gain_c=gain_c,
+                gain_q=gain_q,
+                gain_a=gain_a,
+                theta_q=theta_q if theta_q < float("inf") else None,
+            )
             return api_adapter
 
         # Last resort: return any eligible S_A adapter.  S_C and S_Q are
@@ -1226,18 +1400,36 @@ class RouteWiseRouter(BaseRouter):
         # spurious releases in _execute_adapter's finally block.
         for adapter, _w, sub in entries:
             if sub is SubscriptionType.API:
+                selected_endpoint_id = getattr(
+                    getattr(adapter, "config", None),
+                    "endpoint_id",
+                    None,
+                )
                 if request_id:
-                    self._pending_decisions[request_id] = {
-                        **_base_decision(),
-                        "is_streaming": False,
-                        "selected_tier": "api",
-                        "quota_committed": 0.0,
-                        "sc_committed": False,
-                        "hedged": False,
-                        "backup_won": False,
-                        "lp_status": None,
-                    }
+                    self._pending_decisions[request_id] = _build_base_entry(
+                        selected_tier="api",
+                        hedged=False,
+                        lp_status=None,
+                        sc_committed=False,
+                        selected_adapter=adapter,
+                        selected_endpoint_id=selected_endpoint_id,
+                    )
+
+                self._log_routewise_decision(
+                    model_id=model_id,
+                    request_id=request_id,
+                    selected_tier="api",
+                    selected_adapter=adapter,
+                    selected_endpoint_id=selected_endpoint_id,
+                    lp_status=None,
+                    v_t=v_t,
+                    gain_c=gain_c,
+                    gain_q=gain_q,
+                    gain_a=gain_a,
+                    theta_q=theta_q if theta_q < float("inf") else None,
+                )
                 return adapter
+
         return None
 
     def _get_fallback_adapters(

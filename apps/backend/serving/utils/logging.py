@@ -55,6 +55,21 @@ _STRUCTURED_LOG_KEYS = (
     "cooldown_sec",
     "elapsed_ms",
     "role",
+    # RouteWise decision metadata (emitted by routers on every route choice).
+    "model_id",
+    "selected_tier",
+    "selected_provider",
+    "selected_endpoint_id",
+    "selected_endpoint",
+    "hedging_triggered",
+    "hedge_backup_provider",
+    "hedge_backup_endpoint_id",
+    "v_t",
+    "gain_c",
+    "gain_q",
+    "gain_a",
+    "theta_q",
+    "lp_status",
 )
 
 

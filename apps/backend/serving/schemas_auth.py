@@ -1,7 +1,7 @@
 """Pydantic schemas for authentication and user management."""
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints
 
@@ -264,6 +264,7 @@ class RecentRequestItem(BaseModel):
     total_tokens: int | None = None
     cost_usd: float | None = None
     error: str | None = None
+    routewise: dict[str, Any] | None = None
 
 
 class RecentRequestsResponse(BaseModel):

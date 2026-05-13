@@ -170,6 +170,20 @@ def _coerce_preferences(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _coerce_json_object(value: Any) -> dict[str, Any] | None:
+    """Return a JSON object from asyncpg JSONB values or None for non-objects."""
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
 def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutState:
     """Parse the persisted llm-prober layout or fall back to defaults."""
     raw_layout = preferences.get(LLM_PROBER_LAYOUT_KEY, {})
@@ -855,7 +869,8 @@ async def get_recent_requests(
                     status_code, latency_ms, ttft_ms, stream,
                     prompt_tokens, completion_tokens, reasoning_tokens,
                     cache_read_tokens, cache_write_tokens,
-                    total_tokens, cost_usd, error
+                    total_tokens, cost_usd, error,
+                    metadata->'routewise' AS routewise
                 FROM api_logs
                 WHERE {where_sql}
                 ORDER BY timestamp DESC
@@ -889,6 +904,7 @@ async def get_recent_requests(
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
+            routewise=_coerce_json_object(row["routewise"]),
         )
         for row in rows
     ]

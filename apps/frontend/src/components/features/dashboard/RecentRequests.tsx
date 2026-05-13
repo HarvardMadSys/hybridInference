@@ -72,9 +72,22 @@ function DetailStat({ label, value }: { label: string; value: string }): JSX.Ele
   );
 }
 
+function formatRouteWiseDecision(req: RecentRequestItem): string | null {
+  const rw = req.routewise;
+  if (!rw) return null;
+  const tier = rw.selected_tier ?? 'routewise';
+  const provider = rw.selected_provider ?? req.provider;
+  const hedge = rw.hedging_triggered
+    ? `; hedge -> ${rw.hedge_backup_provider ?? rw.hedge_backup_endpoint_id ?? 'backup'}`
+    : '; no hedge';
+  const backupWon = rw.backup_won ? '; backup won' : '';
+  return `${tier}: ${provider}${hedge}${backupWon}`;
+}
+
 function RequestRow({ req }: { req: RecentRequestItem }) {
   const [expanded, setExpanded] = useState(false);
   const cachedTokens = req.cache_read_tokens ?? null;
+  const routewiseDecision = formatRouteWiseDecision(req);
 
   const throughputTps =
     req.stream &&
@@ -180,6 +193,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 {throughputTps != null && (
                   <DetailStat label="Throughput" value={`${throughputTps.toFixed(1)} tok/s`} />
                 )}
+                {routewiseDecision && <DetailStat label="RouteWise" value={routewiseDecision} />}
               </div>
 
               {req.error && (

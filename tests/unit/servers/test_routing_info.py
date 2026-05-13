@@ -230,6 +230,27 @@ def test_merge_adapter_routing_top_level_routewise_merges_over_strategy_metadata
     }
 
 
+def test_routewise_metadata_shape_for_recent_requests() -> None:
+    """RouteWise DB metadata carries provider and hedging details for recent requests."""
+    routewise = {
+        "selected_tier": "api",
+        "selected_provider": "openai",
+        "selected_endpoint_id": "openai:key-1",
+        "selected_endpoint": "openai:key-1",
+        "hedging_triggered": True,
+        "hedge_backup_provider": "anthropic",
+        "hedge_backup_endpoint_id": "anthropic:key-2",
+        "backup_won": False,
+    }
+
+    routing = merge_adapter_routing(
+        RoutingInfo(request_id="rid", model="gpt-4"),
+        {"provider": "openai", "routewise": routewise},
+    )
+
+    assert routing.routewise == routewise
+
+
 def test_merge_adapter_routing_stashes_unknown_keys_in_extra():
     base = RoutingInfo(request_id="rid", model="gpt-4")
     routing_dict = {

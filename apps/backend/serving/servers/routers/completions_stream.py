@@ -633,6 +633,12 @@ class StreamSession:
         exc_status_code = _extract_exception_status_code(exc)
 
         if self._log_store and not self._is_synthetic_probe:
+            metadata_for_error = self._metadata
+            if isinstance(exc_routing, dict):
+                metadata_for_error = {
+                    **self._metadata,
+                    **{k: v for k, v in exc_routing.items() if k != "upstream_cost_usd"},
+                }
             self._completions_logger.schedule_log(
                 self._request_id,
                 {
@@ -646,7 +652,7 @@ class StreamSession:
                     "status_code": exc_status_code,
                     "error": _format_exception_for_db(exc),
                     "params": self._params,
-                    "metadata": self._metadata,
+                    "metadata": metadata_for_error,
                     "ttft_ms": self._ttft.ttft_ms,
                     "pricing": None,
                     "request_payload": self._request_payload,

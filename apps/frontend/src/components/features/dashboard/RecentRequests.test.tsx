@@ -73,6 +73,38 @@ describe('RecentRequests', () => {
     expect(screen.queryByText('Request Details')).not.toBeInTheDocument();
   });
 
+  it('shows RouteWise decision metadata in the detail panel', async () => {
+    const { useRecentRequests } = await import('@/lib/hooks');
+    vi.mocked(useRecentRequests).mockReturnValue({
+      data: {
+        requests: [
+          makeRequest({
+            routewise: {
+              selected_tier: 'api',
+              selected_provider: 'openai',
+              selected_endpoint_id: 'openai:key-1',
+              hedging_triggered: true,
+              hedge_backup_provider: 'anthropic',
+              backup_won: false,
+            },
+          }),
+        ],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useRecentRequests>);
+
+    render(<RecentRequests />);
+
+    fireEvent.click(screen.getAllByText('claude-sonnet')[0]);
+
+    expect(screen.getByText('RouteWise')).toBeInTheDocument();
+    expect(screen.getByText('api: openai; hedge -> anthropic')).toBeInTheDocument();
+  });
+
   it('shows cached tokens in the collapsed token summary', async () => {
     const { useRecentRequests } = await import('@/lib/hooks');
     vi.mocked(useRecentRequests).mockReturnValue({

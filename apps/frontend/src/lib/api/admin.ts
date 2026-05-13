@@ -419,6 +419,19 @@ export interface AdminRecentRequestItem {
   total_tokens?: number | null;
   cost_usd?: number | null;
   error?: string | null;
+  routewise?: AdminRouteWiseDecision | null;
+}
+
+export interface AdminRouteWiseDecision {
+  selected_tier?: string | null;
+  selected_provider?: string | null;
+  selected_endpoint_id?: string | null;
+  selected_endpoint?: string | null;
+  hedging_triggered?: boolean | null;
+  hedge_backup_provider?: string | null;
+  hedge_backup_endpoint_id?: string | null;
+  backup_won?: boolean | null;
+  lp_status?: string | null;
 }
 
 export interface AdminRecentRequestsResponse {
