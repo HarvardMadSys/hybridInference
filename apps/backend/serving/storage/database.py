@@ -9,6 +9,7 @@ Pure utility functions (``calculate_cost``, etc.) have been moved to
 """
 
 import json
+import math
 import os
 from typing import Any
 
@@ -19,6 +20,19 @@ from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively replace non-finite floats with ``None`` for JSONB storage."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def _parse_admin_emails(raw: str) -> list[str]:
@@ -920,7 +934,7 @@ class DatabaseLogger:
                 error,
                 (metadata or {}).get("user_id"),
                 (metadata or {}).get("session_id"),
-                json.dumps(metadata) if metadata else None,
+                json.dumps(_json_safe(metadata)) if metadata else None,
                 json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
                 upstream_cost_usd,
             )

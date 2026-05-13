@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
@@ -15,6 +16,19 @@ if TYPE_CHECKING:
     import asyncpg
 
 logger = get_logger(__name__)
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively replace non-finite floats with ``None`` for JSONB storage."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 class PostgresLogStore(LogStore):
@@ -255,7 +269,7 @@ class PostgresLogStore(LogStore):
                 error,
                 (metadata or {}).get("user_id"),
                 (metadata or {}).get("session_id"),
-                json.dumps(metadata) if metadata else None,
+                json.dumps(_json_safe(metadata)) if metadata else None,
                 json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
                 upstream_cost_usd,
             )
