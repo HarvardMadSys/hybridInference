@@ -686,7 +686,7 @@ async def admin_list_recent_requests(
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
-            routewise=coerce_json_object(row["routewise"]),
+            routewise=coerce_json_object(row.get("routewise")),
         )
         for row in rows
     ]
