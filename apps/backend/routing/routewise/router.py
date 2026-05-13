@@ -157,6 +157,7 @@ class RouteWiseRouter(BaseRouter):
 
         # Per-model adapter classification.
         self.classified: dict[str, list[tuple[Any, float, SubscriptionType]]] = {}
+        self._adapter_sub_type_by_model: dict[str, dict[int, SubscriptionType]] = {}
 
         # Reverse lookup: adapter id(obj) -> SubscriptionType.
         self._adapter_sub_type: dict[int, SubscriptionType] = {}
@@ -187,9 +188,9 @@ class RouteWiseRouter(BaseRouter):
         # Periodic TTL-cleanup task; populated by start(), cancelled by stop().
         self._sweep_task: asyncio.Task[None] | None = None
 
-        # Precomputed per-token prices for all S_A adapters, keyed by model.
-        # Each entry: (adapter, price_prompt_per_token, price_completion_per_token).
-        self._api_adapter_prices: dict[str, list[tuple[Any, float, float]]] = {}
+        # Precomputed per-token prices for all S_A adapters, keyed by model and adapter id.
+        # Each entry: adapter id -> (adapter, price_prompt_per_token, price_completion_per_token).
+        self._api_adapter_prices: dict[str, dict[int, tuple[Any, float, float]]] = {}
 
         # Layer 2: Latency-aware provider selection state.
         # Latency profiles are keyed by endpoint_id.  This dict is router-global,
@@ -237,6 +238,7 @@ class RouteWiseRouter(BaseRouter):
         """
         self.fixed_router = fixed_router
         self.classified = {}
+        self._adapter_sub_type_by_model = {}
         self._adapter_sub_type = {}
         self._pending_decisions = {}
         self._api_adapter_prices = {}
@@ -298,8 +300,6 @@ class RouteWiseRouter(BaseRouter):
         for model_id, route_cfg in self.fixed_router.routes.items():
             entries: list[tuple[Any, float, SubscriptionType]] = []
             for adapter, weight in route_cfg.adapters:
-                if weight <= 0:
-                    continue  # Respect FixedRouter's disabled-route convention
                 metadata = getattr(adapter.config, "route_metadata", None)
                 if isinstance(metadata, dict):
                     sub_str = metadata.get(
@@ -319,6 +319,31 @@ class RouteWiseRouter(BaseRouter):
                 entries.append((adapter, weight, sub_type))
             self.classified[model_id] = entries
 
+    def _effective_fixed_entries(self, model_id: str, route_cfg: Any) -> list[tuple[Any, float]]:
+        """Return FixedRouter route entries with live admin weight overrides applied."""
+        get_effective = getattr(self.fixed_router, "_get_effective_adapters", None)
+        if get_effective is not None:
+            return list(get_effective(model_id, route_cfg))
+        return list(route_cfg.adapters)
+
+    def _effective_classified_entries(
+        self, model_id: str
+    ) -> list[tuple[Any, float, SubscriptionType]]:
+        """Return currently enabled RouteWise entries after live weight overrides."""
+        route_cfg = self.fixed_router.routes.get(model_id)
+        if route_cfg is None:
+            return self.classified.get(model_id, [])
+
+        sub_by_adapter = self._adapter_sub_type_by_model.get(model_id, {})
+        entries: list[tuple[Any, float, SubscriptionType]] = []
+        for adapter, weight in self._effective_fixed_entries(model_id, route_cfg):
+            if weight <= 0:
+                continue
+            sub_type = sub_by_adapter.get(id(adapter))
+            if sub_type is not None:
+                entries.append((adapter, weight, sub_type))
+        return entries
+
     def _build_adapter_sub_type_map(self) -> None:
         """Build reverse lookup from ``id(adapter)`` to ``SubscriptionType``.
 
@@ -327,9 +352,13 @@ class RouteWiseRouter(BaseRouter):
         whether a given adapter is S_C without touching ``self.classified``.
         """
         self._adapter_sub_type = {}
-        for entries in self.classified.values():
+        self._adapter_sub_type_by_model = {}
+        for model_id, entries in self.classified.items():
+            model_sub_types: dict[int, SubscriptionType] = {}
             for adapter, _w, sub in entries:
                 self._adapter_sub_type[id(adapter)] = sub
+                model_sub_types[id(adapter)] = sub
+            self._adapter_sub_type_by_model[model_id] = model_sub_types
 
     def _validate_api_baseline(self) -> None:
         """Warn if any model lacks an S_A baseline adapter.
@@ -360,16 +389,16 @@ class RouteWiseRouter(BaseRouter):
         per-token for direct multiplication in value estimation.
         """
         for model_id, entries in self.classified.items():
-            api_list: list[tuple[Any, float, float]] = []
+            api_prices: dict[int, tuple[Any, float, float]] = {}
             for adapter, _w, sub in entries:
                 if sub is not SubscriptionType.API:
                     continue
                 pricing = adapter.config.pricing
                 p_in = float(pricing.get("prompt", "0")) / 1_000_000.0
                 p_out = float(pricing.get("completion", "0")) / 1_000_000.0
-                api_list.append((adapter, p_in, p_out))
-            if api_list:
-                self._api_adapter_prices[model_id] = api_list
+                api_prices[id(adapter)] = (adapter, p_in, p_out)
+            if api_prices:
+                self._api_adapter_prices[model_id] = api_prices
 
     # ------------------------------------------------------------------
     # Layer 2: Latency-aware provider selection
@@ -412,6 +441,7 @@ class RouteWiseRouter(BaseRouter):
         model_id: str,
         prompt_tokens: int,
         predicted_output: float,
+        api_list: list[tuple[Any, float, float]] | None = None,
     ) -> tuple[BaseAdapter | None, float]:
         """Layer 2 entry point: select an S_A adapter with latency awareness.
 
@@ -430,9 +460,12 @@ class RouteWiseRouter(BaseRouter):
         Returns:
             Tuple of (selected adapter, estimated cost).
         """
-        api_list = self._api_adapter_prices.get(model_id, [])
+        if api_list is None:
+            api_list = self._effective_api_prices(model_id)
         if len(api_list) <= 1:
-            return self._cheapest_api_for_request(model_id, prompt_tokens, predicted_output)
+            return self._cheapest_api_for_request(
+                model_id, prompt_tokens, predicted_output, api_list=api_list
+            )
 
         # Collect endpoint IDs for this model's S_A adapters.
         model_eids: list[str] = []
@@ -449,18 +482,24 @@ class RouteWiseRouter(BaseRouter):
             and self._latency_profiles[eid].sample_count(now) >= self.config.latency_min_samples
         ]
         if len(warmed) < 2:
-            return self._cheapest_api_for_request(model_id, prompt_tokens, predicted_output)
+            return self._cheapest_api_for_request(
+                model_id, prompt_tokens, predicted_output, api_list=api_list
+            )
 
         # LP + SWRR path (per-model state).
         self._maybe_update_lp(model_id, model_eids, prompt_tokens, predicted_output, now)
 
         sampler = self._swrr_samplers.get(model_id)
         if sampler is None:
-            return self._cheapest_api_for_request(model_id, prompt_tokens, predicted_output)
+            return self._cheapest_api_for_request(
+                model_id, prompt_tokens, predicted_output, api_list=api_list
+            )
 
         selected_eid = sampler.sample()
         if selected_eid is None or selected_eid not in self._api_endpoint_map:
-            return self._cheapest_api_for_request(model_id, prompt_tokens, predicted_output)
+            return self._cheapest_api_for_request(
+                model_id, prompt_tokens, predicted_output, api_list=api_list
+            )
 
         adapter, p_in, p_out = self._api_endpoint_map[selected_eid]
         cost = p_in * prompt_tokens + p_out * predicted_output
@@ -497,7 +536,7 @@ class RouteWiseRouter(BaseRouter):
         """Compute finite-cost provider candidates across all subscription categories."""
         candidates: list[_ProviderCandidate] = []
         theta_q = self.quota_mgr.get_shadow_price()
-        for adapter, _weight, sub_type in self.classified.get(model_id, []):
+        for adapter, _weight, sub_type in self._effective_classified_entries(model_id):
             endpoint_id = adapter.config.endpoint_id or adapter.config.id
             effective_cost = float("inf")
             if sub_type is SubscriptionType.API:
@@ -524,6 +563,18 @@ class RouteWiseRouter(BaseRouter):
                     )
                 )
         return candidates
+
+    def _effective_api_prices(self, model_id: str) -> list[tuple[Any, float, float]]:
+        """Return currently enabled API adapter prices for a model."""
+        api_prices = self._api_adapter_prices.get(model_id, {})
+        prices: list[tuple[Any, float, float]] = []
+        for adapter, _weight, sub_type in self._effective_classified_entries(model_id):
+            if sub_type is not SubscriptionType.API:
+                continue
+            cached = api_prices.get(id(adapter))
+            if cached is not None:
+                prices.append(cached)
+        return prices
 
     def _commit_candidate_resource(self, candidate: _ProviderCandidate) -> bool:
         """Commit selected quota/concurrency resources after final selection."""
@@ -1019,6 +1070,8 @@ class RouteWiseRouter(BaseRouter):
         model_id: str,
         prompt_tokens: int,
         predicted_output: float,
+        *,
+        api_list: list[tuple[Any, float, float]] | None = None,
     ) -> tuple[BaseAdapter | None, float]:
         """Return (adapter, estimated_cost) for the cheapest S_A option.
 
@@ -1035,7 +1088,8 @@ class RouteWiseRouter(BaseRouter):
             Tuple of (cheapest adapter, estimated cost).  If no S_A adapters
             exist, returns ``(None, inf)``.
         """
-        api_list = self._api_adapter_prices.get(model_id, [])
+        if api_list is None:
+            api_list = self._effective_api_prices(model_id)
         if not api_list:
             return None, float("inf")
 
@@ -1118,8 +1172,8 @@ class RouteWiseRouter(BaseRouter):
         Returns:
             Selected adapter, or None if no eligible adapter exists.
         """
-        entries = self.classified.get(model_id)
-        if entries is None:
+        entries = self._effective_classified_entries(model_id)
+        if model_id not in self.classified:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
 
         # -- Prompt tokens ------------------------------------------------
@@ -1129,12 +1183,14 @@ class RouteWiseRouter(BaseRouter):
 
         # -- Output prediction --------------------------------------------
         predicted_out = self._predict_output_tokens(model_id, prompt_tokens)
+        api_list = self._effective_api_prices(model_id)
 
         # -- Value estimation for Layer 1 (uses cheapest API baseline) ------
         _, v_t = self._cheapest_api_for_request(
             model_id,
             prompt_tokens,
             predicted_out,
+            api_list=api_list,
         )
 
         # -- Request ID for decision metadata --------------------------------
@@ -1384,6 +1440,7 @@ class RouteWiseRouter(BaseRouter):
             model_id,
             prompt_tokens,
             predicted_out,
+            api_list=api_list,
         )
         if api_adapter is not None:
             selected_endpoint_id = getattr(
@@ -1472,7 +1529,7 @@ class RouteWiseRouter(BaseRouter):
           ``_execute_adapter`` / ``_execute_stream_adapter``, so the
           slot acquire/release lifecycle cannot be guaranteed.
         """
-        entries = self.classified.get(model_id, [])
+        entries = self._effective_classified_entries(model_id)
         return [a for a, _w, s in entries if a is not failed_adapter and s is SubscriptionType.API]
 
     def record_observation(self, obs: RoutingObservation) -> None:
