@@ -236,7 +236,6 @@ def test_routewise_metadata_shape_for_recent_requests() -> None:
         "selected_tier": "api",
         "selected_provider": "openai",
         "selected_endpoint_id": "openai:key-1",
-        "selected_endpoint": "openai:key-1",
         "hedging_triggered": True,
         "hedge_backup_provider": "anthropic",
         "hedge_backup_endpoint_id": "anthropic:key-2",

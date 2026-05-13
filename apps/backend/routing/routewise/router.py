@@ -719,17 +719,16 @@ class RouteWiseRouter(BaseRouter):
         is_hedged = isinstance(selected_adapter, HedgedAdapter)
         if is_hedged:
             backup_config = getattr(selected_adapter.backup, "config", None)
-            backup_provider = getattr(backup_config, "provider", None) if backup_config is not None else None
+            backup_provider = (
+                getattr(backup_config, "provider", None) if backup_config is not None else None
+            )
             backup_endpoint_id = (
-                getattr(backup_config, "endpoint_id", None)
-                if backup_config is not None
-                else None
+                getattr(backup_config, "endpoint_id", None) if backup_config is not None else None
             )
 
         return {
             "selected_provider": selected_provider,
             "selected_endpoint_id": selected_endpoint_id,
-            "selected_endpoint": selected_endpoint_id,
             "hedging_triggered": is_hedged,
             "hedge_backup_provider": backup_provider,
             "hedge_backup_endpoint_id": backup_endpoint_id,
@@ -1197,6 +1196,8 @@ class RouteWiseRouter(BaseRouter):
             selected_tier = selected_candidate.sub_type.value
             selected_endpoint_id = selected_candidate.endpoint_id
             is_hedged = isinstance(selected_adapter, HedgedAdapter)
+            theta_q_val = self.quota_mgr.get_shadow_price()
+            theta_q_for_logs = theta_q_val if theta_q_val < float("inf") else None
 
             if request_id:
                 self._pending_decisions[request_id] = {
@@ -1204,9 +1205,7 @@ class RouteWiseRouter(BaseRouter):
                     "gain_c": gain_c,
                     "gain_q": gain_q,
                     "gain_a": gain_a,
-                    "theta_q": self.quota_mgr.get_shadow_price()
-                    if self.quota_mgr.get_shadow_price() < float("inf")
-                    else None,
+                    "theta_q": theta_q_for_logs,
                     "quota_remaining": self.quota_mgr.remaining,
                     "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
                     "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
@@ -1236,7 +1235,7 @@ class RouteWiseRouter(BaseRouter):
                 gain_c=gain_c,
                 gain_q=gain_q,
                 gain_a=gain_a,
-                theta_q=self.quota_mgr.get_shadow_price(),
+                theta_q=theta_q_for_logs,
             )
             return selected_adapter
 

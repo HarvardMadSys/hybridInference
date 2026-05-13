@@ -30,6 +30,7 @@ from serving.servers.routers.admin._common import (
     _build_histogram,
     _round_or_none,
 )
+from serving.storage.utils import coerce_json_object
 
 router = APIRouter(prefix="/admin")
 
@@ -147,20 +148,6 @@ def _decode_throughput_tps(
     if completion_tokens < _DECODE_MIN_TOKENS:
         return None
     return (completion_tokens - 1) / ((latency_ms - ttft_ms) / 1000.0)
-
-
-def _coerce_json_object(value: Any) -> dict[str, Any] | None:
-    """Return a JSON object from asyncpg JSONB values or None for non-objects."""
-    if isinstance(value, dict):
-        return dict(value)
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
-    return None
 
 
 @router.get("/request-metrics", response_model=AdminRequestMetricsResponse)
@@ -699,7 +686,7 @@ async def admin_list_recent_requests(
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
-            routewise=_coerce_json_object(row["routewise"]),
+            routewise=coerce_json_object(row["routewise"]),
         )
         for row in rows
     ]

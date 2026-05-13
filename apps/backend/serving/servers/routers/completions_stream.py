@@ -36,6 +36,7 @@ from routing.routers import AllCircuitsOpenError
 from serving.exceptions import scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
 from serving.servers.routers.routing_info import RoutingInfo, merge_adapter_routing
+from serving.storage.utils import json_safe
 from serving.stream import make_role_chunk
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -637,7 +638,7 @@ class StreamSession:
             if isinstance(exc_routing, dict):
                 metadata_for_error = {
                     **self._metadata,
-                    **{k: v for k, v in exc_routing.items() if k != "upstream_cost_usd"},
+                    **json_safe({k: v for k, v in exc_routing.items() if k != "upstream_cost_usd"}),
                 }
             self._completions_logger.schedule_log(
                 self._request_id,

@@ -1520,7 +1520,9 @@ class TestRouteWiseDecisionMetadata:
             selected = router._select_adapter("test-model", {"request_id": "req-log-provider"})
 
         assert selected is quota
-        events = [rec for rec in caplog.records if getattr(rec, "event", None) == "routewise_decision"]
+        events = [
+            rec for rec in caplog.records if getattr(rec, "event", None) == "routewise_decision"
+        ]
         assert len(events) == 1
         event = events[0]
 
@@ -1529,7 +1531,9 @@ class TestRouteWiseDecisionMetadata:
         assert event.selected_endpoint_id == "test-model:quota-provider"
         assert event.hedge_backup_provider is None
 
-    def test_routewise_decision_log_survives_json_formatting(self, caplog: pytest.LogCaptureFixture):
+    def test_routewise_decision_log_survives_json_formatting(
+        self, caplog: pytest.LogCaptureFixture
+    ):
         """The routewise_decision log record keeps all structured keys through JsonFormatter."""
         quota = _make_adapter(
             subscription_type="quota",
@@ -1560,6 +1564,7 @@ class TestRouteWiseDecisionMetadata:
         assert payload["selected_tier"] == "quota"
         assert payload["hedging_triggered"] is False
         assert payload["hedge_backup_provider"] is None
+        assert "selected_endpoint" not in payload
         assert "v_t" in payload
         assert "gain_c" in payload
         assert "gain_q" in payload
@@ -1591,8 +1596,12 @@ class TestRouteWiseDecisionMetadata:
 
         # Make both providers warm for layer2 and force a hedged adapter.
         now = time.time()
-        router._latency_profiles["test-model:primary"] = router._latency_profiles[primary.config.endpoint_id]
-        router._latency_profiles["test-model:backup"] = router._latency_profiles[backup.config.endpoint_id]
+        router._latency_profiles["test-model:primary"] = router._latency_profiles[
+            primary.config.endpoint_id
+        ]
+        router._latency_profiles["test-model:backup"] = router._latency_profiles[
+            backup.config.endpoint_id
+        ]
         for _ in range(10):
             router._latency_profiles["test-model:primary"].record(now, 200.0)
             router._latency_profiles["test-model:backup"].record(now, 400.0)

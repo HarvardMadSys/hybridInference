@@ -393,6 +393,7 @@ async def test_error_log_includes_routewise_metadata_from_exception():
     routewise = {
         "selected_tier": "api",
         "selected_provider": "openai",
+        "gain_c": float("-inf"),
         "hedging_triggered": True,
         "hedge_backup_provider": "anthropic",
     }
@@ -408,7 +409,7 @@ async def test_error_log_includes_routewise_metadata_from_exception():
 
     log_data = cl_logger.schedule_log.call_args.args[1]
     assert log_data["metadata"]["user_id"] == "user-1"
-    assert log_data["metadata"]["routewise"] == routewise
+    assert log_data["metadata"]["routewise"] == {**routewise, "gain_c": None}
 
 
 @pytest.mark.asyncio

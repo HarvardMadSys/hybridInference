@@ -47,6 +47,7 @@ from serving.servers.routers.routing_info import (
     build_initial_routing_info,
     merge_adapter_routing,
 )
+from serving.storage.utils import json_safe
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -918,7 +919,7 @@ async def chat_completions(
             if isinstance(exc_routing, dict):
                 metadata_for_error = {
                     **metadata,
-                    **{k: v for k, v in exc_routing.items() if k != "upstream_cost_usd"},
+                    **json_safe({k: v for k, v in exc_routing.items() if k != "upstream_cost_usd"}),
                 }
             completions_logger.schedule_log(
                 request_id,

@@ -54,6 +54,7 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.routers.models import _build_model_list_async
+from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -168,20 +169,6 @@ def _coerce_preferences(value: Any) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             pass
     return {}
-
-
-def _coerce_json_object(value: Any) -> dict[str, Any] | None:
-    """Return a JSON object from asyncpg JSONB values or None for non-objects."""
-    if isinstance(value, dict):
-        return dict(value)
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
-    return None
 
 
 def _extract_llm_prober_layout(preferences: dict[str, Any]) -> LLMProberLayoutState:
@@ -904,7 +891,7 @@ async def get_recent_requests(
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
-            routewise=_coerce_json_object(row["routewise"]),
+            routewise=coerce_json_object(row["routewise"]),
         )
         for row in rows
     ]

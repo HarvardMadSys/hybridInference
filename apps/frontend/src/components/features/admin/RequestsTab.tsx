@@ -11,21 +11,10 @@ import {
   listRecentRequests,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 
 const REQ_PAGE_SIZE = 50;
-
-function formatRouteWiseDecision(req: AdminRecentRequestItem): string | null {
-  const rw = req.routewise;
-  if (!rw) return null;
-  const tier = rw.selected_tier ?? 'routewise';
-  const provider = rw.selected_provider ?? req.provider;
-  const hedge = rw.hedging_triggered
-    ? `; hedge -> ${rw.hedge_backup_provider ?? rw.hedge_backup_endpoint_id ?? 'backup'}`
-    : '; no hedge';
-  const backupWon = rw.backup_won ? '; backup won' : '';
-  return `${tier}: ${provider}${hedge}${backupWon}`;
-}
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';

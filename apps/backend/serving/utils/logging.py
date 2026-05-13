@@ -60,7 +60,6 @@ _STRUCTURED_LOG_KEYS = (
     "selected_tier",
     "selected_provider",
     "selected_endpoint_id",
-    "selected_endpoint",
     "hedging_triggered",
     "hedge_backup_provider",
     "hedge_backup_endpoint_id",

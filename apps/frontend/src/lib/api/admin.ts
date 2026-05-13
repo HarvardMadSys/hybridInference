@@ -426,7 +426,6 @@ export interface AdminRouteWiseDecision {
   selected_tier?: string | null;
   selected_provider?: string | null;
   selected_endpoint_id?: string | null;
-  selected_endpoint?: string | null;
   hedging_triggered?: boolean | null;
   hedge_backup_provider?: string | null;
   hedge_backup_endpoint_id?: string | null;

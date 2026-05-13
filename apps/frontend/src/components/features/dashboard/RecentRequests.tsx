@@ -4,6 +4,7 @@ import { useId, useState } from 'react';
 import { useRecentRequests } from '@/lib/hooks';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import type { RecentRequestItem } from '@/lib/api/user';
+import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 
 const PAGE_SIZE = 20;
 
@@ -70,18 +71,6 @@ function DetailStat({ label, value }: { label: string; value: string }): JSX.Ele
       <div className="mt-1 break-words text-sm font-semibold text-gray-900">{value}</div>
     </div>
   );
-}
-
-function formatRouteWiseDecision(req: RecentRequestItem): string | null {
-  const rw = req.routewise;
-  if (!rw) return null;
-  const tier = rw.selected_tier ?? 'routewise';
-  const provider = rw.selected_provider ?? req.provider;
-  const hedge = rw.hedging_triggered
-    ? `; hedge -> ${rw.hedge_backup_provider ?? rw.hedge_backup_endpoint_id ?? 'backup'}`
-    : '; no hedge';
-  const backupWon = rw.backup_won ? '; backup won' : '';
-  return `${tier}: ${provider}${hedge}${backupWon}`;
 }
 
 function RequestRow({ req }: { req: RecentRequestItem }) {
