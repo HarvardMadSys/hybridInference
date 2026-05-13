@@ -247,7 +247,9 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
 
   const onSelectSubtab = (subtab: SettingsSubtab) => {
     setActiveSubtab(subtab);
-    router.replace(subtab === 'general' ? pathname : `${pathname}?tab=${subtab}`, { scroll: false });
+    router.replace(subtab === 'general' ? pathname : `${pathname}?tab=${subtab}`, {
+      scroll: false,
+    });
   };
 
   return (

@@ -83,7 +83,9 @@ describe('RoutewiseTab', () => {
 
     render(<RoutewiseTab />);
 
-    expect(await screen.findByRole('heading', { level: 2, name: 'Routewise Settings' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 2, name: 'Routewise Settings' }),
+    ).toBeInTheDocument();
     expect(await screen.findByText('routewise-model')).toBeInTheDocument();
     expect(screen.getByText('routewise-model:remote')).toBeInTheDocument();
     expect(screen.queryByText('fixed-model')).not.toBeInTheDocument();
@@ -219,7 +221,9 @@ describe('RoutewiseTab', () => {
     await waitFor(() => {
       expect(input).toHaveValue(3);
     });
-    expect(screen.queryByRole('button', { name: 'Clear routewise-model:remote override' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Clear routewise-model:remote override' }),
+    ).not.toBeInTheDocument();
   });
 
   it('keeps save disabled for unchanged or invalid runtime weights', async () => {

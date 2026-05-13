@@ -47,7 +47,9 @@ export function RoutewiseTab() {
       setRoutes(loadedRoutes);
       setRoutewiseSettings(loadedSettings);
       setSettingDrafts(
-        Object.fromEntries(loadedSettings.map((setting) => [setting.key, String(setting.value ?? '')])),
+        Object.fromEntries(
+          loadedSettings.map((setting) => [setting.key, String(setting.value ?? '')]),
+        ),
       );
     } catch (e) {
       setError(getErrorMessage(e));
@@ -60,9 +62,10 @@ export function RoutewiseTab() {
     void load();
   }, [load]);
 
-  const visibleRoutes = useMemo(() => {
-    return routes.filter((route) => route.strategy === 'routewise');
-  }, [routes]);
+  const visibleRoutes = useMemo(
+    () => routes.filter((route) => route.strategy === 'routewise'),
+    [routes],
+  );
 
   const replaceRoute = useCallback((updated: RouteWeight) => {
     setRoutes((prev) => prev.map((route) => (rowKey(route) === rowKey(updated) ? updated : route)));
@@ -154,7 +157,9 @@ export function RoutewiseTab() {
       setSavingSettingKey(setting.key);
       try {
         const updated = await updateRoutewiseSetting(setting.key, value);
-        setRoutewiseSettings((prev) => prev.map((item) => (item.key === updated.key ? updated : item)));
+        setRoutewiseSettings((prev) =>
+          prev.map((item) => (item.key === updated.key ? updated : item)),
+        );
         setSettingDrafts((prev) => ({ ...prev, [updated.key]: String(updated.value ?? '') }));
         toast.success(`Updated ${displayKey(updated)}.`);
       } catch (e) {
@@ -197,18 +202,17 @@ export function RoutewiseTab() {
                 const isSaving = savingSettingKey === setting.key;
                 const isDecisionRule =
                   setting.key === 'routewise_decision_rule' || setting.key === 'decision_rule';
-                const validated =
-                  setting.value_type === 'int' || setting.value_type === 'float'
-                    ? validateNumericSettingInput(draft, {
-                        min: setting.min,
-                        max: setting.max,
-                        integer: setting.value_type === 'int',
-                      })
-                    : { ok: true as const, value: draft };
+                const isNumericSetting =
+                  setting.value_type === 'int' || setting.value_type === 'float';
+                const validated = isNumericSetting
+                  ? validateNumericSettingInput(draft, {
+                    min: setting.min,
+                    max: setting.max,
+                    integer: setting.value_type === 'int',
+                  })
+                  : { ok: true as const, value: draft };
                 const isDirty =
-                  isDecisionRule || validated.ok
-                    ? draft !== String(setting.value ?? '')
-                    : false;
+                  isDecisionRule || validated.ok ? draft !== String(setting.value ?? '') : false;
 
                 return (
                   <div
@@ -216,7 +220,9 @@ export function RoutewiseTab() {
                     className="flex items-center justify-between gap-4 rounded-lg border border-gray-100 px-4 py-3"
                   >
                     <div className="flex-1">
-                      <div className="text-[13px] font-medium text-gray-900">{displayKey(setting)}</div>
+                      <div className="text-[13px] font-medium text-gray-900">
+                        {displayKey(setting)}
+                      </div>
                       <p className="mt-0.5 text-[11px] text-gray-500">{setting.description}</p>
                       {!isDecisionRule && !validated.ok && draft !== '' && (
                         <p className="mt-0.5 text-[11px] text-red-600" role="alert">

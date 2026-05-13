@@ -35,9 +35,10 @@ export function RoutingTab() {
     void load();
   }, [load]);
 
-  const visibleRoutes = useMemo(() => {
-    return routes.filter((route) => route.strategy !== 'routewise');
-  }, [routes]);
+  const visibleRoutes = useMemo(
+    () => routes.filter((route) => route.strategy !== 'routewise'),
+    [routes],
+  );
 
   const replaceRoute = useCallback((updated: RouteWeight) => {
     setRoutes((prev) => prev.map((route) => (rowKey(route) === rowKey(updated) ? updated : route)));

@@ -226,12 +226,17 @@ describe('SettingsTab model visibility', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'Routewise' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByRole('tab', { name: 'Routewise' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
     });
 
     const routewisePanel = screen.getByRole('tabpanel', { name: 'Routewise' });
     expect(routewisePanel).toHaveAttribute('id', 'admin-settings-routewise-panel');
-    expect(within(routewisePanel).getByRole('heading', { level: 2, name: 'Routewise Settings' })).toBeInTheDocument();
+    expect(
+      within(routewisePanel).getByRole('heading', { level: 2, name: 'Routewise Settings' }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'false');
   });
 

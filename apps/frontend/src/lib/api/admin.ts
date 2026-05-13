@@ -1021,11 +1021,15 @@ export async function updateRoutewiseSetting(
   key: string,
   value: RoutewiseSettingValue,
 ): Promise<RoutewiseSettingItem> {
-  const resp = await fetchWithAuth(API_BASE, `/admin/routewise/settings/${encodeURIComponent(key)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value }),
-  });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routewise/settings/${encodeURIComponent(key)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    },
+  );
   return jsonOrThrow<RoutewiseSettingItem>(resp);
 }
 
