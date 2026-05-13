@@ -133,6 +133,9 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
             "routewise_decision_rule": {"value": "lapd", "value_type": "str"},
+            "routewise_daily_quota": {"value": "4321", "value_type": "int"},
+            "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
+            "routewise_latency_min_samples": {"value": "8", "value_type": "int"},
         }.get(key)
     )
     op_store.set_setting = AsyncMock()
@@ -169,6 +172,54 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     assert router.config.latency_min_samples == 8
     assert router.quota_mgr is not original_quota_mgr
     assert router.quota_mgr.remaining == 4319
+
+
+@pytest.mark.asyncio
+async def test_patch_routewise_setting_refreshes_uncached_routewise_router(admin_client):
+    client, op_store, _ = admin_client
+    op_store.get_setting = AsyncMock(
+        side_effect=lambda key: {
+            "routewise_decision_rule": {"value": "lapd", "value_type": "str"},
+            "routewise_daily_quota": {"value": "4321", "value_type": "int"},
+            "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
+            "routewise_latency_min_samples": {"value": "8", "value_type": "int"},
+        }.get(key)
+    )
+    op_store.set_setting = AsyncMock()
+
+    runtime_settings = client._transport.app.state.services.runtime_settings
+    runtime_settings._cache.update(
+        {
+            "routewise_decision_rule": (time.monotonic(), "stale"),
+            "routewise_daily_quota": (time.monotonic(), 9999),
+            "routewise_latency_slo_sec": (time.monotonic(), 9.9),
+            "routewise_latency_min_samples": (time.monotonic(), 99),
+        }
+    )
+
+    registry = ModelRouterRegistry(
+        models_config={
+            "uncached-model": {
+                "router": "routewise",
+                "router_params": {"decision_rule": "pd", "daily_quota": 5000},
+            }
+        }
+    )
+    client._transport.app.state.services.model_router_registry = registry
+
+    response = await client.patch(
+        "/admin/routewise/settings/routewise_decision_rule",
+        json={"value": "lapd"},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 200
+    uncached_router = registry.get_router("uncached-model")
+    assert isinstance(uncached_router, RouteWiseRouter)
+    assert uncached_router.config.decision_rule == "lapd"
+    assert uncached_router.config.daily_quota == 4321
+    assert uncached_router.config.latency_slo_sec == 1.5
+    assert uncached_router.config.latency_min_samples == 8
 
 
 @pytest.mark.asyncio
@@ -212,6 +263,47 @@ async def test_patch_routewise_daily_quota_preserves_consumed_usage(admin_client
     assert response.status_code == 200
     assert router.config.daily_quota == 2000
     assert router.quota_mgr.remaining == 1997
+
+
+@pytest.mark.asyncio
+async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client):
+    client, op_store, _ = admin_client
+    op_store.get_setting = AsyncMock(
+        side_effect=lambda key: {
+            "routewise_decision_rule": {"value": "lapd", "value_type": "str"},
+            "routewise_daily_quota": {"value": "4321", "value_type": "int"},
+            "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
+            "routewise_latency_min_samples": {"value": "8", "value_type": "int"},
+        }.get(key)
+    )
+    op_store.set_setting = AsyncMock()
+
+    runtime_settings = client._transport.app.state.services.runtime_settings
+    runtime_settings._cache.update(
+        {
+            "routewise_decision_rule": (time.monotonic(), "stale"),
+            "routewise_daily_quota": (time.monotonic(), 9999),
+            "routewise_latency_slo_sec": (time.monotonic(), 9.9),
+            "routewise_latency_min_samples": (time.monotonic(), 99),
+        }
+    )
+
+    router = RouteWiseRouter(config=RouteWiseConfig())
+    registry = ModelRouterRegistry(models_config={})
+    registry._cache["test-model"] = router
+    client._transport.app.state.services.model_router_registry = registry
+
+    response = await client.patch(
+        "/admin/routewise/settings/routewise_decision_rule",
+        json={"value": "lapd"},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 200
+    assert router.config.decision_rule == "lapd"
+    assert router.config.daily_quota == 4321
+    assert router.config.latency_slo_sec == 1.5
+    assert router.config.latency_min_samples == 8
 
 
 @pytest.mark.asyncio
@@ -281,6 +373,19 @@ async def test_patch_routewise_setting_rejects_unknown_key(admin_client):
     response = await client.patch(
         "/admin/routewise/settings/not-a-real-key",
         json={"value": 1},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_generic_admin_settings_rejects_routewise_keys(admin_client):
+    client, _, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/routewise_daily_quota",
+        json={"value": 1234},
         headers={"Authorization": "Bearer test-admin"},
     )
 

@@ -154,4 +154,30 @@ describe('RoutingTab', () => {
     expect(screen.queryByText('routewise-model')).not.toBeInTheDocument();
     expect(screen.queryByText('routewise-model:remote')).not.toBeInTheDocument();
   });
+
+  it('treats an empty runtime weight input as invalid', async () => {
+    vi.mocked(listRouteWeights).mockResolvedValue([
+      {
+        model_id: 'gpt-4o-mini',
+        strategy: 'fixed',
+        endpoint_id: 'gpt-4o-mini:remote',
+        provider: 'remote',
+        base_url: 'https://api.example.test',
+        yaml_weight: 2,
+        override_weight: null,
+        effective_weight: 2,
+      },
+    ]);
+
+    render(<RoutingTab />);
+
+    const input = await screen.findByLabelText('Runtime weight for gpt-4o-mini:remote');
+    const saveButton = screen.getByRole('button', {
+      name: 'Save gpt-4o-mini:remote weight',
+    });
+
+    fireEvent.change(input, { target: { value: '' } });
+
+    expect(saveButton).toBeDisabled();
+  });
 });

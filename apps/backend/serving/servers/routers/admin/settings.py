@@ -22,6 +22,13 @@ from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
 
+ROUTEWISE_SETTINGS_KEYS = {
+    "routewise_decision_rule",
+    "routewise_daily_quota",
+    "routewise_latency_slo_sec",
+    "routewise_latency_min_samples",
+}
+
 
 def _require_runtime_settings(rt: RuntimeSettings | None) -> RuntimeSettings:
     """Return the singleton or raise 503 if the app hasn't initialized it yet."""
@@ -73,6 +80,8 @@ async def update_runtime_setting_endpoint(
 
     entry = RUNTIME_SETTINGS_REGISTRY.get(key)
     if entry is None:
+        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+    if key in ROUTEWISE_SETTINGS_KEYS:
         raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
 
     expected_type = entry["type"]

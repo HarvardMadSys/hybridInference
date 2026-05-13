@@ -259,4 +259,31 @@ describe('RoutewiseTab', () => {
     fireEvent.change(input, { target: { value: '3.5' } });
     expect(saveButton).toBeEnabled();
   });
+
+  it('keeps save disabled when a routewise runtime weight input is cleared', async () => {
+    vi.mocked(listRouteWeights).mockResolvedValue([
+      {
+        model_id: 'routewise-model',
+        strategy: 'routewise',
+        endpoint_id: 'routewise-model:remote',
+        provider: 'remote',
+        base_url: 'https://routewise.example.test',
+        yaml_weight: 3,
+        override_weight: null,
+        effective_weight: 3,
+      },
+    ]);
+    vi.mocked(listRoutewiseSettings).mockResolvedValue({ settings: [] });
+
+    render(<RoutewiseTab />);
+
+    const input = await screen.findByLabelText('Runtime weight for routewise-model:remote');
+    const saveButton = screen.getByRole('button', {
+      name: 'Save routewise-model:remote weight',
+    });
+
+    fireEvent.change(input, { target: { value: '' } });
+
+    expect(saveButton).toBeDisabled();
+  });
 });

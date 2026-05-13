@@ -120,6 +120,14 @@ class ModelRouterRegistry:
         """Return ``{model_id: router_class_name}`` for every cached entry."""
         return {mid: type(r).__name__ for mid, r in self._cache.items()}
 
+    def cached_routers(self) -> list[BaseRouter]:
+        """Return cached router instances."""
+        return list(self._cache.values())
+
+    def configured_model_ids(self) -> list[str]:
+        """Return model ids known to the registry config."""
+        return list(self._configs.keys())
+
     def managed_routers(self) -> list[ManagedRouter]:
         """Return unique cached routers with async lifecycle hooks."""
         seen_ids: set[int] = set()

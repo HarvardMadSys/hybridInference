@@ -41,12 +41,17 @@ def _require_runtime_settings(rt: RuntimeSettings | None) -> RuntimeSettings:
 
 
 def _serialize_existing_value(raw: str | None, expected_type: str) -> Any:
+    if raw is None:
+        return None
     if expected_type == "bool":
         return raw.lower() in ("true", "1", "yes") if isinstance(raw, str) else raw
-    if expected_type == "int":
-        return int(raw) if raw is not None else None
-    if expected_type == "float":
-        return float(raw) if raw is not None else None
+    try:
+        if expected_type == "int":
+            return int(raw)
+        if expected_type == "float":
+            return float(raw)
+    except (TypeError, ValueError):
+        return raw
     return raw
 
 
@@ -57,12 +62,20 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
     if registry is None:
         return
 
+    for key in ROUTEWISE_KEYS:
+        rt.invalidate_key(key)
+
     decision_rule = await rt.get_str("routewise_decision_rule")
     daily_quota = await rt.get_int("routewise_daily_quota")
     latency_slo_sec = await rt.get_float("routewise_latency_slo_sec")
     latency_min_samples = await rt.get_int("routewise_latency_min_samples")
 
-    for router in registry._cache.values():
+    for model_id in registry.configured_model_ids():
+        if registry.get_router_name(model_id) != "routewise":
+            continue
+        registry.get_router(model_id)
+
+    for router in registry.cached_routers():
         if isinstance(router, RouteWiseRouter):
             router.apply_runtime_overrides(
                 decision_rule=decision_rule,
@@ -164,7 +177,6 @@ async def update_routewise_setting_endpoint(
         old_value = getattr(get_settings(), key, entry["default"])
 
     await op_store.set_setting(key, str(value), expected_type, admin_id)
-    rt.invalidate_key(key)
     await _refresh_live_routewise_routers(request, rt)
 
     ip = get_client_ip(request)

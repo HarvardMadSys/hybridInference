@@ -11,6 +11,9 @@ function formatWeight(value: number) {
 }
 
 function parseDraftWeight(value: string) {
+  if (value.trim() === '') {
+    return null;
+  }
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) {
     return null;
