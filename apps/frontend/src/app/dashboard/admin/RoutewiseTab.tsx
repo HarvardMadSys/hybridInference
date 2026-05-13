@@ -26,6 +26,17 @@ function displayKey(setting: RoutewiseSettingItem) {
   return setting.key;
 }
 
+function validateSettingDraft(setting: RoutewiseSettingItem, draft: string) {
+  if (setting.value_type === 'int' || setting.value_type === 'float') {
+    return validateNumericSettingInput(draft, {
+      min: setting.min,
+      max: setting.max,
+      integer: setting.value_type === 'int',
+    });
+  }
+  return { ok: true as const, value: draft };
+}
+
 export function RoutewiseTab() {
   const [routes, setRoutes] = useState<RouteWeight[]>([]);
   const [routewiseSettings, setRoutewiseSettings] = useState<RoutewiseSettingItem[]>([]);
@@ -202,15 +213,7 @@ export function RoutewiseTab() {
                 const isSaving = savingSettingKey === setting.key;
                 const isDecisionRule =
                   setting.key === 'routewise_decision_rule' || setting.key === 'decision_rule';
-                const isNumericSetting =
-                  setting.value_type === 'int' || setting.value_type === 'float';
-                const validated = isNumericSetting
-                  ? validateNumericSettingInput(draft, {
-                    min: setting.min,
-                    max: setting.max,
-                    integer: setting.value_type === 'int',
-                  })
-                  : { ok: true as const, value: draft };
+                const validated = validateSettingDraft(setting, draft);
                 const isDirty =
                   isDecisionRule || validated.ok ? draft !== String(setting.value ?? '') : false;
 
