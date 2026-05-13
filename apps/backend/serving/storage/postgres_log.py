@@ -7,7 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
-from serving.storage.utils import calculate_cost
+from serving.storage.utils import calculate_cost, json_safe
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
@@ -190,14 +190,14 @@ class PostgresLogStore(LogStore):
         if should_store_full:
             prompt_str = json.dumps(prompt) if isinstance(prompt, list) else str(prompt)
             response_str = (
-                json.dumps(response)
+                json.dumps(json_safe(response))
                 if isinstance(response, dict)
                 else str(response)
                 if response is not None
                 else None
             )
             request_payload_str = (
-                json.dumps(request_payload) if request_payload is not None else None
+                json.dumps(json_safe(request_payload)) if request_payload is not None else None
             )
         else:
             prompt_str = None
@@ -255,8 +255,10 @@ class PostgresLogStore(LogStore):
                 error,
                 (metadata or {}).get("user_id"),
                 (metadata or {}).get("session_id"),
-                json.dumps(metadata) if metadata else None,
-                json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
+                json.dumps(json_safe(metadata)) if metadata else None,
+                json.dumps(json_safe((params or {}).get("tools")))
+                if (params or {}).get("tools")
+                else None,
                 upstream_cost_usd,
             )
 
