@@ -235,6 +235,37 @@ class TestRouteWiseRouterScaffold:
 
         assert selected is backup
 
+    def test_runtime_positive_weight_override_enables_initially_disabled_adapter(self):
+        """RouteWise can re-enable adapters that started with zero YAML weight."""
+        disabled_cheaper = _make_adapter(
+            model_id="minimax-fast",
+            provider="minimax",
+            subscription_type="api",
+            prompt_price="0.001",
+            completion_price="0.001",
+            endpoint_id="minimax-fast:minimax-api",
+        )
+        active_expensive = _make_adapter(
+            model_id="minimax-fast",
+            provider="openrouter",
+            subscription_type="api",
+            prompt_price="1.0",
+            completion_price="1.0",
+            endpoint_id="minimax-fast:openrouter-api",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("minimax-fast", [(disabled_cheaper, 0.0), (active_expensive, 1.0)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        fr.overrides["minimax-fast"] = {"minimax-fast:minimax-api": 1.0}
+
+        selected = router._select_adapter(
+            "minimax-fast",
+            {"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+        assert selected is disabled_cheaper
+
     def test_unregistered_model_raises(self):
         """Requesting an unknown model raises ValueError."""
         fr = _FakeFixedRouter()
