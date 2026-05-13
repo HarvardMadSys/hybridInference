@@ -297,7 +297,7 @@ class RouteWiseRouter(BaseRouter):
         """Walk every route in FixedRouter and classify adapters."""
         for model_id, route_cfg in self.fixed_router.routes.items():
             entries: list[tuple[Any, float, SubscriptionType]] = []
-            for adapter, weight in route_cfg.adapters:
+            for adapter, weight in self._effective_fixed_entries(model_id, route_cfg):
                 if weight <= 0:
                     continue  # Respect FixedRouter's disabled-route convention
                 metadata = getattr(adapter.config, "route_metadata", None)
@@ -318,6 +318,33 @@ class RouteWiseRouter(BaseRouter):
                     sub_type = SubscriptionType.API
                 entries.append((adapter, weight, sub_type))
             self.classified[model_id] = entries
+
+    def _effective_fixed_entries(self, model_id: str, route_cfg: Any) -> list[tuple[Any, float]]:
+        """Return FixedRouter route entries with live admin weight overrides applied."""
+        get_effective = getattr(self.fixed_router, "_get_effective_adapters", None)
+        if get_effective is not None:
+            return list(get_effective(model_id, route_cfg))
+        return list(route_cfg.adapters)
+
+    def _effective_classified_entries(
+        self, model_id: str
+    ) -> list[tuple[Any, float, SubscriptionType]]:
+        """Return currently enabled RouteWise entries after live weight overrides."""
+        route_cfg = self.fixed_router.routes.get(model_id)
+        if route_cfg is None:
+            return self.classified.get(model_id, [])
+
+        sub_by_adapter = {
+            id(adapter): sub for adapter, _weight, sub in self.classified.get(model_id, [])
+        }
+        entries: list[tuple[Any, float, SubscriptionType]] = []
+        for adapter, weight in self._effective_fixed_entries(model_id, route_cfg):
+            if weight <= 0:
+                continue
+            sub_type = sub_by_adapter.get(id(adapter))
+            if sub_type is not None:
+                entries.append((adapter, weight, sub_type))
+        return entries
 
     def _build_adapter_sub_type_map(self) -> None:
         """Build reverse lookup from ``id(adapter)`` to ``SubscriptionType``.
@@ -359,7 +386,8 @@ class RouteWiseRouter(BaseRouter):
         Prices in ``models.yaml`` are per-1M-token; we store them as
         per-token for direct multiplication in value estimation.
         """
-        for model_id, entries in self.classified.items():
+        for model_id in self.classified:
+            entries = self._effective_classified_entries(model_id)
             api_list: list[tuple[Any, float, float]] = []
             for adapter, _w, sub in entries:
                 if sub is not SubscriptionType.API:
@@ -430,7 +458,7 @@ class RouteWiseRouter(BaseRouter):
         Returns:
             Tuple of (selected adapter, estimated cost).
         """
-        api_list = self._api_adapter_prices.get(model_id, [])
+        api_list = self._effective_api_prices(model_id)
         if len(api_list) <= 1:
             return self._cheapest_api_for_request(model_id, prompt_tokens, predicted_output)
 
@@ -497,7 +525,7 @@ class RouteWiseRouter(BaseRouter):
         """Compute finite-cost provider candidates across all subscription categories."""
         candidates: list[_ProviderCandidate] = []
         theta_q = self.quota_mgr.get_shadow_price()
-        for adapter, _weight, sub_type in self.classified.get(model_id, []):
+        for adapter, _weight, sub_type in self._effective_classified_entries(model_id):
             endpoint_id = adapter.config.endpoint_id or adapter.config.id
             effective_cost = float("inf")
             if sub_type is SubscriptionType.API:
@@ -524,6 +552,24 @@ class RouteWiseRouter(BaseRouter):
                     )
                 )
         return candidates
+
+    def _effective_api_prices(self, model_id: str) -> list[tuple[Any, float, float]]:
+        """Return currently enabled API adapter prices for a model."""
+        api_prices = {
+            id(adapter): (p_in, p_out)
+            for adapter, p_in, p_out in self._api_adapter_prices.get(model_id, [])
+        }
+        prices: list[tuple[Any, float, float]] = []
+        for adapter, _weight, sub_type in self._effective_classified_entries(model_id):
+            if sub_type is not SubscriptionType.API:
+                continue
+            p_in, p_out = api_prices.get(id(adapter), (None, None))
+            if p_in is None or p_out is None:
+                pricing = adapter.config.pricing
+                p_in = float(pricing.get("prompt", "0")) / 1_000_000.0
+                p_out = float(pricing.get("completion", "0")) / 1_000_000.0
+            prices.append((adapter, p_in, p_out))
+        return prices
 
     def _commit_candidate_resource(self, candidate: _ProviderCandidate) -> bool:
         """Commit selected quota/concurrency resources after final selection."""
@@ -1035,7 +1081,7 @@ class RouteWiseRouter(BaseRouter):
             Tuple of (cheapest adapter, estimated cost).  If no S_A adapters
             exist, returns ``(None, inf)``.
         """
-        api_list = self._api_adapter_prices.get(model_id, [])
+        api_list = self._effective_api_prices(model_id)
         if not api_list:
             return None, float("inf")
 
@@ -1118,8 +1164,8 @@ class RouteWiseRouter(BaseRouter):
         Returns:
             Selected adapter, or None if no eligible adapter exists.
         """
-        entries = self.classified.get(model_id)
-        if entries is None:
+        entries = self._effective_classified_entries(model_id)
+        if model_id not in self.classified:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
 
         # -- Prompt tokens ------------------------------------------------
@@ -1472,7 +1518,7 @@ class RouteWiseRouter(BaseRouter):
           ``_execute_adapter`` / ``_execute_stream_adapter``, so the
           slot acquire/release lifecycle cannot be guaranteed.
         """
-        entries = self.classified.get(model_id, [])
+        entries = self._effective_classified_entries(model_id)
         return [a for a, _w, s in entries if a is not failed_adapter and s is SubscriptionType.API]
 
     def record_observation(self, obs: RoutingObservation) -> None:

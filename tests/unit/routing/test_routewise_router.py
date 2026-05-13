@@ -68,6 +68,8 @@ def _make_adapter(
 @dataclass
 class _FakeRouteConfig:
     adapters: list[tuple[Any, float]]
+    raw_adapters: list[tuple[Any, float, str]] | None = None
+    canonical_model_id: str | None = None
 
 
 class _FakeFixedRouter:
@@ -75,9 +77,29 @@ class _FakeFixedRouter:
 
     def __init__(self) -> None:
         self.routes: dict[str, _FakeRouteConfig] = {}
+        self.overrides: dict[str, dict[str, float]] = {}
 
     def add(self, model_id: str, adapters_with_weights: list[tuple[Any, float]]) -> None:
-        self.routes[model_id] = _FakeRouteConfig(adapters=adapters_with_weights)
+        self.routes[model_id] = _FakeRouteConfig(
+            adapters=adapters_with_weights,
+            raw_adapters=[
+                (adapter, weight, adapter.config.endpoint_id)
+                for adapter, weight in adapters_with_weights
+            ],
+            canonical_model_id=model_id,
+        )
+
+    def _get_effective_adapters(
+        self,
+        model_id: str,
+        route: _FakeRouteConfig,
+    ) -> list[tuple[Any, float]]:
+        overrides = self.overrides.get(route.canonical_model_id or model_id, {})
+        assert route.raw_adapters is not None
+        return [
+            (adapter, float(overrides.get(endpoint_id, weight)))
+            for adapter, weight, endpoint_id in route.raw_adapters
+        ]
 
 
 def _make_router_with_quota_and_api(
@@ -181,6 +203,37 @@ class TestRouteWiseRouterScaffold:
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         selected = router._select_adapter("test-model", {})
         assert selected is adapter
+
+    def test_runtime_zero_weight_override_excludes_api_adapter(self):
+        """Regression: RouteWise must honor admin dashboard zero-weight overrides."""
+        minimax = _make_adapter(
+            model_id="minimax-fast",
+            provider="minimax",
+            subscription_type="api",
+            prompt_price="0.001",
+            completion_price="0.001",
+            endpoint_id="minimax-fast:minimax-api",
+        )
+        backup = _make_adapter(
+            model_id="minimax-fast",
+            provider="openrouter",
+            subscription_type="api",
+            prompt_price="1.0",
+            completion_price="1.0",
+            endpoint_id="minimax-fast:openrouter-api",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("minimax-fast", [(minimax, 1.0), (backup, 1.0)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        fr.overrides["minimax-fast"] = {"minimax-fast:minimax-api": 0.0}
+
+        selected = router._select_adapter(
+            "minimax-fast",
+            {"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+        assert selected is backup
 
     def test_unregistered_model_raises(self):
         """Requesting an unknown model raises ValueError."""
