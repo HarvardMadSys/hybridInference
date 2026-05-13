@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -35,9 +35,22 @@ vi.mock('@/lib/api/admin', async () => {
       override_required_role: 'internal',
       effective_required_role: 'internal',
     })),
+    listRoutewiseSettings: vi.fn(async () => ({
+      settings: [
+        {
+          key: 'decision_rule',
+          value: 'pd',
+          value_type: 'str',
+          default_value: 'pd',
+          description: 'Decision rule used by Routewise.',
+        },
+      ],
+    })),
+    updateRoutewiseSetting: vi.fn(),
     listRouteWeights: vi.fn(async () => [
       {
         model_id: 'gpt-4o-mini',
+        strategy: 'fixed',
         endpoint_id: 'gpt-4o-mini:remote',
         provider: 'remote',
         base_url: 'https://api.example.test',
@@ -140,6 +153,88 @@ describe('SettingsTab model visibility', () => {
     expect(await screen.findByText('Routing Weights')).toBeInTheDocument();
   });
 
+  it('renders and selects the routewise subtab', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab />
+      </QueryClientProvider>,
+    );
+
+    const routewiseTab = await screen.findByRole('tab', { name: 'Routewise' });
+    expect(routewiseTab).toHaveAttribute('aria-selected', 'false');
+
+    fireEvent.click(routewiseTab);
+
+    expect(routewiseTab).toHaveAttribute('aria-selected', 'true');
+    expect(replaceMock).toHaveBeenCalledWith('/dashboard/admin/settings?tab=routewise', {
+      scroll: false,
+    });
+    expect(
+      await screen.findByRole('heading', { level: 2, name: 'Routewise Settings' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders a server-provided routewise subtab without reading window location', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab initialSubtab="routewise" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole('tab', { name: 'Routewise' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText('Routewise Settings')).toBeInTheDocument();
+  });
+
+  it('resyncs the selected subtab when initialSubtab changes after mount', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab initialSubtab="general" />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('tab', { name: 'General' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByRole('tabpanel', { name: 'General' })).toBeInTheDocument();
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <SettingsTab initialSubtab="routewise" />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'Routewise' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    const routewisePanel = screen.getByRole('tabpanel', { name: 'Routewise' });
+    expect(routewisePanel).toHaveAttribute('id', 'admin-settings-routewise-panel');
+    expect(within(routewisePanel).getByRole('heading', { level: 2, name: 'Routewise Settings' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'false');
+  });
+
   it('links tabs to accessible panels', async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -168,6 +263,15 @@ describe('SettingsTab model visibility', () => {
     expect(screen.getByRole('tabpanel', { name: 'Routing' })).toHaveAttribute(
       'id',
       'admin-settings-routing-panel',
+    );
+
+    const routewiseTab = screen.getByRole('tab', { name: 'Routewise' });
+    expect(routewiseTab).toHaveAttribute('aria-controls', 'admin-settings-routewise-panel');
+    fireEvent.click(routewiseTab);
+
+    expect(screen.getByRole('tabpanel', { name: 'Routewise' })).toHaveAttribute(
+      'id',
+      'admin-settings-routewise-panel',
     );
   });
 });

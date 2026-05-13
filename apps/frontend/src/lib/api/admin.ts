@@ -947,6 +947,7 @@ export async function updateModelVisibility(
 
 export interface RouteWeight {
   model_id: string;
+  strategy: string;
   endpoint_id: string;
   provider: string;
   base_url: string | null;
@@ -958,6 +959,22 @@ export interface RouteWeight {
 export interface ListRouteWeightsResponse {
   model_id?: string;
   routes: RouteWeight[];
+}
+
+export type RoutewiseSettingValue = string | number | boolean | null;
+
+export interface RoutewiseSettingItem {
+  key: string;
+  value: RoutewiseSettingValue;
+  value_type: string;
+  default_value: RoutewiseSettingValue;
+  description: string;
+  min?: number | null;
+  max?: number | null;
+}
+
+export interface ListRoutewiseSettingsResponse {
+  settings: RoutewiseSettingItem[];
 }
 
 export async function listRouteWeights(modelId?: string): Promise<RouteWeight[]> {
@@ -993,6 +1010,23 @@ export async function clearRouteWeight(modelId: string, endpointId: string): Pro
     { method: 'DELETE' },
   );
   return jsonOrThrow<RouteWeight>(resp);
+}
+
+export async function listRoutewiseSettings(): Promise<ListRoutewiseSettingsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/routewise/settings');
+  return jsonOrThrow<ListRoutewiseSettingsResponse>(resp);
+}
+
+export async function updateRoutewiseSetting(
+  key: string,
+  value: RoutewiseSettingValue,
+): Promise<RoutewiseSettingItem> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/routewise/settings/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  });
+  return jsonOrThrow<RoutewiseSettingItem>(resp);
 }
 
 // ========================================

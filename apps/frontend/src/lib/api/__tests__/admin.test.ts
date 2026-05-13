@@ -3,9 +3,11 @@ import {
   applyRoleQuota,
   clearRouteWeight,
   listRouteWeights,
+  listRoutewiseSettings,
   listModelVisibility,
   previewRoleQuotaApply,
   setRouteWeight,
+  updateRoutewiseSetting,
   updateModelVisibility,
 } from '../admin';
 import { setAccessToken } from '../client';
@@ -155,6 +157,7 @@ describe('route weight client', () => {
           routes: [
             {
               model_id: 'gpt-4o-mini',
+              strategy: 'routewise',
               endpoint_id: 'gpt-4o-mini:local',
               provider: 'local',
               base_url: 'http://localhost:8000',
@@ -170,7 +173,11 @@ describe('route weight client', () => {
 
     const out = await listRouteWeights('gpt-4o-mini');
 
-    expect(out[0]).toMatchObject({ endpoint_id: 'gpt-4o-mini:local', effective_weight: 1 });
+    expect(out[0]).toMatchObject({
+      endpoint_id: 'gpt-4o-mini:local',
+      strategy: 'routewise',
+      effective_weight: 1,
+    });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routing/weights/gpt-4o-mini');
     expect(init.headers).toBeInstanceOf(Headers);
@@ -182,6 +189,7 @@ describe('route weight client', () => {
       new Response(
         JSON.stringify({
           model_id: 'gpt-4o-mini',
+          strategy: 'routewise',
           endpoint_id: 'gpt-4o-mini:remote',
           provider: 'remote',
           base_url: 'https://api.example.test',
@@ -208,6 +216,7 @@ describe('route weight client', () => {
       new Response(
         JSON.stringify({
           model_id: 'gpt-4o-mini',
+          strategy: 'routewise',
           endpoint_id: 'gpt-4o-mini:remote',
           provider: 'remote',
           base_url: 'https://api.example.test',
@@ -225,5 +234,72 @@ describe('route weight client', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routing/weights/gpt-4o-mini/gpt-4o-mini%3Aremote');
     expect(init.method).toBe('DELETE');
+  });
+});
+
+describe('routewise settings client', () => {
+  it('listRoutewiseSettings hits routewise settings endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          settings: [
+            {
+              key: 'routewise_daily_quota',
+              value: 7000,
+              value_type: 'int',
+              default_value: 5000,
+              description: 'Daily quota for Routewise',
+              min: 1,
+              max: 10000,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await listRoutewiseSettings();
+
+    expect(out.settings[0]).toMatchObject({
+      key: 'routewise_daily_quota',
+      value: 7000,
+      value_type: 'int',
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routewise/settings');
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+  });
+
+  it('updateRoutewiseSetting PATCHes the routewise setting endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          key: 'routewise_latency_min_samples',
+          value: 12,
+          value_type: 'int',
+          default_value: 10,
+          description: 'Minimum samples for latency decisions',
+          min: 1,
+          max: 100,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await updateRoutewiseSetting('routewise_latency_min_samples', 12);
+
+    expect(out).toMatchObject({
+      key: 'routewise_latency_min_samples',
+      value: 12,
+      value_type: 'int',
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routewise/settings/routewise_latency_min_samples');
+    expect(init.method).toBe('PATCH');
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+    expect(JSON.parse(init.body as string)).toEqual({ value: 12 });
   });
 });

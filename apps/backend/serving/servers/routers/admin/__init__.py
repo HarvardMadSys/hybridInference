@@ -19,6 +19,7 @@ from serving.servers.routers.admin import (
     provider_keys,
     providers,
     quota,
+    routewise,
     routing_weights,
     settings,
     signup_domains,
@@ -38,6 +39,7 @@ router.include_router(model_visibility.router)
 router.include_router(provider_keys.router)
 router.include_router(providers.router)
 router.include_router(quota.router)
+router.include_router(routewise.router)
 router.include_router(routing_weights.router)
 router.include_router(settings.router)
 router.include_router(signup_domains.router)

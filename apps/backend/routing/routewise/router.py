@@ -254,6 +254,29 @@ class RouteWiseRouter(BaseRouter):
         self._validate_api_baseline()
         self._init_latency_profiles()
 
+    def apply_runtime_overrides(
+        self,
+        *,
+        decision_rule: str,
+        daily_quota: int,
+        latency_slo_sec: float,
+        latency_min_samples: int,
+    ) -> None:
+        """Apply live RouteWise runtime settings to this router instance.
+
+        Only the curated runtime-editable fields are updated here. Helpers that
+        snapshot those values at construction time are rebuilt so subsequent
+        requests observe the new settings without reconstructing the router.
+        """
+        self.config.decision_rule = decision_rule
+        self.config.daily_quota = daily_quota
+        self.config.latency_slo_sec = latency_slo_sec
+        self.config.latency_min_samples = latency_min_samples
+        previous_quota_mgr = self.quota_mgr
+        self.quota_mgr = QuotaManager(self.config)
+        self.quota_mgr._used_today = previous_quota_mgr._used_today
+        self.quota_mgr._last_reset_date = previous_quota_mgr._last_reset_date
+
     # ------------------------------------------------------------------
     # ProviderEventSink conformance
     # ------------------------------------------------------------------

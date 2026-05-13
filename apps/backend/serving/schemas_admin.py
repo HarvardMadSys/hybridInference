@@ -686,6 +686,29 @@ class UpdateSettingRequest(BaseModel):
     value: Any
 
 
+class RoutewiseSettingItem(BaseModel):
+    """A curated Routewise runtime setting with current value and metadata."""
+
+    key: Literal[
+        "routewise_decision_rule",
+        "routewise_daily_quota",
+        "routewise_latency_slo_sec",
+        "routewise_latency_min_samples",
+    ]
+    value: Any
+    value_type: Literal["str", "int", "float"]
+    default_value: Any
+    description: str
+    min: int | float | None = None
+    max: int | float | None = None
+
+
+class ListRoutewiseSettingsResponse(BaseModel):
+    """Response payload for listing Routewise runtime settings."""
+
+    settings: list[RoutewiseSettingItem]
+
+
 class ModelVisibilityItem(BaseModel):
     """Current visibility requirements for a canonical model."""
 
@@ -711,6 +734,7 @@ class RouteWeightItem(BaseModel):
     """Current route weight state for one model endpoint."""
 
     model_id: str
+    strategy: str
     endpoint_id: str
     provider: str
     base_url: str | None = None
@@ -775,6 +799,7 @@ __all__ = [
     "ListAuditLogResponse",
     "ListModelVisibilityResponse",
     "ListRouteWeightsResponse",
+    "ListRoutewiseSettingsResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
@@ -788,6 +813,7 @@ __all__ = [
     "ResumeUserResponse",
     "RevokeAPIKeyResponse",
     "RouteWeightItem",
+    "RoutewiseSettingItem",
     "RuntimeSettingItem",
     "SparklineBucket",
     "StatusCounts",

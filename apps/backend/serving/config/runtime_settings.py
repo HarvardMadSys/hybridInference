@@ -129,6 +129,29 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "Default daily USD spend quota seeded onto an admin user's active API key at signup."
         ),
     },
+    "routewise_decision_rule": {
+        "type": "str",
+        "default": "pd",
+        "description": "Decision rule for Routewise routing (pd or lapd)",
+    },
+    "routewise_daily_quota": {
+        "type": "int",
+        "default": 5000,
+        "min": 1,
+        "description": "Daily request quota for Routewise S_Q routing",
+    },
+    "routewise_latency_slo_sec": {
+        "type": "float",
+        "default": 3.0,
+        "min": 0.1,
+        "description": "Latency SLO in seconds for Routewise LP decisions",
+    },
+    "routewise_latency_min_samples": {
+        "type": "int",
+        "default": 10,
+        "min": 1,
+        "description": "Minimum samples before Routewise latency LP warmup ends",
+    },
 }
 
 _SENTINEL = object()

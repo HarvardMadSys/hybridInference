@@ -110,6 +110,59 @@ def _make_router_with_quota_and_api(
     return router, quota_adapter, api_adapter
 
 
+def test_apply_runtime_overrides_rebuilds_config_dependent_helpers():
+    """Non-quota runtime refreshes preserve quota usage while rebuilding helpers."""
+    router, _quota_adapter, _api_adapter = _make_router_with_quota_and_api(
+        config=RouteWiseConfig(
+            decision_rule="pd",
+            daily_quota=5000,
+            latency_slo_sec=3.0,
+            latency_min_samples=10,
+        )
+    )
+    router.quota_mgr.consume()
+    router.quota_mgr.consume()
+    original_quota_mgr = router.quota_mgr
+
+    router.apply_runtime_overrides(
+        decision_rule="lapd",
+        daily_quota=1234,
+        latency_slo_sec=1.25,
+        latency_min_samples=7,
+    )
+
+    assert router.config.decision_rule == "lapd"
+    assert router.config.daily_quota == 1234
+    assert router.config.latency_slo_sec == 1.25
+    assert router.config.latency_min_samples == 7
+    assert router.quota_mgr is not original_quota_mgr
+    assert router.quota_mgr.remaining == 1232
+
+
+def test_apply_runtime_overrides_recomputes_remaining_from_new_daily_quota():
+    """Changing daily_quota preserves used_today instead of refilling quota."""
+    router, _quota_adapter, _api_adapter = _make_router_with_quota_and_api(
+        config=RouteWiseConfig(
+            decision_rule="pd",
+            daily_quota=5000,
+            latency_slo_sec=3.0,
+            latency_min_samples=10,
+        )
+    )
+    router.quota_mgr.consume()
+    router.quota_mgr.consume()
+    router.quota_mgr.consume()
+
+    router.apply_runtime_overrides(
+        decision_rule="pd",
+        daily_quota=2000,
+        latency_slo_sec=3.0,
+        latency_min_samples=10,
+    )
+
+    assert router.quota_mgr.remaining == 1997
+
+
 # ---------------------------------------------------------------------------
 # Scaffold tests (retained from PR-2)
 # ---------------------------------------------------------------------------
