@@ -17,6 +17,13 @@ from serving.servers.deps import get_operational_store, get_services, verify_adm
 router = APIRouter(prefix="/admin")
 
 
+def _strategy_for_model(services, model_id: str) -> str:
+    registry = getattr(services, "model_router_registry", None)
+    if registry is None:
+        return "fixed"
+    return registry.get_router_name(model_id)
+
+
 def _is_canonical_model(model_id: str, route) -> bool:
     return bool(route.adapters) and route.adapters[0][0].config.id == model_id
 
@@ -40,11 +47,16 @@ def _overrides_from_rows(rows) -> dict[str, float]:
 
 
 def _route_row(
-    model_id: str, adapter, yaml_weight: float, override_weight: float | None
+    model_id: str,
+    strategy: str,
+    adapter,
+    yaml_weight: float,
+    override_weight: float | None,
 ) -> RouteWeightItem:
     endpoint_id = _get_endpoint_id(adapter)
     return RouteWeightItem(
         model_id=model_id,
+        strategy=strategy,
         endpoint_id=endpoint_id,
         provider=adapter.config.provider,
         base_url=getattr(adapter.config, "base_url", None),
@@ -78,10 +90,14 @@ def _entry_for_endpoint(route, endpoint_id: str):
 
 
 def _build_routes_for_model(
-    model_id: str, route, overrides: dict[str, float]
+    services,
+    model_id: str,
+    route,
+    overrides: dict[str, float],
 ) -> list[RouteWeightItem]:
+    strategy = _strategy_for_model(services, model_id)
     return [
-        _route_row(model_id, adapter, yaml_weight, overrides.get(endpoint_id))
+        _route_row(model_id, strategy, adapter, yaml_weight, overrides.get(endpoint_id))
         for adapter, yaml_weight, endpoint_id in _raw_route_entries(route)
     ]
 
@@ -118,7 +134,7 @@ async def list_route_weights(
     overrides = await _overrides_for_model(op_store, model_id)
     return ListRouteWeightsResponse(
         model_id=model_id,
-        routes=_build_routes_for_model(model_id, route, overrides),
+        routes=_build_routes_for_model(services, model_id, route, overrides),
     )
 
 
@@ -144,7 +160,7 @@ async def list_all_route_weights(
         if not _is_canonical_model(model_id, route):
             continue
         all_rows.extend(
-            _build_routes_for_model(model_id, route, overrides_by_model.get(model_id, {}))
+            _build_routes_for_model(services, model_id, route, overrides_by_model.get(model_id, {}))
         )
     return ListAllRouteWeightsResponse(routes=all_rows)
 
@@ -189,7 +205,13 @@ async def set_route_weight(
             "new_override_weight": float(payload.weight),
         },
     )
-    return _route_row(model_id, adapter, yaml_weight, float(payload.weight))
+    return _route_row(
+        model_id,
+        _strategy_for_model(services, model_id),
+        adapter,
+        yaml_weight,
+        float(payload.weight),
+    )
 
 
 @router.delete("/routing/weights/{model_endpoint_path:path}", response_model=RouteWeightItem)
@@ -228,4 +250,10 @@ async def clear_route_weight(
             "old_override_weight": old_override,
         },
     )
-    return _route_row(model_id, adapter, yaml_weight, None)
+    return _route_row(
+        model_id,
+        _strategy_for_model(services, model_id),
+        adapter,
+        yaml_weight,
+        None,
+    )

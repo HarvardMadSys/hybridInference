@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
+from routing.model_router_registry import ModelRouterRegistry
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
@@ -51,11 +52,21 @@ async def admin_client(monkeypatch):
     disabled = _adapter("zero-model", "disabled", "zero-model:disabled")
     active = _adapter("zero-model", "active", "zero-model:active")
     router.register_route("zero-model", [(disabled, 0.0), (active, 1.0)])
+    model_router_registry = ModelRouterRegistry(
+        models_config={
+            "public-model": {"router": "routewise"},
+            "provider/model": {"router": "fixed"},
+            "zero-model": {"router": "fixed"},
+        },
+        default_router_name="fixed",
+    )
+    model_router_registry.bind_fixed_router(router)
 
     app = FastAPI()
     resolver = WeightOverrideResolver(op_store)
     app.state.services = AppServices(
         router=router,
+        model_router_registry=model_router_registry,
         operational_store=op_store,
         weight_override_resolver=resolver,
         db_logger=MagicMock(),
@@ -71,12 +82,12 @@ async def admin_client(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client, op_store, resolver
+        yield client, op_store, resolver, model_router_registry
 
 
 @pytest.mark.asyncio
 async def test_auth_required(admin_client):
-    client, _, _ = admin_client
+    client, _, _, _ = admin_client
 
     response = await client.get("/admin/routing/weights/public-model")
 
@@ -85,10 +96,13 @@ async def test_auth_required(admin_client):
 
 @pytest.mark.asyncio
 async def test_get_route_weights_returns_yaml_override_and_effective_weights(admin_client):
-    client, op_store, _ = admin_client
+    client, op_store, _, model_router_registry = admin_client
     op_store.list_weight_overrides_for_model.return_value = [
         {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.0}
     ]
+    model_router_registry.get_router = MagicMock(
+        side_effect=AssertionError("should not call get_router")
+    )
 
     response = await client.get(
         "/admin/routing/weights/public-model",
@@ -100,16 +114,18 @@ async def test_get_route_weights_returns_yaml_override_and_effective_weights(adm
     local = _row_by_endpoint(rows, "public-model:local")
     remote = _row_by_endpoint(rows, "public-model:remote")
     assert local["yaml_weight"] == 1.0
+    assert local["strategy"] == "routewise"
     assert local["override_weight"] is None
     assert local["effective_weight"] == 1.0
     assert remote["yaml_weight"] == 2.0
+    assert remote["strategy"] == "routewise"
     assert remote["override_weight"] == 4.0
     assert remote["effective_weight"] == 4.0
 
 
 @pytest.mark.asyncio
 async def test_get_all_route_weights_returns_canonical_models_only(admin_client):
-    client, op_store, _ = admin_client
+    client, op_store, _, _ = admin_client
     op_store.list_all_weight_overrides.return_value = [
         {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.0}
     ]
@@ -124,7 +140,10 @@ async def test_get_all_route_weights_returns_canonical_models_only(admin_client)
     rows = response.json()["routes"]
     model_ids = {row["model_id"] for row in rows}
     remote = _row_by_endpoint(rows, "public-model:remote")
+    slash = _row_by_endpoint(rows, "provider/model:remote")
     assert model_ids == {"public-model", "provider/model", "zero-model"}
+    assert remote["strategy"] == "routewise"
+    assert slash["strategy"] == "fixed"
     assert remote["override_weight"] == 4.0
     op_store.list_all_weight_overrides.assert_awaited_once_with()
     op_store.list_weight_overrides_for_model.assert_not_awaited()
@@ -132,9 +151,12 @@ async def test_get_all_route_weights_returns_canonical_models_only(admin_client)
 
 @pytest.mark.asyncio
 async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
-    client, op_store, resolver = admin_client
+    client, op_store, resolver, model_router_registry = admin_client
     await resolver.get_for_model("public-model")
     assert op_store.list_weight_overrides_for_model.await_count == 1
+    model_router_registry.get_router = MagicMock(
+        side_effect=AssertionError("should not call get_router")
+    )
 
     response = await client.put(
         "/admin/routing/weights/public-model/public-model:remote",
@@ -143,6 +165,7 @@ async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
     )
 
     assert response.status_code == 200
+    assert response.json()["strategy"] == "routewise"
     op_store.upsert_weight_override.assert_awaited_once_with(
         "public-model", "public-model:remote", 4.5, "127.0.0.1"
     )
@@ -154,7 +177,7 @@ async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
 
 @pytest.mark.asyncio
 async def test_put_rejects_negative_unknown_endpoint_and_all_zero(admin_client):
-    client, op_store, _ = admin_client
+    client, op_store, _, _ = admin_client
     headers = {"Authorization": "Bearer test-admin"}
 
     negative = await client.put(
@@ -192,7 +215,7 @@ async def test_put_rejects_negative_unknown_endpoint_and_all_zero(admin_client):
 
 @pytest.mark.asyncio
 async def test_unknown_model_and_alias_return_404(admin_client):
-    client, _, _ = admin_client
+    client, _, _, _ = admin_client
     headers = {"Authorization": "Bearer test-admin"}
 
     unknown = await client.get("/admin/routing/weights/unknown", headers=headers)
@@ -204,10 +227,13 @@ async def test_unknown_model_and_alias_return_404(admin_client):
 
 @pytest.mark.asyncio
 async def test_delete_route_weight_clears_override(admin_client):
-    client, op_store, _ = admin_client
+    client, op_store, _, model_router_registry = admin_client
     op_store.list_weight_overrides_for_model.return_value = [
         {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.0}
     ]
+    model_router_registry.get_router = MagicMock(
+        side_effect=AssertionError("should not call get_router")
+    )
 
     response = await client.delete(
         "/admin/routing/weights/public-model/public-model:remote",
@@ -218,13 +244,14 @@ async def test_delete_route_weight_clears_override(admin_client):
     op_store.delete_weight_override.assert_awaited_once_with("public-model", "public-model:remote")
     row = response.json()
     assert row["endpoint_id"] == "public-model:remote"
+    assert row["strategy"] == "routewise"
     assert row["override_weight"] is None
     assert row["effective_weight"] == 2.0
 
 
 @pytest.mark.asyncio
 async def test_delete_route_weight_rejects_all_zero_effective_weights(admin_client):
-    client, op_store, _ = admin_client
+    client, op_store, _, _ = admin_client
     op_store.list_weight_overrides_for_model.return_value = [
         {"model_id": "zero-model", "endpoint_id": "zero-model:disabled", "weight": 1.0},
         {"model_id": "zero-model", "endpoint_id": "zero-model:active", "weight": 0.0},
@@ -242,7 +269,7 @@ async def test_delete_route_weight_rejects_all_zero_effective_weights(admin_clie
 
 @pytest.mark.asyncio
 async def test_put_route_weight_supports_slash_model_and_endpoint_ids(admin_client):
-    client, op_store, _ = admin_client
+    client, op_store, _, _ = admin_client
 
     response = await client.put(
         "/admin/routing/weights/provider/model/provider/model:remote",

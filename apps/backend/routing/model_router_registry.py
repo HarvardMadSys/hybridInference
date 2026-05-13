@@ -75,8 +75,8 @@ class ModelRouterRegistry:
         cached = self._cache.get(model_id)
         if cached is not None:
             return cached
+        name = self.get_router_name(model_id)
         cfg = self._configs.get(model_id, {})
-        name = cfg.get("router") or self._default
         params = cfg.get("router_params") or {}
         logger.info(
             "router_initialized",
@@ -111,9 +111,22 @@ class ModelRouterRegistry:
         self._cache[model_id] = router
         return router
 
+    def get_router_name(self, model_id: str) -> str:
+        """Return the configured strategy name for ``model_id``."""
+        cfg = self._configs.get(model_id, {})
+        return str(cfg.get("router") or self._default)
+
     def registered_models(self) -> dict[str, str]:
         """Return ``{model_id: router_class_name}`` for every cached entry."""
         return {mid: type(r).__name__ for mid, r in self._cache.items()}
+
+    def cached_routers(self) -> list[BaseRouter]:
+        """Return cached router instances."""
+        return list(self._cache.values())
+
+    def configured_model_ids(self) -> list[str]:
+        """Return model ids known to the registry config."""
+        return list(self._configs.keys())
 
     def managed_routers(self) -> list[ManagedRouter]:
         """Return unique cached routers with async lifecycle hooks."""
