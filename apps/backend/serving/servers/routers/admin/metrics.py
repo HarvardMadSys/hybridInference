@@ -30,6 +30,7 @@ from serving.servers.routers.admin._common import (
     _build_histogram,
     _round_or_none,
 )
+from serving.storage.utils import coerce_json_object
 
 router = APIRouter(prefix="/admin")
 
@@ -638,7 +639,8 @@ async def admin_list_recent_requests(
                 l.metadata->>'x_forwarded_for' AS x_forwarded_for,
                 l.metadata->>'user_agent' AS user_agent,
                 l.metadata->>'session_id' AS session_id,
-                l.metadata->>'surface' AS request_surface
+                l.metadata->>'surface' AS request_surface,
+                l.metadata->'routewise' AS routewise
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
             {where_sql}
@@ -684,6 +686,7 @@ async def admin_list_recent_requests(
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
+            routewise=coerce_json_object(row.get("routewise")),
         )
         for row in rows
     ]

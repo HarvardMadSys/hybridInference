@@ -560,6 +560,7 @@ class AdminRecentRequestItem(BaseModel):
     total_tokens: int | None = None
     cost_usd: float | None = None
     error: str | None = None
+    routewise: dict[str, Any] | None = None
 
 
 class AdminRecentRequestsResponse(BaseModel):

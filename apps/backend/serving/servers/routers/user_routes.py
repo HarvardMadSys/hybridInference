@@ -54,6 +54,7 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.routers.models import _build_model_list_async
+from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -855,7 +856,8 @@ async def get_recent_requests(
                     status_code, latency_ms, ttft_ms, stream,
                     prompt_tokens, completion_tokens, reasoning_tokens,
                     cache_read_tokens, cache_write_tokens,
-                    total_tokens, cost_usd, error
+                    total_tokens, cost_usd, error,
+                    metadata->'routewise' AS routewise
                 FROM api_logs
                 WHERE {where_sql}
                 ORDER BY timestamp DESC
@@ -889,6 +891,7 @@ async def get_recent_requests(
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
+            routewise=coerce_json_object(row["routewise"]),
         )
         for row in rows
     ]

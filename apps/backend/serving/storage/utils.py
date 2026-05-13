@@ -6,6 +6,7 @@ without constructing storage clients.
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -21,6 +22,20 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, tuple):
         return [json_safe(v) for v in value]
     return value
+
+
+def coerce_json_object(value: Any) -> dict[str, Any] | None:
+    """Return a JSON object from decoded JSON/JSONB values, or None for non-objects."""
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
 
 
 def calculate_cost(
