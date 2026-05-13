@@ -246,6 +246,58 @@ async def test_postgres_log_store_accepts_routewise_metadata_with_nonfinite_valu
     assert row is not None
     assert row["user_id"] == "integration-user"
     assert row["metadata"]["routewise"]["selected_tier"] == "api"
+    assert row["metadata"]["routewise"]["gain_c"] is None
+    assert row["metadata"]["routewise"]["gain_q"] is None
+
+
+@pytest.mark.asyncio
+async def test_db_logger_accepts_routewise_metadata_with_nonfinite_values(
+    db_logger: DatabaseLogger,
+):
+    await db_logger.log_request(
+        request_id="req-db-logger-routewise-inf",
+        model_id="minimax-fast",
+        provider="minimax",
+        prompt=[{"role": "user", "content": "hi"}],
+        response={"message": "ok", "score": float("inf")},
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        latency_ms=123,
+        status_code=200,
+        params={"tools": [{"type": "function", "score": float("nan")}]},
+        metadata={
+            "user_id": "integration-user",
+            "routewise": {
+                "selected_tier": "api",
+                "v_t": 0.01,
+                "gain_c": float("-inf"),
+                "gain_q": float("-inf"),
+                "gain_a": 0.0,
+                "theta_q": None,
+            },
+        },
+        pricing={"prompt": "0.15", "completion": "1.25"},
+        request_payload={"threshold": float("inf")},
+    )
+
+    assert db_logger.pool is not None
+    async with db_logger.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT user_id, metadata, response, request_payload, tools
+            FROM api_logs WHERE request_id=$1
+            """,
+            "req-db-logger-routewise-inf",
+        )
+
+    assert row is not None
+    assert row["user_id"] == "integration-user"
+    assert row["metadata"]["routewise"]["selected_tier"] == "api"
+    assert row["metadata"]["routewise"]["gain_c"] is None
+    assert row["metadata"]["routewise"]["gain_q"] is None
+    assert row["response"] is not None
+    assert '"score": null' in row["response"]
+    assert row["request_payload"]["threshold"] is None
+    assert row["tools"][0]["score"] is None
 
 
 @pytest.mark.asyncio
