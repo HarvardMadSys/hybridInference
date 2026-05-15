@@ -355,9 +355,9 @@ class TestRecentRequests:
     async def test_recent_requests_filters_by_model(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
     ):
-        """Test model_id filtering uses correct SQL parameter binding."""
-        model_a = f"model-a-{test_user_with_key['id']}"
-        model_b = f"model-b-{test_user_with_key['id']}"
+        """Test model_id filtering supports case-insensitive partial matching."""
+        model_a = f"gpt-4o-mini-{test_user_with_key['id']}"
+        model_b = f"claude-sonnet-{test_user_with_key['id']}"
         request_id_a = f"req-recent-{test_user_with_key['id']}-a"
         request_id_b = f"req-recent-{test_user_with_key['id']}-b"
 
@@ -379,7 +379,7 @@ class TestRecentRequests:
             )
 
         response = await auth_app_client.get(
-            f"/user/recent-requests?model_id={model_a}",
+            "/user/recent-requests?model_id=4O-MINI",
             headers=auth_headers,
         )
 

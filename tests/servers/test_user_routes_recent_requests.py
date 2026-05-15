@@ -114,7 +114,7 @@ async def test_distinct_keys_cache_independently():
 
 @pytest.mark.asyncio
 async def test_count_query_filters_on_model_id_when_provided():
-    """When ``model_id`` is supplied the helper passes both bind params."""
+    """When ``model_id`` is supplied the helper uses case-insensitive partial matching."""
     conn = _make_conn(total=5)
 
     await _get_cached_user_request_count(conn, "user-1", "gpt-4o")
@@ -124,7 +124,7 @@ async def test_count_query_filters_on_model_id_when_provided():
     sql = args[0]
     bind_params = args[1:]
     assert "user_id = $1" in sql
-    assert "model_id = $2" in sql
+    assert "model_id ILIKE '%' || $2 || '%'" in sql
     assert bind_params == ("user-1", "gpt-4o")
 
 
