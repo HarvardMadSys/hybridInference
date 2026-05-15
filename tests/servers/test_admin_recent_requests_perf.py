@@ -184,7 +184,7 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
     async def _fake_fetch(query: str, *args: Any) -> list[Any]:
         assert "l.model_id ILIKE '%' || $2 || '%'" in query
         assert args[1] == "4O-MINI"
-        return [
+        candidate_rows = [
             {
                 "request_id": "req-match",
                 "user_id": "user-1",
@@ -243,6 +243,11 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
                 "request_surface": None,
                 "routewise": None,
             }
+        ]
+
+        query_term = str(args[1]).lower()
+        return [
+            row for row in candidate_rows if query_term in str(row["model_id"]).lower()
         ]
 
     conn = await logger.pool.acquire().__aenter__()
