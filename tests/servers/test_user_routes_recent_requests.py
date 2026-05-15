@@ -129,6 +129,22 @@ async def test_count_query_filters_on_model_id_when_provided():
 
 
 @pytest.mark.asyncio
+async def test_count_query_escapes_ilike_wildcards_in_model_id():
+    """Literal ``%`` and ``_`` in ``model_id`` are escaped before ILIKE matching."""
+    conn = _make_conn(total=5)
+
+    await _get_cached_user_request_count(conn, "user-1", r"gpt%_4\\o")
+
+    assert conn.fetchrow.await_count == 1
+    args, _kwargs = conn.fetchrow.call_args
+    sql = args[0]
+    bind_params = args[1:]
+    assert "user_id = $1" in sql
+    assert "model_id ILIKE '%' || $2 || '%' ESCAPE '\\'" in sql
+    assert bind_params == ("user-1", r"gpt\%\_4\\\\o")
+
+
+@pytest.mark.asyncio
 async def test_count_query_omits_model_id_when_none():
     """Without ``model_id`` only the user bind param is passed."""
     conn = _make_conn(total=5)

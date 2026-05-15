@@ -77,6 +77,11 @@ _RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES: int = 4096
 _RECENT_REQUESTS_COUNT_CACHE: OrderedDict[tuple[str, str | None], tuple[float, int]] = OrderedDict()
 
 
+def _escape_ilike_substring_term(term: str) -> str:
+    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
+    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
 def _build_user_recent_requests_filters(
     user_id: str, model_id: str | None
 ) -> tuple[str, list[Any]]:
@@ -88,8 +93,8 @@ def _build_user_recent_requests_filters(
     where_clauses = ["user_id = $1"]
     params: list[Any] = [user_id]
     if model_id:
-        params.append(model_id)
-        where_clauses.append(f"model_id ILIKE '%' || ${len(params)} || '%'")
+        params.append(_escape_ilike_substring_term(model_id))
+        where_clauses.append(f"model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
     return " AND ".join(where_clauses), params
 
 
