@@ -242,13 +242,11 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
                 "session_id": None,
                 "request_surface": None,
                 "routewise": None,
-            }
+            },
         ]
 
         query_term = str(args[1]).lower()
-        return [
-            row for row in candidate_rows if query_term in str(row["model_id"]).lower()
-        ]
+        return [row for row in candidate_rows if query_term in str(row["model_id"]).lower()]
 
     conn = await logger.pool.acquire().__aenter__()
     conn.fetch = AsyncMock(side_effect=_fake_fetch)
