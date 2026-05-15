@@ -552,6 +552,31 @@ async def test_patch_user_updates_disabled_models(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_patch_user_prunes_stale_disabled_models(admin_client):
+    """PATCH /admin/users/{id} tolerates stale legacy ids already in preferences."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        **_user_row(),
+        "preferences": {"disabled_models": ["old-retired-model"]},
+    }
+    op_store.get_user_preferences = AsyncMock(
+        return_value={"disabled_models": ["old-retired-model"]}
+    )
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"disabled_models": ["old-retired-model", "a-model"]},
+    )
+
+    assert response.status_code == 200
+    op_store.update_user_preferences.assert_awaited_once_with(
+        "u1",
+        {"disabled_models": ["a-model"]},
+    )
+
+
+@pytest.mark.asyncio
 async def test_patch_user_rejects_unknown_disabled_model(admin_client):
     """PATCH /admin/users/{id} rejects unknown disabled model ids."""
     client, op_store, _log_store, _log = admin_client

@@ -375,7 +375,6 @@ async def get_user_detail(
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
-    router_exec=Depends(get_router),
 ) -> UserDetailResponse:
     """Get detailed user info including usage analytics.
 
@@ -520,14 +519,22 @@ async def update_user(
             if getattr(adapter, "config", None) is not None
         }
         normalized_disabled_models = normalize_disabled_models(payload_dict["disabled_models"])
-        unknown_model_ids = sorted(set(normalized_disabled_models) - known_model_ids)
+        existing_disabled_models = get_disabled_models_from_preferences(
+            await op_store.get_user_preferences(user_id)
+        )
+        stale_disabled_models = set(existing_disabled_models) - known_model_ids
+        unknown_model_ids = sorted(
+            set(normalized_disabled_models) - known_model_ids - stale_disabled_models
+        )
         if unknown_model_ids:
             raise HTTPException(400, f"Unknown model id(s): {', '.join(unknown_model_ids)}")
         preferences = await op_store.get_user_preferences(user_id)
         preferences = dict(preferences) if isinstance(preferences, dict) else {}
-        preferences[DISABLED_MODELS_PREFERENCE_KEY] = normalized_disabled_models
+        preferences[DISABLED_MODELS_PREFERENCE_KEY] = [
+            model_id for model_id in normalized_disabled_models if model_id in known_model_ids
+        ]
         await op_store.update_user_preferences(user_id, preferences)
-        payload_dict["disabled_models"] = normalized_disabled_models
+        payload_dict["disabled_models"] = preferences[DISABLED_MODELS_PREFERENCE_KEY]
         updated.append("disabled_models")
 
     await log_admin_action(

@@ -25,6 +25,8 @@ def inner() -> MagicMock:
     store.get_auth_context_by_key_hash = AsyncMock()
     store.get_auth_context_lightweight = AsyncMock()
     store.get_user_by_id = AsyncMock()
+    store.get_user_preferences = AsyncMock(return_value={})
+    store.update_user_preferences = AsyncMock()
     store.revoke_key = AsyncMock()
     store.regenerate_key = AsyncMock(return_value="old-pfx")
     store.update_key = AsyncMock()
@@ -237,3 +239,35 @@ class TestUserStatusChangeInvalidation:
         assert inner.get_auth_context_by_key_hash.await_count == 1, (
             "auth cache was unexpectedly flushed for a non-auth field update"
         )
+
+
+class TestUserPreferencesInvalidation:
+    """Disabled-model preference writes must invalidate auth cache."""
+
+    async def test_update_user_preferences_clears_auth_caches(self, cached, inner):
+        key_hash = "key-for-disabled-model-update"
+        inner.get_auth_context_by_key_hash.return_value = {
+            "user_id": "u4",
+            "preferences": {},
+        }
+        inner.get_auth_context_lightweight.return_value = {
+            "user_id": "u4",
+            "email": "u4@example.com",
+            "role": "free",
+            "preferences": {},
+        }
+
+        await cached.get_auth_context_by_key_hash(key_hash)
+        await cached.get_auth_context_lightweight(key_hash)
+        assert inner.get_auth_context_by_key_hash.await_count == 1
+        assert inner.get_auth_context_lightweight.await_count == 1
+
+        await cached.update_user_preferences("u4", {"disabled_models": ["gpt-4o-mini"]})
+
+        inner.get_auth_context_by_key_hash.return_value = None
+        inner.get_auth_context_lightweight.return_value = None
+        await cached.get_auth_context_by_key_hash(key_hash)
+        await cached.get_auth_context_lightweight(key_hash)
+
+        assert inner.get_auth_context_by_key_hash.await_count == 2
+        assert inner.get_auth_context_lightweight.await_count == 2
