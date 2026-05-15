@@ -152,13 +152,18 @@ describe('model visibility client', () => {
 describe('admin user client', () => {
   it('updateUser PATCHes disabled_models in the request body', async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ user_id: 'user-1', updated_fields: ['disabled_models'], message: 'ok' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      new Response(
+        JSON.stringify({ user_id: 'user-1', updated_fields: ['disabled_models'], message: 'ok' }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
     );
 
-    const out = await updateUser('user-1', { disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'] });
+    const out = await updateUser('user-1', {
+      disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'],
+    });
 
     expect(out.updated_fields).toEqual(['disabled_models']);
     const [url, init] = fetchMock.mock.calls[0];

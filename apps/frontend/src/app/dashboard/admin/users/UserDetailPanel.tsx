@@ -115,12 +115,15 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
       )}
 
       {u.status === 'active' && availableModels.length > 0 && (
-        <div className="space-y-2 border-t border-gray-200 pt-4" data-testid="disabled-models-panel">
+        <div
+          className="space-y-2 border-t border-gray-200 pt-4"
+          data-testid="disabled-models-panel"
+        >
           <div>
             <div className="text-[11px] font-medium text-gray-500">Model access</div>
             <p className="mt-1 text-[12px] text-gray-500">
-              Disabled models stay hidden for this user even if their role would normally
-              allow them.
+              Disabled models stay hidden for this user even if their role would normally allow
+              them.
             </p>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
