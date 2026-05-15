@@ -114,6 +114,11 @@ _DECODE_MIN_WINDOW_MS = 2000
 _DECODE_MIN_TOKENS = 8
 
 
+def _escape_ilike_substring_term(term: str) -> str:
+    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
+    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
 def _decode_throughput_tps(
     stream: bool | None,
     latency_ms: int | None,
@@ -595,8 +600,10 @@ async def admin_list_recent_requests(
         params.append(user_id)
 
     if model_id:
-        where_clauses.append(f"l.model_id = ${len(params) + 1}")
-        params.append(model_id)
+        params.append(_escape_ilike_substring_term(model_id))
+        where_clauses.append(
+            f"l.model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'"
+        )
 
     if status_code is not None:
         where_clauses.append(f"l.status_code = ${len(params) + 1}")

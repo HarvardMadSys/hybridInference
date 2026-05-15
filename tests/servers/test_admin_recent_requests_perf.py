@@ -169,8 +169,8 @@ async def test_list_model_filter_uses_partial_match(admin_client_capture):
     count_query, count_args = calls["fetchrow"][0]
     select_query, select_args = calls["fetch"][0]
 
-    assert "l.model_id ILIKE '%' || $2 || '%'" in count_query
-    assert "l.model_id ILIKE '%' || $2 || '%'" in select_query
+    assert "l.model_id ILIKE '%' || $2 || '%' ESCAPE '\\'" in count_query
+    assert "l.model_id ILIKE '%' || $2 || '%' ESCAPE '\\'" in select_query
     assert count_args[0] == 7
     assert count_args[1] == "4O-MINI"
     assert select_args[0] == 7
@@ -182,7 +182,7 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
     client, _calls, logger = admin_client_capture
 
     async def _fake_fetch(query: str, *args: Any) -> list[Any]:
-        assert "l.model_id ILIKE '%' || $2 || '%'" in query
+        assert "l.model_id ILIKE '%' || $2 || '%' ESCAPE '\\'" in query
         assert args[1] == "4O-MINI"
         candidate_rows = [
             {
@@ -261,6 +261,22 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
     assert body["total"] == 1
     assert [request["request_id"] for request in body["requests"]] == ["req-match"]
     assert body["requests"][0]["model_id"] == "gpt-4o-mini"
+
+
+@pytest.mark.asyncio
+async def test_list_model_filter_escapes_like_wildcards(admin_client_capture):
+    client, calls, _logger = admin_client_capture
+
+    resp = await client.get("/admin/recent-requests?model_id=gpt%_mini\\v2")
+    assert resp.status_code == 200, resp.text
+
+    count_query, count_args = calls["fetchrow"][0]
+    select_query, select_args = calls["fetch"][0]
+
+    assert "l.model_id ILIKE '%' || $2 || '%' ESCAPE '\\'" in count_query
+    assert "l.model_id ILIKE '%' || $2 || '%' ESCAPE '\\'" in select_query
+    assert count_args[1] == r"gpt\%\_mini\\v2"
+    assert select_args[1] == r"gpt\%\_mini\\v2"
 
 
 @pytest.mark.asyncio
