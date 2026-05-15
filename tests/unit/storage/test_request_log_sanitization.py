@@ -34,8 +34,8 @@ async def test_postgres_log_request_strips_null_bytes_from_all_serialized_fields
         status_code=200,
         error="bad\x00error",
         params={"tools": [{"name": "to\x00ol"}]},
-        metadata={"user_id": "user\x00-1", "nested": {"note": "n\x00ote"}},
-        request_payload={"messages": [{"content": "pa\x00yload"}]},
+        metadata={"us\x00er_id": "user\x00-1", "nested\x00": {"no\x00te": "n\x00ote"}},
+        request_payload={"mess\x00ages": [{"content": "pa\x00yload"}]},
     )
 
     args = conn.execute.await_args.args

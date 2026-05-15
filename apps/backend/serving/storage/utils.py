@@ -29,7 +29,10 @@ def strip_null_bytes(value: Any) -> Any:
     if isinstance(value, str):
         return value.replace("\x00", "")
     if isinstance(value, dict):
-        return {k: strip_null_bytes(v) for k, v in value.items()}
+        return {
+            strip_null_bytes(k) if isinstance(k, str) else k: strip_null_bytes(v)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [strip_null_bytes(v) for v in value]
     if isinstance(value, tuple):

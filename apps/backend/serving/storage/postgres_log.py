@@ -187,13 +187,13 @@ class PostgresLogStore(LogStore):
         should_store_full = (
             store_full_content if store_full_content is not None else self.store_full_prompts
         )
-        sanitized_prompt = strip_null_bytes(prompt)
-        sanitized_response = strip_null_bytes(response)
-        sanitized_request_payload = strip_null_bytes(request_payload)
         sanitized_error = strip_null_bytes(error)
         sanitized_metadata = strip_null_bytes(metadata)
         sanitized_tools = strip_null_bytes((params or {}).get("tools"))
         if should_store_full:
+            sanitized_prompt = strip_null_bytes(prompt)
+            sanitized_response = strip_null_bytes(response)
+            sanitized_request_payload = strip_null_bytes(request_payload)
             prompt_str = (
                 json.dumps(sanitized_prompt)
                 if isinstance(sanitized_prompt, list)
@@ -268,9 +268,7 @@ class PostgresLogStore(LogStore):
                 (sanitized_metadata or {}).get("user_id"),
                 (sanitized_metadata or {}).get("session_id"),
                 json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
-                json.dumps(json_safe(sanitized_tools))
-                if sanitized_tools
-                else None,
+                json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
                 upstream_cost_usd,
             )
 

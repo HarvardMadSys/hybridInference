@@ -71,12 +71,12 @@ async def test_postgres_log_request_strips_null_bytes_from_all_serialized_fields
     )
 
     args = conn.execute.await_args.args
-    prompt_str = args[17]
-    response_str = args[18]
-    request_payload_str = args[19]
-    error_str = args[21]
-    metadata_str = args[24]
-    tools_str = args[25]
+    prompt_str = args[18]
+    response_str = args[19]
+    request_payload_str = args[20]
+    error_str = args[22]
+    metadata_str = args[25]
+    tools_str = args[26]
 
     assert "\x00" not in prompt_str
     assert "\x00" not in response_str
