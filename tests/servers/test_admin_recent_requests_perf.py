@@ -160,6 +160,76 @@ async def test_list_days_clamped_low(admin_client_capture):
 
 
 @pytest.mark.asyncio
+async def test_list_model_filter_uses_partial_match(admin_client_capture):
+    client, calls, _logger = admin_client_capture
+
+    resp = await client.get("/admin/recent-requests?model_id=4O-MINI")
+    assert resp.status_code == 200, resp.text
+
+    count_query, count_args = calls["fetchrow"][0]
+    select_query, select_args = calls["fetch"][0]
+
+    assert "l.model_id ILIKE '%' || $2 || '%'" in count_query
+    assert "l.model_id ILIKE '%' || $2 || '%'" in select_query
+    assert count_args[0] == 7
+    assert count_args[1] == "4O-MINI"
+    assert select_args[0] == 7
+    assert select_args[1] == "4O-MINI"
+
+
+@pytest.mark.asyncio
+async def test_list_model_filter_returns_matching_rows_only(admin_client_capture):
+    client, _calls, logger = admin_client_capture
+
+    async def _fake_fetch(query: str, *args: Any) -> list[Any]:
+        assert "l.model_id ILIKE '%' || $2 || '%'" in query
+        assert args[1] == "4O-MINI"
+        return [
+            {
+                "request_id": "req-match",
+                "user_id": "user-1",
+                "user_name": "u",
+                "user_email": "u@example.com",
+                "model_id": "gpt-4o-mini",
+                "provider": "openai",
+                "timestamp": datetime.now(timezone.utc),
+                "status_code": 200,
+                "latency_ms": 100,
+                "ttft_ms": 10,
+                "stream": False,
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "reasoning_tokens": None,
+                "cache_read_tokens": None,
+                "cache_write_tokens": None,
+                "total_tokens": 2,
+                "cost_usd": None,
+                "error": None,
+                "user_ip": None,
+                "peer_ip": None,
+                "ip_source": None,
+                "x_forwarded_for": None,
+                "user_agent": None,
+                "session_id": None,
+                "request_surface": None,
+                "routewise": None,
+            }
+        ]
+
+    conn = await logger.pool.acquire().__aenter__()
+    conn.fetch = AsyncMock(side_effect=_fake_fetch)
+    conn.fetchrow = AsyncMock(return_value={"total": 1})
+
+    resp = await client.get("/admin/recent-requests?model_id=4O-MINI")
+    assert resp.status_code == 200, resp.text
+
+    body = resp.json()
+    assert body["total"] == 1
+    assert [request["request_id"] for request in body["requests"]] == ["req-match"]
+    assert body["requests"][0]["model_id"] == "gpt-4o-mini"
+
+
+@pytest.mark.asyncio
 async def test_list_response_omits_prompt_and_response(admin_client_capture):
     """Even if a row carried prompt/response by accident, the model strips them."""
     client, _calls, logger = admin_client_capture
