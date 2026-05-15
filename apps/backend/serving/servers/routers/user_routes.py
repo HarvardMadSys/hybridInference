@@ -89,7 +89,7 @@ def _build_user_recent_requests_filters(
     params: list[Any] = [user_id]
     if model_id:
         params.append(model_id)
-        where_clauses.append(f"model_id = ${len(params)}")
+        where_clauses.append(f"model_id ILIKE '%' || ${len(params)} || '%'")
     return " AND ".join(where_clauses), params
 
 
