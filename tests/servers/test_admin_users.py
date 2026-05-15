@@ -11,6 +11,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from routing.executor import RouteExecutor
+from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 
@@ -33,6 +35,7 @@ def mock_stores():
     op_store.list_audit_log = AsyncMock(return_value=(0, []))
     op_store.log_admin_action = AsyncMock()
     op_store.update_user_fields = AsyncMock()
+    op_store.update_user_preferences = AsyncMock()
     op_store.revoke_key = AsyncMock()
     op_store.get_active_key_by_account = AsyncMock(return_value=None)
 
@@ -48,8 +51,41 @@ async def admin_client(monkeypatch, mock_stores):
     op_store, log_store = mock_stores
     app = FastAPI(title="Admin Users Test")
 
+    class _Adapter(BaseAdapter):
+        async def chat_completion(self, messages, **params):
+            return self.format_response(content="ok", model=self.config.id)
+
+        async def stream_chat_completion(self, messages, **params):  # pragma: no cover
+            if False:
+                yield ""
+
+    router = RouteExecutor()
+    for model_id in ("a-model", "z-model", "old-model"):
+        router.register_route(
+            model_id,
+            [
+                (
+                    _Adapter(
+                        ModelConfig(
+                            id=model_id,
+                            name=model_id,
+                            provider="test",
+                            base_url="http://test",
+                            context_length=8192,
+                            max_output_length=4096,
+                            supported_params=["temperature"],
+                            input_modalities=["text"],
+                            output_modalities=["text"],
+                            quantization="bf16",
+                        )
+                    ),
+                    1.0,
+                )
+            ],
+        )
+
     services = AppServices(
-        router=MagicMock(),
+        router=router,
         db_logger=MagicMock(),
         operational_store=op_store,
         log_store=log_store,
@@ -469,6 +505,68 @@ async def test_patch_user_rejects_deleted_status(admin_client):
 
     # Schema validation rejects 'deleted' (pattern only allows active|suspended)
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_user_detail_returns_disabled_models(admin_client):
+    """GET /admin/users/{id}/detail exposes normalized disabled_models."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        **_user_row(),
+        "preferences": {"disabled_models": ["z-model", "a-model", "a-model", 123]},
+    }
+    op_store.get_active_key_by_account.return_value = None
+
+    response = await client.get("/admin/users/u1/detail", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["disabled_models"] == ["a-model", "z-model"]
+
+
+@pytest.mark.asyncio
+async def test_patch_user_updates_disabled_models(admin_client):
+    """PATCH /admin/users/{id} stores normalized disabled_models in preferences."""
+    client, op_store, _log_store, mock_log = admin_client
+    op_store.get_user_by_id.return_value = {
+        **_user_row(),
+        "preferences": {"theme": "dark", "disabled_models": ["old-model"]},
+    }
+    op_store.get_user_preferences = AsyncMock(
+        return_value={"theme": "dark", "disabled_models": ["old-model"]}
+    )
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"disabled_models": ["z-model", "a-model", "a-model"]},
+    )
+
+    assert response.status_code == 200
+    op_store.update_user_preferences.assert_awaited_once_with(
+        "u1",
+        {"theme": "dark", "disabled_models": ["a-model", "z-model"]},
+    )
+    assert response.json()["updated_fields"] == ["disabled_models"]
+    audit_payload = mock_log.await_args.args[4]
+    assert audit_payload["values"]["disabled_models"] == ["a-model", "z-model"]
+
+
+@pytest.mark.asyncio
+async def test_patch_user_rejects_unknown_disabled_model(admin_client):
+    """PATCH /admin/users/{id} rejects unknown disabled model ids."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {**_user_row(), "preferences": {}}
+    op_store.get_user_preferences = AsyncMock(return_value={})
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"disabled_models": ["definitely-unknown-model"]},
+    )
+
+    assert response.status_code == 400
+    assert "Unknown model" in response.json()["detail"]
+    op_store.update_user_preferences.assert_not_awaited()
 
 
 # ========================================================================

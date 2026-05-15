@@ -312,6 +312,7 @@ class UserDetailResponse(BaseModel):
     usage_month_usd: float = 0.0
     usage_month_requests: int = 0
     models_used: list[str] = Field(default_factory=list)
+    disabled_models: list[str] = Field(default_factory=list)
     last_request_at: datetime | None = None
 
 
@@ -326,6 +327,7 @@ class UpdateUserRequest(BaseModel):
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
     quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)
+    disabled_models: list[str] | None = None
 
 
 class UpdateUserResponse(BaseModel):

@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
+from serving.model_access import is_model_disabled_for_user
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     normalize_model_label,
@@ -144,6 +145,8 @@ async def _resolve(
     if model_visibility_resolver is not None:
         required = await model_visibility_resolver.get_effective_required_role(canonical, required)
     if not has_role(user_role, required):
+        raise HTTPException(404, f"Model '{model_id}' not found")
+    if is_model_disabled_for_user(canonical, user_ctx):
         raise HTTPException(404, f"Model '{model_id}' not found")
     if not route.adapters:
         raise HTTPException(404, f"Model '{model_id}' has no adapters")

@@ -1125,7 +1125,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
-                "u.email, u.role, u.email_verified "
+                "u.email, u.role, u.email_verified, u.preferences "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -1141,6 +1141,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.user_id, u.email, u.role, u.email_verified "
+                ", u.preferences "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "

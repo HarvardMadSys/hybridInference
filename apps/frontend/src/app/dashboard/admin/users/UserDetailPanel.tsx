@@ -1,6 +1,6 @@
 'use client';
 
-import type { AdminUser, UserDetail } from '@/lib/api/admin';
+import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -20,10 +20,13 @@ export interface UserDetailPanelProps {
   detail: UserDetail;
   editRole: string;
   editQuota: string;
+  editDisabledModels: string[];
+  availableModels: AdminModelVisibilityItem[];
   saving: boolean;
   busy: string | null;
   onChangeRole: (role: string) => void;
   onChangeQuota: (quota: string) => void;
+  onChangeDisabledModels: (modelIds: string[]) => void;
   onSave: () => void;
   onSuspend: (userId: string) => void;
   onReactivate: (userId: string) => void;
@@ -38,10 +41,13 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     detail,
     editRole,
     editQuota,
+    editDisabledModels,
+    availableModels,
     saving,
     busy,
     onChangeRole,
     onChangeQuota,
+    onChangeDisabledModels,
     onSave,
     onSuspend,
     onReactivate,
@@ -49,6 +55,14 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     onRequestDelete,
     onRequestHardDelete,
   } = props;
+
+  const toggleDisabledModel = (modelId: string) => {
+    if (editDisabledModels.includes(modelId)) {
+      onChangeDisabledModels(editDisabledModels.filter((value) => value !== modelId));
+      return;
+    }
+    onChangeDisabledModels([...editDisabledModels, modelId].sort());
+  };
 
   return (
     <div className="space-y-4 rounded-xl border border-gray-200 bg-gray-50 p-5">
@@ -97,6 +111,37 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
               {m.split('/').pop()}
             </span>
           ))}
+        </div>
+      )}
+
+      {u.status === 'active' && availableModels.length > 0 && (
+        <div className="space-y-2 border-t border-gray-200 pt-4" data-testid="disabled-models-panel">
+          <div>
+            <div className="text-[11px] font-medium text-gray-500">Model access</div>
+            <p className="mt-1 text-[12px] text-gray-500">
+              Disabled models stay hidden for this user even if their role would normally
+              allow them.
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {availableModels.map((model) => {
+              const checked = editDisabledModels.includes(model.model_id);
+              return (
+                <label
+                  key={model.model_id}
+                  className="flex items-center gap-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-700"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleDisabledModel(model.model_id)}
+                    aria-label={`Disable ${model.model_id}`}
+                  />
+                  <span className="font-medium text-gray-900">{model.model_id}</span>
+                </label>
+              );
+            })}
+          </div>
         </div>
       )}
 

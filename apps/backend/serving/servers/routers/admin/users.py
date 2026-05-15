@@ -8,6 +8,11 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from serving.model_access import (
+    DISABLED_MODELS_PREFERENCE_KEY,
+    get_disabled_models_from_preferences,
+    normalize_disabled_models,
+)
 from serving.schemas_admin import (
     ApproveUserRequest,
     ApproveUserResponse,
@@ -38,6 +43,7 @@ from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     get_log_store,
     get_operational_store,
+    get_router,
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import _serialize_for_audit
@@ -369,6 +375,7 @@ async def get_user_detail(
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
+    router_exec=Depends(get_router),
 ) -> UserDetailResponse:
     """Get detailed user info including usage analytics.
 
@@ -422,6 +429,7 @@ async def get_user_detail(
         usage_month_usd=usage_month_usd,
         usage_month_requests=usage_month_req,
         models_used=models_used,
+        disabled_models=get_disabled_models_from_preferences(user_row.get("preferences")),
         last_request_at=last_request_at,
     )
 
@@ -433,6 +441,7 @@ async def update_user(
     payload: UpdateUserRequest,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
+    router_exec=Depends(get_router),
 ) -> UpdateUserResponse:
     """Update user account status or API key settings (quota).
 
@@ -502,6 +511,24 @@ async def update_user(
 
         await op_store.update_key(user_id, **key_fields)
         updated.extend(key_fields)
+
+    if "disabled_models" in payload_dict:
+        known_model_ids = {
+            adapter.config.id
+            for route in router_exec.routes.values()
+            for adapter, _weight in route.adapters
+            if getattr(adapter, "config", None) is not None
+        }
+        normalized_disabled_models = normalize_disabled_models(payload_dict["disabled_models"])
+        unknown_model_ids = sorted(set(normalized_disabled_models) - known_model_ids)
+        if unknown_model_ids:
+            raise HTTPException(400, f"Unknown model id(s): {', '.join(unknown_model_ids)}")
+        preferences = await op_store.get_user_preferences(user_id)
+        preferences = dict(preferences) if isinstance(preferences, dict) else {}
+        preferences[DISABLED_MODELS_PREFERENCE_KEY] = normalized_disabled_models
+        await op_store.update_user_preferences(user_id, preferences)
+        payload_dict["disabled_models"] = normalized_disabled_models
+        updated.append("disabled_models")
 
     await log_admin_action(
         op_store,

@@ -4,6 +4,7 @@ import {
   clearRouteWeight,
   listRouteWeights,
   listRoutewiseSettings,
+  updateUser,
   listModelVisibility,
   previewRoleQuotaApply,
   setRouteWeight,
@@ -145,6 +146,28 @@ describe('model visibility client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('PATCH');
     expect(JSON.parse(init.body as string)).toEqual({ required_role: null });
+  });
+});
+
+describe('admin user client', () => {
+  it('updateUser PATCHes disabled_models in the request body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ user_id: 'user-1', updated_fields: ['disabled_models'], message: 'ok' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await updateUser('user-1', { disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'] });
+
+    expect(out.updated_fields).toEqual(['disabled_models']);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/users/user-1');
+    expect(init.method).toBe('PATCH');
+    expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({
+      disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'],
+    });
   });
 });
 

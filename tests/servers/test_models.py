@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI, status
@@ -393,3 +394,39 @@ async def test_user_models_runtime_visibility_override_hides_model_for_free_user
     ids = [m["id"] for m in resp.json()["data"]]
     assert "visible-model" in ids
     assert "runtime-hidden-model" not in ids
+
+
+@pytest.mark.asyncio
+async def test_user_models_excludes_disabled_models_for_user():
+    router = RouteExecutor()
+    visible = _Adapter(_cfg(id="visible-model"))
+    disabled = _Adapter(_cfg(id="disabled-model"))
+    router.register_route("visible-model", [(visible, 1.0)])
+    router.register_route("disabled-alias", [(disabled, 1.0)])
+
+    app = FastAPI()
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
+    app.dependency_overrides[get_current_user] = lambda: {
+        "authenticated": True,
+        "role": "free",
+        "user_id": "free-user",
+    }
+
+    async def _get_op_store():
+        store = type("Store", (), {})()
+        store.get_user_preferences = AsyncMock(return_value={"disabled_models": ["disabled-model"]})
+        return store
+
+    from serving.servers.deps import get_operational_store
+
+    app.dependency_overrides[get_operational_store] = _get_op_store
+    app.include_router(user_routes.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/user/models")
+
+    assert resp.status_code == status.HTTP_200_OK
+    ids = [m["id"] for m in resp.json()["data"]]
+    assert "visible-model" in ids
+    assert "disabled-model" not in ids

@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from serving.exceptions import (
     UserNotFoundError,
 )
+from serving.model_access import get_disabled_models_from_preferences
 from serving.schemas import ModelList
 from serving.schemas_auth import (
     APIKeyDeleteResponse,
@@ -278,13 +279,20 @@ async def get_user_models(
     router_exec=Depends(get_router),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
+    op_store=Depends(get_operational_store),
 ) -> ModelList:
     """List models available to the current dashboard user."""
+    disabled_models: list[str] = []
+    if op_store:
+        disabled_models = get_disabled_models_from_preferences(
+            await op_store.get_user_preferences(current_user["user_id"])
+        )
     return await _build_model_list_async(
         router_exec=router_exec,
         embedding_adapters=embedding_adapters,
         user_role=current_user.get("role", "free"),
         model_visibility_resolver=model_visibility_resolver,
+        user_ctx={**current_user, "disabled_models": disabled_models},
     )
 
 
