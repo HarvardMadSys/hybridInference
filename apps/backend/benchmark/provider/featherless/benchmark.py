@@ -257,6 +257,7 @@ def save_csv(results: list[dict[str, Any]], output_path: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse and return command line arguments."""
     parser = argparse.ArgumentParser(description="Benchmark TTFT and throughput on featherless")
     parser.add_argument(
         "--base-url",
@@ -312,6 +313,7 @@ MODELS = [
 
 
 def main() -> None:
+    """Run the benchmark for all configured models."""
     args = parse_args()
 
     if not args.api_key:
