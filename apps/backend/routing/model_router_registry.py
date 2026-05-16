@@ -128,7 +128,6 @@ class ModelRouterRegistry:
         """Return model ids known to the registry config."""
         return list(self._configs.keys())
 
-
     def managed_routers(self) -> list[ManagedRouter]:
         """Return unique cached routers with async lifecycle hooks."""
         seen_ids: set[int] = set()

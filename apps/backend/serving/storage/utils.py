@@ -54,7 +54,6 @@ def coerce_json_object(value: Any) -> dict[str, Any] | None:
     return None
 
 
-
 def calculate_cost(
     usage: dict[str, Any] | None,
     pricing: dict[str, str] | None,

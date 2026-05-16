@@ -576,7 +576,6 @@ class RouteWiseRouter(BaseRouter):
                 prices.append(cached)
         return prices
 
-
     def _commit_candidate_resource(self, candidate: _ProviderCandidate) -> bool:
         """Commit selected quota/concurrency resources after final selection."""
         if candidate.sub_type is SubscriptionType.CONCURRENCY:
@@ -1229,7 +1228,6 @@ class RouteWiseRouter(BaseRouter):
                     selected_endpoint_id,
                 ),
             }
-
 
         candidates = self._build_effective_cost_candidates(model_id, prompt_tokens, predicted_out)
         now = time.time()
