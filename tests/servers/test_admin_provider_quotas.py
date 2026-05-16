@@ -690,6 +690,7 @@ class TestGatherAll:
         assert chutes.ok is False
         assert chutes.error == "unexpected"
 
+
 class TestProviderQuotasRoute:
     @pytest.fixture
     def admin_app(self):
