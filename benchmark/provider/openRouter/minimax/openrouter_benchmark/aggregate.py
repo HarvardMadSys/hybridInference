@@ -23,6 +23,7 @@ from typing import Any
 
 
 def aggregate(input_csv: Path, output_csv: Path) -> None:
+    """Read raw per-request CSV and write aggregated summary CSV."""
     by_key: dict[tuple, list[dict[str, Any]]] = {}
 
     with input_csv.open() as f:
@@ -95,6 +96,7 @@ def aggregate(input_csv: Path, output_csv: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for aggregation."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input_csv", type=Path)
     parser.add_argument("--output-csv", type=Path, required=False)
