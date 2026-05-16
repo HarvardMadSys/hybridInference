@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import statistics
 import time
@@ -61,6 +62,7 @@ def measure_ttft_and_throughput(
     start_time = time.time()
     first_token_time: float | None = None
     tokens: list[str] = []
+    usage: dict[str, Any] | None = None
 
     with requests.post(url, json=payload, headers=headers, stream=True, timeout=300) as resp:
         if resp.status_code != 200:
@@ -78,8 +80,6 @@ def measure_ttft_and_throughput(
                 break
 
             try:
-                import json
-
                 data = json.loads(data_str)
             except json.JSONDecodeError:
                 continue
@@ -94,6 +94,9 @@ def measure_ttft_and_throughput(
                     first_token_time = time.time()
                 tokens.append(content)
 
+            if usage is None:
+                usage = data.get("usage")
+
     total_time = time.time() - start_time
 
     if first_token_time is None:
@@ -101,17 +104,23 @@ def measure_ttft_and_throughput(
 
     ttft_sec = first_token_time - start_time
     generation_time_sec = total_time - ttft_sec
-    total_tokens = len(tokens)
     content = "".join(tokens)
-    token_count = max(1, len(content) // 4)
+
+    if usage and usage.get("completion_tokens"):
+        token_count = usage["completion_tokens"]
+    else:
+        token_count = max(1, len(content) // 2)
+
     throughput_tps = token_count / generation_time_sec if generation_time_sec > 0 else 0.0
 
     if verbose:
-        print(f"  TTFT: {ttft_sec:.3f}s, tokens: {token_count}, gen_time: {generation_time_sec:.3f}s, throughput: {throughput_tps:.2f} tps")
+        print(
+            f"  TTFT: {ttft_sec:.3f}s, tokens: {token_count}, gen_time: {generation_time_sec:.3f}s, throughput: {throughput_tps:.2f} tps"
+        )
 
     return {
         "ttft_sec": ttft_sec,
-        "total_tokens": token_count,
+        "completion_tokens": token_count,
         "generation_time_sec": generation_time_sec,
         "throughput_tps": throughput_tps,
     }
@@ -173,23 +182,25 @@ def run_benchmark(
                 model_results.append(r)
                 time.sleep(1)  # Brief delay between runs
             except Exception as e:
-                print(f"  Run {i+1} failed: {e}")
+                print(f"  Run {i + 1} failed: {e}")
 
         if model_results:
             avg_ttft = statistics.mean(r["ttft_sec"] for r in model_results)
-            avg_tokens = int(statistics.mean(r["total_tokens"] for r in model_results))
+            avg_tokens = int(statistics.mean(r["completion_tokens"] for r in model_results))
             avg_gen_time = statistics.mean(r["generation_time_sec"] for r in model_results)
             avg_throughput = statistics.mean(r["throughput_tps"] for r in model_results)
 
-            results.append({
-                "provider": provider,
-                "model": model,
-                "ttft_sec": avg_ttft,
-                "total_tokens": avg_tokens,
-                "generation_time_sec": avg_gen_time,
-                "throughput_tps": avg_throughput,
-                "runs": len(model_results),
-            })
+            results.append(
+                {
+                    "provider": provider,
+                    "model": model,
+                    "ttft_sec": avg_ttft,
+                    "completion_tokens": avg_tokens,
+                    "generation_time_sec": avg_gen_time,
+                    "throughput_tps": avg_throughput,
+                    "runs": len(model_results),
+                }
+            )
             print(f"  Avg: TTFT={avg_ttft:.3f}s, throughput={avg_throughput:.2f} tps")
         else:
             print(f"  No successful runs")
@@ -202,11 +213,15 @@ def print_summary(results: list[dict[str, Any]]) -> None:
     print("\n" + "=" * 90)
     print("BENCHMARK RESULTS")
     print("=" * 90)
-    print(f"{'Provider':<12} {'Model':<25} {'TTFT (s)':<10} {'Tokens':<8} {'Gen Time (s)':<14} {'Throughput (tps)':<16}")
+    print(
+        f"{'Provider':<12} {'Model':<25} {'TTFT (s)':<10} {'Tokens':<8} {'Gen Time (s)':<14} {'Throughput (tps)':<16}"
+    )
     print("-" * 90)
 
     for r in results:
-        print(f"{r['provider']:<12} {r['model']:<25} {r['ttft_sec']:<10.3f} {r['total_tokens']:<8} {r['generation_time_sec']:<14.3f} {r['throughput_tps']:<16.2f}")
+        print(
+            f"{r['provider']:<12} {r['model']:<25} {r['ttft_sec']:<10.3f} {r['completion_tokens']:<8} {r['generation_time_sec']:<14.3f} {r['throughput_tps']:<16.2f}"
+        )
 
     print("=" * 90)
 
@@ -222,7 +237,15 @@ def print_summary(results: list[dict[str, Any]]) -> None:
 
 def save_csv(results: list[dict[str, Any]], output_path: str) -> None:
     """Save results to CSV."""
-    fieldnames = ["provider", "model", "ttft_sec", "total_tokens", "generation_time_sec", "throughput_tps", "runs"]
+    fieldnames = [
+        "provider",
+        "model",
+        "ttft_sec",
+        "completion_tokens",
+        "generation_time_sec",
+        "throughput_tps",
+        "runs",
+    ]
 
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
