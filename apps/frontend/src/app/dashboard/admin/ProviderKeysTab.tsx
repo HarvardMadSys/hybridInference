@@ -11,7 +11,6 @@ import {
   listProviderKeys,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
-import { getProviderSpecialInput } from './providerSpecialInputs';
 
 interface Props {
   refreshKey?: number;
@@ -39,11 +38,6 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
   const [formApiKey, setFormApiKey] = useState('');
   const [formLabel, setFormLabel] = useState('');
   const [submittingKey, setSubmittingKey] = useState(false);
-  const [specialInputOpen, setSpecialInputOpen] = useState(false);
-  const [specialInputValue, setSpecialInputValue] = useState('');
-  const [specialInputLabel, setSpecialInputLabel] = useState('');
-  const [specialInputError, setSpecialInputError] = useState<string | null>(null);
-  const [submittingSpecialInput, setSubmittingSpecialInput] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [disablingEnvId, setDisablingEnvId] = useState<string | null>(null);
 
@@ -89,7 +83,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!formProvider || !formApiKey.trim() || submittingSpecialInput) return;
+    if (!formProvider || !formApiKey.trim()) return;
     setSubmittingKey(true);
     try {
       const resp = await addProviderKey(
@@ -109,41 +103,6 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
       toast.error(`Add failed: ${getErrorMessage(err)}`);
     } finally {
       setSubmittingKey(false);
-    }
-  };
-
-  const submitSpecialInput = async () => {
-    if (!specialInput || !formProvider || submittingKey || submittingSpecialInput) return;
-
-    let normalized: string;
-    try {
-      normalized = specialInput.normalize(specialInputValue);
-      setSpecialInputError(null);
-    } catch (err) {
-      setSpecialInputError(getErrorMessage(err));
-      return;
-    }
-
-    setSubmittingSpecialInput(true);
-    try {
-      const resp = await addProviderKey(
-        formProvider,
-        normalized,
-        specialInputLabel.trim() || undefined,
-      );
-      toast.success(`Cookie added (${resp.pools_updated} pool(s) updated)`);
-      setSpecialInputValue('');
-      setSpecialInputLabel('');
-      setSpecialInputOpen(false);
-      if (formProvider === selectedProvider) {
-        await loadKeys(selectedProvider);
-      } else {
-        setSelectedProvider(formProvider);
-      }
-    } catch (err) {
-      toast.error(`Add failed: ${getErrorMessage(err)}`);
-    } finally {
-      setSubmittingSpecialInput(false);
     }
   };
 
@@ -181,15 +140,6 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
     () => [...keys].sort((a, b) => (a.source === b.source ? 0 : a.source === 'db' ? -1 : 1)),
     [keys],
   );
-
-  const specialInput = getProviderSpecialInput(formProvider);
-
-  useEffect(() => {
-    setSpecialInputOpen(false);
-    setSpecialInputValue('');
-    setSpecialInputLabel('');
-    setSpecialInputError(null);
-  }, [formProvider]);
 
   return (
     <div className="space-y-6">
@@ -343,112 +293,13 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
           <div className="flex justify-end">
             <button
               type="submit"
-              disabled={
-                submittingKey || submittingSpecialInput || !formProvider || !formApiKey.trim()
-              }
+              disabled={submittingKey || !formProvider || !formApiKey.trim()}
               className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {submittingKey ? 'Adding…' : 'Add key'}
             </button>
           </div>
         </form>
-        {specialInput && (
-          <div className="rounded-lg border border-blue-100 bg-blue-50 p-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-[13px] font-medium text-blue-900">{specialInput.title}</p>
-                <p className="text-[12px] text-blue-700">{specialInput.helpText}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSpecialInputOpen((open) => !open);
-                  setSpecialInputError(null);
-                }}
-                disabled={submittingKey || submittingSpecialInput}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-blue-500"
-              >
-                {specialInput.actionLabel}
-              </button>
-            </div>
-            {specialInputOpen && (
-              <div className="mt-3 space-y-3">
-                <div>
-                  <label
-                    className="text-[12px] font-medium text-blue-900"
-                    htmlFor="provider-special-input-label"
-                  >
-                    Cookie label (optional)
-                  </label>
-                  <input
-                    id="provider-special-input-label"
-                    type="text"
-                    value={specialInputLabel}
-                    onChange={(e) => setSpecialInputLabel(e.target.value)}
-                    maxLength={255}
-                    className="mt-1 w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-[13px] focus:border-blue-400 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label
-                    className="text-[12px] font-medium text-blue-900"
-                    htmlFor="provider-special-input-value"
-                  >
-                    Cookie input
-                  </label>
-                  <textarea
-                    id="provider-special-input-value"
-                    value={specialInputValue}
-                    onChange={(e) => {
-                      setSpecialInputValue(e.target.value);
-                      setSpecialInputError(null);
-                    }}
-                    rows={4}
-                    placeholder={specialInput.placeholder}
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-invalid={Boolean(specialInputError)}
-                    aria-describedby={
-                      specialInputError ? 'provider-special-input-error' : undefined
-                    }
-                    className="mt-1 w-full rounded-lg border border-blue-200 bg-white px-3 py-2 font-mono text-[12px] focus:border-blue-400 focus:outline-none"
-                  />
-                  {specialInputError && (
-                    <p
-                      id="provider-special-input-error"
-                      role="alert"
-                      className="mt-1 text-[12px] font-medium text-red-600"
-                    >
-                      {specialInputError}
-                    </p>
-                  )}
-                </div>
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSpecialInputOpen(false);
-                      setSpecialInputValue('');
-                      setSpecialInputLabel('');
-                      setSpecialInputError(null);
-                    }}
-                    className="rounded-md px-3 py-1.5 text-[12px] font-medium text-gray-600 transition hover:bg-white"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={submitSpecialInput}
-                    disabled={submittingKey || submittingSpecialInput || !specialInputValue.trim()}
-                    className="rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {submittingSpecialInput ? 'Saving…' : 'Save cookie'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
