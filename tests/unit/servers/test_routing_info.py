@@ -250,6 +250,7 @@ def test_routewise_metadata_shape_for_recent_requests() -> None:
     assert routing.routewise == routewise
 
 
+
 def test_merge_adapter_routing_stashes_unknown_keys_in_extra():
     base = RoutingInfo(request_id="rid", model="gpt-4")
     routing_dict = {
