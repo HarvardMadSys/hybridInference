@@ -16,6 +16,7 @@ from routing.routers import AllCircuitsOpenError
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
+from serving.model_access import is_model_disabled_for_user
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     API_TOKEN_ANOMALIES,
@@ -446,6 +447,30 @@ async def chat_completions(
             "Insufficient role for model",
             extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
+        record_model_request("404", "router")
+        if log_store and not is_synthetic_probe:
+            completions_logger.schedule_log(
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": "router",
+                    "prompt": messages,
+                    "response": None,
+                    "usage": None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": 404,
+                    "error": f"Model '{model}' not found",
+                    "params": early_params,
+                    "metadata": metadata,
+                    "pricing": None,
+                    "request_payload": body,
+                },
+            )
+        raise HTTPException(404, f"Model '{model}' not found")
+    if is_model_disabled_for_user(
+        route.adapters[0][0].config.id if route.adapters else model, user_ctx
+    ):
         record_model_request("404", "router")
         if log_store and not is_synthetic_probe:
             completions_logger.schedule_log(

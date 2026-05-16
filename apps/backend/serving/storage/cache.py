@@ -601,8 +601,11 @@ class CachedOperationalStore(OperationalStore):
         return await self._store.get_user_preferences(user_id)
 
     async def update_user_preferences(self, user_id: str, preferences: dict[str, Any]) -> None:
-        """Delegate to wrapped store."""
-        return await self._store.update_user_preferences(user_id, preferences)
+        """Delegate then invalidate user and auth caches."""
+        await self._store.update_user_preferences(user_id, preferences)
+        await self._cache.delete(self._user_key(user_id))
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
 
     # -- signup domain allowlist (pass-through) ------------------------------
 

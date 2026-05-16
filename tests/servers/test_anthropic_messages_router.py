@@ -154,6 +154,31 @@ async def test_unknown_model_returns_anthropic_format_404(anthropic_test_client)
 
 
 @pytest.mark.asyncio
+async def test_disabled_model_returns_anthropic_format_404(anthropic_test_client, monkeypatch):
+    from serving.servers.auth import verify_api_key
+
+    app = anthropic_test_client._transport.app
+    app.dependency_overrides[verify_api_key] = lambda: {
+        "user_id": "u1",
+        "role": "free",
+        "authenticated": True,
+        "is_admin": False,
+        "disabled_models": [OPENAI_MODEL],
+    }
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 404
+    err = r.json()
+    assert err["type"] == "error"
+    assert err["error"]["type"] == "not_found_error"
+
+
+@pytest.mark.asyncio
 async def test_v1_messages_native_streaming_passthrough(anthropic_test_client, monkeypatch):
     upstream_sse = (
         b"event: message_start\n"

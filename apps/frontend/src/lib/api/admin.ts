@@ -188,6 +188,7 @@ export interface UserDetail {
   usage_month_usd: number;
   usage_month_requests: number;
   models_used: string[];
+  disabled_models: string[];
   last_request_at: string | null;
 }
 
@@ -201,6 +202,7 @@ export interface UpdateUserData {
   status?: string;
   quota_daily_cost_usd?: number;
   quota_monthly_cost_usd?: number;
+  disabled_models?: string[];
 }
 
 export async function updateUser(
