@@ -8,7 +8,7 @@ and paths are defined exactly once.
 from pathlib import Path
 from typing import Final
 
-REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[4]
+REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
 
 MODEL_ID: Final[str] = "MiniMaxAI/MiniMax-M2.5"
 BASE_URL: Final[str] = "https://openrouter.ai/api/v1"

@@ -37,24 +37,24 @@ export OPENROUTER_API_KEY=<your-key>
 # Full pipeline: benchmark + aggregate + plot
 python -c "
 import sys
-sys.path.insert(0, 'docs/benchmark')
-from minimax_m2_5_openrouter.openrouter_benchmark import __main__
+sys.path.insert(0, 'benchmark/provider/openRouter/minimax')
+from openrouter_benchmark import __main__
 __main__.main()
 "
 
 # Skip plotting
 python -c "
 import sys
-sys.path.insert(0, 'docs/benchmark')
-from minimax_m2_5_openrouter.openrouter_benchmark import __main__
+sys.path.insert(0, 'benchmark/provider/openRouter/minimax')
+from openrouter_benchmark import __main__
 __main__.main(['--skip-plot'])
 "
 
 # Custom providers / params
 python -c "
 import sys
-sys.path.insert(0, 'docs/benchmark')
-from minimax_m2_5_openrouter.openrouter_benchmark import __main__
+sys.path.insert(0, 'benchmark/provider/openRouter/minimax')
+from openrouter_benchmark import __main__
 __main__.main(['--providers', 'deepinfra', 'fireworks', '--input-lens', '1024', '4096', '--concurrencies', '1', '16'])
 "
 ```
@@ -76,22 +76,22 @@ results/minimax_m2_5_openrouter/
 ```bash
 # 1. Run benchmark only
 python -c "
-import sys; sys.path.insert(0, 'docs/benchmark')
-from minimax_m2_5_openrouter.openrouter_benchmark import benchmark
+import sys; sys.path.insert(0, 'benchmark/provider/openRouter/minimax')
+from openrouter_benchmark import benchmark
 benchmark.main(['--api-key', '\$OPENROUTER_API_KEY'])
 "
 
 # 2. Aggregate
 python -c "
-import sys; sys.path.insert(0, 'docs/benchmark')
-from minimax_m2_5_openrouter.openrouter_benchmark import aggregate
+import sys; sys.path.insert(0, 'benchmark/provider/openRouter/minimax')
+from openrouter_benchmark import aggregate
 aggregate.main(['results/minimax_m2_5_openrouter/raw.csv'])
 "
 
 # 3. Plot (requires pandas + matplotlib)
 python -c "
-import sys; sys.path.insert(0, 'docs/benchmark')
-from minimax_m2_5_openrouter.openrouter_benchmark import plot
+import sys; sys.path.insert(0, 'benchmark/provider/openRouter/minimax')
+from openrouter_benchmark import plot
 plot.main(['results/minimax_m2_5_openrouter/summary.csv'])
 "
 ```
