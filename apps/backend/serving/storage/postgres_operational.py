@@ -40,7 +40,7 @@ def _parse_admin_emails(raw: str) -> list[str]:
     return [email.strip().lower() for email in raw.split(",") if email.strip()]
 
 
-def _coerce_user_row(row: Any) -> dict[str, Any] | None:
+def _coerce_user_row(row: Any) -> Row | None:
     """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
 
     asyncpg returns JSONB columns as raw JSON strings when no type codec is
@@ -1156,7 +1156,7 @@ class PostgresOperationalStore(OperationalStore):
                 "  AND u.id IS NOT NULL AND u.status = 'active'",
                 key_hash,
             )
-        return dict(row) if row else None
+        return _coerce_user_row(row)
 
     async def get_auth_context_lightweight(self, key_hash: str) -> Row | None:
         """Lightweight identity lookup (no quota check, no last_used write)."""
@@ -1171,7 +1171,7 @@ class PostgresOperationalStore(OperationalStore):
                 "  AND u.id IS NOT NULL AND u.status = 'active'",
                 key_hash,
             )
-        return dict(row) if row else None
+        return _coerce_user_row(row)
 
     async def update_key_last_used(self, key_id: int) -> None:
         """Set ``last_used_at = NOW()`` for the given key id."""
@@ -1624,19 +1624,8 @@ class PostgresOperationalStore(OperationalStore):
         """Return the preferences JSONB column for *user_id*, parsed as dict."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("SELECT preferences FROM users WHERE id = $1", user_id)
-        if not row:
-            return {}
-        val = row["preferences"]
-        if isinstance(val, dict):
-            return dict(val)
-        if isinstance(val, str):
-            try:
-                parsed = json.loads(val)
-                if isinstance(parsed, dict):
-                    return parsed
-            except (json.JSONDecodeError, TypeError):
-                logger.debug("Malformed preferences payload for user %s", user_id)
-        return {}
+        coerced = _coerce_user_row(row)
+        return coerced["preferences"] if coerced else {}
 
     async def update_user_preferences(
         self,

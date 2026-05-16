@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from serving.storage.postgres_operational import _coerce_user_row
 
 
