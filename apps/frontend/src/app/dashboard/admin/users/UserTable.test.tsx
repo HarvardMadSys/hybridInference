@@ -146,8 +146,8 @@ describe('UserTable disabled models editing', () => {
 
     expect(await screen.findByText('Model access')).toBeInTheDocument();
     const modelAccess = screen.getByTestId('disabled-models-panel');
-    expect(within(modelAccess).getByLabelText('Disable claude-3-5-sonnet')).toBeChecked();
-    expect(within(modelAccess).getByLabelText('Disable gpt-4o-mini')).not.toBeChecked();
+    expect(within(modelAccess).getByLabelText('Enable claude-3-5-sonnet')).not.toBeChecked();
+    expect(within(modelAccess).getByLabelText('Disable gpt-4o-mini')).toBeChecked();
 
     fireEvent.click(within(modelAccess).getByLabelText('Disable gpt-4o-mini'));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));

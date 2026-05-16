@@ -128,19 +128,28 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             {availableModels.map((model) => {
-              const checked = editDisabledModels.includes(model.model_id);
+              const isDisabled = editDisabledModels.includes(model.model_id);
               return (
                 <label
                   key={model.model_id}
-                  className="flex items-center gap-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-700"
+                  className={`flex items-center gap-2 rounded-md border px-3 py-2 text-[12px] cursor-pointer ${
+                    isDisabled
+                      ? 'border-red-200 bg-red-50 text-gray-500'
+                      : 'border-gray-200 bg-white text-gray-700'
+                  }`}
                 >
                   <input
                     type="checkbox"
-                    checked={checked}
+                    checked={!isDisabled}
                     onChange={() => toggleDisabledModel(model.model_id)}
-                    aria-label={`Disable ${model.model_id}`}
+                    aria-label={isDisabled ? `Enable ${model.model_id}` : `Disable ${model.model_id}`}
                   />
-                  <span className="font-medium text-gray-900">{model.model_id}</span>
+                  <span className={`font-medium ${isDisabled ? 'line-through text-gray-400' : 'text-gray-900'}`}>
+                    {model.model_id}
+                  </span>
+                  {isDisabled && (
+                    <span className="ml-auto text-[10px] font-semibold text-red-500">disabled</span>
+                  )}
                 </label>
               );
             })}
