@@ -95,6 +95,7 @@ def _throughput_bar(csv_path: Path, out_path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for plotting."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input_csv", type=Path)
     parser.add_argument("--out-dir", type=Path, required=False)

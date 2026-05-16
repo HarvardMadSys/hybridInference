@@ -18,6 +18,7 @@ from . import aggregate, benchmark as bm, config, plot
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for the full benchmark pipeline."""
     parser = argparse.ArgumentParser(description="MiniMax-M2.5 OpenRouter benchmark")
     parser.add_argument("--api-key", required=False)
     parser.add_argument("--providers", nargs="+", default=list(config.PROVIDERS))

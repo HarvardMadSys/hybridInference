@@ -235,6 +235,7 @@ def _write_csv(rows: list[dict[str, Any]], out_path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for the benchmark."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--api-key",
