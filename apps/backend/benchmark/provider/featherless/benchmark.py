@@ -84,6 +84,9 @@ def measure_ttft_and_throughput(
             except json.JSONDecodeError:
                 continue
 
+            if usage is None:
+                usage = data.get("usage")
+
             choices = data.get("choices") or []
             if not choices:
                 continue
@@ -93,9 +96,6 @@ def measure_ttft_and_throughput(
                 if first_token_time is None:
                     first_token_time = time.time()
                 tokens.append(content)
-
-            if usage is None:
-                usage = data.get("usage")
 
     total_time = time.time() - start_time
 
@@ -203,7 +203,7 @@ def run_benchmark(
             )
             print(f"  Avg: TTFT={avg_ttft:.3f}s, throughput={avg_throughput:.2f} tps")
         else:
-            print(f"  No successful runs")
+            print("  No successful runs")
 
     return results
 
@@ -226,7 +226,7 @@ def print_summary(results: list[dict[str, Any]]) -> None:
     print("=" * 90)
 
     # Group by provider for comparison
-    providers = sorted(set(r["provider"] for r in results))
+    providers = sorted({r["provider"] for r in results})
     print("\n--- Summary by Provider (avg throughput) ---")
     for provider in providers:
         provider_results = [r for r in results if r["provider"] == provider]
