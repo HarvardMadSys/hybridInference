@@ -273,6 +273,11 @@ class CachedOperationalStore(OperationalStore):
         await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)
         await self._cache.delete(self._user_key(user_id))
 
+    async def invalidate_auth_caches(self) -> None:
+        """Evict all cached auth-context entries (cache-only, no DB write)."""
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
+
     # -- key writes (invalidate auth caches) ---------------------------------
 
     async def update_key(self, user_id: str, **fields: Any) -> None:

@@ -288,6 +288,15 @@ class OperationalStore(ABC):
 
     # -- api keys ------------------------------------------------------------
 
+    async def invalidate_auth_caches(self) -> None:  # noqa: B027
+        """Evict all cached auth-context entries.
+
+        The base implementation is a no-op — uncached stores have nothing
+        to evict.  ``CachedOperationalStore`` overrides this to clear the
+        in-memory (or Redis) auth cache so that key revocations take effect
+        immediately without waiting for TTL expiry.
+        """
+
     @abstractmethod
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:
         """Materialized auth lookup for ``verify_api_key``.
