@@ -33,7 +33,7 @@ def measure_ttft_and_throughput(
     """Measure TTFT and decoding throughput using streaming.
 
     Args:
-        base_url: API base URL (e.g., https://api.featherless.ai/v1).
+
         model: Model identifier.
         api_key: API key for Authorization header.
         prompt: User prompt.
@@ -300,15 +300,17 @@ def parse_args() -> argparse.Namespace:
 
 
 MODELS = [
-    ("minimax", "MiniMax-M2.5"),
-    ("minimax", "MiniMax-M2.7"),
-    ("kimi", "kimi-k2.5"),
-    ("kimi", "kimi-k2.6"),
-    ("qwen", "qwen3.6-35B-A3B"),
-    ("qwen", "qwen3.6-27B"),
-    ("glm", "GLM-4.7"),
-    ("glm", "GLM-5"),
-    ("glm", "GLM-5.1"),
+    ("featherless", "MiniMaxAI/MiniMax-M2.5"),
+    ("featherless", "MiniMaxAI/MiniMax-M2.7"),
+    ("featherless", "moonshotai/Kimi-K2.5"),
+    ("featherless", "moonshotai/Kimi-K2.6"),
+    ("featherless", "Qwen/Qwen3.6-35B-A3B"),
+    ("featherless", "Qwen/Qwen3.6-27B"),
+    ("featherless", "zai-org/GLM-4.7"),
+    ("featherless", "zai-org/GLM-5"),
+    ("featherless", "zai-org/GLM-5.1"),
+    ("featherless", "deepseek-ai/DeepSeek-V4-Pro"),
+    ("featherless", "deepseek-ai/DeepSeek-V4-Flash"),
 ]
 
 
