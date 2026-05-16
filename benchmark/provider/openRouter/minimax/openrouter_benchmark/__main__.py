@@ -1,8 +1,11 @@
 """Drive the MiniMax-M2.5 OpenRouter benchmark pipeline.
 
 Usage:
-    python -m openrouter_benchmark --api-key <key>
-    python -m openrouter_benchmark --skip-plot
+    python -c "
+    import sys; sys.path.insert(0, 'benchmark/provider/openRouter/minimax')
+    from openrouter_benchmark import __main__
+    __main__.main()
+    "
 """
 
 from __future__ import annotations
@@ -10,18 +13,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from openrouter_benchmark import aggregate, benchmark as bm, config, plot
+from . import aggregate, benchmark as bm, config, plot
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MiniMax-M2.5 OpenRouter benchmark")
     parser.add_argument("--api-key", required=False)
-    parser.add_argument("--providers", nargs="+", default=config.PROVIDERS)
+    parser.add_argument("--providers", nargs="+", default=list(config.PROVIDERS))
     parser.add_argument("--input-lens", type=int, nargs="+", default=list(config.INPUT_LENS))
     parser.add_argument("--concurrencies", type=int, nargs="+", default=list(config.CONCURRENCIES))
     parser.add_argument("--skip-plot", action="store_true")
@@ -37,11 +36,22 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 60)
 
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    raw_csv = config.RESULTS_DIR / "raw.csv"
+    raw_csv = config.RAW_CSV
     agg_csv = config.SUMMARY_CSV
 
+    providers = args.providers
+    input_lens = tuple(args.input_lens)
+    concurrencies = tuple(args.concurrencies)
+
     print("\n[1/3] Running benchmark...")
-    rows = asyncio.run(bm._run_all_providers(api_key))
+    rows = asyncio.run(
+        bm._run_all_providers(
+            api_key,
+            providers=providers,
+            input_lens=input_lens,
+            concurrencies=concurrencies,
+        )
+    )
     bm._write_csv(rows, raw_csv)
     print(f"Raw CSV: {raw_csv}")
 
@@ -52,8 +62,8 @@ def main(argv: list[str] | None = None) -> int:
         print("\n[3/3] Plotting...")
         config.PLOTS_DIR.mkdir(parents=True, exist_ok=True)
         plot._apply_style()
-        plot._ttft_heatmap(agg_csv, config.PLOTS_DIR / "ttft_heatmap.png")
-        plot._ttft_by_concurrency(agg_csv, config.PLOTS_DIR / "ttft_by_concurrency.png")
+        plot._ttft_bar(agg_csv, config.PLOTS_DIR / "ttft_bar.png")
+        plot._ttft_by_input_len(agg_csv, config.PLOTS_DIR / "ttft_by_input_len.png", concurrency=16)
         plot._throughput_bar(agg_csv, config.PLOTS_DIR / "throughput_bar.png")
         print(f"Plots: {config.PLOTS_DIR}/")
 

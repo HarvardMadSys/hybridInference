@@ -19,12 +19,19 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import tiktoken
 
 from . import config
 
+_ENC = tiktoken.get_encoding("cl100k_base")
+
+_SENTENCE = "The capital of France is Paris. "
+_SENTENCE_TOKENS = len(_ENC.encode(_SENTENCE))
+
 
 def _prompt_for_len(n: int) -> str:
-    return "The capital of France is Paris. " * (n // 20)
+    repeats = max(1, n // _SENTENCE_TOKENS)
+    return _SENTENCE * repeats
 
 
 async def _stream_request(
@@ -65,8 +72,8 @@ async def _stream_request(
             timeout=httpx.Timeout(120.0, connect=30.0),
         ) as resp:
             if resp.status_code != 200:
-                text = await resp.aread()
-                error = f"HTTP {resp.status_code}: {text[:200]}"
+                raw = await resp.aread()
+                error = f"HTTP {resp.status_code}: {raw[:200].decode(errors='replace')}"
                 return _make_result(
                     provider, input_len, output_len, concurrency, ttft, chars, error
                 )
@@ -124,13 +131,17 @@ async def _run_battery(
     client: httpx.AsyncClient,
     api_key: str,
     provider: str,
+    input_lens: tuple[int, ...],
+    concurrencies: tuple[int, ...],
+    output_len: int,
+    num_repeats: int,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for input_len in config.INPUT_LENS:
-        for conc in config.CONCURRENCIES:
-            for run_id in range(1, config.NUM_REPEATS + 1):
+    for input_len in input_lens:
+        for conc in concurrencies:
+            for run_id in range(1, num_repeats + 1):
                 tasks = [
-                    _stream_request(client, api_key, provider, input_len, config.OUTPUT_LEN, conc)
+                    _stream_request(client, api_key, provider, input_len, output_len, conc)
                     for _ in range(conc)
                 ]
                 results = await asyncio.gather(*tasks)
@@ -140,12 +151,27 @@ async def _run_battery(
     return rows
 
 
-async def _run_all_providers(api_key: str) -> list[dict[str, Any]]:
+async def _run_all_providers(
+    api_key: str,
+    providers: list[str] | None = None,
+    input_lens: tuple[int, ...] | None = None,
+    concurrencies: tuple[int, ...] | None = None,
+    output_len: int | None = None,
+    num_repeats: int | None = None,
+) -> list[dict[str, Any]]:
+    providers = providers or config.PROVIDERS
+    input_lens = input_lens or config.INPUT_LENS
+    concurrencies = concurrencies or config.CONCURRENCIES
+    output_len = output_len or config.OUTPUT_LEN
+    num_repeats = num_repeats or config.NUM_REPEATS
+
     all_rows: list[dict[str, Any]] = []
     async with httpx.AsyncClient() as client:
-        for provider in config.PROVIDERS:
+        for provider in providers:
             print(f"  Running provider: {provider}")
-            rows = await _run_battery(client, api_key, provider)
+            rows = await _run_battery(
+                client, api_key, provider, input_lens, concurrencies, output_len, num_repeats
+            )
             all_rows.extend(rows)
     return all_rows
 
@@ -215,24 +241,35 @@ def main(argv: list[str] | None = None) -> int:
         default=os.getenv(config.OPENROUTER_API_KEY_ENV),
         required=not bool(os.getenv(config.OPENROUTER_API_KEY_ENV)),
     )
-    parser.add_argument("--providers", nargs="+", default=config.PROVIDERS)
+    parser.add_argument("--providers", nargs="+", default=list(config.PROVIDERS))
     parser.add_argument("--input-lens", type=int, nargs="+", default=list(config.INPUT_LENS))
     parser.add_argument("--concurrencies", type=int, nargs="+", default=list(config.CONCURRENCIES))
-    parser.add_argument("--output-csv", type=Path, default=config.SUMMARY_CSV)
+    parser.add_argument("--output-raw-csv", type=Path, default=config.RAW_CSV)
     args = parser.parse_args(argv)
 
     if not args.api_key:
         print("Error: --api-key or OPENROUTER_API_KEY env var required")
         return 1
 
-    print(f"Benchmarking MiniMax-M2.5 across {len(config.PROVIDERS)} providers")
+    providers = args.providers
+    input_lens = tuple(args.input_lens)
+    concurrencies = tuple(args.concurrencies)
+
+    print(f"Benchmarking MiniMax-M2.5 across {len(providers)} providers")
     print(
-        f"Input lens: {config.INPUT_LENS}, Concurrencies: {config.CONCURRENCIES}, Repeats: {config.NUM_REPEATS}"
+        f"Input lens: {input_lens}, Concurrencies: {concurrencies}, Repeats: {config.NUM_REPEATS}"
     )
 
-    rows = asyncio.run(_run_all_providers(args.api_key))
-    _write_csv(rows, args.output_csv)
-    print(f"\nCSV written to {args.output_csv}")
+    rows = asyncio.run(
+        _run_all_providers(
+            args.api_key,
+            providers=providers,
+            input_lens=input_lens,
+            concurrencies=concurrencies,
+        )
+    )
+    _write_csv(rows, args.output_raw_csv)
+    print(f"\nCSV written to {args.output_raw_csv}")
 
     summary = _compute_summary(rows)
     _print_summary_table(summary)
