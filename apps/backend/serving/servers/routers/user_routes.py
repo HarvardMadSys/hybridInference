@@ -497,6 +497,7 @@ async def delete_api_key(
     key_prefix: str,
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> APIKeyDeleteResponse:
     """Revoke an active key or remove a revoked key owned by the current user."""
     if not db_logger or not db_logger.pool:
@@ -572,6 +573,10 @@ async def delete_api_key(
             current_user["user_id"],
             audit_details,
         )
+        # Revoke bypasses CachedOperationalStore, so invalidate the auth cache
+        # explicitly so the key cannot be used after revocation.
+        if audit_action == "revoke_key" and op_store:
+            await op_store.revoke_key(current_user["user_id"])
         return response
 
     if not existing:
