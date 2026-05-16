@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,16 +11,11 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from serving.admin.provider_quotas import (
-    _discover_chatgpt_credentials,
     _discover_env_keys,
     _mask_key,
     _next_reset,
-    _parse_chatgpt_usage,
-    _parse_claude_code_usage,
     _parse_iso,
-    fetch_chatgpt,
     fetch_chutes,
-    fetch_claude_code,
     fetch_minimax,
     fetch_ollama,
     fetch_zai,
@@ -154,131 +148,6 @@ class TestParseIso:
         assert _parse_iso("2026Z05-02T04:00:00") is None
 
 
-class TestParseChatGPTUsage:
-    def test_parses_model_message_caps(self):
-        payload = {
-            "models": [
-                {
-                    "slug": "gpt-5",
-                    "title": "GPT-5",
-                    "message_cap": {
-                        "used": 18,
-                        "limit": 80,
-                        "reset_at": "2026-05-08T00:00:00Z",
-                    },
-                },
-                {
-                    "slug": "gpt-4o",
-                    "title": "GPT-4o",
-                    "message_cap": {
-                        "remaining": 14,
-                        "total": 40,
-                        "reset_at": "2026-05-08T12:30:00+00:00",
-                    },
-                },
-            ]
-        }
-
-        usages = _parse_chatgpt_usage(payload)
-
-        assert len(usages) == 2
-        gpt5 = usages[0]
-        assert gpt5.label == "GPT-5 messages"
-        assert gpt5.used == 18.0
-        assert gpt5.limit == 80.0
-        assert gpt5.unit == "messages"
-        assert gpt5.reset_at == datetime(2026, 5, 8, 0, 0, 0, tzinfo=timezone.utc)
-
-        gpt4o = usages[1]
-        assert gpt4o.label == "GPT-4o messages"
-        assert gpt4o.used == 26.0
-        assert gpt4o.limit == 40.0
-        assert gpt4o.unit == "messages"
-        assert gpt4o.reset_at == datetime(2026, 5, 8, 12, 30, 0, tzinfo=timezone.utc)
-
-    def test_parses_top_level_message_caps_mapping(self):
-        payload = {
-            "message_caps": {
-                "gpt-5-thinking": {
-                    "used": 3,
-                    "limit": 50,
-                    "resets_at": "2026-05-09T00:00:00Z",
-                }
-            }
-        }
-
-        usages = _parse_chatgpt_usage(payload)
-
-        assert len(usages) == 1
-        usage = usages[0]
-        assert usage.label == "gpt-5-thinking messages"
-        assert usage.used == 3.0
-        assert usage.limit == 50.0
-        assert usage.unit == "messages"
-        assert usage.reset_at == datetime(2026, 5, 9, 0, 0, 0, tzinfo=timezone.utc)
-
-    def test_derives_used_from_limit_minus_remaining_without_clamping(self):
-        payload = {
-            "message_caps": {
-                "temporary": {
-                    "remaining": 50,
-                    "limit": 40,
-                }
-            }
-        }
-
-        usages = _parse_chatgpt_usage(payload)
-
-        assert len(usages) == 1
-        assert usages[0].used == -10.0
-        assert usages[0].limit == 40.0
-
-    def test_does_not_parse_generic_top_level_numbers(self):
-        assert _parse_chatgpt_usage({"total": 0}) == []
-        assert _parse_chatgpt_usage({"used": 1}) == []
-
-    def test_rejects_non_finite_numbers(self):
-        payload = {
-            "message_caps": {
-                "nan": {"used": float("nan"), "limit": 10},
-                "inf": {"used": float("inf"), "limit": 10},
-                "negative_inf": {"used": float("-inf"), "limit": 10},
-            }
-        }
-
-        assert _parse_chatgpt_usage(payload) == []
-
-    def test_preserves_zero_values_in_message_cap_block(self):
-        payload = {"models": [{"title": "GPT-Zero", "message_cap": {"used": 0, "limit": 0}}]}
-
-        usages = _parse_chatgpt_usage(payload)
-
-        assert len(usages) == 1
-        assert usages[0].used == 0.0
-        assert usages[0].limit == 0.0
-
-    def test_prefers_message_cap_block_with_zero_values(self):
-        payload = {
-            "models": [
-                {
-                    "title": "GPT-Zero",
-                    "message_cap": {"used": 0, "limit": 0},
-                    "quota": {"used": 9, "limit": 9},
-                }
-            ]
-        }
-
-        usages = _parse_chatgpt_usage(payload)
-
-        assert len(usages) == 1
-        assert usages[0].used == 0.0
-        assert usages[0].limit == 0.0
-
-    def test_returns_empty_for_unknown_shape(self):
-        assert _parse_chatgpt_usage({"models": [{"slug": "gpt-5"}]}) == []
-        assert _parse_chatgpt_usage({"unrelated": "value"}) == []
-
-
 class TestDiscoverEnvKeys:
     def test_single_key_returns_index_1(self, monkeypatch):
         monkeypatch.setenv("ZAI_API_KEY", "key1_long_enough_1234")
@@ -314,54 +183,6 @@ class TestDiscoverEnvKeys:
         monkeypatch.setenv("ZAI_API_KEY2", "key2_long_enough_5678")
         keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
         assert keys == []
-
-
-class TestDiscoverChatGPTCredentials:
-    @pytest.mark.asyncio
-    async def test_env_credentials_only(self, monkeypatch):
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=env_primary_1234567890")
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE2", "session=env_secondary_1234567890")
-        monkeypatch.delenv("CHATGPT_SESSION_COOKIE3", raising=False)
-
-        keys = await _discover_chatgpt_credentials(None)
-
-        assert keys == [
-            (1, "session=env_primary_1234567890"),
-            (2, "session=env_secondary_1234567890"),
-        ]
-
-    @pytest.mark.asyncio
-    async def test_db_credentials_only(self, monkeypatch):
-        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
-        op_store = MagicMock()
-        op_store.list_provider_keys_full = AsyncMock(
-            return_value=["session=db_primary_1234567890", "session=db_secondary_1234567890"]
-        )
-
-        keys = await _discover_chatgpt_credentials(op_store)
-
-        assert keys == [
-            (1, "session=db_primary_1234567890"),
-            (2, "session=db_secondary_1234567890"),
-        ]
-        op_store.list_provider_keys_full.assert_awaited_once_with("chatgpt")
-
-    @pytest.mark.asyncio
-    async def test_env_and_db_credentials_are_deduped_in_order(self, monkeypatch):
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=shared_1234567890")
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE2", "session=env_only_1234567890")
-        op_store = MagicMock()
-        op_store.list_provider_keys_full = AsyncMock(
-            return_value=["session=shared_1234567890", "session=db_only_1234567890"]
-        )
-
-        keys = await _discover_chatgpt_credentials(op_store)
-
-        assert keys == [
-            (1, "session=shared_1234567890"),
-            (2, "session=env_only_1234567890"),
-            (3, "session=db_only_1234567890"),
-        ]
 
 
 class TestFetchChutes:
@@ -837,358 +658,19 @@ class TestFetchOllama:
         assert weekly_use.unit == "%"
 
 
-class TestFetchChatGPT:
-    @pytest.mark.asyncio
-    async def test_not_configured_when_cookie_missing(self, monkeypatch):
-        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
-        results = await fetch_chatgpt(None)
-        assert len(results) == 1
-        result = results[0]
-        assert result.ok is False
-        assert result.error == "not_configured"
-        assert result.name == "chatgpt"
-        assert result.display_name == "ChatGPT"
-        assert result.key_configured is False
-
-    @pytest.mark.asyncio
-    async def test_success_parses_messages_and_masks_cookie(self, monkeypatch):
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
-        payload = {
-            "models": [
-                {
-                    "slug": "gpt-5",
-                    "title": "GPT-5",
-                    "message_cap": {
-                        "used": 18,
-                        "limit": 80,
-                        "reset_at": "2026-05-08T00:00:00Z",
-                    },
-                }
-            ]
-        }
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=payload),
-        ) as mock_session_cls:
-            results = await fetch_chatgpt(None)
-
-        result = results[0]
-        assert result.ok is True
-        assert result.error is None
-        assert result.name == "chatgpt"
-        assert result.display_name == "ChatGPT"
-        assert result.key_configured is True
-        assert result.key_masked is not None
-        assert "chatgpt_cookie" not in result.key_masked
-        assert len(result.usages) == 1
-        assert result.usages[0].label == "GPT-5 messages"
-        assert result.usages[0].used == 18.0
-        assert result.usages[0].limit == 80.0
-
-        session = mock_session_cls.return_value.__aenter__.return_value
-        call_args = session.get.call_args
-        assert call_args.args[0] == "https://chatgpt.com/backend-api/models"
-        assert call_args.kwargs["allow_redirects"] is False
-        assert call_args.kwargs["headers"]["Cookie"] == "session=chatgpt_cookie_abcdefghijklmnop"
-        assert call_args.kwargs["headers"]["Accept"] == "application/json"
-        assert "User-Agent" in call_args.kwargs["headers"]
-        assert mock_session_cls.call_args.kwargs["timeout"].total == 8
-
-    @pytest.mark.asyncio
-    async def test_auth_failed_on_redirect_or_401(self, monkeypatch):
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=302),
-        ):
-            redirected = (await fetch_chatgpt(None))[0]
-        assert redirected.ok is False
-        assert redirected.error == "auth_failed"
-
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=401),
-        ):
-            unauthorized = (await fetch_chatgpt(None))[0]
-        assert unauthorized.ok is False
-        assert unauthorized.error == "auth_failed"
-
-    @pytest.mark.asyncio
-    async def test_parse_error_on_unknown_shape(self, monkeypatch):
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data={"models": [{"slug": "gpt-5"}]}),
-        ):
-            result = (await fetch_chatgpt(None))[0]
-        assert result.ok is False
-        assert result.error == "parse_error"
-
-    @pytest.mark.asyncio
-    async def test_parse_error_on_non_object_json(self, monkeypatch):
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=[]),
-        ):
-            result = (await fetch_chatgpt(None))[0]
-        assert result.ok is False
-        assert result.error == "parse_error"
-
-    @pytest.mark.asyncio
-    async def test_timeout_maps_to_timeout(self, monkeypatch):
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", "session=chatgpt_cookie_abcdefghijklmnop")
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError()),
-        ):
-            result = (await fetch_chatgpt(None))[0]
-        assert result.ok is False
-        assert result.error == "timeout"
-
-    @pytest.mark.asyncio
-    async def test_error_paths_do_not_leak_raw_cookie(self, monkeypatch):
-        secret = "distinctive_chatgpt_secret"
-        monkeypatch.setenv("CHATGPT_SESSION_COOKIE", f"session={secret}_abcdefghijklmnop")
-
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=401),
-        ):
-            auth_failed = (await fetch_chatgpt(None))[0]
-        assert auth_failed.error == "auth_failed"
-        assert auth_failed.key_masked is not None
-        assert secret not in auth_failed.key_masked
-        assert secret not in auth_failed.error
-
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data={"models": [{"slug": "gpt-5"}]}),
-        ):
-            parse_error = (await fetch_chatgpt(None))[0]
-        assert parse_error.error == "parse_error"
-        assert parse_error.key_masked is not None
-        assert secret not in parse_error.key_masked
-        assert secret not in parse_error.error
-
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError()),
-        ):
-            timeout = (await fetch_chatgpt(None))[0]
-        assert timeout.error == "timeout"
-        assert timeout.key_masked is not None
-        assert secret not in timeout.key_masked
-        assert secret not in timeout.error
-
-
-class TestParseClaudeCodeUsage:
-    def test_parses_subscription_usage_buckets(self):
-        payload = {
-            "five_hour": {"utilization": 45, "resets_at": "2026-05-08T04:00:00Z"},
-            "seven_day": {"utilization": 62.5, "resets_at": "2026-05-11T00:00:00Z"},
-            "seven_day_oauth_apps": {"utilization": 12, "resets_at": None},
-            "seven_day_opus": {"utilization": 30, "resets_at": "2026-05-11T00:00:00Z"},
-            "seven_day_sonnet": {"utilization": 55, "resets_at": "2026-05-11T00:00:00Z"},
-            "seven_day_cowork": {"utilization": 8, "resets_at": "2026-05-11T00:00:00Z"},
-            "extra_usage": {
-                "is_enabled": True,
-                "monthly_limit": 1000,
-                "used_credits": 250,
-                "utilization": 25,
-            },
-        }
-
-        usages = _parse_claude_code_usage(payload)
-
-        assert [u.label for u in usages] == [
-            "5-hour usage",
-            "7-day usage",
-            "7-day OAuth apps",
-            "7-day Opus",
-            "7-day Sonnet",
-            "7-day Cowork",
-            "Extra usage",
-            "Extra usage credits",
-        ]
-        assert usages[0].used == 45.0
-        assert usages[0].limit == 100.0
-        assert usages[0].unit == "%"
-        assert usages[0].reset_at == datetime(2026, 5, 8, 4, 0, 0, tzinfo=timezone.utc)
-        assert usages[1].used == 62.5
-        assert usages[2].reset_at is None
-        assert usages[6].used == 25.0
-        assert usages[6].limit == 100.0
-        assert usages[7].used == 250.0
-        assert usages[7].limit == 1000.0
-        assert usages[7].unit == "credits"
-
-    def test_ignores_malformed_buckets(self):
-        payload = {
-            "five_hour": {"utilization": float("nan"), "resets_at": "2026-05-08T04:00:00Z"},
-            "seven_day": "not-a-bucket",
-            "seven_day_opus": {"utilization": True, "resets_at": "2026-05-11T00:00:00Z"},
-            "seven_day_sonnet": {"resets_at": "2026-05-11T00:00:00Z"},
-            "extra_usage": {"is_enabled": True, "used_credits": 10},
-        }
-
-        assert _parse_claude_code_usage(payload) == []
-
-
-class TestFetchClaudeCode:
-    @pytest.mark.asyncio
-    async def test_not_configured_when_token_missing(self, monkeypatch):
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-
-        results = await fetch_claude_code(None)
-
-        assert len(results) == 1
-        result = results[0]
-        assert result.ok is False
-        assert result.error == "not_configured"
-        assert result.name == "claude-code"
-        assert result.display_name == "Claude Code"
-        assert result.key_configured is False
-
-    @pytest.mark.asyncio
-    async def test_success_parses_usage_and_sends_oauth_headers(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-abcdefghijklmnop")
-        payload = {
-            "five_hour": {"utilization": 45, "resets_at": "2026-05-08T04:00:00Z"},
-            "seven_day_opus": {"utilization": 30, "resets_at": "2026-05-11T00:00:00Z"},
-            "extra_usage": {
-                "is_enabled": True,
-                "monthly_limit": 1000,
-                "used_credits": 250,
-                "utilization": 25,
-            },
-        }
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=payload),
-        ) as mock_session_cls:
-            results = await fetch_claude_code(None)
-
-        result = results[0]
-        assert result.ok is True
-        assert result.error is None
-        assert result.name == "claude-code"
-        assert result.display_name == "Claude Code"
-        assert result.key_configured is True
-        assert result.key_masked == "sk-ant-o...mnop"
-        assert [u.label for u in result.usages] == [
-            "5-hour usage",
-            "7-day Opus",
-            "Extra usage",
-            "Extra usage credits",
-        ]
-
-        session = mock_session_cls.return_value.__aenter__.return_value
-        call_args = session.get.call_args
-        assert call_args.args[0] == "https://api.anthropic.com/api/oauth/usage"
-        assert call_args.kwargs["allow_redirects"] is False
-        assert call_args.kwargs["headers"]["Authorization"] == "Bearer sk-ant-oat-abcdefghijklmnop"
-        assert call_args.kwargs["headers"]["anthropic-beta"] == "oauth-2025-04-20"
-        assert call_args.kwargs["headers"]["Accept"] == "application/json"
-        assert mock_session_cls.call_args.kwargs["timeout"].total == 8
-
-    @pytest.mark.asyncio
-    async def test_auth_failed_on_redirect_or_401(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-abcdefghijklmnop")
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=302),
-        ):
-            redirected = (await fetch_claude_code(None))[0]
-        assert redirected.ok is False
-        assert redirected.error == "auth_failed"
-
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=401),
-        ):
-            unauthorized = (await fetch_claude_code(None))[0]
-        assert unauthorized.ok is False
-        assert unauthorized.error == "auth_failed"
-
-    @pytest.mark.asyncio
-    async def test_parse_error_on_unknown_shape(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-abcdefghijklmnop")
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data={"unrelated": "junk"}),
-        ):
-            result = (await fetch_claude_code(None))[0]
-        assert result.ok is False
-        assert result.error == "parse_error"
-
-    @pytest.mark.asyncio
-    async def test_timeout_maps_to_timeout(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-abcdefghijklmnop")
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(raise_exc=asyncio.TimeoutError()),
-        ):
-            result = (await fetch_claude_code(None))[0]
-        assert result.ok is False
-        assert result.error == "timeout"
-
-    @pytest.mark.asyncio
-    async def test_discovers_db_backed_tokens(self, monkeypatch):
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        op_store = MagicMock()
-        op_store.list_provider_keys_full = AsyncMock(
-            return_value=["sk-ant-oat-db-token-abcdefghijklmnop"]
-        )
-        payload = {"five_hour": {"utilization": 10, "resets_at": None}}
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=payload),
-        ):
-            result = (await fetch_claude_code(op_store))[0]
-
-        op_store.list_provider_keys_full.assert_awaited_once_with("claude-code")
-        assert result.ok is True
-        assert result.usages[0].label == "5-hour usage"
-
-    @pytest.mark.asyncio
-    async def test_multi_token_results_are_indexed(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-token-one-abcdefghijklmnop")
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN2", "sk-ant-oat-token-two-abcdefghijklmnop")
-        payload = {"five_hour": {"utilization": 10, "resets_at": None}}
-        with patch(
-            "serving.admin.provider_quotas.aiohttp.ClientSession",
-            return_value=_mock_aiohttp_get(status=200, json_data=payload),
-        ):
-            results = await fetch_claude_code(None)
-
-        assert [r.key_index for r in results] == [1, 2]
-        assert [r.display_name for r in results] == ["Claude Code #1", "Claude Code #2"]
-
-
 class TestGatherAll:
     @pytest.mark.asyncio
-    async def test_gather_all_returns_seven_results_when_unconfigured(self, monkeypatch):
+    async def test_gather_all_returns_five_results_when_unconfigured(self, monkeypatch):
         monkeypatch.delenv("CHUTES_API_KEY", raising=False)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
-        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
         results = await gather_all()
-        assert len(results) == 7
+        assert len(results) == 5
         names = {r.name for r in results}
-        assert names == {
-            "chutes",
-            "zai",
-            "minimax",
-            "ollama",
-            "featherless",
-            "chatgpt",
-            "claude-code",
-        }
+        assert names == {"chutes", "zai", "minimax", "ollama", "featherless"}
         assert all(r.error == "not_configured" for r in results)
 
     @pytest.mark.asyncio
@@ -1201,56 +683,12 @@ class TestGatherAll:
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
-        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
         results = await gather_all()
-        assert len(results) == 7
+        assert len(results) == 5
         chutes = next(r for r in results if r.name == "chutes")
         assert chutes.ok is False
         assert chutes.error == "unexpected"
-
-    @pytest.mark.asyncio
-    async def test_gather_all_passes_op_store_to_chatgpt(self, monkeypatch):
-        seen = {}
-
-        async def fake_chatgpt(op_store=None):
-            seen["op_store"] = op_store
-            return []
-
-        monkeypatch.setattr("serving.admin.provider_quotas.fetch_chatgpt", fake_chatgpt)
-        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-
-        op_store = MagicMock()
-        await gather_all(op_store=op_store)
-
-        assert seen["op_store"] is op_store
-
-    @pytest.mark.asyncio
-    async def test_gather_all_passes_op_store_to_claude_code(self, monkeypatch):
-        seen = {}
-
-        async def fake_claude_code(op_store=None):
-            seen["op_store"] = op_store
-            return []
-
-        monkeypatch.setattr("serving.admin.provider_quotas.fetch_claude_code", fake_claude_code)
-        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
-        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
-
-        op_store = MagicMock()
-        await gather_all(op_store=op_store)
-
-        assert seen["op_store"] is op_store
 
 
 class TestProviderQuotasRoute:
@@ -1289,8 +727,6 @@ class TestProviderQuotasRoute:
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
-        monkeypatch.delenv("CHATGPT_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1299,38 +735,14 @@ class TestProviderQuotasRoute:
         assert resp.status_code == 200
         body = resp.json()
         assert "generated_at" in body
-        assert len(body["providers"]) == 7
+        assert len(body["providers"]) == 5
         assert {p["name"] for p in body["providers"]} == {
             "chutes",
             "zai",
             "minimax",
             "ollama",
             "featherless",
-            "chatgpt",
-            "claude-code",
         }
-
-    @pytest.mark.asyncio
-    async def test_route_passes_operational_store_to_gather_all(self, admin_app, monkeypatch):
-        async def _fake_admin() -> str:
-            return "admin@test"
-
-        seen = {}
-
-        async def fake_gather_all(op_store=None):
-            seen["op_store"] = op_store
-            return []
-
-        admin_app.dependency_overrides[verify_admin_access] = _fake_admin
-        monkeypatch.setattr("serving.servers.routers.admin.providers.gather_all", fake_gather_all)
-
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/admin/provider-quotas")
-
-        admin_app.dependency_overrides.clear()
-        assert resp.status_code == 200
-        assert seen["op_store"] is admin_app.state.services.operational_store
 
 
 class TestNextReset:
