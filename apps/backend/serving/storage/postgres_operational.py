@@ -40,6 +40,28 @@ def _parse_admin_emails(raw: str) -> list[str]:
     return [email.strip().lower() for email in raw.split(",") if email.strip()]
 
 
+def _coerce_user_row(row: Any) -> dict[str, Any] | None:
+    """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
+
+    asyncpg returns JSONB columns as raw JSON strings when no type codec is
+    registered. Callers that inspect ``preferences`` (e.g. disabled-model
+    checks) need a Python dict, not a string.
+    """
+    if row is None:
+        return None
+    d = dict(row)
+    val = d.get("preferences")
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            d["preferences"] = parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            d["preferences"] = {}
+    elif not isinstance(val, dict):
+        d["preferences"] = {}
+    return d
+
+
 class PostgresOperationalStore(OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
@@ -495,7 +517,7 @@ class PostgresOperationalStore(OperationalStore):
                 "FROM users WHERE id = $1",
                 user_id,
             )
-        return dict(row) if row else None
+        return _coerce_user_row(row)
 
     async def get_user_by_email(self, email: str) -> Row | None:
         """Fetch a single user row by lowercased email."""
@@ -506,7 +528,7 @@ class PostgresOperationalStore(OperationalStore):
                 "FROM users WHERE email = $1",
                 email.lower(),
             )
-        return dict(row) if row else None
+        return _coerce_user_row(row)
 
     async def create_user(
         self,
