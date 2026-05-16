@@ -142,9 +142,13 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
                     type="checkbox"
                     checked={!isDisabled}
                     onChange={() => toggleDisabledModel(model.model_id)}
-                    aria-label={isDisabled ? `Enable ${model.model_id}` : `Disable ${model.model_id}`}
+                    aria-label={
+                      isDisabled ? `Enable ${model.model_id}` : `Disable ${model.model_id}`
+                    }
                   />
-                  <span className={`font-medium ${isDisabled ? 'line-through text-gray-400' : 'text-gray-900'}`}>
+                  <span
+                    className={`font-medium ${isDisabled ? 'line-through text-gray-400' : 'text-gray-900'}`}
+                  >
                     {model.model_id}
                   </span>
                   {isDisabled && (
