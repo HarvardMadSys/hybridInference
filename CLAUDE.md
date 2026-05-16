@@ -139,6 +139,7 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 ### 6.5 Common gotchas
 
 - Don't commit to `main` or `dev` directly — always branch + PR.
+- ALWAYS use a git worktree for development — never work in the main checkout.
 - SSE streaming lives in `apps/backend/serving/servers/`. Middleware order
   matters; new middleware that buffers responses will break streaming.
 - Storage layer supports both Postgres and Cloudflare D1 — check
