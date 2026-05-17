@@ -50,7 +50,7 @@ describe('HomePage', () => {
     const { container } = render(<HomePage />);
 
     const warrantyNotice = screen.getByText(/service is provided without guarantee/i);
-    const loggingNotice = screen.getByText(/all prompts and responses are logged/i);
+    const loggingNotice = screen.getByText(/all prompts and responses are logged for research purposes/i);
 
     expect(warrantyNotice).toBeInTheDocument();
     expect(loggingNotice).toBeInTheDocument();
@@ -79,6 +79,6 @@ describe('HomePage', () => {
     });
     expect(screen.queryByLabelText(/dashboard view/i)).not.toBeInTheDocument();
     expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
-    expect(screen.getByText(/all prompts and responses are logged/i)).toBeInTheDocument();
+    expect(screen.getByText(/all prompts and responses are logged for research purposes/i)).toBeInTheDocument();
   });
 });
