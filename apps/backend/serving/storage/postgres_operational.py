@@ -517,7 +517,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
-                "created_at, last_login_at, password_hash, preferences "
+                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests "
                 "FROM users WHERE id = $1",
                 user_id,
             )
@@ -528,7 +528,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
-                "created_at, last_login_at, password_hash, preferences "
+                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests "
                 "FROM users WHERE email = $1",
                 email.lower(),
             )
