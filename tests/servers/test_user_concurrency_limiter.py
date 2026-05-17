@@ -216,3 +216,57 @@ async def test_concurrent_acquires_respect_capacity():
 # Prometheus-backed metric assertions removed: the prometheus stack was
 # dropped from the project; the metric symbols are now no-op shims and there
 # is no REGISTRY to scrape. Limiter behavior is covered by the tests above.
+
+
+# ------------------- per-user max_concurrent_requests override -------------------
+
+
+@pytest.mark.asyncio
+async def test_per_user_override_replaces_role_cap():
+    """A non-None max_concurrent_requests overrides the role-based cap."""
+    lim = _limiter()
+    user_id = "custom-1"
+    # free role cap is 1; override to 5
+    for _ in range(5):
+        granted, cap, _ = await lim.try_acquire(
+            user_id, "free", is_admin=False, max_concurrent_requests=5
+        )
+        assert granted is True
+        assert cap == 5
+    # 6th request must be rejected
+    granted, cap, _ = await lim.try_acquire(
+        user_id, "free", is_admin=False, max_concurrent_requests=5
+    )
+    assert granted is False
+
+
+@pytest.mark.asyncio
+async def test_per_user_override_none_falls_back_to_role():
+    """max_concurrent_requests=None must use the role-based cap."""
+    lim = _limiter()
+    user_id = "custom-2"
+    # free cap is 1
+    granted, cap, _ = await lim.try_acquire(
+        user_id, "free", is_admin=False, max_concurrent_requests=None
+    )
+    assert granted is True
+    assert cap == 1
+    granted, _, _ = await lim.try_acquire(
+        user_id, "free", is_admin=False, max_concurrent_requests=None
+    )
+    assert granted is False
+
+
+@pytest.mark.asyncio
+async def test_per_user_override_live_resize():
+    """Changing the override on subsequent calls triggers lazy resize."""
+    lim = _limiter()
+    user_id = "custom-3"
+    # First call creates slot at cap=2
+    await lim.try_acquire(user_id, "free", is_admin=False, max_concurrent_requests=2)
+    # Second call with cap=10 resizes the slot
+    granted, cap, _ = await lim.try_acquire(
+        user_id, "free", is_admin=False, max_concurrent_requests=10
+    )
+    assert granted is True
+    assert cap == 10

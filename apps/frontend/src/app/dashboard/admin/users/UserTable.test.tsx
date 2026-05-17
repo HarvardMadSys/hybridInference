@@ -96,6 +96,7 @@ describe('UserTable disabled models editing', () => {
         models_used: ['gpt-4o-mini'],
         disabled_models: ['claude-3-5-sonnet'],
         last_request_at: null,
+        max_concurrent_requests: null,
       })
       .mockResolvedValueOnce({
         id: 'user-1',
@@ -117,6 +118,7 @@ describe('UserTable disabled models editing', () => {
         models_used: ['gpt-4o-mini'],
         disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'],
         last_request_at: null,
+        max_concurrent_requests: null,
       });
     vi.mocked(listModelVisibility).mockResolvedValue({
       models: [

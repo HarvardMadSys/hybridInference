@@ -292,6 +292,7 @@ async def verify_api_key(
         "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,
         "is_admin": user_role == "admin",
         "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+        "max_concurrent_requests": user.get("max_concurrent_requests"),
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,
@@ -367,6 +368,7 @@ async def optional_verify_api_key(
         "authenticated": True,
         "is_admin": user_role == "admin",
         "disabled_models": get_disabled_models_from_preferences(row.get("preferences")),
+        "max_concurrent_requests": row.get("max_concurrent_requests"),
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,

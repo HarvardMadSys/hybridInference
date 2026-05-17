@@ -430,6 +430,7 @@ async def get_user_detail(
         models_used=models_used,
         disabled_models=get_disabled_models_from_preferences(user_row.get("preferences")),
         last_request_at=last_request_at,
+        max_concurrent_requests=user_row.get("max_concurrent_requests"),
     )
 
 
@@ -460,25 +461,23 @@ async def update_user(
     updated: list[str] = []
     current_status = user_row["status"]
 
-    # Update role (user-level field on users table)
+    # --- Validate all fields first, then write atomically ---
+
+    # Validate role
+    new_role: str | None = None
     if "role" in payload_dict:
         new_role = payload_dict["role"]
-        # Guard: admin cannot demote themselves
         if (
             user_row["email"]
             and user_row["email"].lower() == admin_id.lower()
             and new_role != "admin"
         ):
             raise HTTPException(409, "Cannot demote your own admin role.")
-        await op_store.update_user_fields(user_id, role=new_role)
-        updated.append("role")
 
-    # Update user-level fields
+    # Validate status transition
+    new_status: str | None = None
     if "status" in payload_dict:
         new_status = payload_dict["status"]
-
-        # Enforce valid transitions: only active <-> suspended.
-        # pending_approval/rejected must go through approve/reject endpoints.
         valid_transitions = {
             ("active", "suspended"),
             ("suspended", "active"),
@@ -490,12 +489,23 @@ async def update_user(
                 f"Use the approve/reject endpoints for pending users.",
             )
 
-        await op_store.update_user_fields(user_id, status=new_status)
+    # Collect all users-table fields for a single round-trip
+    user_table_updates: dict[str, object] = {}
+    if new_role is not None:
+        user_table_updates["role"] = new_role
+        updated.append("role")
+    if new_status is not None:
+        user_table_updates["status"] = new_status
         updated.append("status")
+    if "max_concurrent_requests" in payload_dict:
+        user_table_updates["max_concurrent_requests"] = payload_dict["max_concurrent_requests"]
+        updated.append("max_concurrent_requests")
+    if user_table_updates:
+        await op_store.update_user_fields(user_id, **user_table_updates)
 
-        # Suspend: also revoke active API key to cut API access immediately
-        if new_status == "suspended":
-            await op_store.revoke_key(user_id, hard_delete=False)
+    # Post-write side-effects that depend on the new status
+    if new_status == "suspended":
+        await op_store.revoke_key(user_id, hard_delete=False)
 
     # Update key-level fields
     key_fields = {

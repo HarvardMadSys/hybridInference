@@ -314,6 +314,7 @@ class UserDetailResponse(BaseModel):
     models_used: list[str] = Field(default_factory=list)
     disabled_models: list[str] = Field(default_factory=list)
     last_request_at: datetime | None = None
+    max_concurrent_requests: int | None = None
 
 
 class UpdateUserRequest(BaseModel):
@@ -328,6 +329,7 @@ class UpdateUserRequest(BaseModel):
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
     quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)
     disabled_models: list[str] | None = None
+    max_concurrent_requests: int | None = Field(None, ge=1)
 
 
 class UpdateUserResponse(BaseModel):

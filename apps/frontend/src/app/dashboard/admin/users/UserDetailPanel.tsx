@@ -21,12 +21,14 @@ export interface UserDetailPanelProps {
   editRole: string;
   editQuota: string;
   editDisabledModels: string[];
+  editMaxConcurrent: string;
   availableModels: AdminModelVisibilityItem[];
   saving: boolean;
   busy: string | null;
   onChangeRole: (role: string) => void;
   onChangeQuota: (quota: string) => void;
   onChangeDisabledModels: (modelIds: string[]) => void;
+  onChangeMaxConcurrent: (val: string) => void;
   onSave: () => void;
   onSuspend: (userId: string) => void;
   onReactivate: (userId: string) => void;
@@ -42,12 +44,14 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     editRole,
     editQuota,
     editDisabledModels,
+    editMaxConcurrent,
     availableModels,
     saving,
     busy,
     onChangeRole,
     onChangeQuota,
     onChangeDisabledModels,
+    onChangeMaxConcurrent,
     onSave,
     onSuspend,
     onReactivate,
@@ -178,18 +182,27 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             </select>
           </div>
           {detail.has_key && (
-            <>
-              <div>
-                <div className="text-[11px] font-medium text-gray-500 mb-1">Daily quota</div>
-                <input
-                  type="number"
-                  value={editQuota}
-                  onChange={(e) => onChangeQuota(e.target.value)}
-                  className="w-24 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
-                />
-              </div>
-            </>
+            <div>
+              <div className="text-[11px] font-medium text-gray-500 mb-1">Daily quota</div>
+              <input
+                type="number"
+                value={editQuota}
+                onChange={(e) => onChangeQuota(e.target.value)}
+                className="w-24 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
+              />
+            </div>
           )}
+          <div>
+            <div className="text-[11px] font-medium text-gray-500 mb-1">Max concurrent</div>
+            <input
+              type="number"
+              min={1}
+              value={editMaxConcurrent}
+              onChange={(e) => onChangeMaxConcurrent(e.target.value)}
+              placeholder="Role default"
+              className="w-28 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] placeholder:text-gray-400"
+            />
+          </div>
           <button
             onClick={onSave}
             disabled={saving}
