@@ -19,19 +19,12 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import tiktoken
 
 from . import config
 
-_ENC = tiktoken.get_encoding("cl100k_base")
-
-_SENTENCE = "The capital of France is Paris. "
-_SENTENCE_TOKENS = len(_ENC.encode(_SENTENCE))
-
 
 def _prompt_for_len(n: int) -> str:
-    repeats = max(1, n // _SENTENCE_TOKENS)
-    return _SENTENCE * repeats
+    return "hi"
 
 
 async def _stream_request(

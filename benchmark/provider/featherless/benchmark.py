@@ -271,7 +271,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prompt",
-        default="Write a long story",
+        # default="Write a long story",
+        default="Hi",
         help="Prompt to send",
     )
     parser.add_argument(

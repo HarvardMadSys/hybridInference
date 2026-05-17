@@ -1,16 +1,21 @@
 # MiniMax-M2.5 OpenRouter TTFT Benchmark
 
-**Model:** `MiniMaxAI/MiniMax-M2.5`
+**Model:** `minimax/minimax-m2.5`
 **Purpose:** Measure TTFT (Time To First Token) and throughput across OpenRouter providers for MiniMax-M2.5.
 
 ## Providers tested
 
-- deepinfra
-- fireworks
-- together-ai
-- featherless
-- chutes
-- ollama
+- DeepInfra
+- Chutes
+- Inceptron
+- Parasail
+- SambaNova
+- Friendli
+- Mara
+- Minimax
+- Novita
+- SiliconFlow
+- AkashML
 
 ## Test matrix
 
@@ -56,7 +61,7 @@ python -c "
 import sys
 sys.path.insert(0, 'benchmark/provider/openRouter/minimax')
 from openrouter_benchmark import __main__
-__main__.main(['--providers', 'deepinfra', 'fireworks', '--input-lens', '1024', '4096', '--concurrencies', '1', '16'])
+__main__.main(['--providers', 'DeepInfra', 'Chutes', '--input-lens', '1024', '4096', '--concurrencies', '1', '16'])
 "
 ```
 
