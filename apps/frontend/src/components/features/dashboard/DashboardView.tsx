@@ -90,6 +90,10 @@ export function DashboardView() {
         </div>
       </div>
 
+      <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-center text-sm text-amber-800">
+        All prompts and responses are logged.
+      </div>
+
       <ApiKeyManager />
 
       <ModelsSection />
