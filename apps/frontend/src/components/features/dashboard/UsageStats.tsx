@@ -222,7 +222,7 @@ export function UsageStats(): JSX.Element {
           </div>
 
           <div className="text-center text-sm text-gray-500">
-            Free within plan limits; dollar amounts are attribution from logs, not invoices.
+            All prompts and responses are logged for research purposes. Free within plan limits; dollar amounts are attribution from logs, not invoices.
           </div>
         </div>
       )}

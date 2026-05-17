@@ -12,9 +12,6 @@ export default function HomePage(): JSX.Element {
         <p>Service is provided without guarantee.</p>
         <p className="mt-1">All prompts and responses are logged for research purposes.</p>
       </footer>
-      <div className="mx-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-center text-sm text-amber-800 sm:mx-6 lg:mx-8">
-        All prompts and responses are logged.
-      </div>
     </div>
   );
 }
