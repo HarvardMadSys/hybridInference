@@ -98,7 +98,8 @@ class PostgresOperationalStore(OperationalStore):
                 reviewed_at TIMESTAMPTZ,
                 reviewed_by TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
-                last_login_at TIMESTAMPTZ
+                last_login_at TIMESTAMPTZ,
+                max_concurrent_requests INT DEFAULT NULL
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
@@ -122,6 +123,9 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
             "preferences JSONB NOT NULL DEFAULT '{}'::jsonb"
+        )
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS max_concurrent_requests INT DEFAULT NULL"
         )
 
         # Status constraint rebuild
@@ -1147,7 +1151,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
-                "u.email, u.role, u.email_verified, u.preferences "
+                "u.email, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -1162,7 +1166,8 @@ class PostgresOperationalStore(OperationalStore):
         """Lightweight identity lookup (no quota check, no last_used write)."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT k.user_id, u.email, u.role, u.email_verified, u.preferences "
+                "SELECT k.user_id, u.email, u.role, u.email_verified, u.preferences, "
+                "u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "

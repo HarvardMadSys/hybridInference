@@ -116,15 +116,27 @@ class UserConcurrencyLimiter:
             return role
         return "free"
 
-    async def try_acquire(self, user_id: str, role: str, is_admin: bool) -> tuple[bool, int, str]:
+    async def try_acquire(
+        self,
+        user_id: str,
+        role: str,
+        is_admin: bool,
+        max_concurrent_requests: int | None = None,
+    ) -> tuple[bool, int, str]:
         """Non-blocking acquire.
 
         Returns ``(granted, capacity, role_label)`` where *capacity*
         reflects the slot's **current** capacity after any lazy resize and
         *role_label* is the slot's sticky label.
+
+        *max_concurrent_requests* overrides the role-based default when set.
         """
         limits = await self._read_limits()
-        target_capacity = self._limit_for(role, is_admin, limits)
+        target_capacity = (
+            max_concurrent_requests
+            if max_concurrent_requests is not None
+            else self._limit_for(role, is_admin, limits)
+        )
         target_label = self._role_label(role, is_admin, limits)
 
         slot = self._slots.get(user_id)
@@ -208,8 +220,9 @@ async def enforce_user_concurrency(
     user_id = user["user_id"]
     role = user.get("role", "free") or "free"
     is_admin = bool(user.get("is_admin", False))
+    max_concurrent = user.get("max_concurrent_requests")
 
-    granted, limit, role_label = await limiter.try_acquire(user_id, role, is_admin)
+    granted, limit, role_label = await limiter.try_acquire(user_id, role, is_admin, max_concurrent)
     if not granted:
         logger.info(
             "per-user concurrency limit hit",

@@ -58,6 +58,7 @@ USERS_MUTABLE_COLUMNS: dict[str, str] = {
     "reviewed_at": "reviewed_at",
     "reviewed_by": "reviewed_by",
     "last_login_at": "last_login_at",
+    "max_concurrent_requests": "max_concurrent_requests",
 }
 
 API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {

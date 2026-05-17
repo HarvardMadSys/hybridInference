@@ -47,6 +47,7 @@ export function UserTable(props: UserTableProps) {
   const [editRole, setEditRole] = useState('');
   const [editQuota, setEditQuota] = useState('');
   const [editDisabledModels, setEditDisabledModels] = useState<string[]>([]);
+  const [editMaxConcurrent, setEditMaxConcurrent] = useState('');
   const [availableModels, setAvailableModels] = useState<AdminModelVisibilityItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -78,6 +79,7 @@ export function UserTable(props: UserTableProps) {
       setEditRole(d.role || 'free');
       setEditQuota(d.quota_daily_usd?.toString() ?? '100');
       setEditDisabledModels(d.disabled_models ?? []);
+      setEditMaxConcurrent(d.max_concurrent_requests?.toString() ?? '');
       setAvailableModels(visibility.models);
     } catch {
       setExpandedId(null);
@@ -99,6 +101,10 @@ export function UserTable(props: UserTableProps) {
       const nextDisabledModels = [...editDisabledModels].sort();
       if (JSON.stringify(nextDisabledModels) !== JSON.stringify(currentDisabledModels)) {
         patch.disabled_models = nextDisabledModels;
+      }
+      const currentMaxConcurrent = detail.max_concurrent_requests?.toString() ?? '';
+      if (editMaxConcurrent !== currentMaxConcurrent) {
+        patch.max_concurrent_requests = editMaxConcurrent === '' ? null : Number(editMaxConcurrent);
       }
       if (!Object.keys(patch).length) return;
       await apiUpdateUser(expandedId, patch);
@@ -345,12 +351,14 @@ export function UserTable(props: UserTableProps) {
                             editRole={editRole}
                             editQuota={editQuota}
                             editDisabledModels={editDisabledModels}
+                            editMaxConcurrent={editMaxConcurrent}
                             availableModels={availableModels}
                             saving={saving}
                             busy={busy}
                             onChangeRole={setEditRole}
                             onChangeQuota={setEditQuota}
                             onChangeDisabledModels={setEditDisabledModels}
+                            onChangeMaxConcurrent={setEditMaxConcurrent}
                             onSave={doSave}
                             onSuspend={doSuspend}
                             onReactivate={doReactivate}

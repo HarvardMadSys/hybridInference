@@ -190,6 +190,7 @@ export interface UserDetail {
   models_used: string[];
   disabled_models: string[];
   last_request_at: string | null;
+  max_concurrent_requests: number | null;
 }
 
 export async function getUserDetail(userId: string): Promise<UserDetail> {
@@ -203,6 +204,7 @@ export interface UpdateUserData {
   quota_daily_cost_usd?: number;
   quota_monthly_cost_usd?: number;
   disabled_models?: string[];
+  max_concurrent_requests?: number | null;
 }
 
 export async function updateUser(

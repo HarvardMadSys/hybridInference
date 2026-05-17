@@ -430,6 +430,7 @@ async def get_user_detail(
         models_used=models_used,
         disabled_models=get_disabled_models_from_preferences(user_row.get("preferences")),
         last_request_at=last_request_at,
+        max_concurrent_requests=user_row.get("max_concurrent_requests"),
     )
 
 
@@ -459,6 +460,13 @@ async def update_user(
 
     updated: list[str] = []
     current_status = user_row["status"]
+
+    # Update per-user concurrency override
+    if "max_concurrent_requests" in payload_dict:
+        await op_store.update_user_fields(
+            user_id, max_concurrent_requests=payload_dict["max_concurrent_requests"]
+        )
+        updated.append("max_concurrent_requests")
 
     # Update role (user-level field on users table)
     if "role" in payload_dict:
