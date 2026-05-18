@@ -12,9 +12,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from routing.routers import RoutingObservation
+from routing.routewise.candidates import QuotaSource
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import HedgedAdapter
+from routing.routewise.quota_snapshot import ProviderQuotaSnapshotStore
 from routing.routewise.router import RouteWiseRouter, SubscriptionType
+from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -28,6 +31,7 @@ def _make_model_config(
     prompt_price: str = "0.001",
     completion_price: str = "0.002",
     endpoint_id: str | None = None,
+    quota_source: dict[str, str] | None = None,
 ) -> MagicMock:
     """Create a mock ModelConfig."""
     cfg = MagicMock()
@@ -39,6 +43,7 @@ def _make_model_config(
     # emitted by FixedRouter.stream_chat_completion can be json.dumps()'d.
     cfg.base_url = f"https://{provider}.example/v1"
     cfg.pricing = {"prompt": prompt_price, "completion": completion_price}
+    cfg.quota_source = quota_source
     return cfg
 
 
@@ -49,6 +54,7 @@ def _make_adapter(
     prompt_price: str = "0.001",
     completion_price: str = "0.002",
     endpoint_id: str | None = None,
+    quota_source: dict[str, str] | None = None,
 ) -> MagicMock:
     """Create a mock adapter with a mock ModelConfig."""
     adapter = MagicMock()
@@ -59,6 +65,7 @@ def _make_adapter(
         prompt_price=prompt_price,
         completion_price=completion_price,
         endpoint_id=endpoint_id,
+        quota_source=quota_source,
     )
     return adapter
 
@@ -274,6 +281,101 @@ class TestRouteWiseRouterScaffold:
         )
 
         assert router._estimate_value("test-model", 1000) == pytest.approx(0.004048)
+
+    def test_quota_source_without_snapshot_masks_quota_candidate(self):
+        """Provider-backed S_Q is not feasible until a quota snapshot exists."""
+        source = {
+            "provider": "chutes",
+            "usage_label": "Daily requests",
+            "unit": "requests",
+        }
+        quota_adapter = _make_adapter(
+            subscription_type="quota",
+            quota_source=source,
+            endpoint_id="test-model:quota-provider",
+        )
+        api_adapter = _make_adapter(
+            subscription_type="api",
+            endpoint_id="test-model:api-provider",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+
+        assert selected is api_adapter
+        assert router._quota_sources() == [
+            QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_quota_source_snapshot_enables_quota_candidate(self):
+        """Provider-backed S_Q uses the fetched Chutes quota fraction."""
+        source = {
+            "provider": "chutes",
+            "usage_label": "Daily requests",
+            "unit": "requests",
+        }
+        quota_adapter = _make_adapter(
+            subscription_type="quota",
+            quota_source=source,
+            endpoint_id="test-model:quota-provider",
+        )
+        api_adapter = _make_adapter(
+            subscription_type="api",
+            prompt_price="3.0",
+            completion_price="15.0",
+            endpoint_id="test-model:api-provider",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
+
+        async def fake_fetch_chutes() -> list[ProviderQuotaResult]:
+            return [
+                ProviderQuotaResult(
+                    name="chutes",
+                    display_name="Chutes",
+                    key_configured=True,
+                    key_masked="***",
+                    fetched_at=None,
+                    ok=True,
+                    error=None,
+                    usages=[
+                        ProviderQuotaUsage(
+                            label="Daily requests",
+                            used=10.0,
+                            limit=100.0,
+                            unit="requests",
+                            reset_at=None,
+                        )
+                    ],
+                )
+            ]
+
+        config = RouteWiseConfig(
+            shadow_price_L_seed=0.0000001,
+            shadow_price_U_seed=0.001,
+        )
+        router = RouteWiseRouter(fixed_router=fr, config=config)
+        router.quota_snapshots = ProviderQuotaSnapshotStore(fetchers={"chutes": fake_fetch_chutes})
+        await router.refresh_quota_snapshots_once()
+
+        selected = router._select_adapter(
+            "test-model",
+            {"prompt_tokens": 1000, "request_id": "req-with-snapshot"},
+        )
+
+        assert selected is quota_adapter
+        snapshot = router.quota_snapshots.get(
+            QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
+        )
+        assert snapshot is not None
+        assert snapshot.remaining == 89
+        decision = router._pending_decisions["req-with-snapshot"]
+        assert decision["quota_remaining"] == 89
+        assert decision["quota_source"] == source
 
     def test_stateful_tiers_raise_when_worker_count_is_multi_process(self, monkeypatch):
         """S_Q/S_C are process-local and guarded in multi-worker deployments."""

@@ -24,8 +24,8 @@ Exports:
     pre_filter_providers -- Hard-filter providers by basic requirements.
 """
 
-from .concurrency import ConcurrencyManager
 from .candidates import CandidatePricing, ProviderCandidate, QuotaSource, SubscriptionType
+from .concurrency import ConcurrencyManager
 from .config import RouteWiseConfig, load_routewise_config
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
 from .envelope import CostEnvelopeEstimator, CostEnvelopeSnapshot
@@ -51,6 +51,7 @@ from .predictor import (
     QuantilePrediction,
 )
 from .quota import QuotaManager
+from .quota_snapshot import ProviderQuotaSnapshot, ProviderQuotaSnapshotStore
 from .router import RouteWiseRouter
 
 __all__ = [
@@ -65,12 +66,14 @@ __all__ = [
     "HedgedAdapter",
     "LPCandidate",
     "LPSolution",
-    "ProviderEventSink",
     "ProviderCandidate",
+    "ProviderEventSink",
     "ProviderProfile",
+    "ProviderQuotaSnapshot",
+    "ProviderQuotaSnapshotStore",
     "QuantilePrediction",
-    "QuotaSource",
     "QuotaManager",
+    "QuotaSource",
     "RouteWiseConfig",
     "RouteWiseRouter",
     "SWRRSampler",

@@ -46,6 +46,7 @@ class RouteWiseParams(BaseModel):
     daily_quota: int = 5000
     quota_monthly_fee: float = 20.0
     reset_timezone: str = "UTC"
+    quota_snapshot_refresh_interval_sec: float = 60.0
 
     # S_C concurrency parameters (Stage 2, disabled in Stage 1)
     concurrency_enabled: bool = False

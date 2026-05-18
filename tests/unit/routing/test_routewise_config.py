@@ -27,6 +27,7 @@ class TestRouteWiseConfigDefaults:
         assert cfg.daily_quota == 5000
         assert cfg.quota_monthly_fee == 20.0
         assert cfg.reset_timezone == "UTC"
+        assert cfg.quota_snapshot_refresh_interval_sec == 60.0
         assert cfg.concurrency_enabled is False
         assert cfg.concurrency_limit == 8
         assert cfg.concurrency_monthly_fee == 25.0
@@ -88,6 +89,7 @@ class TestLoadFromYAML:
             "    daily_quota: 8000\n"
             "    monthly_fee: 30.0\n"
             "    reset_timezone: US/Eastern\n"
+            "    snapshot_refresh_interval_sec: 15.0\n"
             "  concurrency:\n"
             "    enabled: true\n"
             "    limit: 16\n"
@@ -109,6 +111,7 @@ class TestLoadFromYAML:
         assert cfg.daily_quota == 8000
         assert cfg.quota_monthly_fee == 30.0
         assert cfg.reset_timezone == "US/Eastern"
+        assert cfg.quota_snapshot_refresh_interval_sec == 15.0
         # Concurrency section
         assert cfg.concurrency_enabled is True
         assert cfg.concurrency_limit == 16

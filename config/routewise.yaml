@@ -35,6 +35,7 @@ routewise:
     daily_quota: 5000             # requests per day
     monthly_fee: 20.0             # for amortized cost reporting only
     reset_timezone: UTC           # daily quota reset boundary
+    snapshot_refresh_interval_sec: 60.0  # provider quota API refresh cadence
 
   # --- S_C (concurrency) subscription parameters ---
   # Stage 2 feature; disabled by default in Stage 1.

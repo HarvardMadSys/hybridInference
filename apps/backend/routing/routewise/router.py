@@ -39,6 +39,7 @@ from serving.utils.tokens import estimate_prompt_tokens
 from .candidates import (
     CandidatePricing,
     ProviderCandidate as RouteProviderCandidate,
+    QuotaSource,
     SubscriptionType,
     build_provider_candidates,
     endpoint_id_for_adapter,
@@ -50,6 +51,7 @@ from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
 from .quota import QuotaManager
+from .quota_snapshot import ProviderQuotaSnapshotStore
 
 logger = get_logger(__name__)
 
@@ -74,6 +76,9 @@ class FeasibleProviderCandidate:
     effective_cost_usd: float
     mean_ttft_sec: float
     cost_reason: str
+    quota_source: QuotaSource | None = None
+    quota_used_fraction: float | None = None
+    quota_remaining: int | None = None
 
 
 class _WeightView:
@@ -157,6 +162,7 @@ class RouteWiseRouter(BaseRouter):
             min_ratio=float(self.config.shadow_price_min_ratio),
         )
         self.quota_mgr = QuotaManager(config)
+        self.quota_snapshots = ProviderQuotaSnapshotStore()
         self.conc_mgr: ConcurrencyManager | None = (
             ConcurrencyManager(config) if self.config.concurrency_enabled else None
         )
@@ -164,6 +170,7 @@ class RouteWiseRouter(BaseRouter):
         self._latency_profiles: dict[str, ProviderProfile] = {}
         self._pending_decisions: dict[str, dict[str, Any]] = {}
         self._sweep_task: asyncio.Task[None] | None = None
+        self._quota_refresh_task: asyncio.Task[None] | None = None
         # Compatibility attributes retained for tests and diagnostics from the
         # older implementation.  The current body router does not run the old
         # background LP/SWRR or shadow/economic hedging paths.
@@ -216,23 +223,30 @@ class RouteWiseRouter(BaseRouter):
         self._validate_routes()
 
     async def start(self) -> None:
-        """Start periodic pending-decision cleanup."""
-        if self._sweep_task is not None and not self._sweep_task.done():
-            return
-        self._sweep_task = asyncio.create_task(
-            self._sweep_pending_decisions_loop(),
-            name="RouteWiseRouter.sweep_pending_decisions",
-        )
+        """Start periodic maintenance tasks."""
+        if self._sweep_task is None or self._sweep_task.done():
+            self._sweep_task = asyncio.create_task(
+                self._sweep_pending_decisions_loop(),
+                name="RouteWiseRouter.sweep_pending_decisions",
+            )
+        if self._quota_sources() and (
+            self._quota_refresh_task is None or self._quota_refresh_task.done()
+        ):
+            self._quota_refresh_task = asyncio.create_task(
+                self._refresh_quota_snapshots_loop(),
+                name="RouteWiseRouter.refresh_quota_snapshots",
+            )
 
     async def stop(self) -> None:
-        """Stop periodic pending-decision cleanup."""
-        task = self._sweep_task
+        """Stop periodic maintenance tasks."""
+        tasks = [task for task in (self._sweep_task, self._quota_refresh_task) if task is not None]
         self._sweep_task = None
-        if task is None:
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
+        self._quota_refresh_task = None
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
     async def _sweep_pending_decisions_loop(self) -> None:
         try:
@@ -267,6 +281,27 @@ class RouteWiseRouter(BaseRouter):
                 },
             )
         return evicted
+
+    async def refresh_quota_snapshots_once(self) -> None:
+        """Refresh provider quota snapshots for configured S_Q candidates."""
+        await self.quota_snapshots.refresh_once(self._quota_sources())
+
+    async def _refresh_quota_snapshots_loop(self) -> None:
+        interval = max(1.0, float(self.config.quota_snapshot_refresh_interval_sec))
+        try:
+            while True:
+                try:
+                    await self.refresh_quota_snapshots_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "routewise_quota_snapshot_loop_failed",
+                        extra={"event": "routewise_quota_snapshot_loop_failed"},
+                    )
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
 
     # ------------------------------------------------------------------
     # Classification and helpers
@@ -349,6 +384,17 @@ class RouteWiseRouter(BaseRouter):
 
     def _routewise_pool(self, model_id: str) -> str:
         return self._model_routewise_pools.get(model_id, model_id)
+
+    def _quota_sources(self) -> list[QuotaSource]:
+        sources: dict[QuotaSource, QuotaSource] = {}
+        for candidates in self.route_candidates.values():
+            for candidate in candidates:
+                if (
+                    candidate.subscription_type is SubscriptionType.QUOTA
+                    and candidate.quota_source is not None
+                ):
+                    sources[candidate.quota_source] = candidate.quota_source
+        return list(sources.values())
 
     def _max_tokens_from_context(self, context: dict[str, Any]) -> int | None:
         params = context.get("params")
@@ -488,12 +534,6 @@ class RouteWiseRouter(BaseRouter):
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
 
         candidates: list[FeasibleProviderCandidate] = []
-        used_fraction = self.quota_mgr.used_fraction
-        quota_price = quota_shadow_price_usd(
-            used_fraction=used_fraction,
-            lower=envelope.lower,
-            upper=envelope.upper,
-        )
 
         for route_candidate in entries:
             adapter = route_candidate.adapter
@@ -513,10 +553,24 @@ class RouteWiseRouter(BaseRouter):
                 )
                 reason = "cold_api_cost"
             elif route_candidate.subscription_type is SubscriptionType.QUOTA:
-                if self.quota_mgr.remaining <= 0:
-                    continue
+                quota_source = route_candidate.quota_source
+                if quota_source is not None:
+                    snapshot = self.quota_snapshots.get(quota_source)
+                    if snapshot is None or snapshot.remaining <= 0:
+                        continue
+                    used_fraction = snapshot.used_fraction
+                    quota_remaining = snapshot.remaining
+                else:
+                    if self.quota_mgr.remaining <= 0:
+                        continue
+                    used_fraction = self.quota_mgr.used_fraction
+                    quota_remaining = self.quota_mgr.remaining
                 tier = "quota"
-                cost = quota_price
+                cost = quota_shadow_price_usd(
+                    used_fraction=used_fraction,
+                    lower=envelope.lower,
+                    upper=envelope.upper,
+                )
                 reason = "quota_shadow_price"
             elif route_candidate.subscription_type is SubscriptionType.CONCURRENCY:
                 if self.conc_mgr is None or self.conc_mgr.available <= 0:
@@ -524,8 +578,16 @@ class RouteWiseRouter(BaseRouter):
                 tier = "concurrency"
                 cost = 0.0
                 reason = "available_concurrency_slot"
+                quota_source = None
+                used_fraction = None
+                quota_remaining = None
             else:
                 continue
+
+            if route_candidate.subscription_type is not SubscriptionType.QUOTA:
+                quota_source = None
+                used_fraction = None
+                quota_remaining = None
 
             candidates.append(
                 FeasibleProviderCandidate(
@@ -536,6 +598,9 @@ class RouteWiseRouter(BaseRouter):
                     effective_cost_usd=cost,
                     mean_ttft_sec=self._mean_ttft_sec(endpoint_id, now),
                     cost_reason=reason,
+                    quota_source=quota_source,
+                    quota_used_fraction=used_fraction,
+                    quota_remaining=quota_remaining,
                 )
             )
         return candidates
@@ -566,6 +631,8 @@ class RouteWiseRouter(BaseRouter):
         if candidate.tier == "concurrency":
             return self.conc_mgr is not None and self.conc_mgr.try_acquire()
         if candidate.tier == "quota":
+            if candidate.quota_source is not None:
+                return self.quota_snapshots.consume(candidate.quota_source)
             if self.quota_mgr.remaining <= 0:
                 return False
             # Commit at selection time and do not refund on provider failure:
@@ -574,6 +641,13 @@ class RouteWiseRouter(BaseRouter):
             self.quota_mgr.consume()
             return True
         return True
+
+    def _quota_metadata_state(self, selected: FeasibleProviderCandidate) -> tuple[float, int]:
+        if selected.tier == "quota" and selected.quota_source is not None:
+            snapshot = self.quota_snapshots.get(selected.quota_source)
+            if snapshot is not None:
+                return snapshot.used_fraction, snapshot.remaining
+        return self.quota_mgr.used_fraction, self.quota_mgr.remaining
 
     def _decision_metadata(
         self,
@@ -593,6 +667,7 @@ class RouteWiseRouter(BaseRouter):
             prompt_tokens=prompt_tokens,
             output_tokens=prediction.tokens,
         )
+        quota_used_fraction, quota_remaining = self._quota_metadata_state(selected)
         return {
             "request_id": request_id,
             "timestamp": time.time(),
@@ -608,6 +683,16 @@ class RouteWiseRouter(BaseRouter):
             "candidate_costs_usd": {c.endpoint_id: c.effective_cost_usd for c in candidates},
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
             "candidate_tiers": {c.endpoint_id: c.tier for c in candidates},
+            "candidate_quota_used_fraction": {
+                c.endpoint_id: c.quota_used_fraction
+                for c in candidates
+                if c.quota_used_fraction is not None
+            },
+            "candidate_quota_remaining": {
+                c.endpoint_id: c.quota_remaining
+                for c in candidates
+                if c.quota_remaining is not None
+            },
             "prompt_tokens": prompt_tokens,
             "predicted_output_tokens": prediction.tokens,
             "output_prediction_source": prediction.source,
@@ -623,8 +708,17 @@ class RouteWiseRouter(BaseRouter):
             "U": envelope.upper,
             "envelope_source": envelope.source,
             "envelope_sample_count": envelope.sample_count,
-            "quota_used_fraction": self.quota_mgr.used_fraction,
-            "quota_remaining": self.quota_mgr.remaining,
+            "quota_source": (
+                {
+                    "provider": selected.quota_source.provider,
+                    "usage_label": selected.quota_source.usage_label,
+                    "unit": selected.quota_source.unit,
+                }
+                if selected.quota_source is not None
+                else None
+            ),
+            "quota_used_fraction": quota_used_fraction,
+            "quota_remaining": quota_remaining,
             "quota_committed": 0.0,
             "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
             "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
