@@ -405,6 +405,16 @@ def register_from_models_yaml(
                 # RouteWise subscription classification
                 if "subscription_type" in r:
                     adapter_cfg["subscription_type"] = r["subscription_type"]
+                for routewise_key in (
+                    "routewise_pool",
+                    "quota_pool",
+                    "concurrency_pool",
+                    "quota_source",
+                    "quota",
+                    "concurrency",
+                ):
+                    if routewise_key in r:
+                        adapter_cfg[routewise_key] = r[routewise_key]
 
                 adapter = _make_adapter(kind, adapter_cfg)
                 adapters_with_weights.append((adapter, weight))

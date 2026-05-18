@@ -109,6 +109,14 @@ class ModelConfig:
     # RouteWise subscription classification for this route entry.
     # Valid values: "api" (pay-per-token), "quota" (daily quota), "concurrency".
     subscription_type: str = "api"
+    # RouteWise route-level metadata. These fields are not sent upstream; they
+    # are carried from models.yaml to the RouteWise candidate extractor.
+    routewise_pool: str | None = None
+    quota_pool: str | None = None
+    concurrency_pool: str | None = None
+    quota_source: dict[str, Any] | None = None
+    quota: dict[str, Any] | None = None
+    concurrency: dict[str, Any] | None = None
     # Whether to send `stream_options: {"include_usage": True}` on streaming requests.
     # Enable for OpenAI / vLLM / sglang upstreams that support it. Leave False for
     # providers that strictly validate the request body and reject unknown fields

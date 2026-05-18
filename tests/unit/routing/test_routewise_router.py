@@ -262,6 +262,42 @@ class TestRouteWiseRouterScaffold:
         entries = router.classified["test-model"]
         assert entries[0][2] is SubscriptionType.API
 
+    def test_subscription_only_route_uses_reference_api_price_for_value(self):
+        """Routes without S_A can still price requests with reference_api_price."""
+        quota_adapter = _make_adapter(subscription_type="quota")
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota_adapter, 1.0)])
+
+        router = RouteWiseRouter(
+            fixed_router=fr,
+            config=RouteWiseConfig(reference_api_price={"prompt": "2.0", "completion": "4.0"}),
+        )
+
+        assert router._estimate_value("test-model", 1000) == pytest.approx(0.004048)
+
+    def test_stateful_tiers_raise_when_worker_count_is_multi_process(self, monkeypatch):
+        """S_Q/S_C are process-local and guarded in multi-worker deployments."""
+        monkeypatch.setenv("WEB_CONCURRENCY", "2")
+
+        quota_adapter = _make_adapter(subscription_type="quota")
+        api_adapter = _make_adapter(subscription_type="api")
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
+
+        with pytest.raises(RuntimeError, match="process-local"):
+            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+    def test_multi_worker_guard_does_not_block_api_only_routes(self, monkeypatch):
+        """API-only RouteWise routes remain safe with multiple workers."""
+        monkeypatch.setenv("WEB_CONCURRENCY", "2")
+
+        api_adapter = _make_adapter(subscription_type="api")
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(api_adapter, 1.0)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        assert router._select_adapter("test-model", {}) is api_adapter
+
     def test_attach_fixed_router_clears_derived_state_on_rebind(self):
         """Rebinding resets all derived state that depends on prior routing activity."""
         adapter = _make_adapter()
@@ -715,8 +751,8 @@ class TestRouteWiseLayer2:
         now = time.time()
         assert profile.sample_count(now) == 1
 
-    def test_single_api_skips_lp(self):
-        """Single S_A provider bypasses Layer 2 LP."""
+    def test_single_api_uses_body_lp_single_provider_solution(self):
+        """Single S_A provider returns a degenerate body-LP solution."""
         api_only = _make_adapter(
             subscription_type="api",
             prompt_price="3.0",
@@ -735,11 +771,10 @@ class TestRouteWiseLayer2:
 
         selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
         assert selected is api_only
-        # LP should not have run.
-        assert router._last_lp_statuses.get("test-model", "not_run") == "not_run"
+        assert router._last_lp_statuses.get("test-model") == "single_provider"
 
-    def test_shadow_hedge_logged(self):
-        """Shadow mode produces log entries when multiple providers exist."""
+    def test_shadow_hedge_mode_is_ignored_by_body_router(self):
+        """First integration does not run shadow/economic hedging from selection."""
         config = RouteWiseConfig(
             latency_min_samples=5,
             latency_lp_interval_sec=0.0,
@@ -760,16 +795,7 @@ class TestRouteWiseLayer2:
 
         router._select_adapter("test-model", {"prompt_tokens": 1000})
 
-        # Shadow hedge log should have at least one entry with correct model_id.
-        assert len(router._shadow_hedge_log) >= 1
-        entry = router._shadow_hedge_log[0]
-        assert entry.model_id == "test-model"
-        assert entry.reason in (
-            "no_backup",
-            "hedge_not_justified",
-            "hedge_warranted",
-            "insufficient_samples",
-        )
+        assert router._shadow_hedge_log == []
 
     def test_error_observation_updates_profile(self):
         """Failed observation records error in the profile."""

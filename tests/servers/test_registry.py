@@ -420,3 +420,57 @@ models:
     assert by_id["model-with-router"].router_params == {"daily_quota": 1000}
     assert by_id["model-without-router"].router is None
     assert by_id["model-without-router"].router_params is None
+
+
+@pytest.mark.unit
+def test_register_from_models_yaml_propagates_routewise_route_metadata(tmp_path):
+    yaml = """
+models:
+  - id: routewise-model
+    name: RouteWise Model
+    provider: openai_compat
+    base_url: http://example.com/v1
+    router: routewise
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://example.com/v1
+        subscription_type: quota
+        routewise_pool: glm-paid-pool
+        quota_pool: chutes-glm-daily
+        quota_source:
+          provider: chutes
+          usage_label: Daily requests
+          unit: requests
+        quota:
+          limit: 5000
+          window: daily
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://example-two.com/v1
+        subscription_type: concurrency
+        concurrency_pool: featherless-glm
+        concurrency:
+          limit: 4
+"""
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml)
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    first = exe.routes["routewise-model"].adapters[0][0].config
+    second = exe.routes["routewise-model"].adapters[1][0].config
+
+    assert first.subscription_type == "quota"
+    assert first.routewise_pool == "glm-paid-pool"
+    assert first.quota_pool == "chutes-glm-daily"
+    assert first.quota_source == {
+        "provider": "chutes",
+        "usage_label": "Daily requests",
+        "unit": "requests",
+    }
+    assert first.quota == {"limit": 5000, "window": "daily"}
+
+    assert second.subscription_type == "concurrency"
+    assert second.concurrency_pool == "featherless-glm"
+    assert second.concurrency == {"limit": 4}

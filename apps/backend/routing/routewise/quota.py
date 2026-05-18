@@ -49,6 +49,28 @@ class QuotaManager:
         """Requests remaining in today's quota (non-negative)."""
         return max(0, self._daily_quota - self._used_today)
 
+    @property
+    def daily_quota(self) -> int:
+        """Configured daily request quota."""
+        return self._daily_quota
+
+    @property
+    def used_today(self) -> int:
+        """Requests consumed in the current reset window."""
+        self._maybe_reset()
+        return self._used_today
+
+    @property
+    def used_fraction(self) -> float:
+        """Fraction of today's quota consumed, clamped to [0, 1]."""
+        self._maybe_reset()
+        return min(max(self._used_today / self._daily_quota, 0.0), 1.0)
+
+    def set_shadow_bounds(self, lower: float, upper: float) -> None:
+        """Update ``L/U`` used by the exponential shadow-price curve."""
+        self._L = max(float(lower), 1e-12)
+        self._U = max(float(upper), self._L)
+
     def get_shadow_price(self) -> float:
         """Compute the current shadow price ``theta_Q``.
 

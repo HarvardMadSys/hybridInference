@@ -733,8 +733,8 @@ def _make_router_with_two_api(
 
 @pytest.mark.unit
 class TestRouterHedgeMode:
-    def test_economic_mode_returns_hedged_adapter(self):
-        """Economic mode returns HedgedAdapter when hedge is justified."""
+    def test_economic_mode_does_not_wrap_body_router_selection(self):
+        """First RouteWise body-router integration does not dispatch hedges."""
         config = RouteWiseConfig(
             latency_min_samples=5,
             latency_lp_interval_sec=0.0,
@@ -757,18 +757,13 @@ class TestRouterHedgeMode:
         for _ in range(20):
             router._latency_profiles["test-model:api-b"].record(now, 200.0)
 
-        # Test _maybe_create_hedged_adapter directly for reliability.
-        hedged = router._maybe_create_hedged_adapter(
-            "test-model",
-            "test-model:api-a",
-            ["test-model:api-a", "test-model:api-b"],
-            now,
-        )
-        assert hedged is not None
-        assert isinstance(hedged, HedgedAdapter)
+        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
 
-    def test_economic_mode_returns_plain_when_not_justified(self):
-        """Economic mode returns None (plain adapter) when h*=inf."""
+        assert selected is not None
+        assert not isinstance(selected, HedgedAdapter)
+
+    def test_economic_mode_still_returns_plain_adapter_when_not_justified(self):
+        """The body router ignores the old economic hedge mode entirely."""
         config = RouteWiseConfig(
             latency_min_samples=5,
             latency_lp_interval_sec=0.0,
@@ -784,16 +779,13 @@ class TestRouterHedgeMode:
             router._latency_profiles["test-model:api-a"].record(now, 200.0)
             router._latency_profiles["test-model:api-b"].record(now, 300.0)
 
-        hedged = router._maybe_create_hedged_adapter(
-            "test-model",
-            "test-model:api-a",
-            ["test-model:api-a", "test-model:api-b"],
-            now,
-        )
-        assert hedged is None
+        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
 
-    def test_shadow_mode_uses_smart_economic_formula(self):
-        """Shadow mode now uses SMART_ECONOMIC compute_hedge_threshold."""
+        assert selected is not None
+        assert not isinstance(selected, HedgedAdapter)
+
+    def test_shadow_mode_is_not_executed_by_body_router(self):
+        """Shadow hedge logging is out of scope for the first body-router PR."""
         config = RouteWiseConfig(
             latency_min_samples=5,
             latency_lp_interval_sec=0.0,
@@ -814,15 +806,7 @@ class TestRouterHedgeMode:
 
         router._select_adapter("test-model", {"prompt_tokens": 1000})
 
-        # Shadow log should exist and use economic model reasons.
-        assert len(router._shadow_hedge_log) >= 1
-        entry = router._shadow_hedge_log[-1]
-        assert entry.reason in (
-            "hedge_warranted",
-            "hedge_not_justified",
-            "no_backup",
-            "insufficient_samples",
-        )
+        assert router._shadow_hedge_log == []
 
 
 # ===========================================================================

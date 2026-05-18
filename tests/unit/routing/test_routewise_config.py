@@ -18,6 +18,9 @@ class TestRouteWiseConfigDefaults:
 
     def test_default_config(self):
         cfg = RouteWiseConfig()
+        assert cfg.random_seed is None
+        assert cfg.reference_api_price is None
+        assert cfg.stateful_tiers_single_worker_only is True
         assert cfg.decision_rule == "pd"
         assert cfg.predictor == "ema"
         assert cfg.risk_quantile == 0.10
@@ -53,6 +56,10 @@ class TestLoadFromYAML:
         yaml_content = (
             "routewise:\n"
             "  decision_rule: lapd\n"
+            "  random_seed: 123\n"
+            "  reference_api_price:\n"
+            '    prompt: "1.2"\n'
+            '    completion: "4.0"\n'
             "  daily_quota: 10000\n"
             "  risk_quantile: 0.05\n"
             "  shadow_price_adaptive: false\n"
@@ -62,6 +69,8 @@ class TestLoadFromYAML:
 
         cfg = load_routewise_config(p)
         assert cfg.decision_rule == "lapd"
+        assert cfg.random_seed == 123
+        assert cfg.reference_api_price == {"prompt": "1.2", "completion": "4.0"}
         assert cfg.daily_quota == 10000
         assert cfg.risk_quantile == 0.05
         assert cfg.shadow_price_adaptive is False

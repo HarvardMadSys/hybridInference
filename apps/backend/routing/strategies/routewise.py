@@ -1,11 +1,10 @@
-"""RouteWise (cost-aware primal-dual) routing strategy.
+"""RouteWise current body-routing strategy.
 
 Self-registers via ``register_strategy("routewise")`` at import time.
 
 ``RouteWiseParams`` mirrors ``routing.routewise.config.RouteWiseConfig``
 field-for-field with the same defaults.  ``extra="forbid"`` rejects unknown
-keys at boot, so a typo in ``models.yaml`` (``router_params: { daily_quotas: 5000 }``)
-fails fast with a clear message rather than silently using the default.
+keys at boot, so a typo in ``models.yaml`` fails fast with a clear message.
 """
 
 from __future__ import annotations
@@ -27,10 +26,21 @@ class RouteWiseParams(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    # Decision rule + predictor
+    budget_alpha: float = 0.75
+    random_seed: int | None = None
+    reference_api_price: dict[str, object] | None = None
+    stateful_tiers_single_worker_only: bool = True
+
+    # Legacy decision-rule fields accepted for config compatibility.
     decision_rule: str = "pd"
     predictor: str = "ema"
     risk_quantile: float = 0.10
+
+    # Output-length predictor
+    output_default_tokens: float = 512.0
+    output_min_bucket_samples: int = 3
+    output_min_model_samples: int = 3
+    output_min_global_samples: int = 3
 
     # S_Q quota parameters
     daily_quota: int = 5000
@@ -48,6 +58,9 @@ class RouteWiseParams(BaseModel):
     shadow_price_adaptive: bool = True
     shadow_price_window_hours: int = 24
     shadow_price_min_ratio: int = 10
+    envelope_lower_percentile: float = 10.0
+    envelope_upper_percentile: float = 90.0
+    envelope_min_samples: int = 20
 
     # Layer 2: latency-aware provider selection
     latency_slo_sec: float = 3.0
@@ -57,6 +70,7 @@ class RouteWiseParams(BaseModel):
     latency_min_samples: int = 10
     latency_lp_interval_sec: float = 60.0
     latency_swrr_alpha: float = 0.3
+    latency_unprofiled_ttft_ms: float = 5000.0
     latency_relaxation_factors: str = "1.2,1.5,2.0"
     latency_hedge_mode: str = "shadow"
     latency_hedge_cost_ratio: float = 0.1

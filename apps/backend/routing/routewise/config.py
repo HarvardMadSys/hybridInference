@@ -1,8 +1,9 @@
 """RouteWise policy configuration.
 
-Defines tunable parameters for the RouteWise cost-aware routing algorithm,
-including decision rule selection, predictor settings, quota parameters,
-concurrency parameters, and shadow price bounds.
+Defines tunable parameters for the current RouteWise body router.  Some legacy
+fields remain accepted so existing configuration files continue to validate,
+but the production router now uses unified effective cost plus a
+cost-budgeted mean-TTFT LP rather than the old PD / LA-PD tier cascade.
 """
 
 from __future__ import annotations
@@ -54,14 +55,30 @@ class RouteWiseConfig:
         latency_lp_interval_sec: Minimum seconds between LP re-solves.
         latency_swrr_alpha: Smoothing factor for SWRR weight updates.
         latency_relaxation_factors: Comma-separated SLO relaxation factors.
-        latency_hedge_mode: Hedge mode -- "shadow" | "economic" | "disabled".
-        latency_hedge_cost_ratio: C_b/V for SMART_ECONOMIC hedge threshold.
-        latency_hedge_dispatch_overhead_sec: Backup launch overhead (seconds).
+        budget_alpha: Interpolation factor for the LP cost budget:
+            ``c_min + alpha * (c_max - c_min)``.
     """
 
+    budget_alpha: float = 0.75
+    random_seed: int | None = None
+    reference_api_price: dict[str, Any] | None = None
+
+    # S_Q/S_C state is process-local in this first integration.  Keep the
+    # single-worker guard enabled until quota/concurrency state is backed by a
+    # shared store.
+    stateful_tiers_single_worker_only: bool = True
+
+    # Legacy knobs still parsed for compatibility.  ``decision_rule`` and
+    # ``risk_quantile`` no longer switch the top-level RouteWise policy.
     decision_rule: str = "pd"
     predictor: str = "ema"
     risk_quantile: float = 0.10
+
+    # Output-length predictor
+    output_default_tokens: float = 512.0
+    output_min_bucket_samples: int = 3
+    output_min_model_samples: int = 3
+    output_min_global_samples: int = 3
 
     # S_Q quota parameters
     daily_quota: int = 5000
@@ -79,6 +96,9 @@ class RouteWiseConfig:
     shadow_price_adaptive: bool = True
     shadow_price_window_hours: int = 24
     shadow_price_min_ratio: int = 10
+    envelope_lower_percentile: float = 10.0
+    envelope_upper_percentile: float = 90.0
+    envelope_min_samples: int = 20
 
     # Layer 2: Latency-aware provider selection
     latency_slo_sec: float = 3.0
@@ -88,8 +108,9 @@ class RouteWiseConfig:
     latency_min_samples: int = 10  # warmup threshold
     latency_lp_interval_sec: float = 60.0  # LP re-solve interval
     latency_swrr_alpha: float = 0.3
+    latency_unprofiled_ttft_ms: float = 5000.0
     latency_relaxation_factors: str = "1.2,1.5,2.0"
-    latency_hedge_mode: str = "shadow"  # "shadow" | "economic" | "disabled"
+    latency_hedge_mode: str = "shadow"  # parsed but not used by body router
     latency_hedge_cost_ratio: float = 0.1  # C_b/V for SMART_ECONOMIC
     latency_hedge_dispatch_overhead_sec: float = 0.05  # backup launch overhead
 
@@ -170,6 +191,24 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "window_hours": "shadow_price_window_hours",
             "min_ratio": "shadow_price_min_ratio",
         },
+        "envelope": {
+            "bootstrap_window_hours": "shadow_price_window_hours",
+            "window_hours": "shadow_price_window_hours",
+            "lower_percentile": "envelope_lower_percentile",
+            "upper_percentile": "envelope_upper_percentile",
+            "min_samples": "envelope_min_samples",
+            "min_ratio": "shadow_price_min_ratio",
+            "L_seed": "shadow_price_L_seed",
+            "U_seed": "shadow_price_U_seed",
+        },
+        "output_predictor": {
+            "type": "predictor",
+            "cold_start_tokens": "output_default_tokens",
+            "default_tokens": "output_default_tokens",
+            "min_bucket_samples": "output_min_bucket_samples",
+            "min_model_samples": "output_min_model_samples",
+            "min_global_samples": "output_min_global_samples",
+        },
         "latency": {
             "slo_sec": "latency_slo_sec",
             "target_cdf": "latency_target_cdf",
@@ -178,6 +217,7 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "min_samples": "latency_min_samples",
             "lp_interval_sec": "latency_lp_interval_sec",
             "swrr_alpha": "latency_swrr_alpha",
+            "unprofiled_ttft_ms": "latency_unprofiled_ttft_ms",
             "relaxation_factors": "latency_relaxation_factors",
             "hedge_mode": "latency_hedge_mode",
             "hedge_cost_ratio": "latency_hedge_cost_ratio",
