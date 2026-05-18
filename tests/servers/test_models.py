@@ -430,3 +430,31 @@ async def test_user_models_excludes_disabled_models_for_user():
     ids = [m["id"] for m in resp.json()["data"]]
     assert "visible-model" in ids
     assert "disabled-model" not in ids
+
+
+@pytest.mark.asyncio
+async def test_trial_user_sees_same_models_as_free():
+    """Trial-role users must see the same model set as free-role users."""
+    from serving.servers.auth import optional_verify_api_key
+
+    router_exec = RouteExecutor()
+    public = _Adapter(_cfg(id="public-model"))
+    router_exec.register_route("public-model", [(public, 1.0)])
+
+    def _make_app(role: str) -> FastAPI:
+        app = FastAPI()
+        app.state.services = AppServices(router=router_exec, db_logger=None)  # type: ignore[attr-defined]
+        app.dependency_overrides[optional_verify_api_key] = lambda: {"role": role}
+        app.include_router(models.router)
+        return app
+
+    transport_free = ASGITransport(_make_app("free"))
+    transport_trial = ASGITransport(_make_app("trial"))
+
+    async with AsyncClient(transport=transport_free, base_url="http://test") as c:
+        free_ids = [m["id"] for m in (await c.get("/v1/models")).json()["data"]]
+    async with AsyncClient(transport=transport_trial, base_url="http://test") as c:
+        trial_ids = [m["id"] for m in (await c.get("/v1/models")).json()["data"]]
+
+    assert free_ids == trial_ids
+    assert "public-model" in trial_ids

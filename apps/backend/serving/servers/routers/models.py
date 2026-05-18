@@ -122,7 +122,8 @@ async def list_models(
     response shape instead.  The ``/models`` and ``/openrouter/models`` paths
     always return the OpenAI/OpenRouter shape.
     """
-    user_role = (user_ctx or {}).get("role", "free")
+    raw_role = (user_ctx or {}).get("role", "free")
+    user_role = "free" if raw_role == "trial" else raw_role
     if request.url.path == "/v1/models" and _is_anthropic_client(request):
         return JSONResponse(
             await _format_anthropic_model_list(
@@ -149,7 +150,8 @@ async def list_models_anthropic(
     Mirrors the Anthropic GET /v1/models response shape unconditionally,
     regardless of request headers or User-Agent.
     """
-    user_role = (user_ctx or {}).get("role", "free")
+    raw_role = (user_ctx or {}).get("role", "free")
+    user_role = "free" if raw_role == "trial" else raw_role
     return JSONResponse(
         await _format_anthropic_model_list(
             router_exec, user_role, model_visibility_resolver, user_ctx
