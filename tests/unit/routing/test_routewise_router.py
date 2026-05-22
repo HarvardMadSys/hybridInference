@@ -1588,6 +1588,36 @@ class TestRouteWiseDecisionMetadata:
         assert meta["hedged"] is False
         assert meta["backup_won"] is False
 
+    def test_decision_metadata_carries_canonical_h6_fields(self):
+        """Decision metadata exposes H6 canonical fields aligned with SIM/REAL.
+
+        These land in ``api_logs.metadata["routewise"]`` so cross-source parity
+        reads one field-name contract. Production does not dispatch hedges, so
+        hedge fields are disabled/None.
+        """
+        router, _conc, _quota, _api = _make_router_with_all_tiers()
+        request_id = "req-test-canonical"
+        context = {"request_id": request_id}
+
+        router._select_adapter("test-model", context)
+        meta = router._pending_decisions[request_id]
+
+        assert meta["policy"] == "routewise"
+        # Canonical aliases agree with the prod-native fields.
+        assert meta["primary_tier"] == meta["selected_tier"]
+        assert meta["primary_provider"] == meta["selected_endpoint"]
+        assert meta["lp_budget_usd"] == meta["budget_usd"]
+        # Hedging is not dispatched in production.
+        assert meta["hedge_triggered"] is False
+        assert meta["hedge_algorithm"] == "disabled"
+        assert meta["hedge_schedule"] is None
+        assert meta["backup_provider"] is None
+        assert meta["backup_tier"] is None
+        assert meta["hedge_winner"] is None
+        # lp_weights / lp_status already use canonical names.
+        assert "lp_weights" in meta
+        assert "lp_status" in meta
+
     def test_sq_decision_stores_metadata(self):
         """S_Q selection stores metadata with selected_tier='quota'."""
         router, quota, _api = _make_router_with_quota_and_api()

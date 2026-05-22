@@ -725,6 +725,36 @@ class RouteWiseRouter(BaseRouter):
             "sc_committed": selected.tier == "concurrency",
             "hedged": False,
             "backup_won": False,
+            # --- H6 canonical cross-source fields ---------------------------
+            # Aligned with the SIM/REAL PerRequestRecord schema
+            # (docs in the RouteWise simulator repo: SCHEMA_UNIFICATION). These
+            # are added alongside the prod-native fields above (which the
+            # observation/health pipeline still reads) so cross-source parity
+            # has one field-name contract. Provider granularity is endpoint-level
+            # here vs provider-level in SIM/REAL — that value difference is
+            # inherent to the source, not a schema gap.
+            "policy": "routewise",
+            "primary_provider": selected.endpoint_id,
+            "primary_tier": selected.tier,
+            # TODO(routewise-hedging): when production hedging is enabled, populate
+            # the canonical hedge fields below from the actual probability-target
+            # hedge execution path (backup endpoint/tier, trigger, winner, delay).
+            # These static disabled values are correct only for the current
+            # body-router integration, which does not dispatch hedges.
+            "backup_provider": None,  # production does not dispatch hedges
+            "backup_tier": None,
+            "hedge_triggered": False,
+            "hedge_winner": None,
+            "hedge_algorithm": "disabled",  # production does not dispatch hedges
+            "hedge_schedule": None,
+            "lp_budget_usd": solution.budget_usd,
+            # follow-up: per-provider dollar cost at predicted tokens. The
+            # prod-native ``selected_effective_cost_usd`` above is shadow-priced
+            # for quota/concurrency tiers, so it is not directly comparable to
+            # SIM/REAL routing_estimated_cost_usd (raw dollar). Left None until a
+            # per-provider dollar-cost helper exists.
+            "routing_estimated_cost_usd": None,
+            # lp_weights and lp_status (above) already use canonical names.
         }
 
     # ------------------------------------------------------------------
