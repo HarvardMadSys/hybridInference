@@ -577,8 +577,8 @@ async def test_patch_user_prunes_stale_disabled_models(admin_client):
 
 
 @pytest.mark.asyncio
-async def test_patch_user_rejects_unknown_disabled_model(admin_client):
-    """PATCH /admin/users/{id} rejects unknown disabled model ids."""
+async def test_patch_user_drops_unknown_disabled_models(admin_client):
+    """PATCH /admin/users/{id} silently drops unknown disabled model ids."""
     client, op_store, _log_store, _log = admin_client
     op_store.get_user_by_id.return_value = {**_user_row(), "preferences": {}}
     op_store.get_user_preferences = AsyncMock(return_value={})
@@ -586,12 +586,14 @@ async def test_patch_user_rejects_unknown_disabled_model(admin_client):
     response = await client.patch(
         "/admin/users/u1",
         headers=AUTH,
-        json={"disabled_models": ["definitely-unknown-model"]},
+        json={"disabled_models": ["definitely-unknown-model", "a-model"]},
     )
 
-    assert response.status_code == 400
-    assert "Unknown model" in response.json()["detail"]
-    op_store.update_user_preferences.assert_not_awaited()
+    assert response.status_code == 200
+    op_store.update_user_preferences.assert_awaited_once_with(
+        "u1",
+        {"disabled_models": ["a-model"]},
+    )
 
 
 # ========================================================================
