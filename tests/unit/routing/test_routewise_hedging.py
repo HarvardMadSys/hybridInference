@@ -1,8 +1,9 @@
-"""Tests for SMART_ECONOMIC hedging: survival/CDF, threshold, HedgedAdapter."""
+"""Tests for RouteWise hedge dispatch and probability-target router wiring."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -14,42 +15,10 @@ from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import (
     HedgedAdapter,
     ProviderEventSink,
-    cdf_separate_at,
-    compute_hedge_threshold,
-    survival_at,
 )
-from routing.routewise.latency import ProviderProfile
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_profile(
-    endpoint_id: str = "test:ep",
-    window_sec: float = 900.0,
-) -> ProviderProfile:
-    return ProviderProfile(endpoint_id=endpoint_id, window_sec=window_sec)
-
-
-def _populate_profile(
-    profile: ProviderProfile,
-    latencies_ms: list[float],
-    now: float | None = None,
-    errors: int = 0,
-) -> float:
-    """Add latency samples to a profile. Returns the timestamp used."""
-    if now is None:
-        now = time.time()
-    for ms in latencies_ms:
-        profile.record(now, ms)
-    for _ in range(errors):
-        profile.record(now, -1.0, error_type="error")
-    return now
-
 
 class _FakeEventSink:
     """Test double for ProviderEventSink."""
@@ -74,6 +43,7 @@ def _make_model_config(
     cfg.id = model_id
     cfg.provider = provider
     cfg.endpoint_id = endpoint_id
+    cfg.base_url = f"https://{provider}.example/v1"
     cfg.pricing = {"prompt": "3.0", "completion": "15.0"}
     cfg.subscription_type = "api"
     return cfg
@@ -124,231 +94,6 @@ def _make_fake_adapter(
     adapter.stream_chat_completion = _stream
 
     return adapter
-
-
-# ===========================================================================
-# TestSurvivalFunctions
-# ===========================================================================
-
-
-@pytest.mark.unit
-class TestSurvivalFunctions:
-    def test_empty_profile_survival_is_one(self):
-        """Empty profile returns S=1.0 (no data, assume high latency)."""
-        profile = _make_profile()
-        now = time.time()
-        assert survival_at(profile, 1.0, now) == 1.0
-
-    def test_empty_profile_cdf_is_zero(self):
-        """Empty profile returns F=0.0."""
-        profile = _make_profile()
-        now = time.time()
-        assert cdf_separate_at(profile, 1.0, now) == 0.0
-
-    def test_known_samples_survival(self):
-        """With known samples, S(t) returns correct fraction > t."""
-        profile = _make_profile()
-        now = time.time()
-        # 10 samples: [100, 200, 300, ..., 1000] ms = [0.1, 0.2, ..., 1.0] sec
-        latencies = [i * 100.0 for i in range(1, 11)]
-        _populate_profile(profile, latencies, now)
-
-        # S(0.5) = fraction > 0.5s = {0.6, 0.7, 0.8, 0.9, 1.0} = 5/10
-        assert survival_at(profile, 0.5, now) == pytest.approx(0.5)
-
-        # F(0.5) = 1 - S(0.5) = 0.5
-        assert cdf_separate_at(profile, 0.5, now) == pytest.approx(0.5)
-
-    def test_known_samples_cdf_boundary(self):
-        """CDF at threshold below all samples is 0; above all is 1."""
-        profile = _make_profile()
-        now = time.time()
-        latencies = [500.0, 600.0, 700.0]  # 0.5, 0.6, 0.7 sec
-        _populate_profile(profile, latencies, now)
-
-        assert cdf_separate_at(profile, 0.4, now) == pytest.approx(0.0)
-        assert cdf_separate_at(profile, 1.0, now) == pytest.approx(1.0)
-
-    def test_errors_excluded_separate_mode(self):
-        """Errors do not appear in SEPARATE mode samples."""
-        profile = _make_profile()
-        now = time.time()
-        # 5 successes at 200ms, 5 errors
-        _populate_profile(profile, [200.0] * 5, now, errors=5)
-
-        # All successful samples are 0.2s; S(0.3) should be 0 (none > 0.3)
-        assert survival_at(profile, 0.3, now) == pytest.approx(0.0)
-        # S(0.1) should be 1.0 (all > 0.1)
-        assert survival_at(profile, 0.1, now) == pytest.approx(1.0)
-
-    def test_window_filtering(self):
-        """Samples outside the time window are excluded."""
-        profile = _make_profile(window_sec=60.0)
-        now = time.time()
-
-        # Old samples (outside window).
-        for ms in [100.0, 200.0, 300.0]:
-            profile.record(now - 120.0, ms)
-
-        # Recent samples (inside window).
-        _populate_profile(profile, [500.0, 600.0], now)
-
-        # Only recent samples count: 0.5s and 0.6s.
-        # S(0.4) = 2/2 = 1.0 (both > 0.4)
-        assert survival_at(profile, 0.4, now) == pytest.approx(1.0)
-        # S(0.55) = 1/2 = 0.5
-        assert survival_at(profile, 0.55, now) == pytest.approx(0.5)
-
-
-# ===========================================================================
-# TestComputeHedgeThreshold
-# ===========================================================================
-
-
-@pytest.mark.unit
-class TestComputeHedgeThreshold:
-    def test_primary_fast_returns_inf(self):
-        """If primary is always fast, hedge is never justified -> h*=inf."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        # Primary always finishes in 100ms, well within SLO of 3s.
-        _populate_profile(primary, [100.0] * 20, now)
-        _populate_profile(backup, [200.0] * 20, now)
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        assert h == float("inf")
-
-    def test_primary_slow_backup_fast(self):
-        """If primary often violates SLO and backup is fast, h* should be small."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        # Primary: 50% at 3.5s (SLO violation), 50% at 0.5s.
-        _populate_profile(primary, [500.0] * 10 + [3500.0] * 10, now)
-        # Backup always 200ms.
-        _populate_profile(backup, [200.0] * 20, now)
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        assert h < 2.0, f"Expected h* < 2.0, got {h}"
-        assert h != float("inf")
-
-    def test_cost_ratio_monotonicity(self):
-        """Higher cost_ratio -> later or equal h* (harder to justify hedge)."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        # Mix of fast and slow primary.
-        latencies = [200.0] * 10 + [2500.0] * 10
-        _populate_profile(primary, latencies, now)
-        _populate_profile(backup, [300.0] * 20, now)
-
-        h_low = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.05,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        h_high = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.5,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        assert h_high >= h_low
-
-    def test_empty_backup_returns_inf(self):
-        """If backup has no samples, F_backup=0 -> hedge never justified."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        _populate_profile(primary, [2500.0] * 20, now)
-        # backup has no samples
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        assert h == float("inf")
-
-    def test_empty_primary_returns_inf(self):
-        """If primary has no samples, S(t)=1 for all t -> P_viol stays 1, but
-        F_backup also matters; with no primary data, return inf."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        _populate_profile(backup, [200.0] * 20, now)
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        # With empty primary: S(SLO)=1, S(h)=1, P_viol=1, F_backup>0
-        # 1 * F_backup > 0.1 should trigger at h=0 if F_backup(remaining) > 0.1
-        # Actually with empty primary, survival_at returns 1.0, so
-        # P_viol = S(SLO)/S(h) = 1/1 = 1.  If F_backup > cost_ratio, h*=0.
-        # This test documents the behavior rather than asserting inf.
-        assert h is not None  # Just ensure it runs without error.
-
-    def test_cross_validate_with_experiment(self):
-        """Grid search result should match experiment module on identical data.
-
-        We construct profiles with known samples and verify the threshold
-        direction matches: experiment code uses numpy but same math.
-        """
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        # 50% of primary requests violate SLO (3.5s > 3.0s), 50% fast (0.3s)
-        latencies = [300.0] * 10 + [3500.0] * 10
-        _populate_profile(primary, latencies, now)
-        _populate_profile(backup, [200.0] * 20, now)
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-            resolution_sec=0.1,
-        )
-        # With 50% primary > SLO, hedge should trigger.
-        assert h < float("inf")
-        # h* should be a reasonable value between 0 and SLO.
-        assert 0 <= h <= 3.0
 
 
 # ===========================================================================
@@ -733,81 +478,158 @@ def _make_router_with_two_api(
 
 @pytest.mark.unit
 class TestRouterHedgeMode:
-    def test_economic_mode_does_not_wrap_body_router_selection(self):
-        """First RouteWise body-router integration does not dispatch hedges."""
+    def test_probability_target_mode_wraps_body_router_selection(self):
+        """Probability-target mode returns a real HedgedAdapter."""
         config = RouteWiseConfig(
+            budget_alpha=0.0,
             latency_min_samples=5,
-            latency_lp_interval_sec=0.0,
             latency_slo_sec=3.0,
-            latency_hedge_mode="economic",
-            latency_hedge_cost_ratio=0.05,  # Low threshold -> easy to justify
+            latency_hedge_mode="probability_target",
         )
-        router, _api_a, _api_b = _make_router_with_two_api(config)
+        router, api_a, api_b = _make_router_with_two_api(config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
         now = time.time()
-        # Primary (api-a): 50% SLO violations -> hedging justified.
         for _ in range(10):
             router._latency_profiles["test-model:api-a"].record(now, 500.0)
-        for _ in range(10):
             router._latency_profiles["test-model:api-a"].record(now, 3500.0)
-        # Backup (api-b): fast.
-        for _ in range(20):
             router._latency_profiles["test-model:api-b"].record(now, 200.0)
 
         selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
 
-        assert selected is not None
-        assert not isinstance(selected, HedgedAdapter)
+        assert isinstance(selected, HedgedAdapter)
+        assert selected.primary is api_a
+        assert selected.backup is api_b
+        assert selected.hedge_threshold_sec > 0.0
 
-    def test_economic_mode_still_returns_plain_adapter_when_not_justified(self):
-        """The body router ignores the old economic hedge mode entirely."""
+    @pytest.mark.asyncio
+    async def test_probability_target_mode_dispatches_backup_and_updates_metadata(self):
+        """Probability-target hedging dispatches the backup and records the winner."""
         config = RouteWiseConfig(
-            latency_min_samples=5,
-            latency_lp_interval_sec=0.0,
-            latency_slo_sec=3.0,
-            latency_hedge_mode="economic",
-            latency_hedge_cost_ratio=0.9,  # Very high -> hard to justify
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
         )
-        router, _api_a, _api_b = _make_router_with_two_api(config)
+        router, api_a, api_b = _make_router_with_two_api(config)
 
         now = time.time()
-        # Both providers fast.
-        for _ in range(20):
-            router._latency_profiles["test-model:api-a"].record(now, 200.0)
-            router._latency_profiles["test-model:api-b"].record(now, 300.0)
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 1.0)
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        async def _slow_primary(messages, **params):
+            await asyncio.sleep(0.2)
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
 
-        assert selected is not None
-        assert not isinstance(selected, HedgedAdapter)
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
 
-    def test_shadow_mode_is_not_executed_by_body_router(self):
-        """Shadow hedge logging is out of scope for the first body-router PR."""
-        config = RouteWiseConfig(
-            latency_min_samples=5,
-            latency_lp_interval_sec=0.0,
-            latency_slo_sec=3.0,
-            latency_hedge_mode="shadow",
-            latency_hedge_cost_ratio=0.05,
+        api_a.chat_completion = _slow_primary
+        api_b.chat_completion = _fast_backup
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
         )
-        router, _api_a, _api_b = _make_router_with_two_api(config)
 
-        for _ in range(25):
-            router.predictor.update("test-model", 500)
+        assert resp["source"] == "backup"
+        assert resp["_routing"]["endpoint_id"] == "test-model:api-b"
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["hedged"] is True
+        assert routewise["hedge_triggered"] is True
+        assert routewise["backup_won"] is True
+        assert routewise["hedge_winner"] == "backup"
+        assert routewise["backup_provider"] == "test-model:api-b"
+        assert routewise["hedge_algorithm"] == "probability_target"
+        assert routewise["hedge_schedule"] == "slo_relative_checkpoints"
+
+    @pytest.mark.asyncio
+    async def test_probability_target_primary_wins_before_dispatch(self):
+        """A planned hedge is not recorded as triggered if primary returns first."""
+        config = RouteWiseConfig(
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api_a, api_b = _make_router_with_two_api(config)
 
         now = time.time()
-        # Primary slow, backup fast.
-        for _ in range(20):
-            router._latency_profiles["test-model:api-a"].record(now, 2800.0)
-            router._latency_profiles["test-model:api-b"].record(now, 200.0)
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 1.0)
 
-        router._select_adapter("test-model", {"prompt_tokens": 1000})
+        async def _fast_primary(messages, **params):
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
 
-        assert router._shadow_hedge_log == []
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
 
+        api_a.chat_completion = _fast_primary
+        api_b.chat_completion = _fast_backup
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "primary"
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["hedged"] is False
+        assert routewise["hedge_triggered"] is False
+        assert routewise["backup_won"] is False
+        assert routewise["backup_provider"] is None
+
+    @pytest.mark.asyncio
+    async def test_probability_target_streaming_backup_winner_updates_routing(self):
+        """Streaming hedges emit winner routing before backup content."""
+        config = RouteWiseConfig(
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api_a, api_b = _make_router_with_two_api(config)
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 1.0)
+
+        async def _slow_primary_stream(messages, **params):
+            await asyncio.sleep(0.2)
+            yield 'data: {"choices":[{"delta":{"content":"primary"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        async def _fast_backup_stream(messages, **params):
+            yield 'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        api_a.stream_chat_completion = _slow_primary_stream
+        api_b.stream_chat_completion = _fast_backup_stream
+
+        chunks = []
+        async for chunk in router.stream_chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+            request_id="req-stream-hedge",
+        ):
+            chunks.append(chunk)
+
+        combined = "".join(chunks)
+        assert "backup" in combined
+        assert '"endpoint_id": "test-model:api-b"' in combined
+
+        routewise_chunks = [
+            json.loads(chunk[6:])
+            for chunk in chunks
+            if isinstance(chunk, str) and chunk.startswith("data: ") and "routewise" in chunk
+        ]
+        assert routewise_chunks
+        routewise = routewise_chunks[-1]["_routing"]["routewise"]
+        assert routewise["hedged"] is True
+        assert routewise["backup_won"] is True
+        assert routewise["hedge_winner"] == "backup"
 
 # ===========================================================================
 # TestProviderEventSinkProtocol
@@ -930,6 +752,7 @@ class TestWinnerAttribution:
 
         combined = "".join(chunks)
         assert "quick" in combined
+        assert '"endpoint_id": "ep:fast"' in combined
         # Config must be swapped to backup's.
         assert hedged.config.provider == "fast-backup"
         assert hedged.config.endpoint_id == "ep:fast"

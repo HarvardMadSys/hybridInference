@@ -7,10 +7,11 @@ paper/simulator body-routing semantics:
 2. Solve a cost-budgeted mean-TTFT LP over all feasible providers.
 3. Sample one primary provider from the sparse LP mixture.
 
-This first integration intentionally does not dispatch RouteWise hedges and
-does not predict provider-local prefix-cache hits.  API costs and the ``L/U``
-envelope use a cold-cache route-time assumption; actual billing remains
-cache-aware in the serving/storage path.
+When ``latency_hedge_mode="probability_target"``, the router may wrap the
+selected primary in a delayed ``HedgedAdapter`` using RouteWise checkpoint
+probability math.  Prefix-cache hits are not predicted at route time: API costs
+and the ``L/U`` envelope use a cold-cache assumption, while actual billing
+remains cache-aware in the serving/storage path.
 """
 
 from __future__ import annotations
@@ -24,6 +25,14 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
+
+from routewise.core import (
+    HEDGE_SUCCESS_TARGET,
+    BackupCandidate,
+    combined_success_probability,
+    hedge_checkpoints_for_slo,
+    select_probability_backup,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -47,6 +56,7 @@ from .candidates import (
 from .concurrency import ConcurrencyManager
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
 from .envelope import CostEnvelopeEstimator, CostEnvelopeSnapshot
+from .hedging import HedgedAdapter
 from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
@@ -58,6 +68,7 @@ logger = get_logger(__name__)
 
 PENDING_DECISIONS_TTL_SECONDS: float = 300.0
 PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
+PROBABILITY_TARGET_HEDGE_MODE: str = "probability_target"
 _WORKER_COUNT_ENV_KEYS = (
     "WEB_CONCURRENCY",
     "UVICORN_WORKERS",
@@ -79,6 +90,15 @@ class FeasibleProviderCandidate:
     quota_source: QuotaSource | None = None
     quota_used_fraction: float | None = None
     quota_remaining: int | None = None
+
+
+@dataclass(frozen=True)
+class HedgePlan:
+    """Concrete production hedge plan computed before dispatch."""
+
+    backup: FeasibleProviderCandidate
+    delay_sec: float
+    success_probability: float
 
 
 class _WeightView:
@@ -173,12 +193,11 @@ class RouteWiseRouter(BaseRouter):
         self._quota_refresh_task: asyncio.Task[None] | None = None
         # Compatibility attributes retained for tests and diagnostics from the
         # older implementation.  The current body router does not run the old
-        # background LP/SWRR or shadow/economic hedging paths.
+        # background LP/SWRR path.
         self._last_lp_statuses: dict[str, str] = {}
         self._last_lp_weights: dict[str, dict[str, float]] = {}
         self._swrr_samplers: dict[str, _WeightView] = {}
         self._pending_lp_solves: set[str] = set()
-        self._shadow_hedge_log: list[Any] = []
 
         if self.fixed_router is not None:
             self._rebuild_from_fixed_router()
@@ -195,7 +214,6 @@ class RouteWiseRouter(BaseRouter):
         self._last_lp_weights = {}
         self._swrr_samplers = {}
         self._pending_lp_solves = set()
-        self._shadow_hedge_log = []
         self._rebuild_from_fixed_router()
 
     def _rebuild_from_fixed_router(self) -> None:
@@ -660,6 +678,7 @@ class RouteWiseRouter(BaseRouter):
         candidates: list[FeasibleProviderCandidate],
         solution: LPSolution,
         selected: FeasibleProviderCandidate,
+        hedge_plan: HedgePlan | None = None,
     ) -> dict[str, Any]:
         selected_weight = solution.weights.get(selected.endpoint_id, 0.0)
         api_cost = self._reference_api_cost(
@@ -668,6 +687,7 @@ class RouteWiseRouter(BaseRouter):
             output_tokens=prediction.tokens,
         )
         quota_used_fraction, quota_remaining = self._quota_metadata_state(selected)
+        backup = hedge_plan.backup if hedge_plan is not None else None
         return {
             "request_id": request_id,
             "timestamp": time.time(),
@@ -736,17 +756,18 @@ class RouteWiseRouter(BaseRouter):
             "policy": "routewise",
             "primary_provider": selected.endpoint_id,
             "primary_tier": selected.tier,
-            # TODO(routewise-hedging): when production hedging is enabled, populate
-            # the canonical hedge fields below from the actual probability-target
-            # hedge execution path (backup endpoint/tier, trigger, winner, delay).
-            # These static disabled values are correct only for the current
-            # body-router integration, which does not dispatch hedges.
-            "backup_provider": None,  # production does not dispatch hedges
-            "backup_tier": None,
+            "backup_provider": backup.endpoint_id if backup is not None else None,
+            "backup_tier": backup.tier if backup is not None else None,
             "hedge_triggered": False,
             "hedge_winner": None,
-            "hedge_algorithm": "disabled",  # production does not dispatch hedges
-            "hedge_schedule": None,
+            "hedge_algorithm": "probability_target" if hedge_plan is not None else "disabled",
+            "hedge_schedule": "slo_relative_checkpoints" if hedge_plan is not None else None,
+            "hedge_delay_ms": (
+                hedge_plan.delay_sec * 1000.0 if hedge_plan is not None else None
+            ),
+            "hedge_success_probability": (
+                hedge_plan.success_probability if hedge_plan is not None else None
+            ),
             "lp_budget_usd": solution.budget_usd,
             # follow-up: per-provider dollar cost at predicted tokens. The
             # prod-native ``selected_effective_cost_usd`` above is shadow-priced
@@ -756,6 +777,110 @@ class RouteWiseRouter(BaseRouter):
             "routing_estimated_cost_usd": None,
             # lp_weights and lp_status (above) already use canonical names.
         }
+
+    def _select_hedge_plan(
+        self,
+        *,
+        candidates: list[FeasibleProviderCandidate],
+        selected: FeasibleProviderCandidate,
+        now: float,
+    ) -> HedgePlan | None:
+        """Return a concrete probability-target hedge plan for this primary.
+
+        The plan is computed from current read-only latency/cost snapshots.
+        Production dispatch overhead is not subtracted in the probability
+        formula because real HTTP dispatch time is already paid in wall-clock.
+        Backup candidates are limited to API tier in this first dispatch path,
+        so enabling hedging cannot mutate quota/concurrency state for the
+        backup side.
+        """
+
+        if self.config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
+            return None
+
+        primary_profile = self._latency_profiles.get(selected.endpoint_id)
+        if (
+            primary_profile is None
+            or primary_profile.sample_count(now) < self.config.latency_min_samples
+        ):
+            return None
+
+        checkpoints = hedge_checkpoints_for_slo(self.config.latency_slo_sec * 1000.0)
+        for delay_sec in reversed(checkpoints):
+            candidate = self._select_hedge_candidate_at_elapsed(
+                primary_profile=primary_profile,
+                candidates=candidates,
+                selected=selected,
+                now=now,
+                elapsed_sec=delay_sec,
+            )
+            if candidate is not None:
+                return HedgePlan(
+                    backup=candidate.provider,
+                    delay_sec=delay_sec,
+                    success_probability=candidate.success_probability,
+                )
+        return None
+
+    def _select_hedge_candidate_at_elapsed(
+        self,
+        *,
+        primary_profile: ProviderProfile,
+        candidates: list[FeasibleProviderCandidate],
+        selected: FeasibleProviderCandidate,
+        now: float,
+        elapsed_sec: float,
+    ) -> BackupCandidate[FeasibleProviderCandidate] | None:
+        backup_candidates: list[BackupCandidate[FeasibleProviderCandidate]] = []
+        for candidate in candidates:
+            if candidate.endpoint_id == selected.endpoint_id:
+                continue
+            if candidate.tier != "api":
+                continue
+            profile = self._latency_profiles.get(candidate.endpoint_id)
+            if profile is None or profile.sample_count(now) < self.config.latency_min_samples:
+                continue
+            success_probability = combined_success_probability(
+                lambda value_ms: primary_profile.cdf_at(value_ms / 1000.0, now),
+                lambda value_ms, backup_profile=profile: backup_profile.cdf_at(
+                    value_ms / 1000.0,
+                    now,
+                ),
+                elapsed_ms=elapsed_sec * 1000.0,
+                slo_ms=self.config.latency_slo_sec * 1000.0,
+                dispatch_overhead_ms=0.0,
+            )
+            backup_candidates.append(
+                BackupCandidate(
+                    provider=candidate,
+                    success_probability=success_probability,
+                    marginal_cost=candidate.effective_cost_usd,
+                    true_mean_ms=candidate.mean_ttft_sec * 1000.0,
+                    success_target=HEDGE_SUCCESS_TARGET,
+                )
+            )
+        return select_probability_backup(backup_candidates)
+
+    def _apply_hedge_execution_metadata(self, adapter: Any, request_id: str | None) -> None:
+        """Update pending RouteWise metadata after a HedgedAdapter has run."""
+
+        if not request_id or request_id not in self._pending_decisions:
+            return
+        if not isinstance(adapter, HedgedAdapter):
+            return
+
+        meta = self._pending_decisions[request_id]
+        hedge_triggered = bool(getattr(adapter, "hedge_triggered", False))
+        backup_won = bool(getattr(adapter, "backup_won", False))
+        meta["hedged"] = hedge_triggered
+        meta["hedge_triggered"] = hedge_triggered
+        meta["backup_won"] = backup_won
+        if hedge_triggered:
+            meta["hedge_winner"] = "backup" if backup_won else "primary"
+        else:
+            meta["backup_provider"] = None
+            meta["backup_tier"] = None
+            meta["hedge_winner"] = None
 
     # ------------------------------------------------------------------
     # BaseRouter integration
@@ -807,6 +932,19 @@ class RouteWiseRouter(BaseRouter):
             if selected is None:
                 return None
             if self._commit_candidate(selected):
+                hedge_plan = self._select_hedge_plan(
+                    candidates=candidates,
+                    selected=selected,
+                    now=now,
+                )
+                adapter: BaseAdapter = selected.adapter
+                if hedge_plan is not None:
+                    adapter = HedgedAdapter(
+                        primary=selected.adapter,
+                        backup=hedge_plan.backup.adapter,
+                        hedge_threshold_sec=hedge_plan.delay_sec,
+                        event_sink=self,
+                    )
                 request_id = context.get("request_id")
                 if request_id:
                     self._pending_decisions[request_id] = self._decision_metadata(
@@ -818,8 +956,9 @@ class RouteWiseRouter(BaseRouter):
                         candidates=candidates,
                         solution=solution,
                         selected=selected,
+                        hedge_plan=hedge_plan,
                     )
-                return selected.adapter
+                return adapter
             candidates = [c for c in candidates if c.endpoint_id != selected.endpoint_id]
             if not candidates:
                 return None
@@ -874,7 +1013,8 @@ class RouteWiseRouter(BaseRouter):
         messages: list[dict[str, Any]],
         **params: Any,
     ) -> dict[str, Any]:
-        is_sc = self._adapter_sub_type.get(id(adapter)) is SubscriptionType.CONCURRENCY
+        primary_adapter = adapter.primary if isinstance(adapter, HedgedAdapter) else adapter
+        is_sc = self._adapter_sub_type.get(id(primary_adapter)) is SubscriptionType.CONCURRENCY
         original_config = getattr(adapter, "config", None)
         try:
             result = await super()._execute_adapter(adapter, model_id, messages, **params)
@@ -882,8 +1022,10 @@ class RouteWiseRouter(BaseRouter):
                 request_id = params.get("request_id")
                 if request_id and request_id in self._pending_decisions:
                     self._pending_decisions[request_id]["backup_won"] = True
+            self._apply_hedge_execution_metadata(adapter, params.get("request_id"))
             return result
         finally:
+            self._apply_hedge_execution_metadata(adapter, params.get("request_id"))
             if is_sc and self.conc_mgr is not None:
                 self.conc_mgr.release()
 
@@ -894,7 +1036,8 @@ class RouteWiseRouter(BaseRouter):
         messages: list[dict[str, Any]],
         **params: Any,
     ) -> AsyncIterator[Any]:
-        is_sc = self._adapter_sub_type.get(id(adapter)) is SubscriptionType.CONCURRENCY
+        primary_adapter = adapter.primary if isinstance(adapter, HedgedAdapter) else adapter
+        is_sc = self._adapter_sub_type.get(id(primary_adapter)) is SubscriptionType.CONCURRENCY
         original_config = getattr(adapter, "config", None)
         try:
             async for chunk in super()._execute_stream_adapter(
@@ -906,6 +1049,7 @@ class RouteWiseRouter(BaseRouter):
                 request_id = params.get("request_id")
                 if request_id and request_id in self._pending_decisions:
                     self._pending_decisions[request_id]["backup_won"] = True
+            self._apply_hedge_execution_metadata(adapter, params.get("request_id"))
             if is_sc and self.conc_mgr is not None:
                 self.conc_mgr.release()
 

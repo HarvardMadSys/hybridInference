@@ -45,7 +45,11 @@ class TestRouteWiseConfigDefaults:
         assert cfg.latency_lp_interval_sec == 60.0
         assert cfg.latency_swrr_alpha == 0.3
         assert cfg.latency_relaxation_factors == "1.2,1.5,2.0"
-        assert cfg.latency_hedge_mode == "shadow"
+        assert cfg.latency_hedge_mode == "disabled"
+
+    def test_invalid_latency_hedge_mode_rejected(self):
+        with pytest.raises(ValueError, match="Unsupported latency_hedge_mode"):
+            RouteWiseConfig(latency_hedge_mode="economic")
 
 
 @pytest.mark.unit
@@ -210,6 +214,13 @@ class TestLoadFromYAML:
         assert cfg.latency_swrr_alpha == 0.5
         assert cfg.latency_relaxation_factors == "1.5,2.0"
         assert cfg.latency_hedge_mode == "disabled"
+
+    def test_load_invalid_latency_hedge_mode_raises(self, tmp_path: Path):
+        p = tmp_path / "routewise.yaml"
+        p.write_text("routewise:\n  latency:\n    hedge_mode: shadow\n")
+
+        with pytest.raises(ValueError, match="Unsupported latency_hedge_mode"):
+            load_routewise_config(p)
 
     def test_load_flat_latency_keys(self, tmp_path: Path):
         """Flat latency_* keys also load correctly."""

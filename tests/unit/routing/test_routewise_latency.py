@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from routing.routewise.latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
+from routing.routewise.latency import ProviderProfile, SWRRSampler
 
 # ---------------------------------------------------------------------------
 # ProviderProfile tests
@@ -177,27 +177,3 @@ class TestSWRRSampler:
         """Empty sampler returns None."""
         sampler = SWRRSampler()
         assert sampler.sample() is None
-
-
-# ---------------------------------------------------------------------------
-# ShadowHedgeDecision tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestShadowHedgeDecision:
-    def test_dataclass_creation(self):
-        """ShadowHedgeDecision can be instantiated with all fields."""
-        decision = ShadowHedgeDecision(
-            model_id="test-model",
-            primary_endpoint="ep1",
-            backup_endpoint="ep2",
-            hedge_threshold_sec=0.5,
-            reason="hedge_warranted",
-            timestamp=1000.0,
-        )
-        assert decision.model_id == "test-model"
-        assert decision.primary_endpoint == "ep1"
-        assert decision.backup_endpoint == "ep2"
-        assert decision.hedge_threshold_sec == 0.5
-        assert decision.reason == "hedge_warranted"

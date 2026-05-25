@@ -10,13 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+LatencyHedgeMode = Literal["disabled", "probability_target"]
+VALID_LATENCY_HEDGE_MODES = frozenset(("disabled", "probability_target"))
 
 
 @dataclass
@@ -111,14 +114,20 @@ class RouteWiseConfig:
     latency_swrr_alpha: float = 0.3
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_relaxation_factors: str = "1.2,1.5,2.0"
-    latency_hedge_mode: str = "shadow"  # parsed but not used by body router
-    latency_hedge_cost_ratio: float = 0.1  # C_b/V for SMART_ECONOMIC
-    latency_hedge_dispatch_overhead_sec: float = 0.05  # backup launch overhead
+    latency_hedge_mode: LatencyHedgeMode = "disabled"
 
     # Canary rollout controls
     canary_enabled: bool = False
     canary_enabled_models: list[str] | None = None  # None = all routewise models
     canary_traffic_fraction: float = 1.0  # 0.0-1.0
+
+    def __post_init__(self) -> None:
+        if self.latency_hedge_mode not in VALID_LATENCY_HEDGE_MODES:
+            allowed = ", ".join(sorted(VALID_LATENCY_HEDGE_MODES))
+            raise ValueError(
+                f"Unsupported latency_hedge_mode {self.latency_hedge_mode!r}; "
+                f"expected one of: {allowed}"
+            )
 
 
 def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
@@ -222,8 +231,6 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "unprofiled_ttft_ms": "latency_unprofiled_ttft_ms",
             "relaxation_factors": "latency_relaxation_factors",
             "hedge_mode": "latency_hedge_mode",
-            "hedge_cost_ratio": "latency_hedge_cost_ratio",
-            "hedge_dispatch_overhead_sec": "latency_hedge_dispatch_overhead_sec",
         },
         "canary": {
             "enabled": "canary_enabled",

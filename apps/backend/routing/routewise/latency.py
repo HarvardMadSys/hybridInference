@@ -5,8 +5,6 @@ This module provides:
   with empirical CDF computation (INFINITY failure mode).
 - ``SWRRSampler``: smooth weighted round-robin with exponential smoothing
   for LP weight updates.
-- ``ShadowHedgeDecision``: record type for shadow hedge computation
-  (no actual dispatch in shadow mode).
 
 Reference: experiment/strategies/online_latency_router.py (lines 40-196, 373-455).
 """
@@ -231,27 +229,3 @@ class SWRRSampler:
     def get_weights(self) -> dict[str, float]:
         """Return current target weights (copy)."""
         return self._weights.copy()
-
-
-@dataclass
-class ShadowHedgeDecision:
-    """Record of a shadow hedge computation (no actual dispatch).
-
-    Shadow mode logs hedge decisions for analysis without performing
-    actual hedged requests.
-
-    Attributes:
-        model_id: Model that triggered this decision.
-        primary_endpoint: Endpoint selected by LP/SWRR.
-        backup_endpoint: Second-best endpoint (or None if single provider).
-        hedge_threshold_sec: Computed threshold for when hedge would trigger.
-        reason: One of "no_backup", "backup_slower", "hedge_warranted".
-        timestamp: Unix timestamp of the decision.
-    """
-
-    model_id: str
-    primary_endpoint: str
-    backup_endpoint: str | None
-    hedge_threshold_sec: float | None
-    reason: str  # "no_backup" | "backup_slower" | "hedge_warranted"
-    timestamp: float

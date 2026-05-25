@@ -90,6 +90,21 @@ def test_routewise_params_extra_forbidden():
     # Unknown field rejected
     with pytest.raises(ValidationError):
         RouteWiseParams.model_validate({"not_a_field": 1})
+    # Removed legacy hedge knobs are rejected.
+    with pytest.raises(ValidationError):
+        RouteWiseParams.model_validate({"latency_hedge_cost_ratio": 0.1})
+
+
+@pytest.mark.unit
+def test_routewise_params_reject_legacy_hedge_modes():
+    from pydantic import ValidationError
+
+    from routing.strategies.routewise import RouteWiseParams
+
+    with pytest.raises(ValidationError):
+        RouteWiseParams.model_validate({"latency_hedge_mode": "shadow"})
+    with pytest.raises(ValidationError):
+        RouteWiseParams.model_validate({"latency_hedge_mode": "economic"})
 
 
 @pytest.mark.unit

@@ -1,19 +1,4 @@
-"""SMART_ECONOMIC hedging for latency-aware routing.
-
-This module provides:
-- ``survival_at`` / ``cdf_separate_at``: Empirical survival and CDF functions
-  using SEPARATE mode (success-only samples) for hedge threshold computation.
-- ``compute_hedge_threshold``: Grid search for the minimum elapsed time h*
-  where hedging is cost-justified under the economic model.
-- ``ProviderEventSink``: Protocol for reporting per-provider outcomes.
-- ``HedgedAdapter``: Composite adapter that races primary vs delayed backup.
-
-The SEPARATE mode CDF used here differs from the INFINITY mode CDF in
-``latency.py`` (used for LP constraints).  Keeping them separate avoids
-interface confusion on ProviderProfile.
-
-Reference algorithm: experiment/strategies/smart_hedging.py::smart_hedge_economic().
-"""
+"""Runtime hedge dispatch support for latency-aware routing."""
 
 from __future__ import annotations
 
@@ -24,131 +9,12 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from .latency import ProviderProfile
-
-from routing.routers import _has_non_empty_content
+from routing.routers import _has_non_empty_content, _routing_chunk
 from serving.adapters.base import BaseAdapter
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Survival / CDF functions (SEPARATE mode)
-# ---------------------------------------------------------------------------
-
-
-def survival_at(
-    profile: ProviderProfile,
-    t_sec: float,
-    current_time: float,
-) -> float:
-    """Compute survival function S(t) = P(T > t | success).
-
-    Uses SEPARATE mode: only successful latency samples are considered.
-    Failures are handled separately by the hedge trigger logic.
-
-    Args:
-        profile: Provider latency profile.
-        t_sec: Time threshold in seconds.
-        current_time: Reference time for window pruning.
-
-    Returns:
-        S(t) in [0, 1].  Returns 1.0 if no samples (assume high latency).
-    """
-    samples = profile._get_latency_samples_sec(current_time)
-    if not samples:
-        return 1.0
-    return sum(1 for s in samples if s > t_sec) / len(samples)
-
-
-def cdf_separate_at(
-    profile: ProviderProfile,
-    t_sec: float,
-    current_time: float,
-) -> float:
-    """Compute CDF F(t) = P(T <= t | success) in SEPARATE mode.
-
-    Args:
-        profile: Provider latency profile.
-        t_sec: Time threshold in seconds.
-        current_time: Reference time for window pruning.
-
-    Returns:
-        F(t) in [0, 1].  Returns 0.0 if no samples.
-    """
-    return 1.0 - survival_at(profile, t_sec, current_time)
-
-
-# ---------------------------------------------------------------------------
-# Hedge threshold computation (SMART_ECONOMIC grid search)
-# ---------------------------------------------------------------------------
-
-
-def compute_hedge_threshold(
-    primary_profile: ProviderProfile,
-    backup_profile: ProviderProfile,
-    slo_sec: float,
-    cost_ratio: float,
-    dispatch_overhead_sec: float,
-    current_time: float,
-    resolution_sec: float = 0.1,
-) -> float:
-    """Find minimum elapsed time h* where hedging is cost-justified.
-
-    Decision rule at each candidate h:
-        P_viol(h) * F_backup(remaining) > cost_ratio
-
-    Where:
-    - P_viol(h) = S_primary(SLO) / S_primary(h) = P(primary violates | survived to h)
-    - F_backup(remaining) = P(backup finishes within SLO - h - overhead)
-    - cost_ratio = C_b / V (backup cost relative to violation penalty)
-
-    Args:
-        primary_profile: Latency profile for the primary provider.
-        backup_profile: Latency profile for the backup provider.
-        slo_sec: SLO deadline in seconds.
-        cost_ratio: C_b / V threshold.
-        dispatch_overhead_sec: Backup launch overhead in seconds.
-        current_time: Reference time for profile queries.
-        resolution_sec: Grid search step size in seconds.
-
-    Returns:
-        Optimal hedge time h* in seconds.  Returns float("inf") if the
-        condition is never met (hedging not justified).
-    """
-    # Pre-compute S_primary(SLO) once -- it does not change across the grid.
-    s_primary_slo = survival_at(primary_profile, slo_sec, current_time)
-
-    # If primary never violates SLO (S(SLO) ~ 0 means all requests finish
-    # before the deadline), hedging is never justified regardless of h.
-    if s_primary_slo < 1e-6:
-        return float("inf")
-
-    # Grid search from 0 to slo_sec in resolution_sec steps.
-    steps = int(slo_sec / resolution_sec)
-    for i in range(steps + 1):
-        h = i * resolution_sec
-
-        remaining = slo_sec - h - dispatch_overhead_sec
-        if remaining <= 0:
-            break  # No time for backup; hedge would be pointless.
-
-        s_primary_h = survival_at(primary_profile, h, current_time)
-        p_viol = 1.0 if s_primary_h < 1e-6 else s_primary_slo / s_primary_h
-
-        f_backup = cdf_separate_at(backup_profile, remaining, current_time)
-
-        if p_viol * f_backup > cost_ratio:
-            return h
-
-    return float("inf")
-
-
-# ---------------------------------------------------------------------------
-# ProviderEventSink protocol
-# ---------------------------------------------------------------------------
 
 
 @runtime_checkable
@@ -204,6 +70,8 @@ class HedgedAdapter(BaseAdapter):
         self.backup = backup
         self.hedge_threshold_sec = hedge_threshold_sec
         self.event_sink = event_sink
+        self.hedge_triggered = False
+        self.backup_won = False
 
     # ---------------------------------------------------------------
     # Non-streaming race
@@ -236,11 +104,13 @@ class HedgedAdapter(BaseAdapter):
             nonlocal backup_past_sleep
             await asyncio.sleep(self.hedge_threshold_sec)
             backup_past_sleep = True
+            self.hedge_triggered = True
             return await self.backup.chat_completion(messages, **params)
 
         async def _run_backup_immediate() -> dict[str, Any]:
             nonlocal backup_past_sleep
             backup_past_sleep = True
+            self.hedge_triggered = True
             return await self.backup.chat_completion(messages, **params)
 
         primary_task = asyncio.ensure_future(_run_primary())
@@ -288,6 +158,7 @@ class HedgedAdapter(BaseAdapter):
                             self.event_sink.on_provider_success(backup_provider)
                             # Swap config so BaseRouter attributes to real winner.
                             self.config = self.backup.config
+                            self.backup_won = True
                             primary_task.cancel()
                             await _safe_await_task(primary_task)
                         return winner_result
@@ -357,6 +228,8 @@ class HedgedAdapter(BaseAdapter):
                     "base_url": winner_base_url,
                 }
             )
+            if self.backup_won:
+                yield _routing_chunk(self)
 
             # Phase 2: yield buffered chunks from winner.
             for chunk in winner_buffer:
@@ -425,6 +298,7 @@ class HedgedAdapter(BaseAdapter):
                     hedge_timer_task = None
                     if not backup_started and not primary_done:
                         backup_started = True
+                        self.hedge_triggered = True
                         backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
 
                 # Check for primary content.
@@ -448,6 +322,7 @@ class HedgedAdapter(BaseAdapter):
                         # Start backup immediately if not already running.
                         if not backup_started:
                             backup_started = True
+                            self.hedge_triggered = True
                             if hedge_timer_task is not None:
                                 hedge_timer_task.cancel()
                                 hedge_timer_task = None
@@ -487,6 +362,7 @@ class HedgedAdapter(BaseAdapter):
                     self.event_sink.on_provider_success(backup_provider)
                     # Swap config so BaseRouter attributes to real winner.
                     self.config = self.backup.config
+                    self.backup_won = True
                     _cancel_task(primary_next_task)
                     _cancel_task(hedge_timer_task)
                     return backup_gen, primary_gen, backup_buffer

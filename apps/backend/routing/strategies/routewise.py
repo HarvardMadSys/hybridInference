@@ -9,6 +9,8 @@ keys at boot, so a typo in ``models.yaml`` fails fast with a clear message.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 from routing.routewise.router import RouteWiseRouter
@@ -73,9 +75,7 @@ class RouteWiseParams(BaseModel):
     latency_swrr_alpha: float = 0.3
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_relaxation_factors: str = "1.2,1.5,2.0"
-    latency_hedge_mode: str = "shadow"
-    latency_hedge_cost_ratio: float = 0.1
-    latency_hedge_dispatch_overhead_sec: float = 0.05
+    latency_hedge_mode: Literal["disabled", "probability_target"] = "disabled"
 
     # Canary rollout controls
     canary_enabled: bool = False

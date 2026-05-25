@@ -408,7 +408,6 @@ class TestRouteWiseRouterScaffold:
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         router._pending_decisions["req-1"] = {"decision": "quota"}
-        router._shadow_hedge_log.append(MagicMock())
         router._pending_lp_solves.add("test-model")
 
         replacement = _FakeFixedRouter()
@@ -418,7 +417,6 @@ class TestRouteWiseRouterScaffold:
 
         assert router.fixed_router is replacement
         assert router._pending_decisions == {}
-        assert router._shadow_hedge_log == []
         assert router._pending_lp_solves == set()
 
     def test_concurrency_adapter_skipped_when_disabled(self):
@@ -874,30 +872,6 @@ class TestRouteWiseLayer2:
         selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
         assert selected is api_only
         assert router._last_lp_statuses.get("test-model") == "single_provider"
-
-    def test_shadow_hedge_mode_is_ignored_by_body_router(self):
-        """First integration does not run shadow/economic hedging from selection."""
-        config = RouteWiseConfig(
-            latency_min_samples=5,
-            latency_lp_interval_sec=0.0,
-            latency_slo_sec=2.0,
-            latency_hedge_mode="shadow",
-        )
-        router, _api_a, _api_b = _make_router_with_two_api(config)
-
-        # Warm predictor.
-        for _ in range(25):
-            router.predictor.update("test-model", 500)
-
-        # Populate profiles.
-        now = time.time()
-        for _ in range(10):
-            router._latency_profiles["test-model:api-a"].record(now, 200.0)
-            router._latency_profiles["test-model:api-b"].record(now, 300.0)
-
-        router._select_adapter("test-model", {"prompt_tokens": 1000})
-
-        assert router._shadow_hedge_log == []
 
     def test_error_observation_updates_profile(self):
         """Failed observation records error in the profile."""
@@ -1592,8 +1566,8 @@ class TestRouteWiseDecisionMetadata:
         """Decision metadata exposes H6 canonical fields aligned with SIM/REAL.
 
         These land in ``api_logs.metadata["routewise"]`` so cross-source parity
-        reads one field-name contract. Production does not dispatch hedges, so
-        hedge fields are disabled/None.
+        reads one field-name contract. The default config does not dispatch
+        hedges, so hedge fields are disabled/None.
         """
         router, _conc, _quota, _api = _make_router_with_all_tiers()
         request_id = "req-test-canonical"
