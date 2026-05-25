@@ -848,6 +848,13 @@ class BroadcastPreviewRequest(BaseModel):
     subject: str = Field("", description="Required when template_key is None")
     body_html: str = Field("", description="Required when template_key is None")
     body_text: str = Field("", description="Required when template_key is None")
+    body_markdown: str = Field(
+        "",
+        description=(
+            "Markdown source for custom body; rendered to HTML server-side. "
+            "Takes precedence over body_html when set."
+        ),
+    )
     # Empty arrays would silently match zero users (postgres ANY('{}') is always
     # false), which is confusing for admins. Require at least one role and one
     # status — admin must opt in to who receives the broadcast.

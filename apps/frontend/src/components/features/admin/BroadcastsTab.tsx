@@ -2,6 +2,8 @@
 
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   BroadcastDetailResponse,
   BroadcastListItem,
@@ -36,7 +38,7 @@ export function BroadcastsTab() {
   const [bcTemplateKey, setBcTemplateKey] = useState<string>('custom');
   const [bcTemplateVars, setBcTemplateVars] = useState<Record<string, string>>({});
   const [bcSubject, setBcSubject] = useState('');
-  const [bcBodyHtml, setBcBodyHtml] = useState('');
+  const [bcBodyMarkdown, setBcBodyMarkdown] = useState('');
   const [bcScheduleMode, setBcScheduleMode] = useState<'now' | 'later'>('now');
   const [bcScheduledAt, setBcScheduledAt] = useState('');
   const [bcPreview, setBcPreview] = useState<{
@@ -83,7 +85,7 @@ export function BroadcastsTab() {
                 setBcTemplateKey(e.target.value);
                 setBcTemplateVars({});
                 setBcSubject('');
-                setBcBodyHtml('');
+                setBcBodyMarkdown('');
                 setBcPreview(null);
               }}
               className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
@@ -173,16 +175,26 @@ export function BroadcastsTab() {
               </div>
               <div>
                 <label className="block text-[12px] font-medium text-gray-600 mb-1">
-                  Body (HTML)
+                  Body (Markdown)
                 </label>
                 <textarea
                   rows={6}
                   className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-mono focus:outline-none focus:ring-2 focus:ring-gray-900"
-                  placeholder="<p>Your message here...</p>"
-                  value={bcBodyHtml}
-                  onChange={(e) => setBcBodyHtml(e.target.value)}
+                  placeholder={'## Heading\n\nYour **message** here. [link](https://...)'}
+                  value={bcBodyMarkdown}
+                  onChange={(e) => setBcBodyMarkdown(e.target.value)}
                 />
               </div>
+              {bcBodyMarkdown && (
+                <div>
+                  <label className="block text-[12px] font-medium text-gray-600 mb-1">
+                    Preview
+                  </label>
+                  <div className="rounded-md border border-gray-200 px-3 py-2 text-[13px] text-gray-700 [&_a]:text-blue-600 [&_a]:underline [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{bcBodyMarkdown}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -272,7 +284,7 @@ export function BroadcastsTab() {
                     template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
                     template_vars: bcTemplateVars,
                     subject: bcSubject,
-                    body_html: bcBodyHtml,
+                    body_markdown: bcBodyMarkdown,
                     body_text: '',
                     target_roles: bcTargetRoles,
                     target_statuses: bcTargetStatuses,
@@ -298,7 +310,7 @@ export function BroadcastsTab() {
                     template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
                     template_vars: bcTemplateVars,
                     subject: bcSubject,
-                    body_html: bcBodyHtml,
+                    body_markdown: bcBodyMarkdown,
                     body_text: '',
                     target_roles: bcTargetRoles,
                     target_statuses: bcTargetStatuses,
@@ -368,7 +380,7 @@ export function BroadcastsTab() {
                         template_key: bcTemplateKey === 'custom' ? null : bcTemplateKey,
                         template_vars: bcTemplateVars,
                         subject: bcSubject,
-                        body_html: bcBodyHtml,
+                        body_markdown: bcBodyMarkdown,
                         body_text: '',
                         target_roles: bcTargetRoles,
                         target_statuses: bcTargetStatuses,

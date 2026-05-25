@@ -6,6 +6,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import urlparse
 
+from markdown_it import MarkdownIt
+
 from serving.config.settings import settings
 from serving.utils.logging import get_logger
 
@@ -427,6 +429,35 @@ Review at: {admin_url}
 
 # ── Broadcast email templates ──────────────────────────────────────────────
 
+# Shared markdown renderer for custom broadcast bodies. CommonMark base plus a
+# few GFM-ish niceties (autolinks, soft-break-as-<br>, tables, strikethrough).
+_md = (
+    MarkdownIt("commonmark", {"linkify": True, "breaks": True})
+    .enable("table")
+    .enable("strikethrough")
+)
+
+
+def render_markdown_email(markdown_src: str) -> tuple[str, str]:
+    """Render markdown into a wrapped HTML email body plus a plaintext version.
+
+    Returns:
+        Tuple of ``(wrapped_html, plain_text)``. The HTML fragment produced by
+        the markdown renderer is wrapped in the same email shell + footer used
+        by EMAIL_TEMPLATES; the plaintext is just the (stripped) markdown source,
+        which is already human-readable.
+    """
+    fragment = _md.render(markdown_src)
+    wrapped_html = (
+        '<html><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">'
+        f'<div style="max-width: 600px; margin: 0 auto; padding: 20px;">{fragment}'
+        '<hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">'
+        '<p style="color: #999; font-size: 12px;">You received this because you have an '
+        "active FreeInference account.</p>"
+        "</div></body></html>"
+    )
+    return wrapped_html, markdown_src.strip()
+
 
 class _SafeDict(dict):
     """dict subclass that returns '{key}' for missing keys instead of raising KeyError."""
@@ -495,13 +526,26 @@ def render_broadcast_template(
     custom_subject: str = "",
     custom_body_html: str = "",
     custom_body_text: str = "",
+    custom_body_markdown: str = "",
 ) -> dict[str, str]:
     """Render a broadcast email from a template key or custom content.
+
+    For custom content (``template_key is None``), markdown takes precedence:
+    when ``custom_body_markdown`` is non-empty it is rendered to HTML (and its
+    stripped source used as the plaintext), overriding ``custom_body_html`` /
+    ``custom_body_text``. Otherwise the custom HTML/text are passed through.
 
     Raises:
         ValueError: If template_key is provided but not in EMAIL_TEMPLATES.
     """
     if template_key is None:
+        if custom_body_markdown.strip():
+            body_html, body_text = render_markdown_email(custom_body_markdown)
+            return {
+                "subject": custom_subject,
+                "body_html": body_html,
+                "body_text": body_text,
+            }
         return {
             "subject": custom_subject,
             "body_html": custom_body_html,
