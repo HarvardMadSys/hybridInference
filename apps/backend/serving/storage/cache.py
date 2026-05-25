@@ -681,6 +681,26 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_model_visibility_overrides()
 
+    async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_model_concurrency_exemption(model_id)
+
+    async def set_model_concurrency_exemption(
+        self,
+        model_id: str,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_model_concurrency_exemption(model_id, updated_by)
+
+    async def delete_model_concurrency_exemption(self, model_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_model_concurrency_exemption(model_id)
+
+    async def list_model_concurrency_exemptions(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_model_concurrency_exemptions()
+
     async def list_weight_overrides_for_model(self, model_id: str) -> list[Row]:
         """Delegate to wrapped store."""
         return await self._store.list_weight_overrides_for_model(model_id)

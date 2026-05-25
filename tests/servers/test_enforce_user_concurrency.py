@@ -8,7 +8,7 @@ isolation, including streaming-hold / disconnect / exception cleanup.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -21,7 +21,11 @@ from serving.servers.concurrency import (
     enforce_user_concurrency,
     static_limits_provider,
 )
-from serving.servers.deps import get_user_concurrency_limiter
+from serving.servers.deps import (
+    get_model_concurrency_resolver,
+    get_router,
+    get_user_concurrency_limiter,
+)
 
 LIMITS = {"free": 1, "pro": 3, "internal": 10, "admin": 10}
 
@@ -37,6 +41,10 @@ def _make_app(user: dict[str, Any], limiter: UserConcurrencyLimiter | None) -> F
 
     app.dependency_overrides[verify_api_key] = fake_verify_api_key
     app.dependency_overrides[get_user_concurrency_limiter] = fake_get_limiter
+    # These tests exercise the per-user gate in isolation, so disable the
+    # model-exemption short-circuit by returning no router / resolver.
+    app.dependency_overrides[get_router] = lambda: None
+    app.dependency_overrides[get_model_concurrency_resolver] = lambda: None
 
     # Unary endpoint
     app.unary_event = asyncio.Event()  # type: ignore[attr-defined]
@@ -255,6 +263,93 @@ async def test_fail_open_when_limiter_is_none():
         for _ in range(5):
             r = await client.get("/probe")
             assert r.status_code == 200
+
+
+def _make_exempt_app(
+    user: dict[str, Any],
+    limiter: UserConcurrencyLimiter | None,
+    exempt_models: set[str],
+) -> FastAPI:
+    """Build an app whose POST endpoint reads ``model`` from the JSON body.
+
+    Wires a stub router (canonical id == model) and a stub concurrency
+    resolver that reports the given models as exempt.
+    """
+    app = FastAPI()
+
+    async def fake_verify_api_key() -> dict[str, Any]:
+        return user
+
+    def fake_get_limiter() -> UserConcurrencyLimiter | None:
+        return limiter
+
+    class _StubRouter:
+        routes: ClassVar[dict[str, Any]] = {}
+
+    class _StubResolver:
+        async def is_exempt(self, model_id: str) -> bool:
+            return model_id in exempt_models
+
+    app.dependency_overrides[verify_api_key] = fake_verify_api_key
+    app.dependency_overrides[get_user_concurrency_limiter] = fake_get_limiter
+    app.dependency_overrides[get_router] = lambda: _StubRouter()
+    app.dependency_overrides[get_model_concurrency_resolver] = lambda: _StubResolver()
+
+    app.unary_event = asyncio.Event()  # type: ignore[attr-defined]
+
+    # No body param on the handler: the gate dependency reads the JSON body
+    # itself, and re-reading it for the handler is exercised separately. A
+    # parameterless handler matches the pattern used by the other tests here
+    # and avoids FastAPI re-parsing a body stream the gate already consumed.
+    @app.post("/probe", dependencies=[Depends(enforce_user_concurrency)])
+    async def probe():
+        await app.unary_event.wait()
+        return {"ok": True}
+
+    return app
+
+
+@pytest.mark.asyncio
+async def test_exempt_model_bypasses_full_user_slot():
+    """An exempt model must never be rejected even when the user's slot is full."""
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_exempt_app(user, limiter, exempt_models={"exempt-model"})
+    app.unary_event.set()  # type: ignore[attr-defined]  # don't block handler
+
+    # Saturate the user's single free slot up-front.
+    granted, _, _ = await limiter.try_acquire("u1", "free", False)
+    assert granted
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Non-exempt model is rejected because the slot is full.
+        resp_blocked = await client.post("/probe", json={"model": "normal-model"})
+        assert resp_blocked.status_code == 429
+
+        # Exempt model bypasses the gate entirely -> 200 despite the full slot.
+        resp_exempt = await client.post("/probe", json={"model": "exempt-model"})
+        assert resp_exempt.status_code == 200
+        assert resp_exempt.json()["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_exempt_model_consumes_no_slot():
+    """Many concurrent exempt requests succeed without consuming per-user slots."""
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_exempt_app(user, limiter, exempt_models={"exempt-model"})
+    app.unary_event.set()  # type: ignore[attr-defined]
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # free limit is 1, but exempt model should allow many sequential 200s.
+        for _ in range(5):
+            r = await client.post("/probe", json={"model": "exempt-model"})
+            assert r.status_code == 200
+
+    # The exempt path must not have touched the user's slot.
+    assert limiter.role_for("u1") is None
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
     from routing.routers import ManagedRouter
+    from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
     from serving.config.weight_overrides import WeightOverrideResolver
     from serving.observability.alert_rules import AlertEngine
@@ -52,6 +53,7 @@ class AppServices:
     model_router_registry: ModelRouterRegistry | None = None
     managed_routers: list[ManagedRouter] = field(default_factory=list)
     model_visibility_resolver: ModelVisibilityResolver | None = None
+    model_concurrency_resolver: ModelConcurrencyResolver | None = None
     weight_override_resolver: WeightOverrideResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
@@ -119,6 +121,13 @@ def get_model_visibility_resolver(
 ) -> ModelVisibilityResolver | None:
     """Dependency to obtain the ModelVisibilityResolver (if configured)."""
     return getattr(services, "model_visibility_resolver", None)
+
+
+def get_model_concurrency_resolver(
+    services: AppServices = Depends(get_services),
+) -> ModelConcurrencyResolver | None:
+    """Dependency to obtain the ModelConcurrencyResolver (if configured)."""
+    return getattr(services, "model_concurrency_resolver", None)
 
 
 def get_completions_logger(

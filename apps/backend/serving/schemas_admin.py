@@ -735,6 +735,25 @@ class UpdateModelVisibilityRequest(BaseModel):
     required_role: Literal["trial", "free", "pro", "internal", "admin"] | None
 
 
+class ModelConcurrencyItem(BaseModel):
+    """Current per-user concurrency-limit exemption state for a canonical model."""
+
+    model_id: str
+    exempt: bool
+
+
+class ListModelConcurrencyResponse(BaseModel):
+    """Response payload for listing model concurrency exemptions."""
+
+    models: list[ModelConcurrencyItem]
+
+
+class UpdateModelConcurrencyRequest(BaseModel):
+    """Request payload for updating a model concurrency exemption."""
+
+    exempt: bool
+
+
 class RouteWeightItem(BaseModel):
     """Current route weight state for one model endpoint."""
 

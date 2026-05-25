@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
@@ -437,6 +438,7 @@ async def initialize() -> AppServices:
             logger.warning(f"Runtime settings initialization failed: {exc}")
 
     model_visibility_resolver = None
+    model_concurrency_resolver = None
     weight_override_resolver = None
     weight_override_refresh_task = None
     if operational_store is not None:
@@ -445,6 +447,11 @@ async def initialize() -> AppServices:
             logger.info("Model visibility resolver initialized")
         except Exception as exc:
             logger.warning(f"Model visibility resolver initialization failed: {exc}")
+        try:
+            model_concurrency_resolver = ModelConcurrencyResolver(operational_store)
+            logger.info("Model concurrency resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Model concurrency resolver initialization failed: {exc}")
         try:
             weight_override_resolver = WeightOverrideResolver(operational_store)
             await weight_override_resolver.load_all()
@@ -532,6 +539,7 @@ async def initialize() -> AppServices:
         model_router_registry=model_router_registry,
         managed_routers=managed_routers,
         model_visibility_resolver=model_visibility_resolver,
+        model_concurrency_resolver=model_concurrency_resolver,
         weight_override_resolver=weight_override_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,

@@ -961,6 +961,36 @@ export async function updateModelVisibility(
   return jsonOrThrow<AdminModelVisibilityItem>(resp);
 }
 
+export interface AdminModelConcurrencyItem {
+  model_id: string;
+  exempt: boolean;
+}
+
+export interface ListAdminModelConcurrencyResponse {
+  models: AdminModelConcurrencyItem[];
+}
+
+export async function listModelConcurrency(): Promise<ListAdminModelConcurrencyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/models/concurrency');
+  return jsonOrThrow<ListAdminModelConcurrencyResponse>(resp);
+}
+
+export async function updateModelConcurrency(
+  modelId: string,
+  exempt: boolean,
+): Promise<AdminModelConcurrencyItem> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/models/${encodeURIComponent(modelId)}/concurrency`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exempt }),
+    },
+  );
+  return jsonOrThrow<AdminModelConcurrencyItem>(resp);
+}
+
 export interface RouteWeight {
   model_id: string;
   strategy: string;

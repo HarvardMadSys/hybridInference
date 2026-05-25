@@ -193,7 +193,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import Depends, HTTPException, Request
 
 from .auth import verify_api_key
-from .deps import get_user_concurrency_limiter
+from .deps import get_model_concurrency_resolver, get_router, get_user_concurrency_limiter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -203,8 +203,14 @@ async def enforce_user_concurrency(
     request: Request,
     user: dict[str, Any] = Depends(verify_api_key),
     limiter: UserConcurrencyLimiter | None = Depends(get_user_concurrency_limiter),
+    router: Any = Depends(get_router),
+    concurrency_resolver: Any = Depends(get_model_concurrency_resolver),
 ) -> AsyncGenerator[None, None]:
     """Acquire a per-user concurrency slot or raise 429.
+
+    Models flagged as concurrency-exempt bypass the gate entirely: their
+    requests never consume a per-user slot and are never rejected with a
+    429 ``concurrency_limit_exceeded``.
 
     Uses ``yield`` so FastAPI runs the cleanup ``finally`` block after the
     response (including streaming body) is fully sent, on exception, or
@@ -216,6 +222,32 @@ async def enforce_user_concurrency(
         logger.warning("user_concurrency: limiter is None; passing request through unguarded")
         yield
         return
+
+    # Concurrency-exemption check. Parsing must never break the gate, so any
+    # failure here falls through to the normal acquire/release path. FastAPI
+    # caches the parsed body, so the handler's own ``await request.json()``
+    # still works.
+    if concurrency_resolver is not None and router is not None:
+        try:
+            body = await request.json()
+            model = body.get("model") if isinstance(body, dict) else None
+            if model:
+                route = router.routes.get(model)
+                if route is not None and route.adapters:
+                    canonical = route.adapters[0][0].config.id
+                else:
+                    canonical = model
+                if await concurrency_resolver.is_exempt(canonical):
+                    logger.debug(
+                        "user_concurrency: model exempt; bypassing per-user gate",
+                        extra={"model": model, "canonical": canonical},
+                    )
+                    yield
+                    return
+        except Exception:
+            # Never let exemption parsing break the gate; fall through to the
+            # normal per-user concurrency path below.
+            logger.debug("user_concurrency: exemption check skipped", exc_info=True)
 
     user_id = user["user_id"]
     role = user.get("role", "free") or "free"

@@ -721,6 +721,26 @@ class OperationalStore(ABC):
         """Return all model visibility override rows ordered by model_id."""
 
     @abstractmethod
+    async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
+        """Fetch a single model concurrency exemption row by model_id."""
+
+    @abstractmethod
+    async def set_model_concurrency_exemption(
+        self,
+        model_id: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model concurrency exemption row (presence of row = exempt)."""
+
+    @abstractmethod
+    async def delete_model_concurrency_exemption(self, model_id: str) -> bool:
+        """Delete a model concurrency exemption row. Returns True if removed."""
+
+    @abstractmethod
+    async def list_model_concurrency_exemptions(self) -> list[Row]:
+        """Return all model concurrency exemption rows ordered by model_id."""
+
+    @abstractmethod
     async def list_weight_overrides_for_model(self, model_id: str) -> list[Row]:
         """Return provider weight overrides for a model ordered by endpoint_id."""
 

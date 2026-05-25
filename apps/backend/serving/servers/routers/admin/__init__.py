@@ -1,8 +1,9 @@
 """Admin router package.
 
 Aggregates domain-focused sub-routers (analytics, api_keys, broadcast,
-export, login_events, metrics, providers, settings, signup_domains, stats,
-users) into a single ``router`` exported at this level. Callers use
+export, login_events, metrics, model_concurrency, model_visibility,
+providers, settings, signup_domains, stats, users) into a single ``router``
+exported at this level. Callers use
 ``from serving.servers.routers import admin`` unchanged.
 """
 
@@ -15,6 +16,7 @@ from serving.servers.routers.admin import (
     export,
     login_events,
     metrics,
+    model_concurrency,
     model_visibility,
     provider_keys,
     providers,
@@ -35,6 +37,7 @@ router.include_router(broadcast.router)
 router.include_router(export.router)
 router.include_router(login_events.router)
 router.include_router(metrics.router)
+router.include_router(model_concurrency.router)
 router.include_router(model_visibility.router)
 router.include_router(provider_keys.router)
 router.include_router(providers.router)
