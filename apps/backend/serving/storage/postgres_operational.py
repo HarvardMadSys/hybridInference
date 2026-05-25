@@ -453,6 +453,14 @@ class PostgresOperationalStore(OperationalStore):
         """)
 
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_concurrency_exemptions (
+                model_id TEXT PRIMARY KEY,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT
+            )
+        """)
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS provider_weight_overrides (
                 model_id TEXT NOT NULL,
                 endpoint_id TEXT NOT NULL,
@@ -1834,6 +1842,52 @@ class PostgresOperationalStore(OperationalStore):
             rows = await conn.fetch(
                 "SELECT model_id, required_role, updated_at, updated_by "
                 "FROM model_visibility_overrides ORDER BY model_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
+        """Fetch a single model_concurrency_exemptions row by model_id."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT model_id, updated_at, updated_by "
+                "FROM model_concurrency_exemptions WHERE model_id = $1",
+                model_id,
+            )
+        return dict(row) if row else None
+
+    async def set_model_concurrency_exemption(
+        self,
+        model_id: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model concurrency exemption row (presence of row = exempt)."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO model_concurrency_exemptions "
+                "(model_id, updated_at, updated_by) "
+                "VALUES ($1, NOW(), $2) "
+                "ON CONFLICT (model_id) DO UPDATE SET "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                updated_by,
+            )
+
+    async def delete_model_concurrency_exemption(self, model_id: str) -> bool:
+        """Delete a model concurrency exemption row. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM model_concurrency_exemptions WHERE model_id = $1",
+                model_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+    async def list_model_concurrency_exemptions(self) -> list[Row]:
+        """Return all model concurrency exemption rows ordered by model_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, updated_at, updated_by "
+                "FROM model_concurrency_exemptions ORDER BY model_id"
             )
         return [dict(r) for r in rows]
 

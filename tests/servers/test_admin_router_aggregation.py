@@ -22,9 +22,8 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = (
-        56  # includes role-quota, provider-key, visibility, routewise, and routing-weight routes
-    )
+    expected = 58  # includes role-quota, provider-key, visibility, concurrency,
+    # routewise, and routing-weight routes
     routes = [r for r in admin.router.routes if hasattr(r, "path") and r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"

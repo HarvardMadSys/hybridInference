@@ -20,6 +20,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { validateNumericSettingInput } from './numericSettingValidation';
 import { validateSignupDomainInput } from './signupDomainValidation';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
+import { ModelConcurrencySection } from './ModelConcurrencySection';
 import { RoutewiseTab } from './RoutewiseTab';
 import { RoutingTab } from './RoutingTab';
 
@@ -508,6 +509,8 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
           </div>
 
           <ModelVisibilitySection onToast={flashToast} />
+
+          <ModelConcurrencySection onToast={flashToast} />
 
           {/* Signup Policy */}
           <div className="rounded-xl border border-gray-200 bg-white p-5">

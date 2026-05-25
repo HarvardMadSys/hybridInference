@@ -1,0 +1,39 @@
+"""Runtime resolver for per-model concurrency-limit exemptions."""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+class ModelConcurrencyResolver:
+    """Resolve whether a model is exempt from the per-user concurrency limit."""
+
+    def __init__(self, store: Any, ttl: float = 30.0) -> None:
+        self._store = store
+        self._ttl = ttl
+        self._cache: dict[str, tuple[float, bool]] = {}
+
+    async def is_exempt(self, model_id: str) -> bool:
+        """Return True when the model is exempt from the per-user concurrency limit."""
+        now = time.monotonic()
+        cached = self._cache.get(model_id)
+        if cached is not None and (now - cached[0]) < self._ttl:
+            return cached[1]
+
+        row = await self._store.get_model_concurrency_exemption(model_id)
+        exempt = row is not None
+        self._cache[model_id] = (now, exempt)
+        return exempt
+
+    def invalidate_model(self, model_id: str) -> None:
+        """Drop the cached exemption entry for a single model."""
+        self._cache.pop(model_id, None)
+
+    def invalidate_cache(self) -> None:
+        """Clear all cached model concurrency exemptions."""
+        self._cache.clear()
