@@ -334,7 +334,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
                 style: { fontSize: 11, fill: '#6b7280', textAnchor: 'middle' },
               }}
             />
-            <ZAxis range={[8, 8]} />
+            <ZAxis range={[4, 4]} />
             <Tooltip
               cursor={{ strokeDasharray: '3 3' }}
               contentStyle={{ fontSize: 11 }}
