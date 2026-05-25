@@ -529,15 +529,6 @@ async def update_user(
             if getattr(adapter, "config", None) is not None
         }
         normalized_disabled_models = normalize_disabled_models(payload_dict["disabled_models"])
-        existing_disabled_models = get_disabled_models_from_preferences(
-            await op_store.get_user_preferences(user_id)
-        )
-        stale_disabled_models = set(existing_disabled_models) - known_model_ids
-        unknown_model_ids = sorted(
-            set(normalized_disabled_models) - known_model_ids - stale_disabled_models
-        )
-        if unknown_model_ids:
-            raise HTTPException(400, f"Unknown model id(s): {', '.join(unknown_model_ids)}")
         preferences = await op_store.get_user_preferences(user_id)
         preferences = dict(preferences) if isinstance(preferences, dict) else {}
         preferences[DISABLED_MODELS_PREFERENCE_KEY] = [
