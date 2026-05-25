@@ -34,6 +34,7 @@ def _render_or_422(req: BroadcastPreviewRequest) -> dict[str, str]:
             custom_subject=req.subject,
             custom_body_html=req.body_html,
             custom_body_text=req.body_text,
+            custom_body_markdown=req.body_markdown,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

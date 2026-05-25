@@ -523,6 +523,7 @@ export interface BroadcastPreviewRequest {
   template_vars?: Record<string, string>;
   subject?: string;
   body_html?: string;
+  body_markdown?: string;
   body_text?: string;
   target_roles: string[];
   target_statuses: string[];
