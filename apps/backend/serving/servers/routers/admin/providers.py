@@ -140,19 +140,9 @@ async def admin_provider_stats(
             )
         # Dropdown lists span the full retained table (purge caps it at 30
         # days), NOT the selected [start, end) window — otherwise picking a
-        # range with no rows would leave the provider dropdown empty.
-        providers = await conn.fetch(
-            """
-            SELECT DISTINCT provider FROM provider_hourly_stats
-             ORDER BY provider
-            """
-        )
-        models = await conn.fetch(
-            """
-            SELECT DISTINCT model_id FROM provider_hourly_stats
-             ORDER BY model_id
-            """
-        )
+        # range with no rows would leave the provider dropdown empty. One
+        # DISTINCT scan over the (provider, model_id) pairs is enough; the
+        # provider and model lists are derived from it in Python.
         pairs = await conn.fetch(
             """
             SELECT DISTINCT provider, model_id FROM provider_hourly_stats
@@ -160,10 +150,13 @@ async def admin_provider_stats(
             """
         )
 
+    providers = sorted({r["provider"] for r in pairs})
+    models = sorted({r["model_id"] for r in pairs})
+
     return ProviderStatsResponse(
         rows=[ProviderStatsRow(**dict(r)) for r in rows],
-        providers=[r["provider"] for r in providers],
-        models=[r["model_id"] for r in models],
+        providers=providers,
+        models=models,
         pairs=[ProviderModelPair(provider=r["provider"], model_id=r["model_id"]) for r in pairs],
     )
 
