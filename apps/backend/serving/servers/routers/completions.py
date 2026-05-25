@@ -104,6 +104,7 @@ async def _buffer_streaming_response_for_non_stream_client(
         if isinstance(error, dict):
             code = error.get("code")
             status_code = code if isinstance(code, int) else 500
+            logger.error(f"Upstream error in stream: {error}", extra={"request_id": request_id})
             raise HTTPException(
                 status_code=status_code,
                 detail=scrub_error_for_user(None, request_id, status_code),
@@ -222,6 +223,7 @@ async def _streaming_response_with_keepalive(
             if isinstance(error, dict):
                 code = error.get("code")
                 status_code = code if isinstance(code, int) else 500
+                logger.error(f"Upstream error in stream: {error}", extra={"request_id": request_id})
                 raise HTTPException(
                     status_code=status_code,
                     detail=scrub_error_for_user(None, request_id, status_code),
