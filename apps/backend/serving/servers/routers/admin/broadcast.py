@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio as _asyncio
+import json
 import uuid as _uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -129,14 +130,14 @@ async def create_broadcast(
                 INSERT INTO email_broadcasts
                     (id, subject, body_html, body_text, template_key, template_vars,
                      target_roles, target_statuses, status, scheduled_at, created_by)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11)
                 """,
             broadcast_id,
             rendered["subject"],
             rendered["body_html"],
             rendered["body_text"],
             req.template_key,
-            req.template_vars,
+            json.dumps(req.template_vars),
             req.target_roles or [],
             req.target_statuses or [],
             "scheduled",
