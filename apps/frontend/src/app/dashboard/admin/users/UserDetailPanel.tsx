@@ -1,5 +1,6 @@
 'use client';
 
+import { hasRole } from '@/components/providers/AuthProvider';
 import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
 
 function relTime(s: string | null): string {
@@ -127,12 +128,35 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             <div className="text-[11px] font-medium text-gray-500">Model access</div>
             <p className="mt-1 text-[12px] text-gray-500">
               Disabled models stay hidden for this user even if their role would normally allow
-              them.
+              them. Models above the user&apos;s role are locked and cannot be enabled here.
             </p>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             {availableModels.map((model) => {
+              const roleLocked = !hasRole(editRole, model.effective_required_role);
               const isDisabled = editDisabledModels.includes(model.model_id);
+              if (roleLocked) {
+                return (
+                  <label
+                    key={model.model_id}
+                    className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-100 px-3 py-2 text-[12px] text-gray-400 opacity-70 cursor-not-allowed"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={false}
+                      disabled
+                      readOnly
+                      onChange={() => {}}
+                      className="cursor-not-allowed"
+                      aria-label={`${model.model_id} requires ${model.effective_required_role} role`}
+                    />
+                    <span className="font-medium text-gray-500">{model.model_id}</span>
+                    <span className="ml-auto text-[10px] font-semibold text-gray-500">
+                      requires {model.effective_required_role}
+                    </span>
+                  </label>
+                );
+              }
               return (
                 <label
                   key={model.model_id}
@@ -151,7 +175,9 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
                     }
                   />
                   <span
-                    className={`font-medium ${isDisabled ? 'line-through text-gray-400' : 'text-gray-900'}`}
+                    className={`font-medium ${
+                      isDisabled ? 'line-through text-gray-400' : 'text-gray-900'
+                    }`}
                   >
                     {model.model_id}
                   </span>
