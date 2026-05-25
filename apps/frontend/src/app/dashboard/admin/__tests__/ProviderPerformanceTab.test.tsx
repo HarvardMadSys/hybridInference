@@ -45,6 +45,7 @@ vi.mock('@/lib/api/admin', async () => {
     getProviderStats: vi.fn(async ({ provider }: { provider: string }) => ({
       providers: ['openai'],
       pairs: [{ provider: 'openai', model_id: 'gpt-4o-mini' }],
+      window_providers: ['openai'],
       rows: provider === '__none__' ? [] : [mockStatsRow],
     })),
     getTtftScatter: vi.fn(async () => ({ models: [] })),

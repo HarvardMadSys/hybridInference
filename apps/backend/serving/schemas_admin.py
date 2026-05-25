@@ -969,12 +969,17 @@ class ProviderModelPair(BaseModel):
 
 class ProviderStatsResponse(BaseModel):
     rows: list[ProviderStatsRow]
+    # `providers`/`models`/`pairs` span the full retained table (last 30
+    # days), so the dropdowns stay populated even when the selected range
+    # has no rows.
     providers: list[str]
     models: list[str]
-    # Distinct (provider, model_id) pairs that have data in the window.
-    # The UI uses pairs[0] as the default selection so it never picks a
-    # provider x model combination that has no data.
     pairs: list[ProviderModelPair]
+    # Providers that actually have rows inside the selected [from, to)
+    # window. The UI prefers one of these as the default selection so the
+    # tab doesn't render empty on load when a retention-only provider sorts
+    # first.
+    window_providers: list[str]
 
 
 # ============================================================

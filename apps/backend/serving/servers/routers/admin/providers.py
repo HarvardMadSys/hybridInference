@@ -149,6 +149,18 @@ async def admin_provider_stats(
              ORDER BY provider, model_id
             """
         )
+        # Providers with rows INSIDE the selected window — used by the UI to
+        # pick a sensible default so the tab doesn't open on a provider that
+        # has no in-range data.
+        window_providers = await conn.fetch(
+            """
+            SELECT DISTINCT provider FROM provider_hourly_stats
+             WHERE hour_bucket >= $1 AND hour_bucket < $2
+             ORDER BY provider
+            """,
+            start,
+            end,
+        )
 
     providers = sorted({r["provider"] for r in pairs})
     models = sorted({r["model_id"] for r in pairs})
@@ -158,6 +170,7 @@ async def admin_provider_stats(
         providers=providers,
         models=models,
         pairs=[ProviderModelPair(provider=r["provider"], model_id=r["model_id"]) for r in pairs],
+        window_providers=[r["provider"] for r in window_providers],
     )
 
 

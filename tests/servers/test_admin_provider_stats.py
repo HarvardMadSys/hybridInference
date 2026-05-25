@@ -283,3 +283,7 @@ async def test_provider_stats_happy_path(db_logger):
         "meta/llama-3.3-70b",
         "deepseek/deepseek-chat",
     }
+
+    # window_providers is range-scoped: the in-window providers only, used by
+    # the UI to pick a default that has data. The stale deepseek row is excluded.
+    assert set(body["window_providers"]) == {"openrouter", "chutes"}
