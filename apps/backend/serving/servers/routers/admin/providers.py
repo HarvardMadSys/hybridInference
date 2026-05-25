@@ -70,8 +70,10 @@ async def admin_provider_stats(
         to:   ISO8601 upper bound (exclusive). Defaults to current hour.
 
     The window is hour-truncated and capped at 90 days. The response also
-    includes the distinct providers and models seen in the window so the UI
-    can populate dropdowns from a single round-trip.
+    includes the distinct providers and models across the full retained table
+    (last 30 days), independent of the selected range, so the UI can populate
+    its dropdowns from a single round-trip even when the chosen window has no
+    rows.
     """
     del request  # accepted to match other admin handlers; pool comes from Depends
     if not db_logger or not db_logger.pool:
@@ -136,32 +138,26 @@ async def admin_provider_stats(
                 start,
                 end,
             )
+        # Dropdown lists span the full retained table (purge caps it at 30
+        # days), NOT the selected [start, end) window — otherwise picking a
+        # range with no rows would leave the provider dropdown empty.
         providers = await conn.fetch(
             """
             SELECT DISTINCT provider FROM provider_hourly_stats
-             WHERE hour_bucket >= $1 AND hour_bucket < $2
              ORDER BY provider
-            """,
-            start,
-            end,
+            """
         )
         models = await conn.fetch(
             """
             SELECT DISTINCT model_id FROM provider_hourly_stats
-             WHERE hour_bucket >= $1 AND hour_bucket < $2
              ORDER BY model_id
-            """,
-            start,
-            end,
+            """
         )
         pairs = await conn.fetch(
             """
             SELECT DISTINCT provider, model_id FROM provider_hourly_stats
-             WHERE hour_bucket >= $1 AND hour_bucket < $2
              ORDER BY provider, model_id
-            """,
-            start,
-            end,
+            """
         )
 
     return ProviderStatsResponse(
