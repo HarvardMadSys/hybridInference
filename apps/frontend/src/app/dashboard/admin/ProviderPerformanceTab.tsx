@@ -545,8 +545,12 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         if (cancelled) return;
         setAllProviders(resp.providers);
         setAllPairs(resp.pairs);
-        if (resp.providers.length > 0) {
-          const preferred = resp.providers.includes('minimax') ? 'minimax' : resp.providers[0];
+        // Prefer a provider that actually has data in the selected window so
+        // the tab doesn't open empty; fall back to the full list otherwise.
+        const candidates =
+          resp.window_providers.length > 0 ? resp.window_providers : resp.providers;
+        if (candidates.length > 0) {
+          const preferred = candidates.includes('minimax') ? 'minimax' : candidates[0];
           setProvider(preferred);
         }
       } catch (exc) {

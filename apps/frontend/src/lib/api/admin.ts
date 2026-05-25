@@ -751,6 +751,9 @@ export interface ProviderStatsResponse {
   providers: string[];
   models: string[];
   pairs: ProviderModelPair[];
+  // Providers that have rows inside the selected window. The dropdown lists
+  // above span the full retained table regardless of the selected range.
+  window_providers: string[];
 }
 
 export async function getProviderStats(params: {
