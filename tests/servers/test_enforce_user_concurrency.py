@@ -283,8 +283,30 @@ def _make_exempt_app(
     def fake_get_limiter() -> UserConcurrencyLimiter | None:
         return limiter
 
+    class _StubConfig:
+        def __init__(self, model_id: str) -> None:
+            self.id = model_id
+
+    class _StubAdapter:
+        def __init__(self, model_id: str) -> None:
+            self.config = _StubConfig(model_id)
+
+    class _StubRoute:
+        def __init__(self, model_id: str) -> None:
+            self.adapters = [(_StubAdapter(model_id), None)]
+
+    class _AllRoutes:
+        """Pretend every model id is a registered canonical route.
+
+        The gate only checks exemptions for models the router recognizes, so
+        the stub returns a route (with ``config.id == model``) for any lookup.
+        """
+
+        def get(self, model_id: str, default: Any = None) -> Any:
+            return _StubRoute(model_id)
+
     class _StubRouter:
-        routes: ClassVar[dict[str, Any]] = {}
+        routes: ClassVar[Any] = _AllRoutes()
 
     class _StubResolver:
         async def is_exempt(self, model_id: str) -> bool:

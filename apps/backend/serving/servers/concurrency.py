@@ -17,6 +17,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.observability.metrics import (
     USER_CONCURRENCY_ACQUIRES_TOTAL,
     USER_CONCURRENCY_IN_FLIGHT,
@@ -223,21 +224,30 @@ async def enforce_user_concurrency(
         yield
         return
 
-    # Concurrency-exemption check. Parsing must never break the gate, so any
-    # failure here falls through to the normal acquire/release path. FastAPI
-    # caches the parsed body, so the handler's own ``await request.json()``
-    # still works.
-    if concurrency_resolver is not None and router is not None:
+    # Concurrency-exemption check. Restricted to POST requests: only the
+    # inference routes (chat/completions/embeddings/messages) carry a JSON
+    # body with a ``model`` field, so parsing anything else (e.g. GET
+    # ``/v1/models``) is wasted work and a slow-body attack surface. Parsing
+    # must never break the gate, so any failure here falls through to the
+    # normal acquire/release path. FastAPI caches the parsed body, so the
+    # handler's own ``await request.json()`` still works.
+    if concurrency_resolver is not None and router is not None and request.method == "POST":
         try:
             body = await request.json()
             model = body.get("model") if isinstance(body, dict) else None
             if model:
-                route = router.routes.get(model)
-                if route is not None and route.adapters:
-                    canonical = route.adapters[0][0].config.id
-                else:
-                    canonical = model
-                if await concurrency_resolver.is_exempt(canonical):
+                # Resolve Anthropic display aliases (e.g. claude-3-opus-latest)
+                # to registry IDs before the route lookup, matching how the
+                # Anthropic Messages handler canonicalizes models. Only models
+                # recognized by the router reach the resolver: unknown strings
+                # are never cached, so arbitrary input can't pollute its
+                # in-memory cache.
+                resolved = resolve_anthropic_alias(model)
+                route = router.routes.get(resolved)
+                canonical = (
+                    route.adapters[0][0].config.id if route is not None and route.adapters else None
+                )
+                if canonical is not None and await concurrency_resolver.is_exempt(canonical):
                     logger.debug(
                         "user_concurrency: model exempt; bypassing per-user gate",
                         extra={"model": model, "canonical": canonical},
