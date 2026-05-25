@@ -50,10 +50,10 @@ function fmtHour(iso: string): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00`;
 }
 
-function fmt2(v: unknown): string {
+function fmt0(v: unknown): string {
   if (v == null) return '';
   const n = typeof v === 'number' ? v : Number(v);
-  return Number.isFinite(n) ? n.toFixed(2) : String(v);
+  return Number.isFinite(n) ? Math.round(n).toLocaleString() : String(v);
 }
 
 type AxisDomain = [number, number] | ['auto', 'auto'];
@@ -347,7 +347,7 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               cursor={{ strokeDasharray: '3 3' }}
               contentStyle={{ fontSize: 11 }}
               labelFormatter={() => ''}
-              formatter={(v) => fmt2(v)}
+              formatter={(v) => fmt0(v)}
               wrapperStyle={{ outline: 'none' }}
             />
             <Scatter
@@ -435,8 +435,8 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt2} />
-                <Tooltip formatter={(v) => fmt2(v)} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt0} />
+                <Tooltip formatter={(v) => fmt0(v)} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="ttft_p50" stroke="#3b82f6" dot={false} name="p50" />
                 <Line type="monotone" dataKey="ttft_p95" stroke="#f59e0b" dot={false} name="p95" />
@@ -454,11 +454,11 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
                 <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
                 <YAxis
                   tick={{ fontSize: 11 }}
-                  tickFormatter={fmt2}
+                  tickFormatter={fmt0}
                   domain={[0, THROUGHPUT_Y_MAX]}
                   allowDataOverflow
                 />
-                <Tooltip formatter={(v) => fmt2(v)} />
+                <Tooltip formatter={(v) => fmt0(v)} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="thru_avg" stroke="#10b981" dot={false} name="avg" />
                 <Line type="monotone" dataKey="thru_p50" stroke="#3b82f6" dot={false} name="p50" />
