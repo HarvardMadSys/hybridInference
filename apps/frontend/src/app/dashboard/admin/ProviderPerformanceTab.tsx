@@ -73,7 +73,7 @@ const SCATTER_DOT_RADIUS = 2;
 // the marker ourselves so the radius is fixed and explicit.
 function ScatterDot(props: { cx?: number; cy?: number; fill?: string; fillOpacity?: number }) {
   const { cx, cy, fill, fillOpacity } = props;
-  if (cx == null || cy == null) return null;
+  if (cx == null || cy == null || Number.isNaN(cx) || Number.isNaN(cy)) return null;
   return <circle cx={cx} cy={cy} r={SCATTER_DOT_RADIUS} fill={fill} fillOpacity={fillOpacity} />;
 }
 
