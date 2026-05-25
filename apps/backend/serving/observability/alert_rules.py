@@ -39,7 +39,9 @@ _REQUEST_LOG_LOGGER = "serving.servers.middleware.request_log"
 # 401 is normal SPA token-refresh churn (the auth_failure_spike rule covers
 # real auth attacks separately); excluding it from the failed-request rate
 # stops admin/refresh sequences from tripping the alert.
-_FAILED_REQUEST_IGNORED_STATUSES = frozenset({401})
+# 429 covers quota-exceeded and concurrency-limit rejections — expected user-facing
+# rate limiting, not service failures, so excluded from the failure-rate alert.
+_FAILED_REQUEST_IGNORED_STATUSES = frozenset({401, 429})
 
 
 class _Rule(Protocol):
