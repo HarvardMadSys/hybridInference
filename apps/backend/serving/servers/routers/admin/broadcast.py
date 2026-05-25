@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio as _asyncio
+import json as _json
 import uuid as _uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -122,6 +123,10 @@ async def create_broadcast(
         raise HTTPException(status_code=422, detail="subject and body_html are required")
 
     broadcast_id = str(_uuid.uuid4())
+    # Serialize before opening the transaction so we hold the DB connection
+    # for the minimum time. ensure_ascii=False keeps unicode (emoji, non-English
+    # text) as UTF-8 in the JSONB column rather than \uXXXX escapes.
+    template_vars_json = _json.dumps(req.template_vars, ensure_ascii=False)
 
     async with db.pool.acquire() as conn, conn.transaction():
         await conn.execute(
@@ -129,14 +134,14 @@ async def create_broadcast(
                 INSERT INTO email_broadcasts
                     (id, subject, body_html, body_text, template_key, template_vars,
                      target_roles, target_statuses, status, scheduled_at, created_by)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11)
                 """,
             broadcast_id,
             rendered["subject"],
             rendered["body_html"],
             rendered["body_text"],
             req.template_key,
-            req.template_vars,
+            template_vars_json,
             req.target_roles or [],
             req.target_statuses or [],
             "scheduled",
