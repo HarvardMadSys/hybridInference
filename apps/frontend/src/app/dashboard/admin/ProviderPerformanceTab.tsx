@@ -71,8 +71,7 @@ const THROUGHPUT_Y_MAX = 280;
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
   const cached = safePoints.filter((p) => p.cache_hit);
-  // Cap uncached markers to the most recent 200 (points arrive timestamp DESC).
-  const uncached = safePoints.filter((p) => !p.cache_hit).slice(0, 200);
+  const uncached = safePoints.filter((p) => !p.cache_hit);
   const heading = `${model.model_id} · ${model.provider}`;
 
   const [xDomain, setXDomain] = useState<AxisDomain>(['auto', 'auto']);
