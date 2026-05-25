@@ -76,7 +76,7 @@ Pre-commit hooks are installed by `make setup-dev`.
 
 - **Branch off `dev`**, never `main`.
 - **Branch naming:** `<user>/<scope>/<feature-name>` (e.g. `jason/claude/add-x`).
-- **Use a git worktree** rather than working in the main checkout.
+- **Use a git worktree** rather than working in the main checkout. Worktree should be put in /tmp/claude/worktree/<feature-name>.
 - **PRs target `dev`.** Staging deploys from `dev`.
 - **Verify against staging** before claiming done.
 - **Staging test account:** `admin@example.com` / `<password>`.
@@ -160,5 +160,3 @@ not duplicate their content.
 | Address PR review / fix CI | [.kilo/skills/check-pr/SKILL.md](.kilo/skills/check-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
-
-
