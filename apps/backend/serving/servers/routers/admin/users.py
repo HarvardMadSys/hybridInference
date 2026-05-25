@@ -529,8 +529,10 @@ async def update_user(
             if getattr(adapter, "config", None) is not None
         }
         normalized_disabled_models = normalize_disabled_models(payload_dict["disabled_models"])
-        preferences = await op_store.get_user_preferences(user_id)
-        preferences = dict(preferences) if isinstance(preferences, dict) else {}
+        # Reuse the already-fetched, JSONB-decoded preferences from user_row to
+        # avoid an extra DB round-trip.
+        raw_preferences = user_row.get("preferences")
+        preferences = dict(raw_preferences) if isinstance(raw_preferences, dict) else {}
         preferences[DISABLED_MODELS_PREFERENCE_KEY] = [
             model_id for model_id in normalized_disabled_models if model_id in known_model_ids
         ]
