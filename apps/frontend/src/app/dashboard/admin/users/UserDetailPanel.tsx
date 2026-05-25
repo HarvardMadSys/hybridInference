@@ -139,18 +139,17 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
                 return (
                   <label
                     key={model.model_id}
-                    className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-100 px-3 py-2 text-[12px] text-gray-400 opacity-70 cursor-not-allowed"
+                    className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-100 px-3 py-2 text-[12px] text-gray-500 cursor-not-allowed"
                   >
                     <input
                       type="checkbox"
                       checked={false}
                       disabled
                       readOnly
-                      onChange={() => {}}
                       className="cursor-not-allowed"
                       aria-label={`${model.model_id} requires ${model.effective_required_role} role`}
                     />
-                    <span className="font-medium text-gray-500">{model.model_id}</span>
+                    <span className="font-medium text-gray-600">{model.model_id}</span>
                     <span className="ml-auto text-[10px] font-semibold text-gray-500">
                       requires {model.effective_required_role}
                     </span>
