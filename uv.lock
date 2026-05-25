@@ -939,6 +939,7 @@ dependencies = [
     { name = "python-ulid" },
     { name = "pyyaml" },
     { name = "requests" },
+    { name = "routewise" },
     { name = "tabulate" },
     { name = "tiktoken" },
     { name = "uvicorn", extra = ["standard"] },
@@ -986,6 +987,7 @@ requires-dist = [
     { name = "python-ulid", specifier = ">=2.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32.5" },
+    { name = "routewise", git = "https://github.com/realtmxi/RouteWise.git?rev=468842a18aa6c08025a2dc00a80504e412ed47c0" },
     { name = "tabulate", specifier = ">=0.9.0" },
     { name = "tiktoken", specifier = ">=0.3.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
@@ -2148,6 +2150,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/ae/f9/41dc953bbeb056c17
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/54/6f679c435d28e0a568d8e8a7c0a93a09010818634c3c3907fc98d8983770/roman_numerals-4.1.0-py3-none-any.whl", hash = "sha256:647ba99caddc2cc1e55a51e4360689115551bf4476d90e8162cf8c345fe233c7", size = 7676, upload-time = "2025-12-17T18:25:33.098Z" },
 ]
+
+[[package]]
+name = "routewise"
+version = "0.1.0"
+source = { git = "https://github.com/realtmxi/RouteWise.git?rev=468842a18aa6c08025a2dc00a80504e412ed47c0#468842a18aa6c08025a2dc00a80504e412ed47c0" }
 
 [[package]]
 name = "ruff"

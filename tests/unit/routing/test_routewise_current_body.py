@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from routewise.core import (
+    BudgetLPCandidate,
+    cost_tiebroken_objective,
+    quota_effective_cost,
+    solve_budget_lp,
+)
 
 from routing.routewise.effective_cost import api_request_cost_usd, quota_shadow_price_usd
 from routing.routewise.envelope import CostEnvelopeEstimator
@@ -24,7 +30,9 @@ def test_api_request_cost_uses_cold_cache_assumption():
 @pytest.mark.unit
 def test_quota_shadow_price_interpolates_lu():
     assert quota_shadow_price_usd(used_fraction=0.0, lower=0.01, upper=1.0) == pytest.approx(0.01)
-    assert quota_shadow_price_usd(used_fraction=1.0, lower=0.01, upper=1.0) == pytest.approx(1.0)
+    assert quota_shadow_price_usd(used_fraction=1.0, lower=0.01, upper=1.0) == pytest.approx(
+        quota_effective_cost(1.0, L=0.01, U=1.0)
+    )
     assert quota_shadow_price_usd(used_fraction=0.5, lower=0.01, upper=1.0) == pytest.approx(0.1)
 
 
@@ -65,6 +73,35 @@ def test_body_lp_mixes_fast_expensive_with_slow_cheap_at_budget():
     assert solution.budget_usd == pytest.approx(2.0)
     assert solution.weights["fast-expensive"] == pytest.approx(0.5)
     assert solution.weights["slow-cheap"] == pytest.approx(0.5)
+
+
+@pytest.mark.unit
+def test_body_lp_wrapper_matches_routewise_core_mapping():
+    candidates = [
+        LPCandidate("slow-cheap", cost_usd=1.0, mean_ttft_sec=10.0),
+        LPCandidate("fast-expensive", cost_usd=3.0, mean_ttft_sec=1.0),
+    ]
+    objective_ms = cost_tiebroken_objective(
+        [candidate.mean_ttft_sec * 1000.0 for candidate in candidates],
+        [candidate.cost_usd for candidate in candidates],
+    )
+    core_result = solve_budget_lp(
+        [
+            BudgetLPCandidate(
+                name=candidate.endpoint_id,
+                objective=objective_ms[index],
+                effective_cost=candidate.cost_usd,
+            )
+            for index, candidate in enumerate(candidates)
+        ],
+        budget=2.0,
+    )
+
+    solution = solve_cost_budgeted_mean_ttft(candidates, alpha=0.5)
+
+    assert core_result.feasible
+    assert solution.weights == pytest.approx(core_result.weights)
+    assert solution.budget_usd == pytest.approx(core_result.budget)
 
 
 @pytest.mark.unit
