@@ -19,7 +19,6 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-  ZAxis,
   Legend,
 } from 'recharts';
 import {
@@ -67,6 +66,16 @@ const CHART_MARGIN_TOP = 8;
 const CHART_MARGIN_BOTTOM = 24;
 const X_AXIS_HEIGHT = 30;
 const THROUGHPUT_Y_MAX = 280;
+const SCATTER_DOT_RADIUS = 2;
+
+// Recharts derives Scatter symbol size from the ZAxis range, but with no z
+// dataKey that path is unreliable across versions and ignored our range. Render
+// the marker ourselves so the radius is fixed and explicit.
+function ScatterDot(props: { cx?: number; cy?: number; fill?: string; fillOpacity?: number }) {
+  const { cx, cy, fill, fillOpacity } = props;
+  if (cx == null || cy == null) return null;
+  return <circle cx={cx} cy={cy} r={SCATTER_DOT_RADIUS} fill={fill} fillOpacity={fillOpacity} />;
+}
 
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
@@ -334,7 +343,6 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
                 style: { fontSize: 11, fill: '#6b7280', textAnchor: 'middle' },
               }}
             />
-            <ZAxis range={[2, 2]} />
             <Tooltip
               cursor={{ strokeDasharray: '3 3' }}
               contentStyle={{ fontSize: 11 }}
@@ -347,14 +355,14 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               data={cached}
               fill="#10b981"
               fillOpacity={0.6}
-              shape="circle"
+              shape={<ScatterDot />}
             />
             <Scatter
               name="No cache"
               data={uncached}
               fill="#64748b"
               fillOpacity={0.6}
-              shape="circle"
+              shape={<ScatterDot />}
             />
             {showDragArea ? (
               <ReferenceArea
