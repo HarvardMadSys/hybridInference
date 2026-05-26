@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from routewise.core import (
     HEDGE_SUCCESS_TARGET,
     BackupCandidate,
+    CheckpointBackupDispatch,
     combined_success_probability,
     hedge_checkpoints_for_slo,
     select_probability_backup,
@@ -94,11 +95,9 @@ class FeasibleProviderCandidate:
 
 @dataclass(frozen=True)
 class HedgePlan:
-    """Concrete production hedge plan computed before dispatch."""
+    """In-flight checkpoint hedge schedule for one primary dispatch."""
 
-    backup: FeasibleProviderCandidate
-    delay_sec: float
-    success_probability: float
+    checkpoints_sec: tuple[float, ...]
 
 
 @dataclass
@@ -715,7 +714,6 @@ class RouteWiseRouter(BaseRouter):
             output_tokens=prediction.tokens,
         )
         quota_used_fraction, quota_remaining = self._quota_metadata_state(selected)
-        backup = hedge_plan.backup if hedge_plan is not None else None
         return {
             "request_id": request_id,
             "timestamp": time.time(),
@@ -784,18 +782,14 @@ class RouteWiseRouter(BaseRouter):
             "policy": "routewise",
             "primary_provider": selected.endpoint_id,
             "primary_tier": selected.tier,
-            "backup_provider": backup.endpoint_id if backup is not None else None,
-            "backup_tier": backup.tier if backup is not None else None,
+            "backup_provider": None,
+            "backup_tier": None,
             "hedge_triggered": False,
             "hedge_winner": None,
             "hedge_algorithm": "probability_target" if hedge_plan is not None else "disabled",
             "hedge_schedule": "slo_relative_checkpoints" if hedge_plan is not None else None,
-            "hedge_delay_ms": (
-                hedge_plan.delay_sec * 1000.0 if hedge_plan is not None else None
-            ),
-            "hedge_success_probability": (
-                hedge_plan.success_probability if hedge_plan is not None else None
-            ),
+            "hedge_delay_ms": None,
+            "hedge_success_probability": None,
             "lp_budget_usd": solution.budget_usd,
             # follow-up: per-provider dollar cost at predicted tokens. The
             # prod-native ``selected_effective_cost_usd`` above is shadow-priced
@@ -809,19 +803,10 @@ class RouteWiseRouter(BaseRouter):
     def _select_hedge_plan(
         self,
         *,
-        candidates: list[FeasibleProviderCandidate],
         selected: FeasibleProviderCandidate,
         now: float,
     ) -> HedgePlan | None:
-        """Return a concrete probability-target hedge plan for this primary.
-
-        The plan is computed from current read-only latency/cost snapshots.
-        Production dispatch overhead is not subtracted in the probability
-        formula because real HTTP dispatch time is already paid in wall-clock.
-        Backup candidates come from the same feasible candidate snapshot as the
-        primary. Stateful tiers are committed only if the backup actually
-        dispatches after the hedge delay.
-        """
+        """Return the checkpoint schedule for probability-target hedging."""
 
         if self.config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
             return None
@@ -834,21 +819,83 @@ class RouteWiseRouter(BaseRouter):
             return None
 
         checkpoints = hedge_checkpoints_for_slo(self.config.latency_slo_sec * 1000.0)
-        for delay_sec in reversed(checkpoints):
-            candidate = self._select_hedge_candidate_at_elapsed(
-                primary_profile=primary_profile,
-                candidates=candidates,
-                selected=selected,
-                now=now,
-                elapsed_sec=delay_sec,
-            )
-            if candidate is not None:
-                return HedgePlan(
-                    backup=candidate.provider,
-                    delay_sec=delay_sec,
-                    success_probability=candidate.success_probability,
+        return HedgePlan(checkpoints_sec=checkpoints) if checkpoints else None
+
+    def _select_checkpoint_backup(
+        self,
+        *,
+        model_id: str,
+        request_id: str | None,
+        prompt_tokens: int,
+        predicted_output_tokens: float,
+        envelope: CostEnvelopeSnapshot,
+        selected: FeasibleProviderCandidate,
+        checkpoints_sec: tuple[float, ...],
+        elapsed_sec: float,
+        checkpoint_ts: float,
+    ) -> CheckpointBackupDispatch | None:
+        """Select and reserve a backup at one in-flight checkpoint."""
+
+        primary_profile = self._latency_profiles.get(selected.endpoint_id)
+        if (
+            primary_profile is None
+            or primary_profile.sample_count(checkpoint_ts) < self.config.latency_min_samples
+        ):
+            return None
+
+        candidates = self._build_candidates(
+            model_id,
+            prompt_tokens=prompt_tokens,
+            predicted_output_tokens=predicted_output_tokens,
+            envelope=envelope,
+            now=checkpoint_ts,
+        )
+        current = self._select_hedge_candidate_at_elapsed(
+            primary_profile=primary_profile,
+            candidates=candidates,
+            selected=selected,
+            now=checkpoint_ts,
+            elapsed_sec=elapsed_sec,
+        )
+        if current is None:
+            return None
+
+        scheduled_checkpoint = any(
+            abs(checkpoint - elapsed_sec) <= 1e-9 for checkpoint in checkpoints_sec
+        )
+        # Primary failure asks for an immediate backup at an arbitrary elapsed
+        # time; only scheduled checkpoints should defer to a later checkpoint.
+        if scheduled_checkpoint:
+            for future_elapsed in checkpoints_sec:
+                if future_elapsed <= elapsed_sec + 1e-9:
+                    continue
+                future = self._select_hedge_candidate_at_elapsed(
+                    primary_profile=primary_profile,
+                    candidates=candidates,
+                    selected=selected,
+                    now=checkpoint_ts,
+                    elapsed_sec=future_elapsed,
                 )
-        return None
+                if future is not None:
+                    return None
+
+        backup = current.provider
+        reservation = self._reserve_candidate(backup)
+        if not reservation.acquire():
+            return None
+
+        self._record_hedge_dispatch(
+            request_id=request_id,
+            backup=backup,
+            elapsed_sec=elapsed_sec,
+            success_probability=current.success_probability,
+        )
+        return CheckpointBackupDispatch(
+            backup=backup.adapter,
+            elapsed_sec=elapsed_sec,
+            success_probability=current.success_probability,
+            release=reservation.release,
+        )
 
     def _select_hedge_candidate_at_elapsed(
         self,
@@ -887,6 +934,22 @@ class RouteWiseRouter(BaseRouter):
             )
         return select_probability_backup(backup_candidates)
 
+    def _record_hedge_dispatch(
+        self,
+        *,
+        request_id: str | None,
+        backup: FeasibleProviderCandidate,
+        elapsed_sec: float,
+        success_probability: float,
+    ) -> None:
+        if not request_id or request_id not in self._pending_decisions:
+            return
+        meta = self._pending_decisions[request_id]
+        meta["backup_provider"] = backup.endpoint_id
+        meta["backup_tier"] = backup.tier
+        meta["hedge_delay_ms"] = elapsed_sec * 1000.0
+        meta["hedge_success_probability"] = success_probability
+
     def _apply_hedge_execution_metadata(self, adapter: Any, request_id: str | None) -> None:
         """Update pending RouteWise metadata after a HedgedAdapter has run."""
 
@@ -901,6 +964,10 @@ class RouteWiseRouter(BaseRouter):
         meta["hedged"] = hedge_triggered
         meta["hedge_triggered"] = hedge_triggered
         meta["backup_won"] = backup_won
+        if hedge_triggered and getattr(adapter, "hedge_delay_sec", None) is not None:
+            meta["hedge_delay_ms"] = float(adapter.hedge_delay_sec) * 1000.0
+        if hedge_triggered and getattr(adapter, "hedge_success_probability", None) is not None:
+            meta["hedge_success_probability"] = adapter.hedge_success_probability
         if hedge_triggered:
             meta["hedge_winner"] = "backup" if backup_won else "primary"
         else:
@@ -958,23 +1025,39 @@ class RouteWiseRouter(BaseRouter):
             if selected is None:
                 return None
             if self._commit_candidate(selected):
+                request_id = context.get("request_id")
                 hedge_plan = self._select_hedge_plan(
-                    candidates=candidates,
                     selected=selected,
                     now=now,
                 )
                 adapter: BaseAdapter = selected.adapter
                 if hedge_plan is not None:
-                    backup_reservation = self._reserve_candidate(hedge_plan.backup)
+                    def _select_checkpoint_backup_for_request(
+                        elapsed_sec: float,
+                        checkpoint_ts: float,
+                        *,
+                        request_id: str | None = request_id,
+                        selected: FeasibleProviderCandidate = selected,
+                        checkpoints_sec: tuple[float, ...] = hedge_plan.checkpoints_sec,
+                    ) -> CheckpointBackupDispatch | None:
+                        return self._select_checkpoint_backup(
+                            model_id=model_id,
+                            request_id=request_id,
+                            prompt_tokens=prompt_tokens,
+                            predicted_output_tokens=prediction.tokens,
+                            envelope=envelope,
+                            selected=selected,
+                            checkpoints_sec=checkpoints_sec,
+                            elapsed_sec=elapsed_sec,
+                            checkpoint_ts=checkpoint_ts,
+                        )
+
                     adapter = HedgedAdapter(
                         primary=selected.adapter,
-                        backup=hedge_plan.backup.adapter,
-                        hedge_threshold_sec=hedge_plan.delay_sec,
                         event_sink=self,
-                        backup_start_hook=backup_reservation.acquire,
-                        backup_finish_hook=backup_reservation.release,
+                        hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
+                        checkpoint_backup_selector=_select_checkpoint_backup_for_request,
                     )
-                request_id = context.get("request_id")
                 if request_id:
                     self._pending_decisions[request_id] = self._decision_metadata(
                         model_id=model_id,

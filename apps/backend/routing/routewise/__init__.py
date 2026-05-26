@@ -14,11 +14,15 @@ Exports:
     ProviderProfile    -- Real-time latency profile for an API endpoint.
     SWRRSampler        -- Smooth weighted round-robin sampler.
     HedgedAdapter      -- Composite adapter that races primary vs backup.
+    CheckpointBackupDispatch -- Shared checkpoint backup dispatch dataclass.
+    CheckpointBackupSelector -- Protocol for checkpoint-time backup selection.
     ProviderEventSink  -- Protocol for per-provider outcome reporting.
     solve_provider_lp  -- LP solver for cost-minimization with tail constraints.
     solve_provider_lp_with_relaxation -- LP solver with progressive relaxation.
     pre_filter_providers -- Hard-filter providers by basic requirements.
 """
+
+from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
 from .candidates import CandidatePricing, ProviderCandidate, QuotaSource, SubscriptionType
 from .concurrency import ConcurrencyManager
@@ -48,6 +52,8 @@ __all__ = [
     "BucketMeanOutputPredictor",
     "BucketMeanPrediction",
     "CandidatePricing",
+    "CheckpointBackupDispatch",
+    "CheckpointBackupSelector",
     "ConcurrencyManager",
     "CostEnvelopeEstimator",
     "CostEnvelopeSnapshot",
