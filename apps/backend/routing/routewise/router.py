@@ -101,6 +101,27 @@ class HedgePlan:
     success_probability: float
 
 
+@dataclass
+class ProviderReservation:
+    """Resource reservation for one concrete provider dispatch."""
+
+    router: RouteWiseRouter
+    candidate: FeasibleProviderCandidate
+    acquired: bool = False
+
+    def acquire(self) -> bool:
+        if self.acquired:
+            return True
+        self.acquired = self.router._commit_candidate(self.candidate)
+        return self.acquired
+
+    def release(self) -> None:
+        if not self.acquired:
+            return
+        self.router._release_candidate(self.candidate)
+        self.acquired = False
+
+
 class _WeightView:
     """Small compatibility view exposing ``get_weights()`` for tests."""
 
@@ -660,6 +681,13 @@ class RouteWiseRouter(BaseRouter):
             return True
         return True
 
+    def _release_candidate(self, candidate: FeasibleProviderCandidate) -> None:
+        if candidate.tier == "concurrency" and self.conc_mgr is not None:
+            self.conc_mgr.release()
+
+    def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
+        return ProviderReservation(router=self, candidate=candidate)
+
     def _quota_metadata_state(self, selected: FeasibleProviderCandidate) -> tuple[float, int]:
         if selected.tier == "quota" and selected.quota_source is not None:
             snapshot = self.quota_snapshots.get(selected.quota_source)
@@ -790,9 +818,9 @@ class RouteWiseRouter(BaseRouter):
         The plan is computed from current read-only latency/cost snapshots.
         Production dispatch overhead is not subtracted in the probability
         formula because real HTTP dispatch time is already paid in wall-clock.
-        Backup candidates are limited to API tier in this first dispatch path,
-        so enabling hedging cannot mutate quota/concurrency state for the
-        backup side.
+        Backup candidates come from the same feasible candidate snapshot as the
+        primary. Stateful tiers are committed only if the backup actually
+        dispatches after the hedge delay.
         """
 
         if self.config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
@@ -834,8 +862,6 @@ class RouteWiseRouter(BaseRouter):
         backup_candidates: list[BackupCandidate[FeasibleProviderCandidate]] = []
         for candidate in candidates:
             if candidate.endpoint_id == selected.endpoint_id:
-                continue
-            if candidate.tier != "api":
                 continue
             profile = self._latency_profiles.get(candidate.endpoint_id)
             if profile is None or profile.sample_count(now) < self.config.latency_min_samples:
@@ -887,11 +913,11 @@ class RouteWiseRouter(BaseRouter):
     # ------------------------------------------------------------------
 
     def on_provider_success(self, provider: str) -> None:
-        """ProviderEventSink compatibility for the legacy HedgedAdapter."""
+        """ProviderEventSink hook used by HedgedAdapter."""
         self._on_success(provider)
 
     def on_provider_failure(self, provider: str, reason: str) -> None:
-        """ProviderEventSink compatibility for the legacy HedgedAdapter."""
+        """ProviderEventSink hook used by HedgedAdapter."""
         self._on_failure(provider, reason=reason)
 
     def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
@@ -939,11 +965,14 @@ class RouteWiseRouter(BaseRouter):
                 )
                 adapter: BaseAdapter = selected.adapter
                 if hedge_plan is not None:
+                    backup_reservation = self._reserve_candidate(hedge_plan.backup)
                     adapter = HedgedAdapter(
                         primary=selected.adapter,
                         backup=hedge_plan.backup.adapter,
                         hedge_threshold_sec=hedge_plan.delay_sec,
                         event_sink=self,
+                        backup_start_hook=backup_reservation.acquire,
+                        backup_finish_hook=backup_reservation.release,
                     )
                 request_id = context.get("request_id")
                 if request_id:

@@ -476,6 +476,78 @@ def _make_router_with_two_api(
     return router, api_a, api_b
 
 
+def _make_router_with_api_and_concurrency(
+    config: RouteWiseConfig,
+) -> tuple[Any, MagicMock, MagicMock]:
+    """Build a RouteWiseRouter with one S_A and one S_C adapter."""
+    from routing.routewise.router import RouteWiseRouter
+
+    api = MagicMock()
+    api.config = _make_model_config(provider="provider-a", endpoint_id="test-model:api-a")
+    api.config.pricing = {"prompt": "3.0", "completion": "15.0"}
+    api.config.subscription_type = "api"
+
+    concurrency = MagicMock()
+    concurrency.config = _make_model_config(
+        provider="provider-b",
+        endpoint_id="test-model:concurrency-b",
+    )
+    concurrency.config.pricing = {"prompt": "0.0", "completion": "0.0"}
+    concurrency.config.subscription_type = "concurrency"
+
+    @dataclass
+    class _FakeRouteConfig:
+        adapters: list[tuple[Any, float]]
+
+    class _FakeFixedRouter:
+        def __init__(self) -> None:
+            self.routes: dict[str, _FakeRouteConfig] = {}
+
+        def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
+            self.routes[model_id] = _FakeRouteConfig(adapters=adapters)
+
+    fr = _FakeFixedRouter()
+    fr.add("test-model", [(api, 0.5), (concurrency, 0.5)])
+    router = RouteWiseRouter(fixed_router=fr, config=config)
+    return router, api, concurrency
+
+
+def _make_router_with_api_and_quota(
+    config: RouteWiseConfig,
+) -> tuple[Any, MagicMock, MagicMock]:
+    """Build a RouteWiseRouter with one S_A and one S_Q adapter."""
+    from routing.routewise.router import RouteWiseRouter
+
+    api = MagicMock()
+    api.config = _make_model_config(provider="provider-a", endpoint_id="test-model:api-a")
+    api.config.pricing = {"prompt": "3.0", "completion": "15.0"}
+    api.config.subscription_type = "api"
+
+    quota = MagicMock()
+    quota.config = _make_model_config(
+        provider="provider-q",
+        endpoint_id="test-model:quota-q",
+    )
+    quota.config.pricing = {"prompt": "0.0", "completion": "0.0"}
+    quota.config.subscription_type = "quota"
+
+    @dataclass
+    class _FakeRouteConfig:
+        adapters: list[tuple[Any, float]]
+
+    class _FakeFixedRouter:
+        def __init__(self) -> None:
+            self.routes: dict[str, _FakeRouteConfig] = {}
+
+        def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
+            self.routes[model_id] = _FakeRouteConfig(adapters=adapters)
+
+    fr = _FakeFixedRouter()
+    fr.add("test-model", [(api, 0.5), (quota, 0.5)])
+    router = RouteWiseRouter(fixed_router=fr, config=config)
+    return router, api, quota
+
+
 @pytest.mark.unit
 class TestRouterHedgeMode:
     def test_probability_target_mode_wraps_body_router_selection(self):
@@ -630,6 +702,96 @@ class TestRouterHedgeMode:
         assert routewise["hedged"] is True
         assert routewise["backup_won"] is True
         assert routewise["hedge_winner"] == "backup"
+
+    @pytest.mark.asyncio
+    async def test_probability_target_can_dispatch_concurrency_backup(self):
+        """Backup selection is not restricted to API-tier providers."""
+        config = RouteWiseConfig(
+            budget_alpha=1.0,
+            concurrency_enabled=True,
+            concurrency_limit=1,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api, concurrency = _make_router_with_api_and_concurrency(config)
+
+        def _force_api_primary(candidates, solution):
+            return next(c for c in candidates if c.endpoint_id == "test-model:api-a")
+
+        router._sample_solution = _force_api_primary
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:concurrency-b"].record(now, 1.0)
+
+        async def _slow_primary(messages, **params):
+            await asyncio.sleep(0.2)
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
+
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
+
+        api.chat_completion = _slow_primary
+        concurrency.chat_completion = _fast_backup
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "backup"
+        assert router.conc_mgr is not None
+        assert router.conc_mgr.active == 0
+        assert router.conc_mgr.get_stats()["total_acquired"] == 1
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["backup_provider"] == "test-model:concurrency-b"
+        assert routewise["backup_tier"] == "concurrency"
+        assert routewise["backup_won"] is True
+
+    @pytest.mark.asyncio
+    async def test_probability_target_can_dispatch_quota_backup(self):
+        """Quota-tier backups consume quota when the hedge actually dispatches."""
+        config = RouteWiseConfig(
+            budget_alpha=1.0,
+            daily_quota=2,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api, quota = _make_router_with_api_and_quota(config)
+
+        def _force_api_primary(candidates, solution):
+            return next(c for c in candidates if c.endpoint_id == "test-model:api-a")
+
+        router._sample_solution = _force_api_primary
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:quota-q"].record(now, 1.0)
+
+        async def _slow_primary(messages, **params):
+            await asyncio.sleep(0.2)
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
+
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
+
+        api.chat_completion = _slow_primary
+        quota.chat_completion = _fast_backup
+
+        before = router.quota_mgr.remaining
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "backup"
+        assert before - router.quota_mgr.remaining == 1
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["backup_provider"] == "test-model:quota-q"
+        assert routewise["backup_tier"] == "quota"
+        assert routewise["backup_won"] is True
 
 # ===========================================================================
 # TestProviderEventSinkProtocol

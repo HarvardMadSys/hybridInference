@@ -7,7 +7,7 @@ import contextlib
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Callable
 
 from routing.routers import _has_non_empty_content, _routing_chunk
 from serving.adapters.base import BaseAdapter
@@ -15,6 +15,10 @@ from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+class HedgeBackupUnavailable(RuntimeError):
+    """Raised when a planned backup cannot reserve state at dispatch time."""
 
 
 @runtime_checkable
@@ -64,14 +68,29 @@ class HedgedAdapter(BaseAdapter):
         backup: BaseAdapter,
         hedge_threshold_sec: float,
         event_sink: ProviderEventSink,
+        backup_start_hook: Callable[[], bool] | None = None,
+        backup_finish_hook: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(primary.config)  # BaseRouter reads primary's config
         self.primary = primary
         self.backup = backup
         self.hedge_threshold_sec = hedge_threshold_sec
         self.event_sink = event_sink
+        self.backup_start_hook = backup_start_hook
+        self.backup_finish_hook = backup_finish_hook
         self.hedge_triggered = False
         self.backup_won = False
+        self._stream_backup_started = False
+
+    def _start_backup(self) -> bool:
+        if self.backup_start_hook is not None and not self.backup_start_hook():
+            raise HedgeBackupUnavailable("planned hedge backup is no longer feasible")
+        self.hedge_triggered = True
+        return True
+
+    def _finish_backup(self, started: bool) -> None:
+        if started and self.backup_finish_hook is not None:
+            self.backup_finish_hook()
 
     # ---------------------------------------------------------------
     # Non-streaming race
@@ -104,14 +123,20 @@ class HedgedAdapter(BaseAdapter):
             nonlocal backup_past_sleep
             await asyncio.sleep(self.hedge_threshold_sec)
             backup_past_sleep = True
-            self.hedge_triggered = True
-            return await self.backup.chat_completion(messages, **params)
+            started = self._start_backup()
+            try:
+                return await self.backup.chat_completion(messages, **params)
+            finally:
+                self._finish_backup(started)
 
         async def _run_backup_immediate() -> dict[str, Any]:
             nonlocal backup_past_sleep
             backup_past_sleep = True
-            self.hedge_triggered = True
-            return await self.backup.chat_completion(messages, **params)
+            started = self._start_backup()
+            try:
+                return await self.backup.chat_completion(messages, **params)
+            finally:
+                self._finish_backup(started)
 
         primary_task = asyncio.ensure_future(_run_primary())
         backup_task = asyncio.ensure_future(_run_backup_delayed())
@@ -142,10 +167,11 @@ class HedgedAdapter(BaseAdapter):
                                 backup_task = asyncio.ensure_future(_run_backup_immediate())
                                 pending.add(backup_task)
                         else:
-                            self.event_sink.on_provider_failure(
-                                backup_provider,
-                                reason=exc.__class__.__name__,
-                            )
+                            if not isinstance(exc, HedgeBackupUnavailable):
+                                self.event_sink.on_provider_failure(
+                                    backup_provider,
+                                    reason=exc.__class__.__name__,
+                                )
                     else:
                         # Winner found -- cancel the loser.
                         winner_result = task.result()
@@ -245,6 +271,8 @@ class HedgedAdapter(BaseAdapter):
                 await _safe_aclose(primary_gen)
             if backup_gen is not None:
                 await _safe_aclose(backup_gen)
+            self._finish_backup(self._stream_backup_started)
+            self._stream_backup_started = False
 
     async def _race_streams(
         self,
@@ -297,9 +325,13 @@ class HedgedAdapter(BaseAdapter):
                 if hedge_timer_task in done:
                     hedge_timer_task = None
                     if not backup_started and not primary_done:
-                        backup_started = True
-                        self.hedge_triggered = True
-                        backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
+                        try:
+                            self._stream_backup_started = self._start_backup()
+                        except HedgeBackupUnavailable:
+                            self._stream_backup_started = False
+                        else:
+                            backup_started = True
+                            backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
 
                 # Check for primary content.
                 primary_has_content = False
@@ -321,12 +353,16 @@ class HedgedAdapter(BaseAdapter):
                         )
                         # Start backup immediately if not already running.
                         if not backup_started:
-                            backup_started = True
-                            self.hedge_triggered = True
                             if hedge_timer_task is not None:
                                 hedge_timer_task.cancel()
                                 hedge_timer_task = None
-                            backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
+                            try:
+                                self._stream_backup_started = self._start_backup()
+                            except HedgeBackupUnavailable:
+                                self._stream_backup_started = False
+                            else:
+                                backup_started = True
+                                backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
                         continue
 
                 # Check for backup content.
@@ -340,9 +376,10 @@ class HedgedAdapter(BaseAdapter):
                     except StopAsyncIteration:
                         backup_next_task = None
                     except Exception as e:
-                        self.event_sink.on_provider_failure(
-                            backup_provider, reason=e.__class__.__name__
-                        )
+                        if not isinstance(e, HedgeBackupUnavailable):
+                            self.event_sink.on_provider_failure(
+                                backup_provider, reason=e.__class__.__name__
+                            )
                         backup_next_task = None
 
                 # Decide winner.
