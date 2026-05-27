@@ -88,8 +88,8 @@ class PostgresOperationalStore(OperationalStore):
                 password_hash TEXT NOT NULL,
                 user_name TEXT,
                 preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-                role TEXT NOT NULL DEFAULT 'trial'
-                    CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin')),
+                role TEXT NOT NULL DEFAULT 'free'
+                    CHECK (role IN ('free', 'pro', 'internal', 'admin')),
                 email_verified BOOLEAN DEFAULT FALSE,
                 status TEXT DEFAULT 'active'
                     CHECK (status IN ('active', 'suspended', 'deleted',
@@ -154,7 +154,7 @@ class PostgresOperationalStore(OperationalStore):
 
         # Role column & migration
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT")
-        await conn.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'trial'")
+        await conn.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'")
         tag = await conn.execute("UPDATE users SET role = 'free' WHERE role IS NULL")
         backfilled = _parse_command_tag_count(tag)
         if backfilled:
@@ -175,14 +175,23 @@ class PostgresOperationalStore(OperationalStore):
                         "Migrated %d users from internal_group/developer to internal.",
                         migrated,
                     )
+                trial_tag = await conn.execute(
+                    "UPDATE users SET role = 'free' WHERE role = 'trial'"
+                )
+                migrated_trial = _parse_command_tag_count(trial_tag)
+                if migrated_trial:
+                    logger.info(
+                        "Migrated %d users from trial to free.",
+                        migrated_trial,
+                    )
                 await conn.execute("""
                     ALTER TABLE users ADD CONSTRAINT users_role_check
-                    CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin'))
+                    CHECK (role IN ('free', 'pro', 'internal', 'admin'))
                 """)
         except _asyncpg.PostgresError as exc:
             invalid_rows = await conn.fetch(
                 "SELECT id, email, role FROM users "
-                "WHERE role NOT IN ('trial','free','pro','internal','admin') "
+                "WHERE role NOT IN ('free','pro','internal','admin') "
                 "ORDER BY created_at DESC LIMIT 10"
             )
             logger.error(
@@ -199,7 +208,7 @@ class PostgresOperationalStore(OperationalStore):
             tag = await conn.execute(
                 "UPDATE users SET role = 'admin' "
                 "WHERE lower(trim(email)) = ANY($1::text[]) "
-                "AND role IN ('trial', 'free')",
+                "AND role IN ('free')",
                 admin_emails,
             )
             seeded = _parse_command_tag_count(tag)
@@ -451,6 +460,20 @@ class PostgresOperationalStore(OperationalStore):
                 updated_by TEXT
             )
         """)
+
+        # Migrate legacy 'trial' visibility overrides to 'free'. Trial was
+        # removed from VALID_ROLES, so an override left at 'trial' would be
+        # treated as invalid and fail closed to admin, hiding the model.
+        tag = await conn.execute(
+            "UPDATE model_visibility_overrides SET required_role = 'free' "
+            "WHERE required_role = 'trial'"
+        )
+        migrated_overrides = _parse_command_tag_count(tag)
+        if migrated_overrides:
+            logger.info(
+                "Migrated %d model visibility overrides from trial to free.",
+                migrated_overrides,
+            )
 
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS model_concurrency_exemptions (

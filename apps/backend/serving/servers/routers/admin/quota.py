@@ -21,7 +21,7 @@ from serving.utils.request_ip import get_client_ip
 logger = get_logger(__name__)
 router = APIRouter(prefix="/admin")
 
-Role = Literal["trial", "free", "pro", "internal", "admin"]
+Role = Literal["free", "pro", "internal", "admin"]
 
 
 class RoleQuotaApplyRequest(BaseModel):

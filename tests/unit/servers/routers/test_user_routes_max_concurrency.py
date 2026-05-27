@@ -152,7 +152,7 @@ async def test_get_usage_concurrency_when_runtime_unavailable(monkeypatch):
 
     monkeypatch.setattr(user_routes, "get_runtime_settings_instance", _raise)
 
-    current_user = {"user_id": "u1", "role": "trial"}
+    current_user = {"user_id": "u1", "role": "free"}
 
     resp = await user_routes.get_usage(
         period="today",
@@ -164,7 +164,7 @@ async def test_get_usage_concurrency_when_runtime_unavailable(monkeypatch):
 
     from serving.servers.concurrency import _FALLBACK_LIMITS
 
-    assert resp.quota.max_concurrency == _FALLBACK_LIMITS["trial"]
+    assert resp.quota.max_concurrency == _FALLBACK_LIMITS["free"]
 
 
 @pytest.mark.asyncio

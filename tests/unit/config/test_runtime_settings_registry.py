@@ -5,7 +5,6 @@ from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
 def test_per_role_daily_quota_keys_registered():
     keys = {
-        "user_daily_quota_trial",
         "user_daily_quota_free",
         "user_daily_quota_pro",
         "user_daily_quota_internal",
@@ -16,7 +15,6 @@ def test_per_role_daily_quota_keys_registered():
 
 def test_per_role_daily_quota_entries_are_well_formed():
     for role, expected_default in (
-        ("trial", 2.00),
         ("free", 100.00),
         ("pro", 100.00),
         ("internal", 1000.00),
@@ -31,7 +29,6 @@ def test_per_role_daily_quota_entries_are_well_formed():
 
 def test_per_role_concurrency_keys_registered():
     keys = {
-        "user_concurrency_trial",
         "user_concurrency_free",
         "user_concurrency_pro",
         "user_concurrency_internal",
@@ -40,10 +37,10 @@ def test_per_role_concurrency_keys_registered():
     assert keys.issubset(RUNTIME_SETTINGS_REGISTRY.keys())
 
 
-def test_trial_concurrency_default_is_one():
-    entry = RUNTIME_SETTINGS_REGISTRY["user_concurrency_trial"]
+def test_free_concurrency_default_is_three():
+    entry = RUNTIME_SETTINGS_REGISTRY["user_concurrency_free"]
     assert entry["type"] == "int"
-    assert entry["default"] == 1
+    assert entry["default"] == 3
     assert entry["min"] == 1
 
 

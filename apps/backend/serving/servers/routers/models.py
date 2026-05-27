@@ -123,7 +123,7 @@ async def list_models(
     always return the OpenAI/OpenRouter shape.
     """
     raw_role = (user_ctx or {}).get("role", "free")
-    user_role = "free" if raw_role == "trial" else raw_role
+    user_role = raw_role
     if request.url.path == "/v1/models" and _is_anthropic_client(request):
         return JSONResponse(
             await _format_anthropic_model_list(
@@ -151,7 +151,7 @@ async def list_models_anthropic(
     regardless of request headers or User-Agent.
     """
     raw_role = (user_ctx or {}).get("role", "free")
-    user_role = "free" if raw_role == "trial" else raw_role
+    user_role = raw_role
     return JSONResponse(
         await _format_anthropic_model_list(
             router_exec, user_role, model_visibility_resolver, user_ctx

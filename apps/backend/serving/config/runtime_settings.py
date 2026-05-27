@@ -59,12 +59,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "then buffer and return a normal non-streaming response to clients."
         ),
     },
-    "user_concurrency_trial": {
-        "type": "int",
-        "default": 1,
-        "min": 1,
-        "description": "Per-user concurrency cap for trial-tier users",
-    },
     "user_concurrency_free": {
         "type": "int",
         "default": 3,
@@ -88,14 +82,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "default": 10,
         "min": 1,
         "description": "Per-user concurrency cap for admin users",
-    },
-    "user_daily_quota_trial": {
-        "type": "float",
-        "default": 2.00,
-        "min": 0.0,
-        "description": (
-            "Default daily USD spend quota seeded onto a trial-tier user's active API key at signup."
-        ),
     },
     "user_daily_quota_free": {
         "type": "float",
