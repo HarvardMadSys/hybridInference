@@ -12,6 +12,17 @@ export const passwordSchema = z
   .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
   .regex(/[0-9]/, 'Password must contain at least one number');
 
+export function buildCombinedUseCase(useCase?: string, discoverySource?: string): string {
+  const trimmedUseCase = useCase?.trim();
+  const trimmedDiscovery = discoverySource?.trim();
+  return [
+    trimmedUseCase,
+    trimmedDiscovery ? `How did you find freeinference.org? ${trimmedDiscovery}` : undefined,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 export const signupSchema = z
   .object({
     email: emailSchema,
@@ -28,6 +39,12 @@ export const signupSchema = z
       .max(2000, 'Use case cannot exceed 2000 characters')
       .optional()
       .or(z.literal('')),
+    discoverySource: z
+      .string()
+      .trim()
+      .max(500, 'Response cannot exceed 500 characters')
+      .optional()
+      .or(z.literal('')),
     acceptTerms: z.boolean(),
   })
   .refine((data) => data.password === data.confirmPassword, {
@@ -37,6 +54,10 @@ export const signupSchema = z
   .refine((data) => data.acceptTerms, {
     message: 'You must agree to the Terms of Service',
     path: ['acceptTerms'],
+  })
+  .refine((data) => buildCombinedUseCase(data.useCase, data.discoverySource).length <= 2000, {
+    message: 'Combined use case and discovery response is too long (max 2000 characters)',
+    path: ['discoverySource'],
   });
 
 export const loginSchema = z.object({

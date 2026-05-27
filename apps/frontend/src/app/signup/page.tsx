@@ -5,7 +5,7 @@ import Link from 'next/link';
 import Script from 'next/script';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { signupSchema, SignupFormData } from '@/lib/schemas/auth';
+import { buildCombinedUseCase, signupSchema, SignupFormData } from '@/lib/schemas/auth';
 import { signup, SignupResponse } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
@@ -56,11 +56,13 @@ export default function SignupPage() {
     }
 
     try {
+      const combinedUseCase = buildCombinedUseCase(data.useCase, data.discoverySource);
+
       const result = await signup({
         email: data.email,
         password: data.password,
         user_name: data.userName.trim(),
-        use_case: data.useCase?.trim() || undefined,
+        use_case: combinedUseCase || undefined,
         accepted_tos: data.acceptTerms,
         turnstileToken: turnstileTokenRef.current ?? undefined,
       });
@@ -189,6 +191,30 @@ export default function SignupPage() {
             error={errors.confirmPassword?.message}
             {...register('confirmPassword')}
           />
+
+          <label className="block">
+            <span className="text-sm font-medium text-gray-700">How did you find us?</span>
+            <textarea
+              rows={2}
+              maxLength={500}
+              placeholder="Friend/classmate, search engine, social media, course link, etc."
+              className={
+                errors.discoverySource
+                  ? 'mt-1.5 w-full rounded-lg border border-red-300 bg-white px-4 py-2.5 text-sm shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-gray-400 focus:border-red-500 focus:ring-2 focus:ring-red-500/20'
+                  : 'mt-1.5 w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20'
+              }
+              {...register('discoverySource')}
+            />
+            {errors.discoverySource ? (
+              <span className="mt-1.5 block text-xs text-red-600">
+                {errors.discoverySource.message}
+              </span>
+            ) : (
+              <span className="mt-1.5 block text-xs text-gray-500">
+                Optional, but helpful for improving outreach.
+              </span>
+            )}
+          </label>
 
           <label className="block">
             <span className="text-sm font-medium text-gray-700">Use case</span>

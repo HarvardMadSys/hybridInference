@@ -59,6 +59,39 @@ describe('auth schemas', () => {
     expect(result.success).toBe(true);
   });
 
+  it('rejects signup when combined use case and discovery exceed 2000 chars', () => {
+    const result = signupSchema.safeParse({
+      email: 'user@example.org',
+      password: 'SecurePass123',
+      confirmPassword: 'SecurePass123',
+      userName: 'Example User',
+      useCase: 'a'.repeat(1900),
+      discoverySource: 'b'.repeat(400),
+      acceptTerms: true,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.flatten().fieldErrors.discoverySource).toContain(
+        'Combined use case and discovery response is too long (max 2000 characters)',
+      );
+    }
+  });
+
+  it('accepts signup when combined use case and discovery stay within 2000 chars', () => {
+    const result = signupSchema.safeParse({
+      email: 'user@example.org',
+      password: 'SecurePass123',
+      confirmPassword: 'SecurePass123',
+      userName: 'Example User',
+      useCase: 'a'.repeat(1500),
+      discoverySource: 'b'.repeat(400),
+      acceptTerms: true,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
   it('accepts valid login input', () => {
     expect(
       loginSchema.safeParse({
