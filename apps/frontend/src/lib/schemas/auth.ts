@@ -28,6 +28,12 @@ export const signupSchema = z
       .max(2000, 'Use case cannot exceed 2000 characters')
       .optional()
       .or(z.literal('')),
+    discoverySource: z
+      .string()
+      .trim()
+      .max(500, 'Response cannot exceed 500 characters')
+      .optional()
+      .or(z.literal('')),
     acceptTerms: z.boolean(),
   })
   .refine((data) => data.password === data.confirmPassword, {
