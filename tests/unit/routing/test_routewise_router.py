@@ -1482,6 +1482,44 @@ class TestRouteWiseNoApiBaseline:
         assert selected is conc
         assert router.conc_mgr.active == 1
 
+    @pytest.mark.asyncio
+    async def test_stream_close_after_routing_chunk_releases_sc_slot(self):
+        """Closing before provider streaming starts must not leak the S_C slot."""
+        conc = _make_adapter(
+            subscription_type="concurrency",
+            endpoint_id="test-model:conc",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(conc, 1.0)])
+
+        stream_entered = False
+
+        async def _stream(*args, **kwargs):
+            nonlocal stream_entered
+            stream_entered = True
+            yield 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+
+        conc.stream_chat_completion = _stream
+
+        config = RouteWiseConfig(concurrency_enabled=True, concurrency_limit=1)
+        router = RouteWiseRouter(fixed_router=fr, config=config)
+
+        stream = router.stream_chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+            request_id="req-close-before-provider",
+        )
+        first = await stream.__anext__()
+
+        assert isinstance(first, str)
+        assert '"_routing"' in first
+        assert stream_entered is False
+        assert router.conc_mgr.active == 1
+
+        await stream.aclose()
+
+        assert router.conc_mgr.active == 0
+
     def test_validation_warns_no_api_baseline(self):
         """Construction-time warning when model has no S_A adapter."""
         conc = _make_adapter(

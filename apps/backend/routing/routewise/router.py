@@ -210,6 +210,7 @@ class RouteWiseRouter(BaseRouter):
 
         self._latency_profiles: dict[str, ProviderProfile] = {}
         self._pending_decisions: dict[str, dict[str, Any]] = {}
+        self._primary_reservations: dict[str, ProviderReservation] = {}
         self._sweep_task: asyncio.Task[None] | None = None
         self._quota_refresh_task: asyncio.Task[None] | None = None
         # Compatibility attributes retained for tests and diagnostics from the
@@ -231,6 +232,7 @@ class RouteWiseRouter(BaseRouter):
         """Bind the shared ``FixedRouter`` after strategy construction."""
         self.fixed_router = fixed_router
         self._pending_decisions = {}
+        self._primary_reservations = {}
         self._last_lp_statuses = {}
         self._last_lp_weights = {}
         self._swrr_samplers = {}
@@ -691,6 +693,43 @@ class RouteWiseRouter(BaseRouter):
     def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
         return ProviderReservation(router=self, candidate=candidate)
 
+    def _remember_primary_reservation(
+        self,
+        request_id: str | None,
+        candidate: FeasibleProviderCandidate,
+    ) -> None:
+        if not request_id:
+            return
+        self._release_pending_primary_reservation(request_id)
+        if candidate.tier == "concurrency":
+            self._primary_reservations[request_id] = ProviderReservation(
+                router=self,
+                candidate=candidate,
+                acquired=True,
+            )
+
+    def _release_pending_primary_reservation(self, request_id: str | None) -> bool:
+        if not request_id:
+            return False
+        reservation = self._primary_reservations.pop(request_id, None)
+        if reservation is None:
+            return False
+        reservation.release()
+        return True
+
+    def _release_execution_primary_capacity(
+        self,
+        request_id: str | None,
+        primary_adapter: Any,
+    ) -> None:
+        if self._release_pending_primary_reservation(request_id):
+            return
+        if (
+            self._adapter_sub_type.get(id(primary_adapter)) is SubscriptionType.CONCURRENCY
+            and self.conc_mgr is not None
+        ):
+            self.conc_mgr.release()
+
     def _quota_metadata_state(self, selected: FeasibleProviderCandidate) -> tuple[float, int]:
         if selected.tier == "quota" and selected.quota_source is not None:
             snapshot = self.quota_snapshots.get(selected.quota_source)
@@ -1033,6 +1072,7 @@ class RouteWiseRouter(BaseRouter):
                 return None
             if self._commit_candidate(selected):
                 request_id = context.get("request_id")
+                self._remember_primary_reservation(request_id, selected)
                 hedge_plan = self._select_hedge_plan(
                     selected=selected,
                     now=now,
@@ -1133,20 +1173,21 @@ class RouteWiseRouter(BaseRouter):
         **params: Any,
     ) -> dict[str, Any]:
         primary_adapter = adapter.primary if isinstance(adapter, HedgedAdapter) else adapter
-        is_sc = self._adapter_sub_type.get(id(primary_adapter)) is SubscriptionType.CONCURRENCY
+        request_id = params.get("request_id")
         original_config = getattr(adapter, "config", None)
         try:
             result = await super()._execute_adapter(adapter, model_id, messages, **params)
-            if getattr(adapter, "config", None) is not original_config:
-                request_id = params.get("request_id")
-                if request_id and request_id in self._pending_decisions:
-                    self._pending_decisions[request_id]["backup_won"] = True
-            self._apply_hedge_execution_metadata(adapter, params.get("request_id"))
+            if (
+                getattr(adapter, "config", None) is not original_config
+                and request_id
+                and request_id in self._pending_decisions
+            ):
+                self._pending_decisions[request_id]["backup_won"] = True
+            self._apply_hedge_execution_metadata(adapter, request_id)
             return result
         finally:
-            self._apply_hedge_execution_metadata(adapter, params.get("request_id"))
-            if is_sc and self.conc_mgr is not None:
-                self.conc_mgr.release()
+            self._apply_hedge_execution_metadata(adapter, request_id)
+            self._release_execution_primary_capacity(request_id, primary_adapter)
 
     async def _execute_stream_adapter(
         self,
@@ -1156,7 +1197,7 @@ class RouteWiseRouter(BaseRouter):
         **params: Any,
     ) -> AsyncIterator[Any]:
         primary_adapter = adapter.primary if isinstance(adapter, HedgedAdapter) else adapter
-        is_sc = self._adapter_sub_type.get(id(primary_adapter)) is SubscriptionType.CONCURRENCY
+        request_id = params.get("request_id")
         original_config = getattr(adapter, "config", None)
         try:
             async for chunk in super()._execute_stream_adapter(
@@ -1164,13 +1205,14 @@ class RouteWiseRouter(BaseRouter):
             ):
                 yield chunk
         finally:
-            if getattr(adapter, "config", None) is not original_config:
-                request_id = params.get("request_id")
-                if request_id and request_id in self._pending_decisions:
-                    self._pending_decisions[request_id]["backup_won"] = True
-            self._apply_hedge_execution_metadata(adapter, params.get("request_id"))
-            if is_sc and self.conc_mgr is not None:
-                self.conc_mgr.release()
+            if (
+                getattr(adapter, "config", None) is not original_config
+                and request_id
+                and request_id in self._pending_decisions
+            ):
+                self._pending_decisions[request_id]["backup_won"] = True
+            self._apply_hedge_execution_metadata(adapter, request_id)
+            self._release_execution_primary_capacity(request_id, primary_adapter)
 
     # ------------------------------------------------------------------
     # chat_completion / stream_chat_completion: merge decision metadata
@@ -1184,19 +1226,22 @@ class RouteWiseRouter(BaseRouter):
         request_id = params["request_id"]
 
         try:
-            resp = await super().chat_completion(model_id, messages, **params)
-        except BaseException as e:
-            decision_info = self._pending_decisions.pop(request_id, None)
-            if decision_info:
-                exc_routing = getattr(e, "_routing", None)
-                if exc_routing is not None:
-                    exc_routing["routewise"] = decision_info
-            raise
+            try:
+                resp = await super().chat_completion(model_id, messages, **params)
+            except BaseException as e:
+                decision_info = self._pending_decisions.pop(request_id, None)
+                if decision_info:
+                    exc_routing = getattr(e, "_routing", None)
+                    if exc_routing is not None:
+                        exc_routing["routewise"] = decision_info
+                raise
 
-        decision_info = self._pending_decisions.pop(request_id, None)
-        if decision_info and isinstance(resp, dict) and "_routing" in resp:
-            resp["_routing"]["routewise"] = decision_info
-        return resp
+            decision_info = self._pending_decisions.pop(request_id, None)
+            if decision_info and isinstance(resp, dict) and "_routing" in resp:
+                resp["_routing"]["routewise"] = decision_info
+            return resp
+        finally:
+            self._release_pending_primary_reservation(request_id)
 
     async def stream_chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
@@ -1207,29 +1252,32 @@ class RouteWiseRouter(BaseRouter):
 
         done_chunk: str | None = None
         try:
-            async for chunk in super().stream_chat_completion(model_id, messages, **params):
-                if request_id in self._pending_decisions:
-                    self._pending_decisions[request_id]["is_streaming"] = True
-                if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
-                    done_chunk = chunk
-                    continue
-                yield chunk
-        except BaseException as e:
+            try:
+                async for chunk in super().stream_chat_completion(model_id, messages, **params):
+                    if request_id in self._pending_decisions:
+                        self._pending_decisions[request_id]["is_streaming"] = True
+                    if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
+                        done_chunk = chunk
+                        continue
+                    yield chunk
+            except BaseException as e:
+                decision_info = self._pending_decisions.pop(request_id, None)
+                if decision_info:
+                    exc_routing = getattr(e, "_routing", None)
+                    if exc_routing is not None:
+                        exc_routing["routewise"] = decision_info
+                raise
+
             decision_info = self._pending_decisions.pop(request_id, None)
             if decision_info:
-                exc_routing = getattr(e, "_routing", None)
-                if exc_routing is not None:
-                    exc_routing["routewise"] = decision_info
-            raise
+                decision_info["is_streaming"] = True
+                routing_chunk = {
+                    "choices": [],
+                    "_routing": {"routewise": decision_info},
+                }
+                yield f"data: {json.dumps(routing_chunk)}\n\n"
 
-        decision_info = self._pending_decisions.pop(request_id, None)
-        if decision_info:
-            decision_info["is_streaming"] = True
-            routing_chunk = {
-                "choices": [],
-                "_routing": {"routewise": decision_info},
-            }
-            yield f"data: {json.dumps(routing_chunk)}\n\n"
-
-        if done_chunk:
-            yield done_chunk
+            if done_chunk:
+                yield done_chunk
+        finally:
+            self._release_pending_primary_reservation(request_id)
