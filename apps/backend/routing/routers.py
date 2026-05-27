@@ -133,7 +133,12 @@ def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
     }
 
 
-def _routing_chunk(adapter: BaseAdapter, *, fallback: bool = False) -> str:
+def _routing_chunk(
+    adapter: BaseAdapter,
+    *,
+    fallback: bool = False,
+    failed_attempts: list[dict[str, str]] | None = None,
+) -> str:
     """Build a synthetic SSE chunk carrying ``_routing`` metadata for streaming.
 
     Mirrors the ``resp["_routing"]`` injection used by ``chat_completion`` so
@@ -156,6 +161,8 @@ def _routing_chunk(adapter: BaseAdapter, *, fallback: bool = False) -> str:
     }
     if fallback:
         routing["fallback"] = True
+    if failed_attempts:
+        routing["failed_attempts"] = failed_attempts
     return f"data: {json.dumps({'choices': [], '_routing': routing})}\n\n"
 
 
@@ -521,6 +528,7 @@ class BaseRouter:
             raise ValueError(f"No route configured for model {model_id}")
 
         last_attempted = primary
+        failed_attempts: list[dict[str, str]] = []
         try:
             try:
                 resp = await self._execute_adapter(primary, model_id, messages, **params)
@@ -536,7 +544,7 @@ class BaseRouter:
                 return resp
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason=primary_error.__class__.__name__)
-                failed_attempts = [_failed_attempt(primary, primary_error)]
+                failed_attempts.append(_failed_attempt(primary, primary_error))
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
                 for adapter in fallback_adapters:
                     last_attempted = adapter
@@ -571,6 +579,8 @@ class BaseRouter:
                     "base_url": last_attempted.config.base_url,
                     "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
                 }
+            if failed_attempts:
+                e._routing.setdefault("failed_attempts", failed_attempts)  # type: ignore[attr-defined]
             raise
 
     async def stream_chat_completion(
@@ -594,6 +604,7 @@ class BaseRouter:
             raise ValueError(f"No route configured for model {model_id}")
 
         last_attempted = primary
+        failed_attempts: list[dict[str, str]] = []
         chunks_yielded = False
         try:
             try:
@@ -606,6 +617,7 @@ class BaseRouter:
                 return
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+                failed_attempts.append(_failed_attempt(primary, primary_error))
                 # Once any provider chunk has reached the client, this SSE
                 # stream is committed to that provider. Falling back would
                 # splice a second provider's role/content/events into the same
@@ -616,7 +628,11 @@ class BaseRouter:
                 for adapter in fallback_adapters:
                     last_attempted = adapter
                     try:
-                        yield _routing_chunk(adapter, fallback=True)
+                        yield _routing_chunk(
+                            adapter,
+                            fallback=True,
+                            failed_attempts=failed_attempts,
+                        )
                         async for chunk in self._execute_stream_adapter(
                             adapter, model_id, messages, **params
                         ):
@@ -630,6 +646,7 @@ class BaseRouter:
                         return
                     except Exception as fallback_error:
                         self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
+                        failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         if chunks_yielded:
                             raise fallback_error
                         continue
@@ -641,6 +658,8 @@ class BaseRouter:
                     "base_url": last_attempted.config.base_url,
                     "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
                 }
+            if failed_attempts:
+                e._routing.setdefault("failed_attempts", failed_attempts)  # type: ignore[attr-defined]
             raise
 
     def _select_adapter(
@@ -1041,7 +1060,11 @@ class FixedRouter(BaseRouter):
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        yield _routing_chunk(adapter, fallback=True)
+                        yield _routing_chunk(
+                            adapter,
+                            fallback=True,
+                            failed_attempts=[_failed_attempt(primary, primary_error)],
+                        )
                         first = True
                         started = time.perf_counter()
                         adapter_endpoint_id = _get_endpoint_id(adapter)

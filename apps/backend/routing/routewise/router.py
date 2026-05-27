@@ -21,6 +21,7 @@ import contextlib
 import json
 import os
 import random
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -70,6 +71,7 @@ logger = get_logger(__name__)
 PENDING_DECISIONS_TTL_SECONDS: float = 300.0
 PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
 PROBABILITY_TARGET_HEDGE_MODE: str = "probability_target"
+RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
 _WORKER_COUNT_ENV_KEYS = (
     "WEB_CONCURRENCY",
     "UVICORN_WORKERS",
@@ -211,6 +213,7 @@ class RouteWiseRouter(BaseRouter):
         self._latency_profiles: dict[str, ProviderProfile] = {}
         self._pending_decisions: dict[str, dict[str, Any]] = {}
         self._primary_reservations: dict[str, ProviderReservation] = {}
+        self._route_commit_lock = threading.RLock()
         self._sweep_task: asyncio.Task[None] | None = None
         self._quota_refresh_task: asyncio.Task[None] | None = None
         # Compatibility attributes retained for tests and diagnostics from the
@@ -486,9 +489,15 @@ class RouteWiseRouter(BaseRouter):
         profile = self._latency_profiles.get(endpoint_id)
         if profile is None:
             return self.config.latency_unprofiled_ttft_ms / 1000.0
-        if profile.sample_count(now) < self.config.latency_min_samples:
+        if profile.total_count(now) <= 0:
             return self.config.latency_unprofiled_ttft_ms / 1000.0
-        return profile.percentile(50.0, now)
+        mean = profile.mean_with_errors_sec(
+            now,
+            error_penalty_ms=RATE_LIMIT_ERROR_PENALTY_MS,
+        )
+        if mean is None:
+            return self.config.latency_unprofiled_ttft_ms / 1000.0
+        return mean
 
     def _api_cost_for_adapter(
         self,
@@ -894,6 +903,32 @@ class RouteWiseRouter(BaseRouter):
     ) -> CheckpointBackupDispatch | None:
         """Select and reserve a backup at one in-flight checkpoint."""
 
+        with self._route_commit_lock:
+            return self._select_checkpoint_backup_locked(
+                model_id=model_id,
+                request_id=request_id,
+                prompt_tokens=prompt_tokens,
+                predicted_output_tokens=predicted_output_tokens,
+                envelope=envelope,
+                selected=selected,
+                checkpoints_sec=checkpoints_sec,
+                elapsed_sec=elapsed_sec,
+                checkpoint_ts=checkpoint_ts,
+            )
+
+    def _select_checkpoint_backup_locked(
+        self,
+        *,
+        model_id: str,
+        request_id: str | None,
+        prompt_tokens: int,
+        predicted_output_tokens: float,
+        envelope: CostEnvelopeSnapshot,
+        selected: FeasibleProviderCandidate,
+        checkpoints_sec: tuple[float, ...],
+        elapsed_sec: float,
+        checkpoint_ts: float,
+    ) -> CheckpointBackupDispatch | None:
         primary_profile = self._latency_profiles.get(selected.endpoint_id)
         if (
             primary_profile is None
@@ -1050,6 +1085,14 @@ class RouteWiseRouter(BaseRouter):
         if model_id not in self.classified:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
 
+        with self._route_commit_lock:
+            return self._select_adapter_locked(model_id, context)
+
+    def _select_adapter_locked(
+        self,
+        model_id: str,
+        context: dict[str, Any],
+    ) -> BaseAdapter | None:
         prompt_tokens = self._prompt_tokens_from_context(context)
         prediction = self._predict_output(model_id, prompt_tokens, context)
         pool = self._routewise_pool(model_id)
@@ -1067,8 +1110,8 @@ class RouteWiseRouter(BaseRouter):
             return None
 
         # If a selected concurrency/quota candidate loses a race while
-        # committing, remove it and re-solve once with the remaining candidates.
-        for _attempt in range(2):
+        # committing, remove it and re-solve with the remaining candidates.
+        while candidates:
             lp_candidates = [
                 LPCandidate(c.endpoint_id, c.effective_cost_usd, c.mean_ttft_sec)
                 for c in candidates

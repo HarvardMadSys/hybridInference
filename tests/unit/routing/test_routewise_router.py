@@ -956,6 +956,18 @@ class TestRouteWiseLayer2:
         now = time.time()
         assert profile.error_rate(now) > 0
 
+    def test_body_latency_mean_includes_error_penalty(self):
+        """Body LP latency matches real-eval mean-with-errors semantics."""
+        config = RouteWiseConfig(latency_min_samples=10, latency_unprofiled_ttft_ms=5000.0)
+        router, _api_a, _api_b = _make_router_with_two_api(config)
+        profile = router._latency_profiles["test-model:api-a"]
+        now = time.time()
+
+        profile.record(now, 100.0)
+        profile.record(now, -1.0, error_type="timeout")
+
+        assert router._mean_ttft_sec("test-model:api-a", now) == pytest.approx(30.05)
+
     def test_multi_model_layer2_isolation(self):
         """Two models sharing one RouteWiseRouter have independent LP state.
 
@@ -1253,6 +1265,60 @@ class TestRouteWiseSCDecision:
         # S_Q now exhausted (quota=1). Third request: S_A.
         sel3 = router._select_adapter("test-model", {"prompt_tokens": 1000})
         assert sel3 is api_adapter
+
+    def test_commit_retry_keeps_resolving_until_candidate_success(self, monkeypatch):
+        """Commit races remove the failed candidate and continue until success."""
+        config = RouteWiseConfig(
+            concurrency_enabled=True,
+            concurrency_limit=4,
+            daily_quota=5000,
+            shadow_price_L_seed=0.001,
+            shadow_price_U_seed=0.500,
+        )
+        router, _conc_adapter, _quota_adapter, api_adapter = _make_router_three_tier(
+            config=config
+        )
+
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        sampled_attempts: list[list[str]] = []
+        commit_attempts: list[str] = []
+
+        def sample_first_candidate(candidates, _solution):
+            sampled_attempts.append([candidate.endpoint_id for candidate in candidates])
+            return candidates[0]
+
+        def fail_first_two_commits(candidate):
+            commit_attempts.append(candidate.endpoint_id)
+            return len(commit_attempts) >= 3
+
+        monkeypatch.setattr(router, "_sample_solution", sample_first_candidate)
+        monkeypatch.setattr(router, "_commit_candidate", fail_first_two_commits)
+
+        selected = router._select_adapter(
+            "test-model",
+            {"prompt_tokens": 1000, "request_id": "req-commit-retry"},
+        )
+
+        assert selected is api_adapter
+        assert sampled_attempts == [
+            [
+                "test-model:conc-provider",
+                "test-model:quota-provider",
+                "test-model:api-provider",
+            ],
+            ["test-model:quota-provider", "test-model:api-provider"],
+            ["test-model:api-provider"],
+        ]
+        assert commit_attempts == [
+            "test-model:conc-provider",
+            "test-model:quota-provider",
+            "test-model:api-provider",
+        ]
+        meta = router._pending_decisions["req-commit-retry"]
+        assert meta["selected_endpoint"] == "test-model:api-provider"
+        assert meta["selected_tier"] == "api"
 
 
 @pytest.mark.unit

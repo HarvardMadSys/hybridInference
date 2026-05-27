@@ -128,6 +128,49 @@ def test_record_routing_observation_with_routing_info(cl_logger, routing_info):
     assert obs.success is True
 
 
+def test_record_routing_observation_records_failed_attempts_before_final_success(
+    cl_logger,
+):
+    routing = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        provider="openai",
+        endpoint_id="openai-prod",
+        extra={
+            "failed_attempts": [
+                {
+                    "provider": "anthropic",
+                    "endpoint_id": "anthropic-prod",
+                    "error_type": "RateLimitError",
+                    "error": "429",
+                }
+            ]
+        },
+    )
+    active_router = MagicMock()
+
+    cl_logger.record_routing_observation(
+        active_router,
+        "gpt-4",
+        routing,
+        ttft_ms=42.0,
+        total_latency_ms=120.0,
+        prompt_tokens=10,
+        completion_tokens=5,
+        success=True,
+    )
+
+    assert active_router.record_observation.call_count == 2
+    failed_obs = active_router.record_observation.call_args_list[0][0][0]
+    final_obs = active_router.record_observation.call_args_list[1][0][0]
+    assert failed_obs.endpoint_id == "anthropic-prod"
+    assert failed_obs.success is False
+    assert failed_obs.prompt_tokens == 10
+    assert failed_obs.completion_tokens == 0
+    assert final_obs.endpoint_id == "openai-prod"
+    assert final_obs.success is True
+
+
 def test_record_routing_observation_falls_back_to_base_url(cl_logger):
     """When endpoint_id is missing, observation key falls back to base_url."""
     routing = RoutingInfo(
@@ -224,6 +267,49 @@ def test_record_routing_observation_accepts_legacy_dict(cl_logger):
     assert obs.hedged is True
     assert obs.backup_won is False
     assert obs.lp_status == "ok"
+
+
+def test_record_routing_observation_records_legacy_failed_attempts(cl_logger):
+    legacy = {
+        "provider": "openai",
+        "endpoint_id": "openai-prod",
+        "failed_attempts": [
+            {
+                "provider": "anthropic",
+                "endpoint_id": "anthropic-prod",
+                "error_type": "TimeoutError",
+                "error": "timeout",
+            },
+            {
+                "provider": "anthropic",
+                "endpoint_id": "anthropic-prod",
+                "error_type": "TimeoutError",
+                "error": "timeout",
+            },
+        ],
+    }
+    active_router = MagicMock()
+
+    cl_logger.record_routing_observation(
+        active_router,
+        "gpt-4",
+        legacy,
+        ttft_ms=None,
+        total_latency_ms=200.0,
+        prompt_tokens=20,
+        completion_tokens=10,
+        success=True,
+    )
+
+    # Duplicate failed attempts can surface when streaming routing chunks are
+    # merged; they should only feed RouteWise once.
+    assert active_router.record_observation.call_count == 2
+    failed_obs = active_router.record_observation.call_args_list[0][0][0]
+    assert failed_obs.endpoint_id == "anthropic-prod"
+    assert failed_obs.success is False
+    final_obs = active_router.record_observation.call_args_list[1][0][0]
+    assert final_obs.endpoint_id == "openai-prod"
+    assert final_obs.success is True
 
 
 def test_record_routing_observation_no_routewise_dict(cl_logger):

@@ -105,6 +105,20 @@ class TestProviderProfile:
 
         assert profile.error_rate(now) == pytest.approx(0.3)
 
+    def test_mean_with_errors_uses_synthetic_penalty(self):
+        """Failed attempts enter body latency as synthetic penalty samples."""
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
+        now = 100.0
+
+        profile.record(now, 100.0)
+        profile.record(now, -1.0, error_type="timeout")
+
+        assert profile.total_count(now) == 2
+        assert profile.mean_with_errors_sec(
+            now,
+            error_penalty_ms=60_000.0,
+        ) == pytest.approx(30.05)
+
     def test_empty_profile(self):
         """Empty profile returns safe defaults."""
         profile = ProviderProfile(endpoint_id="ep1")
@@ -112,8 +126,10 @@ class TestProviderProfile:
 
         assert profile.cdf_at(1.0, now) == 0.0
         assert profile.percentile(50, now) == float("inf")
+        assert profile.mean_with_errors_sec(now, error_penalty_ms=60_000.0) is None
         assert profile.error_rate(now) == 0.0
         assert profile.sample_count(now) == 0
+        assert profile.total_count(now) == 0
 
 
 # ---------------------------------------------------------------------------

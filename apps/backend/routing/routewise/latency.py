@@ -119,6 +119,21 @@ class ProviderProfile:
         frac = idx - lower
         return samples_sec[lower] * (1.0 - frac) + samples_sec[upper] * frac
 
+    def mean_with_errors_sec(
+        self,
+        current_time: float,
+        *,
+        error_penalty_ms: float,
+    ) -> float | None:
+        """Return success mean with failed attempts as synthetic penalty samples."""
+        self._prune(current_time)
+        samples_ms = [v for _, v in self._samples]
+        error_count = sum(1 for _, e in self._events if e is not None)
+        total = len(samples_ms) + error_count
+        if total == 0:
+            return None
+        return (sum(samples_ms) + error_count * float(error_penalty_ms)) / total / 1000.0
+
     def sample_count(self, current_time: float) -> int:
         """Return number of latency samples in the current window.
 
@@ -130,6 +145,13 @@ class ProviderProfile:
         """
         cutoff = current_time - self.window_sec
         return sum(1 for t, _ in self._samples if t >= cutoff)
+
+    def total_count(self, current_time: float) -> int:
+        """Return successful latency samples plus failed attempts in the window."""
+        self._prune(current_time)
+        successes = len(self._samples)
+        errors = sum(1 for _, e in self._events if e is not None)
+        return successes + errors
 
     def _prune(self, current_time: float) -> None:
         """Remove samples outside the time window."""
