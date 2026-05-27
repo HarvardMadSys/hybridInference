@@ -48,7 +48,8 @@ class ProviderProfile:
 
         Args:
             timestamp: Unix timestamp of the request.
-            ttft_ms: Time to first token in milliseconds (-1 if error).
+            ttft_ms: Time to first token in milliseconds.  Non-positive values
+                are treated as missing TTFT.
             error_type: None for success, or error type string.
         """
         self._events.append((timestamp, ttft_ms, error_type))
@@ -144,8 +145,3 @@ class ProviderProfile:
         # should replay history oldest-to-newest so this remains O(evicted).
         while self._events and self._events[0][0] < cutoff:
             self._events.popleft()
-
-    def _get_latency_samples_sec(self, current_time: float) -> list[float]:
-        """Get latency samples in seconds within the current window."""
-        self._prune(current_time)
-        return [ttft / 1000.0 for _, ttft, e in self._events if e is None and ttft > 0]
