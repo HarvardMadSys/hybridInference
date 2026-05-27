@@ -113,7 +113,7 @@ docs/             # User docs, developer docs, agent specs/plans, reviews
 
 - Gateway app and HTTP/SSE handling: `apps/backend/serving/servers/`.
 - Provider adapters: `apps/backend/serving/adapters/`.
-- Routing engine: `apps/backend/routing/routers.py`, `apps/backend/routing/manager.py`, and `apps/backend/routing/strategies.py`.
+- Routing engine: `apps/backend/routing/routers.py`, `apps/backend/routing/manager.py`, and the `apps/backend/routing/strategies/` package.
 - Storage backends: `apps/backend/serving/storage/`.
 - Frontend dashboard: `apps/frontend/`.
 - Architecture guide: [docs/developer/architecture.md](docs/developer/architecture.md).
@@ -125,7 +125,7 @@ docs/             # User docs, developer docs, agent specs/plans, reviews
 
 - `config/models.yaml`: required model registry.
 - `config/routing.yaml`: optional local/remote split, routing strategy, and health checks.
-- `config/routewise.yaml`: per-model routing overrides.
+- `config/routewise.yaml`: legacy RouteWise config; per-model RouteWise tuning now lives under `router_params:` in `config/models.yaml`.
 - `config/alerts.yaml`: alert rules.
 
 YAML files support `${VAR}` and `${VAR:-default}` environment variable interpolation.

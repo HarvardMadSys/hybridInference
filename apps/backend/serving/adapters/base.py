@@ -58,6 +58,12 @@ class ModelConfig:
     # Optional list of API keys for multi-key rotation. When set, takes
     # precedence over ``api_key`` and the adapter constructs a KeyPool.
     # Only one of ``api_key`` / ``api_keys`` should be set per route.
+    #
+    # RouteWise treats one route entry as one endpoint candidate. Therefore,
+    # ``api_keys`` means "this endpoint is an aggregate key pool": latency,
+    # failures, and quota accounting are learned for the pool as a whole. If
+    # individual keys represent separate scarce resources, configure them as
+    # separate route entries with distinct endpoint_id values instead.
     api_keys: list[str] | None = None
     # Model type: "chat" for LLMs, "embedding" for embedding models.
     model_type: str = "chat"

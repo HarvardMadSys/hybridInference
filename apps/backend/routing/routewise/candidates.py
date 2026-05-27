@@ -76,7 +76,14 @@ class QuotaSource:
 
 @dataclass(frozen=True, slots=True)
 class ProviderCandidate:
-    """RouteWise provider metadata before route-time feasibility/cost checks."""
+    """RouteWise provider metadata before route-time feasibility/cost checks.
+
+    The candidate is the unit RouteWise optimizes over. If the underlying
+    adapter has a multi-key pool, that pool is treated as one aggregate
+    endpoint: ``endpoint_id``, latency/error profile, and quota_source must all
+    describe the pool-level resource. Key-level scarcity requires separate
+    route entries instead of hidden adapter-level key rotation.
+    """
 
     endpoint_id: str
     model_id: str
