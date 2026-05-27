@@ -174,6 +174,14 @@ class TestHedgedAdapterNonStreaming:
         assert result["source"] == "backup"
         assert ("fail-primary", "RuntimeError") in sink.failures
         assert "good-backup" in sink.successes
+        assert hedged.failed_attempts == [
+            {
+                "provider": "fail-primary",
+                "endpoint_id": "test:ep-a",
+                "error_type": "RuntimeError",
+                "error": "primary failed",
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_both_fail_primary_error_raised(self):
@@ -197,6 +205,19 @@ class TestHedgedAdapterNonStreaming:
             await hedged.chat_completion([{"role": "user", "content": "hi"}])
         assert ("fail-primary", "RuntimeError") in sink.failures
         assert ("fail-backup", "ValueError") in sink.failures
+        assert {
+            "provider": "fail-primary",
+            "endpoint_id": "test:ep-a",
+            "error_type": "RuntimeError",
+            "error": "primary boom",
+        } in hedged.failed_attempts
+        assert {
+            "provider": "fail-backup",
+            "endpoint_id": "test:ep-a",
+            "error_type": "ValueError",
+            "error": "backup boom",
+        } in hedged.failed_attempts
+        assert len(hedged.failed_attempts) == 2
 
     @pytest.mark.asyncio
     async def test_event_sink_called_correctly(self):
@@ -664,6 +685,54 @@ class TestRouterHedgeMode:
         assert routewise["backup_provider"] == "test-model:api-b"
         assert routewise["hedge_algorithm"] == "probability_target"
         assert routewise["hedge_schedule"] == "slo_relative_checkpoints"
+        assert routewise["primary_routing_estimated_cost_usd"] is not None
+        assert routewise["backup_routing_estimated_cost_usd"] is not None
+        assert routewise["routing_estimated_cost_usd"] == pytest.approx(
+            routewise["primary_routing_estimated_cost_usd"]
+            + routewise["backup_routing_estimated_cost_usd"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_probability_target_primary_failure_surfaces_failed_attempt(self):
+        """A hidden hedged primary failure must feed the normal observation path."""
+        config = RouteWiseConfig(
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api_a, api_b = _make_router_with_two_api(config)
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 1.0)
+
+        async def _failed_primary(messages, **params):
+            raise RuntimeError("primary failed")
+
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
+
+        api_a.chat_completion = _failed_primary
+        api_b.chat_completion = _fast_backup
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "backup"
+        assert resp["_routing"]["failed_attempts"] == [
+            {
+                "provider": "provider-a",
+                "endpoint_id": "test-model:api-a",
+                "error_type": "RuntimeError",
+                "error": "primary failed",
+            }
+        ]
+        assert resp["_routing"]["routewise"]["failed_attempts"] == resp["_routing"][
+            "failed_attempts"
+        ]
 
     @pytest.mark.asyncio
     async def test_probability_target_primary_wins_before_dispatch(self):

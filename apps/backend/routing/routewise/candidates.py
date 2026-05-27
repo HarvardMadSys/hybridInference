@@ -103,7 +103,7 @@ def build_provider_candidates(
     """Normalize a model route into RouteWise provider candidates."""
 
     candidates: list[ProviderCandidate] = []
-    seen_endpoint_ids: dict[str, int] = {}
+    seen_endpoint_ids: set[str] = set()
 
     for adapter, raw_weight in adapters_with_weights:
         weight = float(raw_weight)
@@ -111,11 +111,14 @@ def build_provider_candidates(
             continue
 
         endpoint_base = endpoint_id_for_adapter(adapter)
-        duplicate_index = seen_endpoint_ids.get(endpoint_base, 0)
-        seen_endpoint_ids[endpoint_base] = duplicate_index + 1
-        endpoint_id = (
-            endpoint_base if duplicate_index == 0 else f"{endpoint_base}#{duplicate_index + 1}"
-        )
+        if endpoint_base in seen_endpoint_ids:
+            raise ValueError(
+                f"RouteWise endpoint_id {endpoint_base!r} is configured more than once "
+                f"for model {model_id!r}; endpoint_id must be unique so latency profiles "
+                "and request logs share one stable key."
+            )
+        seen_endpoint_ids.add(endpoint_base)
+        endpoint_id = endpoint_base
 
         sub_type = subscription_type_for_adapter(adapter)
         config = adapter.config

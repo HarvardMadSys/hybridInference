@@ -124,6 +124,23 @@ class ProviderReservation:
         self.acquired = False
 
 
+def _dedupe_failed_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str | None, str | None, str | None]] = set()
+    result: list[dict[str, Any]] = []
+    for attempt in attempts:
+        endpoint = attempt.get("endpoint_id") or attempt.get("base_url") or attempt.get("provider")
+        key = (
+            endpoint if isinstance(endpoint, str) else None,
+            attempt.get("error_type") if isinstance(attempt.get("error_type"), str) else None,
+            attempt.get("error") if isinstance(attempt.get("error"), str) else None,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(attempt)
+    return result
+
+
 def _configured_worker_count() -> int | None:
     """Best-effort detection for common ASGI worker-count environment vars."""
 
@@ -839,12 +856,12 @@ class RouteWiseRouter(BaseRouter):
             "hedge_delay_ms": None,
             "hedge_success_probability": None,
             "lp_budget_usd": solution.budget_usd,
-            # follow-up: per-provider dollar cost at predicted tokens. The
-            # prod-native ``selected_effective_cost_usd`` above is shadow-priced
-            # for quota/concurrency tiers, so it is not directly comparable to
-            # SIM/REAL routing_estimated_cost_usd (raw dollar). Left None until a
-            # per-provider dollar-cost helper exists.
-            "routing_estimated_cost_usd": None,
+            # Decision-time raw dollar estimate at predicted tokens. This is
+            # separate from selected_effective_cost_usd, which may be a shadow
+            # price for S_Q/S_C.
+            "primary_routing_estimated_cost_usd": selected.request_cost_usd,
+            "backup_routing_estimated_cost_usd": None,
+            "routing_estimated_cost_usd": selected.request_cost_usd,
             # lp_weights and lp_status (above) already use canonical names.
         }
 
@@ -1023,6 +1040,12 @@ class RouteWiseRouter(BaseRouter):
         meta["backup_tier"] = backup.tier
         meta["hedge_delay_ms"] = elapsed_sec * 1000.0
         meta["hedge_success_probability"] = success_probability
+        meta["backup_routing_estimated_cost_usd"] = backup.request_cost_usd
+        primary_cost = meta.get("primary_routing_estimated_cost_usd")
+        if primary_cost is not None:
+            meta["routing_estimated_cost_usd"] = float(primary_cost) + backup.request_cost_usd
+        else:
+            meta["routing_estimated_cost_usd"] = backup.request_cost_usd
 
     def _apply_hedge_execution_metadata(self, adapter: Any, request_id: str | None) -> None:
         """Update pending RouteWise metadata after a HedgedAdapter has run."""
@@ -1048,6 +1071,15 @@ class RouteWiseRouter(BaseRouter):
             meta["backup_provider"] = None
             meta["backup_tier"] = None
             meta["hedge_winner"] = None
+        failed_attempts = getattr(adapter, "failed_attempts", None)
+        if failed_attempts:
+            existing = meta.get("failed_attempts")
+            meta["failed_attempts"] = _dedupe_failed_attempts(
+                [
+                    *(existing if isinstance(existing, list) else []),
+                    *failed_attempts,
+                ]
+            )
 
     # ------------------------------------------------------------------
     # BaseRouter integration
@@ -1390,6 +1422,20 @@ class RouteWiseRouter(BaseRouter):
     # chat_completion / stream_chat_completion: merge decision metadata
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _attach_decision_info(routing: dict[str, Any], decision_info: dict[str, Any]) -> None:
+        routing["routewise"] = decision_info
+        failed_attempts = decision_info.get("failed_attempts")
+        if not isinstance(failed_attempts, list) or not failed_attempts:
+            return
+        existing = routing.get("failed_attempts")
+        routing["failed_attempts"] = _dedupe_failed_attempts(
+            [
+                *(existing if isinstance(existing, list) else []),
+                *failed_attempts,
+            ]
+        )
+
     async def chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
@@ -1404,13 +1450,13 @@ class RouteWiseRouter(BaseRouter):
                 decision_info = self._pending_decisions.pop(request_id, None)
                 if decision_info:
                     exc_routing = getattr(e, "_routing", None)
-                    if exc_routing is not None:
-                        exc_routing["routewise"] = decision_info
+                    if isinstance(exc_routing, dict):
+                        self._attach_decision_info(exc_routing, decision_info)
                 raise
 
             decision_info = self._pending_decisions.pop(request_id, None)
             if decision_info and isinstance(resp, dict) and "_routing" in resp:
-                resp["_routing"]["routewise"] = decision_info
+                self._attach_decision_info(resp["_routing"], decision_info)
             return resp
         finally:
             self._release_pending_primary_reservation(request_id)
@@ -1436,16 +1482,18 @@ class RouteWiseRouter(BaseRouter):
                 decision_info = self._pending_decisions.pop(request_id, None)
                 if decision_info:
                     exc_routing = getattr(e, "_routing", None)
-                    if exc_routing is not None:
-                        exc_routing["routewise"] = decision_info
+                    if isinstance(exc_routing, dict):
+                        self._attach_decision_info(exc_routing, decision_info)
                 raise
 
             decision_info = self._pending_decisions.pop(request_id, None)
             if decision_info:
                 decision_info["is_streaming"] = True
+                routing: dict[str, Any] = {}
+                self._attach_decision_info(routing, decision_info)
                 routing_chunk = {
                     "choices": [],
-                    "_routing": {"routewise": decision_info},
+                    "_routing": routing,
                 }
                 yield f"data: {json.dumps(routing_chunk)}\n\n"
 

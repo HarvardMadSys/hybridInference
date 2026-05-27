@@ -111,6 +111,7 @@ class HedgedAdapter(BaseAdapter):
         self.backup_won = False
         self.hedge_delay_sec: float | None = None
         self.hedge_success_probability: float | None = None
+        self.failed_attempts: list[dict[str, str]] = []
         self._stream_backup_dispatch: CheckpointBackupDispatch[BaseAdapter] | None = None
         self._stream_backup_gen: AsyncGenerator[str, None] | None = None
 
@@ -231,6 +232,7 @@ class HedgedAdapter(BaseAdapter):
                                 primary_provider,
                                 reason=exc.__class__.__name__,
                             )
+                            self.failed_attempts.append(_failed_attempt(self.primary, exc))
                             primary_error = exc
                             # Primary failed.  If the backup is still in its
                             # initial sleep(h*), cancel it and re-launch without
@@ -250,6 +252,7 @@ class HedgedAdapter(BaseAdapter):
                                     backup_provider,
                                     reason=exc.__class__.__name__,
                                 )
+                                self.failed_attempts.append(_failed_attempt(self.backup, exc))
                     else:
                         # Winner found -- cancel the loser.
                         winner_result = task.result()
@@ -458,6 +461,7 @@ class HedgedAdapter(BaseAdapter):
                         self.event_sink.on_provider_failure(
                             primary_provider, reason=e.__class__.__name__
                         )
+                        self.failed_attempts.append(_failed_attempt(self.primary, e))
                         # Start backup immediately if not already running.
                         if not backup_started:
                             if hedge_timer_task is not None:
@@ -486,6 +490,7 @@ class HedgedAdapter(BaseAdapter):
                             self.event_sink.on_provider_failure(
                                 provider, reason=e.__class__.__name__
                             )
+                            self.failed_attempts.append(_failed_attempt(self.backup, e))
                         backup_next_task = None
 
                 # Decide winner.
@@ -571,3 +576,19 @@ def _provider_name_from_adapter(adapter: BaseAdapter | None) -> str:
     if adapter is None:
         return "unknown-backup"
     return str(adapter.config.provider)
+
+
+def _endpoint_id_from_adapter(adapter: BaseAdapter | None) -> str:
+    if adapter is None:
+        return "unknown-backup"
+    endpoint_id = getattr(adapter.config, "endpoint_id", None)
+    return str(endpoint_id or adapter.config.provider)
+
+
+def _failed_attempt(adapter: BaseAdapter | None, exc: BaseException) -> dict[str, str]:
+    return {
+        "provider": _provider_name_from_adapter(adapter),
+        "endpoint_id": _endpoint_id_from_adapter(adapter),
+        "error_type": exc.__class__.__name__,
+        "error": str(exc),
+    }
