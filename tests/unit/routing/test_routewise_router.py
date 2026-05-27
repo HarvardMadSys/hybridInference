@@ -1745,6 +1745,47 @@ class TestRouteWiseDecisionMetadata:
         assert "req-stream-test" not in router._pending_decisions
 
     @pytest.mark.asyncio
+    async def test_stream_does_not_fallback_after_provider_chunk(self):
+        """Once a provider chunk is emitted, fallback would corrupt the SSE stream."""
+        primary = _make_adapter(
+            provider="primary",
+            subscription_type="api",
+            endpoint_id="test-model:primary",
+        )
+        backup = _make_adapter(
+            provider="backup",
+            subscription_type="api",
+            endpoint_id="test-model:backup",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(primary, 0.5), (backup, 0.5)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        async def _primary_stream(*args, **kwargs):
+            yield 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            raise RuntimeError("primary stream failed mid-flight")
+
+        async def _backup_stream(*args, **kwargs):
+            yield 'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        primary.stream_chat_completion = _primary_stream
+        backup.stream_chat_completion = _backup_stream
+        router._select_adapter = lambda model_id, context: primary  # type: ignore[method-assign]
+
+        chunks: list[str] = []
+        with pytest.raises(RuntimeError, match="primary stream failed mid-flight"):
+            async for chunk in router.stream_chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-stream-no-midflight-fallback",
+            ):
+                chunks.append(chunk)
+
+        assert any("partial" in chunk for chunk in chunks)
+        assert not any("backup" in chunk for chunk in chunks)
+
+    @pytest.mark.asyncio
     async def test_pending_decisions_cleaned_on_error(self):
         """_pending_decisions is cleaned up when chat_completion raises."""
         router, quota, api = _make_router_with_quota_and_api()

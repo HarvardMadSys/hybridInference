@@ -594,6 +594,7 @@ class BaseRouter:
             raise ValueError(f"No route configured for model {model_id}")
 
         last_attempted = primary
+        chunks_yielded = False
         try:
             try:
                 yield _routing_chunk(primary)
@@ -601,9 +602,16 @@ class BaseRouter:
                     primary, model_id, messages, **params
                 ):
                     yield chunk
+                    chunks_yielded = True
                 return
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+                # Once any provider chunk has reached the client, this SSE
+                # stream is committed to that provider. Falling back would
+                # splice a second provider's role/content/events into the same
+                # response, corrupting the stream.
+                if chunks_yielded:
+                    raise primary_error
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
                 for adapter in fallback_adapters:
                     last_attempted = adapter
@@ -613,14 +621,17 @@ class BaseRouter:
                             adapter, model_id, messages, **params
                         ):
                             yield chunk
+                            chunks_yielded = True
                         API_FALLBACKS.labels(
                             from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                             to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
                             reason=primary_error.__class__.__name__,
                         ).inc()
                         return
-                    except Exception:
+                    except Exception as fallback_error:
                         self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
+                        if chunks_yielded:
+                            raise fallback_error
                         continue
                 raise primary_error
         except BaseException as e:
