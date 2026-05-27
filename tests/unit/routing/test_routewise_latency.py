@@ -63,24 +63,6 @@ class TestProviderProfile:
         assert profile.sample_count(200.0) == 1
         assert profile.cdf_at(0.5, 200.0) == pytest.approx(1.0)
 
-    def test_percentile(self):
-        """Percentile computation matches manual calculation."""
-        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
-        now = 100.0
-
-        # Add 5 samples: 100, 200, 300, 400, 500 ms.
-        for v in [100.0, 200.0, 300.0, 400.0, 500.0]:
-            profile.record(now, v)
-
-        # p50 (median): index = 0.5 * 4 = 2.0 -> samples[2] = 0.3s
-        assert profile.percentile(50, now) == pytest.approx(0.3)
-
-        # p0: index = 0 -> samples[0] = 0.1s
-        assert profile.percentile(0, now) == pytest.approx(0.1)
-
-        # p100: index = 4 -> samples[4] = 0.5s
-        assert profile.percentile(100, now) == pytest.approx(0.5)
-
     def test_sample_count_respects_window(self):
         """sample_count only counts samples within the time window."""
         profile = ProviderProfile(endpoint_id="ep1", window_sec=100.0)
@@ -125,7 +107,6 @@ class TestProviderProfile:
         now = 100.0
 
         assert profile.cdf_at(1.0, now) == 0.0
-        assert profile.percentile(50, now) == float("inf")
         assert profile.mean_with_errors_sec(now, error_penalty_ms=60_000.0) is None
         assert profile.error_rate(now) == 0.0
         assert profile.sample_count(now) == 0

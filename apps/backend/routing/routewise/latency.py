@@ -11,7 +11,6 @@ Reference: experiment/strategies/online_latency_router.py (lines 40-196, 373-455
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
 
@@ -97,27 +96,6 @@ class ProviderProfile:
             return 0.0
         error_count = sum(1 for _, e in events if e is not None)
         return error_count / len(events)
-
-    def percentile(self, q: float, current_time: float) -> float:
-        """Compute the q-th percentile of latency in seconds.
-
-        Args:
-            q: Percentile in [0, 100] (e.g. 50 for median, 99 for p99).
-            current_time: Reference time for window pruning.
-
-        Returns:
-            Latency in seconds at the q-th percentile.
-            Returns inf if no samples.
-        """
-        samples_sec = self._get_latency_samples_sec(current_time)
-        if not samples_sec:
-            return float("inf")
-        samples_sec.sort()
-        idx = (q / 100.0) * (len(samples_sec) - 1)
-        lower = math.floor(idx)
-        upper = min(lower + 1, len(samples_sec) - 1)
-        frac = idx - lower
-        return samples_sec[lower] * (1.0 - frac) + samples_sec[upper] * frac
 
     def mean_with_errors_sec(
         self,

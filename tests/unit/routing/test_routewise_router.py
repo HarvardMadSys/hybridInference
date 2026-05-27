@@ -910,7 +910,10 @@ class TestRouteWiseLayer2:
         profile = router._latency_profiles["test-model:api-a"]
         now = time.time()
         assert profile.sample_count(now) == 1
-        assert profile.percentile(50, now) == pytest.approx(0.5)
+        assert profile.mean_with_errors_sec(
+            now,
+            error_penalty_ms=60_000.0,
+        ) == pytest.approx(0.5)
 
     def test_single_api_uses_body_lp_single_provider_solution(self):
         """Single S_A provider returns a degenerate body-LP solution."""
