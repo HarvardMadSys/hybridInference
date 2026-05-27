@@ -947,6 +947,66 @@ class TestRouteWiseLayer2:
 
         assert router._mean_ttft_sec("test-model:api-a", now) == pytest.approx(30.05)
 
+    def test_bootstrap_from_log_rows_warms_latency_and_envelope(self):
+        """Startup history replay warms profiles with the same online semantics."""
+        router, _api_a, _api_b = _make_router_with_two_api()
+
+        counts = router.bootstrap_from_log_rows(
+            [
+                {
+                    "timestamp": 100.0,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": 200,
+                    "latency_ms": 500,
+                    "status_code": 200,
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 100,
+                    "failed_attempts": [
+                        {
+                            "endpoint_id": "test-model:api-b",
+                            "error_type": "timeout",
+                            "error": "deadline",
+                        },
+                        {
+                            "endpoint_id": "test-model:api-b",
+                            "error_type": "timeout",
+                            "error": "deadline",
+                        },
+                    ],
+                },
+                {
+                    "timestamp": 101.0,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": None,
+                    "latency_ms": 800,
+                    "status_code": 500,
+                    "error": "upstream failed",
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 0,
+                },
+            ]
+        )
+
+        assert counts == {
+            "rows": 2,
+            "latency_events": 2,
+            "failed_attempts": 1,
+            "envelope_samples": 1,
+        }
+        profile_a = router._latency_profiles["test-model:api-a"]
+        profile_b = router._latency_profiles["test-model:api-b"]
+        assert profile_a.total_count(101.0) == 2
+        assert profile_a.error_rate(101.0) == pytest.approx(0.5)
+        assert profile_a.mean_with_errors_sec(
+            101.0,
+            error_penalty_ms=60_000.0,
+        ) == pytest.approx(30.1)
+        assert profile_b.total_count(101.0) == 1
+        assert profile_b.error_rate(101.0) == pytest.approx(1.0)
+        assert router.envelope.snapshot("test-model", now=101.0).sample_count == 1
+
     def test_multi_model_layer2_isolation(self):
         """Two models sharing one RouteWiseRouter have independent LP state.
 

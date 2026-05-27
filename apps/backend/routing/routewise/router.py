@@ -37,7 +37,7 @@ from routewise.core import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterable, Mapping
 
     from serving.adapters.base import BaseAdapter
 
@@ -1204,6 +1204,134 @@ class RouteWiseRouter(BaseRouter):
             obs.completion_tokens,
             obs.success,
         )
+
+    def bootstrap_from_log_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        include_latency: bool = True,
+        include_envelope: bool = True,
+    ) -> dict[str, int]:
+        """Warm latency profiles and the cost envelope from historical api_logs rows."""
+        counts = {"rows": 0, "latency_events": 0, "failed_attempts": 0, "envelope_samples": 0}
+        for row in rows:
+            counts["rows"] += 1
+            ts = self._timestamp_sec(row.get("timestamp"))
+            if ts is None:
+                continue
+
+            model_id = self._canonical_model_id(str(row.get("model_id") or ""))
+            if include_latency:
+                endpoint_id = self._string_or_none(row.get("endpoint_id")) or self._string_or_none(
+                    row.get("provider")
+                )
+                success = self._is_success_status(row.get("status_code"), row.get("error"))
+
+                if endpoint_id and endpoint_id in self._latency_profiles:
+                    latency_ms = self._bootstrap_latency_ms(row, success)
+                    error_type = None if success else self._bootstrap_error_type(row)
+                    self._latency_profiles[endpoint_id].record(ts, latency_ms, error_type)
+                    counts["latency_events"] += 1
+
+                for attempt in self._bootstrap_failed_attempts(row):
+                    failed_endpoint = self._string_or_none(
+                        attempt.get("endpoint_id")
+                    ) or self._string_or_none(
+                        attempt.get("base_url")
+                    ) or self._string_or_none(attempt.get("provider"))
+                    if not failed_endpoint or failed_endpoint not in self._latency_profiles:
+                        continue
+                    error_type = self._string_or_none(attempt.get("error_type")) or "error"
+                    self._latency_profiles[failed_endpoint].record(ts, -1.0, error_type)
+                    counts["failed_attempts"] += 1
+
+            if include_envelope:
+                prompt_tokens = self._int_or_zero(row.get("prompt_tokens"))
+                completion_tokens = self._int_or_zero(row.get("completion_tokens"))
+                if prompt_tokens > 0 and completion_tokens > 0:
+                    sample_cost = self._reference_api_cost(
+                        model_id,
+                        prompt_tokens=prompt_tokens,
+                        output_tokens=completion_tokens,
+                    )
+                    if sample_cost is not None:
+                        self.envelope.observe(self._routewise_pool(model_id), sample_cost, now=ts)
+                        counts["envelope_samples"] += 1
+        return counts
+
+    @staticmethod
+    def _timestamp_sec(value: Any) -> float | None:
+        if isinstance(value, (int, float)):
+            return float(value)
+        timestamp = getattr(value, "timestamp", None)
+        if callable(timestamp):
+            try:
+                return float(timestamp())
+            except (TypeError, ValueError, OSError, OverflowError):
+                return None
+        return None
+
+    @staticmethod
+    def _string_or_none(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _int_or_zero(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _is_success_status(cls, status_code: Any, error: Any) -> bool:
+        code = cls._int_or_zero(status_code)
+        return code > 0 and code < 400 and not error
+
+    @classmethod
+    def _bootstrap_latency_ms(cls, row: Mapping[str, Any], success: bool) -> float:
+        if not success:
+            return -1.0
+        ttft_ms = row.get("ttft_ms")
+        if ttft_ms is not None:
+            try:
+                return float(ttft_ms)
+            except (TypeError, ValueError):
+                pass
+        try:
+            return float(row.get("latency_ms") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _bootstrap_error_type(cls, row: Mapping[str, Any]) -> str:
+        error = cls._string_or_none(row.get("error"))
+        if error:
+            return error[:120]
+        return "error"
+
+    @staticmethod
+    def _bootstrap_failed_attempts(row: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+        attempts = row.get("failed_attempts")
+        if not isinstance(attempts, (list, tuple)):
+            return ()
+        seen: set[tuple[str | None, str | None, str | None]] = set()
+        result: list[Mapping[str, Any]] = []
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            endpoint = (
+                attempt.get("endpoint_id") or attempt.get("base_url") or attempt.get("provider")
+            )
+            key = (
+                endpoint if isinstance(endpoint, str) else None,
+                attempt.get("error_type") if isinstance(attempt.get("error_type"), str) else None,
+                attempt.get("error") if isinstance(attempt.get("error"), str) else None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(attempt)
+        return tuple(result)
 
     # ------------------------------------------------------------------
     # Execution overrides: S_C slot lifecycle

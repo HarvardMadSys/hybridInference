@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import os
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,62 @@ async def _refresh_weight_override_snapshots(
             await resolver.load_all()
         except Exception:
             logger.warning("Route weight override snapshot refresh failed", exc_info=True)
+
+
+async def _bootstrap_routewise_from_logs(
+    log_store: Any,
+    routewise_routers: list[Any],
+    model_ids_by_router: dict[int, set[str]],
+) -> None:
+    """Best-effort warmup of RouteWise in-memory state from recent api_logs."""
+    if log_store is None:
+        return
+    now = dt.datetime.now(dt.timezone.utc)
+    for rw in routewise_routers:
+        if not getattr(rw.config, "db_bootstrap_enabled", True):
+            continue
+        model_ids = sorted(model_ids_by_router.get(id(rw), set()))
+        max_rows = max(int(getattr(rw.config, "db_bootstrap_max_rows", 0) or 0), 0)
+        if not model_ids or max_rows <= 0:
+            continue
+        latency_window_sec = max(float(getattr(rw.config, "latency_window_sec", 0.0) or 0.0), 1.0)
+        envelope_window_sec = max(
+            float(getattr(rw.config, "shadow_price_window_hours", 0.0) or 0.0) * 3600.0,
+            1.0,
+        )
+        try:
+            latency_rows = await log_store.get_routewise_bootstrap_rows(
+                model_ids=model_ids,
+                since=now - dt.timedelta(seconds=latency_window_sec),
+                limit=max_rows,
+            )
+            latency_counts = rw.bootstrap_from_log_rows(
+                latency_rows,
+                include_latency=True,
+                include_envelope=False,
+            )
+            envelope_rows = await log_store.get_routewise_bootstrap_rows(
+                model_ids=model_ids,
+                since=now - dt.timedelta(seconds=envelope_window_sec),
+                limit=None,
+            )
+            envelope_counts = rw.bootstrap_from_log_rows(
+                envelope_rows,
+                include_latency=False,
+                include_envelope=True,
+            )
+            logger.info(
+                "RouteWise DB bootstrap replayed latency_rows=%d envelope_rows=%d: latency_events=%d "
+                "failed_attempts=%d envelope_samples=%d model_ids=%s",
+                latency_counts["rows"],
+                envelope_counts["rows"],
+                latency_counts["latency_events"],
+                latency_counts["failed_attempts"],
+                envelope_counts["envelope_samples"],
+                model_ids,
+            )
+        except Exception as exc:
+            logger.warning(f"RouteWise DB bootstrap failed for models {model_ids}: {exc}")
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -358,11 +415,16 @@ async def initialize() -> AppServices:
 
     seen_ids: set[int] = set()
     routewise_routers: list[_RWR] = []
+    routewise_model_ids_by_router: dict[int, set[str]] = {}
     for info in model_infos:
         r = model_router_registry.get_router(info.model_id)
         if isinstance(r, _RWR) and id(r) not in seen_ids:
             seen_ids.add(id(r))
             routewise_routers.append(r)
+        if isinstance(r, _RWR):
+            routewise_model_ids_by_router.setdefault(id(r), set()).update(
+                [info.model_id, *info.aliases]
+            )
 
     # Build store abstractions
     operational_store = None
@@ -378,6 +440,12 @@ async def initialize() -> AppServices:
         )
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
+
+    await _bootstrap_routewise_from_logs(
+        log_store,
+        routewise_routers,
+        routewise_model_ids_by_router,
+    )
 
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()

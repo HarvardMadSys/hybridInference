@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import os
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -201,6 +203,78 @@ async def test_postgres_log_store_normalizes_nested_cached_tokens(db_logger: Dat
     assert row["completion_tokens"] == 98
     assert row["reasoning_tokens"] == 17
     assert row["cache_read_tokens"] == 13520
+
+
+@pytest.mark.asyncio
+async def test_postgres_log_store_routewise_bootstrap_rows_are_normalized(
+    db_logger: DatabaseLogger,
+):
+    assert db_logger.pool is not None
+    now = dt.datetime.now(dt.timezone.utc)
+    async with db_logger.pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO api_logs (
+                timestamp, request_id, model_id, provider,
+                ttft_ms, latency_ms, status_code, error,
+                prompt_tokens, completion_tokens, metadata
+            )
+            VALUES
+                ($1, 'rw-bootstrap-newer', 'm', 'provider-a',
+                 200, 500, 200, NULL, 1000, 100,
+                 $2::jsonb),
+                ($3, 'rw-bootstrap-older', 'm', 'provider-b',
+                 NULL, 700, 500, 'boom', 1000, 0,
+                 $4::jsonb),
+                ($5, 'rw-bootstrap-too-old-for-limit', 'm', 'provider-old',
+                 900, 1000, 200, NULL, 1000, 100,
+                 $6::jsonb)
+            """,
+            now,
+            json.dumps({"endpoint_id": "m:provider-a"}),
+            now - dt.timedelta(seconds=10),
+            json.dumps(
+                {
+                    "routewise": {"primary_provider": "m:provider-b"},
+                    "failed_attempts": [
+                        {
+                            "endpoint_id": "m:provider-c",
+                            "error_type": "timeout",
+                            "error": "deadline",
+                        }
+                    ],
+                }
+            ),
+            now - dt.timedelta(seconds=20),
+            json.dumps({"endpoint_id": "m:provider-old"}),
+        )
+
+    log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
+    rows = await log_store.get_routewise_bootstrap_rows(
+        model_ids=["m"],
+        since=now - dt.timedelta(minutes=1),
+        limit=2,
+    )
+
+    assert [row["endpoint_id"] for row in rows] == ["m:provider-b", "m:provider-a"]
+    assert rows[0]["failed_attempts"] == (
+        {
+            "endpoint_id": "m:provider-c",
+            "error_type": "timeout",
+            "error": "deadline",
+        },
+    )
+
+    all_rows = await log_store.get_routewise_bootstrap_rows(
+        model_ids=["m"],
+        since=now - dt.timedelta(minutes=1),
+        limit=None,
+    )
+    assert [row["endpoint_id"] for row in all_rows] == [
+        "m:provider-old",
+        "m:provider-b",
+        "m:provider-a",
+    ]
 
 
 @pytest.mark.asyncio

@@ -125,6 +125,12 @@ def _get_endpoint_id(adapter: BaseAdapter) -> str:
 
 
 def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
+    """Return fallback-attempt telemetry.
+
+    Keep ``endpoint_id`` populated: RouteWise profile replay uses it as the
+    canonical key when bootstrapping failed sibling-provider observations from
+    api_logs metadata.
+    """
     return {
         "provider": adapter.config.provider,
         "endpoint_id": _get_endpoint_id(adapter),

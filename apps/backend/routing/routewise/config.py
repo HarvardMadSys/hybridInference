@@ -49,11 +49,17 @@ class RouteWiseConfig:
         latency_min_samples: Minimum samples before LP warmup.
         budget_alpha: Interpolation factor for the LP cost budget:
             ``c_min + alpha * (c_max - c_min)``.
+        db_bootstrap_enabled: Whether to warm RouteWise in-memory state from
+            recent api_logs rows at startup.
+        db_bootstrap_max_rows: Maximum api_logs rows replayed per RouteWise
+            router during startup.
     """
 
     budget_alpha: float = 0.75
     random_seed: int | None = None
     reference_api_price: dict[str, Any] | None = None
+    db_bootstrap_enabled: bool = True
+    db_bootstrap_max_rows: int = 50_000
 
     # S_Q/S_C state is process-local in this first integration.  Keep the
     # single-worker guard enabled until quota/concurrency state is backed by a
@@ -208,6 +214,10 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "enabled": "canary_enabled",
             "enabled_models": "canary_enabled_models",
             "traffic_fraction": "canary_traffic_fraction",
+        },
+        "db_bootstrap": {
+            "enabled": "db_bootstrap_enabled",
+            "max_rows": "db_bootstrap_max_rows",
         },
     }
 

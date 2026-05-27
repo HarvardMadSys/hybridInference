@@ -20,6 +20,8 @@ class TestRouteWiseConfigDefaults:
         cfg = RouteWiseConfig()
         assert cfg.random_seed is None
         assert cfg.reference_api_price is None
+        assert cfg.db_bootstrap_enabled is True
+        assert cfg.db_bootstrap_max_rows == 50_000
         assert cfg.stateful_tiers_single_worker_only is True
         assert cfg.daily_quota == 5000
         assert cfg.quota_monthly_fee == 20.0
@@ -67,6 +69,21 @@ class TestLoadFromYAML:
         assert cfg.daily_quota == 10000
         # Defaults still apply for omitted keys
         assert cfg.concurrency_enabled is False
+
+    def test_load_nested_db_bootstrap_yaml(self, tmp_path: Path):
+        """Nested db_bootstrap section is flattened correctly."""
+        yaml_content = (
+            "routewise:\n"
+            "  db_bootstrap:\n"
+            "    enabled: false\n"
+            "    max_rows: 123\n"
+        )
+        p = tmp_path / "routewise.yaml"
+        p.write_text(yaml_content)
+
+        cfg = load_routewise_config(p)
+        assert cfg.db_bootstrap_enabled is False
+        assert cfg.db_bootstrap_max_rows == 123
 
     def test_load_nested_adr_yaml(self, tmp_path: Path):
         """Nested ADR structure (quota/concurrency/shadow_price) is flattened."""

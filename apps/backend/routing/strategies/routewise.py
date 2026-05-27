@@ -31,6 +31,8 @@ class RouteWiseParams(BaseModel):
     budget_alpha: float = 0.75
     random_seed: int | None = None
     reference_api_price: dict[str, object] | None = None
+    db_bootstrap_enabled: bool = True
+    db_bootstrap_max_rows: int = 50_000
     stateful_tiers_single_worker_only: bool = True
 
     # Output-length predictor

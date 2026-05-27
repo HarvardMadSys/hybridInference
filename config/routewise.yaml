@@ -17,6 +17,11 @@ routewise:
   #   prompt: "1.2"
   #   completion: "4.0"
 
+  # --- Startup DB bootstrap ---
+  db_bootstrap:
+    enabled: true
+    max_rows: 50000
+
   # S_Q/S_C counters are process-local in this integration. Leave this guard
   # on unless the deployment is single-worker or shared state has been added.
   stateful_tiers_single_worker_only: true
