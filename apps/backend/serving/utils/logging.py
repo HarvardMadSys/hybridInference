@@ -93,11 +93,12 @@ class JsonFormatter(logging.Formatter):
         Returns:
             JSON encoded string for the log entry.
         """
+        record.message = record.getMessage()
         payload: dict[str, Any] = {
             "time": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
             "name": record.name,
-            "message": record.getMessage(),
+            "message": record.message,
         }
         # Merge request context fields if present
         try:
@@ -117,7 +118,7 @@ class JsonFormatter(logging.Formatter):
 
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, ensure_ascii=False)
+        return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 _QUIET_PATHS = frozenset({"/health", "/health/deep", "/health/ready", "/metrics"})
