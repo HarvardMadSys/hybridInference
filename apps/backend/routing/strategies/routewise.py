@@ -33,11 +33,6 @@ class RouteWiseParams(BaseModel):
     reference_api_price: dict[str, object] | None = None
     stateful_tiers_single_worker_only: bool = True
 
-    # Legacy decision-rule fields accepted for config compatibility.
-    decision_rule: str = "pd"
-    predictor: str = "ema"
-    risk_quantile: float = 0.10
-
     # Output-length predictor
     output_default_tokens: float = 512.0
     output_min_bucket_samples: int = 3
@@ -58,7 +53,6 @@ class RouteWiseParams(BaseModel):
     # Shadow price bounds
     shadow_price_L_seed: float = 0.001
     shadow_price_U_seed: float = 0.500
-    shadow_price_adaptive: bool = True
     shadow_price_window_hours: int = 24
     shadow_price_min_ratio: int = 10
     envelope_lower_percentile: float = 10.0
@@ -69,7 +63,6 @@ class RouteWiseParams(BaseModel):
     latency_slo_sec: float = 3.0
     latency_window_sec: float = 900.0
     latency_min_samples: int = 10
-    latency_lp_interval_sec: float = 60.0
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_hedge_mode: Literal["disabled", "probability_target"] = "disabled"
 

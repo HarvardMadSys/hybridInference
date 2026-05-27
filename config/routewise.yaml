@@ -21,15 +21,6 @@ routewise:
   # on unless the deployment is single-worker or shared state has been added.
   stateful_tiers_single_worker_only: true
 
-  # Decision algorithm: "pd" (primal-dual) or "lapd" (look-ahead primal-dual).
-  decision_rule: pd
-
-  # Latency predictor type: "ema" (exponential moving average) or "histogram".
-  predictor: ema
-
-  # Quantile for lower confidence bound when decision_rule is "lapd".
-  risk_quantile: 0.10
-
   # --- S_Q (quota) subscription parameters ---
   quota:
     daily_quota: 5000             # requests per day
@@ -48,7 +39,6 @@ routewise:
   shadow_price:
     L_seed: 0.001                 # initial lower bound (USD)
     U_seed: 0.500                 # initial upper bound (USD)
-    adaptive: true                # update L/U from sliding window
     window_hours: 24              # sliding window for L/U adaptation
     min_ratio: 10                 # floor for U/L to prevent degenerate thresholds
 

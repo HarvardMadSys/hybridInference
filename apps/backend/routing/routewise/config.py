@@ -27,11 +27,6 @@ class RouteWiseConfig:
     """Policy parameters for RouteWise cost-aware routing.
 
     Attributes:
-        decision_rule: Decision algorithm -- "pd" (primal-dual) or "lapd"
-            (look-ahead primal-dual).
-        predictor: Latency predictor type -- "ema" or "histogram".
-        risk_quantile: Quantile for lower confidence bound in lapd mode.
-
         daily_quota: Maximum requests per day for S_Q (quota) subscriptions.
         quota_monthly_fee: Monthly cost of the quota subscription (USD).
         reset_timezone: Timezone for daily quota reset.
@@ -44,7 +39,6 @@ class RouteWiseConfig:
 
         shadow_price_L_seed: Initial lower bound for shadow price search.
         shadow_price_U_seed: Initial upper bound for shadow price search.
-        shadow_price_adaptive: Enable adaptive shadow price window.
         shadow_price_window_hours: Lookback window (hours) for adaptive
             shadow price estimation.
         shadow_price_min_ratio: Minimum observations required per window
@@ -53,7 +47,6 @@ class RouteWiseConfig:
         latency_slo_sec: Target SLO for latency-aware routing (seconds).
         latency_window_sec: Profile moving window duration (seconds).
         latency_min_samples: Minimum samples before LP warmup.
-        latency_lp_interval_sec: Minimum seconds between LP re-solves.
         budget_alpha: Interpolation factor for the LP cost budget:
             ``c_min + alpha * (c_max - c_min)``.
     """
@@ -66,12 +59,6 @@ class RouteWiseConfig:
     # single-worker guard enabled until quota/concurrency state is backed by a
     # shared store.
     stateful_tiers_single_worker_only: bool = True
-
-    # Legacy knobs still parsed for compatibility.  ``decision_rule`` and
-    # ``risk_quantile`` no longer switch the top-level RouteWise policy.
-    decision_rule: str = "pd"
-    predictor: str = "ema"
-    risk_quantile: float = 0.10
 
     # Output-length predictor
     output_default_tokens: float = 512.0
@@ -93,7 +80,6 @@ class RouteWiseConfig:
     # Shadow price bounds
     shadow_price_L_seed: float = 0.001
     shadow_price_U_seed: float = 0.500
-    shadow_price_adaptive: bool = True
     shadow_price_window_hours: int = 24
     shadow_price_min_ratio: int = 10
     envelope_lower_percentile: float = 10.0
@@ -104,7 +90,6 @@ class RouteWiseConfig:
     latency_slo_sec: float = 3.0
     latency_window_sec: float = 900.0  # 15 min profile window
     latency_min_samples: int = 10  # warmup threshold
-    latency_lp_interval_sec: float = 60.0  # LP re-solve interval
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_hedge_mode: LatencyHedgeMode = "disabled"
 
@@ -190,7 +175,6 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
         "shadow_price": {
             "L_seed": "shadow_price_L_seed",
             "U_seed": "shadow_price_U_seed",
-            "adaptive": "shadow_price_adaptive",
             "window_hours": "shadow_price_window_hours",
             "min_ratio": "shadow_price_min_ratio",
         },
@@ -216,7 +200,6 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "slo_sec": "latency_slo_sec",
             "window_sec": "latency_window_sec",
             "min_samples": "latency_min_samples",
-            "lp_interval_sec": "latency_lp_interval_sec",
             "unprofiled_ttft_ms": "latency_unprofiled_ttft_ms",
             "hedge_mode": "latency_hedge_mode",
         },

@@ -540,16 +540,15 @@ class TestRouteWiseRouterScaffold:
 
 
 # ---------------------------------------------------------------------------
-# PD / LA-PD decision logic tests (PR-3)
+# Quota / API decision logic tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-class TestRouteWisePDDecision:
-    def test_pd_routes_to_quota_when_value_exceeds_threshold(self):
-        """When v_t >= theta_Q and quota remains, PD selects S_Q adapter."""
+class TestRouteWiseQuotaDecision:
+    def test_routes_to_quota_when_value_exceeds_threshold(self):
+        """When v_t >= theta_Q and quota remains, RouteWise selects S_Q."""
         config = RouteWiseConfig(
-            decision_rule="pd",
             daily_quota=10000,
             shadow_price_L_seed=0.0000001,
             shadow_price_U_seed=0.001,
@@ -567,11 +566,10 @@ class TestRouteWisePDDecision:
         # Selection-commit: quota consumed at selection time.
         assert router.quota_mgr.remaining < initial_remaining
 
-    def test_pd_routes_to_api_when_value_below_threshold(self):
-        """When v_t < theta_Q, PD selects the cheapest S_A adapter."""
+    def test_routes_to_api_when_value_below_threshold(self):
+        """When v_t < theta_Q, RouteWise selects the cheapest S_A adapter."""
         # Very high shadow price bounds so theta_Q >> v_t.
         config = RouteWiseConfig(
-            decision_rule="pd",
             daily_quota=10000,
             shadow_price_L_seed=1000.0,
             shadow_price_U_seed=10000.0,
@@ -587,23 +585,6 @@ class TestRouteWisePDDecision:
         assert selected is api_adapter
         # No selection-commit: quota unchanged.
         assert router.quota_mgr.remaining == initial_remaining
-
-    def test_legacy_decision_rule_does_not_change_value_estimate(self):
-        """Legacy decision_rule no longer changes point-estimate value."""
-        config = RouteWiseConfig(decision_rule="lapd", daily_quota=10000)
-        router, _quota_adapter, _api_adapter = _make_router_with_quota_and_api(config=config)
-
-        # Warm up predictor.
-        for _ in range(25):
-            router.predictor.update("test-model", 500)
-
-        v_lapd = router._estimate_value("test-model", 1000)
-
-        # Compare against pd.
-        router.config.decision_rule = "pd"
-        v_pd = router._estimate_value("test-model", 1000)
-
-        assert v_lapd == v_pd
 
     def test_no_quota_adapter_always_selects_api(self):
         """Models with only S_A adapters never route to S_Q."""
@@ -824,7 +805,6 @@ class TestRouteWiseLayer2:
         """After profile warmup, LP path is used for S_A selection."""
         config = RouteWiseConfig(
             latency_min_samples=5,
-            latency_lp_interval_sec=0.0,  # Always re-solve.
             latency_slo_sec=2.0,
         )
         router, _api_a, _api_b = _make_router_with_two_api(config)
@@ -975,7 +955,6 @@ class TestRouteWiseLayer2:
         """
         config = RouteWiseConfig(
             latency_min_samples=5,
-            latency_lp_interval_sec=0.0,  # Always re-solve.
             latency_slo_sec=2.0,
         )
 

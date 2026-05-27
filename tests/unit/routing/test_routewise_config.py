@@ -21,9 +21,6 @@ class TestRouteWiseConfigDefaults:
         assert cfg.random_seed is None
         assert cfg.reference_api_price is None
         assert cfg.stateful_tiers_single_worker_only is True
-        assert cfg.decision_rule == "pd"
-        assert cfg.predictor == "ema"
-        assert cfg.risk_quantile == 0.10
         assert cfg.daily_quota == 5000
         assert cfg.quota_monthly_fee == 20.0
         assert cfg.reset_timezone == "UTC"
@@ -33,14 +30,12 @@ class TestRouteWiseConfigDefaults:
         assert cfg.concurrency_monthly_fee == 25.0
         assert cfg.shadow_price_L_seed == 0.001
         assert cfg.shadow_price_U_seed == 0.500
-        assert cfg.shadow_price_adaptive is True
         assert cfg.shadow_price_window_hours == 24
         assert cfg.shadow_price_min_ratio == 10
         # Layer 2 defaults
         assert cfg.latency_slo_sec == 3.0
         assert cfg.latency_window_sec == 900.0
         assert cfg.latency_min_samples == 10
-        assert cfg.latency_lp_interval_sec == 60.0
         assert cfg.latency_hedge_mode == "disabled"
 
     def test_invalid_latency_hedge_mode_rejected(self):
@@ -56,35 +51,26 @@ class TestLoadFromYAML:
         """Flat keys (backward compat) still load correctly."""
         yaml_content = (
             "routewise:\n"
-            "  decision_rule: lapd\n"
             "  random_seed: 123\n"
             "  reference_api_price:\n"
             '    prompt: "1.2"\n'
             '    completion: "4.0"\n'
             "  daily_quota: 10000\n"
-            "  risk_quantile: 0.05\n"
-            "  shadow_price_adaptive: false\n"
         )
         p = tmp_path / "routewise.yaml"
         p.write_text(yaml_content)
 
         cfg = load_routewise_config(p)
-        assert cfg.decision_rule == "lapd"
         assert cfg.random_seed == 123
         assert cfg.reference_api_price == {"prompt": "1.2", "completion": "4.0"}
         assert cfg.daily_quota == 10000
-        assert cfg.risk_quantile == 0.05
-        assert cfg.shadow_price_adaptive is False
         # Defaults still apply for omitted keys
-        assert cfg.predictor == "ema"
         assert cfg.concurrency_enabled is False
 
     def test_load_nested_adr_yaml(self, tmp_path: Path):
         """Nested ADR structure (quota/concurrency/shadow_price) is flattened."""
         yaml_content = (
             "routewise:\n"
-            "  decision_rule: lapd\n"
-            "  predictor: histogram\n"
             "  quota:\n"
             "    daily_quota: 8000\n"
             "    monthly_fee: 30.0\n"
@@ -97,7 +83,6 @@ class TestLoadFromYAML:
             "  shadow_price:\n"
             "    L_seed: 0.01\n"
             "    U_seed: 1.0\n"
-            "    adaptive: false\n"
             "    window_hours: 48\n"
             "    min_ratio: 20\n"
         )
@@ -105,8 +90,6 @@ class TestLoadFromYAML:
         p.write_text(yaml_content)
 
         cfg = load_routewise_config(p)
-        assert cfg.decision_rule == "lapd"
-        assert cfg.predictor == "histogram"
         # Quota section
         assert cfg.daily_quota == 8000
         assert cfg.quota_monthly_fee == 30.0
@@ -119,7 +102,6 @@ class TestLoadFromYAML:
         # Shadow price section
         assert cfg.shadow_price_L_seed == 0.01
         assert cfg.shadow_price_U_seed == 1.0
-        assert cfg.shadow_price_adaptive is False
         assert cfg.shadow_price_window_hours == 48
         assert cfg.shadow_price_min_ratio == 20
 
@@ -163,12 +145,12 @@ class TestLoadFromYAML:
 
     def test_unknown_top_level_key_warns(self, tmp_path: Path, caplog):
         """Unrecognized top-level keys emit a warning."""
-        yaml_content = "routewise:\n  decision_rule: pd\n  unknown_future_key: 42\n"
+        yaml_content = "routewise:\n  random_seed: 7\n  unknown_future_key: 42\n"
         p = tmp_path / "routewise.yaml"
         p.write_text(yaml_content)
 
         cfg = load_routewise_config(p)
-        assert cfg.decision_rule == "pd"
+        assert cfg.random_seed == 7
         assert not hasattr(cfg, "unknown_future_key")
         assert "unrecognized key 'unknown_future_key'" in caplog.text
 
@@ -190,7 +172,6 @@ class TestLoadFromYAML:
             "    slo_sec: 5.0\n"
             "    window_sec: 600.0\n"
             "    min_samples: 20\n"
-            "    lp_interval_sec: 30.0\n"
             "    hedge_mode: disabled\n"
         )
         p = tmp_path / "routewise.yaml"
@@ -200,7 +181,6 @@ class TestLoadFromYAML:
         assert cfg.latency_slo_sec == 5.0
         assert cfg.latency_window_sec == 600.0
         assert cfg.latency_min_samples == 20
-        assert cfg.latency_lp_interval_sec == 30.0
         assert cfg.latency_hedge_mode == "disabled"
 
     def test_load_invalid_latency_hedge_mode_raises(self, tmp_path: Path):
