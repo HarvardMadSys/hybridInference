@@ -5,7 +5,7 @@ import Link from 'next/link';
 import Script from 'next/script';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { signupSchema, SignupFormData } from '@/lib/schemas/auth';
+import { buildCombinedUseCase, signupSchema, SignupFormData } from '@/lib/schemas/auth';
 import { signup, SignupResponse } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
@@ -56,14 +56,7 @@ export default function SignupPage() {
     }
 
     try {
-      const discoverySource = data.discoverySource?.trim();
-      const useCase = data.useCase?.trim();
-      const combinedUseCase = [
-        useCase,
-        discoverySource ? `How did you find freeinference.org? ${discoverySource}` : undefined,
-      ]
-        .filter(Boolean)
-        .join('\n\n');
+      const combinedUseCase = buildCombinedUseCase(data.useCase, data.discoverySource);
 
       const result = await signup({
         email: data.email,
