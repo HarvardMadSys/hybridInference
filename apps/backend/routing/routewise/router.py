@@ -361,7 +361,10 @@ class RouteWiseRouter(BaseRouter):
         return float(pricing.get("prompt", "0")), float(pricing.get("completion", "0"))
 
     def _classify_all(self) -> None:
-        for model_id, route_cfg in self.fixed_router.routes.items():
+        for route_key, route_cfg in self.fixed_router.routes.items():
+            model_id = getattr(route_cfg, "canonical_model_id", None) or route_key
+            if model_id in self.route_candidates:
+                continue
             candidates = build_provider_candidates(model_id, route_cfg.adapters)
             self.route_candidates[model_id] = candidates
             self.classified[model_id] = [
@@ -379,6 +382,10 @@ class RouteWiseRouter(BaseRouter):
                         model_id,
                         sorted(pools),
                     )
+
+    def _canonical_model_id(self, model_id: str) -> str:
+        route_cfg = getattr(self.fixed_router, "routes", {}).get(model_id)
+        return getattr(route_cfg, "canonical_model_id", None) or model_id
 
     def _validate_routes(self) -> None:
         has_stateful_tier = False
@@ -424,6 +431,7 @@ class RouteWiseRouter(BaseRouter):
         return CandidatePricing.from_raw(raw, context="reference_api_price")
 
     def _routewise_pool(self, model_id: str) -> str:
+        model_id = self._canonical_model_id(model_id)
         return self._model_routewise_pools.get(model_id, model_id)
 
     def _quota_sources(self) -> list[QuotaSource]:
@@ -467,6 +475,7 @@ class RouteWiseRouter(BaseRouter):
         prompt_tokens: int,
         context: dict[str, Any],
     ) -> BucketMeanPrediction:
+        model_id = self._canonical_model_id(model_id)
         return self.predictor.predict(
             model_id,
             prompt_tokens,
@@ -517,6 +526,7 @@ class RouteWiseRouter(BaseRouter):
         prompt_tokens: int,
         output_tokens: float,
     ) -> float | None:
+        model_id = self._canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id, [])
         costs = [
             self._api_cost_for_pricing(
@@ -553,6 +563,7 @@ class RouteWiseRouter(BaseRouter):
 
     def _estimate_value(self, model_id: str, prompt_tokens: int) -> float:
         """Compatibility helper: cheapest cold-cache API cost for one request."""
+        model_id = self._canonical_model_id(model_id)
         prediction = self.predictor.predict(model_id, prompt_tokens)
         cost = self._reference_api_cost(
             model_id,
@@ -570,6 +581,7 @@ class RouteWiseRouter(BaseRouter):
         envelope: CostEnvelopeSnapshot,
         now: float,
     ) -> list[FeasibleProviderCandidate]:
+        model_id = self._canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id)
         if entries is None:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
@@ -1034,6 +1046,7 @@ class RouteWiseRouter(BaseRouter):
         self._on_failure(provider, reason=reason)
 
     def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
+        model_id = self._canonical_model_id(model_id)
         if model_id not in self.classified:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
 
@@ -1128,6 +1141,7 @@ class RouteWiseRouter(BaseRouter):
         model_id: str,
         failed_adapter: BaseAdapter,
     ) -> list[BaseAdapter]:
+        model_id = self._canonical_model_id(model_id)
         entries = self.classified.get(model_id, [])
         return [
             a for a, _w, sub in entries if a is not failed_adapter and sub is SubscriptionType.API
@@ -1135,8 +1149,9 @@ class RouteWiseRouter(BaseRouter):
 
     def record_observation(self, obs: RoutingObservation) -> None:
         """Update output predictor, latency profile, and L/U envelope."""
+        model_id = self._canonical_model_id(obs.model_id)
         if obs.completion_tokens > 0:
-            self.predictor.update(obs.model_id, obs.prompt_tokens, obs.completion_tokens)
+            self.predictor.update(model_id, obs.prompt_tokens, obs.completion_tokens)
 
         if obs.endpoint_id and obs.endpoint_id in self._latency_profiles:
             now = time.time()
@@ -1152,16 +1167,16 @@ class RouteWiseRouter(BaseRouter):
 
         if obs.prompt_tokens > 0 and obs.completion_tokens > 0:
             sample_cost = self._reference_api_cost(
-                obs.model_id,
+                model_id,
                 prompt_tokens=obs.prompt_tokens,
                 output_tokens=obs.completion_tokens,
             )
             if sample_cost is not None:
-                self.envelope.observe(self._routewise_pool(obs.model_id), sample_cost)
+                self.envelope.observe(self._routewise_pool(model_id), sample_cost)
 
         logger.debug(
             "RouteWise observation: model=%s endpoint=%s completion_tokens=%d success=%s",
-            obs.model_id,
+            model_id,
             obs.endpoint_id,
             obs.completion_tokens,
             obs.success,

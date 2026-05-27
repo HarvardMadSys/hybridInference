@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from routing.routers import RoutingObservation
+from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.candidates import QuotaSource
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import HedgedAdapter
@@ -133,6 +133,44 @@ class TestRouteWiseRouterScaffold:
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         selected = router._select_adapter("test-model", {})
         assert selected is adapter
+
+    def test_alias_routes_use_canonical_routewise_state(self):
+        """Alias requests must share RouteWise per-model state with canonical requests."""
+        adapter = _make_adapter(
+            model_id="minimax-m2.5",
+            endpoint_id="minimax-m2.5:api-a",
+        )
+        fr = FixedRouter()
+        fr.register_route("minimax-m2.5", [(adapter, 1.0)], aliases=["MiniMax-M2.5"])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        assert sorted(router.classified) == ["minimax-m2.5"]
+        assert "MiniMax-M2.5" not in router.route_candidates
+        assert router._routewise_pool("MiniMax-M2.5") == "minimax-m2.5"
+
+        selected = router._select_adapter("MiniMax-M2.5", {"prompt_tokens": 1000})
+        assert selected is adapter
+        assert "minimax-m2.5" in router._last_lp_statuses
+        assert "MiniMax-M2.5" not in router._last_lp_statuses
+
+        router.record_observation(
+            RoutingObservation(
+                model_id="MiniMax-M2.5",
+                endpoint_id="minimax-m2.5:api-a",
+                ttft_ms=None,
+                total_latency_ms=500.0,
+                token_count=600,
+                prompt_tokens=100,
+                completion_tokens=500,
+                success=True,
+                quota_committed=0.0,
+            )
+        )
+
+        assert "minimax-m2.5" in router.predictor._model_states
+        assert "MiniMax-M2.5" not in router.predictor._model_states
+        assert "minimax-m2.5" in router.envelope._samples
+        assert "MiniMax-M2.5" not in router.envelope._samples
 
     def test_unregistered_model_raises(self):
         """Requesting an unknown model raises ValueError."""
