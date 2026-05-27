@@ -446,7 +446,6 @@ class TestRouteWiseRouterScaffold:
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         router._pending_decisions["req-1"] = {"decision": "quota"}
-        router._pending_lp_solves.add("test-model")
 
         replacement = _FakeFixedRouter()
         replacement.add("test-model", [(adapter, 1.0)])
@@ -455,7 +454,6 @@ class TestRouteWiseRouterScaffold:
 
         assert router.fixed_router is replacement
         assert router._pending_decisions == {}
-        assert router._pending_lp_solves == set()
 
     def test_concurrency_adapter_skipped_when_disabled(self):
         """S_C adapter is not selected when concurrency_enabled=False."""

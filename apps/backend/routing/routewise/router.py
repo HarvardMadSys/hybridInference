@@ -206,7 +206,6 @@ class RouteWiseRouter(BaseRouter):
         # Last LP state retained for tests and diagnostics.
         self._last_lp_statuses: dict[str, str] = {}
         self._last_lp_weights: dict[str, dict[str, float]] = {}
-        self._pending_lp_solves: set[str] = set()
 
         if self.fixed_router is not None:
             self._rebuild_from_fixed_router()
@@ -222,7 +221,6 @@ class RouteWiseRouter(BaseRouter):
         self._primary_reservations = {}
         self._last_lp_statuses = {}
         self._last_lp_weights = {}
-        self._pending_lp_solves = set()
         self._rebuild_from_fixed_router()
 
     def _rebuild_from_fixed_router(self) -> None:
