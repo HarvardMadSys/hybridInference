@@ -461,6 +461,20 @@ class PostgresOperationalStore(OperationalStore):
             )
         """)
 
+        # Migrate legacy 'trial' visibility overrides to 'free'. Trial was
+        # removed from VALID_ROLES, so an override left at 'trial' would be
+        # treated as invalid and fail closed to admin, hiding the model.
+        tag = await conn.execute(
+            "UPDATE model_visibility_overrides SET required_role = 'free' "
+            "WHERE required_role = 'trial'"
+        )
+        migrated_overrides = _parse_command_tag_count(tag)
+        if migrated_overrides:
+            logger.info(
+                "Migrated %d model visibility overrides from trial to free.",
+                migrated_overrides,
+            )
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS model_concurrency_exemptions (
                 model_id TEXT PRIMARY KEY,
