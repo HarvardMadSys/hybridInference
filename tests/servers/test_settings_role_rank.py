@@ -13,12 +13,7 @@ def test_role_rank_contains_supported_roles():
 
 def test_role_rank_ordering_is_strictly_ascending():
     # free < pro < internal < admin
-    assert (
-        ROLE_RANK["free"]
-        < ROLE_RANK["pro"]
-        < ROLE_RANK["internal"]
-        < ROLE_RANK["admin"]
-    )
+    assert ROLE_RANK["free"] < ROLE_RANK["pro"] < ROLE_RANK["internal"] < ROLE_RANK["admin"]
 
 
 def test_valid_roles_matches_role_rank():
