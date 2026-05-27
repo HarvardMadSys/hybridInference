@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import time
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 # Helpers
 # ---------------------------------------------------------------------------
 
+_ADAPTER_COUNTER = itertools.count()
+
 
 def _make_model_config(
     model_id: str = "test-model",
@@ -38,7 +41,7 @@ def _make_model_config(
     cfg.id = model_id
     cfg.provider = provider
     cfg.subscription_type = subscription_type
-    cfg.endpoint_id = endpoint_id or f"{model_id}:{provider}"
+    cfg.endpoint_id = endpoint_id or f"{model_id}:{provider}:{next(_ADAPTER_COUNTER)}"
     # Concrete (JSON-serializable) base_url so the synthetic _routing chunk
     # emitted by FixedRouter.stream_chat_completion can be json.dumps()'d.
     cfg.base_url = f"https://{provider}.example/v1"
@@ -115,6 +118,34 @@ def _make_router_with_quota_and_api(
     fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
     router = RouteWiseRouter(fixed_router=fr, config=config)
     return router, quota_adapter, api_adapter
+
+
+def _warm_envelope(
+    router: RouteWiseRouter,
+    *,
+    lower: float,
+    upper: float,
+    model_id: str = "test-model",
+    n: int = 50,
+) -> None:
+    """Pre-populate the cost envelope so its P10/P90 ≈ (lower, upper).
+
+    Tests previously injected a deterministic envelope by setting
+    ``shadow_price_L_seed`` / ``shadow_price_U_seed`` on ``RouteWiseConfig``,
+    relying on the now-removed seed fallback in ``CostEnvelopeEstimator``.
+    With the seed path gone, deterministic envelopes are constructed by
+    feeding observations directly: ``n // 2`` samples at ``lower`` and
+    ``n // 2`` at ``upper`` produce P10 = lower and P90 = upper for the
+    default 10 / 90 percentiles.
+    """
+
+    pool = router._routewise_pool(model_id)
+    half = max(n // 2, 1)
+    base_ts = time.time() - 1.0
+    for _ in range(half):
+        router.envelope.observe(pool, lower, now=base_ts)
+    for _ in range(half):
+        router.envelope.observe(pool, upper, now=base_ts)
 
 
 # ---------------------------------------------------------------------------
@@ -392,11 +423,9 @@ class TestRouteWiseRouterScaffold:
                 )
             ]
 
-        config = RouteWiseConfig(
-            shadow_price_L_seed=0.0000001,
-            shadow_price_U_seed=0.001,
-        )
+        config = RouteWiseConfig()
         router = RouteWiseRouter(fixed_router=fr, config=config)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
         router.quota_snapshots = ProviderQuotaSnapshotStore(fetchers={"chutes": fake_fetch_chutes})
         await router.refresh_quota_snapshots_once()
 
@@ -548,14 +577,11 @@ class TestRouteWiseRouterScaffold:
 class TestRouteWiseQuotaDecision:
     def test_routes_to_quota_when_value_exceeds_threshold(self):
         """When v_t >= theta_Q and quota remains, RouteWise selects S_Q."""
-        config = RouteWiseConfig(
-            daily_quota=10000,
-            shadow_price_L_seed=0.0000001,
-            shadow_price_U_seed=0.001,
-        )
+        config = RouteWiseConfig(daily_quota=10000)
         router, quota_adapter, _api_adapter = _make_router_with_quota_and_api(
             config=config, prompt_price="3.0", completion_price="15.0"
         )
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
         # Warm the predictor so v_t is meaningful.
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -569,14 +595,11 @@ class TestRouteWiseQuotaDecision:
     def test_routes_to_api_when_value_below_threshold(self):
         """When v_t < theta_Q, RouteWise selects the cheapest S_A adapter."""
         # Very high shadow price bounds so theta_Q >> v_t.
-        config = RouteWiseConfig(
-            daily_quota=10000,
-            shadow_price_L_seed=1000.0,
-            shadow_price_U_seed=10000.0,
-        )
+        config = RouteWiseConfig(daily_quota=10000)
         router, _quota_adapter, api_adapter = _make_router_with_quota_and_api(
             config=config, prompt_price="3.0", completion_price="15.0"
         )
+        _warm_envelope(router, lower=1000.0, upper=10000.0)
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
@@ -600,12 +623,9 @@ class TestRouteWiseQuotaDecision:
 
     def test_quota_exhausted_routes_to_api(self):
         """When quota is exhausted, PD routes to S_A even if value is high."""
-        config = RouteWiseConfig(
-            daily_quota=100,
-            shadow_price_L_seed=0.0000001,
-            shadow_price_U_seed=0.001,
-        )
+        config = RouteWiseConfig(daily_quota=100)
         router, _quota_adapter, api_adapter = _make_router_with_quota_and_api(config=config)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
@@ -631,12 +651,9 @@ class TestRouteWiseQuotaDecision:
 
     def test_prompt_tokens_estimated_from_messages(self):
         """When prompt_tokens is absent, tokens are estimated from messages."""
-        config = RouteWiseConfig(
-            daily_quota=10000,
-            shadow_price_L_seed=0.0000001,
-            shadow_price_U_seed=0.001,
-        )
+        config = RouteWiseConfig(daily_quota=10000)
         router, quota_adapter, _api_adapter = _make_router_with_quota_and_api(config=config)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
@@ -655,12 +672,9 @@ class TestRouteWiseQuotaDecision:
 
     def test_selection_commit_consumes_quota_at_selection(self):
         """Quota is consumed at selection time, not deferred to observation."""
-        config = RouteWiseConfig(
-            daily_quota=10000,
-            shadow_price_L_seed=0.0000001,
-            shadow_price_U_seed=0.001,
-        )
+        config = RouteWiseConfig(daily_quota=10000)
         router, quota_adapter, _api_adapter = _make_router_with_quota_and_api(config=config)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
@@ -1136,8 +1150,6 @@ def _make_router_three_tier(
             concurrency_enabled=True,
             concurrency_limit=4,
             daily_quota=5000,
-            shadow_price_L_seed=0.001,
-            shadow_price_U_seed=0.500,
         )
     conc_adapter = _make_adapter(
         subscription_type="concurrency",
@@ -1209,10 +1221,9 @@ class TestRouteWiseSCDecision:
             concurrency_enabled=True,
             concurrency_limit=4,
             daily_quota=5000,
-            shadow_price_L_seed=0.001,
-            shadow_price_U_seed=0.500,
         )
         router, conc_adapter, _quota_adapter, _api_adapter = _make_router_three_tier(config=config)
+        _warm_envelope(router, lower=0.001, upper=0.500)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1241,10 +1252,9 @@ class TestRouteWiseSCDecision:
             concurrency_enabled=True,
             concurrency_limit=1,
             daily_quota=5000,
-            shadow_price_L_seed=0.0000001,
-            shadow_price_U_seed=0.001,
         )
         router, _conc_adapter, quota_adapter, _api_adapter = _make_router_three_tier(config=config)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1261,10 +1271,9 @@ class TestRouteWiseSCDecision:
             concurrency_enabled=True,
             concurrency_limit=1,
             daily_quota=100,
-            shadow_price_L_seed=0.0000001,
-            shadow_price_U_seed=0.001,
         )
         router, _conc_adapter, _quota_adapter, api_adapter = _make_router_three_tier(config=config)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1284,10 +1293,9 @@ class TestRouteWiseSCDecision:
             concurrency_enabled=True,
             concurrency_limit=1,
             daily_quota=1,
-            shadow_price_L_seed=0.0000001,
-            shadow_price_U_seed=0.001,
         )
         router, conc_adapter, quota_adapter, api_adapter = _make_router_three_tier(config=config)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1310,12 +1318,11 @@ class TestRouteWiseSCDecision:
             concurrency_enabled=True,
             concurrency_limit=4,
             daily_quota=5000,
-            shadow_price_L_seed=0.001,
-            shadow_price_U_seed=0.500,
         )
         router, _conc_adapter, _quota_adapter, api_adapter = _make_router_three_tier(
             config=config
         )
+        _warm_envelope(router, lower=0.001, upper=0.500)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1516,11 +1523,10 @@ class TestRouteWiseSCLifecycle:
             concurrency_enabled=True,
             concurrency_limit=4,
             daily_quota=5000,
-            shadow_price_L_seed=0.0000001,
-            shadow_price_U_seed=0.001,
         )
         # Need a router with S_Q + S_C + S_A.
         router, _conc_adapter, quota_adapter, _api_adapter = _make_router_three_tier(config=config)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -1791,6 +1797,15 @@ class TestRouteWiseDecisionMetadata:
         assert meta["backup_provider"] is None
         assert meta["backup_tier"] is None
         assert meta["hedge_winner"] is None
+        assert meta["primary_routing_estimated_cost_usd"] == pytest.approx(
+            meta["selected_effective_cost_usd"]
+            if meta["selected_tier"] == "api"
+            else meta["candidate_request_costs_usd"][meta["selected_endpoint"]]
+        )
+        assert meta["backup_routing_estimated_cost_usd"] is None
+        assert meta["routing_estimated_cost_usd"] == pytest.approx(
+            meta["primary_routing_estimated_cost_usd"]
+        )
         # lp_weights / lp_status already use canonical names.
         assert "lp_weights" in meta
         assert "lp_status" in meta
@@ -1814,9 +1829,10 @@ class TestRouteWiseDecisionMetadata:
 
     def test_sa_decision_stores_metadata(self):
         """S_A selection stores metadata with selected_tier='api'."""
-        # Make quota too expensive by setting high shadow price seed.
-        config = RouteWiseConfig(daily_quota=1000, shadow_price_L_seed=1000.0)
+        # Make quota too expensive by warming the envelope above any API cost.
+        config = RouteWiseConfig(daily_quota=1000)
         router, _quota, api = _make_router_with_quota_and_api(config=config)
+        _warm_envelope(router, lower=1000.0, upper=10000.0)
         request_id = "req-test-sa"
         context = {"request_id": request_id}
 
@@ -2109,8 +2125,9 @@ class TestRouteWiseDecisionMetadata:
             assert meta_sq["v_t"] > 0  # v_t is separate
 
         # S_A path
-        config_sa = RouteWiseConfig(shadow_price_L_seed=1000.0)
+        config_sa = RouteWiseConfig()
         router3, _quota3, _api3 = _make_router_with_quota_and_api(config=config_sa)
+        _warm_envelope(router3, lower=1000.0, upper=10000.0)
         router3._select_adapter("test-model", {"request_id": "req-sa-qc"})
         meta_sa = router3._pending_decisions.get("req-sa-qc")
         if meta_sa:
