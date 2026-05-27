@@ -40,12 +40,11 @@ routewise:
     limit: 8                      # max concurrent requests
     monthly_fee: 25.0
 
-  # --- Shadow price search bounds ---
-  shadow_price:
-    L_seed: 0.001                 # initial lower bound (USD)
-    U_seed: 0.500                 # initial upper bound (USD)
-    window_hours: 24              # sliding window for L/U adaptation
-    min_ratio: 10                 # floor for U/L to prevent degenerate thresholds
+  # --- Cost envelope (quota shadow-price calibration) ---
+  envelope:
+    window_hours: 24              # rolling window for observed P10 / P90
+    lower_percentile: 10          # L bound
+    upper_percentile: 90          # U bound
 
   # --- Latency-aware routing ---
   latency:

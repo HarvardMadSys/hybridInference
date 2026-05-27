@@ -1,8 +1,10 @@
 """RouteWise workload cost-envelope estimator.
 
-``L`` and ``U`` are request-cost scale estimates used by the quota shadow
-price curve.  They are calibrated on the same cold-cache route-time cost
-assumption used by the first production RouteWise body router.
+``L`` and ``U`` are workload-level request-cost percentiles used by the quota
+shadow-price curve. They must be calibrated from real observations: a snapshot
+is only returned once the pool has accumulated samples. There is intentionally
+no seed fallback because operating on a fabricated envelope would violate the
+paper's assumption that ``[L, U]`` is derived from the workload itself.
 """
 
 from __future__ import annotations
@@ -10,6 +12,10 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+
+
+class EnvelopeNotCalibratedError(RuntimeError):
+    """Raised when RouteWise refuses to operate without a calibrated envelope."""
 
 
 def _percentile(values: list[float], p: float) -> float:
@@ -32,20 +38,15 @@ class CostEnvelopeSnapshot:
     lower: float
     upper: float
     sample_count: int
-    source: str
 
 
 @dataclass
 class CostEnvelopeEstimator:
     """Sliding-window percentile estimator for workload request costs."""
 
-    lower_seed: float = 0.001
-    upper_seed: float = 0.500
     lower_percentile: float = 10.0
     upper_percentile: float = 90.0
     window_sec: float = 24 * 3600.0
-    min_samples: int = 20
-    min_ratio: float = 10.0
     _samples: dict[str, deque[tuple[float, float]]] = field(
         default_factory=lambda: defaultdict(deque)
     )
@@ -59,27 +60,19 @@ class CostEnvelopeEstimator:
         samples.append((ts, float(cost_usd)))
         self._prune(pool, ts)
 
-    def snapshot(self, pool: str, *, now: float | None = None) -> CostEnvelopeSnapshot:
-        """Return current ``L/U`` for *pool*."""
+    def snapshot(self, pool: str, *, now: float | None = None) -> CostEnvelopeSnapshot | None:
+        """Return current ``L/U`` for *pool*, or ``None`` if uncalibrated."""
         ts = time.time() if now is None else now
         self._prune(pool, ts)
         values = [cost for _t, cost in self._samples.get(pool, ())]
-        if len(values) < self.min_samples:
-            return CostEnvelopeSnapshot(
-                lower=max(float(self.lower_seed), 1e-12),
-                upper=max(float(self.upper_seed), float(self.lower_seed), 1e-12),
-                sample_count=len(values),
-                source="seed",
-            )
+        if not values:
+            return None
         lower = max(_percentile(values, self.lower_percentile), 1e-12)
         upper = max(_percentile(values, self.upper_percentile), lower)
-        if self.min_ratio > 1.0:
-            upper = max(upper, lower * self.min_ratio)
         return CostEnvelopeSnapshot(
             lower=lower,
             upper=upper,
             sample_count=len(values),
-            source="observed",
         )
 
     def _prune(self, pool: str, now: float) -> None:

@@ -57,7 +57,11 @@ from .candidates import (
 )
 from .concurrency import ConcurrencyManager
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
-from .envelope import CostEnvelopeEstimator, CostEnvelopeSnapshot
+from .envelope import (
+    CostEnvelopeEstimator,
+    CostEnvelopeSnapshot,
+    EnvelopeNotCalibratedError,
+)
 from .hedging import HedgedAdapter
 from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
@@ -200,13 +204,9 @@ class RouteWiseRouter(BaseRouter):
             min_global_samples=self.config.output_min_global_samples,
         )
         self.envelope = CostEnvelopeEstimator(
-            lower_seed=self.config.shadow_price_L_seed,
-            upper_seed=self.config.shadow_price_U_seed,
             lower_percentile=self.config.envelope_lower_percentile,
             upper_percentile=self.config.envelope_upper_percentile,
             window_sec=self.config.shadow_price_window_hours * 3600.0,
-            min_samples=self.config.envelope_min_samples,
-            min_ratio=float(self.config.shadow_price_min_ratio),
         )
         self.quota_mgr = QuotaManager(config)
         self.quota_snapshots = ProviderQuotaSnapshotStore()
@@ -265,7 +265,15 @@ class RouteWiseRouter(BaseRouter):
         self._validate_routes()
 
     async def start(self) -> None:
-        """Start periodic maintenance tasks."""
+        """Start periodic maintenance tasks.
+
+        Validates that any quota-bearing pool has a calibrated envelope before
+        any background tasks are scheduled; an uncalibrated envelope raises
+        :class:`EnvelopeNotCalibratedError`, which the server bootstrap path
+        propagates so deployment fails fast instead of silently routing on
+        fabricated shadow prices.
+        """
+        self._validate_envelope_calibration()
         if self._sweep_task is None or self._sweep_task.done():
             self._sweep_task = asyncio.create_task(
                 self._sweep_pending_decisions_loop(),
@@ -424,6 +432,36 @@ class RouteWiseRouter(BaseRouter):
                 "quota and concurrency limits will be per-worker.",
                 worker_count,
             )
+
+    def _validate_envelope_calibration(self) -> None:
+        """Refuse to operate if any quota-bearing pool has an uncalibrated envelope.
+
+        The RouteWise paper requires the quota shadow price to be parameterized
+        by a workload-derived ``[L, U]``; there is no seed fallback. Pools that
+        contain at least one quota provider must therefore have a non-empty
+        envelope before requests are served. Pure API or pure concurrency
+        models are unaffected.
+        """
+
+        uncalibrated: list[tuple[str, str]] = []
+        for model_id, candidates in self.route_candidates.items():
+            if not any(
+                candidate.subscription_type is SubscriptionType.QUOTA
+                for candidate in candidates
+            ):
+                continue
+            pool = self._routewise_pool(model_id)
+            if self.envelope.snapshot(pool) is None:
+                uncalibrated.append((pool, model_id))
+        if not uncalibrated:
+            return
+        details = "\n".join(f"  - pool='{p}', model='{m}'" for p, m in uncalibrated)
+        raise EnvelopeNotCalibratedError(
+            "RouteWise refuses to start: cost envelope is uncalibrated for "
+            "quota-bearing pools. The quota shadow price requires a workload-"
+            "derived [L, U]; ensure DB bootstrap succeeds or remove quota "
+            "providers from these models.\n" + details
+        )
 
     @staticmethod
     def _parse_reference_api_price(raw: dict[str, Any] | None) -> CandidatePricing | None:
@@ -585,7 +623,7 @@ class RouteWiseRouter(BaseRouter):
         *,
         prompt_tokens: int,
         predicted_output_tokens: float,
-        envelope: CostEnvelopeSnapshot,
+        envelope: CostEnvelopeSnapshot | None,
         now: float,
     ) -> list[FeasibleProviderCandidate]:
         model_id = self._canonical_model_id(model_id)
@@ -615,6 +653,16 @@ class RouteWiseRouter(BaseRouter):
                 cost = request_cost
                 reason = "cold_api_cost"
             elif route_candidate.subscription_type is SubscriptionType.QUOTA:
+                if envelope is None:
+                    # No calibrated envelope: skip quota tier rather than
+                    # invent a shadow price. Startup validation should
+                    # normally have caught this before we got here.
+                    logger.warning(
+                        "Skipping quota provider %s for model %s: envelope uncalibrated",
+                        endpoint_id,
+                        model_id,
+                    )
+                    continue
                 quota_source = route_candidate.quota_source
                 if quota_source is not None:
                     snapshot = self.quota_snapshots.get(quota_source)
@@ -763,7 +811,7 @@ class RouteWiseRouter(BaseRouter):
         request_id: str | None,
         prompt_tokens: int,
         prediction: BucketMeanPrediction,
-        envelope: CostEnvelopeSnapshot,
+        envelope: CostEnvelopeSnapshot | None,
         candidates: list[FeasibleProviderCandidate],
         solution: LPSolution,
         selected: FeasibleProviderCandidate,
@@ -815,10 +863,11 @@ class RouteWiseRouter(BaseRouter):
             "cache_assumption": "cold",
             "estimated_cached_input_tokens": 0,
             "stateful_tiers_single_worker_only": self.config.stateful_tiers_single_worker_only,
-            "L": envelope.lower,
-            "U": envelope.upper,
-            "envelope_source": envelope.source,
-            "envelope_sample_count": envelope.sample_count,
+            "L": envelope.lower if envelope is not None else None,
+            "U": envelope.upper if envelope is not None else None,
+            "envelope_sample_count": (
+                envelope.sample_count if envelope is not None else 0
+            ),
             "quota_source": (
                 {
                     "provider": selected.quota_source.provider,
@@ -893,7 +942,7 @@ class RouteWiseRouter(BaseRouter):
         request_id: str | None,
         prompt_tokens: int,
         predicted_output_tokens: float,
-        envelope: CostEnvelopeSnapshot,
+        envelope: CostEnvelopeSnapshot | None,
         selected: FeasibleProviderCandidate,
         checkpoints_sec: tuple[float, ...],
         elapsed_sec: float,
@@ -921,7 +970,7 @@ class RouteWiseRouter(BaseRouter):
         request_id: str | None,
         prompt_tokens: int,
         predicted_output_tokens: float,
-        envelope: CostEnvelopeSnapshot,
+        envelope: CostEnvelopeSnapshot | None,
         selected: FeasibleProviderCandidate,
         checkpoints_sec: tuple[float, ...],
         elapsed_sec: float,

@@ -52,14 +52,10 @@ class RouteWiseParams(BaseModel):
     concurrency_limit: int = 8
     concurrency_monthly_fee: float = 25.0
 
-    # Shadow price bounds
-    shadow_price_L_seed: float = 0.001
-    shadow_price_U_seed: float = 0.500
+    # Envelope (workload cost percentile) parameters
     shadow_price_window_hours: int = 24
-    shadow_price_min_ratio: int = 10
     envelope_lower_percentile: float = 10.0
     envelope_upper_percentile: float = 90.0
-    envelope_min_samples: int = 20
 
     # Layer 2: latency-aware provider selection
     latency_slo_sec: float = 3.0

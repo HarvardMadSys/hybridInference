@@ -30,10 +30,9 @@ class TestRouteWiseConfigDefaults:
         assert cfg.concurrency_enabled is False
         assert cfg.concurrency_limit == 8
         assert cfg.concurrency_monthly_fee == 25.0
-        assert cfg.shadow_price_L_seed == 0.001
-        assert cfg.shadow_price_U_seed == 0.500
         assert cfg.shadow_price_window_hours == 24
-        assert cfg.shadow_price_min_ratio == 10
+        assert cfg.envelope_lower_percentile == 10.0
+        assert cfg.envelope_upper_percentile == 90.0
         # Layer 2 defaults
         assert cfg.latency_slo_sec == 3.0
         assert cfg.latency_window_sec == 900.0
@@ -86,7 +85,7 @@ class TestLoadFromYAML:
         assert cfg.db_bootstrap_max_rows == 123
 
     def test_load_nested_adr_yaml(self, tmp_path: Path):
-        """Nested ADR structure (quota/concurrency/shadow_price) is flattened."""
+        """Nested ADR structure (quota/concurrency/envelope) is flattened."""
         yaml_content = (
             "routewise:\n"
             "  quota:\n"
@@ -98,11 +97,10 @@ class TestLoadFromYAML:
             "    enabled: true\n"
             "    limit: 16\n"
             "    monthly_fee: 50.0\n"
-            "  shadow_price:\n"
-            "    L_seed: 0.01\n"
-            "    U_seed: 1.0\n"
+            "  envelope:\n"
             "    window_hours: 48\n"
-            "    min_ratio: 20\n"
+            "    lower_percentile: 5\n"
+            "    upper_percentile: 95\n"
         )
         p = tmp_path / "routewise.yaml"
         p.write_text(yaml_content)
@@ -117,11 +115,10 @@ class TestLoadFromYAML:
         assert cfg.concurrency_enabled is True
         assert cfg.concurrency_limit == 16
         assert cfg.concurrency_monthly_fee == 50.0
-        # Shadow price section
-        assert cfg.shadow_price_L_seed == 0.01
-        assert cfg.shadow_price_U_seed == 1.0
+        # Envelope section
         assert cfg.shadow_price_window_hours == 48
-        assert cfg.shadow_price_min_ratio == 20
+        assert cfg.envelope_lower_percentile == 5
+        assert cfg.envelope_upper_percentile == 95
 
     def test_load_missing_file_uses_defaults(self, tmp_path: Path):
         missing = tmp_path / "does_not_exist.yaml"

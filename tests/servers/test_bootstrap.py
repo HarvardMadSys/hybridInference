@@ -346,6 +346,49 @@ class TestBootstrapInitialization:
             include_envelope=False,
         )
 
+    @pytest.mark.asyncio
+    async def test_envelope_not_calibrated_aborts_initialization(self, mock_env):
+        """An uncalibrated quota envelope must fail boot, not silently start."""
+        from routing.routewise.envelope import EnvelopeNotCalibratedError
+
+        mock_routewise = MagicMock()
+        mock_routewise.start = AsyncMock(
+            side_effect=EnvelopeNotCalibratedError("envelope is uncalibrated")
+        )
+
+        info = MagicMock()
+        info.model_id = "m"
+        info.aliases = []
+        info.router = "routewise"
+        info.strategy = None
+        info.router_params = None
+
+        registry_instance = MagicMock()
+        registry_instance.bind_fixed_router = MagicMock()
+        registry_instance.get_router = MagicMock(return_value=mock_routewise)
+        from routing.routewise.router import RouteWiseRouter as _RWR
+
+        mock_routewise.__class__ = _RWR
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [info])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch(
+                "serving.servers.bootstrap.ModelRouterRegistry",
+                return_value=registry_instance,
+            ),
+            patch(
+                "serving.servers.bootstrap._bootstrap_routewise_from_logs",
+                new=AsyncMock(),
+            ),
+            pytest.raises(EnvelopeNotCalibratedError, match="uncalibrated"),
+        ):
+            await bootstrap.initialize()
+
 
 class TestBootstrapShutdown:
     """Test bootstrap shutdown functionality."""

@@ -16,8 +16,6 @@ def _make_config(**overrides) -> RouteWiseConfig:
     """Create a RouteWiseConfig with optional overrides."""
     defaults = {
         "daily_quota": 1000,
-        "shadow_price_L_seed": 0.001,
-        "shadow_price_U_seed": 0.500,
         "reset_timezone": "UTC",
     }
     defaults.update(overrides)
@@ -48,57 +46,16 @@ class TestQuotaManager:
         mgr.consume()  # Over-consume.
         assert mgr.remaining == 0
 
-    def test_shadow_price_at_zero_usage(self):
-        """At zero usage, shadow price equals L_seed."""
-        mgr = QuotaManager(
-            _make_config(
-                shadow_price_L_seed=0.001,
-                shadow_price_U_seed=0.500,
-            )
-        )
-        price = mgr.get_shadow_price()
-        assert price == pytest.approx(0.001)
-
-    def test_shadow_price_at_full_usage(self):
-        """At full usage, shadow price equals inf."""
-        cfg = _make_config(daily_quota=3)
-        mgr = QuotaManager(cfg)
-        mgr.consume()
-        mgr.consume()
-        mgr.consume()
-        price = mgr.get_shadow_price()
-        assert price == float("inf")
-
-    def test_shadow_price_increases_with_usage(self):
-        """Shadow price monotonically increases as quota is consumed."""
-        cfg = _make_config(daily_quota=10)
-        mgr = QuotaManager(cfg)
-
-        prices = []
+    def test_used_fraction_progresses(self):
+        """used_fraction = used / daily_quota, clamped to [0, 1]."""
+        mgr = QuotaManager(_make_config(daily_quota=10))
+        assert mgr.used_fraction == 0.0
+        for _ in range(5):
+            mgr.consume()
+        assert mgr.used_fraction == pytest.approx(0.5)
         for _ in range(10):
-            prices.append(mgr.get_shadow_price())
             mgr.consume()
-
-        for i in range(1, len(prices)):
-            assert prices[i] >= prices[i - 1], (
-                f"Price at step {i} ({prices[i]}) < step {i - 1} ({prices[i - 1]})"
-            )
-
-    def test_shadow_price_at_half_usage(self):
-        """At 50% usage, theta_Q = L * (U/L)^0.5 = sqrt(L*U)."""
-        import math
-
-        L, U = 0.001, 0.500
-        cfg = _make_config(
-            daily_quota=100,
-            shadow_price_L_seed=L,
-            shadow_price_U_seed=U,
-        )
-        mgr = QuotaManager(cfg)
-        for _ in range(50):
-            mgr.consume()
-        expected = math.sqrt(L * U)
-        assert mgr.get_shadow_price() == pytest.approx(expected, rel=1e-6)
+        assert mgr.used_fraction == 1.0
 
     def test_daily_reset(self):
         """Usage resets when date crosses midnight in reset_tz."""
@@ -113,9 +70,7 @@ class TestQuotaManager:
         with patch("routing.routewise.quota.datetime") as mock_dt:
             mock_dt.now.return_value = tomorrow
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-            price = mgr.get_shadow_price()
             assert mgr.remaining == 100
-            assert price == pytest.approx(0.001)
 
     def test_consume_triggers_reset_check(self):
         """consume() also triggers date reset check."""

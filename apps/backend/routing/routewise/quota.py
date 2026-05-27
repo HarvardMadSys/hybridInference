@@ -1,21 +1,17 @@
-"""Daily quota manager with primal-dual shadow price computation.
+"""Daily quota request counter for RouteWise S_Q routing.
 
-Tracks request-level daily quota usage for S_Q (quota subscription) adapters
-and computes the exponential shadow price ``theta_Q = L * (U/L)^z`` where
-``z = used / Q`` is the fraction of the daily request quota consumed.  The
-quota automatically resets at midnight in the configured timezone.
+Tracks request-level daily quota usage for quota-subscription adapters when
+the provider does not expose a queryable quota dashboard. The shadow-price
+math itself lives in :func:`effective_cost.quota_shadow_price_usd`, which
+reads ``L/U`` from the workload :class:`CostEnvelopeEstimator`; this manager
+only owns the depletion counter and the timezone-aware daily reset.
 
 Quota is counted in **requests** (not tokens), matching the online knapsack
-formulation in the paper: each request that is routed to S_Q consumes exactly
-one quota slot.
-
-This module is independent of ``experiment/`` -- the algorithm is reimplemented
-here for production use without importing simulation code.
+formulation in the paper: each request routed to S_Q consumes one slot.
 """
 
 from __future__ import annotations
 
-import math
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -25,13 +21,14 @@ logger = get_logger(__name__)
 
 
 class QuotaManager:
-    """Production daily quota manager for RouteWise S_Q routing.
+    """Daily request-quota counter for RouteWise S_Q routing.
 
     Attributes:
         remaining: Requests remaining in today's quota.
 
     Args:
-        config: ``RouteWiseConfig`` providing quota and shadow-price parameters.
+        config: ``RouteWiseConfig`` providing ``daily_quota`` and
+            ``reset_timezone``.
     """
 
     def __init__(self, config) -> None:
@@ -39,14 +36,13 @@ class QuotaManager:
             raise ValueError(f"daily_quota must be positive, got {config.daily_quota}")
         self._daily_quota: int = config.daily_quota
         self._used_today: int = 0
-        self._L: float = max(config.shadow_price_L_seed, 1e-9)
-        self._U: float = max(config.shadow_price_U_seed, self._L)
         self._reset_tz: ZoneInfo = ZoneInfo(config.reset_timezone)
         self._last_reset_date: date = datetime.now(tz=self._reset_tz).date()
 
     @property
     def remaining(self) -> int:
         """Requests remaining in today's quota (non-negative)."""
+        self._maybe_reset()
         return max(0, self._daily_quota - self._used_today)
 
     @property
@@ -65,32 +61,6 @@ class QuotaManager:
         """Fraction of today's quota consumed, clamped to [0, 1]."""
         self._maybe_reset()
         return min(max(self._used_today / self._daily_quota, 0.0), 1.0)
-
-    def set_shadow_bounds(self, lower: float, upper: float) -> None:
-        """Update ``L/U`` used by the exponential shadow-price curve."""
-        self._L = max(float(lower), 1e-12)
-        self._U = max(float(upper), self._L)
-
-    def get_shadow_price(self) -> float:
-        """Compute the current shadow price ``theta_Q``.
-
-        Uses the exponential threshold function from online knapsack theory:
-
-            ``theta_Q = L * (U / L) ^ z``
-
-        where ``z = used / Q``, clamped to [0, 1].
-
-        Returns:
-            Shadow price in dollars.  Returns ``inf`` when the quota is
-            fully exhausted.
-        """
-        self._maybe_reset()
-
-        if self._used_today >= self._daily_quota:
-            return float("inf")
-
-        z = min(self._used_today / self._daily_quota, 1.0)
-        return self._L * math.pow(self._U / self._L, z)
 
     def consume(self) -> None:
         """Consume one request slot from today's quota.

@@ -96,6 +96,21 @@ def _make_fake_adapter(
     return adapter
 
 
+def _warm_envelope(
+    router: Any,
+    *,
+    lower: float = 0.0000001,
+    upper: float = 0.001,
+    model_id: str = "test-model",
+) -> None:
+    pool = router._routewise_pool(model_id)
+    base_ts = time.time() - 1.0
+    for _ in range(25):
+        router.envelope.observe(pool, lower, now=base_ts)
+    for _ in range(25):
+        router.envelope.observe(pool, upper, now=base_ts)
+
+
 # ===========================================================================
 # TestHedgedAdapterNonStreaming
 # ===========================================================================
@@ -877,6 +892,7 @@ class TestRouterHedgeMode:
             latency_hedge_mode="probability_target",
         )
         router, api, quota = _make_router_with_api_and_quota(config)
+        _warm_envelope(router)
 
         def _force_api_primary(candidates, solution):
             return next(c for c in candidates if c.endpoint_id == "test-model:api-a")
@@ -921,6 +937,7 @@ class TestRouterHedgeMode:
             latency_hedge_mode="probability_target",
         )
         router, api_primary, quota, api_backup = _make_router_with_api_quota_and_api(config)
+        _warm_envelope(router)
 
         def _force_api_primary(candidates, solution):
             return next(c for c in candidates if c.endpoint_id == "test-model:api-a")

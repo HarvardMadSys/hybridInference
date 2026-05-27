@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from routing.routewise.envelope import EnvelopeNotCalibratedError
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
@@ -600,6 +601,11 @@ async def initialize() -> AppServices:
     for rw in routewise_routers:
         try:
             await rw.start()
+        except EnvelopeNotCalibratedError:
+            # Strict fidelity to the RouteWise paper: the quota shadow price
+            # requires a workload-derived [L, U]. We do not silently fall back
+            # to a fabricated envelope.
+            raise
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"RouteWiseRouter.start() failed: {exc}")
 

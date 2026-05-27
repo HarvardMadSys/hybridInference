@@ -35,12 +35,8 @@ class RouteWiseConfig:
         concurrency_monthly_fee: Monthly cost of the concurrency subscription
             (USD).
 
-        shadow_price_L_seed: Initial lower bound for shadow price search.
-        shadow_price_U_seed: Initial upper bound for shadow price search.
-        shadow_price_window_hours: Lookback window (hours) for adaptive
-            shadow price estimation.
-        shadow_price_min_ratio: Minimum observations required per window
-            before adaptive estimation activates.
+        shadow_price_window_hours: Lookback window (hours) for the rolling
+            envelope used by the quota shadow price.
 
         latency_slo_sec: Target SLO for latency-aware routing (seconds).
         latency_window_sec: Profile moving window duration (seconds).
@@ -83,14 +79,10 @@ class RouteWiseConfig:
     concurrency_limit: int = 8
     concurrency_monthly_fee: float = 25.0
 
-    # Shadow price bounds
-    shadow_price_L_seed: float = 0.001
-    shadow_price_U_seed: float = 0.500
+    # Envelope (workload cost percentile) parameters
     shadow_price_window_hours: int = 24
-    shadow_price_min_ratio: int = 10
     envelope_lower_percentile: float = 10.0
     envelope_upper_percentile: float = 90.0
-    envelope_min_samples: int = 20
 
     # Layer 2: Latency-aware provider selection
     latency_slo_sec: float = 3.0
@@ -165,7 +157,7 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
         )
         return RouteWiseConfig()
 
-    # Flatten ADR nested sections (quota, concurrency, shadow_price) into
+    # Flatten ADR nested sections (quota, concurrency, envelope, ...) into
     # the flat dataclass namespace so both flat and nested YAML work.
     _NESTED_MAP: dict[str, dict[str, str]] = {
         "quota": {
@@ -180,20 +172,13 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "monthly_fee": "concurrency_monthly_fee",
         },
         "shadow_price": {
-            "L_seed": "shadow_price_L_seed",
-            "U_seed": "shadow_price_U_seed",
             "window_hours": "shadow_price_window_hours",
-            "min_ratio": "shadow_price_min_ratio",
         },
         "envelope": {
             "bootstrap_window_hours": "shadow_price_window_hours",
             "window_hours": "shadow_price_window_hours",
             "lower_percentile": "envelope_lower_percentile",
             "upper_percentile": "envelope_upper_percentile",
-            "min_samples": "envelope_min_samples",
-            "min_ratio": "shadow_price_min_ratio",
-            "L_seed": "shadow_price_L_seed",
-            "U_seed": "shadow_price_U_seed",
         },
         "output_predictor": {
             "cold_start_tokens": "output_default_tokens",

@@ -15,6 +15,7 @@ import pytest
 from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.candidates import QuotaSource
 from routing.routewise.config import RouteWiseConfig
+from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.hedging import HedgedAdapter
 from routing.routewise.quota_snapshot import ProviderQuotaSnapshotStore
 from routing.routewise.router import RouteWiseRouter, SubscriptionType
@@ -247,6 +248,7 @@ class TestRouteWiseRouterScaffold:
         fr.add("test-model", [(api_adapter, 0.5), (quota_adapter, 0.5)])
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
         selected = router._select_adapter("test-model", {})
         assert selected is quota_adapter
 
@@ -1813,6 +1815,7 @@ class TestRouteWiseDecisionMetadata:
     def test_sq_decision_stores_metadata(self):
         """S_Q selection stores metadata with selected_tier='quota'."""
         router, quota, _api = _make_router_with_quota_and_api()
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
         request_id = "req-test-sq"
         context = {"request_id": request_id}
 
@@ -2118,6 +2121,7 @@ class TestRouteWiseDecisionMetadata:
         # S_Q path (disable concurrency to force quota)
         config_no_conc = RouteWiseConfig(concurrency_enabled=False)
         router2, _quota2, _api2 = _make_router_with_quota_and_api(config=config_no_conc)
+        _warm_envelope(router2, lower=0.0000001, upper=0.001)
         router2._select_adapter("test-model", {"request_id": "req-sq-qc"})
         meta_sq = router2._pending_decisions.get("req-sq-qc")
         if meta_sq and meta_sq["selected_tier"] == "quota":
@@ -2132,3 +2136,44 @@ class TestRouteWiseDecisionMetadata:
         meta_sa = router3._pending_decisions.get("req-sa-qc")
         if meta_sa:
             assert meta_sa["quota_committed"] == 0.0
+
+
+@pytest.mark.unit
+class TestRouteWiseEnvelopeCalibration:
+    """``start()`` must refuse to run if any quota pool is uncalibrated."""
+
+    @pytest.mark.asyncio
+    async def test_start_raises_when_quota_pool_uncalibrated(self):
+        router, _quota, _api = _make_router_with_quota_and_api()
+        with pytest.raises(EnvelopeNotCalibratedError, match="uncalibrated"):
+            await router.start()
+
+    @pytest.mark.asyncio
+    async def test_start_passes_when_quota_pool_has_envelope(self):
+        router, _quota, _api = _make_router_with_quota_and_api()
+        _warm_envelope(router, lower=0.001, upper=0.5)
+        try:
+            await router.start()
+        finally:
+            await router.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_passes_for_api_only_models(self):
+        """Models without any quota provider don't need a calibrated envelope."""
+        api_only = _make_adapter(subscription_type="api")
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(api_only, 1.0)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        try:
+            await router.start()
+        finally:
+            await router.stop()
+
+    def test_quota_provider_is_skipped_when_envelope_uncalibrated(self):
+        """Defense in depth: if envelope is uncalibrated at request time,
+        quota providers are masked rather than priced on a fabricated shadow.
+        """
+        router, _quota, api = _make_router_with_quota_and_api()
+        # No _warm_envelope call: snapshot returns None and quota is skipped.
+        selected = router._select_adapter("test-model", {"prompt_tokens": 100})
+        assert selected is api
