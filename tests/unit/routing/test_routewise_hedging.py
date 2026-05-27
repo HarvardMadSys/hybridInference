@@ -989,6 +989,7 @@ class TestRouterHedgeMode:
             latency_hedge_mode="probability_target",
         )
         router, api_primary, quota, api_backup = _make_router_with_api_quota_and_api(config)
+        _warm_envelope(router)
 
         def _force_api_primary(candidates, solution):
             return next(c for c in candidates if c.endpoint_id == "test-model:api-a")
