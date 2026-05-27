@@ -38,12 +38,9 @@ class TestRouteWiseConfigDefaults:
         assert cfg.shadow_price_min_ratio == 10
         # Layer 2 defaults
         assert cfg.latency_slo_sec == 3.0
-        assert cfg.latency_target_cdf == 0.99
-        assert cfg.latency_error_penalty == 0.0
         assert cfg.latency_window_sec == 900.0
         assert cfg.latency_min_samples == 10
         assert cfg.latency_lp_interval_sec == 60.0
-        assert cfg.latency_relaxation_factors == "1.2,1.5,2.0"
         assert cfg.latency_hedge_mode == "disabled"
 
     def test_invalid_latency_hedge_mode_rejected(self):
@@ -191,12 +188,9 @@ class TestLoadFromYAML:
             "routewise:\n"
             "  latency:\n"
             "    slo_sec: 5.0\n"
-            "    target_cdf: 0.95\n"
-            "    error_penalty: 0.1\n"
             "    window_sec: 600.0\n"
             "    min_samples: 20\n"
             "    lp_interval_sec: 30.0\n"
-            '    relaxation_factors: "1.5,2.0"\n'
             "    hedge_mode: disabled\n"
         )
         p = tmp_path / "routewise.yaml"
@@ -204,12 +198,9 @@ class TestLoadFromYAML:
 
         cfg = load_routewise_config(p)
         assert cfg.latency_slo_sec == 5.0
-        assert cfg.latency_target_cdf == 0.95
-        assert cfg.latency_error_penalty == 0.1
         assert cfg.latency_window_sec == 600.0
         assert cfg.latency_min_samples == 20
         assert cfg.latency_lp_interval_sec == 30.0
-        assert cfg.latency_relaxation_factors == "1.5,2.0"
         assert cfg.latency_hedge_mode == "disabled"
 
     def test_load_invalid_latency_hedge_mode_raises(self, tmp_path: Path):

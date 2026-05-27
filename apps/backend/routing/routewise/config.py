@@ -51,12 +51,9 @@ class RouteWiseConfig:
             before adaptive estimation activates.
 
         latency_slo_sec: Target SLO for latency-aware routing (seconds).
-        latency_target_cdf: Target CDF for the LP tail constraint.
-        latency_error_penalty: Kappa error penalty coefficient for LP.
         latency_window_sec: Profile moving window duration (seconds).
         latency_min_samples: Minimum samples before LP warmup.
         latency_lp_interval_sec: Minimum seconds between LP re-solves.
-        latency_relaxation_factors: Comma-separated SLO relaxation factors.
         budget_alpha: Interpolation factor for the LP cost budget:
             ``c_min + alpha * (c_max - c_min)``.
     """
@@ -105,13 +102,10 @@ class RouteWiseConfig:
 
     # Layer 2: Latency-aware provider selection
     latency_slo_sec: float = 3.0
-    latency_target_cdf: float = 0.99
-    latency_error_penalty: float = 0.0  # kappa
     latency_window_sec: float = 900.0  # 15 min profile window
     latency_min_samples: int = 10  # warmup threshold
     latency_lp_interval_sec: float = 60.0  # LP re-solve interval
     latency_unprofiled_ttft_ms: float = 5000.0
-    latency_relaxation_factors: str = "1.2,1.5,2.0"
     latency_hedge_mode: LatencyHedgeMode = "disabled"
 
     # Canary rollout controls
@@ -220,13 +214,10 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
         },
         "latency": {
             "slo_sec": "latency_slo_sec",
-            "target_cdf": "latency_target_cdf",
-            "error_penalty": "latency_error_penalty",
             "window_sec": "latency_window_sec",
             "min_samples": "latency_min_samples",
             "lp_interval_sec": "latency_lp_interval_sec",
             "unprofiled_ttft_ms": "latency_unprofiled_ttft_ms",
-            "relaxation_factors": "latency_relaxation_factors",
             "hedge_mode": "latency_hedge_mode",
         },
         "canary": {
