@@ -851,6 +851,29 @@ class TestRouteWiseLayer2:
         now = time.time()
         assert profile.sample_count(now) == 1
 
+    def test_record_observation_uses_total_latency_when_ttft_missing(self):
+        """Non-streaming successes still feed the body-latency profile."""
+        config = RouteWiseConfig()
+        router, _api_a, _api_b = _make_router_with_two_api(config)
+
+        obs = RoutingObservation(
+            model_id="test-model",
+            endpoint_id="test-model:api-a",
+            ttft_ms=None,
+            total_latency_ms=500.0,
+            token_count=600,
+            prompt_tokens=100,
+            completion_tokens=500,
+            success=True,
+            quota_committed=0.0,
+        )
+        router.record_observation(obs)
+
+        profile = router._latency_profiles["test-model:api-a"]
+        now = time.time()
+        assert profile.sample_count(now) == 1
+        assert profile.percentile(50, now) == pytest.approx(0.5)
+
     def test_single_api_uses_body_lp_single_provider_solution(self):
         """Single S_A provider returns a degenerate body-LP solution."""
         api_only = _make_adapter(

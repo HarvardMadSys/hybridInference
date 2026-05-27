@@ -1141,8 +1141,14 @@ class RouteWiseRouter(BaseRouter):
         if obs.endpoint_id and obs.endpoint_id in self._latency_profiles:
             now = time.time()
             error_type: str | None = None if obs.success else "error"
-            ttft = obs.ttft_ms if obs.ttft_ms is not None else -1.0
-            self._latency_profiles[obs.endpoint_id].record(now, ttft, error_type)
+            latency_ms = (
+                obs.ttft_ms
+                if obs.ttft_ms is not None
+                else obs.total_latency_ms
+                if obs.success
+                else -1.0
+            )
+            self._latency_profiles[obs.endpoint_id].record(now, latency_ms, error_type)
 
         if obs.prompt_tokens > 0 and obs.completion_tokens > 0:
             sample_cost = self._reference_api_cost(
