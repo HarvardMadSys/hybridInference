@@ -322,8 +322,8 @@ class UpdateUserRequest(BaseModel):
 
     role: str | None = Field(
         None,
-        pattern="^(trial|free|pro|internal|admin)$",
-        description="One of: trial, free, pro, internal, admin",
+        pattern="^(free|pro|internal|admin)$",
+        description="One of: free, pro, internal, admin",
     )
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
@@ -732,7 +732,7 @@ class ListModelVisibilityResponse(BaseModel):
 class UpdateModelVisibilityRequest(BaseModel):
     """Request payload for updating a model visibility override."""
 
-    required_role: Literal["trial", "free", "pro", "internal", "admin"] | None
+    required_role: Literal["free", "pro", "internal", "admin"] | None
 
 
 class ModelConcurrencyItem(BaseModel):

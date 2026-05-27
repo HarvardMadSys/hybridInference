@@ -88,8 +88,8 @@ class PostgresOperationalStore(OperationalStore):
                 password_hash TEXT NOT NULL,
                 user_name TEXT,
                 preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-                role TEXT NOT NULL DEFAULT 'trial'
-                    CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin')),
+                role TEXT NOT NULL DEFAULT 'free'
+                    CHECK (role IN ('free', 'pro', 'internal', 'admin')),
                 email_verified BOOLEAN DEFAULT FALSE,
                 status TEXT DEFAULT 'active'
                     CHECK (status IN ('active', 'suspended', 'deleted',
@@ -154,7 +154,7 @@ class PostgresOperationalStore(OperationalStore):
 
         # Role column & migration
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT")
-        await conn.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'trial'")
+        await conn.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'")
         tag = await conn.execute("UPDATE users SET role = 'free' WHERE role IS NULL")
         backfilled = _parse_command_tag_count(tag)
         if backfilled:
@@ -177,12 +177,12 @@ class PostgresOperationalStore(OperationalStore):
                     )
                 await conn.execute("""
                     ALTER TABLE users ADD CONSTRAINT users_role_check
-                    CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin'))
+                    CHECK (role IN ('free', 'pro', 'internal', 'admin'))
                 """)
         except _asyncpg.PostgresError as exc:
             invalid_rows = await conn.fetch(
                 "SELECT id, email, role FROM users "
-                "WHERE role NOT IN ('trial','free','pro','internal','admin') "
+                "WHERE role NOT IN ('free','pro','internal','admin') "
                 "ORDER BY created_at DESC LIMIT 10"
             )
             logger.error(
@@ -199,7 +199,7 @@ class PostgresOperationalStore(OperationalStore):
             tag = await conn.execute(
                 "UPDATE users SET role = 'admin' "
                 "WHERE lower(trim(email)) = ANY($1::text[]) "
-                "AND role IN ('trial', 'free')",
+                "AND role IN ('free')",
                 admin_emails,
             )
             seeded = _parse_command_tag_count(tag)

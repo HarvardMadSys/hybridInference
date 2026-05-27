@@ -1,8 +1,4 @@
-"""Tests for role-rank ordering and USER_CONCURRENCY_LIMITS in settings.
-
-``trial`` ranks below ``free`` (probationary). Existing role semantics
-must continue to hold.
-"""
+"""Tests for role-rank ordering semantics in settings."""
 
 from serving.config.settings import (
     ROLE_RANK,
@@ -11,15 +7,14 @@ from serving.config.settings import (
 )
 
 
-def test_role_rank_contains_all_five_roles():
-    assert set(ROLE_RANK) == {"trial", "free", "pro", "internal", "admin"}
+def test_role_rank_contains_supported_roles():
+    assert set(ROLE_RANK) == {"free", "pro", "internal", "admin"}
 
 
 def test_role_rank_ordering_is_strictly_ascending():
-    # trial < free < pro < internal < admin
+    # free < pro < internal < admin
     assert (
-        ROLE_RANK["trial"]
-        < ROLE_RANK["free"]
+        ROLE_RANK["free"]
         < ROLE_RANK["pro"]
         < ROLE_RANK["internal"]
         < ROLE_RANK["admin"]
@@ -27,7 +22,7 @@ def test_role_rank_ordering_is_strictly_ascending():
 
 
 def test_valid_roles_matches_role_rank():
-    assert frozenset({"trial", "free", "pro", "internal", "admin"}) == VALID_ROLES
+    assert frozenset({"free", "pro", "internal", "admin"}) == VALID_ROLES
 
 
 def test_has_role_existing_semantics_preserved():
@@ -45,10 +40,6 @@ def test_has_role_existing_semantics_preserved():
     assert has_role("pro", "free") is True
 
 
-def test_trial_below_free():
-    # trial does NOT satisfy free (trial is probationary, ranks below free)
-    assert has_role("trial", "free") is False
-    # trial satisfies trial
-    assert has_role("trial", "trial") is True
-    # free satisfies trial
-    assert has_role("free", "trial") is True
+def test_unknown_role_fails_closed_against_free_and_above():
+    assert has_role("legacy-trial", "free") is True
+    assert has_role("legacy-trial", "pro") is False

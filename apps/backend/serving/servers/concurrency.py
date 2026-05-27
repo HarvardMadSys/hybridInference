@@ -41,7 +41,7 @@ def _build_fallback_limits() -> dict[str, int]:
 
     return {
         role: int(RUNTIME_SETTINGS_REGISTRY[f"user_concurrency_{role}"]["default"])
-        for role in ("trial", "free", "pro", "internal", "admin")
+        for role in ("free", "pro", "internal", "admin")
     }
 
 
