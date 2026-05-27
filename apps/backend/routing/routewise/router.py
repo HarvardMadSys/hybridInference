@@ -124,19 +124,6 @@ class ProviderReservation:
         self.acquired = False
 
 
-class _WeightView:
-    """Small compatibility view exposing ``get_weights()`` for tests."""
-
-    def __init__(self) -> None:
-        self._weights: dict[str, float] = {}
-
-    def update_weights(self, weights: dict[str, float]) -> None:
-        self._weights = dict(weights)
-
-    def get_weights(self) -> dict[str, float]:
-        return dict(self._weights)
-
-
 def _configured_worker_count() -> int | None:
     """Best-effort detection for common ASGI worker-count environment vars."""
 
@@ -216,12 +203,9 @@ class RouteWiseRouter(BaseRouter):
         self._route_commit_lock = threading.RLock()
         self._sweep_task: asyncio.Task[None] | None = None
         self._quota_refresh_task: asyncio.Task[None] | None = None
-        # Compatibility attributes retained for tests and diagnostics from the
-        # older implementation.  The current body router does not run the old
-        # background LP/SWRR path.
+        # Last LP state retained for tests and diagnostics.
         self._last_lp_statuses: dict[str, str] = {}
         self._last_lp_weights: dict[str, dict[str, float]] = {}
-        self._swrr_samplers: dict[str, _WeightView] = {}
         self._pending_lp_solves: set[str] = set()
 
         if self.fixed_router is not None:
@@ -238,7 +222,6 @@ class RouteWiseRouter(BaseRouter):
         self._primary_reservations = {}
         self._last_lp_statuses = {}
         self._last_lp_weights = {}
-        self._swrr_samplers = {}
         self._pending_lp_solves = set()
         self._rebuild_from_fixed_router()
 
@@ -251,7 +234,7 @@ class RouteWiseRouter(BaseRouter):
         self._endpoint_adapter = {}
         self._latency_profiles = {}
         self._classify_all()
-        for model_id, candidates in self.route_candidates.items():
+        for candidates in self.route_candidates.values():
             for candidate in candidates:
                 adapter = candidate.adapter
                 self._adapter_sub_type[id(adapter)] = candidate.subscription_type
@@ -263,7 +246,6 @@ class RouteWiseRouter(BaseRouter):
                         endpoint_id=endpoint_id,
                         window_sec=self.config.latency_window_sec,
                     )
-            self._swrr_samplers[model_id] = _WeightView()
         self._validate_routes()
 
     async def start(self) -> None:
@@ -1122,7 +1104,6 @@ class RouteWiseRouter(BaseRouter):
             )
             self._last_lp_statuses[model_id] = solution.status
             self._last_lp_weights[model_id] = dict(solution.weights)
-            self._swrr_samplers.setdefault(model_id, _WeightView()).update_weights(solution.weights)
             selected = self._sample_solution(candidates, solution)
             if selected is None:
                 return None

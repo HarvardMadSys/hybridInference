@@ -1,10 +1,10 @@
-"""Tests for Layer 2 latency profiling and SWRR sampling."""
+"""Tests for Layer 2 latency profiling."""
 
 from __future__ import annotations
 
 import pytest
 
-from routing.routewise.latency import ProviderProfile, SWRRSampler
+from routing.routewise.latency import ProviderProfile
 
 # ---------------------------------------------------------------------------
 # ProviderProfile tests
@@ -111,66 +111,3 @@ class TestProviderProfile:
         assert profile.error_rate(now) == 0.0
         assert profile.sample_count(now) == 0
         assert profile.total_count(now) == 0
-
-
-# ---------------------------------------------------------------------------
-# SWRRSampler tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestSWRRSampler:
-    def test_single_provider(self):
-        """Single provider always selected."""
-        sampler = SWRRSampler(alpha=0.3)
-        sampler.update_weights({"A": 1.0})
-
-        for _ in range(10):
-            assert sampler.sample() == "A"
-
-    def test_proportional_distribution(self):
-        """Over many samples, distribution approximates target weights."""
-        sampler = SWRRSampler(alpha=1.0)  # alpha=1 for immediate convergence.
-        sampler.update_weights({"A": 0.7, "B": 0.3})
-
-        counts = {"A": 0, "B": 0}
-        n = 1000
-        for _ in range(n):
-            selected = sampler.sample()
-            counts[selected] += 1
-
-        # SWRR should exactly match weights.
-        assert counts["A"] / n == pytest.approx(0.7, abs=0.02)
-        assert counts["B"] / n == pytest.approx(0.3, abs=0.02)
-
-    def test_exponential_smoothing(self):
-        """Weight update blends old and new via alpha."""
-        sampler = SWRRSampler(alpha=0.5)
-        sampler.update_weights({"A": 1.0})
-
-        # Old weights: A=1.0. New: A=0.4, B=0.6.
-        # Smoothed: A = 0.5*0.4 + 0.5*1.0 = 0.7; B = 0.5*0.6 = 0.3.
-        # After normalization: A=0.7, B=0.3.
-        sampler.update_weights({"A": 0.4, "B": 0.6})
-
-        weights = sampler.get_weights()
-        assert weights["A"] == pytest.approx(0.7, abs=0.01)
-        assert weights["B"] == pytest.approx(0.3, abs=0.01)
-
-    def test_provider_removal(self):
-        """Providers with negligible weight after smoothing are removed."""
-        sampler = SWRRSampler(alpha=1.0)
-        sampler.update_weights({"A": 0.9, "B": 0.1})
-
-        # Now update with B having weight 0 -> after smoothing with alpha=1.0,
-        # B = 0.0 which is < 0.001, so B should be removed.
-        sampler.update_weights({"A": 1.0, "B": 0.0})
-
-        weights = sampler.get_weights()
-        assert "B" not in weights
-        assert "A" in weights
-
-    def test_empty_sampler(self):
-        """Empty sampler returns None."""
-        sampler = SWRRSampler()
-        assert sampler.sample() is None

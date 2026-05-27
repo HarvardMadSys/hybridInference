@@ -43,7 +43,6 @@ class TestRouteWiseConfigDefaults:
         assert cfg.latency_window_sec == 900.0
         assert cfg.latency_min_samples == 10
         assert cfg.latency_lp_interval_sec == 60.0
-        assert cfg.latency_swrr_alpha == 0.3
         assert cfg.latency_relaxation_factors == "1.2,1.5,2.0"
         assert cfg.latency_hedge_mode == "disabled"
 
@@ -197,7 +196,6 @@ class TestLoadFromYAML:
             "    window_sec: 600.0\n"
             "    min_samples: 20\n"
             "    lp_interval_sec: 30.0\n"
-            "    swrr_alpha: 0.5\n"
             '    relaxation_factors: "1.5,2.0"\n'
             "    hedge_mode: disabled\n"
         )
@@ -211,7 +209,6 @@ class TestLoadFromYAML:
         assert cfg.latency_window_sec == 600.0
         assert cfg.latency_min_samples == 20
         assert cfg.latency_lp_interval_sec == 30.0
-        assert cfg.latency_swrr_alpha == 0.5
         assert cfg.latency_relaxation_factors == "1.5,2.0"
         assert cfg.latency_hedge_mode == "disabled"
 

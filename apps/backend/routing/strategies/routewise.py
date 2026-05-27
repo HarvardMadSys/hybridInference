@@ -72,7 +72,6 @@ class RouteWiseParams(BaseModel):
     latency_window_sec: float = 900.0
     latency_min_samples: int = 10
     latency_lp_interval_sec: float = 60.0
-    latency_swrr_alpha: float = 0.3
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_relaxation_factors: str = "1.2,1.5,2.0"
     latency_hedge_mode: Literal["disabled", "probability_target"] = "disabled"

@@ -12,7 +12,6 @@ Exports:
     QuotaManager       -- Daily quota manager with shadow price computation.
     ConcurrencyManager -- Production concurrency slot manager (K=0 binary gate).
     ProviderProfile    -- Real-time latency profile for an API endpoint.
-    SWRRSampler        -- Smooth weighted round-robin sampler.
     HedgedAdapter      -- Composite adapter that races primary vs backup.
     CheckpointBackupDispatch -- Shared checkpoint backup dispatch dataclass.
     CheckpointBackupSelector -- Protocol for checkpoint-time backup selection.
@@ -30,7 +29,7 @@ from .config import RouteWiseConfig, load_routewise_config
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
 from .envelope import CostEnvelopeEstimator, CostEnvelopeSnapshot
 from .hedging import HedgedAdapter, ProviderEventSink
-from .latency import ProviderProfile, SWRRSampler
+from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .lp_solver import (
     pre_filter_providers,
@@ -72,7 +71,6 @@ __all__ = [
     "QuotaSource",
     "RouteWiseConfig",
     "RouteWiseRouter",
-    "SWRRSampler",
     "SubscriptionType",
     "api_request_cost_usd",
     "load_routewise_config",

@@ -56,7 +56,6 @@ class RouteWiseConfig:
         latency_window_sec: Profile moving window duration (seconds).
         latency_min_samples: Minimum samples before LP warmup.
         latency_lp_interval_sec: Minimum seconds between LP re-solves.
-        latency_swrr_alpha: Smoothing factor for SWRR weight updates.
         latency_relaxation_factors: Comma-separated SLO relaxation factors.
         budget_alpha: Interpolation factor for the LP cost budget:
             ``c_min + alpha * (c_max - c_min)``.
@@ -111,7 +110,6 @@ class RouteWiseConfig:
     latency_window_sec: float = 900.0  # 15 min profile window
     latency_min_samples: int = 10  # warmup threshold
     latency_lp_interval_sec: float = 60.0  # LP re-solve interval
-    latency_swrr_alpha: float = 0.3
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_relaxation_factors: str = "1.2,1.5,2.0"
     latency_hedge_mode: LatencyHedgeMode = "disabled"
@@ -227,7 +225,6 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "window_sec": "latency_window_sec",
             "min_samples": "latency_min_samples",
             "lp_interval_sec": "latency_lp_interval_sec",
-            "swrr_alpha": "latency_swrr_alpha",
             "unprofiled_ttft_ms": "latency_unprofiled_ttft_ms",
             "relaxation_factors": "latency_relaxation_factors",
             "hedge_mode": "latency_hedge_mode",

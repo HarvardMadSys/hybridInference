@@ -1,12 +1,10 @@
-"""Real-time latency profiling and SWRR sampling for Layer 2.
+"""Real-time latency profiling for Layer 2.
 
 This module provides:
 - ``ProviderProfile``: time-windowed latency and error tracking per endpoint
   with empirical CDF computation (INFINITY failure mode).
-- ``SWRRSampler``: smooth weighted round-robin with exponential smoothing
-  for LP weight updates.
 
-Reference: experiment/strategies/online_latency_router.py (lines 40-196, 373-455).
+Reference: experiment/strategies/online_latency_router.py.
 """
 
 from __future__ import annotations
@@ -141,91 +139,3 @@ class ProviderProfile:
         """Get latency samples in seconds within the current window."""
         cutoff = current_time - self.window_sec
         return [v / 1000.0 for t, v in self._samples if t >= cutoff]
-
-
-class SWRRSampler:
-    """Smooth Weighted Round-Robin with exponential smoothing.
-
-    Given weights pi = {A: 0.7, B: 0.3}, produces a smooth interleaving:
-    A, A, B, A, A, B, A, A, A, B, ...
-
-    Equivalent to probabilistic mixing but with reduced short-term variance.
-    Weight updates use exponential smoothing: w = (1-alpha)*old + alpha*new.
-    """
-
-    def __init__(self, alpha: float = 0.3) -> None:
-        """Initialize SWRR sampler.
-
-        Args:
-            alpha: Smoothing factor for weight updates (0 = keep old, 1 = use new).
-        """
-        self._alpha = alpha
-        self._providers: list[str] = []
-        self._weights: dict[str, float] = {}
-        self._current_weights: dict[str, float] = {}
-
-    def update_weights(self, new_weights: dict[str, float]) -> None:
-        """Update target weights with exponential smoothing.
-
-        w_new = (1 - alpha) * w_old + alpha * w_lp
-
-        Providers with weight < 0.001 after smoothing are removed.
-        Weights are normalized to sum to 1.
-
-        Args:
-            new_weights: New weights from LP solver (should sum to ~1).
-        """
-        all_providers = set(self._providers) | set(new_weights.keys())
-        smoothed: dict[str, float] = {}
-
-        for p in all_providers:
-            old_w = self._weights.get(p, 0.0)
-            new_w = new_weights.get(p, 0.0)
-            smoothed[p] = (1.0 - self._alpha) * old_w + self._alpha * new_w
-
-        # Remove negligible-weight providers.
-        self._weights = {p: w for p, w in smoothed.items() if w > 0.001}
-        self._providers = list(self._weights.keys())
-
-        # Normalize.
-        total = sum(self._weights.values())
-        if total > 0:
-            self._weights = {p: w / total for p, w in self._weights.items()}
-
-        # Soft reset current weights for existing providers, init new ones.
-        new_current: dict[str, float] = {}
-        for p in self._providers:
-            if p in self._current_weights:
-                new_current[p] = self._current_weights[p] * 0.5
-            else:
-                new_current[p] = 0.0
-        self._current_weights = new_current
-
-    def sample(self) -> str | None:
-        """Select next provider using SWRR algorithm.
-
-        Add target weights to current weights, pick the provider with
-        highest current weight, then subtract total weight from the selected.
-
-        Returns:
-            Selected provider name, or None if no providers.
-        """
-        if not self._providers:
-            return None
-
-        # Add target weights.
-        for p in self._providers:
-            self._current_weights[p] = self._current_weights.get(p, 0.0) + self._weights[p]
-
-        # Pick max.
-        selected = max(self._providers, key=lambda p: self._current_weights[p])
-
-        # Subtract total weight.
-        total_weight = sum(self._weights.values())
-        self._current_weights[selected] -= total_weight
-
-        return selected
-
-    def get_weights(self) -> dict[str, float]:
-        """Return current target weights (copy)."""
-        return self._weights.copy()

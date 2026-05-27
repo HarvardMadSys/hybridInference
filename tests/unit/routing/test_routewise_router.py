@@ -974,7 +974,7 @@ class TestRouteWiseLayer2:
     def test_multi_model_layer2_isolation(self):
         """Two models sharing one RouteWiseRouter have independent LP state.
 
-        Model A's LP solve must NOT pollute model B's SWRR sampler, and
+        Model A's LP solve must NOT pollute model B's LP weights, and
         model B's LP interval check must be independent of model A.
         """
         config = RouteWiseConfig(
@@ -1042,9 +1042,9 @@ class TestRouteWiseLayer2:
         assert router._last_lp_statuses.get("model-a") is not None
         assert router._last_lp_statuses.get("model-b") is not None
 
-        # SWRR samplers are independent per model.
-        a_weights = router._swrr_samplers["model-a"].get_weights()
-        b_weights = router._swrr_samplers["model-b"].get_weights()
+        # LP weights are independent per model.
+        a_weights = router._last_lp_weights["model-a"]
+        b_weights = router._last_lp_weights["model-b"]
         # A's weights must only contain A's endpoints.
         for eid in a_weights:
             assert eid.startswith("model-a:")
