@@ -9,6 +9,7 @@ Reference: experiment/strategies/online_latency_router.py.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 
 
@@ -23,18 +24,19 @@ class ProviderProfile:
     Attributes:
         endpoint_id: Unique identifier for the provider endpoint.
         window_sec: Moving window duration in seconds (default 15 min).
+        max_samples: Maximum request outcomes retained per endpoint.
     """
 
     endpoint_id: str
     window_sec: float = 900.0  # 15 minutes
+    max_samples: int = 5000
 
-    # Latency samples: list of (timestamp, ttft_ms).
-    # Only successful requests with positive TTFT are stored.
-    _samples: list[tuple[float, float]] = field(default_factory=list)
+    # Request outcomes: (timestamp, ttft_ms, error_type | None).
+    _events: deque[tuple[float, float, str | None]] = field(init=False, repr=False)
 
-    # Event tracking: list of (timestamp, error_type | None).
-    # error_type: None for success, or string like "timeout", "rate_limit", etc.
-    _events: list[tuple[float, str | None]] = field(default_factory=list)
+    def __post_init__(self) -> None:
+        self.max_samples = max(int(self.max_samples), 1)
+        self._events = deque(maxlen=self.max_samples)
 
     def record(
         self,
@@ -49,9 +51,7 @@ class ProviderProfile:
             ttft_ms: Time to first token in milliseconds (-1 if error).
             error_type: None for success, or error type string.
         """
-        self._events.append((timestamp, error_type))
-        if error_type is None and ttft_ms > 0:
-            self._samples.append((timestamp, ttft_ms))
+        self._events.append((timestamp, ttft_ms, error_type))
 
     def cdf_at(self, threshold_sec: float, current_time: float) -> float:
         """Compute empirical CDF at latency threshold L (INFINITY mode).
@@ -70,13 +70,22 @@ class ProviderProfile:
             CDF value in [0, 1].  Returns 0.0 if no samples.
         """
         self._prune(current_time)
+        success_count = 0
+        success_within = 0
+        error_count = 0
+        for _, ttft_ms, error_type in self._events:
+            if error_type is not None:
+                error_count += 1
+            elif ttft_ms > 0:
+                success_count += 1
+                if ttft_ms / 1000.0 <= threshold_sec:
+                    success_within += 1
 
-        samples_sec = self._get_latency_samples_sec(current_time)
-        if not samples_sec:
+        if success_count == 0:
             return 0.0
 
-        f_success = sum(1 for s in samples_sec if s <= threshold_sec) / len(samples_sec)
-        success_rate = 1.0 - self.error_rate(current_time)
+        f_success = success_within / success_count
+        success_rate = 1.0 - (error_count / len(self._events))
         return success_rate * f_success
 
     def error_rate(self, current_time: float) -> float:
@@ -88,12 +97,11 @@ class ProviderProfile:
         Returns:
             Fraction of failed requests in [0, 1].  Returns 0.0 if no events.
         """
-        cutoff = current_time - self.window_sec
-        events = [(t, e) for t, e in self._events if t >= cutoff]
-        if not events:
+        self._prune(current_time)
+        if not self._events:
             return 0.0
-        error_count = sum(1 for _, e in events if e is not None)
-        return error_count / len(events)
+        error_count = sum(1 for _, _ttft, e in self._events if e is not None)
+        return error_count / len(self._events)
 
     def mean_with_errors_sec(
         self,
@@ -103,8 +111,8 @@ class ProviderProfile:
     ) -> float | None:
         """Return success mean with failed attempts as synthetic penalty samples."""
         self._prune(current_time)
-        samples_ms = [v for _, v in self._samples]
-        error_count = sum(1 for _, e in self._events if e is not None)
+        samples_ms = [ttft for _, ttft, e in self._events if e is None and ttft > 0]
+        error_count = sum(1 for _, _ttft, e in self._events if e is not None)
         total = len(samples_ms) + error_count
         if total == 0:
             return None
@@ -119,23 +127,25 @@ class ProviderProfile:
         Returns:
             Count of successful latency samples within the window.
         """
-        cutoff = current_time - self.window_sec
-        return sum(1 for t, _ in self._samples if t >= cutoff)
+        self._prune(current_time)
+        return sum(1 for _, ttft, e in self._events if e is None and ttft > 0)
 
     def total_count(self, current_time: float) -> int:
         """Return successful latency samples plus failed attempts in the window."""
         self._prune(current_time)
-        successes = len(self._samples)
-        errors = sum(1 for _, e in self._events if e is not None)
+        successes = sum(1 for _, ttft, e in self._events if e is None and ttft > 0)
+        errors = sum(1 for _, _ttft, e in self._events if e is not None)
         return successes + errors
 
     def _prune(self, current_time: float) -> None:
         """Remove samples outside the time window."""
         cutoff = current_time - self.window_sec
-        self._samples = [(t, v) for t, v in self._samples if t >= cutoff]
-        self._events = [(t, e) for t, e in self._events if t >= cutoff]
+        # Outcomes are appended in observation-time order.  Bootstrap callers
+        # should replay history oldest-to-newest so this remains O(evicted).
+        while self._events and self._events[0][0] < cutoff:
+            self._events.popleft()
 
     def _get_latency_samples_sec(self, current_time: float) -> list[float]:
         """Get latency samples in seconds within the current window."""
-        cutoff = current_time - self.window_sec
-        return [v / 1000.0 for t, v in self._samples if t >= cutoff]
+        self._prune(current_time)
+        return [ttft / 1000.0 for _, ttft, e in self._events if e is None and ttft > 0]

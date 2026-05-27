@@ -42,6 +42,15 @@ routewise:
     window_hours: 24              # sliding window for L/U adaptation
     min_ratio: 10                 # floor for U/L to prevent degenerate thresholds
 
+  # --- Latency-aware routing ---
+  latency:
+    slo_sec: 3.0
+    window_sec: 900.0             # profile time window
+    max_samples: 5000             # bounded request outcomes retained per provider
+    min_samples: 10               # warmup threshold before LP/hedging use profile
+    unprofiled_ttft_ms: 5000.0    # conservative fallback for cold providers
+    hedge_mode: disabled
+
   # --- Canary rollout (future — not yet wired in bootstrap) ---
   # NOTE: configure_canary() is not called during startup yet.
   # These fields are reserved for future canary rollout support.

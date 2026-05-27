@@ -243,6 +243,7 @@ class RouteWiseRouter(BaseRouter):
                     self._latency_profiles[endpoint_id] = ProviderProfile(
                         endpoint_id=endpoint_id,
                         window_sec=self.config.latency_window_sec,
+                        max_samples=self.config.latency_max_samples_per_profile,
                     )
         self._validate_routes()
 

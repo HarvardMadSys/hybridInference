@@ -1,9 +1,7 @@
 """RouteWise policy configuration.
 
-Defines tunable parameters for the current RouteWise body router.  Some legacy
-fields remain accepted so existing configuration files continue to validate,
-but the production router now uses unified effective cost plus a
-cost-budgeted mean-TTFT LP rather than the old PD / LA-PD tier cascade.
+Defines tunable parameters for the current RouteWise body router, which uses
+unified effective cost plus a cost-budgeted mean-TTFT LP.
 """
 
 from __future__ import annotations
@@ -46,6 +44,8 @@ class RouteWiseConfig:
 
         latency_slo_sec: Target SLO for latency-aware routing (seconds).
         latency_window_sec: Profile moving window duration (seconds).
+        latency_max_samples_per_profile: Maximum request outcomes retained per
+            provider latency profile.
         latency_min_samples: Minimum samples before LP warmup.
         budget_alpha: Interpolation factor for the LP cost budget:
             ``c_min + alpha * (c_max - c_min)``.
@@ -89,6 +89,7 @@ class RouteWiseConfig:
     # Layer 2: Latency-aware provider selection
     latency_slo_sec: float = 3.0
     latency_window_sec: float = 900.0  # 15 min profile window
+    latency_max_samples_per_profile: int = 5000
     latency_min_samples: int = 10  # warmup threshold
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_hedge_mode: LatencyHedgeMode = "disabled"
@@ -189,7 +190,6 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
             "U_seed": "shadow_price_U_seed",
         },
         "output_predictor": {
-            "type": "predictor",
             "cold_start_tokens": "output_default_tokens",
             "default_tokens": "output_default_tokens",
             "min_bucket_samples": "output_min_bucket_samples",
@@ -199,6 +199,7 @@ def load_routewise_config(path: Path | None = None) -> RouteWiseConfig:
         "latency": {
             "slo_sec": "latency_slo_sec",
             "window_sec": "latency_window_sec",
+            "max_samples": "latency_max_samples_per_profile",
             "min_samples": "latency_min_samples",
             "unprofiled_ttft_ms": "latency_unprofiled_ttft_ms",
             "hedge_mode": "latency_hedge_mode",

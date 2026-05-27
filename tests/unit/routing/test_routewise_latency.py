@@ -74,6 +74,34 @@ class TestProviderProfile:
         # At t=200, window is [100, 200].
         assert profile.sample_count(200.0) == 1
 
+    def test_max_samples_evicts_oldest_outcomes(self):
+        """Profile storage is bounded by the configured outcome cap."""
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0, max_samples=3)
+
+        for i in range(5):
+            profile.record(100.0 + i, (i + 1) * 100.0)
+
+        assert profile.max_samples == 3
+        assert len(profile._events) == 3
+        assert profile.sample_count(200.0) == 3
+        assert [ttft for _t, ttft, _e in profile._events] == [300.0, 400.0, 500.0]
+
+    def test_max_samples_bounds_successes_and_errors_together(self):
+        """Success and error accounting use the same bounded outcome window."""
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0, max_samples=4)
+        now = 100.0
+
+        profile.record(now + 0, 100.0)
+        profile.record(now + 1, -1.0, error_type="timeout")
+        profile.record(now + 2, 200.0)
+        profile.record(now + 3, -1.0, error_type="rate_limit")
+        profile.record(now + 4, 300.0)
+
+        assert len(profile._events) == 4
+        assert profile.sample_count(now + 4) == 2
+        assert profile.total_count(now + 4) == 4
+        assert profile.error_rate(now + 4) == pytest.approx(0.5)
+
     def test_error_rate(self):
         """Error rate is correctly computed."""
         profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
@@ -111,3 +139,13 @@ class TestProviderProfile:
         assert profile.error_rate(now) == 0.0
         assert profile.sample_count(now) == 0
         assert profile.total_count(now) == 0
+
+    def test_invalid_max_samples_is_coerced_to_one(self):
+        profile = ProviderProfile(endpoint_id="ep1", max_samples=0)
+
+        profile.record(100.0, 100.0)
+        profile.record(101.0, 200.0)
+
+        assert profile.max_samples == 1
+        assert len(profile._events) == 1
+        assert profile.sample_count(101.0) == 1

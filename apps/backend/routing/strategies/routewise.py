@@ -62,6 +62,7 @@ class RouteWiseParams(BaseModel):
     # Layer 2: latency-aware provider selection
     latency_slo_sec: float = 3.0
     latency_window_sec: float = 900.0
+    latency_max_samples_per_profile: int = 5000
     latency_min_samples: int = 10
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_hedge_mode: Literal["disabled", "probability_target"] = "disabled"
