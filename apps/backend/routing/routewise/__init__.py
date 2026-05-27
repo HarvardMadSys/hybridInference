@@ -6,9 +6,6 @@ Exports:
                         ``config/routewise.yaml``.
     SubscriptionType -- Enum for quota / concurrency / API classification.
     load_routewise_config -- Loader helper for RouteWiseConfig.
-    EMAOutputPredictor -- Production EMA output-token predictor.
-    EMAState           -- Per-stream EMA tracking state.
-    QuantilePrediction -- Quantile prediction dataclass.
     QuotaManager       -- Daily quota manager with shadow price computation.
     ConcurrencyManager -- Production concurrency slot manager (K=0 binary gate).
     ProviderProfile    -- Real-time latency profile for an API endpoint.
@@ -31,9 +28,6 @@ from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import (
     BucketMeanOutputPredictor,
     BucketMeanPrediction,
-    EMAOutputPredictor,
-    EMAState,
-    QuantilePrediction,
 )
 from .quota import QuotaManager
 from .quota_snapshot import ProviderQuotaSnapshot, ProviderQuotaSnapshotStore
@@ -48,8 +42,6 @@ __all__ = [
     "ConcurrencyManager",
     "CostEnvelopeEstimator",
     "CostEnvelopeSnapshot",
-    "EMAOutputPredictor",
-    "EMAState",
     "HedgedAdapter",
     "LPCandidate",
     "LPSolution",
@@ -58,7 +50,6 @@ __all__ = [
     "ProviderProfile",
     "ProviderQuotaSnapshot",
     "ProviderQuotaSnapshotStore",
-    "QuantilePrediction",
     "QuotaManager",
     "QuotaSource",
     "RouteWiseConfig",

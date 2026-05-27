@@ -197,7 +197,7 @@ class TestRouteWiseRouterScaffold:
         """PD selects S_Q when estimated API cost exceeds shadow price.
 
         With per-1M prices (3.0 prompt, 15.0 completion) and cold-start
-        predictor (q50=500), v_t = 15/1M * 500 = 0.0075 > L_seed=0.001.
+        output prediction (500), v_t = 15/1M * 500 = 0.0075 > L_seed=0.001.
         """
         quota_adapter = _make_adapter(
             subscription_type="quota",
@@ -222,7 +222,7 @@ class TestRouteWiseRouterScaffold:
     def test_scaffold_selects_cheapest_api_by_request_cost(self):
         """Cheapest API is selected per-request, not by fixed unit sum.
 
-        With cold-start prediction (q50=500) and 0 prompt tokens, the
+        With cold-start output prediction (500) and 0 prompt tokens, the
         selection depends only on completion price.  Provider B (0.003/1M)
         beats Provider A (0.010/1M) on completion price.
         """
@@ -588,8 +588,8 @@ class TestRouteWisePDDecision:
         # No selection-commit: quota unchanged.
         assert router.quota_mgr.remaining == initial_remaining
 
-    def test_lapd_uses_conservative_lcb(self):
-        """LA-PD uses q10 (LCB) instead of q50 for value estimation."""
+    def test_legacy_decision_rule_does_not_change_value_estimate(self):
+        """Legacy decision_rule no longer changes point-estimate value."""
         config = RouteWiseConfig(decision_rule="lapd", daily_quota=10000)
         router, _quota_adapter, _api_adapter = _make_router_with_quota_and_api(config=config)
 
@@ -597,15 +597,13 @@ class TestRouteWisePDDecision:
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
-        # v_t with lapd should use q10 (lower), giving smaller value.
         v_lapd = router._estimate_value("test-model", 1000)
 
         # Compare against pd.
         router.config.decision_rule = "pd"
         v_pd = router._estimate_value("test-model", 1000)
 
-        # LA-PD value should be <= PD value because q10 <= q50.
-        assert v_lapd <= v_pd
+        assert v_lapd == v_pd
 
     def test_no_quota_adapter_always_selects_api(self):
         """Models with only S_A adapters never route to S_Q."""
