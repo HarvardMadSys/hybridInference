@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal
 
-from routewise.core import effective_cost as core_effective_cost, quota_effective_cost
+from routewise.core import quota_effective_cost
 
 ProviderTier = Literal["api", "quota", "concurrency"]
 
@@ -37,13 +37,7 @@ def api_request_cost_usd(
 
     prompt = max(float(prompt_tokens or 0), 0.0)
     output = max(float(predicted_output_tokens or 0), 0.0)
-    request_cost = (input_price_per_m * prompt + output_price_per_m * output) / 1_000_000.0
-    return core_effective_cost(
-        "api",
-        request_cost_usd=request_cost,
-        L=1.0,
-        U=2.0,
-    )
+    return (input_price_per_m * prompt + output_price_per_m * output) / 1_000_000.0
 
 
 def quota_shadow_price_usd(
