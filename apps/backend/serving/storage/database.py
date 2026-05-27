@@ -453,6 +453,17 @@ class DatabaseLogger:
                             "Migrated %d users from internal_group/developer to internal.",
                             migrated_roles,
                         )
+                    migrated_trial_tag = await conn.execute("""
+                        UPDATE users
+                        SET role = 'free'
+                        WHERE role = 'trial'
+                    """)
+                    migrated_trial = _parse_command_tag_count(migrated_trial_tag)
+                    if migrated_trial:
+                        logger.info(
+                            "Migrated %d users from trial to free.",
+                            migrated_trial,
+                        )
                     await conn.execute("""
                         ALTER TABLE users
                         ADD CONSTRAINT users_role_check
