@@ -842,6 +842,57 @@ class TestRouterHedgeMode:
         assert routewise["backup_won"] is True
 
     @pytest.mark.asyncio
+    async def test_probability_target_backup_tiebreak_uses_request_cost_not_shadow_price(self):
+        """Checkpoint backup selection matches SIM/REAL raw marginal-cost tiebreak."""
+        config = RouteWiseConfig(
+            budget_alpha=1.0,
+            daily_quota=10,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api_primary, quota, api_backup = _make_router_with_api_quota_and_api(config)
+
+        def _force_api_primary(candidates, solution):
+            return next(c for c in candidates if c.endpoint_id == "test-model:api-a")
+
+        router._sample_solution = _force_api_primary
+        for _ in range(9):
+            router.quota_mgr.consume()
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:quota-q"].record(now, 1.0)
+        router._latency_profiles["test-model:api-c"].record(now, 1.0)
+
+        async def _slow_primary(messages, **params):
+            await asyncio.sleep(0.2)
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
+
+        async def _fast_quota_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "quota-q"}
+
+        async def _api_backup_should_not_run(messages, **params):
+            raise AssertionError("API backup should lose to cheaper raw quota backup")
+
+        api_primary.chat_completion = _slow_primary
+        quota.chat_completion = _fast_quota_backup
+        api_backup.chat_completion = _api_backup_should_not_run
+
+        before = router.quota_mgr.remaining
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "quota-q"
+        assert before - router.quota_mgr.remaining == 1
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["backup_provider"] == "test-model:quota-q"
+        assert routewise["backup_tier"] == "quota"
+        assert routewise["backup_won"] is True
+
+    @pytest.mark.asyncio
     async def test_probability_target_reselects_backup_at_checkpoint(self):
         """Checkpoint hedging re-evaluates current state instead of using a stale backup."""
         config = RouteWiseConfig(

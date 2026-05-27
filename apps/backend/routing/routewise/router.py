@@ -86,6 +86,7 @@ class FeasibleProviderCandidate:
     tier: Literal["api", "quota", "concurrency"]
     weight: float
     effective_cost_usd: float
+    request_cost_usd: float
     mean_ttft_sec: float
     cost_reason: str
     quota_source: QuotaSource | None = None
@@ -581,14 +582,16 @@ class RouteWiseRouter(BaseRouter):
             if not circuit.allow_request():
                 continue
 
+            request_cost = self._api_cost_for_pricing(
+                route_candidate.pricing,
+                prompt_tokens=prompt_tokens,
+                output_tokens=predicted_output_tokens,
+            )
+
             tier: Literal["api", "quota", "concurrency"]
             if route_candidate.subscription_type is SubscriptionType.API:
                 tier = "api"
-                cost = self._api_cost_for_pricing(
-                    route_candidate.pricing,
-                    prompt_tokens=prompt_tokens,
-                    output_tokens=predicted_output_tokens,
-                )
+                cost = request_cost
                 reason = "cold_api_cost"
             elif route_candidate.subscription_type is SubscriptionType.QUOTA:
                 quota_source = route_candidate.quota_source
@@ -634,6 +637,7 @@ class RouteWiseRouter(BaseRouter):
                     tier=tier,
                     weight=route_candidate.weight,
                     effective_cost_usd=cost,
+                    request_cost_usd=request_cost,
                     mean_ttft_sec=self._mean_ttft_sec(endpoint_id, now),
                     cost_reason=reason,
                     quota_source=quota_source,
@@ -727,6 +731,9 @@ class RouteWiseRouter(BaseRouter):
             "lp_status": solution.status,
             "lp_weights": dict(solution.weights),
             "candidate_costs_usd": {c.endpoint_id: c.effective_cost_usd for c in candidates},
+            "candidate_request_costs_usd": {
+                c.endpoint_id: c.request_cost_usd for c in candidates
+            },
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
             "candidate_tiers": {c.endpoint_id: c.tier for c in candidates},
             "candidate_quota_used_fraction": {
@@ -927,7 +934,7 @@ class RouteWiseRouter(BaseRouter):
                 BackupCandidate(
                     provider=candidate,
                     success_probability=success_probability,
-                    marginal_cost=candidate.effective_cost_usd,
+                    marginal_cost=candidate.request_cost_usd,
                     true_mean_ms=candidate.mean_ttft_sec * 1000.0,
                     success_target=HEDGE_SUCCESS_TARGET,
                 )
