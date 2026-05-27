@@ -16,9 +16,6 @@ Exports:
     CheckpointBackupDispatch -- Shared checkpoint backup dispatch dataclass.
     CheckpointBackupSelector -- Protocol for checkpoint-time backup selection.
     ProviderEventSink  -- Protocol for per-provider outcome reporting.
-    solve_provider_lp  -- LP solver for cost-minimization with tail constraints.
-    solve_provider_lp_with_relaxation -- LP solver with progressive relaxation.
-    pre_filter_providers -- Hard-filter providers by basic requirements.
 """
 
 from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
@@ -31,11 +28,6 @@ from .envelope import CostEnvelopeEstimator, CostEnvelopeSnapshot
 from .hedging import HedgedAdapter, ProviderEventSink
 from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
-from .lp_solver import (
-    pre_filter_providers,
-    solve_provider_lp,
-    solve_provider_lp_with_relaxation,
-)
 from .predictor import (
     BucketMeanOutputPredictor,
     BucketMeanPrediction,
@@ -74,9 +66,6 @@ __all__ = [
     "SubscriptionType",
     "api_request_cost_usd",
     "load_routewise_config",
-    "pre_filter_providers",
     "quota_shadow_price_usd",
     "solve_cost_budgeted_mean_ttft",
-    "solve_provider_lp",
-    "solve_provider_lp_with_relaxation",
 ]
