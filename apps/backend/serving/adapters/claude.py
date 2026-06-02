@@ -227,6 +227,7 @@ class ClaudeAdapter(BaseAdapter):
         output_tokens = 0
         cache_read_input_tokens = 0
         cache_creation_input_tokens = 0
+        cache_read_reported = False
         finish_reason = "stop"
 
         accumulator = ToolCallAccumulator()
@@ -307,6 +308,9 @@ class ClaudeAdapter(BaseAdapter):
                     cache_creation_input_tokens = int(
                         usage_data.get("cache_creation_input_tokens", 0) or 0
                     )
+                    cache_read_reported = (
+                        cache_read_reported or "cache_read_input_tokens" in usage_data
+                    )
                     thinking_tokens = int(usage_data.get("thinking_tokens", 0) or 0)
 
                     # Yield content chunk if present
@@ -356,6 +360,7 @@ class ClaudeAdapter(BaseAdapter):
                             base_url=self.config.base_url,
                             cache_read_tokens=cache_read_input_tokens,
                             cache_write_tokens=cache_creation_input_tokens,
+                            cache_read_reported=cache_read_reported,
                             reasoning_tokens=thinking_tokens,
                         )
                         yield done_sentinel()
@@ -377,6 +382,7 @@ class ClaudeAdapter(BaseAdapter):
                         base_url=self.config.base_url,
                         cache_read_tokens=cache_read_input_tokens,
                         cache_write_tokens=cache_creation_input_tokens,
+                        cache_read_reported=cache_read_reported,
                         reasoning_tokens=thinking_tokens,
                     )
                     yield done_sentinel()
@@ -391,6 +397,8 @@ class ClaudeAdapter(BaseAdapter):
                     output_tokens = result.output_tokens
                 if result.cache_read_tokens:
                     cache_read_input_tokens = result.cache_read_tokens
+                if result.cache_read_reported:
+                    cache_read_reported = True
                 if result.cache_write_tokens:
                     cache_creation_input_tokens = result.cache_write_tokens
 
@@ -414,6 +422,7 @@ class ClaudeAdapter(BaseAdapter):
                         output_tokens=output_tokens,
                         cache_read_input_tokens=cache_read_input_tokens,
                         cache_creation_input_tokens=cache_creation_input_tokens,
+                        cache_read_reported=cache_read_reported,
                     )
                     final_chunk = {
                         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",

@@ -9,9 +9,10 @@ paper/simulator body-routing semantics:
 
 When ``latency_hedge_mode="probability_target"``, the router may wrap the
 selected primary in a delayed ``HedgedAdapter`` using RouteWise checkpoint
-probability math.  Prefix-cache hits are not predicted at route time: API costs
-and the ``L/U`` envelope use a cold-cache assumption, while actual billing
-remains cache-aware in the serving/storage path.
+probability math. Prefix-cache hits are observed by default without changing
+routing. When the guarded cost-adjustment flag is enabled, API candidates may
+use the session-scoped prefix estimate as part of their effective cost before
+the LP; the ``L/U`` envelope and actual billing remain driven by observed cost.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from .config import RouteWiseConfig
 
 from routing.routers import BaseRouter, RoutingObservation
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
 
@@ -66,6 +68,7 @@ from .hedging import HedgedAdapter
 from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
+from .prefix_cache import PrefixCacheShadow, price_delta_per_token
 from .quota import QuotaManager
 from .quota_snapshot import ProviderQuotaSnapshotStore
 
@@ -76,6 +79,7 @@ PENDING_DECISIONS_TTL_SECONDS: float = 300.0
 PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
 PROBABILITY_TARGET_HEDGE_MODE: str = "probability_target"
 RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
+_PREFIX_CACHE_PENDING_MAX: int = 10_000
 _WORKER_COUNT_ENV_KEYS = (
     "WEB_CONCURRENCY",
     "UVICORN_WORKERS",
@@ -95,6 +99,9 @@ class FeasibleProviderCandidate:
     request_cost_usd: float
     mean_ttft_sec: float
     cost_reason: str
+    prefix_cache_discount_usd: float = 0.0
+    prefix_cache_expected_tokens: float = 0.0
+    prefix_cache_adjustment_applied: bool = False
     quota_source: QuotaSource | None = None
     quota_used_fraction: float | None = None
     quota_remaining: int | None = None
@@ -213,9 +220,16 @@ class RouteWiseRouter(BaseRouter):
         self.conc_mgr: ConcurrencyManager | None = (
             ConcurrencyManager(config) if self.config.concurrency_enabled else None
         )
+        self.prefix_cache_shadow = PrefixCacheShadow(
+            enabled=(
+                self.config.prefix_cache_shadow_enabled
+                or self.config.prefix_cache_cost_adjustment_enabled
+            ),
+        )
 
         self._latency_profiles: dict[str, ProviderProfile] = {}
         self._pending_decisions: dict[str, dict[str, Any]] = {}
+        self._prefix_cache_pending: dict[str, tuple[Any, dict[str, Any]]] = {}
         self._primary_reservations: dict[str, ProviderReservation] = {}
         self._route_commit_lock = threading.RLock()
         self._sweep_task: asyncio.Task[None] | None = None
@@ -319,6 +333,8 @@ class RouteWiseRouter(BaseRouter):
         evicted = 0
         for request_id in stale:
             decision = self._pending_decisions.pop(request_id, None)
+            with self._route_commit_lock:
+                self._prefix_cache_pending.pop(request_id, None)
             if decision is None:
                 continue
             evicted += 1
@@ -446,8 +462,7 @@ class RouteWiseRouter(BaseRouter):
         uncalibrated: list[tuple[str, str]] = []
         for model_id, candidates in self.route_candidates.items():
             if not any(
-                candidate.subscription_type is SubscriptionType.QUOTA
-                for candidate in candidates
+                candidate.subscription_type is SubscriptionType.QUOTA for candidate in candidates
             ):
                 continue
             pool = self._routewise_pool(model_id)
@@ -625,6 +640,7 @@ class RouteWiseRouter(BaseRouter):
         predicted_output_tokens: float,
         envelope: CostEnvelopeSnapshot | None,
         now: float,
+        context: dict[str, Any] | None = None,
     ) -> list[FeasibleProviderCandidate]:
         model_id = self._canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id)
@@ -632,6 +648,7 @@ class RouteWiseRouter(BaseRouter):
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
 
         candidates: list[FeasibleProviderCandidate] = []
+        prefix_context = self._prefix_cache_cost_context(model_id, context)
 
         for route_candidate in entries:
             adapter = route_candidate.adapter
@@ -652,6 +669,23 @@ class RouteWiseRouter(BaseRouter):
                 tier = "api"
                 cost = request_cost
                 reason = "cold_api_cost"
+                prefix_discount = 0.0
+                prefix_expected = 0.0
+                prefix_applied = False
+                if prefix_context is not None:
+                    (
+                        cost,
+                        prefix_discount,
+                        prefix_expected,
+                        prefix_applied,
+                    ) = self._apply_prefix_cache_cost_adjustment(
+                        model_id=model_id,
+                        route_candidate=route_candidate,
+                        cold_cost=request_cost,
+                        prefix_context=prefix_context,
+                    )
+                    if prefix_applied:
+                        reason = "prefix_cache_adjusted_api_cost"
             elif route_candidate.subscription_type is SubscriptionType.QUOTA:
                 if envelope is None:
                     # No calibrated envelope: skip quota tier rather than
@@ -682,6 +716,9 @@ class RouteWiseRouter(BaseRouter):
                     upper=envelope.upper,
                 )
                 reason = "quota_shadow_price"
+                prefix_discount = 0.0
+                prefix_expected = 0.0
+                prefix_applied = False
             elif route_candidate.subscription_type is SubscriptionType.CONCURRENCY:
                 if self.conc_mgr is None or self.conc_mgr.available <= 0:
                     continue
@@ -691,6 +728,9 @@ class RouteWiseRouter(BaseRouter):
                 quota_source = None
                 used_fraction = None
                 quota_remaining = None
+                prefix_discount = 0.0
+                prefix_expected = 0.0
+                prefix_applied = False
             else:
                 continue
 
@@ -709,12 +749,97 @@ class RouteWiseRouter(BaseRouter):
                     request_cost_usd=request_cost,
                     mean_ttft_sec=self._mean_ttft_sec(endpoint_id, now),
                     cost_reason=reason,
+                    prefix_cache_discount_usd=prefix_discount,
+                    prefix_cache_expected_tokens=prefix_expected,
+                    prefix_cache_adjustment_applied=prefix_applied,
                     quota_source=quota_source,
                     quota_used_fraction=used_fraction,
                     quota_remaining=quota_remaining,
                 )
             )
         return candidates
+
+    def _prefix_cache_cost_context(
+        self,
+        model_id: str,
+        context: dict[str, Any] | None,
+    ) -> tuple[tuple[Any, ...], dict[str, Any]] | None:
+        """Return request prefix-cache inputs for cost adjustment, if eligible."""
+        if not self.config.prefix_cache_cost_adjustment_enabled or context is None:
+            return None
+        params = context.get("params")
+        session = str(params.get("session_id") or "") if isinstance(params, dict) else ""
+        if not session:
+            return None
+        messages = context.get("messages") or []
+        try:
+            blocks = self.prefix_cache_shadow.build_blocks(
+                messages,
+                tools=params.get("tools") if isinstance(params, dict) else None,
+                response_format=params.get("response_format") if isinstance(params, dict) else None,
+            )
+        except Exception:
+            logger.debug("prefix_cache cost build_blocks failed", exc_info=True)
+            return None
+        user = str(req_ctx.get().get("affinity_key") or "")
+        cache_params = self._cache_affecting_params(params)
+        return blocks, {
+            "model_id": model_id,
+            "session": session,
+            "user": user,
+            "cache_params": cache_params,
+        }
+
+    def _apply_prefix_cache_cost_adjustment(
+        self,
+        *,
+        model_id: str,
+        route_candidate: RouteProviderCandidate,
+        cold_cost: float,
+        prefix_context: tuple[tuple[Any, ...], dict[str, Any]],
+    ) -> tuple[float, float, float, bool]:
+        """Return API effective cost after a guarded prefix-cache discount."""
+        adapter = route_candidate.adapter
+        if self._has_rotating_key_pool(adapter):
+            return cold_cost, 0.0, 0.0, False
+        delta = price_delta_per_token(
+            route_candidate.pricing.prompt,
+            route_candidate.pricing.cache_read,
+        )
+        if delta <= 0.0:
+            return cold_cost, 0.0, 0.0, False
+
+        blocks, info = prefix_context
+        provider_id = str(getattr(adapter.config, "provider", "") or "")
+        scope = self.prefix_cache_shadow.scope_for(
+            session=str(info["session"]),
+            provider_id=provider_id,
+            endpoint_id=route_candidate.endpoint_id,
+            model_profile=model_id,
+            user=str(info["user"]),
+            cache_params=str(info["cache_params"]),
+        )
+        record = self.prefix_cache_shadow.evaluate(
+            scope,
+            blocks,
+            cold_cost=cold_cost,
+            price_delta=delta,
+        )
+        discount = record.shadow_cache_discount if record.would_apply else 0.0
+        adjusted = max(0.0, cold_cost - discount)
+        return adjusted, discount, record.expected_cached_tokens, record.would_apply
+
+    @staticmethod
+    def _has_rotating_key_pool(adapter: Any) -> bool:
+        keys = getattr(adapter.config, "api_keys", None)
+        return isinstance(keys, list) and len(keys) > 1
+
+    @staticmethod
+    def _routing_dollar_estimate(candidate: FeasibleProviderCandidate) -> float:
+        """Return the decision-time dollar estimate for metadata / hedging cost."""
+        if candidate.tier == "api":
+            return candidate.effective_cost_usd
+        return candidate.request_cost_usd
 
     def _sample_solution(
         self,
@@ -837,8 +962,17 @@ class RouteWiseRouter(BaseRouter):
             "lp_status": solution.status,
             "lp_weights": dict(solution.weights),
             "candidate_costs_usd": {c.endpoint_id: c.effective_cost_usd for c in candidates},
-            "candidate_request_costs_usd": {
-                c.endpoint_id: c.request_cost_usd for c in candidates
+            "candidate_request_costs_usd": {c.endpoint_id: c.request_cost_usd for c in candidates},
+            "candidate_cost_reasons": {c.endpoint_id: c.cost_reason for c in candidates},
+            "candidate_prefix_cache_discounts_usd": {
+                c.endpoint_id: c.prefix_cache_discount_usd
+                for c in candidates
+                if c.prefix_cache_discount_usd > 0
+            },
+            "candidate_prefix_cache_expected_tokens": {
+                c.endpoint_id: c.prefix_cache_expected_tokens
+                for c in candidates
+                if c.prefix_cache_expected_tokens > 0
             },
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
             "candidate_tiers": {c.endpoint_id: c.tier for c in candidates},
@@ -865,9 +999,7 @@ class RouteWiseRouter(BaseRouter):
             "stateful_tiers_single_worker_only": self.config.stateful_tiers_single_worker_only,
             "L": envelope.lower if envelope is not None else None,
             "U": envelope.upper if envelope is not None else None,
-            "envelope_sample_count": (
-                envelope.sample_count if envelope is not None else 0
-            ),
+            "envelope_sample_count": (envelope.sample_count if envelope is not None else 0),
             "quota_source": (
                 {
                     "provider": selected.quota_source.provider,
@@ -905,12 +1037,13 @@ class RouteWiseRouter(BaseRouter):
             "hedge_delay_ms": None,
             "hedge_success_probability": None,
             "lp_budget_usd": solution.budget_usd,
-            # Decision-time raw dollar estimate at predicted tokens. This is
-            # separate from selected_effective_cost_usd, which may be a shadow
-            # price for S_Q/S_C.
-            "primary_routing_estimated_cost_usd": selected.request_cost_usd,
+            # Decision-time dollar estimate at predicted tokens. API uses the
+            # effective cost because guarded prefix-cache adjustment is part of
+            # the S_A cost formula; S_Q/S_C retain the raw API reference because
+            # their effective cost is a quota/concurrency shadow price.
+            "primary_routing_estimated_cost_usd": self._routing_dollar_estimate(selected),
             "backup_routing_estimated_cost_usd": None,
-            "routing_estimated_cost_usd": selected.request_cost_usd,
+            "routing_estimated_cost_usd": self._routing_dollar_estimate(selected),
             # lp_weights and lp_status (above) already use canonical names.
         }
 
@@ -940,6 +1073,7 @@ class RouteWiseRouter(BaseRouter):
         *,
         model_id: str,
         request_id: str | None,
+        context: dict[str, Any] | None,
         prompt_tokens: int,
         predicted_output_tokens: float,
         envelope: CostEnvelopeSnapshot | None,
@@ -954,6 +1088,7 @@ class RouteWiseRouter(BaseRouter):
             return self._select_checkpoint_backup_locked(
                 model_id=model_id,
                 request_id=request_id,
+                context=context,
                 prompt_tokens=prompt_tokens,
                 predicted_output_tokens=predicted_output_tokens,
                 envelope=envelope,
@@ -968,6 +1103,7 @@ class RouteWiseRouter(BaseRouter):
         *,
         model_id: str,
         request_id: str | None,
+        context: dict[str, Any] | None,
         prompt_tokens: int,
         predicted_output_tokens: float,
         envelope: CostEnvelopeSnapshot | None,
@@ -989,6 +1125,7 @@ class RouteWiseRouter(BaseRouter):
             predicted_output_tokens=predicted_output_tokens,
             envelope=envelope,
             now=checkpoint_ts,
+            context=context,
         )
         current = self._select_hedge_candidate_at_elapsed(
             primary_profile=primary_profile,
@@ -1067,7 +1204,7 @@ class RouteWiseRouter(BaseRouter):
                 BackupCandidate(
                     provider=candidate,
                     success_probability=success_probability,
-                    marginal_cost=candidate.request_cost_usd,
+                    marginal_cost=self._routing_dollar_estimate(candidate),
                     true_mean_ms=candidate.mean_ttft_sec * 1000.0,
                     success_target=HEDGE_SUCCESS_TARGET,
                 )
@@ -1089,12 +1226,13 @@ class RouteWiseRouter(BaseRouter):
         meta["backup_tier"] = backup.tier
         meta["hedge_delay_ms"] = elapsed_sec * 1000.0
         meta["hedge_success_probability"] = success_probability
-        meta["backup_routing_estimated_cost_usd"] = backup.request_cost_usd
+        backup_cost = self._routing_dollar_estimate(backup)
+        meta["backup_routing_estimated_cost_usd"] = backup_cost
         primary_cost = meta.get("primary_routing_estimated_cost_usd")
         if primary_cost is not None:
-            meta["routing_estimated_cost_usd"] = float(primary_cost) + backup.request_cost_usd
+            meta["routing_estimated_cost_usd"] = float(primary_cost) + backup_cost
         else:
-            meta["routing_estimated_cost_usd"] = backup.request_cost_usd
+            meta["routing_estimated_cost_usd"] = backup_cost
 
     def _apply_hedge_execution_metadata(self, adapter: Any, request_id: str | None) -> None:
         """Update pending RouteWise metadata after a HedgedAdapter has run."""
@@ -1167,6 +1305,7 @@ class RouteWiseRouter(BaseRouter):
             predicted_output_tokens=prediction.tokens,
             envelope=envelope,
             now=now,
+            context=context,
         )
         if not candidates:
             return None
@@ -1196,6 +1335,7 @@ class RouteWiseRouter(BaseRouter):
                 )
                 adapter: BaseAdapter = selected.adapter
                 if hedge_plan is not None:
+
                     def _select_checkpoint_backup_for_request(
                         elapsed_sec: float,
                         checkpoint_ts: float,
@@ -1207,6 +1347,7 @@ class RouteWiseRouter(BaseRouter):
                         return self._select_checkpoint_backup(
                             model_id=model_id,
                             request_id=request_id,
+                            context=context,
                             prompt_tokens=prompt_tokens,
                             predicted_output_tokens=prediction.tokens,
                             envelope=envelope,
@@ -1234,11 +1375,139 @@ class RouteWiseRouter(BaseRouter):
                         selected=selected,
                         hedge_plan=hedge_plan,
                     )
+                if self.prefix_cache_shadow.enabled:
+                    self._record_prefix_cache_shadow(model_id, context, candidates, request_id)
                 return adapter
             candidates = [c for c in candidates if c.endpoint_id != selected.endpoint_id]
             if not candidates:
                 return None
         return None
+
+    def _record_prefix_cache_shadow(
+        self,
+        model_id: str,
+        context: dict[str, Any],
+        candidates: list[FeasibleProviderCandidate],
+        request_id: str | None,
+    ) -> None:
+        """Record per-candidate prefix-cache diagnostics.
+
+        Session-scoped only: requests without a session id are skipped. Records
+        ``matched_prefix_tokens`` and the would-be discount per candidate into the
+        pending decision metadata, and stashes the request blocks and per-candidate
+        scopes keyed by ``request_id``. The actual ``remember`` is deferred to the
+        selected-success observation (:meth:`_commit_prefix_cache_observation`) so
+        failed, fallback, or lost-hedge attempts never warm prefix history.
+
+        ``key_slot`` is intentionally omitted from the scope. Cost adjustment
+        therefore skips endpoints backed by a rotating key pool, since prefix
+        cache is per key.
+        """
+        params = context.get("params")
+        session = str(params.get("session_id") or "") if isinstance(params, dict) else ""
+        if not session:
+            return
+        messages = context.get("messages") or []
+        try:
+            blocks = self.prefix_cache_shadow.build_blocks(
+                messages,
+                tools=params.get("tools") if isinstance(params, dict) else None,
+                response_format=params.get("response_format") if isinstance(params, dict) else None,
+            )
+        except Exception:
+            logger.debug("prefix_cache shadow build_blocks failed", exc_info=True)
+            return
+        user = str(req_ctx.get().get("affinity_key") or "")
+        cache_params = self._cache_affecting_params(params)
+        records: dict[str, dict[str, Any]] = {}
+        scopes: dict[str, Any] = {}
+        for candidate in candidates:
+            provider_id = str(getattr(candidate.adapter.config, "provider", "") or "")
+            scope = self.prefix_cache_shadow.scope_for(
+                session=session,
+                provider_id=provider_id,
+                endpoint_id=candidate.endpoint_id,
+                model_profile=model_id,
+                user=user,
+                cache_params=cache_params,
+            )
+            scopes[candidate.endpoint_id] = scope
+            pricing = self._candidate_pricing(model_id, candidate.endpoint_id)
+            delta = (
+                price_delta_per_token(pricing.prompt, pricing.cache_read)
+                if pricing is not None
+                else 0.0
+            )
+            record = self.prefix_cache_shadow.evaluate(
+                scope,
+                blocks,
+                cold_cost=candidate.request_cost_usd,
+                price_delta=delta,
+            )
+            records[candidate.endpoint_id] = {
+                "matched_prefix_tokens": record.matched_prefix_tokens,
+                "expected_cached_tokens": record.expected_cached_tokens,
+                "shadow_cache_discount_usd": record.shadow_cache_discount,
+                "would_apply": record.would_apply,
+            }
+        # Stash under the external request id from the request context — the same
+        # id that ``_commit_prefix_cache_observation`` reads at observation time.
+        # The ``request_id`` arg keys the diagnostics metadata, which may be the
+        # router's internal decision id and can differ from the external id.
+        stash_key = str(req_ctx.get().get("request_id") or request_id or "")
+        if stash_key:
+            self._prefix_cache_pending[stash_key] = (blocks, scopes)
+            while len(self._prefix_cache_pending) > _PREFIX_CACHE_PENDING_MAX:
+                self._prefix_cache_pending.pop(next(iter(self._prefix_cache_pending)), None)
+        if request_id and request_id in self._pending_decisions:
+            self._pending_decisions[request_id]["prefix_cache_shadow"] = records
+
+    def _commit_prefix_cache_observation(self, obs: RoutingObservation) -> None:
+        """On a selected success, commit the winning provider's prefix to memory.
+
+        Only successful observations warm history, and only under the endpoint that
+        actually served (``obs.endpoint_id``) — so failed, fallback, or lost-hedge
+        attempts are never recorded as warm. The request is correlated to its
+        route-time blocks via ``request_id`` from the request context.
+        """
+        request_id = str(req_ctx.get().get("request_id") or "")
+        if not request_id:
+            return
+        with self._route_commit_lock:
+            stashed = self._prefix_cache_pending.pop(request_id, None)
+        if not obs.success:
+            return
+        if stashed is None:
+            return
+        blocks, scopes = stashed
+        scope = scopes.get(obs.endpoint_id)
+        if scope is None:
+            return
+        self.prefix_cache_shadow.remember(
+            scope,
+            blocks,
+            observed_cached_tokens=getattr(obs, "cached_input_tokens", None),
+        )
+
+    def _candidate_pricing(
+        self,
+        model_id: str,
+        endpoint_id: str,
+    ) -> CandidatePricing | None:
+        """Return the parsed pricing for one route candidate, if present."""
+        for route_candidate in self.route_candidates.get(model_id, []):
+            if route_candidate.endpoint_id == endpoint_id:
+                return route_candidate.pricing
+        return None
+
+    @staticmethod
+    def _cache_affecting_params(params: Any) -> str:
+        """Return a stable string of the request params that bust prefix cache."""
+        if not isinstance(params, dict):
+            return ""
+        keys = ("temperature", "top_p", "top_k", "tools", "response_format")
+        relevant = {key: params[key] for key in keys if params.get(key) is not None}
+        return json.dumps(relevant, sort_keys=True, default=str)
 
     def _get_fallback_adapters(
         self,
@@ -1253,6 +1522,8 @@ class RouteWiseRouter(BaseRouter):
 
     def record_observation(self, obs: RoutingObservation) -> None:
         """Update output predictor, latency profile, and L/U envelope."""
+        if self.prefix_cache_shadow.enabled:
+            self._commit_prefix_cache_observation(obs)
         model_id = self._canonical_model_id(obs.model_id)
         if obs.completion_tokens > 0:
             self.predictor.update(model_id, obs.prompt_tokens, obs.completion_tokens)
@@ -1315,11 +1586,11 @@ class RouteWiseRouter(BaseRouter):
                     counts["latency_events"] += 1
 
                 for attempt in self._bootstrap_failed_attempts(row):
-                    failed_endpoint = self._string_or_none(
-                        attempt.get("endpoint_id")
-                    ) or self._string_or_none(
-                        attempt.get("base_url")
-                    ) or self._string_or_none(attempt.get("provider"))
+                    failed_endpoint = (
+                        self._string_or_none(attempt.get("endpoint_id"))
+                        or self._string_or_none(attempt.get("base_url"))
+                        or self._string_or_none(attempt.get("provider"))
+                    )
                     if not failed_endpoint or failed_endpoint not in self._latency_profiles:
                         continue
                     error_type = self._string_or_none(attempt.get("error_type")) or "error"

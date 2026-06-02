@@ -385,6 +385,7 @@ async def chat_completions(
     affinity_key = derive_affinity_key(auth_key_hash, get_client_ip(request))
     req_ctx.update(
         {
+            "request_id": request_id,
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": affinity_key,
         }
@@ -489,6 +490,11 @@ async def chat_completions(
     active_router = router_exec
     if model_router_registry is not None and not pin_provider:
         active_router = model_router_registry.get_router(model)
+
+    # Thread the external request id into params so the router correlates its
+    # routing metadata, prefix-cache stash, and observation under one id instead
+    # of generating a divergent internal id.
+    params["request_id"] = request_id
 
     # Streaming path
     if effective_stream:
@@ -703,6 +709,7 @@ async def chat_completions(
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
             ns_usage = normalize_usage(raw_usage) or {}
+            ns_cache_read = ns_usage.get("cache_read_tokens")
             completions_logger.record_routing_observation(
                 active_router,
                 model,
@@ -712,6 +719,7 @@ async def chat_completions(
                 prompt_tokens=int(ns_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(ns_usage.get("completion_tokens", 0) or 0),
                 success=True,
+                cached_input_tokens=int(ns_cache_read) if ns_cache_read is not None else None,
             )
 
         # Record 200 for non-streaming response

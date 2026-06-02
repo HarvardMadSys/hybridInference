@@ -92,6 +92,15 @@ class RouteWiseConfig:
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_hedge_mode: LatencyHedgeMode = "disabled"
 
+    # Session-scoped prefix-cache shadow: observe and estimate only. Default off;
+    # safe for any model.
+    prefix_cache_shadow_enabled: bool = False
+    # Guarded cache-aware cost adjustment. When enabled, API candidates can use
+    # the prefix-cache estimate as an effective-cost discount before the LP.
+    # Default off; rotating key-pool endpoints are skipped until key_slot is
+    # available in the cache scope.
+    prefix_cache_cost_adjustment_enabled: bool = False
+
     # Canary rollout controls
     canary_enabled: bool = False
     canary_enabled_models: list[str] | None = None  # None = all routewise models

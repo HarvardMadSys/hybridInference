@@ -106,6 +106,7 @@ class CompletionsLogger:
         prompt_tokens: int,
         completion_tokens: int,
         success: bool,
+        cached_input_tokens: int | None = None,
     ) -> None:
         """Emit a ``RoutingObservation`` for online-learning routers.
 
@@ -158,6 +159,7 @@ class CompletionsLogger:
             hedged=rw.get("hedged", False),
             backup_won=rw.get("backup_won", False),
             lp_status=rw.get("lp_status"),
+            cached_input_tokens=cached_input_tokens,
         )
         active_router.record_observation(obs)
 

@@ -448,6 +448,17 @@ class TestBuildFinalUsage:
         assert "cache_read_tokens" not in usage
         assert "cache_write_tokens" not in usage
 
+    def test_explicit_zero_reported_emits_cache_read(self):
+        # Provider reported cache_read_input_tokens: 0 (a real miss). It must be
+        # preserved so the RouteWise shadow records confirmed_miss, not unknown.
+        usage = build_final_usage(
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_input_tokens=0,
+            cache_read_reported=True,
+        )
+        assert usage["cache_read_tokens"] == 0
+
 
 # ===========================================================================
 # Tests for ClaudeAdapter (Vertex) streaming

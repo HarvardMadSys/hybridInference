@@ -76,6 +76,7 @@ def make_final_usage_chunk(
     reasoning_tokens: int = 0,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
+    cache_read_reported: bool = False,
 ) -> str:
     """Create the final SSE chunk carrying usage metrics.
 
@@ -116,7 +117,9 @@ def make_final_usage_chunk(
     # Add optional token fields if present
     if reasoning_tokens > 0:
         usage["reasoning_tokens"] = reasoning_tokens
-    if cache_read_tokens > 0:
+    # Emit cache_read even at an explicitly-reported 0 so downstream can tell a
+    # reported miss from "not reported" (see UsageInfo.to_dict).
+    if cache_read_reported or cache_read_tokens > 0:
         usage["cache_read_tokens"] = cache_read_tokens
     if cache_write_tokens > 0:
         usage["cache_write_tokens"] = cache_write_tokens

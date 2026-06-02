@@ -22,6 +22,9 @@ class UsageInfo:
     # Cache tokens for cost calculation
     cache_read_tokens: int = 0  # Tokens read from cache (cheaper)
     cache_write_tokens: int = 0  # Tokens written to cache (may have cost)
+    # True when the provider explicitly reported a cache-read count (even 0), so
+    # to_dict() can distinguish a reported miss (0) from "not reported" (absent).
+    cache_read_reported: bool = False
     # OpenRouter-reported per-request upstream cost in USD. Internal-only:
     # NOT serialized via to_dict() to avoid leaking to API clients. Logged
     # to api_logs.upstream_cost_usd for ops/billing reconciliation.
@@ -37,8 +40,11 @@ class UsageInfo:
         # Include reasoning tokens if present (for models like DeepSeek-R1)
         if self.reasoning_tokens > 0:
             result["reasoning_tokens"] = self.reasoning_tokens
-        # Include cache tokens if present (for transparency)
-        if self.cache_read_tokens > 0:
+        # Include cache tokens. Emit cache_read even when the provider reported
+        # an explicit 0 (cache_read_reported) so downstream can tell a reported
+        # miss (0) from "not reported" (absent); the RouteWise shadow uses this
+        # to classify confirmed_miss vs unknown.
+        if self.cache_read_reported or self.cache_read_tokens > 0:
             result["cache_read_tokens"] = self.cache_read_tokens
             result["cached_tokens"] = self.cache_read_tokens
         if self.cache_write_tokens > 0:

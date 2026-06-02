@@ -96,6 +96,7 @@ class RoutingObservation:
     hedged: bool = False
     backup_won: bool = False
     lp_status: str | None = None
+    cached_input_tokens: int | None = None
 
 
 @dataclass

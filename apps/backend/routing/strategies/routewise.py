@@ -65,6 +65,11 @@ class RouteWiseParams(BaseModel):
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_hedge_mode: Literal["disabled", "probability_target"] = "disabled"
 
+    # Session-scoped prefix-cache signals. Shadow only observes; cost adjustment
+    # feeds guarded estimates into API effective cost before the LP.
+    prefix_cache_shadow_enabled: bool = False
+    prefix_cache_cost_adjustment_enabled: bool = False
+
     # Canary rollout controls
     canary_enabled: bool = False
     canary_enabled_models: list[str] | None = None
