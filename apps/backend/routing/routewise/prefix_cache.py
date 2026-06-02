@@ -32,6 +32,7 @@ import json
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -240,7 +241,7 @@ class SessionProviderPrefixMemory:
         self._max_entries = int(max_entries)
         self._min_match_tokens = int(min_match_tokens)
         self._time = time_source
-        self._entries: dict[CacheScope, _Entry] = {}
+        self._entries: OrderedDict[CacheScope, _Entry] = OrderedDict()
         self._lock = threading.Lock()
 
     def lookup(
@@ -258,6 +259,7 @@ class SessionProviderPrefixMemory:
                 if entry is not None:
                     del self._entries[scope]
                 return CacheSignal.empty()
+            self._entries.move_to_end(scope)
             matched = longest_common_prefix_tokens(current_blocks, entry.blocks)
             return CacheSignal(
                 matched_prefix_tokens=matched,
@@ -289,6 +291,7 @@ class SessionProviderPrefixMemory:
         with self._lock:
             prior = self._entries.get(scope)
             if prior is not None and self._is_expired(prior, ts):
+                del self._entries[scope]
                 prior = None
 
             hit = prior.confirmed_hit_count if prior is not None else 0
@@ -310,22 +313,20 @@ class SessionProviderPrefixMemory:
                 unknown_count=unknown,
                 last_observed_cached_tokens=observed_cached_tokens,
             )
-            self._evict_locked(ts)
+            self._entries.move_to_end(scope)
+            self._evict_locked()
 
     def __len__(self) -> int:
-        """Return the number of live scopes currently held."""
+        """Return the number of scopes currently held."""
         with self._lock:
             return len(self._entries)
 
     def _is_expired(self, entry: _Entry, now: float) -> bool:
         return self._ttl_sec > 0 and (now - entry.last_seen_at) > self._ttl_sec
 
-    def _evict_locked(self, now: float) -> None:
-        for scope in [s for s, e in self._entries.items() if self._is_expired(e, now)]:
-            del self._entries[scope]
+    def _evict_locked(self) -> None:
         while len(self._entries) > self._max_entries:
-            oldest = min(self._entries, key=lambda s: self._entries[s].last_seen_at)
-            del self._entries[oldest]
+            self._entries.popitem(last=False)
 
 
 # ---------------------------------------------------------------------------

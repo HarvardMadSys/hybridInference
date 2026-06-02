@@ -173,6 +173,31 @@ class TestSessionProviderPrefixMemory:
         assert mem.lookup(_scope(session="a"), _blocks(("x", 10)), now=4.0).has_history is False
         assert mem.lookup(_scope(session="c"), _blocks(("x", 10)), now=4.0).has_history is True
 
+    def test_lru_lookup_refreshes_recency(self):
+        mem = SessionProviderPrefixMemory(max_entries=2, ttl_sec=0.0, min_match_tokens=1)
+        mem.observe(_scope(session="a"), _blocks(("x", 10)), observed_cached_tokens=1, now=1.0)
+        mem.observe(_scope(session="b"), _blocks(("x", 10)), observed_cached_tokens=1, now=2.0)
+
+        assert mem.lookup(_scope(session="a"), _blocks(("x", 10)), now=3.0).has_history is True
+        mem.observe(_scope(session="c"), _blocks(("x", 10)), observed_cached_tokens=1, now=4.0)
+
+        assert mem.lookup(_scope(session="a"), _blocks(("x", 10)), now=5.0).has_history is True
+        assert mem.lookup(_scope(session="b"), _blocks(("x", 10)), now=5.0).has_history is False
+        assert mem.lookup(_scope(session="c"), _blocks(("x", 10)), now=5.0).has_history is True
+
+    def test_expired_entries_are_removed_lazily_by_scope(self):
+        mem = SessionProviderPrefixMemory(max_entries=3, ttl_sec=10.0, min_match_tokens=1)
+        expired = _scope(session="expired")
+        live = _scope(session="live")
+
+        mem.observe(expired, _blocks(("x", 10)), observed_cached_tokens=1, now=0.0)
+        mem.observe(live, _blocks(("x", 10)), observed_cached_tokens=1, now=20.0)
+        assert len(mem) == 2
+
+        assert mem.lookup(expired, _blocks(("x", 10)), now=20.0).has_history is False
+        assert len(mem) == 1
+        assert mem.lookup(live, _blocks(("x", 10)), now=20.0).has_history is True
+
     def test_observe_classifies_hit_miss_unknown(self):
         mem = SessionProviderPrefixMemory(min_match_tokens=1)
         scope = _scope()
