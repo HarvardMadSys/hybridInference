@@ -41,6 +41,7 @@ class CandidatePricing:
         *,
         context: str = "pricing",
     ) -> CandidatePricing:
+        """Parse provider pricing metadata from route configuration."""
         raw = raw or {}
         if not isinstance(raw, Mapping):
             raise ValueError(f"{context} must be a mapping; got {type(raw).__name__}")
@@ -68,6 +69,7 @@ class QuotaSource:
 
     @classmethod
     def from_raw(cls, raw: Mapping[str, Any], *, context: str = "quota_source") -> QuotaSource:
+        """Parse a provider quota-source descriptor."""
         provider = _required_str(raw, "provider", context)
         usage_label = _required_str(raw, "usage_label", context)
         unit = _required_str(raw, "unit", context)
@@ -100,6 +102,7 @@ class ProviderCandidate:
 
     @property
     def tier(self) -> str:
+        """Return the normalized subscription tier string."""
         return self.subscription_type.value
 
 
@@ -108,7 +111,6 @@ def build_provider_candidates(
     adapters_with_weights: Sequence[tuple[BaseAdapter, float]],
 ) -> list[ProviderCandidate]:
     """Normalize a model route into RouteWise provider candidates."""
-
     candidates: list[ProviderCandidate] = []
     seen_endpoint_ids: set[str] = set()
 
@@ -179,7 +181,6 @@ def build_provider_candidates(
 
 def endpoint_id_for_adapter(adapter: BaseAdapter) -> str:
     """Return the configured endpoint id, falling back to provider."""
-
     config = adapter.config
     endpoint_id = _optional_str_attr(config, "endpoint_id")
     if endpoint_id:
@@ -190,7 +191,6 @@ def endpoint_id_for_adapter(adapter: BaseAdapter) -> str:
 
 def subscription_type_for_adapter(adapter: BaseAdapter) -> SubscriptionType:
     """Parse adapter ``subscription_type``, defaulting unknown values to API."""
-
     raw = _optional_str_attr(adapter.config, "subscription_type") or SubscriptionType.API.value
     try:
         return SubscriptionType(raw)

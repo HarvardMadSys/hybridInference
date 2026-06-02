@@ -49,7 +49,6 @@ def solve_cost_budgeted_mean_ttft(
     enumeration; this module only maps hybridInference endpoint snapshots into
     the core API and preserves the existing ``LPSolution`` wrapper contract.
     """
-
     finite = [
         c
         for c in candidates

@@ -273,7 +273,7 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
 
 
 @pytest.mark.asyncio
-async def test_patch_routewise_setting_rejects_unknown_key(admin_client):
+async def test_patch_routewise_setting_rejects_unknown_routewise_key(admin_client):
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(return_value=None)
 

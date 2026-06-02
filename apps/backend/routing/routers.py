@@ -201,9 +201,7 @@ class RoutingObservation:
         self.completion_tokens = resolved_completion_tokens
         self.strategy_metadata = metadata
         self.cached_input_tokens = (
-            None
-            if cached_input_tokens is _OBSERVATION_LEGACY_UNSET
-            else cached_input_tokens
+            None if cached_input_tokens is _OBSERVATION_LEGACY_UNSET else cached_input_tokens
         )
 
 
@@ -1149,6 +1147,7 @@ class FixedRouter(BaseRouter):
                 stage="adapter_stream",
             ).inc()
             self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+            failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
                 raise primary_error
@@ -1167,7 +1166,11 @@ class FixedRouter(BaseRouter):
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        yield _routing_chunk(adapter, fallback=True)
+                        yield _routing_chunk(
+                            adapter,
+                            fallback=True,
+                            failed_attempts=failed_attempts,
+                        )
                         first = True
                         started = time.perf_counter()
                         adapter_endpoint_id = _get_endpoint_id(adapter)
@@ -1186,12 +1189,13 @@ class FixedRouter(BaseRouter):
                         reason=primary_error.__class__.__name__,
                     ).inc()
                     return
-                except Exception:
+                except Exception as fallback_error:
                     STREAMING_INTERRUPTION.labels(
                         model=model_id,
                         provider=normalize_provider_label(adapter_endpoint_id),
                         stage="adapter_stream",
                     ).inc()
                     self._on_failure(adapter_endpoint_id, reason="stream_exception")
+                    failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
             raise primary_error

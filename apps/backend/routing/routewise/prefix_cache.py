@@ -455,7 +455,7 @@ class PrefixCacheShadow:
 
     @property
     def memory(self) -> SessionProviderPrefixMemory:
-        """Return the backing prefix memory (for metrics and tests)."""
+        """Expose the backing prefix memory for metrics and tests."""
         return self._memory
 
     def build_blocks(

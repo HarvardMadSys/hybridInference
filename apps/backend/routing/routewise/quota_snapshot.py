@@ -42,14 +42,17 @@ class ProviderQuotaSnapshot:
 
     @property
     def effective_used(self) -> float:
+        """Return provider usage plus local optimistic increments."""
         return min(self.limit, self.used + self.local_increment)
 
     @property
     def remaining(self) -> int:
+        """Return the remaining request quota after local increments."""
         return max(0, int(self.limit - self.effective_used))
 
     @property
     def used_fraction(self) -> float:
+        """Return effective quota usage as a clamped fraction."""
         if self.limit <= 0:
             return 1.0
         return min(max(self.effective_used / self.limit, 0.0), 1.0)
@@ -70,7 +73,6 @@ class ProviderQuotaSnapshotStore:
 
     def get(self, source: QuotaSource) -> ProviderQuotaSnapshot | None:
         """Return the effective snapshot for a quota source, if available."""
-
         with self._lock:
             snapshot = self._snapshots.get(source)
             if snapshot is None:
@@ -86,7 +88,6 @@ class ProviderQuotaSnapshotStore:
 
     def consume(self, source: QuotaSource) -> bool:
         """Optimistically consume one request for a quota source."""
-
         with self._lock:
             snapshot = self._snapshots.get(source)
             if snapshot is None:
@@ -100,7 +101,6 @@ class ProviderQuotaSnapshotStore:
 
     async def refresh_once(self, sources: Iterable[QuotaSource]) -> None:
         """Refresh snapshots for the requested quota sources."""
-
         unique_sources = {source for source in sources if source.provider in self._fetchers}
         if not unique_sources:
             return

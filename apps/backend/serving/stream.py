@@ -96,6 +96,7 @@ def make_final_usage_chunk(
         reasoning_tokens: Reasoning tokens count (for models like GPT-5/o1/DeepSeek-R1).
         cache_read_tokens: Tokens read from cache (for cost calculation).
         cache_write_tokens: Tokens written to cache (for cost calculation).
+        cache_read_reported: Whether the provider explicitly reported cache-read usage.
     """
     prompt_tokens = (
         int(prompt_tokens_override)

@@ -123,12 +123,14 @@ class ProviderReservation:
     acquired: bool = False
 
     def acquire(self) -> bool:
+        """Acquire quota or concurrency for the candidate if needed."""
         if self.acquired:
             return True
         self.acquired = self.router._commit_candidate(self.candidate)
         return self.acquired
 
     def release(self) -> None:
+        """Release a previously acquired reservation."""
         if not self.acquired:
             return
         self.router._release_candidate(self.candidate)
@@ -154,7 +156,6 @@ def _dedupe_failed_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, An
 
 def _configured_worker_count() -> int | None:
     """Best-effort detection for common ASGI worker-count environment vars."""
-
     for key in _WORKER_COUNT_ENV_KEYS:
         raw = os.getenv(key)
         if raw is None:
@@ -480,7 +481,6 @@ class RouteWiseRouter(BaseRouter):
         envelope before requests are served. Pure API or pure concurrency
         models are unaffected.
         """
-
         uncalibrated: list[tuple[str, str]] = []
         for model_id, candidates in self.route_candidates.items():
             if not any(
@@ -1076,7 +1076,6 @@ class RouteWiseRouter(BaseRouter):
         now: float,
     ) -> HedgePlan | None:
         """Return the checkpoint schedule for probability-target hedging."""
-
         if self.config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
             return None
 
@@ -1105,7 +1104,6 @@ class RouteWiseRouter(BaseRouter):
         checkpoint_ts: float,
     ) -> CheckpointBackupDispatch | None:
         """Select and reserve a backup at one in-flight checkpoint."""
-
         with self._route_commit_lock:
             return self._select_checkpoint_backup_locked(
                 model_id=model_id,
@@ -1258,7 +1256,6 @@ class RouteWiseRouter(BaseRouter):
 
     def _apply_hedge_execution_metadata(self, adapter: Any, request_id: str | None) -> None:
         """Update pending RouteWise metadata after a HedgedAdapter has run."""
-
         if not request_id or request_id not in self._pending_decisions:
             return
         if not isinstance(adapter, HedgedAdapter):
@@ -1295,11 +1292,11 @@ class RouteWiseRouter(BaseRouter):
     # ------------------------------------------------------------------
 
     def on_provider_success(self, provider: str) -> None:
-        """ProviderEventSink hook used by HedgedAdapter."""
+        """Record a provider success emitted by HedgedAdapter."""
         self._on_success(provider)
 
     def on_provider_failure(self, provider: str, reason: str) -> None:
-        """ProviderEventSink hook used by HedgedAdapter."""
+        """Record a provider failure emitted by HedgedAdapter."""
         self._on_failure(provider, reason=reason)
 
     def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
@@ -1781,6 +1778,7 @@ class RouteWiseRouter(BaseRouter):
     async def chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
+        """Run a non-streaming RouteWise chat completion."""
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
@@ -1806,6 +1804,7 @@ class RouteWiseRouter(BaseRouter):
     async def stream_chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ) -> AsyncIterator[Any]:
+        """Run a streaming RouteWise chat completion."""
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]

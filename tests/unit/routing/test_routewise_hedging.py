@@ -20,6 +20,7 @@ from routing.routewise.hedging import (
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+
 class _FakeEventSink:
     """Test double for ProviderEventSink."""
 
@@ -745,9 +746,9 @@ class TestRouterHedgeMode:
                 "error": "primary failed",
             }
         ]
-        assert resp["_routing"]["routewise"]["failed_attempts"] == resp["_routing"][
-            "failed_attempts"
-        ]
+        assert (
+            resp["_routing"]["routewise"]["failed_attempts"] == resp["_routing"]["failed_attempts"]
+        )
 
     @pytest.mark.asyncio
     async def test_probability_target_primary_wins_before_dispatch(self):
@@ -1026,6 +1027,7 @@ class TestRouterHedgeMode:
         assert routewise["backup_provider"] == "test-model:api-c"
         assert routewise["backup_tier"] == "api"
         assert routewise["backup_won"] is True
+
 
 # ===========================================================================
 # TestProviderEventSinkProtocol

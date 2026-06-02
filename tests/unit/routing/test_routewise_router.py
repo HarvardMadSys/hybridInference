@@ -1321,9 +1321,7 @@ class TestRouteWiseSCDecision:
             concurrency_limit=4,
             daily_quota=5000,
         )
-        router, _conc_adapter, _quota_adapter, api_adapter = _make_router_three_tier(
-            config=config
-        )
+        router, _conc_adapter, _quota_adapter, api_adapter = _make_router_three_tier(config=config)
         _warm_envelope(router, lower=0.001, upper=0.500)
 
         for _ in range(25):

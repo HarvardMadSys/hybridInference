@@ -71,12 +71,7 @@ class TestLoadFromYAML:
 
     def test_load_nested_db_bootstrap_yaml(self, tmp_path: Path):
         """Nested db_bootstrap section is flattened correctly."""
-        yaml_content = (
-            "routewise:\n"
-            "  db_bootstrap:\n"
-            "    enabled: false\n"
-            "    max_rows: 123\n"
-        )
+        yaml_content = "routewise:\n  db_bootstrap:\n    enabled: false\n    max_rows: 123\n"
         p = tmp_path / "routewise.yaml"
         p.write_text(yaml_content)
 

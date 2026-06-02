@@ -22,11 +22,13 @@ class BucketMeanState:
 
     @property
     def mean(self) -> float:
+        """Return the current arithmetic mean, or zero before observations."""
         if self.count <= 0:
             return 0.0
         return self.total / self.count
 
     def update(self, value: float) -> None:
+        """Add one positive observation to the running mean."""
         if value <= 0:
             return
         self.total += value

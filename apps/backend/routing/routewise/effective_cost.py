@@ -34,7 +34,6 @@ def api_request_cost_usd(
     ``estimated_cached_tokens = 0`` for routing and envelope calibration.
     Actual post-completion billing remains cache-aware elsewhere.
     """
-
     prompt = max(float(prompt_tokens or 0), 0.0)
     output = max(float(predicted_output_tokens or 0), 0.0)
     return (input_price_per_m * prompt + output_price_per_m * output) / 1_000_000.0
@@ -46,8 +45,7 @@ def quota_shadow_price_usd(
     lower: float,
     upper: float,
 ) -> float:
-    """RouteWise exponential quota shadow price ``L * (U/L)^z``."""
-
+    """Compute the Routewise quota shadow price ``L * (U/L)^z``."""
     lower = max(float(lower), 1e-12)
     upper = max(float(upper), lower)
     if math.isclose(upper, lower):

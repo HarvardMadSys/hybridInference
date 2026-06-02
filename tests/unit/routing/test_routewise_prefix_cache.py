@@ -589,9 +589,10 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
         assert meta["candidate_cost_reasons"]["prov-b:h:1"] == "prefix_cache_adjusted_api_cost"
         assert meta["candidate_prefix_cache_discounts_usd"]["prov-b:h:1"] > 0
         assert meta["candidate_prefix_cache_expected_tokens"]["prov-b:h:1"] > 0
-        assert meta["candidate_costs_usd"]["prov-b:h:1"] < meta["candidate_request_costs_usd"][
-            "prov-b:h:1"
-        ]
+        assert (
+            meta["candidate_costs_usd"]["prov-b:h:1"]
+            < meta["candidate_request_costs_usd"]["prov-b:h:1"]
+        )
         assert meta["primary_routing_estimated_cost_usd"] == pytest.approx(
             meta["selected_effective_cost_usd"]
         )

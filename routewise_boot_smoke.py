@@ -56,9 +56,7 @@ def build_fixed_router() -> tuple[FixedRouter, int]:
     from serving.servers.registry import register_from_models_yaml
 
     fr = FixedRouter()
-    count, _infos = register_from_models_yaml(
-        fr, MODELS_YAML, continue_on_missing_env=True
-    )
+    count, _infos = register_from_models_yaml(fr, MODELS_YAML, continue_on_missing_env=True)
     return fr, count
 
 
@@ -176,6 +174,7 @@ def dump(
 
 
 def main() -> None:
+    """Run the RouteWise boot smoke check."""
     print("RouteWise boot smoke: building from real config/models.yaml ...")
     fr, count = build_fixed_router()
     print(f"  register_from_models_yaml: {count} route ids registered")
@@ -186,8 +185,10 @@ def main() -> None:
     print(f"  {MODEL_ID} legs: {legs}")
 
     cold = make_router(fr)
-    print(f"  RouteWiseRouter built; budget_alpha = {cold.config.budget_alpha}, "
-          f"concurrency_enabled = {cold.config.concurrency_enabled}")
+    print(
+        f"  RouteWiseRouter built; budget_alpha = {cold.config.budget_alpha}, "
+        f"concurrency_enabled = {cold.config.concurrency_enabled}"
+    )
     dump(cold, "COLD (no traffic; quota dark: envelope uncalibrated)")
 
     warmed = make_router(fr)
