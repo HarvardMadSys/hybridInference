@@ -54,10 +54,6 @@ class RouteWiseConfig:
     budget_alpha: float = 0.75
     random_seed: int | None = None
     reference_api_price: dict[str, Any] | None = None
-    # Compatibility-only admin/runtime knob retained for the pre-LP RouteWise
-    # API surface. The current body router records this value but does not use
-    # it in provider selection.
-    decision_rule: Literal["pd", "lapd"] = "pd"
     db_bootstrap_enabled: bool = True
     db_bootstrap_max_rows: int = 50_000
 

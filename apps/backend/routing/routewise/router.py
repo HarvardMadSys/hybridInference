@@ -257,19 +257,15 @@ class RouteWiseRouter(BaseRouter):
     def apply_runtime_overrides(
         self,
         *,
-        decision_rule: str | None = None,
         daily_quota: int | None = None,
         latency_slo_sec: float | None = None,
         latency_min_samples: int | None = None,
     ) -> None:
         """Apply live RouteWise runtime settings from the admin API.
 
-        The current body router no longer has a PD/LA-PD ``decision_rule`` knob;
-        accepting it keeps the runtime-settings endpoint backward compatible
-        without changing this router's LP semantics.
+        The current body router exposes only live knobs that affect LP inputs
+        or resource accounting.
         """
-        if decision_rule is not None:
-            self.config.decision_rule = decision_rule
         if daily_quota is not None:
             self.config.daily_quota = daily_quota
             used_today = self.quota_mgr.used_today

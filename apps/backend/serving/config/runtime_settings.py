@@ -115,11 +115,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "Default daily USD spend quota seeded onto an admin user's active API key at signup."
         ),
     },
-    "routewise_decision_rule": {
-        "type": "str",
-        "default": "pd",
-        "description": "Decision rule for Routewise routing (pd or lapd)",
-    },
     "routewise_daily_quota": {
         "type": "int",
         "default": 5000,

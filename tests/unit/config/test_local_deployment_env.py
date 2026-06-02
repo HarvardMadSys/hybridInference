@@ -47,9 +47,8 @@ def test_minimax_fast_uses_routewise() -> None:
         "stream",
     ]
     assert minimax_fast["router"] == "routewise"
-    assert minimax_fast["router_params"]["predictor"] == "histogram"
-    assert minimax_fast["router_params"]["latency_cost_budget_alpha"] == 0.5
-    assert minimax_fast["router_params"]["latency_hedge_success_target"] == 0.99
+    assert minimax_fast["router_params"]["budget_alpha"] == 0.5
+    assert minimax_fast["router_params"]["latency_hedge_mode"] == "probability_target"
     assert minimax_fast["aliases"] == ["MiniMax-Fast"]
     assert {route["subscription_type"] for route in minimax_fast["route"]} == {"api"}
 
@@ -59,33 +58,29 @@ def test_minimax_fast_lists_routewise_options_in_comments() -> None:
     text = (ROOT / "config" / "models.yaml").read_text()
 
     for option in [
-        "decision_rule",
-        "predictor",
-        "risk_quantile",
+        "budget_alpha",
         "daily_quota",
         "quota_monthly_fee",
         "reset_timezone",
+        "quota_snapshot_refresh_interval_sec",
         "concurrency_enabled",
         "concurrency_limit",
         "concurrency_monthly_fee",
-        "shadow_price_L_seed",
-        "shadow_price_U_seed",
-        "shadow_price_adaptive",
         "shadow_price_window_hours",
-        "shadow_price_min_ratio",
+        "envelope_lower_percentile",
+        "envelope_upper_percentile",
+        "output_default_tokens",
+        "output_min_bucket_samples",
+        "output_min_model_samples",
+        "output_min_global_samples",
         "latency_slo_sec",
-        "latency_target_cdf",
-        "latency_error_penalty",
         "latency_window_sec",
+        "latency_max_samples_per_profile",
         "latency_min_samples",
-        "latency_lp_interval_sec",
-        "latency_swrr_alpha",
-        "latency_relaxation_factors",
+        "latency_unprofiled_ttft_ms",
         "latency_hedge_mode",
-        "latency_cost_budget_alpha",
-        "latency_hedge_success_target",
-        "latency_hedge_cost_ratio",
-        "latency_hedge_dispatch_overhead_sec",
+        "prefix_cache_shadow_enabled",
+        "prefix_cache_cost_adjustment_enabled",
         "canary_enabled",
         "canary_enabled_models",
         "canary_traffic_fraction",
