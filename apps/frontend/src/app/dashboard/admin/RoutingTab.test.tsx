@@ -33,6 +33,7 @@ describe('RoutingTab', () => {
     vi.mocked(listRouteWeights).mockResolvedValue([
       {
         model_id: 'gpt-4o-mini',
+        strategy: 'fixed',
         endpoint_id: 'gpt-4o-mini:local',
         provider: 'local',
         base_url: 'http://localhost:8000',
@@ -53,6 +54,7 @@ describe('RoutingTab', () => {
     vi.mocked(listRouteWeights).mockResolvedValue([
       {
         model_id: 'gpt-4o-mini',
+        strategy: 'fixed',
         endpoint_id: 'gpt-4o-mini:remote',
         provider: 'remote',
         base_url: 'https://api.example.test',
@@ -63,6 +65,7 @@ describe('RoutingTab', () => {
     ]);
     vi.mocked(setRouteWeight).mockResolvedValue({
       model_id: 'gpt-4o-mini',
+      strategy: 'fixed',
       endpoint_id: 'gpt-4o-mini:remote',
       provider: 'remote',
       base_url: 'https://api.example.test',
@@ -87,6 +90,7 @@ describe('RoutingTab', () => {
     vi.mocked(listRouteWeights).mockResolvedValue([
       {
         model_id: 'gpt-4o-mini',
+        strategy: 'fixed',
         endpoint_id: 'gpt-4o-mini:remote',
         provider: 'remote',
         base_url: 'https://api.example.test',
@@ -97,6 +101,7 @@ describe('RoutingTab', () => {
     ]);
     vi.mocked(clearRouteWeight).mockResolvedValue({
       model_id: 'gpt-4o-mini',
+      strategy: 'fixed',
       endpoint_id: 'gpt-4o-mini:remote',
       provider: 'remote',
       base_url: 'https://api.example.test',
@@ -116,5 +121,63 @@ describe('RoutingTab', () => {
       expect(clearRouteWeight).toHaveBeenCalledWith('gpt-4o-mini', 'gpt-4o-mini:remote');
     });
     expect(screen.queryByText('Override active')).not.toBeInTheDocument();
+  });
+
+  it('filters out routewise models from the routing table', async () => {
+    vi.mocked(listRouteWeights).mockResolvedValue([
+      {
+        model_id: 'fixed-model',
+        strategy: 'fixed',
+        endpoint_id: 'fixed-model:local',
+        provider: 'local',
+        base_url: 'http://localhost:8000',
+        yaml_weight: 1,
+        override_weight: null,
+        effective_weight: 1,
+      },
+      {
+        model_id: 'routewise-model',
+        strategy: 'routewise',
+        endpoint_id: 'routewise-model:remote',
+        provider: 'remote',
+        base_url: 'https://api.example.test',
+        yaml_weight: 2,
+        override_weight: 3,
+        effective_weight: 3,
+      },
+    ]);
+
+    render(<RoutingTab />);
+
+    expect(await screen.findByText('fixed-model')).toBeInTheDocument();
+    expect(screen.getByText('fixed-model:local')).toBeInTheDocument();
+    expect(screen.queryByText('routewise-model')).not.toBeInTheDocument();
+    expect(screen.queryByText('routewise-model:remote')).not.toBeInTheDocument();
+  });
+
+  it('treats an empty runtime weight input as invalid', async () => {
+    vi.mocked(listRouteWeights).mockResolvedValue([
+      {
+        model_id: 'gpt-4o-mini',
+        strategy: 'fixed',
+        endpoint_id: 'gpt-4o-mini:remote',
+        provider: 'remote',
+        base_url: 'https://api.example.test',
+        yaml_weight: 2,
+        override_weight: null,
+        effective_weight: 2,
+      },
+    ]);
+
+    render(<RoutingTab />);
+
+    const input = await screen.findByLabelText('Runtime weight for gpt-4o-mini:remote');
+    const saveButton = screen.getByRole('button', {
+      name: 'Save gpt-4o-mini:remote weight',
+    });
+
+    fireEvent.change(input, { target: { value: '' } });
+
+    expect(saveButton).toBeDisabled();
   });
 });

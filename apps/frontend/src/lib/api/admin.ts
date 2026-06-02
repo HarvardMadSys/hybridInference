@@ -188,7 +188,9 @@ export interface UserDetail {
   usage_month_usd: number;
   usage_month_requests: number;
   models_used: string[];
+  disabled_models: string[];
   last_request_at: string | null;
+  max_concurrent_requests: number | null;
 }
 
 export async function getUserDetail(userId: string): Promise<UserDetail> {
@@ -201,6 +203,8 @@ export interface UpdateUserData {
   status?: string;
   quota_daily_cost_usd?: number;
   quota_monthly_cost_usd?: number;
+  disabled_models?: string[];
+  max_concurrent_requests?: number | null;
 }
 
 export async function updateUser(
@@ -419,6 +423,18 @@ export interface AdminRecentRequestItem {
   total_tokens?: number | null;
   cost_usd?: number | null;
   error?: string | null;
+  routewise?: AdminRouteWiseDecision | null;
+}
+
+export interface AdminRouteWiseDecision {
+  selected_tier?: string | null;
+  selected_provider?: string | null;
+  selected_endpoint_id?: string | null;
+  hedging_triggered?: boolean | null;
+  hedge_backup_provider?: string | null;
+  hedge_backup_endpoint_id?: string | null;
+  backup_won?: boolean | null;
+  lp_status?: string | null;
 }
 
 export interface AdminRecentRequestsResponse {
@@ -507,6 +523,7 @@ export interface BroadcastPreviewRequest {
   template_vars?: Record<string, string>;
   subject?: string;
   body_html?: string;
+  body_markdown?: string;
   body_text?: string;
   target_roles: string[];
   target_statuses: string[];
@@ -734,6 +751,9 @@ export interface ProviderStatsResponse {
   providers: string[];
   models: string[];
   pairs: ProviderModelPair[];
+  // Providers that have rows inside the selected window. The dropdown lists
+  // above span the full retained table regardless of the selected range.
+  window_providers: string[];
 }
 
 export async function getProviderStats(params: {
@@ -945,8 +965,39 @@ export async function updateModelVisibility(
   return jsonOrThrow<AdminModelVisibilityItem>(resp);
 }
 
+export interface AdminModelConcurrencyItem {
+  model_id: string;
+  exempt: boolean;
+}
+
+export interface ListAdminModelConcurrencyResponse {
+  models: AdminModelConcurrencyItem[];
+}
+
+export async function listModelConcurrency(): Promise<ListAdminModelConcurrencyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/models/concurrency');
+  return jsonOrThrow<ListAdminModelConcurrencyResponse>(resp);
+}
+
+export async function updateModelConcurrency(
+  modelId: string,
+  exempt: boolean,
+): Promise<AdminModelConcurrencyItem> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/models/${encodeURIComponent(modelId)}/concurrency`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exempt }),
+    },
+  );
+  return jsonOrThrow<AdminModelConcurrencyItem>(resp);
+}
+
 export interface RouteWeight {
   model_id: string;
+  strategy: string;
   endpoint_id: string;
   provider: string;
   base_url: string | null;
@@ -958,6 +1009,22 @@ export interface RouteWeight {
 export interface ListRouteWeightsResponse {
   model_id?: string;
   routes: RouteWeight[];
+}
+
+export type RoutewiseSettingValue = string | number | boolean | null;
+
+export interface RoutewiseSettingItem {
+  key: string;
+  value: RoutewiseSettingValue;
+  value_type: string;
+  default_value: RoutewiseSettingValue;
+  description: string;
+  min?: number | null;
+  max?: number | null;
+}
+
+export interface ListRoutewiseSettingsResponse {
+  settings: RoutewiseSettingItem[];
 }
 
 export async function listRouteWeights(modelId?: string): Promise<RouteWeight[]> {
@@ -995,6 +1062,27 @@ export async function clearRouteWeight(modelId: string, endpointId: string): Pro
   return jsonOrThrow<RouteWeight>(resp);
 }
 
+export async function listRoutewiseSettings(): Promise<ListRoutewiseSettingsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/routewise/settings');
+  return jsonOrThrow<ListRoutewiseSettingsResponse>(resp);
+}
+
+export async function updateRoutewiseSetting(
+  key: string,
+  value: RoutewiseSettingValue,
+): Promise<RoutewiseSettingItem> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routewise/settings/${encodeURIComponent(key)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    },
+  );
+  return jsonOrThrow<RoutewiseSettingItem>(resp);
+}
+
 // ========================================
 // Provider API Keys (admin-managed runtime credentials)
 // ========================================
@@ -1022,6 +1110,12 @@ export interface AddProviderApiKeyResponse {
 }
 
 export interface DeleteProviderApiKeyResponse {
+  id: string;
+  provider: string;
+  pools_updated: number;
+}
+
+export interface DisableProviderEnvKeyResponse {
   id: string;
   provider: string;
   pools_updated: number;
@@ -1058,4 +1152,16 @@ export async function deleteProviderKey(id: string): Promise<DeleteProviderApiKe
     method: 'DELETE',
   });
   return jsonOrThrow<DeleteProviderApiKeyResponse>(resp);
+}
+
+export async function disableProviderEnvKey(
+  provider: string,
+  envKeyId: string,
+): Promise<DisableProviderEnvKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/disable-env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, env_key_id: envKeyId }),
+  });
+  return jsonOrThrow<DisableProviderEnvKeyResponse>(resp);
 }

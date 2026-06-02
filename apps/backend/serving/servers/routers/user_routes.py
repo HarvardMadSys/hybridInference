@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from serving.exceptions import (
     UserNotFoundError,
 )
+from serving.model_access import get_disabled_models_from_preferences
 from serving.schemas import ModelList
 from serving.schemas_auth import (
     APIKeyDeleteResponse,
@@ -54,6 +55,7 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.routers.models import _build_model_list_async
+from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -77,6 +79,11 @@ _RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES: int = 4096
 _RECENT_REQUESTS_COUNT_CACHE: OrderedDict[tuple[str, str | None], tuple[float, int]] = OrderedDict()
 
 
+def _escape_ilike_substring_term(term: str) -> str:
+    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
+    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
 def _build_user_recent_requests_filters(
     user_id: str, model_id: str | None
 ) -> tuple[str, list[Any]]:
@@ -88,8 +95,8 @@ def _build_user_recent_requests_filters(
     where_clauses = ["user_id = $1"]
     params: list[Any] = [user_id]
     if model_id:
-        params.append(model_id)
-        where_clauses.append(f"model_id = ${len(params)}")
+        params.append(_escape_ilike_substring_term(model_id))
+        where_clauses.append(f"model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
     return " AND ".join(where_clauses), params
 
 
@@ -277,13 +284,20 @@ async def get_user_models(
     router_exec=Depends(get_router),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
+    op_store=Depends(get_operational_store),
 ) -> ModelList:
     """List models available to the current dashboard user."""
+    disabled_models: list[str] = []
+    if op_store:
+        disabled_models = get_disabled_models_from_preferences(
+            await op_store.get_user_preferences(current_user["user_id"])
+        )
     return await _build_model_list_async(
         router_exec=router_exec,
         embedding_adapters=embedding_adapters,
         user_role=current_user.get("role", "free"),
         model_visibility_resolver=model_visibility_resolver,
+        user_ctx={**current_user, "disabled_models": disabled_models},
     )
 
 
@@ -483,6 +497,7 @@ async def delete_api_key(
     key_prefix: str,
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> APIKeyDeleteResponse:
     """Revoke an active key or remove a revoked key owned by the current user."""
     if not db_logger or not db_logger.pool:
@@ -558,6 +573,10 @@ async def delete_api_key(
             current_user["user_id"],
             audit_details,
         )
+        # Revoke bypasses CachedOperationalStore, so evict the auth cache entry
+        # explicitly so the key cannot be used after revocation.
+        if audit_action == "revoke_key" and op_store:
+            await op_store.invalidate_auth_caches()
         return response
 
     if not existing:
@@ -855,7 +874,8 @@ async def get_recent_requests(
                     status_code, latency_ms, ttft_ms, stream,
                     prompt_tokens, completion_tokens, reasoning_tokens,
                     cache_read_tokens, cache_write_tokens,
-                    total_tokens, cost_usd, error
+                    total_tokens, cost_usd, error,
+                    metadata->'routewise' AS routewise
                 FROM api_logs
                 WHERE {where_sql}
                 ORDER BY timestamp DESC
@@ -889,6 +909,7 @@ async def get_recent_requests(
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
+            routewise=coerce_json_object(row["routewise"]),
         )
         for row in rows
     ]

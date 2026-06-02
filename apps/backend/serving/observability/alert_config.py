@@ -131,7 +131,6 @@ class UserOverrun(BaseModel):
     cooldown_sec: int = 86400
     thresholds_per_role: dict[str, float] = Field(
         default_factory=lambda: {
-            "trial": 1.0,
             "free": 5.0,
             "pro": 50.0,
             "internal": 500.0,

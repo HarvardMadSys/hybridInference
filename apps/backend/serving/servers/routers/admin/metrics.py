@@ -30,6 +30,7 @@ from serving.servers.routers.admin._common import (
     _build_histogram,
     _round_or_none,
 )
+from serving.storage.utils import coerce_json_object
 
 router = APIRouter(prefix="/admin")
 
@@ -112,6 +113,11 @@ derived AS (
 
 _DECODE_MIN_WINDOW_MS = 2000
 _DECODE_MIN_TOKENS = 8
+
+
+def _escape_ilike_substring_term(term: str) -> str:
+    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
+    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
 def _decode_throughput_tps(
@@ -493,9 +499,12 @@ async def admin_get_ttft_scatter(
     """Return TTFT vs input length scatter data per (model, provider).
 
     For each (model_id, provider) pair, returns up to the last 1000 successful
-    streaming requests with a recorded TTFT and a non-empty prompt. The query
-    is bounded to the last 30 days so it stays bounded as `api_logs` grows.
-    `cache_hit` is true iff `cache_read_tokens > 0`.
+    streaming requests *per cache-hit class* (so up to 1000 cached and 1000
+    uncached) with a recorded TTFT and a non-empty prompt. Partitioning by
+    cache class keeps the rarer uncached series well-populated instead of
+    being crowded out by cache hits. The query is bounded to the last 90 days
+    so the `ROW_NUMBER()` scan stays bounded as `api_logs` grows. `cache_hit`
+    is true iff `cache_read_tokens > 0`.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
@@ -512,10 +521,12 @@ async def admin_get_ttft_scatter(
                     cache_read_tokens,
                     timestamp,
                     ROW_NUMBER() OVER (
-                        PARTITION BY model_id, provider ORDER BY timestamp DESC
+                        PARTITION BY
+                            model_id, provider, (COALESCE(cache_read_tokens, 0) > 0)
+                        ORDER BY timestamp DESC
                     ) AS rn
                 FROM api_logs
-                WHERE timestamp >= NOW() - INTERVAL '30 days'
+                WHERE timestamp >= NOW() - INTERVAL '90 days'
                   AND ttft_ms IS NOT NULL
                   AND prompt_tokens IS NOT NULL
                   AND prompt_tokens > 0
@@ -595,8 +606,8 @@ async def admin_list_recent_requests(
         params.append(user_id)
 
     if model_id:
-        where_clauses.append(f"l.model_id = ${len(params) + 1}")
-        params.append(model_id)
+        params.append(_escape_ilike_substring_term(model_id))
+        where_clauses.append(f"l.model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
 
     if status_code is not None:
         where_clauses.append(f"l.status_code = ${len(params) + 1}")
@@ -638,7 +649,8 @@ async def admin_list_recent_requests(
                 l.metadata->>'x_forwarded_for' AS x_forwarded_for,
                 l.metadata->>'user_agent' AS user_agent,
                 l.metadata->>'session_id' AS session_id,
-                l.metadata->>'surface' AS request_surface
+                l.metadata->>'surface' AS request_surface,
+                l.metadata->'routewise' AS routewise
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
             {where_sql}
@@ -684,6 +696,7 @@ async def admin_list_recent_requests(
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
+            routewise=coerce_json_object(row.get("routewise")),
         )
         for row in rows
     ]

@@ -36,6 +36,7 @@ from routing.routers import AllCircuitsOpenError
 from serving.exceptions import scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
 from serving.servers.routers.routing_info import RoutingInfo, merge_adapter_routing
+from serving.storage.utils import json_safe
 from serving.stream import make_role_chunk
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -52,7 +53,7 @@ logger = get_logger(__name__)
 # Keepalive cadence: emit an SSE comment after this many idle seconds so
 # intermediate proxies (Cloudflare 100s, Nginx 120s) see activity and don't
 # drop the connection during long upstream pauses (e.g., reasoning).
-_KEEPALIVE_INTERVAL = 30
+_KEEPALIVE_INTERVAL = 15
 _SENTINEL: Any = object()
 
 
@@ -542,6 +543,9 @@ class StreamSession:
             # Strip upstream_cost_usd from metadata JSONB; the dedicated column
             # api_logs.upstream_cost_usd is the canonical store. Avoids leaking the
             # internal cost into any future admin route that returns raw metadata.
+            # Persisted metadata intentionally keeps adapter-emitted legacy keys like
+            # routewise for DB log compatibility; RoutingInfo.strategy_metadata is
+            # only the in-process isolation boundary.
             self._metadata.update(
                 {k: v for k, v in self._adapter_routing.items() if k != "upstream_cost_usd"}
             )
@@ -634,6 +638,12 @@ class StreamSession:
         exc_status_code = _extract_exception_status_code(exc)
 
         if self._log_store and not self._is_synthetic_probe:
+            metadata_for_error = self._metadata
+            if isinstance(exc_routing, dict):
+                metadata_for_error = {
+                    **self._metadata,
+                    **json_safe({k: v for k, v in exc_routing.items() if k != "upstream_cost_usd"}),
+                }
             self._completions_logger.schedule_log(
                 self._request_id,
                 {
@@ -647,7 +657,7 @@ class StreamSession:
                     "status_code": exc_status_code,
                     "error": _format_exception_for_db(exc),
                     "params": self._params,
-                    "metadata": self._metadata,
+                    "metadata": metadata_for_error,
                     "ttft_ms": self._ttft.ttft_ms,
                     "pricing": None,
                     "request_payload": self._request_payload,

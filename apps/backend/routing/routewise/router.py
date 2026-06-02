@@ -254,6 +254,32 @@ class RouteWiseRouter(BaseRouter):
         self._last_lp_weights = {}
         self._rebuild_from_fixed_router()
 
+    def apply_runtime_overrides(
+        self,
+        *,
+        decision_rule: str | None = None,
+        daily_quota: int | None = None,
+        latency_slo_sec: float | None = None,
+        latency_min_samples: int | None = None,
+    ) -> None:
+        """Apply live RouteWise runtime settings from the admin API.
+
+        The current body router no longer has a PD/LA-PD ``decision_rule`` knob;
+        accepting it keeps the runtime-settings endpoint backward compatible
+        without changing this router's LP semantics.
+        """
+        if decision_rule is not None:
+            self.config.decision_rule = decision_rule
+        if daily_quota is not None:
+            self.config.daily_quota = daily_quota
+            used_today = self.quota_mgr.used_today
+            self.quota_mgr = QuotaManager(self.config)
+            self.quota_mgr._used_today = min(used_today, self.config.daily_quota)
+        if latency_slo_sec is not None:
+            self.config.latency_slo_sec = latency_slo_sec
+        if latency_min_samples is not None:
+            self.config.latency_min_samples = latency_min_samples
+
     def _rebuild_from_fixed_router(self) -> None:
         self.classified = {}
         self.route_candidates = {}

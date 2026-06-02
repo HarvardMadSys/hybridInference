@@ -14,7 +14,7 @@ from typing import Any
 
 import asyncpg
 
-from serving.storage.utils import calculate_cost
+from serving.storage.utils import calculate_cost, json_safe, strip_null_bytes
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
@@ -322,8 +322,8 @@ class DatabaseLogger:
                     password_hash TEXT NOT NULL,
                     user_name TEXT,
                     preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    role TEXT NOT NULL DEFAULT 'trial'
-                        CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin')),
+                    role TEXT NOT NULL DEFAULT 'free'
+                        CHECK (role IN ('free', 'pro', 'internal', 'admin')),
                     email_verified BOOLEAN DEFAULT FALSE,
                     status TEXT DEFAULT 'active'
                         CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
@@ -405,7 +405,7 @@ class DatabaseLogger:
                 ON users(created_at DESC) WHERE status = 'pending_approval'
             """)
 
-            # Add role column for permission levels (trial/free/pro/internal/admin)
+            # Add role column for permission levels (free/pro/internal/admin)
             await conn.execute("""
                 ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS role TEXT
@@ -413,7 +413,7 @@ class DatabaseLogger:
 
             await conn.execute("""
                 ALTER TABLE users
-                ALTER COLUMN role SET DEFAULT 'trial'
+                ALTER COLUMN role SET DEFAULT 'free'
             """)
 
             updated_roles_tag = await conn.execute("""
@@ -434,9 +434,9 @@ class DatabaseLogger:
             """)
 
             # Migrate legacy roles and rebuild users_role_check to the current
-            # allowed set (trial, free, pro, internal, admin). The constraint
+            # allowed set (free, pro, internal, admin). The constraint
             # must be dropped BEFORE the UPDATE — older DBs may have CHECK
-            # constraints that reject 'internal' or 'trial'.
+            # constraints that reject 'internal'.
             try:
                 async with conn.transaction():
                     await conn.execute("""
@@ -453,16 +453,27 @@ class DatabaseLogger:
                             "Migrated %d users from internal_group/developer to internal.",
                             migrated_roles,
                         )
+                    migrated_trial_tag = await conn.execute("""
+                        UPDATE users
+                        SET role = 'free'
+                        WHERE role = 'trial'
+                    """)
+                    migrated_trial = _parse_command_tag_count(migrated_trial_tag)
+                    if migrated_trial:
+                        logger.info(
+                            "Migrated %d users from trial to free.",
+                            migrated_trial,
+                        )
                     await conn.execute("""
                         ALTER TABLE users
                         ADD CONSTRAINT users_role_check
-                        CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin'))
+                        CHECK (role IN ('free', 'pro', 'internal', 'admin'))
                     """)
             except asyncpg.PostgresError as exc:
                 invalid_role_rows = await conn.fetch("""
                     SELECT id, email, role
                     FROM users
-                    WHERE role NOT IN ('trial', 'free', 'pro', 'internal', 'admin')
+                    WHERE role NOT IN ('free', 'pro', 'internal', 'admin')
                     ORDER BY created_at DESC
                     LIMIT 10
                 """)
@@ -481,7 +492,7 @@ class DatabaseLogger:
                     UPDATE users
                     SET role = 'admin'
                     WHERE lower(trim(email)) = ANY($1::text[])
-                      AND role IN ('trial', 'free')
+                      AND role IN ('free')
                     """,
                     admin_emails,
                 )
@@ -842,19 +853,31 @@ class DatabaseLogger:
         should_store_full = (
             store_full_content if store_full_content is not None else self.store_full_prompts
         )
+        sanitized_error = strip_null_bytes(error)
+        sanitized_metadata = strip_null_bytes(metadata)
+        sanitized_tools = strip_null_bytes((params or {}).get("tools"))
 
         if should_store_full:
             # Store full prompt and response text
-            prompt_str = json.dumps(prompt) if isinstance(prompt, list) else str(prompt)
+            sanitized_prompt = strip_null_bytes(prompt)
+            sanitized_response = strip_null_bytes(response)
+            sanitized_request_payload = strip_null_bytes(request_payload)
+            prompt_str = (
+                json.dumps(sanitized_prompt)
+                if isinstance(sanitized_prompt, list)
+                else str(sanitized_prompt)
+            )
             response_str = (
-                json.dumps(response)
-                if isinstance(response, dict)
-                else str(response)
-                if response is not None
+                json.dumps(json_safe(sanitized_response))
+                if isinstance(sanitized_response, dict)
+                else str(sanitized_response)
+                if sanitized_response is not None
                 else None
             )
             request_payload_str = (
-                json.dumps(request_payload) if request_payload is not None else None
+                json.dumps(json_safe(sanitized_request_payload))
+                if sanitized_request_payload is not None
+                else None
             )
         else:
             # Privacy mode: do not persist request/response content.
@@ -917,11 +940,11 @@ class DatabaseLogger:
                 request_payload_str,
                 # Metadata
                 status_code,
-                error,
-                (metadata or {}).get("user_id"),
-                (metadata or {}).get("session_id"),
-                json.dumps(metadata) if metadata else None,
-                json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
+                sanitized_error,
+                (sanitized_metadata or {}).get("user_id"),
+                (sanitized_metadata or {}).get("session_id"),
+                json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
+                json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
                 upstream_cost_usd,
             )
 

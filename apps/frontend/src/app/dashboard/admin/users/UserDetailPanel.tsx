@@ -1,6 +1,7 @@
 'use client';
 
-import type { AdminUser, UserDetail } from '@/lib/api/admin';
+import { hasRole } from '@/components/providers/AuthProvider';
+import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -20,10 +21,15 @@ export interface UserDetailPanelProps {
   detail: UserDetail;
   editRole: string;
   editQuota: string;
+  editDisabledModels: string[];
+  editMaxConcurrent: string;
+  availableModels: AdminModelVisibilityItem[];
   saving: boolean;
   busy: string | null;
   onChangeRole: (role: string) => void;
   onChangeQuota: (quota: string) => void;
+  onChangeDisabledModels: (modelIds: string[]) => void;
+  onChangeMaxConcurrent: (val: string) => void;
   onSave: () => void;
   onSuspend: (userId: string) => void;
   onReactivate: (userId: string) => void;
@@ -38,10 +44,15 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     detail,
     editRole,
     editQuota,
+    editDisabledModels,
+    editMaxConcurrent,
+    availableModels,
     saving,
     busy,
     onChangeRole,
     onChangeQuota,
+    onChangeDisabledModels,
+    onChangeMaxConcurrent,
     onSave,
     onSuspend,
     onReactivate,
@@ -49,6 +60,14 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     onRequestDelete,
     onRequestHardDelete,
   } = props;
+
+  const toggleDisabledModel = (modelId: string) => {
+    if (editDisabledModels.includes(modelId)) {
+      onChangeDisabledModels(editDisabledModels.filter((value) => value !== modelId));
+      return;
+    }
+    onChangeDisabledModels([...editDisabledModels, modelId].sort());
+  };
 
   return (
     <div className="space-y-4 rounded-xl border border-gray-200 bg-gray-50 p-5">
@@ -100,6 +119,77 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
         </div>
       )}
 
+      {u.status === 'active' && availableModels.length > 0 && (
+        <div
+          className="space-y-2 border-t border-gray-200 pt-4"
+          data-testid="disabled-models-panel"
+        >
+          <div>
+            <div className="text-[11px] font-medium text-gray-500">Model access</div>
+            <p className="mt-1 text-[12px] text-gray-500">
+              Disabled models stay hidden for this user even if their role would normally allow
+              them. Models above the user&apos;s role are locked and cannot be enabled here.
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {availableModels.map((model) => {
+              const roleLocked = !hasRole(editRole, model.effective_required_role);
+              const isDisabled = editDisabledModels.includes(model.model_id);
+              if (roleLocked) {
+                return (
+                  <label
+                    key={model.model_id}
+                    className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-100 px-3 py-2 text-[12px] text-gray-500 cursor-not-allowed"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={false}
+                      disabled
+                      readOnly
+                      className="cursor-not-allowed"
+                      aria-label={`${model.model_id} requires ${model.effective_required_role} role`}
+                    />
+                    <span className="font-medium text-gray-600">{model.model_id}</span>
+                    <span className="ml-auto text-[10px] font-semibold text-gray-500">
+                      requires {model.effective_required_role}
+                    </span>
+                  </label>
+                );
+              }
+              return (
+                <label
+                  key={model.model_id}
+                  className={`flex items-center gap-2 rounded-md border px-3 py-2 text-[12px] cursor-pointer ${
+                    isDisabled
+                      ? 'border-red-200 bg-red-50 text-gray-500'
+                      : 'border-gray-200 bg-white text-gray-700'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!isDisabled}
+                    onChange={() => toggleDisabledModel(model.model_id)}
+                    aria-label={
+                      isDisabled ? `Enable ${model.model_id}` : `Disable ${model.model_id}`
+                    }
+                  />
+                  <span
+                    className={`font-medium ${
+                      isDisabled ? 'line-through text-gray-400' : 'text-gray-900'
+                    }`}
+                  >
+                    {model.model_id}
+                  </span>
+                  {isDisabled && (
+                    <span className="ml-auto text-[10px] font-semibold text-red-500">disabled</span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Edit (active users) */}
       {u.status === 'active' && (
         <div className="flex items-end gap-3 border-t border-gray-200 pt-4">
@@ -117,18 +207,27 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             </select>
           </div>
           {detail.has_key && (
-            <>
-              <div>
-                <div className="text-[11px] font-medium text-gray-500 mb-1">Daily quota</div>
-                <input
-                  type="number"
-                  value={editQuota}
-                  onChange={(e) => onChangeQuota(e.target.value)}
-                  className="w-24 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
-                />
-              </div>
-            </>
+            <div>
+              <div className="text-[11px] font-medium text-gray-500 mb-1">Daily quota</div>
+              <input
+                type="number"
+                value={editQuota}
+                onChange={(e) => onChangeQuota(e.target.value)}
+                className="w-24 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px]"
+              />
+            </div>
           )}
+          <div>
+            <div className="text-[11px] font-medium text-gray-500 mb-1">Max concurrent</div>
+            <input
+              type="number"
+              min={1}
+              value={editMaxConcurrent}
+              onChange={(e) => onChangeMaxConcurrent(e.target.value)}
+              placeholder="Role default"
+              className="w-28 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] placeholder:text-gray-400"
+            />
+          </div>
           <button
             onClick={onSave}
             disabled={saving}

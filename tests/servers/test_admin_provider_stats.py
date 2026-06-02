@@ -192,6 +192,9 @@ async def test_provider_stats_happy_path(db_logger):
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     bucket = now - timedelta(hours=2)
     other_bucket = now - timedelta(hours=3)
+    # A bucket OUTSIDE the default 7-day window — its provider/model must still
+    # surface in the dropdown lists (regression: lists are not window-bound).
+    stale_bucket = now - timedelta(days=20)
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -226,6 +229,19 @@ async def test_provider_stats_happy_path(db_logger):
             """,
             other_bucket,
         )
+        # A row well OUTSIDE the 7-day window — must NOT appear in `rows` but
+        # MUST appear in the `providers`/`models` dropdown lists.
+        await conn.execute(
+            """
+            INSERT INTO provider_hourly_stats (
+                hour_bucket, provider, model_id,
+                request_count, error_count, stream_count,
+                total_completion_tokens
+            )
+            VALUES ($1, 'deepseek', 'deepseek/deepseek-chat', 1, 0, 1, 200)
+            """,
+            stale_bucket,
+        )
 
     app = _build_admin_app(db_logger=db_logger)
     _override_admin(app)
@@ -256,6 +272,18 @@ async def test_provider_stats_happy_path(db_logger):
     assert row["latency_p50_ms"] == 7600
     assert row["total_completion_tokens"] == 980
 
-    # Distinct provider/model lists should include the other-provider row too.
-    assert set(body["providers"]) == {"openrouter", "chutes"}
-    assert set(body["models"]) == {"qwen/qwen3-coder", "meta/llama-3.3-70b"}
+    # The windowed `rows` must exclude the stale out-of-window deepseek row.
+    assert all(r["provider"] != "deepseek" for r in body["rows"])
+
+    # Distinct provider/model lists span the full table, including the stale
+    # out-of-window row — proving the dropdowns are not bound to the range.
+    assert set(body["providers"]) == {"openrouter", "chutes", "deepseek"}
+    assert set(body["models"]) == {
+        "qwen/qwen3-coder",
+        "meta/llama-3.3-70b",
+        "deepseek/deepseek-chat",
+    }
+
+    # window_providers is range-scoped: the in-window providers only, used by
+    # the UI to pick a default that has data. The stale deepseek row is excluded.
+    assert set(body["window_providers"]) == {"openrouter", "chutes"}

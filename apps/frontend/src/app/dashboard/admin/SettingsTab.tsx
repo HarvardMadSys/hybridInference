@@ -20,14 +20,18 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { validateNumericSettingInput } from './numericSettingValidation';
 import { validateSignupDomainInput } from './signupDomainValidation';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
+import { ModelConcurrencySection } from './ModelConcurrencySection';
+import { RoutewiseTab } from './RoutewiseTab';
 import { RoutingTab } from './RoutingTab';
 
-export type SettingsSubtab = 'general' | 'routing';
+export type SettingsSubtab = 'general' | 'routing' | 'routewise';
 
 const GENERAL_TAB_ID = 'admin-settings-general-tab';
 const GENERAL_PANEL_ID = 'admin-settings-general-panel';
 const ROUTING_TAB_ID = 'admin-settings-routing-tab';
 const ROUTING_PANEL_ID = 'admin-settings-routing-panel';
+const ROUTEWISE_TAB_ID = 'admin-settings-routewise-tab';
+const ROUTEWISE_PANEL_ID = 'admin-settings-routewise-panel';
 
 function relTime(iso: string | null): string {
   if (!iso) return '—';
@@ -113,6 +117,10 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
     loadDomains();
     loadFlags();
   }, [loadDomains, loadFlags]);
+
+  useEffect(() => {
+    setActiveSubtab(initialSubtab ?? 'general');
+  }, [initialSubtab]);
 
   useEffect(
     () => () => {
@@ -240,7 +248,9 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
 
   const onSelectSubtab = (subtab: SettingsSubtab) => {
     setActiveSubtab(subtab);
-    router.replace(subtab === 'routing' ? `${pathname}?tab=routing` : pathname, { scroll: false });
+    router.replace(subtab === 'general' ? pathname : `${pathname}?tab=${subtab}`, {
+      scroll: false,
+    });
   };
 
   return (
@@ -279,11 +289,30 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
         >
           Routing
         </button>
+        <button
+          type="button"
+          id={ROUTEWISE_TAB_ID}
+          role="tab"
+          aria-selected={activeSubtab === 'routewise'}
+          aria-controls={ROUTEWISE_PANEL_ID}
+          onClick={() => onSelectSubtab('routewise')}
+          className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
+            activeSubtab === 'routewise'
+              ? 'bg-gray-900 text-white'
+              : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+          }`}
+        >
+          Routewise
+        </button>
       </div>
 
       {activeSubtab === 'routing' ? (
         <div id={ROUTING_PANEL_ID} role="tabpanel" aria-labelledby={ROUTING_TAB_ID}>
           <RoutingTab />
+        </div>
+      ) : activeSubtab === 'routewise' ? (
+        <div id={ROUTEWISE_PANEL_ID} role="tabpanel" aria-labelledby={ROUTEWISE_TAB_ID}>
+          <RoutewiseTab />
         </div>
       ) : (
         <div id={GENERAL_PANEL_ID} role="tabpanel" aria-labelledby={GENERAL_TAB_ID}>
@@ -480,6 +509,8 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
           </div>
 
           <ModelVisibilitySection onToast={flashToast} />
+
+          <ModelConcurrencySection onToast={flashToast} />
 
           {/* Signup Policy */}
           <div className="rounded-xl border border-gray-200 bg-white p-5">

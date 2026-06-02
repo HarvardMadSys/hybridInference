@@ -8,6 +8,11 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from serving.model_access import (
+    DISABLED_MODELS_PREFERENCE_KEY,
+    get_disabled_models_from_preferences,
+    normalize_disabled_models,
+)
 from serving.schemas_admin import (
     ApproveUserRequest,
     ApproveUserResponse,
@@ -38,6 +43,7 @@ from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     get_log_store,
     get_operational_store,
+    get_router,
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import _serialize_for_audit
@@ -422,7 +428,9 @@ async def get_user_detail(
         usage_month_usd=usage_month_usd,
         usage_month_requests=usage_month_req,
         models_used=models_used,
+        disabled_models=get_disabled_models_from_preferences(user_row.get("preferences")),
         last_request_at=last_request_at,
+        max_concurrent_requests=user_row.get("max_concurrent_requests"),
     )
 
 
@@ -433,6 +441,7 @@ async def update_user(
     payload: UpdateUserRequest,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
+    router_exec=Depends(get_router),
 ) -> UpdateUserResponse:
     """Update user account status or API key settings (quota).
 
@@ -452,25 +461,23 @@ async def update_user(
     updated: list[str] = []
     current_status = user_row["status"]
 
-    # Update role (user-level field on users table)
+    # --- Validate all fields first, then write atomically ---
+
+    # Validate role
+    new_role: str | None = None
     if "role" in payload_dict:
         new_role = payload_dict["role"]
-        # Guard: admin cannot demote themselves
         if (
             user_row["email"]
             and user_row["email"].lower() == admin_id.lower()
             and new_role != "admin"
         ):
             raise HTTPException(409, "Cannot demote your own admin role.")
-        await op_store.update_user_fields(user_id, role=new_role)
-        updated.append("role")
 
-    # Update user-level fields
+    # Validate status transition
+    new_status: str | None = None
     if "status" in payload_dict:
         new_status = payload_dict["status"]
-
-        # Enforce valid transitions: only active <-> suspended.
-        # pending_approval/rejected must go through approve/reject endpoints.
         valid_transitions = {
             ("active", "suspended"),
             ("suspended", "active"),
@@ -482,12 +489,23 @@ async def update_user(
                 f"Use the approve/reject endpoints for pending users.",
             )
 
-        await op_store.update_user_fields(user_id, status=new_status)
+    # Collect all users-table fields for a single round-trip
+    user_table_updates: dict[str, object] = {}
+    if new_role is not None:
+        user_table_updates["role"] = new_role
+        updated.append("role")
+    if new_status is not None:
+        user_table_updates["status"] = new_status
         updated.append("status")
+    if "max_concurrent_requests" in payload_dict:
+        user_table_updates["max_concurrent_requests"] = payload_dict["max_concurrent_requests"]
+        updated.append("max_concurrent_requests")
+    if user_table_updates:
+        await op_store.update_user_fields(user_id, **user_table_updates)
 
-        # Suspend: also revoke active API key to cut API access immediately
-        if new_status == "suspended":
-            await op_store.revoke_key(user_id, hard_delete=False)
+    # Post-write side-effects that depend on the new status
+    if new_status == "suspended":
+        await op_store.revoke_key(user_id, hard_delete=False)
 
     # Update key-level fields
     key_fields = {
@@ -502,6 +520,25 @@ async def update_user(
 
         await op_store.update_key(user_id, **key_fields)
         updated.extend(key_fields)
+
+    if "disabled_models" in payload_dict:
+        known_model_ids = {
+            adapter.config.id
+            for route in router_exec.routes.values()
+            for adapter, _weight in route.adapters
+            if getattr(adapter, "config", None) is not None
+        }
+        normalized_disabled_models = normalize_disabled_models(payload_dict["disabled_models"])
+        # Reuse the already-fetched, JSONB-decoded preferences from user_row to
+        # avoid an extra DB round-trip.
+        raw_preferences = user_row.get("preferences")
+        preferences = dict(raw_preferences) if isinstance(raw_preferences, dict) else {}
+        preferences[DISABLED_MODELS_PREFERENCE_KEY] = [
+            model_id for model_id in normalized_disabled_models if model_id in known_model_ids
+        ]
+        await op_store.update_user_preferences(user_id, preferences)
+        payload_dict["disabled_models"] = preferences[DISABLED_MODELS_PREFERENCE_KEY]
+        updated.append("disabled_models")
 
     await log_admin_action(
         op_store,

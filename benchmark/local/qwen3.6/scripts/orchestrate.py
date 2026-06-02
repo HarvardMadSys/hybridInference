@@ -29,11 +29,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import requests
-from benchmark import config
 from benchmark.aggregate import aggregate_directory
 from benchmark.plot import generate_all_plots
 from benchmark.run_genai_perf import run_decode, run_prefill
 from benchmark.state import StateStore
+
+from benchmark import config
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

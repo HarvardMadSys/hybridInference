@@ -40,6 +40,28 @@ def _parse_admin_emails(raw: str) -> list[str]:
     return [email.strip().lower() for email in raw.split(",") if email.strip()]
 
 
+def _coerce_user_row(row: Any) -> Row | None:
+    """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
+
+    asyncpg returns JSONB columns as raw JSON strings when no type codec is
+    registered. Callers that inspect ``preferences`` (e.g. disabled-model
+    checks) need a Python dict, not a string.
+    """
+    if row is None:
+        return None
+    d = dict(row)
+    val = d.get("preferences")
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            d["preferences"] = parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            d["preferences"] = {}
+    elif not isinstance(val, dict):
+        d["preferences"] = {}
+    return d
+
+
 class PostgresOperationalStore(OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
@@ -66,8 +88,8 @@ class PostgresOperationalStore(OperationalStore):
                 password_hash TEXT NOT NULL,
                 user_name TEXT,
                 preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-                role TEXT NOT NULL DEFAULT 'trial'
-                    CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin')),
+                role TEXT NOT NULL DEFAULT 'free'
+                    CHECK (role IN ('free', 'pro', 'internal', 'admin')),
                 email_verified BOOLEAN DEFAULT FALSE,
                 status TEXT DEFAULT 'active'
                     CHECK (status IN ('active', 'suspended', 'deleted',
@@ -76,7 +98,8 @@ class PostgresOperationalStore(OperationalStore):
                 reviewed_at TIMESTAMPTZ,
                 reviewed_by TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
-                last_login_at TIMESTAMPTZ
+                last_login_at TIMESTAMPTZ,
+                max_concurrent_requests INT DEFAULT NULL
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
@@ -100,6 +123,9 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
             "preferences JSONB NOT NULL DEFAULT '{}'::jsonb"
+        )
+        await conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS max_concurrent_requests INT DEFAULT NULL"
         )
 
         # Status constraint rebuild
@@ -128,7 +154,7 @@ class PostgresOperationalStore(OperationalStore):
 
         # Role column & migration
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT")
-        await conn.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'trial'")
+        await conn.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'")
         tag = await conn.execute("UPDATE users SET role = 'free' WHERE role IS NULL")
         backfilled = _parse_command_tag_count(tag)
         if backfilled:
@@ -149,14 +175,23 @@ class PostgresOperationalStore(OperationalStore):
                         "Migrated %d users from internal_group/developer to internal.",
                         migrated,
                     )
+                trial_tag = await conn.execute(
+                    "UPDATE users SET role = 'free' WHERE role = 'trial'"
+                )
+                migrated_trial = _parse_command_tag_count(trial_tag)
+                if migrated_trial:
+                    logger.info(
+                        "Migrated %d users from trial to free.",
+                        migrated_trial,
+                    )
                 await conn.execute("""
                     ALTER TABLE users ADD CONSTRAINT users_role_check
-                    CHECK (role IN ('trial', 'free', 'pro', 'internal', 'admin'))
+                    CHECK (role IN ('free', 'pro', 'internal', 'admin'))
                 """)
         except _asyncpg.PostgresError as exc:
             invalid_rows = await conn.fetch(
                 "SELECT id, email, role FROM users "
-                "WHERE role NOT IN ('trial','free','pro','internal','admin') "
+                "WHERE role NOT IN ('free','pro','internal','admin') "
                 "ORDER BY created_at DESC LIMIT 10"
             )
             logger.error(
@@ -173,7 +208,7 @@ class PostgresOperationalStore(OperationalStore):
             tag = await conn.execute(
                 "UPDATE users SET role = 'admin' "
                 "WHERE lower(trim(email)) = ANY($1::text[]) "
-                "AND role IN ('trial', 'free')",
+                "AND role IN ('free')",
                 admin_emails,
             )
             seeded = _parse_command_tag_count(tag)
@@ -426,6 +461,28 @@ class PostgresOperationalStore(OperationalStore):
             )
         """)
 
+        # Migrate legacy 'trial' visibility overrides to 'free'. Trial was
+        # removed from VALID_ROLES, so an override left at 'trial' would be
+        # treated as invalid and fail closed to admin, hiding the model.
+        tag = await conn.execute(
+            "UPDATE model_visibility_overrides SET required_role = 'free' "
+            "WHERE required_role = 'trial'"
+        )
+        migrated_overrides = _parse_command_tag_count(tag)
+        if migrated_overrides:
+            logger.info(
+                "Migrated %d model visibility overrides from trial to free.",
+                migrated_overrides,
+            )
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_concurrency_exemptions (
+                model_id TEXT PRIMARY KEY,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT
+            )
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS provider_weight_overrides (
                 model_id TEXT NOT NULL,
@@ -460,6 +517,17 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_status "
             "ON provider_api_keys(provider, status)"
         )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS disabled_provider_env_keys (
+                provider TEXT NOT NULL,
+                key_hash TEXT NOT NULL,
+                key_prefix TEXT NOT NULL,
+                disabled_by TEXT,
+                disabled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (provider, key_hash)
+            )
+        """)
+        await conn.execute("DROP INDEX IF EXISTS idx_disabled_provider_env_keys_provider")
 
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
@@ -480,22 +548,22 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
-                "created_at, last_login_at, password_hash, preferences "
+                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests "
                 "FROM users WHERE id = $1",
                 user_id,
             )
-        return dict(row) if row else None
+        return _coerce_user_row(row)
 
     async def get_user_by_email(self, email: str) -> Row | None:
         """Fetch a single user row by lowercased email."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
-                "created_at, last_login_at, password_hash, preferences "
+                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests "
                 "FROM users WHERE email = $1",
                 email.lower(),
             )
-        return dict(row) if row else None
+        return _coerce_user_row(row)
 
     async def create_user(
         self,
@@ -1114,7 +1182,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
-                "u.email, u.role, u.email_verified "
+                "u.email, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -1123,13 +1191,14 @@ class PostgresOperationalStore(OperationalStore):
                 "  AND u.id IS NOT NULL AND u.status = 'active'",
                 key_hash,
             )
-        return dict(row) if row else None
+        return _coerce_user_row(row)
 
     async def get_auth_context_lightweight(self, key_hash: str) -> Row | None:
         """Lightweight identity lookup (no quota check, no last_used write)."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT k.user_id, u.email, u.role, u.email_verified "
+                "SELECT k.user_id, u.email, u.role, u.email_verified, u.preferences, "
+                "u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -1138,7 +1207,7 @@ class PostgresOperationalStore(OperationalStore):
                 "  AND u.id IS NOT NULL AND u.status = 'active'",
                 key_hash,
             )
-        return dict(row) if row else None
+        return _coerce_user_row(row)
 
     async def update_key_last_used(self, key_id: int) -> None:
         """Set ``last_used_at = NOW()`` for the given key id."""
@@ -1591,19 +1660,8 @@ class PostgresOperationalStore(OperationalStore):
         """Return the preferences JSONB column for *user_id*, parsed as dict."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("SELECT preferences FROM users WHERE id = $1", user_id)
-        if not row:
-            return {}
-        val = row["preferences"]
-        if isinstance(val, dict):
-            return dict(val)
-        if isinstance(val, str):
-            try:
-                parsed = json.loads(val)
-                if isinstance(parsed, dict):
-                    return parsed
-            except (json.JSONDecodeError, TypeError):
-                logger.debug("Malformed preferences payload for user %s", user_id)
-        return {}
+        coerced = _coerce_user_row(row)
+        return coerced["preferences"] if coerced else {}
 
     async def update_user_preferences(
         self,
@@ -1807,6 +1865,52 @@ class PostgresOperationalStore(OperationalStore):
             rows = await conn.fetch(
                 "SELECT model_id, required_role, updated_at, updated_by "
                 "FROM model_visibility_overrides ORDER BY model_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
+        """Fetch a single model_concurrency_exemptions row by model_id."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT model_id, updated_at, updated_by "
+                "FROM model_concurrency_exemptions WHERE model_id = $1",
+                model_id,
+            )
+        return dict(row) if row else None
+
+    async def set_model_concurrency_exemption(
+        self,
+        model_id: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model concurrency exemption row (presence of row = exempt)."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO model_concurrency_exemptions "
+                "(model_id, updated_at, updated_by) "
+                "VALUES ($1, NOW(), $2) "
+                "ON CONFLICT (model_id) DO UPDATE SET "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                updated_by,
+            )
+
+    async def delete_model_concurrency_exemption(self, model_id: str) -> bool:
+        """Delete a model concurrency exemption row. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM model_concurrency_exemptions WHERE model_id = $1",
+                model_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+    async def list_model_concurrency_exemptions(self) -> list[Row]:
+        """Return all model concurrency exemption rows ordered by model_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, updated_at, updated_by "
+                "FROM model_concurrency_exemptions ORDER BY model_id"
             )
         return [dict(r) for r in rows]
 
@@ -2338,6 +2442,39 @@ class PostgresOperationalStore(OperationalStore):
                 key_id,
             )
         return _parse_command_tag_count(tag) > 0
+
+    async def disable_provider_env_key(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        disabled_by: str | None,
+    ) -> None:
+        """Persist a tombstone for an env-sourced provider key."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO disabled_provider_env_keys "
+                "(provider, key_hash, key_prefix, disabled_by) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (provider, key_hash) DO UPDATE SET "
+                "key_prefix = EXCLUDED.key_prefix, "
+                "disabled_by = EXCLUDED.disabled_by, "
+                "disabled_at = NOW()",
+                provider,
+                key_hash,
+                key_prefix,
+                disabled_by,
+            )
+
+    async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Return disabled env-sourced provider key hashes for *provider*."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key_hash FROM disabled_provider_env_keys WHERE provider = $1",
+                provider,
+            )
+        return {r["key_hash"] for r in rows}
 
 
 def _mask_provider_key(api_key: str) -> str:

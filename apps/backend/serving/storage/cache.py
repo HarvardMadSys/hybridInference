@@ -273,6 +273,11 @@ class CachedOperationalStore(OperationalStore):
         await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)
         await self._cache.delete(self._user_key(user_id))
 
+    async def invalidate_auth_caches(self) -> None:
+        """Evict all cached auth-context entries (cache-only, no DB write)."""
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
+
     # -- key writes (invalidate auth caches) ---------------------------------
 
     async def update_key(self, user_id: str, **fields: Any) -> None:
@@ -601,8 +606,11 @@ class CachedOperationalStore(OperationalStore):
         return await self._store.get_user_preferences(user_id)
 
     async def update_user_preferences(self, user_id: str, preferences: dict[str, Any]) -> None:
-        """Delegate to wrapped store."""
-        return await self._store.update_user_preferences(user_id, preferences)
+        """Delegate then invalidate user and auth caches."""
+        await self._store.update_user_preferences(user_id, preferences)
+        await self._cache.delete(self._user_key(user_id))
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
 
     # -- signup domain allowlist (pass-through) ------------------------------
 
@@ -672,6 +680,26 @@ class CachedOperationalStore(OperationalStore):
     async def list_model_visibility_overrides(self) -> list[Row]:
         """Delegate to wrapped store."""
         return await self._store.list_model_visibility_overrides()
+
+    async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_model_concurrency_exemption(model_id)
+
+    async def set_model_concurrency_exemption(
+        self,
+        model_id: str,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_model_concurrency_exemption(model_id, updated_by)
+
+    async def delete_model_concurrency_exemption(self, model_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_model_concurrency_exemption(model_id)
+
+    async def list_model_concurrency_exemptions(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_model_concurrency_exemptions()
 
     async def list_weight_overrides_for_model(self, model_id: str) -> list[Row]:
         """Delegate to wrapped store."""
@@ -773,3 +801,23 @@ class CachedOperationalStore(OperationalStore):
     async def delete_provider_key(self, key_id: str) -> bool:
         """Delegate to wrapped store."""
         return await self._store.delete_provider_key(key_id)
+
+    async def disable_provider_env_key(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        disabled_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.disable_provider_env_key(
+            provider=provider,
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            disabled_by=disabled_by,
+        )
+
+    async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_disabled_provider_env_key_hashes(provider)

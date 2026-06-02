@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from serving.config.settings import has_role
+from serving.model_access import is_model_disabled_for_user
 from serving.schemas import ModelItem, ModelList
 from serving.servers.auth import optional_verify_api_key
 from serving.servers.deps import get_embedding_adapters, get_model_visibility_resolver, get_router
@@ -58,6 +59,7 @@ async def _format_anthropic_model_list(
     router_exec: Any,
     user_role: str,
     model_visibility_resolver: Any | None = None,
+    user_ctx: dict[str, Any] | None = None,
 ) -> dict:
     """Build the Anthropic GET /v1/models response shape from the model registry.
 
@@ -77,6 +79,8 @@ async def _format_anthropic_model_list(
                 canonical_id, required
             )
         if not has_role(user_role, required):
+            continue
+        if is_model_disabled_for_user(canonical_id, user_ctx):
             continue
         primary = configs[0]
         if canonical_id in emitted:
@@ -118,16 +122,20 @@ async def list_models(
     response shape instead.  The ``/models`` and ``/openrouter/models`` paths
     always return the OpenAI/OpenRouter shape.
     """
-    user_role = (user_ctx or {}).get("role", "free")
+    raw_role = (user_ctx or {}).get("role", "free")
+    user_role = raw_role
     if request.url.path == "/v1/models" and _is_anthropic_client(request):
         return JSONResponse(
-            await _format_anthropic_model_list(router_exec, user_role, model_visibility_resolver)
+            await _format_anthropic_model_list(
+                router_exec, user_role, model_visibility_resolver, user_ctx
+            )
         )
     return await _build_model_list_async(
         router_exec,
         embedding_adapters,
         user_role,
         model_visibility_resolver,
+        user_ctx=user_ctx,
     )
 
 
@@ -142,9 +150,12 @@ async def list_models_anthropic(
     Mirrors the Anthropic GET /v1/models response shape unconditionally,
     regardless of request headers or User-Agent.
     """
-    user_role = (user_ctx or {}).get("role", "free")
+    raw_role = (user_ctx or {}).get("role", "free")
+    user_role = raw_role
     return JSONResponse(
-        await _format_anthropic_model_list(router_exec, user_role, model_visibility_resolver)
+        await _format_anthropic_model_list(
+            router_exec, user_role, model_visibility_resolver, user_ctx
+        )
     )
 
 
@@ -152,6 +163,7 @@ def build_model_list(
     router_exec: Any,
     embedding_adapters: dict[str, Any],
     user_role: str,
+    user_ctx: dict[str, Any] | None = None,
 ) -> ModelList:
     """Build the model catalog visible to the given user role."""
     models: list[ModelItem] = []
@@ -163,6 +175,9 @@ def build_model_list(
             continue
         configs = [adapter.config for adapter, _ in route.adapters]
         if not configs:
+            continue
+        canonical_id = configs[0].id
+        if is_model_disabled_for_user(canonical_id, user_ctx):
             continue
 
         # Conservative limits across all adapters for this model
@@ -244,10 +259,11 @@ async def _build_model_list_async(
     embedding_adapters: dict[str, Any],
     user_role: str,
     model_visibility_resolver: Any | None = None,
+    user_ctx: dict[str, Any] | None = None,
 ) -> ModelList:
     """Build the model catalog visible to the given user role with optional runtime overrides."""
     if model_visibility_resolver is None:
-        return build_model_list(router_exec, embedding_adapters, user_role)
+        return build_model_list(router_exec, embedding_adapters, user_role, user_ctx)
 
     models: list[ModelItem] = []
     emitted_ids: set[str] = set()
@@ -263,6 +279,8 @@ async def _build_model_list_async(
             canonical_id, required
         )
         if not has_role(user_role, required):
+            continue
+        if is_model_disabled_for_user(canonical_id, user_ctx):
             continue
 
         context_length = min(cfg.context_length for cfg in configs)

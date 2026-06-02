@@ -19,7 +19,9 @@ describe('TermsPage', () => {
     expect(screen.getByRole('heading', { name: /acceptable use/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /logging and data use/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /no warranty/i })).toBeInTheDocument();
-    expect(screen.getByText(/all prompts and responses may be logged/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/all prompts and responses may be logged for research purposes/i),
+    ).toBeInTheDocument();
     expect(screen.getByText(/this page is not legal advice/i)).toBeInTheDocument();
   });
 

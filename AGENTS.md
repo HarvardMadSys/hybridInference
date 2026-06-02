@@ -76,7 +76,7 @@ Pre-commit hooks are installed by `make setup-dev`.
 
 - **Branch off `dev`**, never `main`.
 - **Branch naming:** `<user>/<scope>/<feature-name>` (e.g. `jason/claude/add-x`).
-- **Use a git worktree** rather than working in the main checkout.
+- **Use a git worktree** rather than working in the main checkout. Worktree should be put in /tmp/claude/worktree/<feature-name>.
 - **PRs target `dev`.** Staging deploys from `dev`.
 - **Verify against staging** before claiming done.
 - **Staging test account:** `admin@admin.com` / `admin`.
@@ -147,6 +147,7 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 ### 6.5 Common gotchas
 
 - Don't commit to `main` or `dev` directly — always branch + PR.
+- ALWAYS use a git worktree for development — never work in the main checkout.
 - SSE streaming lives in `apps/backend/serving/servers/`. Middleware order
   matters; new middleware that buffers responses will break streaming.
 - Storage layer supports both Postgres and Cloudflare D1 — check
@@ -167,5 +168,3 @@ not duplicate their content.
 | Address PR review / fix CI | [.kilo/skills/check-pr/SKILL.md](.kilo/skills/check-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
-
-

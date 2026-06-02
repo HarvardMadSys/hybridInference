@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -15,6 +16,7 @@ from routing.routers import AllCircuitsOpenError
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
+from serving.model_access import is_model_disabled_for_user
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     API_TOKEN_ANOMALIES,
@@ -46,14 +48,13 @@ from serving.servers.routers.routing_info import (
     build_initial_routing_info,
     merge_adapter_routing,
 )
+from serving.storage.utils import json_safe
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
-    import asyncio
-
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
 
@@ -103,9 +104,10 @@ async def _buffer_streaming_response_for_non_stream_client(
         if isinstance(error, dict):
             code = error.get("code")
             status_code = code if isinstance(code, int) else 500
+            logger.error(f"Upstream error in stream: {error}", extra={"request_id": request_id})
             raise HTTPException(
                 status_code=status_code,
-                detail=error.get("message") or "Stream failed",
+                detail=scrub_error_for_user(None, request_id, status_code),
             )
 
         response_id = chunk_json.get("id") or response_id
@@ -153,6 +155,132 @@ async def _buffer_streaming_response_for_non_stream_client(
     if usage:
         response["usage"] = usage
     return sanitize_response(response, resolve_mode(request_headers)).response_json
+
+
+_FORCE_STREAMING_KEEPALIVE_S = 15
+
+
+async def _streaming_response_with_keepalive(
+    stream_chunks: Any,
+    *,
+    request_id: str,
+    model: str,
+    request_headers: Any,
+) -> Any:
+    """Buffer a streaming response while yielding whitespace keepalive bytes.
+
+    Keeps intermediate proxies (e.g. Cloudflare) from timing out by
+    yielding ``b" "`` every ``_FORCE_STREAMING_KEEPALIVE_S`` seconds while
+    accumulating SSE chunks, then yields the final ``application/json`` body.
+    The leading whitespace before the JSON object is harmless — all standard
+    JSON parsers ignore it.
+    """
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_calls = ToolCallAccumulator()
+    usage: dict[str, Any] | None = None
+    finish_reason: str | None = None
+    response_id = request_id
+    created = int(time.time())
+
+    time.monotonic()
+    chunk_queue: Any = asyncio.Queue()
+
+    async def _reader() -> None:
+        try:
+            async for item in stream_chunks:
+                await chunk_queue.put(item)
+        except Exception as exc:
+            await chunk_queue.put(exc)
+        finally:
+            await chunk_queue.put(None)
+
+    reader_task = asyncio.create_task(_reader())
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    chunk_queue.get(), timeout=_FORCE_STREAMING_KEEPALIVE_S
+                )
+            except asyncio.TimeoutError:
+                yield b" "
+                time.monotonic()
+                continue
+
+            if chunk is None:
+                break
+            if isinstance(chunk, Exception):
+                raise chunk
+
+            if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
+                continue
+            try:
+                chunk_json = json.loads(chunk[6:])
+            except json.JSONDecodeError:
+                continue
+
+            error = chunk_json.get("error")
+            if isinstance(error, dict):
+                code = error.get("code")
+                status_code = code if isinstance(code, int) else 500
+                logger.error(f"Upstream error in stream: {error}", extra={"request_id": request_id})
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=scrub_error_for_user(None, request_id, status_code),
+                )
+
+            response_id = chunk_json.get("id") or response_id
+            created = int(chunk_json.get("created") or created)
+            if chunk_json.get("usage"):
+                usage = normalize_usage(chunk_json.get("usage")) or chunk_json.get("usage")
+
+            choices = chunk_json.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
+            finish_reason = choice.get("finish_reason") or finish_reason
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if isinstance(reasoning, str) and reasoning:
+                reasoning_parts.append(reasoning)
+            if delta.get("tool_calls"):
+                tool_calls.add(delta["tool_calls"])
+    finally:
+        reader_task.cancel()
+        import contextlib
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await reader_task
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(content_parts),
+    }
+    if reasoning_parts:
+        message["reasoning_content"] = "".join(reasoning_parts)
+    if tool_calls:
+        message["tool_calls"] = tool_calls.to_list()
+
+    response: dict[str, Any] = {
+        "id": response_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason or "stop",
+            }
+        ],
+    }
+    if usage:
+        response["usage"] = usage
+    sanitized = sanitize_response(response, resolve_mode(request_headers)).response_json
+    yield json.dumps(sanitized).encode()
 
 
 def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
@@ -321,6 +449,30 @@ async def chat_completions(
             "Insufficient role for model",
             extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
+        record_model_request("404", "router")
+        if log_store and not is_synthetic_probe:
+            completions_logger.schedule_log(
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": "router",
+                    "prompt": messages,
+                    "response": None,
+                    "usage": None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": 404,
+                    "error": f"Model '{model}' not found",
+                    "params": early_params,
+                    "metadata": metadata,
+                    "pricing": None,
+                    "request_payload": body,
+                },
+            )
+        raise HTTPException(404, f"Model '{model}' not found")
+    if is_model_disabled_for_user(
+        route.adapters[0][0].config.id if route.adapters else model, user_ctx
+    ):
         record_model_request("404", "router")
         if log_store and not is_synthetic_probe:
             completions_logger.schedule_log(
@@ -528,22 +680,43 @@ async def chat_completions(
         logger.debug(f"Creating StreamingResponse for model: {model}")
 
         if force_streaming:
+            keepalive_gen = _streaming_response_with_keepalive(
+                session.stream(adapter_chunks),
+                request_id=request_id,
+                model=model,
+                request_headers=request.headers,
+            )
+            first_chunk: bytes | None = None
             try:
-                response = await _buffer_streaming_response_for_non_stream_client(
-                    session.stream(adapter_chunks),
-                    request_id=request_id,
-                    model=model,
-                    request_headers=request.headers,
-                )
-            except HTTPException as exc:
-                record_model_request(str(exc.status_code), provider)
+                first_chunk = await keepalive_gen.__anext__()
+            except StopAsyncIteration:
+                first_chunk = None
+            except HTTPException:
                 raise
-            record_model_request("200", provider)
             if is_synthetic_probe:
                 provider_header = get_single_route_provider()
                 if provider_header:
                     http_response.headers["X-Provider"] = provider_header
-            return response
+            record_model_request("200", provider)
+
+            async def _chain_first_then_rest(first: bytes | None, gen: Any) -> Any:
+                if first is not None:
+                    yield first
+                async for data in gen:
+                    yield data
+                await gen.aclose()
+
+            streaming_headers: dict[str, str] = {}
+            if is_synthetic_probe:
+                provider_header = get_single_route_provider()
+                if provider_header:
+                    streaming_headers["X-Provider"] = provider_header
+
+            return StreamingResponse(
+                _chain_first_then_rest(first_chunk, keepalive_gen),
+                media_type="application/json",
+                headers=streaming_headers or None,
+            )
 
         # Record 200 for streaming response (HTTP layer success)
         record_model_request("200", provider)
@@ -581,6 +754,9 @@ async def chat_completions(
                 provider = routing.provider or "router"
                 base_url = routing.base_url
                 # See comment above: strip upstream_cost_usd before merging into metadata JSONB.
+                # Persisted metadata intentionally keeps adapter-emitted legacy keys like
+                # routewise for DB log compatibility; RoutingInfo.strategy_metadata is
+                # only the in-process isolation boundary.
                 metadata.update({k: v for k, v in routing_info.items() if k != "upstream_cost_usd"})  # type: ignore[arg-type]
         else:
             # Fallback: get provider from request context when response is not a dict
@@ -774,6 +950,12 @@ async def chat_completions(
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
         if log_store and not is_synthetic_probe:
+            metadata_for_error = metadata
+            if isinstance(exc_routing, dict):
+                metadata_for_error = {
+                    **metadata,
+                    **json_safe({k: v for k, v in exc_routing.items() if k != "upstream_cost_usd"}),
+                }
             completions_logger.schedule_log(
                 request_id,
                 {
@@ -787,7 +969,7 @@ async def chat_completions(
                     "status_code": exc_status_code,
                     "error": str(exc),
                     "params": params,
-                    "metadata": metadata,
+                    "metadata": metadata_for_error,
                     "pricing": None,  # Error case - no pricing available
                     "request_payload": body,
                 },

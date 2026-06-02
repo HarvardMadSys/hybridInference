@@ -118,8 +118,11 @@ class ModelConfig:
     # Provider profile for usage extraction (e.g. "deepseek" for cache hit/miss semantics).
     # When set, OpenAICompatAdapter uses profile-specific usage normalization.
     provider_profile: str | None = None
-    # RouteWise subscription classification for this route entry.
-    # Valid values: "api" (pay-per-token), "quota" (daily quota), "concurrency".
+    # Generic per-route metadata consumed by routing strategies. Existing
+    # `subscription_type` is mirrored here for compatibility with RouteWise.
+    route_metadata: dict[str, Any] = field(default_factory=dict)
+    # Compatibility route classification. Prefer `route_metadata["subscription_type"]`
+    # for new strategy code; this field remains accepted for existing YAML.
     subscription_type: str = "api"
     # RouteWise route-level metadata. These fields are not sent upstream; they
     # are carried from models.yaml to the RouteWise candidate extractor.

@@ -1,8 +1,8 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import type { AdminUser, UserDetail } from '@/lib/api/admin';
-import { getUserDetail, updateUser as apiUpdateUser } from '@/lib/api/admin';
+import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
+import { getUserDetail, listModelVisibility, updateUser as apiUpdateUser } from '@/lib/api/admin';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
 import { UserRow } from './UserRow';
 import { UserDetailPanel } from './UserDetailPanel';
@@ -46,6 +46,9 @@ export function UserTable(props: UserTableProps) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [editRole, setEditRole] = useState('');
   const [editQuota, setEditQuota] = useState('');
+  const [editDisabledModels, setEditDisabledModels] = useState<string[]>([]);
+  const [editMaxConcurrent, setEditMaxConcurrent] = useState('');
+  const [availableModels, setAvailableModels] = useState<AdminModelVisibilityItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -71,10 +74,13 @@ export function UserTable(props: UserTableProps) {
     setDetailLoading(true);
     setDetail(null);
     try {
-      const d = await getUserDetail(userId);
+      const [d, visibility] = await Promise.all([getUserDetail(userId), listModelVisibility()]);
       setDetail(d);
       setEditRole(d.role || 'free');
       setEditQuota(d.quota_daily_usd?.toString() ?? '100');
+      setEditDisabledModels(d.disabled_models ?? []);
+      setEditMaxConcurrent(d.max_concurrent_requests?.toString() ?? '');
+      setAvailableModels(visibility.models);
     } catch {
       setExpandedId(null);
     } finally {
@@ -91,10 +97,20 @@ export function UserTable(props: UserTableProps) {
       if (editQuota !== (detail.quota_daily_usd?.toString() ?? '100')) {
         patch.quota_daily_cost_usd = Number(editQuota);
       }
+      const currentDisabledModels = [...(detail.disabled_models ?? [])].sort();
+      const nextDisabledModels = [...editDisabledModels].sort();
+      if (JSON.stringify(nextDisabledModels) !== JSON.stringify(currentDisabledModels)) {
+        patch.disabled_models = nextDisabledModels;
+      }
+      const currentMaxConcurrent = detail.max_concurrent_requests?.toString() ?? '';
+      if (editMaxConcurrent !== currentMaxConcurrent) {
+        patch.max_concurrent_requests = editMaxConcurrent === '' ? null : Number(editMaxConcurrent);
+      }
       if (!Object.keys(patch).length) return;
       await apiUpdateUser(expandedId, patch);
       const refreshed = await getUserDetail(expandedId);
       setDetail(refreshed);
+      setEditDisabledModels(refreshed.disabled_models ?? []);
       await props.onUpdate(expandedId, patch);
     } finally {
       setSaving(false);
@@ -334,10 +350,15 @@ export function UserTable(props: UserTableProps) {
                             detail={detail}
                             editRole={editRole}
                             editQuota={editQuota}
+                            editDisabledModels={editDisabledModels}
+                            editMaxConcurrent={editMaxConcurrent}
+                            availableModels={availableModels}
                             saving={saving}
                             busy={busy}
                             onChangeRole={setEditRole}
                             onChangeQuota={setEditQuota}
+                            onChangeDisabledModels={setEditDisabledModels}
+                            onChangeMaxConcurrent={setEditMaxConcurrent}
                             onSave={doSave}
                             onSuspend={doSuspend}
                             onReactivate={doReactivate}

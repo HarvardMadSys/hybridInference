@@ -972,6 +972,28 @@ async def test_admin_only_allowed_for_admin(mock_db_logger):
         assert resp.json()["choices"][0]["message"]["content"] == "Test response"
 
 
+@pytest.mark.asyncio
+async def test_disabled_model_returns_404(mock_db_logger):
+    """Per-user disabled model denylist behaves as not found."""
+    app = _build_admin_gate_app(
+        {
+            "user_id": "user1",
+            "authenticated": True,
+            "is_admin": False,
+            "role": "free",
+            "disabled_models": ["public-model"],
+        },
+        mock_db_logger,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "public-model", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+        assert resp.status_code == status.HTTP_404_NOT_FOUND
+
+
 # ---------------------------------------------------------------------------
 # TTFT (Time To First Token) tests
 # ---------------------------------------------------------------------------

@@ -184,7 +184,7 @@ def test_has_role_fails_closed_for_unknown_required_role() -> None:
 
 
 def test_has_role_treats_unknown_user_role_as_lowest() -> None:
-    """Unknown user roles should receive the lowest rank (trial)."""
-    assert has_role("typo-role", "trial") is True
-    assert has_role("typo-role", "free") is False
+    """Unknown user roles should receive the lowest rank (free)."""
+    assert has_role("typo-role", "free") is True
+    assert has_role("typo-role", "pro") is False
     assert has_role("typo-role", "internal") is False

@@ -59,12 +59,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "then buffer and return a normal non-streaming response to clients."
         ),
     },
-    "user_concurrency_trial": {
-        "type": "int",
-        "default": 1,
-        "min": 1,
-        "description": "Per-user concurrency cap for trial-tier users",
-    },
     "user_concurrency_free": {
         "type": "int",
         "default": 3,
@@ -88,14 +82,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "default": 10,
         "min": 1,
         "description": "Per-user concurrency cap for admin users",
-    },
-    "user_daily_quota_trial": {
-        "type": "float",
-        "default": 2.00,
-        "min": 0.0,
-        "description": (
-            "Default daily USD spend quota seeded onto a trial-tier user's active API key at signup."
-        ),
     },
     "user_daily_quota_free": {
         "type": "float",
@@ -128,6 +114,29 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "description": (
             "Default daily USD spend quota seeded onto an admin user's active API key at signup."
         ),
+    },
+    "routewise_decision_rule": {
+        "type": "str",
+        "default": "pd",
+        "description": "Decision rule for Routewise routing (pd or lapd)",
+    },
+    "routewise_daily_quota": {
+        "type": "int",
+        "default": 5000,
+        "min": 1,
+        "description": "Daily request quota for Routewise S_Q routing",
+    },
+    "routewise_latency_slo_sec": {
+        "type": "float",
+        "default": 3.0,
+        "min": 0.1,
+        "description": "Latency SLO in seconds for Routewise LP decisions",
+    },
+    "routewise_latency_min_samples": {
+        "type": "int",
+        "default": 10,
+        "min": 1,
+        "description": "Minimum samples before Routewise latency LP warmup ends",
     },
 }
 

@@ -197,7 +197,6 @@ async def test_list_settings_includes_user_concurrency_keys(admin_client):
     assert response.status_code == 200
     keys = {item["key"] for item in response.json()["settings"]}
     assert {
-        "user_concurrency_trial",
         "user_concurrency_free",
         "user_concurrency_pro",
         "user_concurrency_internal",

@@ -21,6 +21,7 @@ from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routewise.envelope import EnvelopeNotCalibratedError
+from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
@@ -101,8 +102,8 @@ async def _bootstrap_routewise_from_logs(
                 include_envelope=True,
             )
             logger.info(
-                "RouteWise DB bootstrap replayed latency_rows=%d envelope_rows=%d: latency_events=%d "
-                "failed_attempts=%d envelope_samples=%d model_ids=%s",
+                "RouteWise DB bootstrap replayed latency_rows=%d envelope_rows=%d: "
+                "latency_events=%d failed_attempts=%d envelope_samples=%d model_ids=%s",
                 latency_counts["rows"],
                 envelope_counts["rows"],
                 latency_counts["latency_events"],
@@ -346,7 +347,6 @@ async def initialize() -> AppServices:
     # routing.yaml's `default_router`.
     settings = get_settings()
     models_config: dict[str, dict[str, Any]] = {}
-    alias_to_model: dict[str, str] = {}
     for info in model_infos:
         # Effective router: explicit `router:` wins; otherwise the legacy
         # `routing_strategy:` (one-release shim) maps onto `router`.
@@ -360,7 +360,6 @@ async def initialize() -> AppServices:
         models_config[info.model_id] = entry
         for alias in info.aliases:
             models_config[alias] = entry
-            alias_to_model[alias] = info.model_id
 
     # Load routing.yaml to read `default_router`.  RoutingManager loads the
     # same file internally for weight assignment but does not expose its
@@ -384,7 +383,6 @@ async def initialize() -> AppServices:
     model_router_registry: ModelRouterRegistry | None = ModelRouterRegistry(
         models_config=models_config,
         default_router_name=default_router_name,
-        alias_to_model=alias_to_model,
     )
     model_router_registry.bind_fixed_router(router)
 
@@ -410,22 +408,21 @@ async def initialize() -> AppServices:
     if rw_models:
         logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
 
-    # Collect distinct RouteWiseRouter instances for lifecycle management
-    # (pending-decisions TTL sweep start/stop).
+    managed_routers = list(model_router_registry.managed_routers())
     from routing.routewise.router import RouteWiseRouter as _RWR
 
-    seen_ids: set[int] = set()
     routewise_routers: list[_RWR] = []
     routewise_model_ids_by_router: dict[int, set[str]] = {}
     for info in model_infos:
         r = model_router_registry.get_router(info.model_id)
-        if isinstance(r, _RWR) and id(r) not in seen_ids:
-            seen_ids.add(id(r))
-            routewise_routers.append(r)
         if isinstance(r, _RWR):
             routewise_model_ids_by_router.setdefault(id(r), set()).update(
                 [info.model_id, *info.aliases]
             )
+            if all(id(existing) != id(r) for existing in routewise_routers):
+                routewise_routers.append(r)
+            if all(id(existing) != id(r) for existing in managed_routers):
+                managed_routers.append(r)
 
     # Build store abstractions
     operational_store = None
@@ -519,6 +516,7 @@ async def initialize() -> AppServices:
             logger.warning(f"Runtime settings initialization failed: {exc}")
 
     model_visibility_resolver = None
+    model_concurrency_resolver = None
     weight_override_resolver = None
     weight_override_refresh_task = None
     if operational_store is not None:
@@ -527,6 +525,11 @@ async def initialize() -> AppServices:
             logger.info("Model visibility resolver initialized")
         except Exception as exc:
             logger.warning(f"Model visibility resolver initialization failed: {exc}")
+        try:
+            model_concurrency_resolver = ModelConcurrencyResolver(operational_store)
+            logger.info("Model concurrency resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Model concurrency resolver initialization failed: {exc}")
         try:
             weight_override_resolver = WeightOverrideResolver(operational_store)
             await weight_override_resolver.load_all()
@@ -549,15 +552,13 @@ async def initialize() -> AppServices:
         rt = runtime_settings  # capture for closure
 
         async def _read_concurrency_limits() -> dict[str, int]:
-            trial, free, pro, internal, admin = await asyncio.gather(
-                rt.get_int("user_concurrency_trial"),
+            free, pro, internal, admin = await asyncio.gather(
                 rt.get_int("user_concurrency_free"),
                 rt.get_int("user_concurrency_pro"),
                 rt.get_int("user_concurrency_internal"),
                 rt.get_int("user_concurrency_admin"),
             )
             return {
-                "trial": trial,
                 "free": free,
                 "pro": pro,
                 "internal": internal,
@@ -568,7 +569,7 @@ async def initialize() -> AppServices:
         logger.info("User concurrency limiter initialized (runtime-tunable)")
     else:
         user_concurrency_limiter = UserConcurrencyLimiter(
-            static_limits_provider({"trial": 1, "free": 3, "pro": 3, "internal": 10, "admin": 10})
+            static_limits_provider({"free": 3, "pro": 3, "internal": 10, "admin": 10})
         )
         logger.warning(
             "User concurrency limiter initialized with static defaults "
@@ -595,19 +596,18 @@ async def initialize() -> AppServices:
     pricing_lookup = PricingLookup(router=router)
     cost_tracker = CostTracker(op_store=operational_store, pricing=pricing_lookup)
 
-    # Start the periodic RouteWise pending-decision sweep only after the rest
-    # of bootstrap has succeeded, so a later startup failure cannot leave the
-    # background task running without a matching shutdown.
-    for rw in routewise_routers:
+    # Start managed router lifecycle hooks only after the rest of bootstrap has
+    # succeeded, so a later startup failure cannot leave background tasks
+    # running without a matching shutdown.
+    for managed_router in managed_routers:
         try:
-            await rw.start()
+            await managed_router.start()
         except EnvelopeNotCalibratedError:
-            # Strict fidelity to the RouteWise paper: the quota shadow price
-            # requires a workload-derived [L, U]. We do not silently fall back
-            # to a fabricated envelope.
+            # RouteWise quota shadow pricing requires workload-derived [L, U].
+            # Do not silently fall back to a fabricated envelope.
             raise
         except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"RouteWiseRouter.start() failed: {exc}")
+            logger.warning(f"Managed router start() failed: {exc}")
 
     return AppServices(
         router=router,
@@ -617,8 +617,9 @@ async def initialize() -> AppServices:
         log_store=log_store,
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
-        routewise_routers=routewise_routers,
+        managed_routers=managed_routers,
         model_visibility_resolver=model_visibility_resolver,
+        model_concurrency_resolver=model_concurrency_resolver,
         weight_override_resolver=weight_override_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
@@ -684,12 +685,12 @@ async def shutdown(services: AppServices) -> None:
         except Exception as exc:
             logger.error(f"Routing manager shutdown failed: {exc}")
 
-    # RouteWise routers (cancels the _pending_decisions TTL sweep task)
-    for rw in services.routewise_routers:
+    # Managed routers (cancels router-owned background tasks)
+    for managed_router in services.managed_routers:
         try:
-            await rw.stop()
+            await managed_router.stop()
         except Exception as exc:
-            logger.error(f"RouteWise router shutdown failed: {exc}")
+            logger.error(f"Managed router shutdown failed: {exc}")
 
     if services.weight_override_refresh_task is not None:
         services.weight_override_refresh_task.cancel()

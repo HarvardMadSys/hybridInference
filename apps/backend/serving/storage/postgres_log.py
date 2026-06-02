@@ -7,7 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
-from serving.storage.utils import calculate_cost
+from serving.storage.utils import calculate_cost, json_safe, strip_null_bytes
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
@@ -203,17 +203,29 @@ class PostgresLogStore(LogStore):
         should_store_full = (
             store_full_content if store_full_content is not None else self.store_full_prompts
         )
+        sanitized_error = strip_null_bytes(error)
+        sanitized_metadata = strip_null_bytes(metadata)
+        sanitized_tools = strip_null_bytes((params or {}).get("tools"))
         if should_store_full:
-            prompt_str = json.dumps(prompt) if isinstance(prompt, list) else str(prompt)
+            sanitized_prompt = strip_null_bytes(prompt)
+            sanitized_response = strip_null_bytes(response)
+            sanitized_request_payload = strip_null_bytes(request_payload)
+            prompt_str = (
+                json.dumps(sanitized_prompt)
+                if isinstance(sanitized_prompt, list)
+                else str(sanitized_prompt)
+            )
             response_str = (
-                json.dumps(response)
-                if isinstance(response, dict)
-                else str(response)
-                if response is not None
+                json.dumps(json_safe(sanitized_response))
+                if isinstance(sanitized_response, dict)
+                else str(sanitized_response)
+                if sanitized_response is not None
                 else None
             )
             request_payload_str = (
-                json.dumps(request_payload) if request_payload is not None else None
+                json.dumps(json_safe(sanitized_request_payload))
+                if sanitized_request_payload is not None
+                else None
             )
         else:
             prompt_str = None
@@ -268,11 +280,11 @@ class PostgresLogStore(LogStore):
                 response_str,
                 request_payload_str,
                 status_code,
-                error,
-                (metadata or {}).get("user_id"),
-                (metadata or {}).get("session_id"),
-                json.dumps(metadata) if metadata else None,
-                json.dumps((params or {}).get("tools")) if (params or {}).get("tools") else None,
+                sanitized_error,
+                (sanitized_metadata or {}).get("user_id"),
+                (sanitized_metadata or {}).get("session_id"),
+                json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
+                json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
                 upstream_cost_usd,
             )
 

@@ -19,7 +19,6 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-  ZAxis,
   Legend,
 } from 'recharts';
 import {
@@ -51,10 +50,10 @@ function fmtHour(iso: string): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00`;
 }
 
-function fmt2(v: unknown): string {
+function fmt0(v: unknown): string {
   if (v == null) return '';
   const n = typeof v === 'number' ? v : Number(v);
-  return Number.isFinite(n) ? n.toFixed(2) : String(v);
+  return Number.isFinite(n) ? Math.round(n).toLocaleString() : String(v);
 }
 
 type AxisDomain = [number, number] | ['auto', 'auto'];
@@ -67,6 +66,16 @@ const CHART_MARGIN_TOP = 8;
 const CHART_MARGIN_BOTTOM = 24;
 const X_AXIS_HEIGHT = 30;
 const THROUGHPUT_Y_MAX = 280;
+const SCATTER_DOT_RADIUS = 2;
+
+// Recharts derives Scatter symbol size from the ZAxis range, but with no z
+// dataKey that path is unreliable across versions and ignored our range. Render
+// the marker ourselves so the radius is fixed and explicit.
+function ScatterDot(props: { cx?: number; cy?: number; fill?: string; fillOpacity?: number }) {
+  const { cx, cy, fill, fillOpacity } = props;
+  if (cx == null || cy == null || Number.isNaN(cx) || Number.isNaN(cy)) return null;
+  return <circle cx={cx} cy={cy} r={SCATTER_DOT_RADIUS} fill={fill} fillOpacity={fillOpacity} />;
+}
 
 function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
   const safePoints = model.points.filter((p) => p.prompt_tokens > 0);
@@ -334,12 +343,11 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
                 style: { fontSize: 11, fill: '#6b7280', textAnchor: 'middle' },
               }}
             />
-            <ZAxis range={[18, 18]} />
             <Tooltip
               cursor={{ strokeDasharray: '3 3' }}
               contentStyle={{ fontSize: 11 }}
               labelFormatter={() => ''}
-              formatter={(v) => fmt2(v)}
+              formatter={(v) => fmt0(v)}
               wrapperStyle={{ outline: 'none' }}
             />
             <Scatter
@@ -347,14 +355,14 @@ function TtftScatterCard({ model }: { model: AdminTtftScatterModel }) {
               data={cached}
               fill="#10b981"
               fillOpacity={0.6}
-              shape="circle"
+              shape={<ScatterDot />}
             />
             <Scatter
               name="No cache"
               data={uncached}
               fill="#64748b"
               fillOpacity={0.6}
-              shape="circle"
+              shape={<ScatterDot />}
             />
             {showDragArea ? (
               <ReferenceArea
@@ -427,8 +435,8 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt2} />
-                <Tooltip formatter={(v) => fmt2(v)} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt0} />
+                <Tooltip formatter={(v) => fmt0(v)} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="ttft_p50" stroke="#3b82f6" dot={false} name="p50" />
                 <Line type="monotone" dataKey="ttft_p95" stroke="#f59e0b" dot={false} name="p95" />
@@ -446,11 +454,11 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
                 <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
                 <YAxis
                   tick={{ fontSize: 11 }}
-                  tickFormatter={fmt2}
+                  tickFormatter={fmt0}
                   domain={[0, THROUGHPUT_Y_MAX]}
                   allowDataOverflow
                 />
-                <Tooltip formatter={(v) => fmt2(v)} />
+                <Tooltip formatter={(v) => fmt0(v)} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="thru_avg" stroke="#10b981" dot={false} name="avg" />
                 <Line type="monotone" dataKey="thru_p50" stroke="#3b82f6" dot={false} name="p50" />
@@ -545,8 +553,12 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         if (cancelled) return;
         setAllProviders(resp.providers);
         setAllPairs(resp.pairs);
-        if (resp.providers.length > 0) {
-          const preferred = resp.providers.includes('minimax') ? 'minimax' : resp.providers[0];
+        // Prefer a provider that actually has data in the selected window so
+        // the tab doesn't open empty; fall back to the full list otherwise.
+        const candidates =
+          resp.window_providers.length > 0 ? resp.window_providers : resp.providers;
+        if (candidates.length > 0) {
+          const preferred = candidates.includes('minimax') ? 'minimax' : candidates[0];
           setProvider(preferred);
         }
       } catch (exc) {

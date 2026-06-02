@@ -18,7 +18,7 @@ from serving.schemas_admin import (
     ProviderTokenUsageTotals,
     ProviderTokenUsageWindow,
 )
-from serving.servers.deps import get_db_logger, get_operational_store, verify_admin_access
+from serving.servers.deps import get_db_logger, verify_admin_access
 from serving.servers.routers.admin._common import _require_aware_utc, _truncate_hour
 
 router = APIRouter(prefix="/admin")
@@ -42,10 +42,9 @@ _ROLLUP_MINUTE_OFFSET = 5
 @router.get("/provider-quotas", response_model=AdminProviderQuotasResponse)
 async def admin_provider_quotas(
     _admin_id: str = Depends(verify_admin_access),
-    op_store=Depends(get_operational_store),
 ) -> AdminProviderQuotasResponse:
     """Return current quota status for each upstream LLM provider."""
-    providers = await gather_all(op_store=op_store)
+    providers = await gather_all()
     return AdminProviderQuotasResponse(
         generated_at=datetime.now(timezone.utc),
         providers=providers,
@@ -71,8 +70,10 @@ async def admin_provider_stats(
         to:   ISO8601 upper bound (exclusive). Defaults to current hour.
 
     The window is hour-truncated and capped at 90 days. The response also
-    includes the distinct providers and models seen in the window so the UI
-    can populate dropdowns from a single round-trip.
+    includes the distinct providers and models across the full retained table
+    (last 30 days), independent of the selected range, so the UI can populate
+    its dropdowns from a single round-trip even when the chosen window has no
+    rows.
     """
     del request  # accepted to match other admin handlers; pool comes from Depends
     if not db_logger or not db_logger.pool:
@@ -137,7 +138,21 @@ async def admin_provider_stats(
                 start,
                 end,
             )
-        providers = await conn.fetch(
+        # Dropdown lists span the full retained table (purge caps it at 30
+        # days), NOT the selected [start, end) window — otherwise picking a
+        # range with no rows would leave the provider dropdown empty. One
+        # DISTINCT scan over the (provider, model_id) pairs is enough; the
+        # provider and model lists are derived from it in Python.
+        pairs = await conn.fetch(
+            """
+            SELECT DISTINCT provider, model_id FROM provider_hourly_stats
+             ORDER BY provider, model_id
+            """
+        )
+        # Providers with rows INSIDE the selected window — used by the UI to
+        # pick a sensible default so the tab doesn't open on a provider that
+        # has no in-range data.
+        window_providers = await conn.fetch(
             """
             SELECT DISTINCT provider FROM provider_hourly_stats
              WHERE hour_bucket >= $1 AND hour_bucket < $2
@@ -146,30 +161,16 @@ async def admin_provider_stats(
             start,
             end,
         )
-        models = await conn.fetch(
-            """
-            SELECT DISTINCT model_id FROM provider_hourly_stats
-             WHERE hour_bucket >= $1 AND hour_bucket < $2
-             ORDER BY model_id
-            """,
-            start,
-            end,
-        )
-        pairs = await conn.fetch(
-            """
-            SELECT DISTINCT provider, model_id FROM provider_hourly_stats
-             WHERE hour_bucket >= $1 AND hour_bucket < $2
-             ORDER BY provider, model_id
-            """,
-            start,
-            end,
-        )
+
+    providers = sorted({r["provider"] for r in pairs})
+    models = sorted({r["model_id"] for r in pairs})
 
     return ProviderStatsResponse(
         rows=[ProviderStatsRow(**dict(r)) for r in rows],
-        providers=[r["provider"] for r in providers],
-        models=[r["model_id"] for r in models],
+        providers=providers,
+        models=models,
         pairs=[ProviderModelPair(provider=r["provider"], model_id=r["model_id"]) for r in pairs],
+        window_providers=[r["provider"] for r in window_providers],
     )
 
 

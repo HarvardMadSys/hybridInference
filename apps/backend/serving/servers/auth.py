@@ -12,6 +12,7 @@ from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving.config.settings import get_settings
+from serving.model_access import get_disabled_models_from_preferences
 from serving.observability.metrics import (
     API_MODEL_REQUESTS,
     DATABASE_CONNECTED,
@@ -290,6 +291,8 @@ async def verify_api_key(
         "authenticated": True,
         "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,
         "is_admin": user_role == "admin",
+        "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+        "max_concurrent_requests": user.get("max_concurrent_requests"),
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,
@@ -364,6 +367,8 @@ async def optional_verify_api_key(
         "role": user_role,
         "authenticated": True,
         "is_admin": user_role == "admin",
+        "disabled_models": get_disabled_models_from_preferences(row.get("preferences")),
+        "max_concurrent_requests": row.get("max_concurrent_requests"),
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,

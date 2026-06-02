@@ -12,6 +12,9 @@ local_deployment:
   - endpoint: ${LOCAL_DEPLOYMENT_URL}
     models:
       - qwen3.6-35b
+  - endpoint: ${RC_DEPLOYMENT_URL}
+    models:
+      - /n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2
 remote_deployment:
   - endpoint: ${CHUTES_BASE_URL}
     models:

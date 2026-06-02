@@ -108,6 +108,24 @@ def test_routewise_params_reject_legacy_hedge_modes():
 
 
 @pytest.mark.unit
+def test_routewise_params_canary_enabled_models_validation():
+    from pydantic import ValidationError
+
+    from routing.strategies.routewise import RouteWiseParams
+
+    assert (
+        RouteWiseParams.model_validate({"canary_enabled_models": None}).canary_enabled_models
+        is None
+    )
+    assert RouteWiseParams.model_validate(
+        {"canary_enabled_models": ["deepseek-chat", "gpt-4o-mini"]}
+    ).canary_enabled_models == ["deepseek-chat", "gpt-4o-mini"]
+
+    with pytest.raises(ValidationError):
+        RouteWiseParams.model_validate({"canary_enabled_models": "deepseek-chat"})
+
+
+@pytest.mark.unit
 def test_routewise_params_mirror_routewise_config_fields():
     """Pydantic params must cover every RouteWiseConfig dataclass field."""
     from dataclasses import fields
@@ -122,6 +140,20 @@ def test_routewise_params_mirror_routewise_config_fields():
     extra = pydantic_field_names - rw_field_names
     assert not missing, f"RouteWiseParams missing fields: {sorted(missing)}"
     assert not extra, f"RouteWiseParams has extra fields: {sorted(extra)}"
+
+
+@pytest.mark.unit
+def test_routewise_params_defaults_match_routewise_config():
+    from dataclasses import fields
+
+    from routing.routewise.config import RouteWiseConfig
+    from routing.strategies.routewise import RouteWiseParams
+
+    cfg = RouteWiseConfig()
+    params = RouteWiseParams()
+
+    for field in fields(RouteWiseConfig):
+        assert getattr(params, field.name) == getattr(cfg, field.name)
 
 
 @pytest.mark.unit

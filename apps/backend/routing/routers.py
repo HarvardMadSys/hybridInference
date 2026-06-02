@@ -15,9 +15,9 @@ import os
 import random
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from inspect import isawaitable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -58,6 +58,19 @@ class AllCircuitsOpenError(RuntimeError):
     """Raised when all provider circuits are open (full outage)."""
 
 
+@runtime_checkable
+class ManagedRouter(Protocol):
+    """Router with async lifecycle hooks managed by application bootstrap."""
+
+    async def start(self) -> None:
+        """Start router-owned background work."""
+        ...
+
+    async def stop(self) -> None:
+        """Stop router-owned background work."""
+        ...
+
+
 # ============================================================================
 # Data Classes
 # ============================================================================
@@ -74,7 +87,10 @@ class RouteConfig:
     required_role: str = "free"
 
 
-@dataclass
+_OBSERVATION_LEGACY_UNSET = object()
+
+
+@dataclass(init=False)
 class RoutingObservation:
     """Observation from a completed request, for online learning routers.
 
@@ -88,15 +104,107 @@ class RoutingObservation:
     total_latency_ms: float
     token_count: int
     success: bool
-    quota_committed: float
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    selected_tier: str | None = None
-    sc_committed: bool = False
-    hedged: bool = False
-    backup_won: bool = False
-    lp_status: str | None = None
+    strategy_metadata: dict[str, Any] = field(default_factory=dict)
     cached_input_tokens: int | None = None
+
+    def __init__(
+        self,
+        model_id: str,
+        endpoint_id: str,
+        ttft_ms: float | None,
+        total_latency_ms: float,
+        token_count: int,
+        success: bool,
+        *legacy_tail: Any,
+        prompt_tokens: int | object = _OBSERVATION_LEGACY_UNSET,
+        completion_tokens: int | object = _OBSERVATION_LEGACY_UNSET,
+        strategy_metadata: dict[str, Any] | None = None,
+        quota_committed: float | object = _OBSERVATION_LEGACY_UNSET,
+        selected_tier: str | None | object = _OBSERVATION_LEGACY_UNSET,
+        sc_committed: bool | object = _OBSERVATION_LEGACY_UNSET,
+        hedged: bool | object = _OBSERVATION_LEGACY_UNSET,
+        backup_won: bool | object = _OBSERVATION_LEGACY_UNSET,
+        lp_status: str | None | object = _OBSERVATION_LEGACY_UNSET,
+        cached_input_tokens: int | None | object = _OBSERVATION_LEGACY_UNSET,
+    ) -> None:
+        if len(legacy_tail) > 8:
+            raise TypeError(
+                f"RoutingObservation.__init__() takes at most 14 positional arguments "
+                f"but {6 + len(legacy_tail)} were given"
+            )
+
+        values: dict[str, Any] = {
+            "quota_committed": quota_committed,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "selected_tier": selected_tier,
+            "sc_committed": sc_committed,
+            "hedged": hedged,
+            "backup_won": backup_won,
+            "lp_status": lp_status,
+        }
+        legacy_names = [
+            "quota_committed",
+            "prompt_tokens",
+            "completion_tokens",
+            "selected_tier",
+            "sc_committed",
+            "hedged",
+            "backup_won",
+            "lp_status",
+        ]
+        for name, value in zip(legacy_names, legacy_tail, strict=False):
+            if values[name] is not _OBSERVATION_LEGACY_UNSET:
+                raise TypeError(
+                    f"RoutingObservation.__init__() got multiple values for argument '{name}'"
+                )
+            values[name] = value
+
+        metadata = dict(strategy_metadata or {})
+        legacy_routewise: dict[str, Any] = {}
+        for name in (
+            "quota_committed",
+            "selected_tier",
+            "sc_committed",
+            "hedged",
+            "backup_won",
+            "lp_status",
+        ):
+            if values[name] is not _OBSERVATION_LEGACY_UNSET:
+                legacy_routewise[name] = values[name]
+        if legacy_routewise:
+            existing_routewise = metadata.get("routewise")
+            merged_routewise = (
+                dict(existing_routewise) if isinstance(existing_routewise, dict) else {}
+            )
+            merged_routewise.update(legacy_routewise)
+            metadata["routewise"] = merged_routewise
+
+        resolved_prompt_tokens = (
+            0 if values["prompt_tokens"] is _OBSERVATION_LEGACY_UNSET else values["prompt_tokens"]
+        )
+        resolved_completion_tokens = (
+            0
+            if values["completion_tokens"] is _OBSERVATION_LEGACY_UNSET
+            else values["completion_tokens"]
+        )
+
+        self.model_id = model_id
+        self.endpoint_id = endpoint_id
+        self.ttft_ms = ttft_ms
+        self.total_latency_ms = total_latency_ms
+        self.token_count = token_count
+        self.success = success
+        self.prompt_tokens = resolved_prompt_tokens
+        self.completion_tokens = resolved_completion_tokens
+        self.strategy_metadata = metadata
+        self.cached_input_tokens = (
+            None
+            if cached_input_tokens is _OBSERVATION_LEGACY_UNSET
+            else cached_input_tokens
+        )
 
 
 @dataclass
@@ -126,12 +234,7 @@ def _get_endpoint_id(adapter: BaseAdapter) -> str:
 
 
 def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
-    """Return fallback-attempt telemetry.
-
-    Keep ``endpoint_id`` populated: RouteWise profile replay uses it as the
-    canonical key when bootstrapping failed sibling-provider observations from
-    api_logs metadata.
-    """
+    """Return fallback-attempt telemetry."""
     return {
         "provider": adapter.config.provider,
         "endpoint_id": _get_endpoint_id(adapter),
@@ -625,10 +728,9 @@ class BaseRouter:
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
                 failed_attempts.append(_failed_attempt(primary, primary_error))
-                # Once any provider chunk has reached the client, this SSE
-                # stream is committed to that provider. Falling back would
-                # splice a second provider's role/content/events into the same
-                # response, corrupting the stream.
+                # Once provider bytes have reached the client, the SSE response
+                # is committed to that upstream. Falling back would splice a
+                # second provider into the same stream.
                 if chunks_yielded:
                     raise primary_error
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
@@ -654,8 +756,6 @@ class BaseRouter:
                     except Exception as fallback_error:
                         self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
-                        if chunks_yielded:
-                            raise fallback_error
                         continue
                 raise primary_error
         except BaseException as e:
@@ -1067,11 +1167,7 @@ class FixedRouter(BaseRouter):
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        yield _routing_chunk(
-                            adapter,
-                            fallback=True,
-                            failed_attempts=[_failed_attempt(primary, primary_error)],
-                        )
+                        yield _routing_chunk(adapter, fallback=True)
                         first = True
                         started = time.perf_counter()
                         adapter_endpoint_id = _get_endpoint_id(adapter)

@@ -8,7 +8,6 @@ import pytest
 
 from serving.servers.routers.routing_info import (
     Pricing,
-    RouteWiseDecision,
     RoutingInfo,
     _status_code_from_exception,
     build_initial_routing_info,
@@ -22,14 +21,37 @@ def test_pricing_frozen():
         p.prompt_price = 0.0  # type: ignore[misc]
 
 
-def test_routewise_decision_defaults():
-    rw = RouteWiseDecision()
-    assert rw.selected_tier is None
-    assert rw.quota_committed == 0.0
-    assert rw.sc_committed is False
-    assert rw.hedged is False
-    assert rw.backup_won is False
-    assert rw.extra == {}
+def test_strategy_metadata_defaults_to_none():
+    r = RoutingInfo(request_id="abc", model="gpt-4")
+    assert r.strategy_metadata is None
+    assert r.routewise is None
+
+
+def test_routing_info_constructor_accepts_legacy_routewise():
+    r = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        routewise={"selected_tier": "A"},
+    )
+    assert r.strategy_metadata == {"routewise": {"selected_tier": "A"}}
+    assert r.routewise == {"selected_tier": "A"}
+
+
+def test_routing_info_constructor_routewise_merges_over_strategy_metadata_routewise():
+    r = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        strategy_metadata={
+            "routewise": {"lp_status": "optimal", "selected_tier": "generic"},
+            "other": {"x": 1},
+        },
+        routewise={"selected_tier": "legacy"},
+    )
+
+    assert r.strategy_metadata == {
+        "routewise": {"lp_status": "optimal", "selected_tier": "legacy"},
+        "other": {"x": 1},
+    }
 
 
 def test_routing_info_replace_returns_new_instance():
@@ -40,6 +62,31 @@ def test_routing_info_replace_returns_new_instance():
     # Original unchanged
     assert r.provider is None
     assert r.endpoint_id is None
+
+
+def test_routing_info_replace_routewise_none_clears_routewise():
+    r = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        routewise={"selected_tier": "A"},
+    )
+    r2 = dataclasses.replace(r, routewise=None)
+
+    assert r2.routewise is None
+    assert r2.strategy_metadata is None or "routewise" not in r2.strategy_metadata
+
+
+def test_routing_info_replace_routewise_none_preserves_other_metadata():
+    r = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        strategy_metadata={"existing": {"kept": True}},
+        routewise={"selected_tier": "A"},
+    )
+    r2 = dataclasses.replace(r, routewise=None)
+
+    assert r2.routewise is None
+    assert r2.strategy_metadata == {"existing": {"kept": True}}
 
 
 def test_routing_info_frozen():
@@ -57,6 +104,7 @@ def test_build_initial_routing_info_minimal():
     assert r.model == "gpt-4"
     assert r.provider is None
     assert r.pricing is None
+    assert r.strategy_metadata is None
     assert r.routewise is None
     assert r.upstream_cost_usd is None
 
@@ -105,10 +153,101 @@ def test_merge_adapter_routing_populates_known_fields():
     # dict flows through ``extra["pricing"]`` for the log payload.
     assert enriched.pricing is None
     assert enriched.extra["pricing"] == {"prompt": "0.5", "completion": "1.5"}
+    assert enriched.strategy_metadata == {"routewise": {"selected_tier": "A"}}
     assert enriched.routewise == {"selected_tier": "A"}
     assert enriched.upstream_cost_usd == 0.012
     # Original is untouched (frozen + immutability invariant)
     assert base.provider is None
+
+
+def test_merge_adapter_routing_merges_strategy_metadata():
+    base = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        strategy_metadata={"existing": {"kept": True}},
+    )
+    enriched = merge_adapter_routing(
+        base,
+        {
+            "strategy_metadata": {"custom": {"value": 1}},
+            "routewise": {"selected_tier": "quota"},
+        },
+    )
+
+    assert enriched.strategy_metadata == {
+        "existing": {"kept": True},
+        "custom": {"value": 1},
+        "routewise": {"selected_tier": "quota"},
+    }
+    assert enriched.routewise == {"selected_tier": "quota"}
+
+
+def test_merge_adapter_routing_strategy_metadata_routewise_merges_existing_routewise():
+    base = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        strategy_metadata={
+            "routewise": {"lp_status": "optimal", "selected_tier": "base"},
+            "base": {"y": 2},
+        },
+    )
+    enriched = merge_adapter_routing(
+        base,
+        {
+            "strategy_metadata": {
+                "routewise": {"selected_tier": "incoming", "hedged": True},
+                "other": {"x": 1},
+            },
+        },
+    )
+
+    assert enriched.strategy_metadata == {
+        "routewise": {
+            "lp_status": "optimal",
+            "selected_tier": "incoming",
+            "hedged": True,
+        },
+        "base": {"y": 2},
+        "other": {"x": 1},
+    }
+
+
+def test_merge_adapter_routing_top_level_routewise_merges_over_strategy_metadata_routewise():
+    base = RoutingInfo(request_id="rid", model="gpt-4")
+    enriched = merge_adapter_routing(
+        base,
+        {
+            "routewise": {"selected_tier": "legacy"},
+            "strategy_metadata": {
+                "routewise": {"selected_tier": "generic", "lp_status": "optimal"},
+                "other": {"x": 1},
+            },
+        },
+    )
+    assert enriched.strategy_metadata == {
+        "routewise": {"selected_tier": "legacy", "lp_status": "optimal"},
+        "other": {"x": 1},
+    }
+
+
+def test_routewise_metadata_shape_for_recent_requests() -> None:
+    """RouteWise DB metadata carries provider and hedging details for recent requests."""
+    routewise = {
+        "selected_tier": "api",
+        "selected_provider": "openai",
+        "selected_endpoint_id": "openai:key-1",
+        "hedging_triggered": True,
+        "hedge_backup_provider": "anthropic",
+        "hedge_backup_endpoint_id": "anthropic:key-2",
+        "backup_won": False,
+    }
+
+    routing = merge_adapter_routing(
+        RoutingInfo(request_id="rid", model="gpt-4"),
+        {"provider": "openai", "routewise": routewise},
+    )
+
+    assert routing.routewise == routewise
 
 
 def test_merge_adapter_routing_stashes_unknown_keys_in_extra():

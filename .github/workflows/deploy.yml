@@ -39,7 +39,14 @@ jobs:
           printf '%s\n' "${PROD_SSH_KEY}" > "${HOME}/.ssh/production_deploy_key"
           chmod 600 "${HOME}/.ssh/production_deploy_key"
 
-          printf '%s\n' "${PROD_HOST_KEY}" > "${HOME}/.ssh/known_hosts"
+          # Sanitize: keep only well-formed known_hosts entries. The
+          # PROD_HOST_KEY secret can include ssh-keyscan banner lines
+          # (e.g. "<host>:<port> SSH-2.0-OpenSSH_9.6p1") when stderr was
+          # captured alongside stdout. Those malformed lines cause ssh to
+          # fail with "No ED25519 host key is known" under strict checking.
+          printf '%s\n' "${PROD_HOST_KEY}" \
+            | awk 'NF>=3 && $1 !~ /^#/ && ($2 == "ssh-rsa" || $2 == "ssh-ed25519" || $2 ~ /^ecdsa-sha2-/)' \
+            > "${HOME}/.ssh/known_hosts"
           chmod 600 "${HOME}/.ssh/known_hosts"
 
           for var in PROD_HOST PROD_HOST_KEY PROD_USER PROD_SSH_KEY; do
@@ -98,5 +105,7 @@ jobs:
             -p "${PROD_PORT}" \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null \
             "${PROD_USER}@${PROD_HOST}" \
             "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} bash ops/deploy/deploy_production.sh"

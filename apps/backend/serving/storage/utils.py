@@ -6,7 +6,52 @@ without constructing storage clients.
 
 from __future__ import annotations
 
+import json
+import math
 from typing import Any
+
+
+def json_safe(value: Any) -> Any:
+    """Recursively replace non-finite floats with ``None`` for JSON storage."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [json_safe(v) for v in value]
+    return value
+
+
+def strip_null_bytes(value: Any) -> Any:
+    """Recursively remove PostgreSQL-incompatible null bytes from strings."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {
+            strip_null_bytes(k) if isinstance(k, str) else k: strip_null_bytes(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [strip_null_bytes(v) for v in value]
+    if isinstance(value, tuple):
+        return [strip_null_bytes(v) for v in value]
+    return value
+
+
+def coerce_json_object(value: Any) -> dict[str, Any] | None:
+    """Return a JSON object from decoded JSON/JSONB values, or None for non-objects."""
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
 
 
 def calculate_cost(

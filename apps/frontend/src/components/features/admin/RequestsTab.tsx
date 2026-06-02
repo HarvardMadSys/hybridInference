@@ -11,6 +11,7 @@ import {
   listRecentRequests,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 
 const REQ_PAGE_SIZE = 50;
@@ -909,6 +910,7 @@ export function RequestsTab() {
                     req.status_code != null && req.status_code >= 200 && req.status_code < 400;
                   const isExpanded = reqExpandedId === req.request_id;
                   const cachedTokens = req.cache_read_tokens ?? null;
+                  const routewiseDecision = formatRouteWiseDecision(req);
                   return (
                     <Fragment key={req.request_id}>
                       <tr
@@ -1069,6 +1071,14 @@ export function RequestsTab() {
                                   {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
                                 </span>
                               </div>
+                              {routewiseDecision && (
+                                <div className="col-span-full">
+                                  <span className="text-gray-500">RouteWise:</span>{' '}
+                                  <span className="text-gray-700 font-mono break-all">
+                                    {routewiseDecision}
+                                  </span>
+                                </div>
+                              )}
                               <div>
                                 <span className="text-gray-500">User:</span>{' '}
                                 <span className="text-gray-700">

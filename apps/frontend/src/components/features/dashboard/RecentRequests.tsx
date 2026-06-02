@@ -4,6 +4,7 @@ import { useId, useState } from 'react';
 import { useRecentRequests } from '@/lib/hooks';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import type { RecentRequestItem } from '@/lib/api/user';
+import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 
 const PAGE_SIZE = 20;
 
@@ -75,6 +76,7 @@ function DetailStat({ label, value }: { label: string; value: string }): JSX.Ele
 function RequestRow({ req }: { req: RecentRequestItem }) {
   const [expanded, setExpanded] = useState(false);
   const cachedTokens = req.cache_read_tokens ?? null;
+  const routewiseDecision = formatRouteWiseDecision(req);
 
   const throughputTps =
     req.stream &&
@@ -180,6 +182,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                 {throughputTps != null && (
                   <DetailStat label="Throughput" value={`${throughputTps.toFixed(1)} tok/s`} />
                 )}
+                {routewiseDecision && <DetailStat label="RouteWise" value={routewiseDecision} />}
               </div>
 
               {req.error && (

@@ -50,6 +50,63 @@ def test_render_broadcast_template_unknown_key_raises():
         render_broadcast_template("nonexistent", {})
 
 
+def test_render_markdown_email_converts_markdown_to_html():
+    from serving.utils.email import render_markdown_email
+
+    src = "## Hello\n\nThis is **bold** and a [link](https://example.com)."
+    html, text = render_markdown_email(src)
+
+    assert "<h2" in html
+    assert "<strong>" in html
+    assert "<a href" in html and "https://example.com" in html
+    # Plaintext is the stripped markdown source.
+    assert text == src.strip()
+
+
+def test_render_markdown_email_includes_shell_and_footer():
+    from serving.utils.email import render_markdown_email
+
+    html, _ = render_markdown_email("hi")
+
+    assert html.startswith("<html><body")
+    assert "max-width: 600px; margin: 0 auto; padding: 20px;" in html
+    assert "You received this because you have an active FreeInference account." in html
+    assert html.rstrip().endswith("</body></html>")
+
+
+def test_render_broadcast_template_custom_markdown_rendered():
+    from serving.utils.email import render_broadcast_template
+
+    result = render_broadcast_template(
+        None,
+        {},
+        custom_subject="Subj",
+        custom_body_markdown="## Heading\n\n**bold**",
+    )
+    assert result["subject"] == "Subj"
+    # HTML is rendered markdown, not the raw source.
+    assert "<h2" in result["body_html"]
+    assert "<strong>" in result["body_html"]
+    assert "## Heading" not in result["body_html"]
+    # Plaintext is the stripped markdown source.
+    assert result["body_text"] == "## Heading\n\n**bold**"
+
+
+def test_render_broadcast_template_markdown_takes_precedence_over_html():
+    from serving.utils.email import render_broadcast_template
+
+    result = render_broadcast_template(
+        None,
+        {},
+        custom_subject="Subj",
+        custom_body_html="<p>raw html should be ignored</p>",
+        custom_body_markdown="# Markdown wins",
+    )
+    assert "Markdown wins" in result["body_html"]
+    assert "<h1" in result["body_html"]
+    assert "raw html should be ignored" not in result["body_html"]
+
+
 # ── Scheduler / execute_broadcast tests ───────────────────────────────────
 
 from unittest.mock import AsyncMock, MagicMock, patch

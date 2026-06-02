@@ -312,7 +312,9 @@ class UserDetailResponse(BaseModel):
     usage_month_usd: float = 0.0
     usage_month_requests: int = 0
     models_used: list[str] = Field(default_factory=list)
+    disabled_models: list[str] = Field(default_factory=list)
     last_request_at: datetime | None = None
+    max_concurrent_requests: int | None = None
 
 
 class UpdateUserRequest(BaseModel):
@@ -320,12 +322,14 @@ class UpdateUserRequest(BaseModel):
 
     role: str | None = Field(
         None,
-        pattern="^(trial|free|pro|internal|admin)$",
-        description="One of: trial, free, pro, internal, admin",
+        pattern="^(free|pro|internal|admin)$",
+        description="One of: free, pro, internal, admin",
     )
     status: str | None = Field(None, pattern="^(active|suspended)$")
     quota_daily_cost_usd: Decimal | None = Field(None, ge=0)
     quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)
+    disabled_models: list[str] | None = None
+    max_concurrent_requests: int | None = Field(None, ge=1)
 
 
 class UpdateUserResponse(BaseModel):
@@ -560,6 +564,7 @@ class AdminRecentRequestItem(BaseModel):
     total_tokens: int | None = None
     cost_usd: float | None = None
     error: str | None = None
+    routewise: dict[str, Any] | None = None
 
 
 class AdminRecentRequestsResponse(BaseModel):
@@ -686,6 +691,29 @@ class UpdateSettingRequest(BaseModel):
     value: Any
 
 
+class RoutewiseSettingItem(BaseModel):
+    """A curated Routewise runtime setting with current value and metadata."""
+
+    key: Literal[
+        "routewise_decision_rule",
+        "routewise_daily_quota",
+        "routewise_latency_slo_sec",
+        "routewise_latency_min_samples",
+    ]
+    value: Any
+    value_type: Literal["str", "int", "float"]
+    default_value: Any
+    description: str
+    min: int | float | None = None
+    max: int | float | None = None
+
+
+class ListRoutewiseSettingsResponse(BaseModel):
+    """Response payload for listing Routewise runtime settings."""
+
+    settings: list[RoutewiseSettingItem]
+
+
 class ModelVisibilityItem(BaseModel):
     """Current visibility requirements for a canonical model."""
 
@@ -704,13 +732,33 @@ class ListModelVisibilityResponse(BaseModel):
 class UpdateModelVisibilityRequest(BaseModel):
     """Request payload for updating a model visibility override."""
 
-    required_role: Literal["trial", "free", "pro", "internal", "admin"] | None
+    required_role: Literal["free", "pro", "internal", "admin"] | None
+
+
+class ModelConcurrencyItem(BaseModel):
+    """Current per-user concurrency-limit exemption state for a canonical model."""
+
+    model_id: str
+    exempt: bool
+
+
+class ListModelConcurrencyResponse(BaseModel):
+    """Response payload for listing model concurrency exemptions."""
+
+    models: list[ModelConcurrencyItem]
+
+
+class UpdateModelConcurrencyRequest(BaseModel):
+    """Request payload for updating a model concurrency exemption."""
+
+    exempt: bool
 
 
 class RouteWeightItem(BaseModel):
     """Current route weight state for one model endpoint."""
 
     model_id: str
+    strategy: str
     endpoint_id: str
     provider: str
     base_url: str | None = None
@@ -775,6 +823,7 @@ __all__ = [
     "ListAuditLogResponse",
     "ListModelVisibilityResponse",
     "ListRouteWeightsResponse",
+    "ListRoutewiseSettingsResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
@@ -788,6 +837,7 @@ __all__ = [
     "ResumeUserResponse",
     "RevokeAPIKeyResponse",
     "RouteWeightItem",
+    "RoutewiseSettingItem",
     "RuntimeSettingItem",
     "SparklineBucket",
     "StatusCounts",
@@ -817,6 +867,13 @@ class BroadcastPreviewRequest(BaseModel):
     subject: str = Field("", description="Required when template_key is None")
     body_html: str = Field("", description="Required when template_key is None")
     body_text: str = Field("", description="Required when template_key is None")
+    body_markdown: str = Field(
+        "",
+        description=(
+            "Markdown source for custom body; rendered to HTML server-side. "
+            "Takes precedence over body_html when set."
+        ),
+    )
     # Empty arrays would silently match zero users (postgres ANY('{}') is always
     # false), which is confusing for admins. Require at least one role and one
     # status — admin must opt in to who receives the broadcast.
@@ -912,12 +969,17 @@ class ProviderModelPair(BaseModel):
 
 class ProviderStatsResponse(BaseModel):
     rows: list[ProviderStatsRow]
+    # `providers`/`models`/`pairs` span the full retained table (last 30
+    # days), so the dropdowns stay populated even when the selected range
+    # has no rows.
     providers: list[str]
     models: list[str]
-    # Distinct (provider, model_id) pairs that have data in the window.
-    # The UI uses pairs[0] as the default selection so it never picks a
-    # provider x model combination that has no data.
     pairs: list[ProviderModelPair]
+    # Providers that actually have rows inside the selected [from, to)
+    # window. The UI prefers one of these as the default selection so the
+    # tab doesn't render empty on load when a retention-only provider sorts
+    # first.
+    window_providers: list[str]
 
 
 # ============================================================
@@ -1023,6 +1085,13 @@ class AddProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     label: str | None = Field(None, max_length=255)
 
 
+class DisableProviderEnvKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for disabling an env-sourced provider API key."""
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    env_key_id: str = Field(..., min_length=1, max_length=128)
+
+
 class AddProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     """Response for ``POST /admin/provider-keys``."""
 
@@ -1035,6 +1104,14 @@ class AddProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
 
 class DeleteProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     """Response for ``DELETE /admin/provider-keys/{id}``."""
+
+    id: str
+    provider: str
+    pools_updated: int
+
+
+class DisableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys/disable-env``."""
 
     id: str
     provider: str

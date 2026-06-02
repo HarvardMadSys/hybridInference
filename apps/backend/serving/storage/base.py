@@ -58,6 +58,7 @@ USERS_MUTABLE_COLUMNS: dict[str, str] = {
     "reviewed_at": "reviewed_at",
     "reviewed_by": "reviewed_by",
     "last_login_at": "last_login_at",
+    "max_concurrent_requests": "max_concurrent_requests",
 }
 
 API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
@@ -287,6 +288,15 @@ class OperationalStore(ABC):
         """
 
     # -- api keys ------------------------------------------------------------
+
+    async def invalidate_auth_caches(self) -> None:  # noqa: B027
+        """Evict all cached auth-context entries.
+
+        The base implementation is a no-op — uncached stores have nothing
+        to evict.  ``CachedOperationalStore`` overrides this to clear the
+        in-memory (or Redis) auth cache so that key revocations take effect
+        immediately without waiting for TTL expiry.
+        """
 
     @abstractmethod
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:
@@ -711,6 +721,26 @@ class OperationalStore(ABC):
         """Return all model visibility override rows ordered by model_id."""
 
     @abstractmethod
+    async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
+        """Fetch a single model concurrency exemption row by model_id."""
+
+    @abstractmethod
+    async def set_model_concurrency_exemption(
+        self,
+        model_id: str,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a model concurrency exemption row (presence of row = exempt)."""
+
+    @abstractmethod
+    async def delete_model_concurrency_exemption(self, model_id: str) -> bool:
+        """Delete a model concurrency exemption row. Returns True if removed."""
+
+    @abstractmethod
+    async def list_model_concurrency_exemptions(self) -> list[Row]:
+        """Return all model concurrency exemption rows ordered by model_id."""
+
+    @abstractmethod
     async def list_weight_overrides_for_model(self, model_id: str) -> list[Row]:
         """Return provider weight overrides for a model ordered by endpoint_id."""
 
@@ -790,6 +820,21 @@ class OperationalStore(ABC):
     @abstractmethod
     async def delete_provider_key(self, key_id: str) -> bool:
         """Hard-delete the provider key row. Returns True if a row was removed."""
+
+    @abstractmethod
+    async def disable_provider_env_key(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        disabled_by: str | None,
+    ) -> None:
+        """Persist a tombstone for an env-sourced provider API key."""
+
+    @abstractmethod
+    async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Return disabled env-sourced provider key hashes for ``provider``."""
 
 
 # ---------------------------------------------------------------------------

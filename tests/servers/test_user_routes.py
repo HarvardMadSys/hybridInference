@@ -184,6 +184,36 @@ class TestAPIKeyManagement:
         assert key_row["status"] == "revoked"
 
     @pytest.mark.asyncio
+    async def test_delete_api_key_invalidates_auth_cache(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_backend
+    ):
+        """Regression: revoking a key via DELETE must clear the auth cache.
+
+        Before the fix, delete_api_key used db_logger.pool directly, bypassing
+        CachedOperationalStore. The 30s auth cache entry remained valid after
+        revocation, allowing the key to still pass authentication.
+        """
+        from serving.servers.auth import hash_api_key
+
+        operational_store, _, _, _ = auth_backend
+        key_hash = hash_api_key(test_user_with_key["api_key"])
+
+        # Warm the cache with the active key's auth context
+        ctx_before = await operational_store.get_auth_context_by_key_hash(key_hash)
+        assert ctx_before is not None, "Key should be active and cacheable before revoke"
+
+        # Revoke via the user self-service endpoint
+        response = await auth_app_client.delete(
+            f"/user/api-keys/{test_user_with_key['key_prefix']}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+
+        # Cache must be cleared: subsequent lookup should return None
+        ctx_after = await operational_store.get_auth_context_by_key_hash(key_hash)
+        assert ctx_after is None, "Auth cache must be invalidated after key revocation"
+
+    @pytest.mark.asyncio
     async def test_delete_api_key_not_found(
         self, auth_app_client: AsyncClient, test_user, auth_headers
     ):
@@ -355,9 +385,9 @@ class TestRecentRequests:
     async def test_recent_requests_filters_by_model(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
     ):
-        """Test model_id filtering uses correct SQL parameter binding."""
-        model_a = f"model-a-{test_user_with_key['id']}"
-        model_b = f"model-b-{test_user_with_key['id']}"
+        """Test model_id filtering supports case-insensitive partial matching."""
+        model_a = f"gpt-4o-mini-{test_user_with_key['id']}"
+        model_b = f"claude-sonnet-{test_user_with_key['id']}"
         request_id_a = f"req-recent-{test_user_with_key['id']}-a"
         request_id_b = f"req-recent-{test_user_with_key['id']}-b"
 
@@ -379,7 +409,7 @@ class TestRecentRequests:
             )
 
         response = await auth_app_client.get(
-            f"/user/recent-requests?model_id={model_a}",
+            "/user/recent-requests?model_id=4O-MINI",
             headers=auth_headers,
         )
 

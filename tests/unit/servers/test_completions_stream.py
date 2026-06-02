@@ -387,6 +387,32 @@ async def test_error_emits_error_chunk_and_schedules_error_log():
 
 
 @pytest.mark.asyncio
+async def test_error_log_includes_routewise_metadata_from_exception():
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger, metadata={"user_id": "user-1"})
+    routewise = {
+        "selected_tier": "api",
+        "selected_provider": "openai",
+        "gain_c": float("-inf"),
+        "hedging_triggered": True,
+        "hedge_backup_provider": "anthropic",
+    }
+
+    async def _gen():
+        exc = RuntimeError("upstream blew up")
+        exc._routing = {"provider": "openai", "routewise": routewise}
+        raise exc
+        if False:  # pragma: no cover
+            yield ""
+
+    await _consume(session.stream(_gen()))
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["metadata"]["user_id"] == "user-1"
+    assert log_data["metadata"]["routewise"] == {**routewise, "gain_c": None}
+
+
+@pytest.mark.asyncio
 async def test_error_before_any_chunk_still_emits_role_chunk_then_error():
     cl_logger = MagicMock(spec=CompletionsLogger)
     session = _make_session(completions_logger=cl_logger)
