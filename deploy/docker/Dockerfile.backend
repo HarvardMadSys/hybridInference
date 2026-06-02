@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # ---- Stage 1: build ----
 FROM python:3.12-slim AS builder
 
@@ -10,7 +12,18 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 # --no-install-project: only install dependencies, not the project itself.
 # The project source is copied in the runtime stage and used via PYTHONPATH.
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=secret,id=github_token \
+    if [ -f /run/secrets/github_token ]; then \
+        token="$(cat /run/secrets/github_token)" && \
+        git config --global \
+            url."https://x-access-token:${token}@github.com/".insteadOf \
+            "https://github.com/"; \
+    fi && \
+    uv sync --frozen --no-dev --no-install-project && \
+    if [ -f /run/secrets/github_token ]; then \
+        git config --global --unset-all \
+            url."https://x-access-token:${token}@github.com/".insteadOf || true; \
+    fi
 
 # ---- Stage 2: runtime ----
 FROM python:3.12-slim

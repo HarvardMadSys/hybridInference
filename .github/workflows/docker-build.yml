@@ -35,5 +35,7 @@ jobs:
           context: .
           file: deploy/docker/Dockerfile.${{ matrix.image }}
           push: false
+          secrets: |
+            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=min,scope=${{ matrix.image }}
