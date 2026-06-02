@@ -9,6 +9,7 @@ paper's assumption that ``[L, U]`` is derived from the workload itself.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -50,21 +51,24 @@ class CostEnvelopeEstimator:
     _samples: dict[str, deque[tuple[float, float]]] = field(
         default_factory=lambda: defaultdict(deque)
     )
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def observe(self, pool: str, cost_usd: float, *, now: float | None = None) -> None:
         """Add one cheapest API-equivalent cost sample."""
         if cost_usd <= 0:
             return
         ts = time.time() if now is None else now
-        samples = self._samples[pool]
-        samples.append((ts, float(cost_usd)))
-        self._prune(pool, ts)
+        with self._lock:
+            samples = self._samples[pool]
+            samples.append((ts, float(cost_usd)))
+            self._prune_locked(pool, ts)
 
     def snapshot(self, pool: str, *, now: float | None = None) -> CostEnvelopeSnapshot | None:
         """Return current ``L/U`` for *pool*, or ``None`` if uncalibrated."""
         ts = time.time() if now is None else now
-        self._prune(pool, ts)
-        values = [cost for _t, cost in self._samples.get(pool, ())]
+        with self._lock:
+            self._prune_locked(pool, ts)
+            values = [cost for _t, cost in self._samples.get(pool, ())]
         if not values:
             return None
         lower = max(_percentile(values, self.lower_percentile), 1e-12)
@@ -76,6 +80,10 @@ class CostEnvelopeEstimator:
         )
 
     def _prune(self, pool: str, now: float) -> None:
+        with self._lock:
+            self._prune_locked(pool, now)
+
+    def _prune_locked(self, pool: str, now: float) -> None:
         samples = self._samples.get(pool)
         if not samples:
             return

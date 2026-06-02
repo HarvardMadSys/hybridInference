@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from routewise.core import (
     BudgetLPCandidate,
@@ -75,6 +77,38 @@ def test_envelope_returns_none_after_window_evicts_all_samples():
 
     # Advance past the window: all samples drop and the pool is uncalibrated.
     assert estimator.snapshot("m", now=100.0) is None
+
+
+@pytest.mark.unit
+def test_envelope_supports_concurrent_observe_and_snapshot():
+    estimator = CostEnvelopeEstimator(
+        lower_percentile=0,
+        upper_percentile=100,
+        window_sec=10_000.0,
+    )
+
+    def observe_worker(offset: int) -> None:
+        for idx in range(200):
+            estimator.observe("m", 0.01 + ((offset + idx) % 50) * 0.001, now=float(offset + idx))
+
+    def snapshot_worker() -> None:
+        for _ in range(200):
+            snap = estimator.snapshot("m", now=500.0)
+            if snap is not None:
+                assert snap.lower <= snap.upper
+                assert snap.sample_count > 0
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            *(pool.submit(observe_worker, worker * 1000) for worker in range(4)),
+            *(pool.submit(snapshot_worker) for _ in range(4)),
+        ]
+        for future in futures:
+            future.result()
+
+    snap = estimator.snapshot("m", now=500.0)
+    assert snap is not None
+    assert snap.sample_count == 800
 
 
 @pytest.mark.unit
