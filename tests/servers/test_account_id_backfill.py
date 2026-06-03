@@ -187,3 +187,32 @@ class TestKeyLookupAndCreate:
                 user_id=user_id,
                 account_id=user_id,
             )
+
+    @pytest.mark.asyncio
+    async def test_create_key_defaults_account_id_to_user_id(self, backfill_db: DatabaseLogger):
+        """create_key without account_id must persist account_id = user_id.
+
+        Guards the ongoing NULL-producing path: admin key creation
+        (admin/api_keys.py) calls create_key without account_id, so the row
+        must still default to account_id = user_id to stay visible in the
+        dashboard (list/info/lookup all filter by account_id).
+        """
+        pool = backfill_db.pool
+        assert pool is not None
+        store = PostgresOperationalStore(pool)
+
+        async with pool.acquire() as conn:
+            user_id = await _insert_user(conn)
+
+        # Note: account_id intentionally omitted, mirroring admin key creation.
+        await store.create_key(
+            key_hash="adminhash",
+            key_prefix="adminpref",
+            user_id=user_id,
+        )
+
+        async with pool.acquire() as conn:
+            account_id = await conn.fetchval(
+                "SELECT account_id FROM api_keys WHERE user_id = $1", user_id
+            )
+        assert account_id == user_id

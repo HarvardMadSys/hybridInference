@@ -1246,6 +1246,13 @@ class PostgresOperationalStore(OperationalStore):
         """Insert a new API key. Returns the inserted row."""
         import asyncpg as _asyncpg
 
+        # Default account_id to user_id so self-service AND admin-created keys
+        # are visible/manageable in the dashboard (list/info/lookup all key off
+        # account_id). Callers that omit account_id (e.g. admin key creation)
+        # would otherwise persist NULL and hide the key from the user. This
+        # stops the ongoing NULL-producing path at its single source (#630).
+        effective_account_id = account_id if account_id is not None else user_id
+
         async with self._pool.acquire() as conn:
             try:
                 row = await conn.fetchrow(
@@ -1264,7 +1271,7 @@ class PostgresOperationalStore(OperationalStore):
                     expires_at,
                     notes,
                     metadata,
-                    account_id,
+                    effective_account_id,
                 )
             except _asyncpg.UniqueViolationError as exc:
                 # Active-key uniqueness is enforced per user_id
