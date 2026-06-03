@@ -503,6 +503,27 @@ class DatabaseLogger:
                         seeded_admins,
                     )
 
+            # Backfill account_id = user_id for legacy self-registered keys
+            # created before the account_id column existed (account_id IS NULL).
+            # Makes those keys visible/manageable in the dashboard and reconciles
+            # idx_api_keys_user_unique (user_id) with
+            # idx_api_keys_account_active_unique (account_id). Idempotent: only
+            # NULL rows whose user still exists are touched. Runs here (not next
+            # to the account_id column above) because api_keys is created before
+            # the users table in this method.
+            backfilled_account_ids_tag = await conn.execute("""
+                UPDATE api_keys k
+                SET account_id = k.user_id
+                WHERE k.account_id IS NULL
+                  AND EXISTS (SELECT 1 FROM users u WHERE u.id = k.user_id)
+            """)
+            backfilled_account_ids = _parse_command_tag_count(backfilled_account_ids_tag)
+            if backfilled_account_ids:
+                logger.info(
+                    "Backfilled account_id for %d legacy api_keys rows.",
+                    backfilled_account_ids,
+                )
+
             # Auth sessions table for refresh token management
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS auth_sessions (

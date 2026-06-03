@@ -378,7 +378,12 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def get_key_by_account_or_user(self, account_id: str) -> Row | None:
-        """Fetch key row by account_id or user_id (for login lookup)."""
+        """Fetch the active key by account_id OR user_id.
+
+        Matches the real user_id uniqueness constraint, so it also finds legacy
+        keys whose account_id is NULL. Preferred for create/regenerate
+        pre-checks.
+        """
 
     @abstractmethod
     async def get_active_key_by_account(self, account_id: str) -> Row | None:

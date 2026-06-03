@@ -12,6 +12,7 @@ import os
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.config.settings import VALID_ROLES
+from serving.exceptions import DuplicateAPIKeyError
 from serving.storage.base import OperationalStore, ProviderKeyRow, Row
 from serving.utils.logging import get_logger
 
@@ -260,6 +261,20 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique "
             "ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL"
         )
+        # Backfill account_id = user_id for legacy self-registered keys created
+        # before the account_id column existed (account_id IS NULL). Makes those
+        # keys visible/manageable in the dashboard and reconciles
+        # idx_api_keys_user_unique (user_id) with
+        # idx_api_keys_account_active_unique (account_id). Idempotent: only NULL
+        # rows whose user still exists are touched.
+        tag = await conn.execute(
+            "UPDATE api_keys k SET account_id = k.user_id "
+            "WHERE k.account_id IS NULL "
+            "AND EXISTS (SELECT 1 FROM users u WHERE u.id = k.user_id)"
+        )
+        backfilled = _parse_command_tag_count(tag)
+        if backfilled:
+            logger.info("Backfilled account_id for %d legacy api_keys rows.", backfilled)
         # Drop legacy 'tier' column — tier/role unified on users.role
         # (spec: docs/agents/specs/2026-05-02-unify-tier-role-design.md).
         await conn.execute("""
@@ -1229,25 +1244,41 @@ class PostgresOperationalStore(OperationalStore):
         account_id: str | None = None,
     ) -> Row:
         """Insert a new API key. Returns the inserted row."""
+        import asyncpg as _asyncpg
+
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "INSERT INTO api_keys "
-                "(key_hash, key_prefix, user_id, user_name, "
-                "quota_daily_cost_usd, quota_monthly_cost_usd, "
-                "expires_at, notes, metadata, account_id) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10) "
-                "RETURNING id, created_at",
-                key_hash,
-                key_prefix,
-                user_id,
-                user_name,
-                quota_daily_cost_usd,
-                quota_monthly_cost_usd,
-                expires_at,
-                notes,
-                metadata,
-                account_id,
-            )
+            try:
+                row = await conn.fetchrow(
+                    "INSERT INTO api_keys "
+                    "(key_hash, key_prefix, user_id, user_name, "
+                    "quota_daily_cost_usd, quota_monthly_cost_usd, "
+                    "expires_at, notes, metadata, account_id) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10) "
+                    "RETURNING id, created_at",
+                    key_hash,
+                    key_prefix,
+                    user_id,
+                    user_name,
+                    quota_daily_cost_usd,
+                    quota_monthly_cost_usd,
+                    expires_at,
+                    notes,
+                    metadata,
+                    account_id,
+                )
+            except _asyncpg.UniqueViolationError as exc:
+                # Active-key uniqueness is enforced per user_id
+                # (idx_api_keys_user_unique) and per account_id
+                # (idx_api_keys_account_active_unique). Convert either to a clean
+                # 409 (DuplicateAPIKeyError has a global handler) instead of a
+                # 500, and guard the concurrent-create race. Re-raise other
+                # unique violations (e.g. key_prefix collision).
+                if exc.constraint_name in (
+                    "idx_api_keys_user_unique",
+                    "idx_api_keys_account_active_unique",
+                ):
+                    raise DuplicateAPIKeyError("You already have an active API key") from exc
+                raise
         return dict(row)
 
     async def check_active_key_exists(self, user_id: str) -> bool:
@@ -1362,10 +1393,18 @@ class PostgresOperationalStore(OperationalStore):
         return old_row["key_prefix"]
 
     async def get_key_by_account_or_user(self, account_id: str) -> Row | None:
-        """Fetch key row by account_id or user_id."""
+        """Fetch the active key by account_id OR user_id.
+
+        Unlike :meth:`get_active_key_by_account`, this matches the real
+        ``idx_api_keys_user_unique`` (user_id) constraint, so it also finds
+        legacy keys whose ``account_id`` is NULL. Prefer it for the
+        create/regenerate pre-checks.
+        """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id FROM api_keys "
+                "SELECT id, key_prefix, created_at, last_used_at, status, "
+                "quota_daily_cost_usd "
+                "FROM api_keys "
                 "WHERE (account_id = $1 OR user_id = $1) AND status = 'active' "
                 "LIMIT 1",
                 account_id,
