@@ -776,6 +776,34 @@ class TestFetchMinimax:
             ),
         ]
 
+    @pytest.mark.asyncio
+    async def test_weekly_credit_unit_not_overwritten_by_interval_percent(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "_token=abc; minimax_group_id_v2=test-group")
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "data": {
+                "model_remains": [
+                    {
+                        "model_name": "Token Plan",
+                        "current_interval_remaining_percent": 25,
+                        "current_weekly_total_credits": 30000,
+                        "current_weekly_remaining_credits": 22000,
+                    }
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        assert [(u.label, u.used, u.limit, u.unit) for u in result.usages] == [
+            ("Token Plan (interval)", 75.0, 100.0, "%"),
+            ("Token Plan (weekly)", 8000.0, 30000.0, "credits"),
+        ]
+
 
 class TestFetchOllama:
     @pytest.mark.asyncio

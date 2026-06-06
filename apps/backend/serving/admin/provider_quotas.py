@@ -662,6 +662,11 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
             "weekly_used_credits",
             "weekly_used_credit",
         )
+        weekly_unit = (
+            "credits"
+            if any("weekly" in key.lower() and "credit" in key.lower() for key in entry)
+            else unit
+        )
         weekly_remaining_percent = _first_float(
             entry,
             "current_weekly_remaining_percent",
@@ -680,7 +685,7 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
                     label=f"{model_name} (weekly)",
                     used=weekly_used_val,
                     limit=weekly_total,
-                    unit=unit,
+                    unit=weekly_unit,
                     reset_at=weekly_reset_dt,
                 )
             )
