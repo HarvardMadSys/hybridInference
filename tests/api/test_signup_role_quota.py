@@ -10,8 +10,10 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 import serving.servers.routers.user_routes as user_routes
+from serving.exceptions import DuplicateAPIKeyError
 from serving.servers.routers.user_routes import create_api_key, regenerate_api_key
 
 _FAKE_API_KEY = "hyi-" + "a" * 44
@@ -39,7 +41,7 @@ def _make_rt(quota_value: float = 250.0) -> AsyncMock:
 def _make_op_store(*, has_active_key: bool = False) -> AsyncMock:
     """Return a minimal mock OperationalStore."""
     store = AsyncMock()
-    store.get_active_key_by_account.return_value = (
+    store.get_key_by_account_or_user.return_value = (
         {"key_prefix": "abc123456789"} if has_active_key else None
     )
     store.create_key = AsyncMock()
@@ -117,6 +119,63 @@ async def test_create_api_key_free_role_uses_role_specific_quota():
     rt.get_float.assert_awaited_with("user_daily_quota_free")
     call_kwargs = op_store.create_key.call_args.kwargs
     assert call_kwargs["quota_daily_cost_usd"] == Decimal("75.0")
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_existing_active_key_returns_409():
+    """Pre-check must 409 when an active key already exists.
+
+    get_key_by_account_or_user also catches legacy keys whose account_id is
+    NULL, so those users now get a clean 409 instead of an INSERT-time 500.
+    """
+    rt = _make_rt(250.0)
+    op_store = _make_op_store(has_active_key=True)
+    current_user = _make_current_user(role="pro")
+    request = _make_request()
+    db_logger = _make_db_logger()
+
+    with (
+        _patch_auth(),
+        patch.object(user_routes, "get_runtime_settings_instance", return_value=rt),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await create_api_key(
+            request=request,
+            current_user=current_user,
+            op_store=op_store,
+            db_logger=db_logger,
+        )
+
+    assert exc_info.value.status_code == 409
+    op_store.get_key_by_account_or_user.assert_awaited_once_with("user-123")
+    op_store.create_key.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_propagates_duplicate_on_insert_race():
+    """A unique-violation surfaced by create_key must bubble as
+    DuplicateAPIKeyError (→ global 409 handler), not be swallowed or become 500.
+
+    Covers the concurrent-create race and any pre-check miss.
+    """
+    rt = _make_rt(250.0)
+    op_store = _make_op_store(has_active_key=False)
+    op_store.create_key = AsyncMock(side_effect=DuplicateAPIKeyError("dup"))
+    current_user = _make_current_user(role="pro")
+    request = _make_request()
+    db_logger = _make_db_logger()
+
+    with (
+        _patch_auth(),
+        patch.object(user_routes, "get_runtime_settings_instance", return_value=rt),
+        pytest.raises(DuplicateAPIKeyError),
+    ):
+        await create_api_key(
+            request=request,
+            current_user=current_user,
+            op_store=op_store,
+            db_logger=db_logger,
+        )
 
 
 # ---------------------------------------------------------------------------
