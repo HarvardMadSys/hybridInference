@@ -543,24 +543,29 @@ models:
 
 
   # ===== Embedding Models =====
+  # Served locally on a GPU box by ops/embedding_idle_proxy (sglang --is-embedding),
+  # reverse-tunneled to production on port 8002. The gateway reaches the tunnel via
+  # host.docker.internal:8002 and routes by the model field.
 
-  # - id: bge-m3
-  #   name: BGE-M3
-  #   type: embedding
-  #   provider: sglang
-  #   quantization: "fp16"
-  #   input_modalities: ["text"]
-  #   output_modalities: ["embedding"]
-  #   context_length: 8192
-  #   max_output_length: 0
-  #   pricing:
-  #     prompt: "0"
-  #     completion: "0"
-  #   route:
-  #     - kind: sglang
-  #       weight: 1.0
-  #       base_url: "http://host.docker.internal:8005"
-  #       provider_model_id: "bge-m3"
+  - id: bge-m3
+    name: BGE-M3
+    type: embedding
+    provider: sglang
+    quantization: "fp16"
+    input_modalities: ["text"]
+    output_modalities: ["embedding"]
+    context_length: 8192
+    max_output_length: 0
+    pricing:
+      prompt: "0"
+      completion: "0"
+    route:
+      - kind: sglang
+        weight: 1.0
+        base_url: "http://host.docker.internal:8002"
+        provider_model_id: "BAAI/bge-m3"
+        api_keys:
+          - ${LOCAL_API_KEY}
 
   # ── Anthropic direct (kind: anthropic) ─────────────────────
   # These models route directly to api.anthropic.com via the AnthropicAdapter.

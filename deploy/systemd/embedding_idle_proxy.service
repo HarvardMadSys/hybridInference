@@ -1,0 +1,28 @@
+[Unit]
+Description=embedding idle proxy — lazy start/stop of GPU embedding-model containers
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/srv/hybridInference/ops/embedding_idle_proxy
+ExecStart=/srv/hybridInference/.venv/bin/python3 /srv/hybridInference/ops/sglang_idle_proxy/sglang_idle_proxy.py
+
+Restart=on-failure
+RestartSec=10s
+
+Environment=LISTEN_PORT=8002
+Environment=IDLE_TIMEOUT=1200
+Environment=HEALTH_TIMEOUT=600
+Environment=HEALTH_INTERVAL=10
+Environment=MODELS_CONFIG=/srv/hybridInference/ops/embedding_idle_proxy/models.json
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=embedding-idle-proxy
+
+[Install]
+WantedBy=multi-user.target

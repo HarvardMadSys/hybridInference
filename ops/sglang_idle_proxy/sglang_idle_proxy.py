@@ -57,6 +57,9 @@ Example::
     }
 
 ``gpu_index`` can be omitted to auto-pick the least-used GPU.
+
+Set ``"is_embedding": true`` on a model to launch sglang in encode-only mode
+(adds ``--is-embedding``); such models serve ``/v1/embeddings`` instead of chat.
 """
 
 from __future__ import annotations
@@ -188,14 +191,17 @@ class BackendManager:
 
     @property
     def state(self) -> str:
+        """Return the current backend lifecycle phase."""
         with self._lock:
             return self._state
 
     def touch(self) -> None:
+        """Record activity to reset the idle timer."""
         with self._lock:
             self._last_activity = time.monotonic()
 
     def ensure_running(self) -> None:
+        """Start the container if needed and block until it is healthy."""
         should_start = False
         with self._lock:
             if self._state == "ready":
@@ -243,6 +249,12 @@ class BackendManager:
             )
 
     def _resolve_gpu(self) -> str:
+        # An explicit gpu_index pins the model to that device (lets several
+        # models share one GPU); only auto-pick when it is unset.
+        pinned = self.config.get("gpu_index")
+        if pinned not in (None, ""):
+            log.info("[%s] Using pinned GPU %s", self.model_name, pinned)
+            return str(pinned)
         used_gpus = set()
         for mgr in _backends.values():
             if mgr is not self and mgr.state == "ready":
@@ -295,9 +307,17 @@ class BackendManager:
             "--tp",
             "1",
         ]
-        tcp = self.config.get("tool_call_parser")
-        if tcp:
-            cmd += ["--tool-call-parser", tcp]
+        if self.config.get("is_embedding"):
+            # Embedding models run sglang in encode-only mode; tool-call parsing
+            # and chat-completion endpoints are irrelevant for them.
+            cmd += ["--is-embedding"]
+            attn = self.config.get("attention_backend")
+            if attn:
+                cmd += ["--attention-backend", attn]
+        else:
+            tcp = self.config.get("tool_call_parser")
+            if tcp:
+                cmd += ["--tool-call-parser", tcp]
         log.info("Running: %s", " ".join(cmd))
         subprocess.run(cmd, check=True, capture_output=True)
 
@@ -513,31 +533,40 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_error(500, str(exc))
 
     def do_GET(self) -> None:
+        """Handle GET by proxying to the matching backend."""
         self._proxy()
 
     def do_POST(self) -> None:
+        """Handle POST by proxying to the matching backend."""
         self._proxy()
 
     def do_PUT(self) -> None:
+        """Handle PUT by proxying to the matching backend."""
         self._proxy()
 
     def do_DELETE(self) -> None:
+        """Handle DELETE by proxying to the matching backend."""
         self._proxy()
 
     def do_PATCH(self) -> None:
+        """Handle PATCH by proxying to the matching backend."""
         self._proxy()
 
     def do_OPTIONS(self) -> None:
+        """Handle OPTIONS by proxying to the matching backend."""
         self._proxy()
 
     def do_HEAD(self) -> None:
+        """Handle HEAD by proxying to the matching backend."""
         self._proxy()
 
     def log_message(self, fmt: str, *args: object) -> None:  # type: ignore[override]
+        """Route stdlib HTTP server logs through the module logger."""
         log.info(fmt, *args)
 
 
 def main() -> None:
+    """Start the proxy HTTP server and serve until interrupted."""
     models = list(_backends.keys())
     log.info(
         "sglang idle proxy listening on :%d  (%d models: %s)  (idle timeout %ds)",
