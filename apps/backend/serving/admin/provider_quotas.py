@@ -552,6 +552,9 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
         logger.exception("fetch_minimax: unexpected error")
         return _err("minimax", "MiniMax", cookie, "unexpected")
 
+    if not isinstance(data, dict):
+        return _err("minimax", "MiniMax", cookie, "parse_error")
+
     base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else None
     if base_resp and base_resp.get("status_code") == 1004:
         return _err("minimax", "MiniMax", cookie, "auth_failed")
@@ -604,12 +607,23 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
             "used_credit",
             "used",
         )
+        remaining_percent = _first_float(
+            entry,
+            "current_interval_remaining_percent",
+            "current_interval_remain_percent",
+            "remain_percent",
+            "remaining_percent",
+        )
         end = entry.get("end_time")
         reset_dt = _parse_epoch_ms(end) or _parse_iso(end)
         used_val = used
         if used_val is None and total is not None and remains is not None:
             used_val = max(0.0, total - remains)
         unit = "credits" if _entry_has_credit_field(entry) else "requests"
+        if total is None and used_val is None and remaining_percent is not None:
+            total = 100.0
+            used_val = max(0.0, 100.0 - remaining_percent)
+            unit = "%"
         usages.append(
             ProviderQuotaUsage(
                 label=f"{model_name} (interval)",
@@ -648,6 +662,13 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
             "weekly_used_credits",
             "weekly_used_credit",
         )
+        weekly_remaining_percent = _first_float(
+            entry,
+            "current_weekly_remaining_percent",
+            "current_weekly_remain_percent",
+            "weekly_remaining_percent",
+            "weekly_remain_percent",
+        )
         if weekly_total is not None and weekly_total > 0:
             weekly_end = entry.get("weekly_end_time")
             weekly_reset_dt = _parse_epoch_ms(weekly_end) or _parse_iso(weekly_end)
@@ -661,6 +682,17 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
                     limit=weekly_total,
                     unit=unit,
                     reset_at=weekly_reset_dt,
+                )
+            )
+        elif weekly_used is None and weekly_remaining_percent is not None:
+            weekly_end = entry.get("weekly_end_time")
+            usages.append(
+                ProviderQuotaUsage(
+                    label=f"{model_name} (weekly)",
+                    used=max(0.0, 100.0 - weekly_remaining_percent),
+                    limit=100.0,
+                    unit="%",
+                    reset_at=_parse_epoch_ms(weekly_end) or _parse_iso(weekly_end),
                 )
             )
 

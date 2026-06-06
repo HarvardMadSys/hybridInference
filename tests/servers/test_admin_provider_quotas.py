@@ -488,6 +488,18 @@ class TestFetchMinimax:
         assert result.error == "not_configured"
 
     @pytest.mark.asyncio
+    async def test_parse_error_when_json_root_is_not_object(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=["unexpected"]),
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is False
+        assert result.error == "parse_error"
+
+    @pytest.mark.asyncio
     async def test_success_parses_remains(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
         monkeypatch.setenv("MINIMAX_GROUP_ID", "test-group-42")
@@ -719,6 +731,47 @@ class TestFetchMinimax:
                 8000.0,
                 30000.0,
                 "credits",
+                datetime(2026, 6, 8, 0, 0, 0, tzinfo=timezone.utc),
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_success_parses_percent_only_cookie_shape(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "_token=abc; minimax_group_id_v2=test-group")
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "data": {
+                "model_remains": [
+                    {
+                        "model_name": "Token Plan",
+                        "current_interval_remaining_percent": 25,
+                        "end_time": "2026-06-07T01:00:00Z",
+                        "current_weekly_remaining_percent": 40,
+                        "weekly_end_time": "2026-06-08T00:00:00Z",
+                    }
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        assert [(u.label, u.used, u.limit, u.unit, u.reset_at) for u in result.usages] == [
+            (
+                "Token Plan (interval)",
+                75.0,
+                100.0,
+                "%",
+                datetime(2026, 6, 7, 1, 0, 0, tzinfo=timezone.utc),
+            ),
+            (
+                "Token Plan (weekly)",
+                60.0,
+                100.0,
+                "%",
                 datetime(2026, 6, 8, 0, 0, 0, tzinfo=timezone.utc),
             ),
         ]
