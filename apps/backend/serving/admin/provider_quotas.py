@@ -18,6 +18,7 @@ import math
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from typing import Any
 
 import aiohttp
@@ -158,7 +159,7 @@ def _parse_epoch_ms(value: Any) -> datetime | None:
     """Parse a Unix epoch milliseconds value (int/float) into a UTC datetime; None on failure."""
     if isinstance(value, bool):
         return None
-    if not isinstance(value, (int, float)):
+    if not isinstance(value, int | float):
         return None
     try:
         return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
@@ -170,10 +171,35 @@ def _as_float(value: Any) -> float | None:
     """Convert a JSON number to float while rejecting bool and non-finite values."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         converted = float(value)
         return converted if math.isfinite(converted) else None
     return None
+
+
+def _first_float(data: dict[str, Any], *keys: str) -> float | None:
+    """Return the first numeric value among possible response-field aliases."""
+    for key in keys:
+        converted = _as_float(data.get(key))
+        if converted is not None:
+            return converted
+    return None
+
+
+def _extract_cookie_value(cookie: str, name: str) -> str:
+    """Extract a single cookie value from a browser Cookie header string."""
+    parsed = SimpleCookie()
+    try:
+        parsed.load(cookie)
+    except Exception:
+        return ""
+    morsel = parsed.get(name)
+    return morsel.value if morsel is not None else ""
+
+
+def _entry_has_credit_field(entry: dict[str, Any]) -> bool:
+    """Detect MiniMax's newer credit-based quota fields."""
+    return any("credit" in key.lower() for key in entry)
 
 
 def _err(name: str, display_name: str, key: str, reason: str) -> ProviderQuotaResult:
@@ -295,7 +321,7 @@ async def _fetch_chutes_request_counts(
             if bucket_dt is None:
                 continue
             count_raw = item.get("count")
-            if isinstance(count_raw, bool) or not isinstance(count_raw, (int, float)):
+            if isinstance(count_raw, bool) or not isinstance(count_raw, int | float):
                 continue
             if not float(count_raw).is_integer():
                 continue
@@ -344,7 +370,7 @@ async def _fetch_chutes_daily_cap(
             continue
         if entry.get("chute_id") == "*" or entry.get("is_default") is True:
             quota = entry.get("quota")
-            if isinstance(quota, (int, float)):
+            if isinstance(quota, int | float):
                 return int(quota)
     return None
 
@@ -366,8 +392,8 @@ def _parse_chutes_usage(data: dict[str, Any]) -> list[ProviderQuotaUsage]:
         usages.append(
             ProviderQuotaUsage(
                 label=label,
-                used=float(used) if isinstance(used, (int, float)) else None,
-                limit=float(limit) if isinstance(limit, (int, float)) else None,
+                used=float(used) if isinstance(used, int | float) else None,
+                limit=float(limit) if isinstance(limit, int | float) else None,
                 unit="USD",
                 reset_at=reset_dt,
             )
@@ -432,7 +458,7 @@ async def _fetch_zai_for_key(key: str) -> ProviderQuotaResult:
             usages.append(
                 ProviderQuotaUsage(
                     label=label,
-                    used=float(pct) if isinstance(pct, (int, float)) else None,
+                    used=float(pct) if isinstance(pct, int | float) else None,
                     limit=100.0,
                     unit="%",
                     reset_at=entry_reset_at,
@@ -443,8 +469,8 @@ async def _fetch_zai_for_key(key: str) -> ProviderQuotaResult:
         usages.append(
             ProviderQuotaUsage(
                 label=label,
-                used=float(used_raw) if isinstance(used_raw, (int, float)) else None,
-                limit=float(limit_raw) if isinstance(limit_raw, (int, float)) else None,
+                used=float(used_raw) if isinstance(used_raw, int | float) else None,
+                limit=float(limit_raw) if isinstance(limit_raw, int | float) else None,
                 unit=unit,
                 reset_at=entry_reset_at,
             )
@@ -493,8 +519,14 @@ async def fetch_zai() -> list[ProviderQuotaResult]:
 async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
     """Fetch coding-plan quota for a single MiniMax session cookie."""
     url = "https://platform.minimax.io/v1/api/openplatform/coding_plan/remains"
-    headers = {"Cookie": cookie}
-    group_id = settings.minimax_group_id
+    headers = {
+        "Cookie": cookie,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://platform.minimax.io/console/usage",
+        "User-Agent": "Mozilla/5.0 (compatible; freeinference-admin/1.0)",
+    }
+    group_id = settings.minimax_group_id or _extract_cookie_value(cookie, "minimax_group_id_v2")
     if group_id:
         headers["x-group-id"] = group_id
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
@@ -528,7 +560,8 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
     if base_resp and base_resp.get("status_code") not in (None, 0):
         return _err("minimax", "MiniMax", cookie, "unexpected")
 
-    model_remains = data.get("model_remains") if isinstance(data, dict) else None
+    body = data.get("data") if isinstance(data.get("data"), dict) else data
+    model_remains = body.get("model_remains") if isinstance(body, dict) else None
     if not isinstance(model_remains, list) or not model_remains:
         return _err("minimax", "MiniMax", cookie, "parse_error")
 
@@ -537,46 +570,96 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
         if not isinstance(entry, dict):
             continue
         model_name = str(entry.get("model_name", "Coding plan"))
-        total = entry.get("current_interval_total_count")
-        remains = entry.get("current_interval_usage_count")
+        total = _first_float(
+            entry,
+            "current_interval_total_count",
+            "current_interval_total_credits",
+            "current_interval_total_credit",
+            "total_count",
+            "total_credits",
+            "total_credit",
+            "total",
+            "limit",
+        )
+        remains = _first_float(
+            entry,
+            "current_interval_usage_count",
+            "current_interval_remain_count",
+            "current_interval_remaining_count",
+            "current_interval_remains_credits",
+            "current_interval_remaining_credits",
+            "current_interval_remain_credit",
+            "remain_count",
+            "remaining_count",
+            "remaining",
+            "remain",
+        )
+        used = _first_float(
+            entry,
+            "current_interval_used_count",
+            "current_interval_used_credits",
+            "current_interval_used_credit",
+            "used_count",
+            "used_credits",
+            "used_credit",
+            "used",
+        )
         end = entry.get("end_time")
-        reset_dt = None
-        if isinstance(end, (int, float)):
-            try:
-                reset_dt = datetime.fromtimestamp(end / 1000, tz=timezone.utc)
-            except (OSError, OverflowError, ValueError):
-                reset_dt = None
-        used_val = None
-        if isinstance(total, (int, float)) and isinstance(remains, (int, float)):
-            used_val = max(0.0, float(total) - float(remains))
+        reset_dt = _parse_epoch_ms(end) or _parse_iso(end)
+        used_val = used
+        if used_val is None and total is not None and remains is not None:
+            used_val = max(0.0, total - remains)
+        unit = "credits" if _entry_has_credit_field(entry) else "requests"
         usages.append(
             ProviderQuotaUsage(
                 label=f"{model_name} (interval)",
                 used=used_val,
-                limit=float(total) if isinstance(total, (int, float)) else None,
-                unit="requests",
+                limit=total,
+                unit=unit,
                 reset_at=reset_dt,
             )
         )
-        weekly_total = entry.get("current_weekly_total_count")
-        weekly_remains = entry.get("current_weekly_usage_count")
-        if isinstance(weekly_total, (int, float)) and weekly_total > 0:
+        weekly_total = _first_float(
+            entry,
+            "current_weekly_total_count",
+            "current_weekly_total_credits",
+            "current_weekly_total_credit",
+            "weekly_total_count",
+            "weekly_total_credits",
+            "weekly_total_credit",
+        )
+        weekly_remains = _first_float(
+            entry,
+            "current_weekly_usage_count",
+            "current_weekly_remain_count",
+            "current_weekly_remaining_count",
+            "current_weekly_remains_credits",
+            "current_weekly_remaining_credits",
+            "current_weekly_remain_credit",
+            "weekly_remain_count",
+            "weekly_remaining_count",
+        )
+        weekly_used = _first_float(
+            entry,
+            "current_weekly_used_count",
+            "current_weekly_used_credits",
+            "current_weekly_used_credit",
+            "weekly_used_count",
+            "weekly_used_credits",
+            "weekly_used_credit",
+        )
+        if weekly_total is not None and weekly_total > 0:
             weekly_end = entry.get("weekly_end_time")
-            weekly_reset_dt = None
-            if isinstance(weekly_end, (int, float)):
-                try:
-                    weekly_reset_dt = datetime.fromtimestamp(weekly_end / 1000, tz=timezone.utc)
-                except (OSError, OverflowError, ValueError):
-                    weekly_reset_dt = None
-            weekly_used_val = None
-            if isinstance(weekly_remains, (int, float)):
-                weekly_used_val = max(0.0, float(weekly_total) - float(weekly_remains))
+            weekly_reset_dt = _parse_epoch_ms(weekly_end) or _parse_iso(weekly_end)
+            weekly_used_val = weekly_used
+            if weekly_used_val is None and weekly_remains is not None:
+                weekly_used_val = max(0.0, weekly_total - weekly_remains)
             usages.append(
                 ProviderQuotaUsage(
                     label=f"{model_name} (weekly)",
                     used=weekly_used_val,
-                    limit=float(weekly_total),
-                    unit="requests",
+                    limit=weekly_total,
+                    unit=unit,
                     reset_at=weekly_reset_dt,
                 )
             )
@@ -599,6 +682,8 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
 async def fetch_minimax() -> list[ProviderQuotaResult]:
     """Fetch coding-plan quota from MiniMax for all configured session cookies."""
     keys = _discover_env_keys("MINIMAX_SESSION_COOKIE", "MINIMAX_SESSION_COOKIE")
+    if not keys and settings.minimax_session_cookie:
+        keys = [(1, settings.minimax_session_cookie)]
     if not keys:
         return [
             ProviderQuotaResult(
