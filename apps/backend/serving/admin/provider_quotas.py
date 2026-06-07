@@ -620,7 +620,7 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
         if used_val is None and total is not None and remains is not None:
             used_val = max(0.0, total - remains)
         unit = "credits" if _entry_has_credit_field(entry) else "requests"
-        if total is None and used_val is None and remaining_percent is not None:
+        if (total is None or total <= 0) and remaining_percent is not None:
             total = 100.0
             used_val = max(0.0, 100.0 - remaining_percent)
             unit = "%"
