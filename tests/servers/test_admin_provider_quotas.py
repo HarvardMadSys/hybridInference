@@ -815,9 +815,11 @@ class TestFetchMinimax:
                         "model_name": "Token Plan",
                         "current_interval_total_count": 0,
                         "current_interval_usage_count": 0,
+                        "current_interval_used_count": 0,
                         "current_interval_remaining_percent": 25,
                         "current_weekly_total_count": 0,
                         "current_weekly_usage_count": 0,
+                        "current_weekly_used_count": 0,
                         "current_weekly_remaining_percent": 40,
                     }
                 ]

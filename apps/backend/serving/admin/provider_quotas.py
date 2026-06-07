@@ -689,7 +689,7 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
                     reset_at=weekly_reset_dt,
                 )
             )
-        elif weekly_used is None and weekly_remaining_percent is not None:
+        elif (weekly_total is None or weekly_total <= 0) and weekly_remaining_percent is not None:
             weekly_end = entry.get("weekly_end_time")
             usages.append(
                 ProviderQuotaUsage(
