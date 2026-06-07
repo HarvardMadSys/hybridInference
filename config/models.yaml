@@ -543,9 +543,9 @@ models:
 
 
   # ===== Embedding Models =====
-  # Served locally on a GPU box by ops/embedding_idle_proxy (sglang --is-embedding),
-  # reverse-tunneled to production on port 8002. The gateway reaches the tunnel via
-  # host.docker.internal:8002 and routes by the model field.
+  # Served locally on a GPU box by ops/sglang_idle_proxy (sglang --is-embedding),
+  # the same idle proxy that serves the local chat models. Reuses LOCAL_DEPLOYMENT_URL
+  # (the proxy's reverse tunnel); the proxy routes by the model field.
 
   - id: bge-m3
     name: BGE-M3
@@ -562,7 +562,7 @@ models:
     route:
       - kind: sglang
         weight: 1.0
-        base_url: "http://host.docker.internal:8002"
+        base_url: ${LOCAL_DEPLOYMENT_URL}
         provider_model_id: "BAAI/bge-m3"
         api_keys:
           - ${LOCAL_API_KEY}

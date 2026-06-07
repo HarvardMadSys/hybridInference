@@ -2,14 +2,18 @@
 
 A lightweight reverse proxy that lazily starts and stops sglang Docker containers for multiple models. The proxy port stays open permanently; GPU-heavy containers are only running when there is active traffic. The least-used GPU is auto-selected.
 
-Supports **Qwen3.6-35B-A3B-FP8** and **GLM-4.7-Flash** out of the box. Add more models by editing `models.json`.
+Serves both **chat** and **embedding** models from one proxy/port. Supports
+**Qwen3.6-35B-A3B-FP8**, **GLM-4.7-Flash**, and the **bge-m3** embedding model
+out of the box. Add more by editing `models.json` (set `"is_embedding": true`
+for embedding models). Every model is loaded on-demand and stopped when idle.
 
 ## How it works
 
 ```
 Client → spark2:8001 ──SSH tunnel──→ GPU box :8001 (proxy)
-                                        ├─ model="Qwen/..." → :18001 (sglang on GPU 1)
-                                        └─ model="zai-org/GLM-4.7-Flash" → :18002 (sglang on GPU 2)
+                                        ├─ model="Qwen/..."             → :18001 (sglang on GPU 1)
+                                        ├─ model="zai-org/GLM-4.7-Flash" → :18002 (sglang on GPU 2)
+                                        └─ model="BAAI/bge-m3"          → :18012 (sglang --is-embedding on GPU 1)
 ```
 
 1. The proxy listens on port 8001 and accepts all incoming HTTP requests.
@@ -116,7 +120,9 @@ Models are defined in `sglang_idle_proxy/models.json`:
 | `served_name` | `--served-model-name` for sglang |
 | `max_model_len` | `--context-length` |
 | `mem_fraction` | `--mem-fraction-static` |
-| `tool_call_parser` | `--tool-call-parser` (omit to disable) |
+| `tool_call_parser` | `--tool-call-parser` (omit to disable; chat models only) |
+| `is_embedding` | `true` → launch with `--is-embedding` (encode-only); serves `/v1/embeddings` |
+| `attention_backend` | optional `--attention-backend` (embedding models) |
 
 To add a new model, append an entry to `models.json` and restart the proxy.
 
