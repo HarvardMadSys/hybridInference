@@ -17,12 +17,12 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 
-class SubscriptionType(Enum):
-    """RouteWise subscription tier for one adapter endpoint."""
+class ProviderType(Enum):
+    """RouteWise provider category for one adapter endpoint."""
 
+    ON_DEMAND = "on_demand"
     QUOTA = "quota"
     CONCURRENCY = "concurrency"
-    API = "api"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +90,7 @@ class ProviderCandidate:
     endpoint_id: str
     model_id: str
     adapter: BaseAdapter
-    subscription_type: SubscriptionType
+    provider_type: ProviderType
     weight: float
     pricing: CandidatePricing
     routewise_pool: str
@@ -99,11 +99,6 @@ class ProviderCandidate:
     quota_source: QuotaSource | None = None
     quota_config: dict[str, Any] = field(default_factory=dict)
     concurrency_config: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def tier(self) -> str:
-        """Return the normalized subscription tier string."""
-        return self.subscription_type.value
 
 
 def build_provider_candidates(
@@ -129,7 +124,7 @@ def build_provider_candidates(
         seen_endpoint_ids.add(endpoint_base)
         endpoint_id = endpoint_base
 
-        sub_type = subscription_type_for_adapter(adapter)
+        provider_type = provider_type_for_adapter(adapter)
         config = adapter.config
         pricing = CandidatePricing.from_raw(
             _mapping_attr(config, "pricing") or {},
@@ -143,7 +138,7 @@ def build_provider_candidates(
         quota_config: dict[str, Any] = {}
         concurrency_config: dict[str, Any] = {}
 
-        if sub_type is SubscriptionType.QUOTA:
+        if provider_type is ProviderType.QUOTA:
             quota_pool = _optional_str_attr(config, "quota_pool") or f"{model_id}:{endpoint_id}"
             quota_source_raw = _mapping_attr(config, "quota_source")
             quota_source = (
@@ -153,7 +148,7 @@ def build_provider_candidates(
             )
             quota_config = dict(_mapping_attr(config, "quota") or {})
 
-        if sub_type is SubscriptionType.CONCURRENCY:
+        if provider_type is ProviderType.CONCURRENCY:
             concurrency_pool = (
                 _optional_str_attr(config, "concurrency_pool") or f"{model_id}:{endpoint_id}"
             )
@@ -164,7 +159,7 @@ def build_provider_candidates(
                 endpoint_id=endpoint_id,
                 model_id=model_id,
                 adapter=adapter,
-                subscription_type=sub_type,
+                provider_type=provider_type,
                 weight=weight,
                 pricing=pricing,
                 routewise_pool=routewise_pool,
@@ -189,13 +184,14 @@ def endpoint_id_for_adapter(adapter: BaseAdapter) -> str:
     return provider or "unknown"
 
 
-def subscription_type_for_adapter(adapter: BaseAdapter) -> SubscriptionType:
-    """Parse adapter ``subscription_type``, defaulting unknown values to API."""
-    raw = _optional_str_attr(adapter.config, "subscription_type") or SubscriptionType.API.value
+def provider_type_for_adapter(adapter: BaseAdapter) -> ProviderType:
+    """Parse adapter ``provider_type``, defaulting an omitted value to on-demand."""
+    raw = _optional_str_attr(adapter.config, "provider_type") or ProviderType.ON_DEMAND.value
     try:
-        return SubscriptionType(raw)
-    except ValueError:
-        return SubscriptionType.API
+        return ProviderType(raw)
+    except ValueError as exc:
+        allowed = ", ".join(provider_type.value for provider_type in ProviderType)
+        raise ValueError(f"provider_type must be one of: {allowed}; got {raw!r}") from exc
 
 
 def _parse_float(value: Any, field_name: str) -> float:

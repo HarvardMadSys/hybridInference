@@ -22,7 +22,7 @@ class TestRouteWiseConfigDefaults:
         assert cfg.reference_api_price is None
         assert cfg.db_bootstrap_enabled is True
         assert cfg.db_bootstrap_max_rows == 50_000
-        assert cfg.stateful_tiers_single_worker_only is True
+        assert cfg.stateful_providers_single_worker_only is True
         assert cfg.daily_quota == 5000
         assert cfg.quota_monthly_fee == 20.0
         assert cfg.reset_timezone == "UTC"

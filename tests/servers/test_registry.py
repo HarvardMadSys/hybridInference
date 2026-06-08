@@ -435,7 +435,7 @@ models:
       - kind: openai_compat
         weight: 1.0
         base_url: http://example.com/v1
-        subscription_type: quota
+        provider_type: quota
         routewise_pool: glm-paid-pool
         quota_pool: chutes-glm-daily
         quota_source:
@@ -448,7 +448,7 @@ models:
       - kind: openai_compat
         weight: 1.0
         base_url: http://example-two.com/v1
-        subscription_type: concurrency
+        provider_type: concurrency
         concurrency_pool: featherless-glm
         concurrency:
           limit: 4
@@ -461,7 +461,7 @@ models:
     first = exe.routes["routewise-model"].adapters[0][0].config
     second = exe.routes["routewise-model"].adapters[1][0].config
 
-    assert first.subscription_type == "quota"
+    assert first.provider_type == "quota"
     assert first.routewise_pool == "glm-paid-pool"
     assert first.quota_pool == "chutes-glm-daily"
     assert first.quota_source == {
@@ -471,6 +471,6 @@ models:
     }
     assert first.quota == {"limit": 5000, "window": "daily"}
 
-    assert second.subscription_type == "concurrency"
+    assert second.provider_type == "concurrency"
     assert second.concurrency_pool == "featherless-glm"
     assert second.concurrency == {"limit": 4}

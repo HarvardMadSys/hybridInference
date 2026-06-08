@@ -9,8 +9,8 @@ routewise:
   # null = non-deterministic process-local RNG.
   random_seed: null
 
-  # Optional API-equivalent price scale for subscription-only RouteWise routes.
-  # When a route has a real S_A API provider, RouteWise uses the cheapest S_A
+  # Optional on-demand-equivalent price scale for routes without a P_O baseline.
+  # When a route has a real P_O provider, RouteWise uses the cheapest P_O
   # request cost instead. Values are USD per million tokens.
   reference_api_price: null
   # reference_api_price:
@@ -24,7 +24,7 @@ routewise:
 
   # S_Q/S_C counters are process-local in this integration. Leave this guard
   # on unless the deployment is single-worker or shared state has been added.
-  stateful_tiers_single_worker_only: true
+  stateful_providers_single_worker_only: true
 
   # --- S_Q (quota) subscription parameters ---
   quota:

@@ -8,7 +8,7 @@ from typing import Literal
 
 from routewise.core import quota_effective_cost
 
-ProviderTier = Literal["api", "quota", "concurrency"]
+ProviderTypeName = Literal["on_demand", "quota", "concurrency"]
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class EffectiveCost:
     """Effective cost for one feasible provider candidate."""
 
     endpoint_id: str
-    tier: ProviderTier
+    provider_type: ProviderTypeName
     cost_usd: float
     reason: str
 

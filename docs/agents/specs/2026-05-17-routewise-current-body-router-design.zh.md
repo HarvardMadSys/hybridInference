@@ -26,9 +26,9 @@ FreeInference 需要一个符合当前 RouteWise paper 和 simulator 语义的�
 
 1. 围绕当前 RouteWise 语义实现生产 `routewise` router：统一 effective cost，并在所有可行 provider 上解 cost-budgeted mean-TTFT LP。
 2. 以 paper/simulator 语义作为唯一 RouteWise 目标。
-3. 支持两种价格参照：真实 S_A API provider，或 subscription-only route 下配置的 reference API price。
+3. 支持两种价格参照：真实 P_O/on-demand provider，或无 on-demand route 下配置的 reference API price。
 4. 增加 bucket-mean output length predictor，用于 route-time cost estimation。
-5. 扩展 latency profiling，让所有 provider tier 都能进 LP，不只 API provider。
+5. 扩展 latency profiling，让所有 provider category 都能进 LP，不只 on-demand provider。
 6. 保持现有 request execution、fallback、request logging 和 adapter 语义。
 7. 输出足够的 RouteWise decision metadata，方便和 simulator / real-eval 对齐排查。
 
@@ -49,7 +49,7 @@ FreeInference 需要一个符合当前 RouteWise paper 和 simulator 语义的�
 | 文件 | 当前职责 |
 |---|---|
 | `config/models.yaml` | 模型 routes、pricing、provider metadata。 |
-| `apps/backend/serving/servers/registry.py` | 构造 adapters，并把 route-level `subscription_type` 传进 `ModelConfig`。 |
+| `apps/backend/serving/servers/registry.py` | 构造 adapters，并把 route-level `provider_type` 传进 `ModelConfig`。 |
 | `apps/backend/routing/model_router_registry.py` | 按 model 选择 router，并 attach `FixedRouter`。 |
 | `apps/backend/routing/routewise/router.py` | 新的 current RouteWise router 实现目标。 |
 | `apps/backend/routing/routewise/lp_solver.py` | 替换为 cost-budgeted mean-TTFT LP。 |
@@ -330,13 +330,12 @@ class ProviderCandidate:
     endpoint_id: str
     model_id: str
     adapter: BaseAdapter
-    tier: Literal["api", "quota", "concurrency"]
+    provider_type: Literal["on_demand", "quota", "concurrency"]
     weight: float
     pricing: Pricing
     routewise_pool: str
     quota_pool: str | None
     concurrency_pool: str | None
-    subscription_type: str
 ```
 
 `endpoint_id` 继续作为 health、latency-profile 和 observation key。
@@ -372,12 +371,12 @@ route-level metadata：
 route:
   - kind: zai
     weight: 1.0
-    subscription_type: api
+    provider_type: on_demand
     routewise_pool: glm-paid-pool
 
   - kind: chutes
     weight: 1.0
-    subscription_type: quota
+    provider_type: quota
     routewise_pool: glm-paid-pool
     quota_pool: chutes-glm-daily
     quota:
@@ -387,14 +386,14 @@ route:
 
   - kind: featherless
     weight: 1.0
-    subscription_type: concurrency
+    provider_type: concurrency
     routewise_pool: glm-paid-pool
     concurrency_pool: featherless-glm
     concurrency:
       limit: 4
 ```
 
-subscription-only 示例：
+无 on-demand baseline 示例：
 
 ```yaml
 models:
@@ -407,28 +406,28 @@ models:
     route:
       - kind: chutes
         weight: 1.0
-        subscription_type: quota
+        provider_type: quota
         quota_source:
           provider: chutes
           usage_label: "Daily requests"
           unit: requests
       - kind: featherless
         weight: 1.0
-        subscription_type: concurrency
+        provider_type: concurrency
         concurrency:
           limit: 4
 ```
 
-如果保留真实 API baseline，也可以用更标准的配置：
+如果保留真实 P_O baseline，也可以用更标准的配置：
 
 ```yaml
 route:
   - kind: zai
     weight: 1.0
-    subscription_type: api
+    provider_type: on_demand
   - kind: chutes
     weight: 1.0
-    subscription_type: quota
+    provider_type: quota
     quota_source:
       provider: chutes
       usage_label: "Daily requests"
@@ -485,7 +484,7 @@ else:
 {
   "version": "current_body",
   "selected_endpoint": "minimax-m2.5:zai",
-  "selected_tier": "api",
+  "selected_provider_type": "on_demand",
   "alpha": 0.75,
   "budget_usd": 0.0123,
   "envelope": {
@@ -545,13 +544,13 @@ quota 和 concurrency 只能在 sampled primary 确定后 commit。LP 失败或�
 
 - `output_predictor`：bucket 选择、fallback 顺序、max-token clamp、completion update。
 - `envelope`：从 actual-token samples bootstrap、P10/P90 计算、seed fallback、非法样本过滤。
-- `effective_cost`：API cache math、quota `exp_lu`、concurrency feasible / saturated 行为。
+- `effective_cost`：on-demand cost math、quota `exp_lu`、concurrency feasible / saturated 行为。
 - `lp`：和 RouteWise simulator 示例对齐、稀疏 support、budget 边界情况。
-- `router`：all-tier candidate collection、sampling、quota commit、concurrency acquire/release、metadata shape。
+- `router`：provider-category candidate collection、sampling、quota commit、concurrency acquire/release、metadata shape。
 
 集成测试：
 
-- 使用 fake adapters 覆盖 API + quota + concurrency routes。
+- 使用 fake adapters 覆盖 on-demand + quota + concurrency routes。
 - 用 deterministic `L/U` 测 historical log bootstrap。
 - `router: routewise` 使用当前 RouteWise body router。
 - 现有 checked-in RouteWise decision semantics 不再作为 selectable mode 保留。
@@ -565,10 +564,10 @@ Replay validation：
 ## Rollout
 
 1. 落代码，让 `router: routewise` 映射到 current body router。
-2. 如有需要，先对一个低风险 model 开 shadow decision logging。
+2. staging 验证通过前保持 cost adjustment 关闭。
 3. 先选少数明确模型，不自动覆盖所有 provider。
-4. 如果 route 有真实 S_A，先用 `ZAI API baseline + Chutes S_Q` 验证 reference price、`L/U` 和 quota usage。
-5. 如果 route 是 subscription-only，必须配置 `reference_api_price` 或使用 model-level pricing 作为 reference。
+4. 如果 route 有真实 P_O provider，先用 `ZAI on-demand baseline + Chutes S_Q` 验证 reference price、`L/U` 和 quota usage。
+5. 如果 route 没有 on-demand baseline，必须配置 `reference_api_price` 或使用 model-level pricing 作为 reference。
 6. Chutes S_Q 先只接 `Daily requests`，并复用 provider quota snapshot。
 7. slot accounting 验证后再加入 S_C provider。
 8. 如果某个 model 的 RouteWise 有问题，临时把该 model 切到 `fixed`。
@@ -586,10 +585,10 @@ Replay validation：
 
 - `router: routewise` 选择 current RouteWise body router。
 - 不暴露第二个 RouteWise mode。
-- 支持真实 S_A baseline 和 subscription-only reference API price 两种价格参照。
+- 支持真实 P_O/on-demand baseline 和无 on-demand reference API price 两种价格参照。
 - 可以从现有 `api_logs` bootstrap `L/U`，并在 decision metadata 中暴露。
 - Chutes S_Q 使用 provider quota snapshot 恢复 `used/limit/reset_at`，deploy/restart 后不会从 0 开始。
-- router 能解 unified all-tier cost-budgeted mean-TTFT LP。
+- router 能解 unified provider-category cost-budgeted mean-TTFT LP。
 - router 记录足够 metadata，能解释每个 provider selection。
 - 现有 request execution、cost logging、fallback 和 response wire format 不变。
 - 本 PR 不发生真实 backup hedging dispatch。

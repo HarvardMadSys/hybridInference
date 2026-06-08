@@ -52,8 +52,8 @@ from serving.utils.tokens import estimate_prompt_tokens
 from .candidates import (
     CandidatePricing,
     ProviderCandidate as RouteProviderCandidate,
+    ProviderType,
     QuotaSource,
-    SubscriptionType,
     build_provider_candidates,
     endpoint_id_for_adapter,
 )
@@ -89,11 +89,11 @@ _WORKER_COUNT_ENV_KEYS = (
 
 @dataclass(frozen=True)
 class FeasibleProviderCandidate:
-    """Internal feasible-provider representation used by the body LP."""
+    """Internal feasible-provider representation used by the provider-mixer LP."""
 
     endpoint_id: str
     adapter: BaseAdapter
-    tier: Literal["api", "quota", "concurrency"]
+    provider_type: Literal["on_demand", "quota", "concurrency"]
     weight: float
     effective_cost_usd: float
     request_cost_usd: float
@@ -200,8 +200,8 @@ class RouteWiseRouter(BaseRouter):
         self.reference_api_price = self._parse_reference_api_price(config.reference_api_price)
         self.route_candidates: dict[str, list[RouteProviderCandidate]] = {}
         self._model_routewise_pools: dict[str, str] = {}
-        self.classified: dict[str, list[tuple[Any, float, SubscriptionType]]] = {}
-        self._adapter_sub_type: dict[int, SubscriptionType] = {}
+        self.classified: dict[str, list[tuple[Any, float, ProviderType]]] = {}
+        self._adapter_provider_type: dict[int, ProviderType] = {}
         self._adapter_endpoint_ids: dict[int, str] = {}
         self._endpoint_adapter: dict[str, Any] = {}
 
@@ -222,10 +222,7 @@ class RouteWiseRouter(BaseRouter):
             ConcurrencyManager(config) if self.config.concurrency_enabled else None
         )
         self.prefix_cache_shadow = PrefixCacheShadow(
-            enabled=(
-                self.config.prefix_cache_shadow_enabled
-                or self.config.prefix_cache_cost_adjustment_enabled
-            ),
+            enabled=self.config.prefix_cache_cost_adjustment_enabled,
         )
 
         self._latency_profiles: dict[str, ProviderProfile] = {}
@@ -281,7 +278,7 @@ class RouteWiseRouter(BaseRouter):
         self.classified = {}
         self.route_candidates = {}
         self._model_routewise_pools = {}
-        self._adapter_sub_type = {}
+        self._adapter_provider_type = {}
         self._adapter_endpoint_ids = {}
         self._endpoint_adapter = {}
         self._latency_profiles = {}
@@ -289,7 +286,7 @@ class RouteWiseRouter(BaseRouter):
         for candidates in self.route_candidates.values():
             for candidate in candidates:
                 adapter = candidate.adapter
-                self._adapter_sub_type[id(adapter)] = candidate.subscription_type
+                self._adapter_provider_type[id(adapter)] = candidate.provider_type
                 endpoint_id = candidate.endpoint_id
                 self._adapter_endpoint_ids[id(adapter)] = endpoint_id
                 self._endpoint_adapter[endpoint_id] = adapter
@@ -416,7 +413,7 @@ class RouteWiseRouter(BaseRouter):
             candidates = build_provider_candidates(model_id, route_cfg.adapters)
             self.route_candidates[model_id] = candidates
             self.classified[model_id] = [
-                (candidate.adapter, candidate.weight, candidate.subscription_type)
+                (candidate.adapter, candidate.weight, candidate.provider_type)
                 for candidate in candidates
             ]
             pools = {candidate.routewise_pool for candidate in candidates}
@@ -436,38 +433,37 @@ class RouteWiseRouter(BaseRouter):
         return getattr(route_cfg, "canonical_model_id", None) or model_id
 
     def _validate_routes(self) -> None:
-        has_stateful_tier = False
+        has_stateful_provider = False
         for model_id, candidates in self.route_candidates.items():
-            route_has_stateful_tier = any(
-                candidate.subscription_type
-                in (SubscriptionType.QUOTA, SubscriptionType.CONCURRENCY)
+            route_has_stateful_provider = any(
+                candidate.provider_type in (ProviderType.QUOTA, ProviderType.CONCURRENCY)
                 for candidate in candidates
             )
-            has_stateful_tier = has_stateful_tier or route_has_stateful_tier
+            has_stateful_provider = has_stateful_provider or route_has_stateful_provider
             if not any(
-                candidate.subscription_type is SubscriptionType.API for candidate in candidates
+                candidate.provider_type is ProviderType.ON_DEMAND for candidate in candidates
             ):
                 logger.warning(
-                    "Model '%s' has no API baseline; RouteWise will use reference_api_price "
-                    "for L/U if configured. no S_A baseline is configured.",
+                    "Model '%s' has no on-demand baseline; RouteWise will use "
+                    "reference_api_price for L/U if configured. no P_O baseline is configured.",
                     model_id,
                 )
-        if has_stateful_tier:
-            self._validate_stateful_tier_worker_scope()
+        if has_stateful_provider:
+            self._validate_stateful_provider_worker_scope()
 
-    def _validate_stateful_tier_worker_scope(self) -> None:
+    def _validate_stateful_provider_worker_scope(self) -> None:
         worker_count = _configured_worker_count()
         if worker_count is not None and worker_count > 1:
-            if self.config.stateful_tiers_single_worker_only:
+            if self.config.stateful_providers_single_worker_only:
                 raise RuntimeError(
-                    "RouteWise quota/concurrency tiers are process-local in this "
+                    "RouteWise quota/concurrency providers are process-local in this "
                     "integration and require a single backend worker. Configure "
-                    "only API providers for routewise in multi-worker deployments, "
-                    "or disable stateful_tiers_single_worker_only after adding "
+                    "only on-demand providers for routewise in multi-worker deployments, "
+                    "or disable stateful_providers_single_worker_only after adding "
                     "shared quota/concurrency state."
                 )
             logger.warning(
-                "RouteWise quota/concurrency tiers are process-local but worker_count=%d; "
+                "RouteWise quota/concurrency providers are process-local but worker_count=%d; "
                 "quota and concurrency limits will be per-worker.",
                 worker_count,
             )
@@ -483,9 +479,7 @@ class RouteWiseRouter(BaseRouter):
         """
         uncalibrated: list[tuple[str, str]] = []
         for model_id, candidates in self.route_candidates.items():
-            if not any(
-                candidate.subscription_type is SubscriptionType.QUOTA for candidate in candidates
-            ):
+            if not any(candidate.provider_type is ProviderType.QUOTA for candidate in candidates):
                 continue
             pool = self._routewise_pool(model_id)
             if self.envelope.snapshot(pool) is None:
@@ -515,7 +509,7 @@ class RouteWiseRouter(BaseRouter):
         for candidates in self.route_candidates.values():
             for candidate in candidates:
                 if (
-                    candidate.subscription_type is SubscriptionType.QUOTA
+                    candidate.provider_type is ProviderType.QUOTA
                     and candidate.quota_source is not None
                 ):
                     sources[candidate.quota_source] = candidate.quota_source
@@ -617,7 +611,7 @@ class RouteWiseRouter(BaseRouter):
                 output_tokens=output_tokens,
             )
             for candidate in entries
-            if candidate.subscription_type is SubscriptionType.API
+            if candidate.provider_type is ProviderType.ON_DEMAND
         ]
         return min(costs) if costs else None
 
@@ -663,7 +657,7 @@ class RouteWiseRouter(BaseRouter):
         envelope: CostEnvelopeSnapshot | None,
         now: float,
         context: dict[str, Any] | None = None,
-    ) -> list[FeasibleProviderCandidate]:
+    ) -> tuple[list[FeasibleProviderCandidate], tuple[tuple[Any, ...], dict[str, Any]] | None]:
         model_id = self._canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id)
         if entries is None:
@@ -686,9 +680,9 @@ class RouteWiseRouter(BaseRouter):
                 output_tokens=predicted_output_tokens,
             )
 
-            tier: Literal["api", "quota", "concurrency"]
-            if route_candidate.subscription_type is SubscriptionType.API:
-                tier = "api"
+            provider_type: Literal["on_demand", "quota", "concurrency"]
+            if route_candidate.provider_type is ProviderType.ON_DEMAND:
+                provider_type = "on_demand"
                 cost = request_cost
                 reason = "cold_api_cost"
                 prefix_discount = 0.0
@@ -708,9 +702,9 @@ class RouteWiseRouter(BaseRouter):
                     )
                     if prefix_applied:
                         reason = "prefix_cache_adjusted_api_cost"
-            elif route_candidate.subscription_type is SubscriptionType.QUOTA:
+            elif route_candidate.provider_type is ProviderType.QUOTA:
                 if envelope is None:
-                    # No calibrated envelope: skip quota tier rather than
+                    # No calibrated envelope: skip quota providers rather than
                     # invent a shadow price. Startup validation should
                     # normally have caught this before we got here.
                     logger.warning(
@@ -731,7 +725,7 @@ class RouteWiseRouter(BaseRouter):
                         continue
                     used_fraction = self.quota_mgr.used_fraction
                     quota_remaining = self.quota_mgr.remaining
-                tier = "quota"
+                provider_type = "quota"
                 cost = quota_shadow_price_usd(
                     used_fraction=used_fraction,
                     lower=envelope.lower,
@@ -741,10 +735,10 @@ class RouteWiseRouter(BaseRouter):
                 prefix_discount = 0.0
                 prefix_expected = 0.0
                 prefix_applied = False
-            elif route_candidate.subscription_type is SubscriptionType.CONCURRENCY:
+            elif route_candidate.provider_type is ProviderType.CONCURRENCY:
                 if self.conc_mgr is None or self.conc_mgr.available <= 0:
                     continue
-                tier = "concurrency"
+                provider_type = "concurrency"
                 cost = 0.0
                 reason = "available_concurrency_slot"
                 quota_source = None
@@ -756,7 +750,7 @@ class RouteWiseRouter(BaseRouter):
             else:
                 continue
 
-            if route_candidate.subscription_type is not SubscriptionType.QUOTA:
+            if route_candidate.provider_type is not ProviderType.QUOTA:
                 quota_source = None
                 used_fraction = None
                 quota_remaining = None
@@ -765,7 +759,7 @@ class RouteWiseRouter(BaseRouter):
                 FeasibleProviderCandidate(
                     endpoint_id=endpoint_id,
                     adapter=adapter,
-                    tier=tier,
+                    provider_type=provider_type,
                     weight=route_candidate.weight,
                     effective_cost_usd=cost,
                     request_cost_usd=request_cost,
@@ -779,7 +773,7 @@ class RouteWiseRouter(BaseRouter):
                     quota_remaining=quota_remaining,
                 )
             )
-        return candidates
+        return candidates, prefix_context
 
     def _prefix_cache_cost_context(
         self,
@@ -805,11 +799,16 @@ class RouteWiseRouter(BaseRouter):
             return None
         user = str(req_ctx.get().get("affinity_key") or "")
         cache_params = self._cache_affecting_params(params)
+        # ``scopes`` is filled in by _apply_prefix_cache_cost_adjustment as each
+        # eligible candidate is priced, so the post-success warm only covers the
+        # providers the cost estimate actually applied to (direct, cache-priced,
+        # non-rotating) and never rebuilds blocks/scopes a second time.
         return blocks, {
             "model_id": model_id,
             "session": session,
             "user": user,
             "cache_params": cache_params,
+            "scopes": {},
         }
 
     def _apply_prefix_cache_cost_adjustment(
@@ -841,6 +840,11 @@ class RouteWiseRouter(BaseRouter):
             user=str(info["user"]),
             cache_params=str(info["cache_params"]),
         )
+        # Stash this eligible candidate's scope so the selected request can warm
+        # it after a successful observation without rebuilding blocks/scopes.
+        scopes = info.get("scopes")
+        if isinstance(scopes, dict):
+            scopes[route_candidate.endpoint_id] = scope
         record = self.prefix_cache_shadow.evaluate(
             scope,
             blocks,
@@ -859,7 +863,7 @@ class RouteWiseRouter(BaseRouter):
     @staticmethod
     def _routing_dollar_estimate(candidate: FeasibleProviderCandidate) -> float:
         """Return the decision-time dollar estimate for metadata / hedging cost."""
-        if candidate.tier == "api":
+        if candidate.provider_type == "on_demand":
             return candidate.effective_cost_usd
         return candidate.request_cost_usd
 
@@ -886,9 +890,9 @@ class RouteWiseRouter(BaseRouter):
         return last
 
     def _commit_candidate(self, candidate: FeasibleProviderCandidate) -> bool:
-        if candidate.tier == "concurrency":
+        if candidate.provider_type == "concurrency":
             return self.conc_mgr is not None and self.conc_mgr.try_acquire()
-        if candidate.tier == "quota":
+        if candidate.provider_type == "quota":
             if candidate.quota_source is not None:
                 return self.quota_snapshots.consume(candidate.quota_source)
             if self.quota_mgr.remaining <= 0:
@@ -901,7 +905,7 @@ class RouteWiseRouter(BaseRouter):
         return True
 
     def _release_candidate(self, candidate: FeasibleProviderCandidate) -> None:
-        if candidate.tier == "concurrency" and self.conc_mgr is not None:
+        if candidate.provider_type == "concurrency" and self.conc_mgr is not None:
             self.conc_mgr.release()
 
     def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
@@ -915,7 +919,7 @@ class RouteWiseRouter(BaseRouter):
         if not request_id:
             return
         self._release_pending_primary_reservation(request_id)
-        if candidate.tier == "concurrency":
+        if candidate.provider_type == "concurrency":
             self._primary_reservations[request_id] = ProviderReservation(
                 router=self,
                 candidate=candidate,
@@ -939,13 +943,13 @@ class RouteWiseRouter(BaseRouter):
         if self._release_pending_primary_reservation(request_id):
             return
         if (
-            self._adapter_sub_type.get(id(primary_adapter)) is SubscriptionType.CONCURRENCY
+            self._adapter_provider_type.get(id(primary_adapter)) is ProviderType.CONCURRENCY
             and self.conc_mgr is not None
         ):
             self.conc_mgr.release()
 
     def _quota_metadata_state(self, selected: FeasibleProviderCandidate) -> tuple[float, int]:
-        if selected.tier == "quota" and selected.quota_source is not None:
+        if selected.provider_type == "quota" and selected.quota_source is not None:
             snapshot = self.quota_snapshots.get(selected.quota_source)
             if snapshot is not None:
                 return snapshot.used_fraction, snapshot.remaining
@@ -975,7 +979,7 @@ class RouteWiseRouter(BaseRouter):
             "request_id": request_id,
             "timestamp": time.time(),
             "is_streaming": False,
-            "selected_tier": selected.tier,
+            "selected_provider_type": selected.provider_type,
             "selected_endpoint": selected.endpoint_id,
             "selected_effective_cost_usd": selected.effective_cost_usd,
             "selected_mean_ttft_sec": selected.mean_ttft_sec,
@@ -997,7 +1001,7 @@ class RouteWiseRouter(BaseRouter):
                 if c.prefix_cache_expected_tokens > 0
             },
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
-            "candidate_tiers": {c.endpoint_id: c.tier for c in candidates},
+            "candidate_provider_types": {c.endpoint_id: c.provider_type for c in candidates},
             "candidate_quota_used_fraction": {
                 c.endpoint_id: c.quota_used_fraction
                 for c in candidates
@@ -1018,7 +1022,7 @@ class RouteWiseRouter(BaseRouter):
             "v_t": api_cost if api_cost is not None else 0.0,
             "cache_assumption": "cold",
             "estimated_cached_input_tokens": 0,
-            "stateful_tiers_single_worker_only": self.config.stateful_tiers_single_worker_only,
+            "stateful_providers_single_worker_only": self.config.stateful_providers_single_worker_only,
             "L": envelope.lower if envelope is not None else None,
             "U": envelope.upper if envelope is not None else None,
             "envelope_sample_count": (envelope.sample_count if envelope is not None else 0),
@@ -1036,7 +1040,7 @@ class RouteWiseRouter(BaseRouter):
             "quota_committed": 0.0,
             "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
             "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
-            "sc_committed": selected.tier == "concurrency",
+            "sc_committed": selected.provider_type == "concurrency",
             "hedged": False,
             "backup_won": False,
             # --- H6 canonical cross-source fields ---------------------------
@@ -1049,9 +1053,9 @@ class RouteWiseRouter(BaseRouter):
             # inherent to the source, not a schema gap.
             "policy": "routewise",
             "primary_provider": selected.endpoint_id,
-            "primary_tier": selected.tier,
+            "primary_provider_type": selected.provider_type,
             "backup_provider": None,
-            "backup_tier": None,
+            "backup_provider_type": None,
             "hedge_triggered": False,
             "hedge_winner": None,
             "hedge_algorithm": "probability_target" if hedge_plan is not None else "disabled",
@@ -1059,9 +1063,9 @@ class RouteWiseRouter(BaseRouter):
             "hedge_delay_ms": None,
             "hedge_success_probability": None,
             "lp_budget_usd": solution.budget_usd,
-            # Decision-time dollar estimate at predicted tokens. API uses the
+            # Decision-time dollar estimate at predicted tokens. On-demand uses the
             # effective cost because guarded prefix-cache adjustment is part of
-            # the S_A cost formula; S_Q/S_C retain the raw API reference because
+            # the P_O cost formula; P_Q/P_C retain the raw API reference because
             # their effective cost is a quota/concurrency shadow price.
             "primary_routing_estimated_cost_usd": self._routing_dollar_estimate(selected),
             "backup_routing_estimated_cost_usd": None,
@@ -1139,7 +1143,7 @@ class RouteWiseRouter(BaseRouter):
         ):
             return None
 
-        candidates = self._build_candidates(
+        candidates, _ = self._build_candidates(
             model_id,
             prompt_tokens=prompt_tokens,
             predicted_output_tokens=predicted_output_tokens,
@@ -1243,7 +1247,7 @@ class RouteWiseRouter(BaseRouter):
             return
         meta = self._pending_decisions[request_id]
         meta["backup_provider"] = backup.endpoint_id
-        meta["backup_tier"] = backup.tier
+        meta["backup_provider_type"] = backup.provider_type
         meta["hedge_delay_ms"] = elapsed_sec * 1000.0
         meta["hedge_success_probability"] = success_probability
         backup_cost = self._routing_dollar_estimate(backup)
@@ -1275,7 +1279,7 @@ class RouteWiseRouter(BaseRouter):
             meta["hedge_winner"] = "backup" if backup_won else "primary"
         else:
             meta["backup_provider"] = None
-            meta["backup_tier"] = None
+            meta["backup_provider_type"] = None
             meta["hedge_winner"] = None
         failed_attempts = getattr(adapter, "failed_attempts", None)
         if failed_attempts:
@@ -1318,7 +1322,7 @@ class RouteWiseRouter(BaseRouter):
         envelope = self.envelope.snapshot(pool)
         now = time.time()
 
-        candidates = self._build_candidates(
+        candidates, prefix_context = self._build_candidates(
             model_id,
             prompt_tokens=prompt_tokens,
             predicted_output_tokens=prediction.tokens,
@@ -1395,91 +1399,42 @@ class RouteWiseRouter(BaseRouter):
                         hedge_plan=hedge_plan,
                     )
                 if self.prefix_cache_shadow.enabled:
-                    self._record_prefix_cache_shadow(model_id, context, candidates, request_id)
+                    self._stash_prefix_for_commit(prefix_context, request_id)
                 return adapter
             candidates = [c for c in candidates if c.endpoint_id != selected.endpoint_id]
             if not candidates:
                 return None
         return None
 
-    def _record_prefix_cache_shadow(
+    def _stash_prefix_for_commit(
         self,
-        model_id: str,
-        context: dict[str, Any],
-        candidates: list[FeasibleProviderCandidate],
+        prefix_context: tuple[tuple[Any, ...], dict[str, Any]] | None,
         request_id: str | None,
     ) -> None:
-        """Record per-candidate prefix-cache diagnostics.
+        """Stash request blocks and eligible-candidate scopes for the warm on success.
 
-        Session-scoped only: requests without a session id are skipped. Records
-        ``matched_prefix_tokens`` and the would-be discount per candidate into the
-        pending decision metadata, and stashes the request blocks and per-candidate
-        scopes keyed by ``request_id``. The actual ``remember`` is deferred to the
-        selected-success observation (:meth:`_commit_prefix_cache_observation`) so
-        failed, fallback, or lost-hedge attempts never warm prefix history.
+        The scopes were collected by :meth:`_apply_prefix_cache_cost_adjustment`
+        while pricing candidates, so only providers the cost estimate applied to
+        (direct, cache-priced, non-rotating) are present. The commit
+        (:meth:`_commit_prefix_cache_observation`) looks the winning endpoint up by
+        id, so a winner without a scope here -- e.g. a rotating-key or no-delta
+        provider -- is simply not warmed.
 
-        ``key_slot`` is intentionally omitted from the scope. Cost adjustment
-        therefore skips endpoints backed by a rotating key pool, since prefix
-        cache is per key.
+        Keyed by the external request id from the request context, the same id the
+        observation path reads back.
         """
-        params = context.get("params")
-        session = str(params.get("session_id") or "") if isinstance(params, dict) else ""
-        if not session:
+        if prefix_context is None:
             return
-        messages = context.get("messages") or []
-        try:
-            blocks = self.prefix_cache_shadow.build_blocks(
-                messages,
-                tools=params.get("tools") if isinstance(params, dict) else None,
-                response_format=params.get("response_format") if isinstance(params, dict) else None,
-            )
-        except Exception:
-            logger.debug("prefix_cache shadow build_blocks failed", exc_info=True)
+        blocks, info = prefix_context
+        scopes = info.get("scopes") or {}
+        if not scopes:
             return
-        user = str(req_ctx.get().get("affinity_key") or "")
-        cache_params = self._cache_affecting_params(params)
-        records: dict[str, dict[str, Any]] = {}
-        scopes: dict[str, Any] = {}
-        for candidate in candidates:
-            provider_id = str(getattr(candidate.adapter.config, "provider", "") or "")
-            scope = self.prefix_cache_shadow.scope_for(
-                session=session,
-                provider_id=provider_id,
-                endpoint_id=candidate.endpoint_id,
-                model_profile=model_id,
-                user=user,
-                cache_params=cache_params,
-            )
-            scopes[candidate.endpoint_id] = scope
-            pricing = self._candidate_pricing(model_id, candidate.endpoint_id)
-            delta = (
-                price_delta_per_token(pricing.prompt, pricing.cache_read)
-                if pricing is not None
-                else 0.0
-            )
-            record = self.prefix_cache_shadow.evaluate(
-                scope,
-                blocks,
-                cold_cost=candidate.request_cost_usd,
-                price_delta=delta,
-            )
-            records[candidate.endpoint_id] = {
-                "matched_prefix_tokens": record.matched_prefix_tokens,
-                "expected_cached_tokens": record.expected_cached_tokens,
-                "shadow_cache_discount_usd": record.shadow_cache_discount,
-                "would_apply": record.would_apply,
-            }
-        # Stash under the external request id from the request context — the same
-        # id that ``_commit_prefix_cache_observation`` reads at observation time.
-        # The ``request_id`` arg keys the diagnostics metadata, which may be the
-        # router's internal decision id and can differ from the external id.
         stash_key = str(req_ctx.get().get("request_id") or request_id or "")
-        if stash_key:
-            self._prefix_cache_pending[stash_key] = (blocks, scopes)
-            while len(self._prefix_cache_pending) > _PREFIX_CACHE_PENDING_MAX:
-                self._prefix_cache_pending.pop(next(iter(self._prefix_cache_pending)), None)
-        if request_id and request_id in self._pending_decisions:
-            self._pending_decisions[request_id]["prefix_cache_shadow"] = records
+        if not stash_key:
+            return
+        self._prefix_cache_pending[stash_key] = (blocks, scopes)
+        while len(self._prefix_cache_pending) > _PREFIX_CACHE_PENDING_MAX:
+            self._prefix_cache_pending.pop(next(iter(self._prefix_cache_pending)), None)
 
     def _commit_prefix_cache_observation(self, obs: RoutingObservation) -> None:
         """On a selected success, commit the winning provider's prefix to memory.
@@ -1508,17 +1463,6 @@ class RouteWiseRouter(BaseRouter):
             observed_cached_tokens=getattr(obs, "cached_input_tokens", None),
         )
 
-    def _candidate_pricing(
-        self,
-        model_id: str,
-        endpoint_id: str,
-    ) -> CandidatePricing | None:
-        """Return the parsed pricing for one route candidate, if present."""
-        for route_candidate in self.route_candidates.get(model_id, []):
-            if route_candidate.endpoint_id == endpoint_id:
-                return route_candidate.pricing
-        return None
-
     @staticmethod
     def _cache_affecting_params(params: Any) -> str:
         """Return a stable string of the request params that bust prefix cache."""
@@ -1536,7 +1480,9 @@ class RouteWiseRouter(BaseRouter):
         model_id = self._canonical_model_id(model_id)
         entries = self.classified.get(model_id, [])
         return [
-            a for a, _w, sub in entries if a is not failed_adapter and sub is SubscriptionType.API
+            a
+            for a, _w, provider_type in entries
+            if a is not failed_adapter and provider_type is ProviderType.ON_DEMAND
         ]
 
     def record_observation(self, obs: RoutingObservation) -> None:

@@ -57,7 +57,7 @@ _STRUCTURED_LOG_KEYS = (
     "role",
     # RouteWise decision metadata (emitted by routers on every route choice).
     "model_id",
-    "selected_tier",
+    "selected_provider_type",
     "selected_provider",
     "selected_endpoint_id",
     "hedging_triggered",

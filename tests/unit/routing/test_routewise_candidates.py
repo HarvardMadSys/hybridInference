@@ -6,8 +6,8 @@ import pytest
 
 from routing.routewise.candidates import (
     ProviderCandidate,
+    ProviderType,
     QuotaSource,
-    SubscriptionType,
     build_provider_candidates,
 )
 from serving.adapters.base import ModelConfig
@@ -23,7 +23,7 @@ def _adapter(
     model_id: str = "glm-test",
     provider: str = "zai",
     endpoint_id: str | None = None,
-    subscription_type: str = "api",
+    provider_type: str = "on_demand",
     routewise_pool: str | None = None,
     quota_pool: str | None = None,
     concurrency_pool: str | None = None,
@@ -40,7 +40,7 @@ def _adapter(
             provider=provider,
             base_url=f"https://{provider}.example/v1",
             endpoint_id=endpoint_id,
-            subscription_type=subscription_type,
+            provider_type=provider_type,
             routewise_pool=routewise_pool,
             quota_pool=quota_pool,
             concurrency_pool=concurrency_pool,
@@ -57,7 +57,7 @@ def test_build_provider_candidates_preserves_routewise_metadata():
     quota = _adapter(
         provider="chutes",
         endpoint_id="glm-test:chutes-api",
-        subscription_type="quota",
+        provider_type="quota",
         routewise_pool="glm-paid-pool",
         quota_pool="chutes-glm-daily",
         quota_source={
@@ -70,7 +70,7 @@ def test_build_provider_candidates_preserves_routewise_metadata():
     concurrency = _adapter(
         provider="featherless",
         endpoint_id="glm-test:featherless-api",
-        subscription_type="concurrency",
+        provider_type="concurrency",
         routewise_pool="glm-paid-pool",
         concurrency_pool="featherless-glm",
         concurrency={"limit": 4},
@@ -78,7 +78,7 @@ def test_build_provider_candidates_preserves_routewise_metadata():
     api = _adapter(
         provider="zai",
         endpoint_id="glm-test:zai-api",
-        subscription_type="api",
+        provider_type="on_demand",
         routewise_pool="glm-paid-pool",
     )
 
@@ -95,7 +95,7 @@ def test_build_provider_candidates_preserves_routewise_metadata():
 
     by_id: dict[str, ProviderCandidate] = {c.endpoint_id: c for c in candidates}
     quota_candidate = by_id["glm-test:chutes-api"]
-    assert quota_candidate.subscription_type is SubscriptionType.QUOTA
+    assert quota_candidate.provider_type is ProviderType.QUOTA
     assert quota_candidate.routewise_pool == "glm-paid-pool"
     assert quota_candidate.quota_pool == "chutes-glm-daily"
     assert quota_candidate.quota_source == QuotaSource(
@@ -106,21 +106,21 @@ def test_build_provider_candidates_preserves_routewise_metadata():
     assert quota_candidate.quota_config == {"limit": 5000, "window": "daily"}
 
     concurrency_candidate = by_id["glm-test:featherless-api"]
-    assert concurrency_candidate.subscription_type is SubscriptionType.CONCURRENCY
+    assert concurrency_candidate.provider_type is ProviderType.CONCURRENCY
     assert concurrency_candidate.concurrency_pool == "featherless-glm"
     assert concurrency_candidate.concurrency_config == {"limit": 4}
 
     api_candidate = by_id["glm-test:zai-api"]
-    assert api_candidate.subscription_type is SubscriptionType.API
+    assert api_candidate.provider_type is ProviderType.ON_DEMAND
     assert api_candidate.pricing.prompt == pytest.approx(1.2)
     assert api_candidate.pricing.completion == pytest.approx(4.0)
 
 
 @pytest.mark.unit
 def test_build_provider_candidates_uses_stable_defaults_and_skips_zero_weight():
-    quota = _adapter(provider="chutes", endpoint_id="quota-shared", subscription_type="quota")
-    api = _adapter(provider="zai", endpoint_id="api-shared", subscription_type="api")
-    zero = _adapter(provider="ignored", endpoint_id="ignored", subscription_type="api")
+    quota = _adapter(provider="chutes", endpoint_id="quota-shared", provider_type="quota")
+    api = _adapter(provider="zai", endpoint_id="api-shared", provider_type="on_demand")
+    zero = _adapter(provider="ignored", endpoint_id="ignored", provider_type="on_demand")
 
     candidates = build_provider_candidates("glm-test", [(quota, 1.0), (api, 1.0), (zero, 0.0)])
 
@@ -133,8 +133,8 @@ def test_build_provider_candidates_uses_stable_defaults_and_skips_zero_weight():
 
 @pytest.mark.unit
 def test_build_provider_candidates_rejects_duplicate_endpoint_id():
-    quota = _adapter(provider="chutes", endpoint_id="shared", subscription_type="quota")
-    api = _adapter(provider="zai", endpoint_id="shared", subscription_type="api")
+    quota = _adapter(provider="chutes", endpoint_id="shared", provider_type="quota")
+    api = _adapter(provider="zai", endpoint_id="shared", provider_type="on_demand")
 
     with pytest.raises(ValueError, match=r"endpoint_id 'shared'.*more than once"):
         build_provider_candidates("glm-test", [(quota, 1.0), (api, 1.0)])
@@ -144,7 +144,7 @@ def test_build_provider_candidates_rejects_duplicate_endpoint_id():
 def test_build_provider_candidates_rejects_malformed_quota_source():
     quota = _adapter(
         provider="chutes",
-        subscription_type="quota",
+        provider_type="quota",
         quota_source={"provider": "chutes", "unit": "requests"},
     )
 
@@ -153,9 +153,8 @@ def test_build_provider_candidates_rejects_malformed_quota_source():
 
 
 @pytest.mark.unit
-def test_unknown_subscription_type_defaults_to_api_candidate():
-    adapter = _adapter(subscription_type="not-a-tier")
+def test_unknown_provider_type_raises():
+    adapter = _adapter(provider_type="not-a-provider-type")
 
-    candidates = build_provider_candidates("glm-test", [(adapter, 1.0)])
-
-    assert candidates[0].subscription_type is SubscriptionType.API
+    with pytest.raises(ValueError, match="provider_type must be one of"):
+        build_provider_candidates("glm-test", [(adapter, 1.0)])

@@ -2,8 +2,8 @@
 
 Construct the production ``RouteWiseRouter`` from the real ``config/models.yaml``
 (no mocks) and dump routing decisions for the ``minimax-m2.5`` route, which
-carries all three RouteWise tiers (S_Q Chutes quota, S_C Featherless C=1,
-S_A OpenRouter API).
+carries all three RouteWise provider categories (S_Q Chutes quota,
+S_C Featherless C=1, P_O OpenRouter on-demand).
 
 This is a read-only sanity check: it exercises config -> candidate -> effective
 cost -> LP -> selection, but never issues a network request. Run from the repo
@@ -46,9 +46,10 @@ logging.getLogger("serving.servers.registry").setLevel(logging.ERROR)
 from routing.routers import FixedRouter, RoutingObservation
 from routing.strategies import build_router
 
-# Per-tier synthetic TTFT (ms) used only to warm latency profiles so the LP has
-# distinguishable inputs. Concurrency fastest, API mid, quota slowest.
-TTFT_MS_BY_TIER = {"quota": 4000.0, "concurrency": 800.0, "api": 1500.0}
+# Per-provider-category synthetic TTFT (ms) used only to warm latency profiles
+# so the LP has distinguishable inputs. Concurrency fastest, on-demand mid,
+# quota slowest.
+TTFT_MS_BY_PROVIDER_TYPE = {"quota": 4000.0, "concurrency": 800.0, "on_demand": 1500.0}
 
 
 def build_fixed_router() -> tuple[FixedRouter, int]:
@@ -84,14 +85,14 @@ def inject_quota_snapshot(router, *, used: float = 500.0, limit: float = 5000.0)
 
     Offline there is no Chutes usage API, so the refresh loop never populates
     the store and quota stays dark. We poke the store directly (diagnostic only)
-    to prove the three-tier path fires.
+    to prove the three-provider-category path fires.
     """
     from datetime import datetime, timezone
 
     from routing.routewise.quota_snapshot import ProviderQuotaSnapshot
 
     for cand in router.route_candidates[MODEL_ID]:
-        if cand.subscription_type.value == "quota" and cand.quota_source is not None:
+        if cand.provider_type.value == "quota" and cand.quota_source is not None:
             qs = cand.quota_source
             router.quota_snapshots._snapshots[qs] = ProviderQuotaSnapshot(
                 source=qs,
@@ -108,8 +109,8 @@ def warm(router) -> None:
     """Replay realistic request records so latency + envelope calibrate."""
     rng_prompts = [240, 600, 1100, 1800, 3200, 512, 900, 1500]
     for cand in router.route_candidates[MODEL_ID]:
-        tier = cand.subscription_type.value
-        ttft = TTFT_MS_BY_TIER.get(tier, 1500.0)
+        provider_type = cand.provider_type.value
+        ttft = TTFT_MS_BY_PROVIDER_TYPE.get(provider_type, 1500.0)
         for i in range(16):
             prompt = rng_prompts[i % len(rng_prompts)]
             router.record_observation(
@@ -146,12 +147,13 @@ def dump(
     ctx = {"prompt_tokens": 1000, "request_id": f"smoke-{label}"}
     prediction = router._predict_output(MODEL_ID, 1000, ctx)
 
-    candidates = router._build_candidates(
+    candidates, _prefix_context = router._build_candidates(
         MODEL_ID,
         prompt_tokens=1000,
         predicted_output_tokens=prediction.tokens,
         envelope=envelope,
         now=time.time(),
+        context=ctx,
     )
 
     print(f"\n=== {label} ===")
@@ -159,10 +161,10 @@ def dump(
     U = getattr(envelope, "upper", getattr(envelope, "U", None))
     print(f"  envelope L/U = {L} / {U}   predicted_out_tokens = {prediction.tokens}")
     print(f"  feasible candidates ({len(candidates)}):")
-    print(f"    {'endpoint_id':<34} {'tier':>12} {'eff_cost_usd':>14} {'mean_ttft_s':>12}")
+    print(f"    {'endpoint_id':<34} {'provider_type':>14} {'eff_cost_usd':>14} {'mean_ttft_s':>12}")
     for c in candidates:
         print(
-            f"    {c.endpoint_id:<34} {c.tier:>12} "
+            f"    {c.endpoint_id:<34} {c.provider_type:>14} "
             f"{c.effective_cost_usd:>14.8f} {c.mean_ttft_sec:>12.3f}"
         )
 
@@ -197,7 +199,11 @@ def main() -> None:
 
     with_quota = make_router(fr)
     warm(with_quota)
-    dump(with_quota, "WARM + quota snapshot (all three tiers feasible)", inject_quota=True)
+    dump(
+        with_quota,
+        "WARM + quota snapshot (all provider categories feasible)",
+        inject_quota=True,
+    )
 
     spill = make_router(fr)
     warm(spill)

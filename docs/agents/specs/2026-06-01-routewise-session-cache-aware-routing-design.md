@@ -183,10 +183,9 @@ Provider usage classification: missing → `unknown`, `== 0` → `confirmed_miss
 
 Key rotation invalidates cache: the key pool rotates keys (~5-min TTL); a
 `key_slot_id` change must be treated as cache invalidation, never estimated from
-the prior key's history. **Status: the shadow implementation does not yet put
-`key_slot` in the scope**. Therefore guarded cost adjustment must skip endpoints
-backed by a rotating multi-key pool until `key_slot` is available in the scope;
-shadow diagnostics may still be recorded because they do not change routing.
+the prior key's history. **Status: `key_slot` is not yet in the scope**.
+Therefore guarded cost adjustment must skip endpoints backed by a rotating
+multi-key pool until `key_slot` is available in the scope.
 
 ## Implementation plan
 
@@ -195,17 +194,11 @@ shadow diagnostics may still be recorded because they do not change routing.
 2. **Observation hook** — write memory after a selected success (streaming only
    after successful finalize). Failures, cancels, timeouts, and non-selected
    attempts do not write hit/miss.
-3. **Shadow cache signal** — per-candidate lookup behind
-   `prefix_cache_shadow_enabled`, record shadow fields only, no cost change.
-   Emit predicted-vs-observed calibration metrics. Limitation: shadow observes
-   only the provider the cold router actually picked, so it cannot measure the
-   "if we had forced a stay" counterfactual — that needs the live cost-adjustment
-   phase.
-4. **Guarded cost adjustment** — enable adjusted S_A effective cost behind
-   `prefix_cache_cost_adjustment_enabled`, default off / small-traffic canary.
-   This is where the counterfactual benefit is measured. Rotating key-pool
-   endpoints are skipped until `key_slot` is part of the scope.
-5. **Metrics / report** — per provider/model/session bucket: `matched`,
+3. **Route-time cache signal** — behind `prefix_cache_cost_adjustment_enabled`,
+   build blocks once, look up eligible on-demand candidates, adjust effective
+   cost, and stash the selected candidate's scope for the selected-success
+   memory write. There is no separate shadow-only mode.
+4. **Metrics / report** — per provider/model/session bucket: `matched`,
    `expected`, `observed_cached_tokens`, hit/miss/unknown, adjustment_applied,
    route_stayed/switched, calibration error.
 
@@ -229,7 +222,7 @@ conditional on staying: observed_cached_tokens > 0 and close to predicted   # st
 predicted vs observed calibration error, bucketed by provider/scope          # the estimate is honest
 unknown rate is controlled
 no latency / cost regression; no quota/health/fallback semantics broken
-counterfactual benefit validated via the cost-adjustment small-traffic canary, not shadow alone
+counterfactual benefit validated via the cost-adjustment small-traffic canary
 ```
 
 ## Open decisions

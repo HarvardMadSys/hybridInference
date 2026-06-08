@@ -64,7 +64,7 @@ Relevant existing files:
 | File | Current responsibility |
 |---|---|
 | `config/models.yaml` | Model routes, pricing, provider metadata. |
-| `apps/backend/serving/servers/registry.py` | Builds adapters and passes route-level `subscription_type` into `ModelConfig`. |
+| `apps/backend/serving/servers/registry.py` | Builds adapters and passes route-level `provider_type` into `ModelConfig`. |
 | `apps/backend/routing/model_router_registry.py` | Chooses per-model routers and attaches `FixedRouter`. |
 | `apps/backend/routing/routewise/router.py` | Implementation target for the new current RouteWise router. |
 | `apps/backend/routing/routewise/lp_solver.py` | Replace with the cost-budgeted mean-TTFT LP. |
@@ -397,13 +397,12 @@ class ProviderCandidate:
     endpoint_id: str
     model_id: str
     adapter: BaseAdapter
-    tier: Literal["api", "quota", "concurrency"]
+    provider_type: Literal["on_demand", "quota", "concurrency"]
     weight: float
     pricing: Pricing
     routewise_pool: str
     quota_pool: str | None
     concurrency_pool: str | None
-    subscription_type: str
 ```
 
 `endpoint_id` remains the health, latency-profile, and observation key.
@@ -443,12 +442,12 @@ Route-level metadata:
 route:
   - kind: zai
     weight: 1.0
-    subscription_type: api
+    provider_type: on_demand
     routewise_pool: glm-paid-pool
 
   - kind: chutes
     weight: 1.0
-    subscription_type: quota
+    provider_type: quota
     routewise_pool: glm-paid-pool
     quota_pool: chutes-glm-daily
     quota_source:
@@ -462,14 +461,14 @@ route:
 
   - kind: featherless
     weight: 1.0
-    subscription_type: concurrency
+    provider_type: concurrency
     routewise_pool: glm-paid-pool
     concurrency_pool: featherless-glm
     concurrency:
       limit: 4
 ```
 
-Subscription-only example:
+No-on-demand-baseline example:
 
 ```yaml
 models:
@@ -482,28 +481,28 @@ models:
     route:
       - kind: chutes
         weight: 1.0
-        subscription_type: quota
+        provider_type: quota
         quota_source:
           provider: chutes
           usage_label: "Daily requests"
           unit: requests
       - kind: featherless
         weight: 1.0
-        subscription_type: concurrency
+        provider_type: concurrency
         concurrency:
           limit: 4
 ```
 
-If the route keeps a real API baseline, use a standard S_A + S_Q shape:
+If the route keeps a real P_O baseline, use a standard P_O + S_Q shape:
 
 ```yaml
 route:
   - kind: zai
     weight: 1.0
-    subscription_type: api
+    provider_type: on_demand
   - kind: chutes
     weight: 1.0
-    subscription_type: quota
+    provider_type: quota
     quota_source:
       provider: chutes
       usage_label: "Daily requests"
@@ -561,7 +560,7 @@ Attach a `routewise` metadata object to the existing routing metadata:
 {
   "version": "current_body",
   "selected_endpoint": "minimax-m2.5:zai",
-  "selected_tier": "api",
+  "selected_provider_type": "on_demand",
   "alpha": 0.75,
   "budget_usd": 0.0123,
   "envelope": {
@@ -633,12 +632,12 @@ Unit tests:
   saturated behavior.
 - `lp`: parity with RouteWise simulator examples, sparse support, budget
   boundary cases.
-- `router`: all-tier candidate collection, sampling, quota commit, concurrency
+- `router`: provider-category candidate collection, sampling, quota commit, concurrency
   acquire/release, metadata shape.
 
 Integration tests:
 
-- Fake adapters with API + quota + concurrency routes.
+- Fake adapters with on-demand + quota + concurrency routes.
 - Historical log bootstrap with deterministic `L/U`.
 - `router: routewise` uses the current RouteWise body router.
 - The existing checked-in RouteWise decision semantics are not preserved as a
@@ -654,11 +653,11 @@ Replay validation:
 ## Rollout
 
 1. Land code with `router: routewise` mapped to the current body router.
-2. Enable shadow decision logging for one low-risk model if needed.
+2. Keep cost adjustment disabled until staging validation passes.
 3. Start with a small explicit model set; do not auto-enable every provider.
-4. If the route has a real S_A provider, validate with `ZAI API baseline +
+4. If the route has a real P_O provider, validate with `ZAI on-demand baseline +
    Chutes S_Q` first.
-5. If the route is subscription-only, require `reference_api_price` or
+5. If the route has no on-demand baseline, require `reference_api_price` or
    model-level pricing as the reference.
 6. For Chutes S_Q, initially map only `Daily requests` and reuse provider quota
    snapshots.
@@ -685,13 +684,13 @@ Replay validation:
 
 - `router: routewise` selects the current RouteWise body router.
 - No second RouteWise mode is exposed.
-- Both real S_A baseline and subscription-only reference API price are
+- Both real P_O/on-demand baseline and no-on-demand reference API price are
   supported as price references.
 - `L/U` can be bootstrapped from existing `api_logs` and exposed in decision
   metadata.
 - Chutes S_Q uses provider quota snapshots to recover `used/limit/reset_at`, so
   deploy/restart does not reset quota state to zero.
-- The router solves a unified all-tier cost-budgeted mean-TTFT LP.
+- The router solves a unified provider-category cost-budgeted mean-TTFT LP.
 - The router records enough metadata to explain every selected provider.
 - Existing request execution, cost logging, fallback, and response wire format
   remain unchanged.

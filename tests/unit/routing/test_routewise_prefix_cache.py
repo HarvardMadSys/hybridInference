@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from routing.routers import RoutingObservation
-from routing.routewise.candidates import CandidatePricing
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.prefix_cache import (
     Block,
@@ -21,7 +20,7 @@ from routing.routewise.prefix_cache import (
     longest_common_prefix_tokens,
     price_delta_per_token,
 )
-from routing.routewise.router import FeasibleProviderCandidate, RouteWiseRouter
+from routing.routewise.router import RouteWiseRouter
 from serving.utils import context as req_ctx
 
 SECRET = b"unit-test-secret"
@@ -309,19 +308,6 @@ class TestPrefixCacheShadow:
         assert record.shadow_cache_discount == 0.0
 
 
-def _fake_candidate(endpoint_id: str, provider: str) -> FeasibleProviderCandidate:
-    return FeasibleProviderCandidate(
-        endpoint_id=endpoint_id,
-        adapter=SimpleNamespace(config=SimpleNamespace(provider=provider)),
-        tier="api",
-        weight=1.0,
-        effective_cost_usd=0.01,
-        request_cost_usd=0.01,
-        mean_ttft_sec=1.0,
-        cost_reason="cold_api_cost",
-    )
-
-
 def _obs(
     endpoint_id: str, *, success: bool = True, cached: int | None = None
 ) -> RoutingObservation:
@@ -354,7 +340,7 @@ def _api_adapter(
         config=SimpleNamespace(
             id="m1",
             provider=provider,
-            subscription_type="api",
+            provider_type="on_demand",
             endpoint_id=endpoint_id,
             base_url=f"https://{provider}.example/v1",
             pricing={
@@ -374,9 +360,18 @@ def _fixed_router(*adapters: SimpleNamespace) -> SimpleNamespace:
 
 
 @pytest.mark.unit
-class TestRouteWiseRouterPrefixCacheShadow:
+class TestRouteWiseRouterPrefixCacheWarm:
+    """Warm chain after shadow-only mode was removed.
+
+    Scopes are collected by ``_apply_prefix_cache_cost_adjustment`` while pricing
+    candidates, stashed by ``_stash_prefix_for_commit`` on a committed selection,
+    then turned into ``remember(winner)`` by ``_commit_prefix_cache_observation``.
+    Warming happens only under the cost-adjustment flag; there is no observe-only
+    mode anymore.
+    """
+
     def _router(self) -> RouteWiseRouter:
-        router = RouteWiseRouter(config=RouteWiseConfig(prefix_cache_shadow_enabled=True))
+        router = RouteWiseRouter(config=RouteWiseConfig(prefix_cache_cost_adjustment_enabled=True))
         router.prefix_cache_shadow = PrefixCacheShadow(
             enabled=True,
             memory=SessionProviderPrefixMemory(min_match_tokens=1),
@@ -384,118 +379,117 @@ class TestRouteWiseRouterPrefixCacheShadow:
             secret=SECRET,
             tokenize=_chars,
         )
-        router.route_candidates["m1"] = [
-            SimpleNamespace(
-                endpoint_id="prov-a:h:1",
-                pricing=CandidatePricing(prompt=0.30, cache_read=0.03),
-            ),
-            SimpleNamespace(
-                endpoint_id="prov-b:h:1",
-                pricing=CandidatePricing(prompt=0.30, cache_read=0.03),
-            ),
-        ]
         return router
 
-    def _route(self, router, request_id, messages, *, affinity="userA", session="sess-1"):
-        # Mirror the real flow: req_ctx carries the EXTERNAL id, while the router
-        # sees only an INTERNAL decision id in params/context (different value).
-        # The stash must key off the external id so the observation can find it.
-        internal_id = f"internal-{request_id}"
-        req_ctx.set({"request_id": request_id, "affinity_key": affinity})
-        router._pending_decisions[internal_id] = {}
-        cands = [_fake_candidate("prov-a:h:1", "prov-a"), _fake_candidate("prov-b:h:1", "prov-b")]
-        ctx = {
-            "messages": messages,
-            "params": {"session_id": session},
-            "request_id": internal_id,
-        }
-        router._record_prefix_cache_shadow("m1", ctx, cands, internal_id)
-        return router._pending_decisions[internal_id]["prefix_cache_shadow"]
+    def _scope(self, router, provider, endpoint, *, user="userA"):
+        return router.prefix_cache_shadow.scope_for(
+            session="sess-1",
+            provider_id=provider,
+            endpoint_id=endpoint,
+            model_profile="m1",
+            user=user,
+            cache_params="{}",
+        )
+
+    def _stash(self, router, request_id, scopes, *, messages=_MSGS1):
+        # Mirror _select_adapter: the external id lives in req_ctx; scopes were
+        # collected by _apply (built directly here); stash keys off the external id.
+        req_ctx.set({"request_id": request_id, "affinity_key": "userA"})
+        blocks = router.prefix_cache_shadow.build_blocks(messages)
+        router._stash_prefix_for_commit((blocks, {"scopes": scopes}), request_id)
 
     @staticmethod
     def _observe(router, request_id, endpoint_id, *, success=True, cached=None):
         req_ctx.set({"request_id": request_id, "affinity_key": "ignored-at-observe"})
         router._commit_prefix_cache_observation(_obs(endpoint_id, success=success, cached=cached))
 
+    def _lookup(self, router, scope, *, messages=_MSGS2):
+        return router.prefix_cache_shadow.memory.lookup(
+            scope, router.prefix_cache_shadow.build_blocks(messages)
+        )
+
     def test_flag_defaults_off(self):
         router = RouteWiseRouter(config=RouteWiseConfig())
         assert router.prefix_cache_shadow.enabled is False
 
-    def test_matched_only_after_selected_success(self):
+    def test_success_warms_winner(self):
         router = self._router()
-        assert self._route(router, "r1", _MSGS1)["prov-a:h:1"]["matched_prefix_tokens"] == 0
-        self._observe(router, "r1", "prov-a:h:1")  # prov-a actually served
-        recs = self._route(router, "r2", _MSGS2)
-        assert recs["prov-a:h:1"]["matched_prefix_tokens"] > 0
-        assert recs["prov-b:h:1"]["matched_prefix_tokens"] == 0  # never served
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        assert self._lookup(router, scope_a).has_history is False
+        self._stash(router, "r1", {"prov-a:h:1": scope_a})
+        self._observe(router, "r1", "prov-a:h:1")  # prov-a served and succeeded
+        signal = self._lookup(router, scope_a)
+        assert signal.has_history is True
+        assert signal.matched_prefix_tokens > 0
 
-    def test_failed_attempt_does_not_warm(self):
+    def test_failed_does_not_warm_and_clears_stash(self):
         router = self._router()
-        self._route(router, "r1", _MSGS1)
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        self._stash(router, "r1", {"prov-a:h:1": scope_a})
         self._observe(router, "r1", "prov-a:h:1", success=False)  # primary failed
+        assert "r1" not in router._prefix_cache_pending  # popped even on failure
+        assert self._lookup(router, scope_a).has_history is False
+
+    def test_warms_winner_among_eligible_not_others(self):
+        # Both prov-a and prov-b were eligible (in scopes); prov-b actually served
+        # (e.g. the hedge backup won). Only the real winner is warmed.
+        router = self._router()
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        scope_b = self._scope(router, "prov-b", "prov-b:h:1")
+        self._stash(router, "r1", {"prov-a:h:1": scope_a, "prov-b:h:1": scope_b})
+        self._observe(router, "r1", "prov-b:h:1")  # backup won the hedge / fallback
+        assert self._lookup(router, scope_b).has_history is True  # winner warmed
+        assert self._lookup(router, scope_a).has_history is False  # never served
+
+    def test_no_stash_when_no_eligible_scope(self):
+        # All candidates ineligible (rotating / no cache price): _apply collected
+        # nothing, so the `if not scopes` gate skips the stash entirely.
+        router = self._router()
+        self._stash(router, "r1", {})
         assert "r1" not in router._prefix_cache_pending
-        recs = self._route(router, "r2", _MSGS2)
-        assert recs["prov-a:h:1"]["matched_prefix_tokens"] == 0
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        self._observe(router, "r1", "prov-a:h:1")  # nothing to commit
+        assert self._lookup(router, scope_a).has_history is False
+
+    def test_different_user_same_session_is_isolated(self):
+        router = self._router()
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1", user="userA")
+        self._stash(router, "r1", {"prov-a:h:1": scope_a})
+        self._observe(router, "r1", "prov-a:h:1")
+        # User B reuses the SAME session id but a different affinity key.
+        scope_other_user = self._scope(router, "prov-a", "prov-a:h:1", user="userB")
+        assert self._lookup(router, scope_other_user).has_history is False
+
+    def test_observed_cached_tokens_reach_memory(self):
+        router = self._router()
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        self._stash(router, "r1", {"prov-a:h:1": scope_a})
+        self._observe(router, "r1", "prov-a:h:1", cached=123)
+        signal = router.prefix_cache_shadow.memory.lookup(scope_a, ())
+        assert signal.confirmed_hit_count == 1
+        assert signal.confirmed_miss_count == 0
+
+    def test_no_request_id_skips_stash(self):
+        router = self._router()
+        req_ctx.set({"affinity_key": "userA"})  # no request_id in context
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        blocks = router.prefix_cache_shadow.build_blocks(_MSGS1)
+        router._stash_prefix_for_commit((blocks, {"scopes": {"prov-a:h:1": scope_a}}), None)
+        assert len(router._prefix_cache_pending) == 0
 
     @pytest.mark.asyncio
     async def test_stale_pending_decision_sweep_removes_prefix_stash(self):
         router = self._router()
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
         req_ctx.set({"request_id": "r1", "affinity_key": "userA"})
         router._pending_decisions["r1"] = {"timestamp": -1_000_000_000.0}
-        cands = [_fake_candidate("prov-a:h:1", "prov-a")]
-        ctx = {
-            "messages": _MSGS1,
-            "params": {"session_id": "sess-1"},
-            "request_id": "r1",
-        }
-        router._record_prefix_cache_shadow("m1", ctx, cands, "r1")
+        self._stash(router, "r1", {"prov-a:h:1": scope_a})
         assert "r1" in router._prefix_cache_pending
 
         evicted = await router._sweep_pending_decisions_once()
 
         assert evicted == 1
         assert "r1" not in router._prefix_cache_pending
-
-    def test_remembers_winner_not_primary(self):
-        router = self._router()
-        self._route(router, "r1", _MSGS1)
-        self._observe(router, "r1", "prov-b:h:1")  # backup won the hedge / fallback
-        recs = self._route(router, "r2", _MSGS2)
-        assert recs["prov-b:h:1"]["matched_prefix_tokens"] > 0  # the real winner is warm
-        assert recs["prov-a:h:1"]["matched_prefix_tokens"] == 0
-
-    def test_different_user_same_session_is_isolated(self):
-        router = self._router()
-        self._route(router, "r1", _MSGS1, affinity="userA", session="sess-1")
-        self._observe(router, "r1", "prov-a:h:1")
-        # User B reuses the SAME session id but a different affinity key.
-        recs = self._route(router, "r2", _MSGS2, affinity="userB", session="sess-1")
-        assert recs["prov-a:h:1"]["matched_prefix_tokens"] == 0
-
-    def test_observed_cached_tokens_reach_memory(self):
-        router = self._router()
-        self._route(router, "r1", _MSGS1, affinity="userA", session="sess-1")
-        self._observe(router, "r1", "prov-a:h:1", cached=123)
-        scope = router.prefix_cache_shadow.scope_for(
-            session="sess-1",
-            provider_id="prov-a",
-            endpoint_id="prov-a:h:1",
-            model_profile="m1",
-            user="userA",
-            cache_params="{}",
-        )
-        signal = router.prefix_cache_shadow.memory.lookup(scope, ())
-        assert signal.confirmed_hit_count == 1
-        assert signal.confirmed_miss_count == 0
-
-    def test_no_session_id_skips_recording(self):
-        router = self._router()
-        req_ctx.set({"request_id": "r1", "affinity_key": "userA"})
-        router._pending_decisions["r1"] = {}
-        cands = [_fake_candidate("prov-a:h:1", "prov-a")]
-        ctx = {"messages": [{"role": "user", "content": "x"}], "params": {}, "request_id": "r1"}
-        router._record_prefix_cache_shadow("m1", ctx, cands, "r1")
-        assert "prefix_cache_shadow" not in router._pending_decisions["r1"]
 
 
 @pytest.mark.unit
@@ -523,12 +517,11 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
             fixed_router=_fixed_router(cold_cheaper, warm_slightly_pricier),
             config=RouteWiseConfig(
                 budget_alpha=0.0,
-                prefix_cache_shadow_enabled=True,
                 prefix_cache_cost_adjustment_enabled=cost_adjustment,
             ),
         )
         router.prefix_cache_shadow = PrefixCacheShadow(
-            enabled=True,
+            enabled=cost_adjustment,
             memory=SessionProviderPrefixMemory(min_match_tokens=1),
             block_size=8,
             secret=SECRET,
@@ -564,7 +557,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
             },
         )
 
-    def test_shadow_only_does_not_change_real_route_selection(self):
+    def test_cost_adjustment_off_does_not_change_route(self):
         router, cold_cheaper, _warm_slightly_pricier = self._router(cost_adjustment=False)
         self._warm_provider_b(router)
 
@@ -610,3 +603,26 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
         meta = router._pending_decisions["r-select"]
         assert meta["candidate_cost_reasons"]["prov-b:h:1"] == "cold_api_cost"
         assert "prov-b:h:1" not in meta["candidate_prefix_cache_discounts_usd"]
+
+    def test_eligible_scopes_collected_excludes_rotating_pool(self):
+        # prov-a is direct + cache-priced (eligible); prov-b is a rotating key
+        # pool (skipped). Only the eligible endpoint's scope is collected, so the
+        # post-success warm is scoped to providers the estimate actually applies to.
+        router, _cold, _warm = self._router(cost_adjustment=True, warm_api_keys=["key-a", "key-b"])
+        req_ctx.set({"request_id": "r1", "affinity_key": "userA"})
+        _candidates, prefix_context = router._build_candidates(
+            "m1",
+            prompt_tokens=1000,
+            predicted_output_tokens=10.0,
+            envelope=None,
+            now=0.0,
+            context={
+                "messages": _MSGS2,
+                "params": {"session_id": "sess-1"},
+                "request_id": "r1",
+            },
+        )
+        assert prefix_context is not None
+        scopes = prefix_context[1]["scopes"]
+        assert "prov-a:h:1" in scopes  # eligible -> collected for warm
+        assert "prov-b:h:1" not in scopes  # rotating key pool -> skipped

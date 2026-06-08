@@ -403,13 +403,13 @@ def register_from_models_yaml(
                 if "processor" in r:
                     adapter_cfg["processor"] = r["processor"]
 
-                # RouteWise subscription classification
+                # RouteWise provider category classification
                 route_metadata = dict(adapter_cfg.get("route_metadata") or {})
                 if isinstance(r.get("route_metadata"), dict):
                     route_metadata.update(r["route_metadata"])
-                if "subscription_type" in r:
-                    adapter_cfg["subscription_type"] = r["subscription_type"]
-                    route_metadata["subscription_type"] = r["subscription_type"]
+                if "provider_type" in r:
+                    adapter_cfg["provider_type"] = r["provider_type"]
+                    route_metadata["provider_type"] = r["provider_type"]
                 for routewise_key in (
                     "routewise_pool",
                     "quota_pool",

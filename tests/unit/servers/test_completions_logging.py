@@ -240,7 +240,7 @@ def test_record_routing_observation_accepts_legacy_dict(cl_logger):
         "endpoint_id": "anthropic-prod",
         "base_url": "https://api.anthropic.com/v1",
         "routewise": {
-            "selected_tier": "B",
+            "selected_provider_type": "B",
             "quota_committed": 1.5,
             "sc_committed": True,
             "hedged": True,
@@ -263,7 +263,7 @@ def test_record_routing_observation_accepts_legacy_dict(cl_logger):
     assert obs.endpoint_id == "anthropic-prod"
     assert obs.strategy_metadata == {
         "routewise": {
-            "selected_tier": "B",
+            "selected_provider_type": "B",
             "quota_committed": 1.5,
             "sc_committed": True,
             "hedged": True,
@@ -345,7 +345,7 @@ def test_record_routing_observation_accepts_typed_strategy_metadata(cl_logger):
         model="gpt-4",
         provider="openai",
         endpoint_id="openai-prod",
-        strategy_metadata={"routewise": {"selected_tier": "api"}, "other": {"x": 1}},
+        strategy_metadata={"routewise": {"selected_provider_type": "on_demand"}, "other": {"x": 1}},
     )
     active_router = MagicMock()
     cl_logger.record_routing_observation(
@@ -359,7 +359,10 @@ def test_record_routing_observation_accepts_typed_strategy_metadata(cl_logger):
         success=True,
     )
     obs = active_router.record_observation.call_args[0][0]
-    assert obs.strategy_metadata == {"routewise": {"selected_tier": "api"}, "other": {"x": 1}}
+    assert obs.strategy_metadata == {
+        "routewise": {"selected_provider_type": "on_demand"},
+        "other": {"x": 1},
+    }
     assert obs.token_count == 7
 
 
@@ -375,7 +378,7 @@ def test_routing_observation_accepts_legacy_routewise_kwargs():
         success=True,
         prompt_tokens=1,
         completion_tokens=2,
-        selected_tier="api",
+        selected_provider_type="on_demand",
         quota_committed=1.5,
         sc_committed=True,
         hedged=True,
@@ -385,7 +388,7 @@ def test_routing_observation_accepts_legacy_routewise_kwargs():
 
     assert obs.strategy_metadata == {
         "routewise": {
-            "selected_tier": "api",
+            "selected_provider_type": "on_demand",
             "quota_committed": 1.5,
             "sc_committed": True,
             "hedged": True,
@@ -428,7 +431,7 @@ def test_routing_observation_accepts_full_legacy_positional_tail():
         1.5,
         1,
         2,
-        "api",
+        "on_demand",
         True,
         True,
         False,
@@ -440,7 +443,7 @@ def test_routing_observation_accepts_full_legacy_positional_tail():
     assert obs.strategy_metadata == {
         "routewise": {
             "quota_committed": 1.5,
-            "selected_tier": "api",
+            "selected_provider_type": "on_demand",
             "sc_committed": True,
             "hedged": True,
             "backup_won": False,

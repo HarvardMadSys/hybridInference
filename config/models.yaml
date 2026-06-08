@@ -213,7 +213,7 @@ models:
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
-        subscription_type: quota
+        provider_type: quota
         quota_pool: chutes-minimax-m2.5-daily
         quota_source:
           provider: chutes
@@ -229,7 +229,7 @@ models:
         api_keys:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
-        subscription_type: concurrency
+        provider_type: concurrency
         concurrency_pool: featherless-minimax-m2.5
         concurrency:
           limit: 1
@@ -240,7 +240,7 @@ models:
         api_keys:
           - ${OPENROUTER_API_KEY}
         provider_model_id: "minimax/minimax-m2.5"
-        subscription_type: api
+        provider_type: on_demand
         pricing:
           prompt: "0.15"
           completion: "1.15"
@@ -285,7 +285,6 @@ models:
       # latency_max_samples_per_profile: 5000
       # latency_min_samples: 10
       # latency_unprofiled_ttft_ms: 5000.0
-      # prefix_cache_shadow_enabled: false
       # prefix_cache_cost_adjustment_enabled: false
       # canary_enabled: false
       # canary_enabled_models: null        # null = all routewise models
@@ -306,7 +305,7 @@ models:
         api_keys:
           - ${MINIMAX_API_KEY}
         provider_model_id: "MiniMax-M2.5"
-        subscription_type: api
+        provider_type: on_demand
       # Ollama Cloud fallback
       - kind: ollama
         weight: 0.24
@@ -314,7 +313,7 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.5"
-        subscription_type: api
+        provider_type: on_demand
       # Chutes fallback
       - kind: chutes
         weight: 0.24
@@ -322,7 +321,7 @@ models:
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
-        subscription_type: api
+        provider_type: on_demand
       # Featherless fallback
       - kind: featherless
         weight: 0.64
@@ -330,7 +329,7 @@ models:
         api_keys:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
-        subscription_type: api
+        provider_type: on_demand
 
   - id: minimax-m2.7
     name: MiniMax M2.7

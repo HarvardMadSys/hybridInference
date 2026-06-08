@@ -296,7 +296,7 @@ async def test_postgres_log_store_accepts_routewise_metadata_with_nonfinite_valu
         metadata={
             "user_id": "integration-user",
             "routewise": {
-                "selected_tier": "api",
+                "selected_provider_type": "on_demand",
                 "v_t": 0.01,
                 "gain_c": float("-inf"),
                 "gain_q": float("-inf"),
@@ -319,7 +319,7 @@ async def test_postgres_log_store_accepts_routewise_metadata_with_nonfinite_valu
 
     assert row is not None
     assert row["user_id"] == "integration-user"
-    assert row["metadata"]["routewise"]["selected_tier"] == "api"
+    assert row["metadata"]["routewise"]["selected_provider_type"] == "on_demand"
     assert row["metadata"]["routewise"]["gain_c"] is None
     assert row["metadata"]["routewise"]["gain_q"] is None
 
@@ -341,7 +341,7 @@ async def test_db_logger_accepts_routewise_metadata_with_nonfinite_values(
         metadata={
             "user_id": "integration-user",
             "routewise": {
-                "selected_tier": "api",
+                "selected_provider_type": "on_demand",
                 "v_t": 0.01,
                 "gain_c": float("-inf"),
                 "gain_q": float("-inf"),
@@ -365,7 +365,7 @@ async def test_db_logger_accepts_routewise_metadata_with_nonfinite_values(
 
     assert row is not None
     assert row["user_id"] == "integration-user"
-    assert row["metadata"]["routewise"]["selected_tier"] == "api"
+    assert row["metadata"]["routewise"]["selected_provider_type"] == "on_demand"
     assert row["metadata"]["routewise"]["gain_c"] is None
     assert row["metadata"]["routewise"]["gain_q"] is None
     assert row["response"] is not None

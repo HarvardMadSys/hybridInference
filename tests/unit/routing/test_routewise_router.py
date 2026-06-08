@@ -18,7 +18,7 @@ from routing.routewise.config import RouteWiseConfig
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.hedging import HedgedAdapter
 from routing.routewise.quota_snapshot import ProviderQuotaSnapshotStore
-from routing.routewise.router import RouteWiseRouter, SubscriptionType
+from routing.routewise.router import ProviderType, RouteWiseRouter
 from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 
 # ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ _ADAPTER_COUNTER = itertools.count()
 def _make_model_config(
     model_id: str = "test-model",
     provider: str = "openai_compat",
-    subscription_type: str = "api",
+    provider_type: str = "on_demand",
     prompt_price: str = "0.001",
     completion_price: str = "0.002",
     endpoint_id: str | None = None,
@@ -41,7 +41,7 @@ def _make_model_config(
     cfg = MagicMock()
     cfg.id = model_id
     cfg.provider = provider
-    cfg.subscription_type = subscription_type
+    cfg.provider_type = provider_type
     cfg.endpoint_id = endpoint_id or f"{model_id}:{provider}:{next(_ADAPTER_COUNTER)}"
     # Concrete (JSON-serializable) base_url so the synthetic _routing chunk
     # emitted by FixedRouter.stream_chat_completion can be json.dumps()'d.
@@ -54,7 +54,7 @@ def _make_model_config(
 def _make_adapter(
     model_id: str = "test-model",
     provider: str = "openai_compat",
-    subscription_type: str = "api",
+    provider_type: str = "on_demand",
     prompt_price: str = "0.001",
     completion_price: str = "0.002",
     endpoint_id: str | None = None,
@@ -65,7 +65,7 @@ def _make_adapter(
     adapter.config = _make_model_config(
         model_id=model_id,
         provider=provider,
-        subscription_type=subscription_type,
+        provider_type=provider_type,
         prompt_price=prompt_price,
         completion_price=completion_price,
         endpoint_id=endpoint_id,
@@ -104,13 +104,13 @@ def _make_router_with_quota_and_api(
     if config is None:
         config = RouteWiseConfig()
     quota_adapter = _make_adapter(
-        subscription_type="quota",
+        provider_type="quota",
         prompt_price=prompt_price,
         completion_price=completion_price,
         endpoint_id="test-model:quota-provider",
     )
     api_adapter = _make_adapter(
-        subscription_type="api",
+        provider_type="on_demand",
         prompt_price=prompt_price,
         completion_price=completion_price,
         endpoint_id="test-model:api-provider",
@@ -211,10 +211,10 @@ class TestRouteWiseRouterScaffold:
         with pytest.raises(ValueError, match="no route"):
             router._select_adapter("nonexistent", {})
 
-    def test_subscription_type_classification(self):
-        """Adapters are correctly classified by their subscription_type."""
-        quota_adapter = _make_adapter(subscription_type="quota")
-        api_adapter = _make_adapter(subscription_type="api")
+    def test_provider_type_classification(self):
+        """Adapters are correctly classified by their provider_type."""
+        quota_adapter = _make_adapter(provider_type="quota")
+        api_adapter = _make_adapter(provider_type="on_demand")
 
         fr = _FakeFixedRouter()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
@@ -222,8 +222,8 @@ class TestRouteWiseRouterScaffold:
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         entries = router.classified["test-model"]
         types = {s for _, _, s in entries}
-        assert SubscriptionType.QUOTA in types
-        assert SubscriptionType.API in types
+        assert ProviderType.QUOTA in types
+        assert ProviderType.ON_DEMAND in types
 
     def test_pd_selects_quota_when_value_high(self):
         """PD selects S_Q when estimated API cost exceeds shadow price.
@@ -232,13 +232,13 @@ class TestRouteWiseRouterScaffold:
         output prediction (500), v_t = 15/1M * 500 = 0.0075 > L_seed=0.001.
         """
         quota_adapter = _make_adapter(
-            subscription_type="quota",
+            provider_type="quota",
             prompt_price="3.0",
             completion_price="15.0",
             endpoint_id="test-model:quota-provider",
         )
         api_adapter = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             prompt_price="3.0",
             completion_price="15.0",
             endpoint_id="test-model:api-provider",
@@ -261,11 +261,11 @@ class TestRouteWiseRouterScaffold:
         """
         # Provider A: cheap prompt but expensive completion
         provider_a = _make_adapter(
-            subscription_type="api", prompt_price="0.002", completion_price="0.010"
+            provider_type="on_demand", prompt_price="0.002", completion_price="0.010"
         )
         # Provider B: balanced pricing
         provider_b = _make_adapter(
-            subscription_type="api", prompt_price="0.003", completion_price="0.003"
+            provider_type="on_demand", prompt_price="0.003", completion_price="0.003"
         )
 
         fr = _FakeFixedRouter()
@@ -285,12 +285,12 @@ class TestRouteWiseRouterScaffold:
         With small prompt_tokens and large predicted output, B is cheaper.
         """
         provider_a = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             prompt_price="0.5",
             completion_price="20.0",
         )
         provider_b = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             prompt_price="5.0",
             completion_price="5.0",
         )
@@ -330,19 +330,18 @@ class TestRouteWiseRouterScaffold:
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         assert router._get_fallback_adapters("nonexistent", MagicMock()) == []
 
-    def test_unknown_subscription_type_defaults_to_api(self):
-        """Unknown subscription_type value falls back to API."""
-        adapter = _make_adapter(subscription_type="unknown_tier")
+    def test_unknown_provider_type_raises(self):
+        """Unknown provider_type values are rejected."""
+        adapter = _make_adapter(provider_type="unknown_tier")
         fr = _FakeFixedRouter()
         fr.add("test-model", [(adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        entries = router.classified["test-model"]
-        assert entries[0][2] is SubscriptionType.API
+        with pytest.raises(ValueError, match="provider_type must be one of"):
+            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
 
     def test_subscription_only_route_uses_reference_api_price_for_value(self):
         """Routes without S_A can still price requests with reference_api_price."""
-        quota_adapter = _make_adapter(subscription_type="quota")
+        quota_adapter = _make_adapter(provider_type="quota")
         fr = _FakeFixedRouter()
         fr.add("test-model", [(quota_adapter, 1.0)])
 
@@ -361,12 +360,12 @@ class TestRouteWiseRouterScaffold:
             "unit": "requests",
         }
         quota_adapter = _make_adapter(
-            subscription_type="quota",
+            provider_type="quota",
             quota_source=source,
             endpoint_id="test-model:quota-provider",
         )
         api_adapter = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             endpoint_id="test-model:api-provider",
         )
         fr = _FakeFixedRouter()
@@ -390,12 +389,12 @@ class TestRouteWiseRouterScaffold:
             "unit": "requests",
         }
         quota_adapter = _make_adapter(
-            subscription_type="quota",
+            provider_type="quota",
             quota_source=source,
             endpoint_id="test-model:quota-provider",
         )
         api_adapter = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             prompt_price="3.0",
             completion_price="15.0",
             endpoint_id="test-model:api-provider",
@@ -446,12 +445,12 @@ class TestRouteWiseRouterScaffold:
         assert decision["quota_remaining"] == 89
         assert decision["quota_source"] == source
 
-    def test_stateful_tiers_raise_when_worker_count_is_multi_process(self, monkeypatch):
+    def test_stateful_providers_raise_when_worker_count_is_multi_process(self, monkeypatch):
         """S_Q/S_C are process-local and guarded in multi-worker deployments."""
         monkeypatch.setenv("WEB_CONCURRENCY", "2")
 
-        quota_adapter = _make_adapter(subscription_type="quota")
-        api_adapter = _make_adapter(subscription_type="api")
+        quota_adapter = _make_adapter(provider_type="quota")
+        api_adapter = _make_adapter(provider_type="on_demand")
         fr = _FakeFixedRouter()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
@@ -462,7 +461,7 @@ class TestRouteWiseRouterScaffold:
         """API-only RouteWise routes remain safe with multiple workers."""
         monkeypatch.setenv("WEB_CONCURRENCY", "2")
 
-        api_adapter = _make_adapter(subscription_type="api")
+        api_adapter = _make_adapter(provider_type="on_demand")
         fr = _FakeFixedRouter()
         fr.add("test-model", [(api_adapter, 1.0)])
 
@@ -488,7 +487,7 @@ class TestRouteWiseRouterScaffold:
 
     def test_concurrency_adapter_skipped_when_disabled(self):
         """S_C adapter is not selected when concurrency_enabled=False."""
-        conc = _make_adapter(subscription_type="concurrency")
+        conc = _make_adapter(provider_type="concurrency")
         fr = _FakeFixedRouter()
         fr.add("test-model", [(conc, 1.0)])
 
@@ -499,7 +498,7 @@ class TestRouteWiseRouterScaffold:
 
     def test_concurrency_adapter_selected_when_enabled(self):
         """S_C adapter is returned when concurrency_enabled=True."""
-        conc = _make_adapter(subscription_type="concurrency")
+        conc = _make_adapter(provider_type="concurrency")
         fr = _FakeFixedRouter()
         fr.add("test-model", [(conc, 1.0)])
 
@@ -514,8 +513,8 @@ class TestRouteWiseRouterScaffold:
         S_C is excluded from fallback because the BaseRouter fallback path
         bypasses _select_adapter -- no concurrency slot accounting would occur.
         """
-        api = _make_adapter(subscription_type="api")
-        conc = _make_adapter(subscription_type="concurrency")
+        api = _make_adapter(provider_type="on_demand")
+        conc = _make_adapter(provider_type="concurrency")
 
         fr = _FakeFixedRouter()
         fr.add("test-model", [(api, 0.5), (conc, 0.5)])
@@ -537,10 +536,10 @@ class TestRouteWiseRouterScaffold:
         so no PD decision or quota/concurrency accounting is performed.
         Only S_A is safe for fallback.
         """
-        quota = _make_adapter(subscription_type="quota")
-        conc = _make_adapter(subscription_type="concurrency")
-        api_a = _make_adapter(subscription_type="api", provider="provider_a")
-        api_b = _make_adapter(subscription_type="api", provider="provider_b")
+        quota = _make_adapter(provider_type="quota")
+        conc = _make_adapter(provider_type="concurrency")
+        api_a = _make_adapter(provider_type="on_demand", provider="provider_a")
+        api_b = _make_adapter(provider_type="on_demand", provider="provider_b")
 
         fr = _FakeFixedRouter()
         fr.add(
@@ -613,7 +612,7 @@ class TestRouteWiseQuotaDecision:
 
     def test_no_quota_adapter_always_selects_api(self):
         """Models with only S_A adapters never route to S_Q."""
-        api_only = _make_adapter(subscription_type="api")
+        api_only = _make_adapter(provider_type="on_demand")
         fr = _FakeFixedRouter()
         fr.add("test-model", [(api_only, 1.0)])
 
@@ -798,13 +797,13 @@ def _make_router_with_two_api(
     if config is None:
         config = RouteWiseConfig()
     api_a = _make_adapter(
-        subscription_type="api",
+        provider_type="on_demand",
         prompt_price="3.0",
         completion_price="15.0",
         endpoint_id="test-model:api-a",
     )
     api_b = _make_adapter(
-        subscription_type="api",
+        provider_type="on_demand",
         prompt_price="4.0",
         completion_price="20.0",
         endpoint_id="test-model:api-b",
@@ -910,7 +909,7 @@ class TestRouteWiseLayer2:
     def test_single_api_uses_body_lp_single_provider_solution(self):
         """Single S_A provider returns a degenerate body-LP solution."""
         api_only = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             prompt_price="3.0",
             completion_price="15.0",
             endpoint_id="test-model:api-only",
@@ -1036,25 +1035,25 @@ class TestRouteWiseLayer2:
 
         # Two models, each with two S_A endpoints.
         a1 = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             prompt_price="3.0",
             completion_price="15.0",
             endpoint_id="model-a:ep1",
         )
         a2 = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             prompt_price="4.0",
             completion_price="20.0",
             endpoint_id="model-a:ep2",
         )
         b1 = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             prompt_price="5.0",
             completion_price="10.0",
             endpoint_id="model-b:ep1",
         )
         b2 = _make_adapter(
-            subscription_type="api",
+            provider_type="on_demand",
             prompt_price="6.0",
             completion_price="12.0",
             endpoint_id="model-b:ep2",
@@ -1105,7 +1104,7 @@ class TestRouteWiseLayer2:
 
 
 # ---------------------------------------------------------------------------
-# S_C Concurrency tier tests (PR-6)
+# S_C Concurrency provider tests (PR-6)
 # ---------------------------------------------------------------------------
 
 
@@ -1122,13 +1121,13 @@ def _make_router_with_conc_and_api(
     if config is None:
         config = RouteWiseConfig(concurrency_enabled=True, concurrency_limit=4)
     conc_adapter = _make_adapter(
-        subscription_type="concurrency",
+        provider_type="concurrency",
         prompt_price=prompt_price,
         completion_price=completion_price,
         endpoint_id="test-model:conc-provider",
     )
     api_adapter = _make_adapter(
-        subscription_type="api",
+        provider_type="on_demand",
         prompt_price=prompt_price,
         completion_price=completion_price,
         endpoint_id="test-model:api-provider",
@@ -1154,19 +1153,19 @@ def _make_router_three_tier(
             daily_quota=5000,
         )
     conc_adapter = _make_adapter(
-        subscription_type="concurrency",
+        provider_type="concurrency",
         prompt_price="3.0",
         completion_price="15.0",
         endpoint_id="test-model:conc-provider",
     )
     quota_adapter = _make_adapter(
-        subscription_type="quota",
+        provider_type="quota",
         prompt_price="3.0",
         completion_price="15.0",
         endpoint_id="test-model:quota-provider",
     )
     api_adapter = _make_adapter(
-        subscription_type="api",
+        provider_type="on_demand",
         prompt_price="3.0",
         completion_price="15.0",
         endpoint_id="test-model:api-provider",
@@ -1186,7 +1185,7 @@ def _make_router_three_tier(
 
 @pytest.mark.unit
 class TestRouteWiseSCDecision:
-    """Layer 1 decision tests for S_C concurrency tier."""
+    """Layer 1 decision tests for S_C concurrency providers."""
 
     def test_sc_routes_to_concurrency_when_available(self):
         """S_C selected when slots are available."""
@@ -1363,12 +1362,12 @@ class TestRouteWiseSCDecision:
         ]
         meta = router._pending_decisions["req-commit-retry"]
         assert meta["selected_endpoint"] == "test-model:api-provider"
-        assert meta["selected_tier"] == "api"
+        assert meta["selected_provider_type"] == "on_demand"
 
 
 @pytest.mark.unit
 class TestRouteWiseSCLifecycle:
-    """Async slot lifecycle tests for S_C concurrency tier."""
+    """Async slot lifecycle tests for S_C concurrency providers."""
 
     @pytest.mark.asyncio
     async def test_slot_acquired_and_released_on_success(self):
@@ -1566,7 +1565,7 @@ class TestRouteWiseNoApiBaseline:
     def test_sc_only_full_returns_none(self):
         """S_C-only config: when slots are full, returns None (not S_C)."""
         conc = _make_adapter(
-            subscription_type="concurrency",
+            provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
         fr = _FakeFixedRouter()
@@ -1587,7 +1586,7 @@ class TestRouteWiseNoApiBaseline:
     def test_sq_only_exhausted_returns_none(self):
         """S_Q-only config: when quota exhausted, returns None (not S_Q)."""
         quota = _make_adapter(
-            subscription_type="quota",
+            provider_type="quota",
             endpoint_id="test-model:quota",
         )
         fr = _FakeFixedRouter()
@@ -1609,11 +1608,11 @@ class TestRouteWiseNoApiBaseline:
     def test_sc_sq_no_api_all_depleted_returns_none(self):
         """S_C + S_Q but no S_A: returns None when both depleted."""
         conc = _make_adapter(
-            subscription_type="concurrency",
+            provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
         quota = _make_adapter(
-            subscription_type="quota",
+            provider_type="quota",
             endpoint_id="test-model:quota",
         )
         fr = _FakeFixedRouter()
@@ -1640,7 +1639,7 @@ class TestRouteWiseNoApiBaseline:
     def test_sc_only_available_still_routes(self):
         """S_C-only config: routes to S_C when slots available (v_t=inf ok)."""
         conc = _make_adapter(
-            subscription_type="concurrency",
+            provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
         fr = _FakeFixedRouter()
@@ -1657,7 +1656,7 @@ class TestRouteWiseNoApiBaseline:
     async def test_stream_close_after_routing_chunk_releases_sc_slot(self):
         """Closing before provider streaming starts must not leak the S_C slot."""
         conc = _make_adapter(
-            subscription_type="concurrency",
+            provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
         fr = _FakeFixedRouter()
@@ -1691,10 +1690,10 @@ class TestRouteWiseNoApiBaseline:
 
         assert router.conc_mgr.active == 0
 
-    def test_validation_warns_no_api_baseline(self):
-        """Construction-time warning when model has no S_A adapter."""
+    def test_validation_warns_no_on_demand_baseline(self):
+        """Construction-time warning when model has no P_O adapter."""
         conc = _make_adapter(
-            subscription_type="concurrency",
+            provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
         fr = _FakeFixedRouter()
@@ -1705,7 +1704,7 @@ class TestRouteWiseNoApiBaseline:
             RouteWiseRouter(fixed_router=fr, config=config)
             mock_logger.warning.assert_called()
             warning_msg = mock_logger.warning.call_args[0][0]
-            assert "no S_A" in warning_msg
+            assert "no P_O" in warning_msg
 
 
 # ---------------------------------------------------------------------------
@@ -1724,19 +1723,19 @@ def _make_router_with_all_tiers(
     if config is None:
         config = RouteWiseConfig(concurrency_enabled=True, concurrency_limit=4)
     conc_adapter = _make_adapter(
-        subscription_type="concurrency",
+        provider_type="concurrency",
         prompt_price="3.0",
         completion_price="15.0",
         endpoint_id="test-model:conc-provider",
     )
     quota_adapter = _make_adapter(
-        subscription_type="quota",
+        provider_type="quota",
         prompt_price="3.0",
         completion_price="15.0",
         endpoint_id="test-model:quota-provider",
     )
     api_adapter = _make_adapter(
-        subscription_type="api",
+        provider_type="on_demand",
         prompt_price="3.0",
         completion_price="15.0",
         endpoint_id="test-model:api-provider",
@@ -1755,7 +1754,7 @@ class TestRouteWiseDecisionMetadata:
     """Verify _pending_decisions is populated and merged into responses."""
 
     def test_sc_decision_stores_metadata(self):
-        """S_C selection stores metadata with selected_tier='concurrency'."""
+        """S_C selection stores metadata with selected_provider_type='concurrency'."""
         router, conc, _quota, _api = _make_router_with_all_tiers()
         request_id = "req-test-sc"
         context = {"request_id": request_id}
@@ -1765,7 +1764,7 @@ class TestRouteWiseDecisionMetadata:
         assert request_id in router._pending_decisions
 
         meta = router._pending_decisions[request_id]
-        assert meta["selected_tier"] == "concurrency"
+        assert meta["selected_provider_type"] == "concurrency"
         assert meta["sc_committed"] is True
         assert meta["quota_committed"] == 0.0
         assert meta["hedged"] is False
@@ -1787,7 +1786,7 @@ class TestRouteWiseDecisionMetadata:
 
         assert meta["policy"] == "routewise"
         # Canonical aliases agree with the prod-native fields.
-        assert meta["primary_tier"] == meta["selected_tier"]
+        assert meta["primary_provider_type"] == meta["selected_provider_type"]
         assert meta["primary_provider"] == meta["selected_endpoint"]
         assert meta["lp_budget_usd"] == meta["budget_usd"]
         # Hedging is not dispatched in production.
@@ -1795,11 +1794,11 @@ class TestRouteWiseDecisionMetadata:
         assert meta["hedge_algorithm"] == "disabled"
         assert meta["hedge_schedule"] is None
         assert meta["backup_provider"] is None
-        assert meta["backup_tier"] is None
+        assert meta["backup_provider_type"] is None
         assert meta["hedge_winner"] is None
         assert meta["primary_routing_estimated_cost_usd"] == pytest.approx(
             meta["selected_effective_cost_usd"]
-            if meta["selected_tier"] == "api"
+            if meta["selected_provider_type"] == "on_demand"
             else meta["candidate_request_costs_usd"][meta["selected_endpoint"]]
         )
         assert meta["backup_routing_estimated_cost_usd"] is None
@@ -1811,7 +1810,7 @@ class TestRouteWiseDecisionMetadata:
         assert "lp_status" in meta
 
     def test_sq_decision_stores_metadata(self):
-        """S_Q selection stores metadata with selected_tier='quota'."""
+        """S_Q selection stores metadata with selected_provider_type='quota'."""
         router, quota, _api = _make_router_with_quota_and_api()
         _warm_envelope(router, lower=0.0000001, upper=0.001)
         request_id = "req-test-sq"
@@ -1822,14 +1821,16 @@ class TestRouteWiseDecisionMetadata:
         assert request_id in router._pending_decisions
 
         meta = router._pending_decisions[request_id]
-        assert meta["selected_tier"] == "quota"
-        assert meta["quota_committed"] == 0.0  # commitment signal via selected_tier, not v_t
+        assert meta["selected_provider_type"] == "quota"
+        assert (
+            meta["quota_committed"] == 0.0
+        )  # commitment signal via selected_provider_type, not v_t
         assert meta["v_t"] > 0  # value estimation lives in its own field
         assert meta["sc_committed"] is False
         assert meta["hedged"] is False
 
     def test_sa_decision_stores_metadata(self):
-        """S_A selection stores metadata with selected_tier='api'."""
+        """S_A selection stores metadata with selected_provider_type='on_demand'."""
         # Make quota too expensive by warming the envelope above any API cost.
         config = RouteWiseConfig(daily_quota=1000)
         router, _quota, api = _make_router_with_quota_and_api(config=config)
@@ -1842,7 +1843,7 @@ class TestRouteWiseDecisionMetadata:
         assert request_id in router._pending_decisions
 
         meta = router._pending_decisions[request_id]
-        assert meta["selected_tier"] == "api"
+        assert meta["selected_provider_type"] == "on_demand"
         assert meta["quota_committed"] == 0.0
         assert meta["sc_committed"] is False
 
@@ -1877,7 +1878,7 @@ class TestRouteWiseDecisionMetadata:
         assert "_routing" in resp
         assert "routewise" in resp["_routing"]
         rw = resp["_routing"]["routewise"]
-        assert rw["selected_tier"] in ("quota", "api")
+        assert rw["selected_provider_type"] in ("quota", "on_demand")
         assert "v_t" in rw
         # _pending_decisions should be cleaned up
         assert "req-merge-test" not in router._pending_decisions
@@ -1912,9 +1913,9 @@ class TestRouteWiseDecisionMetadata:
                 parsed = json.loads(c[6:])
                 assert "_routing" in parsed
                 assert "routewise" in parsed["_routing"]
-                assert parsed["_routing"]["routewise"]["selected_tier"] in (
+                assert parsed["_routing"]["routewise"]["selected_provider_type"] in (
                     "quota",
-                    "api",
+                    "on_demand",
                 )
                 routewise_found = True
                 break
@@ -1931,12 +1932,12 @@ class TestRouteWiseDecisionMetadata:
         """Once a provider chunk is emitted, fallback would corrupt the SSE stream."""
         primary = _make_adapter(
             provider="primary",
-            subscription_type="api",
+            provider_type="on_demand",
             endpoint_id="test-model:primary",
         )
         backup = _make_adapter(
             provider="backup",
-            subscription_type="api",
+            provider_type="on_demand",
             endpoint_id="test-model:backup",
         )
         fr = _FakeFixedRouter()
@@ -2012,7 +2013,7 @@ class TestRouteWiseDecisionMetadata:
         # Pre-populate _pending_decisions as if _select_adapter ran
         request_id = "req-backup-test"
         router._pending_decisions[request_id] = {
-            "selected_tier": "api",
+            "selected_provider_type": "on_demand",
             "hedged": True,
             "backup_won": False,
             "quota_committed": 0.0,
@@ -2072,7 +2073,7 @@ class TestRouteWiseDecisionMetadata:
         assert routing is not None
         assert "routewise" in routing
         rw = routing["routewise"]
-        assert rw["selected_tier"] in ("quota", "api")
+        assert rw["selected_provider_type"] in ("quota", "on_demand")
         assert "v_t" in rw
 
         # _pending_decisions should be cleaned up
@@ -2102,7 +2103,7 @@ class TestRouteWiseDecisionMetadata:
         routing = getattr(exc, "_routing", None)
         assert routing is not None
         assert "routewise" in routing
-        assert routing["routewise"]["selected_tier"] in ("quota", "api")
+        assert routing["routewise"]["selected_provider_type"] in ("quota", "on_demand")
 
     @pytest.mark.asyncio
     async def test_quota_committed_always_zero(self):
@@ -2122,7 +2123,7 @@ class TestRouteWiseDecisionMetadata:
         _warm_envelope(router2, lower=0.0000001, upper=0.001)
         router2._select_adapter("test-model", {"request_id": "req-sq-qc"})
         meta_sq = router2._pending_decisions.get("req-sq-qc")
-        if meta_sq and meta_sq["selected_tier"] == "quota":
+        if meta_sq and meta_sq["selected_provider_type"] == "quota":
             assert meta_sq["quota_committed"] == 0.0
             assert meta_sq["v_t"] > 0  # v_t is separate
 
@@ -2158,7 +2159,7 @@ class TestRouteWiseEnvelopeCalibration:
     @pytest.mark.asyncio
     async def test_start_passes_for_api_only_models(self):
         """Models without any quota provider don't need a calibrated envelope."""
-        api_only = _make_adapter(subscription_type="api")
+        api_only = _make_adapter(provider_type="on_demand")
         fr = _FakeFixedRouter()
         fr.add("test-model", [(api_only, 1.0)])
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())

@@ -46,7 +46,7 @@ def _make_model_config(
     cfg.endpoint_id = endpoint_id
     cfg.base_url = f"https://{provider}.example/v1"
     cfg.pricing = {"prompt": "3.0", "completion": "15.0"}
-    cfg.subscription_type = "api"
+    cfg.provider_type = "on_demand"
     return cfg
 
 
@@ -489,12 +489,12 @@ def _make_router_with_two_api(
     api_a = MagicMock()
     api_a.config = _make_model_config(provider="provider-a", endpoint_id="test-model:api-a")
     api_a.config.pricing = {"prompt": "3.0", "completion": "15.0"}
-    api_a.config.subscription_type = "api"
+    api_a.config.provider_type = "on_demand"
 
     api_b = MagicMock()
     api_b.config = _make_model_config(provider="provider-b", endpoint_id="test-model:api-b")
     api_b.config.pricing = {"prompt": "4.0", "completion": "20.0"}
-    api_b.config.subscription_type = "api"
+    api_b.config.provider_type = "on_demand"
 
     @dataclass
     class _FakeRouteConfig:
@@ -522,7 +522,7 @@ def _make_router_with_api_and_concurrency(
     api = MagicMock()
     api.config = _make_model_config(provider="provider-a", endpoint_id="test-model:api-a")
     api.config.pricing = {"prompt": "3.0", "completion": "15.0"}
-    api.config.subscription_type = "api"
+    api.config.provider_type = "on_demand"
 
     concurrency = MagicMock()
     concurrency.config = _make_model_config(
@@ -530,7 +530,7 @@ def _make_router_with_api_and_concurrency(
         endpoint_id="test-model:concurrency-b",
     )
     concurrency.config.pricing = {"prompt": "0.0", "completion": "0.0"}
-    concurrency.config.subscription_type = "concurrency"
+    concurrency.config.provider_type = "concurrency"
 
     @dataclass
     class _FakeRouteConfig:
@@ -558,7 +558,7 @@ def _make_router_with_api_and_quota(
     api = MagicMock()
     api.config = _make_model_config(provider="provider-a", endpoint_id="test-model:api-a")
     api.config.pricing = {"prompt": "3.0", "completion": "15.0"}
-    api.config.subscription_type = "api"
+    api.config.provider_type = "on_demand"
 
     quota = MagicMock()
     quota.config = _make_model_config(
@@ -566,7 +566,7 @@ def _make_router_with_api_and_quota(
         endpoint_id="test-model:quota-q",
     )
     quota.config.pricing = {"prompt": "0.0", "completion": "0.0"}
-    quota.config.subscription_type = "quota"
+    quota.config.provider_type = "quota"
 
     @dataclass
     class _FakeRouteConfig:
@@ -597,7 +597,7 @@ def _make_router_with_api_quota_and_api(
         endpoint_id="test-model:api-a",
     )
     api_primary.config.pricing = {"prompt": "3.0", "completion": "15.0"}
-    api_primary.config.subscription_type = "api"
+    api_primary.config.provider_type = "on_demand"
 
     quota = MagicMock()
     quota.config = _make_model_config(
@@ -605,7 +605,7 @@ def _make_router_with_api_quota_and_api(
         endpoint_id="test-model:quota-q",
     )
     quota.config.pricing = {"prompt": "0.0", "completion": "0.0"}
-    quota.config.subscription_type = "quota"
+    quota.config.provider_type = "quota"
 
     api_backup = MagicMock()
     api_backup.config = _make_model_config(
@@ -613,7 +613,7 @@ def _make_router_with_api_quota_and_api(
         endpoint_id="test-model:api-c",
     )
     api_backup.config.pricing = {"prompt": "4.0", "completion": "20.0"}
-    api_backup.config.subscription_type = "api"
+    api_backup.config.provider_type = "on_demand"
 
     @dataclass
     class _FakeRouteConfig:
@@ -838,7 +838,7 @@ class TestRouterHedgeMode:
 
     @pytest.mark.asyncio
     async def test_probability_target_can_dispatch_concurrency_backup(self):
-        """Backup selection is not restricted to API-tier providers."""
+        """Backup selection is not restricted to on-demand providers."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
             concurrency_enabled=True,
@@ -879,12 +879,12 @@ class TestRouterHedgeMode:
         assert router.conc_mgr.get_stats()["total_acquired"] == 1
         routewise = resp["_routing"]["routewise"]
         assert routewise["backup_provider"] == "test-model:concurrency-b"
-        assert routewise["backup_tier"] == "concurrency"
+        assert routewise["backup_provider_type"] == "concurrency"
         assert routewise["backup_won"] is True
 
     @pytest.mark.asyncio
     async def test_probability_target_can_dispatch_quota_backup(self):
-        """Quota-tier backups consume quota when the hedge actually dispatches."""
+        """Quota backups consume quota when the hedge actually dispatches."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
             daily_quota=2,
@@ -924,7 +924,7 @@ class TestRouterHedgeMode:
         assert before - router.quota_mgr.remaining == 1
         routewise = resp["_routing"]["routewise"]
         assert routewise["backup_provider"] == "test-model:quota-q"
-        assert routewise["backup_tier"] == "quota"
+        assert routewise["backup_provider_type"] == "quota"
         assert routewise["backup_won"] is True
 
     @pytest.mark.asyncio
@@ -976,7 +976,7 @@ class TestRouterHedgeMode:
         assert before - router.quota_mgr.remaining == 1
         routewise = resp["_routing"]["routewise"]
         assert routewise["backup_provider"] == "test-model:quota-q"
-        assert routewise["backup_tier"] == "quota"
+        assert routewise["backup_provider_type"] == "quota"
         assert routewise["backup_won"] is True
 
     @pytest.mark.asyncio
@@ -1025,7 +1025,7 @@ class TestRouterHedgeMode:
         assert resp["source"] == "api-c"
         routewise = resp["_routing"]["routewise"]
         assert routewise["backup_provider"] == "test-model:api-c"
-        assert routewise["backup_tier"] == "api"
+        assert routewise["backup_provider_type"] == "on_demand"
         assert routewise["backup_won"] is True
 
 

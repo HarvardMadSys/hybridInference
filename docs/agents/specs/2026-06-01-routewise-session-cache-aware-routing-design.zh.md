@@ -164,9 +164,9 @@ provider usage 分类：missing → `unknown`、`== 0` → `confirmed_miss`、
 `> 0` → `confirmed_hit`。`unknown` **绝不**当 miss。
 
 key 轮换使 cache 失效：key pool 轮换 key（~5 分钟 TTL）；`key_slot_id` 一变就当作
-cache 失效，**不得**用旧 key 的历史去估。**现状：shadow 实现暂未把 `key_slot` 放进
-scope**。因此 guarded cost adjustment 必须跳过走轮换 key pool 的 endpoint，直到
-`key_slot` 能进入 scope；shadow diagnostics 仍可记录，因为它不改变路由。
+cache 失效，**不得**用旧 key 的历史去估。**现状：`key_slot` 暂未进入 scope**。
+因此 guarded cost adjustment 必须跳过走轮换 key pool 的 endpoint，直到
+`key_slot` 能进入 scope。
 
 ## 实现计划
 
@@ -174,14 +174,11 @@ scope**。因此 guarded cost adjustment 必须跳过走轮换 key pool 的 endp
    只单测；不接 router。
 2. **Observation hook** — selected success 后写 memory（流式仅 successful finalize
    后写）。失败、取消、超时、未被选中的 attempt 不写 hit/miss。
-3. **Shadow cache signal** — 在 `prefix_cache_shadow_enabled` 后做 per-candidate lookup，
-   只记 shadow 字段，**不改 cost**；输出 predicted-vs-observed 校准指标。局限：
-   shadow 只能观测冷路由实际选中的 provider，因此**测不到**「如果强制 stay 会怎样」
-   的反事实——那要等真正改 cost 那步。
-4. **Guarded cost adjustment** — 在 `prefix_cache_cost_adjustment_enabled` 后启用 S_A
-   adjusted effective cost，默认关 / 小流量 canary。**反事实收益在这里测**。走轮换
-   key pool 的 endpoint 在 `key_slot` 进入 scope 前跳过折扣。
-5. **Metrics / report** — 按 provider/model/session bucket：`matched`、
+3. **Route-time cache signal** — 在 `prefix_cache_cost_adjustment_enabled` 后
+   build blocks 一次、lookup eligible on-demand candidates、调整 effective
+   cost，并 stash selected candidate 的 scope 用于 selected-success 后写
+   memory。没有单独 shadow-only 模式。
+4. **Metrics / report** — 按 provider/model/session bucket：`matched`、
    `expected`、`observed_cached_tokens`、hit/miss/unknown、adjustment_applied、
    route_stayed/switched、calibration error。
 
@@ -202,7 +199,7 @@ conditional on staying: observed_cached_tokens > 0 and close to predicted   # st
 predicted vs observed calibration error, bucketed by provider/scope          # the estimate is honest
 unknown rate is controlled
 no latency / cost regression; no quota/health/fallback semantics broken
-counterfactual benefit validated via the cost-adjustment small-traffic canary, not shadow alone
+counterfactual benefit validated via the cost-adjustment small-traffic canary
 ```
 
 ## 待决策（Open decisions）
