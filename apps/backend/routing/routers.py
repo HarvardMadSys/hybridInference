@@ -107,7 +107,6 @@ class RoutingObservation:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     strategy_metadata: dict[str, Any] = field(default_factory=dict)
-    cached_input_tokens: int | None = None
 
     def __init__(
         self,
@@ -127,7 +126,6 @@ class RoutingObservation:
         hedged: bool | object = _OBSERVATION_LEGACY_UNSET,
         backup_won: bool | object = _OBSERVATION_LEGACY_UNSET,
         lp_status: str | None | object = _OBSERVATION_LEGACY_UNSET,
-        cached_input_tokens: int | None | object = _OBSERVATION_LEGACY_UNSET,
     ) -> None:
         if len(legacy_tail) > 8:
             raise TypeError(
@@ -200,9 +198,6 @@ class RoutingObservation:
         self.prompt_tokens = resolved_prompt_tokens
         self.completion_tokens = resolved_completion_tokens
         self.strategy_metadata = metadata
-        self.cached_input_tokens = (
-            None if cached_input_tokens is _OBSERVATION_LEGACY_UNSET else cached_input_tokens
-        )
 
 
 @dataclass

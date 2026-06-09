@@ -600,7 +600,6 @@ class StreamSession:
 
         if not self._is_synthetic_probe:
             stream_usage = normalize_usage(self._usage_data) if self._usage_data else {}
-            stream_cache_read = stream_usage.get("cache_read_tokens")
             self._completions_logger.record_routing_observation(
                 self._active_router,
                 self._model,
@@ -610,9 +609,6 @@ class StreamSession:
                 prompt_tokens=int(stream_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(stream_usage.get("completion_tokens", 0) or 0),
                 success=True,
-                cached_input_tokens=int(stream_cache_read)
-                if stream_cache_read is not None
-                else None,
             )
 
     async def _finalize_failure(self, exc: BaseException) -> None:

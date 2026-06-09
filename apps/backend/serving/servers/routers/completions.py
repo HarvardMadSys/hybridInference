@@ -885,7 +885,6 @@ async def chat_completions(
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
             ns_usage = normalize_usage(raw_usage) or {}
-            ns_cache_read = ns_usage.get("cache_read_tokens")
             completions_logger.record_routing_observation(
                 active_router,
                 model,
@@ -895,7 +894,6 @@ async def chat_completions(
                 prompt_tokens=int(ns_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(ns_usage.get("completion_tokens", 0) or 0),
                 success=True,
-                cached_input_tokens=int(ns_cache_read) if ns_cache_read is not None else None,
             )
 
         # Record 200 for non-streaming response
