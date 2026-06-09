@@ -450,7 +450,7 @@ class TestBuildFinalUsage:
 
     def test_explicit_zero_reported_emits_cache_read(self):
         # Provider reported cache_read_input_tokens: 0 (a real miss). It must be
-        # preserved so the RouteWise shadow records confirmed_miss, not unknown.
+        # preserved so downstream logging can distinguish it from "not reported".
         usage = build_final_usage(
             input_tokens=100,
             output_tokens=50,

@@ -47,10 +47,16 @@ def test_minimax_fast_uses_routewise() -> None:
         "stream",
     ]
     assert minimax_fast["router"] == "routewise"
+    assert minimax_fast["router_params"]["concurrency_enabled"] is True
+    assert minimax_fast["router_params"]["concurrency_limit"] == 1
     assert minimax_fast["router_params"]["budget_alpha"] == 0.5
     assert minimax_fast["router_params"]["latency_hedge_mode"] == "probability_target"
     assert minimax_fast["aliases"] == ["MiniMax-Fast"]
-    assert {route["provider_type"] for route in minimax_fast["route"]} == {"on_demand"}
+    assert {route["provider_type"] for route in minimax_fast["route"]} == {
+        "concurrency",
+        "on_demand",
+        "quota",
+    }
 
 
 def test_minimax_fast_lists_routewise_options_in_comments() -> None:

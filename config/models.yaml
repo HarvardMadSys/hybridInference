@@ -184,12 +184,8 @@ models:
   - id: minimax-m2.5
     name: MiniMax M2.5
     provider: minimax
-    router: routewise
-    router_params:
-      concurrency_enabled: true
-      concurrency_limit: 1
     quantization: "bf16"
-    input_modalities: ["text", "image"]
+    input_modalities: ["text"]
     output_modalities: ["text"]
     context_length: 204800
     max_output_length: 131072
@@ -203,51 +199,37 @@ models:
       completion: "1.2"
       image: "0"
       request: "0"
-      input_cache_reads: "0.03"
-      input_cache_writes: "0.375"
+      input_cache_reads: "0.3"
+      input_cache_writes: "0.0"
     route:
-      # S_Q: Chutes subscription quota, using provider quota snapshots.
-      - kind: chutes
+      # Remote MiniMax API endpoint
+      - kind: minimax
         weight: 1.0
+        base_url: ${MINIMAX_BASE_URL}
+        api_keys:
+          - ${MINIMAX_API_KEY}
+        provider_model_id: "MiniMax-M2.5"
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.24
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "minimax-m2.5"
+      # Chutes fallback
+      - kind: chutes
+        weight: 0.24
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
-        provider_type: quota
-        quota_pool: chutes-minimax-m2.5-daily
-        quota_source:
-          provider: chutes
-          usage_label: "Daily requests"
-          unit: requests
-        quota:
-          limit: 5000
-          window: daily
-      # S_C: Featherless Premium; paper real-eval used C=1 for MiniMax-M2.5.
+      # Featherless fallback
       - kind: featherless
-        weight: 1.0
+        weight: 0.64
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
-        provider_type: concurrency
-        concurrency_pool: featherless-minimax-m2.5
-        concurrency:
-          limit: 1
-      # S_A: OpenRouter-pinned DeepInfra, cheapest/highest-use MiniMax real-eval API leg.
-      - kind: openrouter[deepinfra]
-        weight: 1.0
-        base_url: https://openrouter.ai/api/v1
-        api_keys:
-          - ${OPENROUTER_API_KEY}
-        provider_model_id: "minimax/minimax-m2.5"
-        provider_type: on_demand
-        pricing:
-          prompt: "0.15"
-          completion: "1.15"
-          image: "0"
-          request: "0"
-          input_cache_reads: "0"
-          input_cache_writes: "0"
 
   - id: minimax-fast
     name: MiniMax Fast
@@ -264,6 +246,8 @@ models:
     router: routewise
     router_params:
       # RouteWise options reference:
+      concurrency_enabled: true
+      concurrency_limit: 1
       budget_alpha: 0.5
       latency_hedge_mode: probability_target
       # daily_quota: 5000
@@ -298,38 +282,48 @@ models:
       input_cache_reads: "0.03"
       input_cache_writes: "0.375"
     route:
-      # Remote MiniMax API endpoint
-      - kind: minimax
-        weight: 1.0
-        base_url: ${MINIMAX_BASE_URL}
-        api_keys:
-          - ${MINIMAX_API_KEY}
-        provider_model_id: "MiniMax-M2.5"
-        provider_type: on_demand
-      # Ollama Cloud fallback
-      - kind: ollama
-        weight: 0.24
-        base_url: ${OLLAMA_BASE_URL}
-        api_keys:
-          - ${OLLAMA_API_KEY}
-        provider_model_id: "minimax-m2.5"
-        provider_type: on_demand
-      # Chutes fallback
+      # S_Q: Chutes subscription quota, using provider quota snapshots.
       - kind: chutes
-        weight: 0.24
+        weight: 1.0
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
-        provider_type: on_demand
-      # Featherless fallback
+        provider_type: quota
+        quota_pool: chutes-minimax-fast-daily
+        quota_source:
+          provider: chutes
+          usage_label: "Daily requests"
+          unit: requests
+        quota:
+          limit: 5000
+          window: daily
+      # S_C: Featherless Premium; paper real-eval used C=1 for MiniMax-M2.5.
       - kind: featherless
-        weight: 0.64
+        weight: 1.0
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
+        provider_type: concurrency
+        concurrency_pool: featherless-minimax-fast
+        concurrency:
+          limit: 1
+      # S_A: OpenRouter-pinned DeepInfra, cheapest/highest-use MiniMax real-eval API leg.
+      - kind: openrouter[deepinfra]
+        weight: 1.0
+        base_url: https://openrouter.ai/api/v1
+        api_keys:
+          - ${OPENROUTER_API_KEY}
         provider_type: on_demand
+        provider_model_id: "minimax/minimax-m2.5"
+        pricing:
+          prompt: "0.15"
+          completion: "1.15"
+          image: "0"
+          request: "0"
+          input_cache_reads: "0"
+          input_cache_writes: "0"
 
   - id: minimax-m2.7
     name: MiniMax M2.7

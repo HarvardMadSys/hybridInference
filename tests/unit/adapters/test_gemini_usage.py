@@ -137,8 +137,8 @@ async def test_gemini_usage_type_safety(monkeypatch):
 async def test_gemini_stream_explicit_zero_cache_emits_cache_read():
     """Gemini streaming with cachedContentTokenCount: 0 must emit cache_read_tokens: 0.
 
-    A reported zero is a confirmed miss; dropping the field downstream would make
-    the RouteWise shadow record unknown instead of confirmed_miss.
+    A reported zero is a real provider signal; dropping the field downstream would
+    make it indistinguishable from a provider that did not report cache usage.
     """
     lines = [
         json.dumps({"candidates": [{"content": {"parts": [{"text": "Hi"}]}}]}),

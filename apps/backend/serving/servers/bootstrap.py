@@ -111,8 +111,12 @@ async def _bootstrap_routewise_from_logs(
                 envelope_counts["envelope_samples"],
                 model_ids,
             )
-        except Exception as exc:
-            logger.warning(f"RouteWise DB bootstrap failed for models {model_ids}: {exc}")
+        except Exception:
+            logger.warning(
+                "RouteWise DB bootstrap failed for models %s",
+                model_ids,
+                exc_info=True,
+            )
 
 
 def _init_db_logger() -> DatabaseLogger | None:

@@ -137,8 +137,8 @@ def test_normalize_usage_default_empty_dict() -> None:
 def test_normalize_usage_default_explicit_zero_cache_recorded() -> None:
     """A provider-reported cache_read of 0 is preserved through to_dict.
 
-    Lets the RouteWise shadow distinguish a confirmed miss (reported 0) from
-    "provider did not report" (absent).
+    Lets downstream logging distinguish a reported miss (0) from "provider did
+    not report" (absent).
     """
     usage_data = {
         "prompt_tokens": 5,

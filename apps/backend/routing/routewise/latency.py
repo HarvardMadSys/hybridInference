@@ -122,10 +122,10 @@ class ProviderProfile:
     def mean_ttft_sec(self, current_time: float) -> float:
         """Return mean successful TTFT in seconds within the current window."""
         self._prune(current_time)
-        samples_sec = self._get_latency_samples_sec(current_time)
-        if not samples_sec:
+        samples_ms = [ttft for _, ttft, e in self._events if e is None and ttft > 0]
+        if not samples_ms:
             return float("inf")
-        return sum(samples_sec) / len(samples_sec)
+        return sum(samples_ms) / len(samples_ms) / 1000.0
 
     def sample_count(self, current_time: float) -> int:
         """Return number of latency samples in the current window.

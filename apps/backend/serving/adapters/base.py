@@ -41,9 +41,8 @@ class UsageInfo:
         if self.reasoning_tokens > 0:
             result["reasoning_tokens"] = self.reasoning_tokens
         # Include cache tokens. Emit cache_read even when the provider reported
-        # an explicit 0 (cache_read_reported) so downstream can tell a reported
-        # miss (0) from "not reported" (absent); the RouteWise shadow uses this
-        # to classify confirmed_miss vs unknown.
+        # an explicit 0 (cache_read_reported) so downstream logging and billing
+        # can distinguish a reported miss (0) from "not reported" (absent).
         if self.cache_read_reported or self.cache_read_tokens > 0:
             result["cache_read_tokens"] = self.cache_read_tokens
             result["cached_tokens"] = self.cache_read_tokens
