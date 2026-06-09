@@ -13,15 +13,14 @@ estimation:
 - :class:`SessionProviderPrefixMemory` -- a bounded in-memory store of the most
   recent successful request's block sequence per scope, with TTL + LRU
   eviction. ``lookup`` returns a :class:`CacheSignal`; ``observe`` records a
-  selected-success outcome (provider usage feeds hit/miss/unknown counters).
+  selected-success outcome for future prefix matches.
 - :class:`CacheAwareCostEstimator` / :func:`price_delta_per_token` -- turn a
   :class:`CacheSignal` into the paper's cached-token cost discount.
 
 This module never touches routing, billing, or provider transport directly. It
-stores metadata only: HMAC block digests, token counts, and outcome counters --
-never raw prompt text, token ids, tool-schema text, or credentials. Callers may
-use the returned estimates for diagnostics only, or under a guarded rollout flag
-as an input to RouteWise effective cost.
+stores metadata only: HMAC block digests and token counts -- never raw prompt
+text, token ids, tool-schema text, or credentials. Callers may use the returned
+estimates under a guarded rollout flag as an input to RouteWise effective cost.
 """
 
 from __future__ import annotations
@@ -173,17 +172,13 @@ class CacheSignal:
     ``matched_prefix_tokens`` is a deterministic exact prefix match against the
     scope's most recent request. Following the paper's cost layer, a matched
     prefix that clears the minimum-cacheable threshold is treated as cached -- no
-    hit-probability model. The counters are shadow-observability signals. A cold
-    lookup returns :meth:`empty`.
+    hit-probability model. A cold lookup returns :meth:`empty`.
     """
 
     matched_prefix_tokens: int
     meets_threshold: bool
     has_history: bool
     last_seen_at: float | None = None
-    confirmed_hit_count: int = 0
-    confirmed_miss_count: int = 0
-    unknown_count: int = 0
 
     @classmethod
     def empty(cls) -> CacheSignal:
@@ -205,14 +200,10 @@ class CacheSignal:
 
 @dataclass(slots=True)
 class _Entry:
-    """Most-recent successful request for one scope, plus shadow counters."""
+    """Most-recent successful request for one scope."""
 
     blocks: tuple[Block, ...]
     last_seen_at: float
-    confirmed_hit_count: int = 0
-    confirmed_miss_count: int = 0
-    unknown_count: int = 0
-    last_observed_cached_tokens: int | None = None
 
 
 class SessionProviderPrefixMemory:
@@ -220,11 +211,8 @@ class SessionProviderPrefixMemory:
 
     ``lookup`` compares the current request's blocks against the scope's stored
     blocks and returns a :class:`CacheSignal`. ``observe`` records a
-    selected-success outcome: it stores the new blocks and classifies the
-    provider-reported cached tokens into hit/miss/unknown counters (shadow
-    observability only -- the counters never feed routing cost). State is
-    metadata-only and bounded by TTL and an LRU cap so it cannot grow without
-    limit.
+    selected-success outcome by storing the new blocks. State is metadata-only
+    and bounded by TTL and an LRU cap so it cannot grow without limit.
     """
 
     def __init__(
@@ -266,9 +254,6 @@ class SessionProviderPrefixMemory:
                 meets_threshold=matched >= self._min_match_tokens,
                 has_history=True,
                 last_seen_at=entry.last_seen_at,
-                confirmed_hit_count=entry.confirmed_hit_count,
-                confirmed_miss_count=entry.confirmed_miss_count,
-                unknown_count=entry.unknown_count,
             )
 
     def observe(
@@ -276,42 +261,19 @@ class SessionProviderPrefixMemory:
         scope: CacheScope,
         blocks: Sequence[Block],
         *,
-        observed_cached_tokens: int | None,
         now: float | None = None,
     ) -> None:
-        """Record a selected-success request and update its scope's counters.
-
-        ``observed_cached_tokens`` is the normalized provider-returned cached
-        input-token count (``None`` when the provider does not report it). It is
-        classified into hit/miss/unknown counters for shadow observability, then
-        the new ``blocks`` are stored so the next request can match against them.
-        """
+        """Store a selected-success request for future prefix matches."""
         ts = self._time() if now is None else now
         new_blocks = tuple(blocks)
         with self._lock:
             prior = self._entries.get(scope)
             if prior is not None and self._is_expired(prior, ts):
                 del self._entries[scope]
-                prior = None
-
-            hit = prior.confirmed_hit_count if prior is not None else 0
-            miss = prior.confirmed_miss_count if prior is not None else 0
-            unknown = prior.unknown_count if prior is not None else 0
-
-            if observed_cached_tokens is None:
-                unknown += 1
-            elif observed_cached_tokens <= 0:
-                miss += 1
-            else:
-                hit += 1
 
             self._entries[scope] = _Entry(
                 blocks=new_blocks,
                 last_seen_at=ts,
-                confirmed_hit_count=hit,
-                confirmed_miss_count=miss,
-                unknown_count=unknown,
-                last_observed_cached_tokens=observed_cached_tokens,
             )
             self._entries.move_to_end(scope)
             self._evict_locked()
@@ -407,27 +369,27 @@ class CacheAwareCostEstimator:
 
 
 # ---------------------------------------------------------------------------
-# Shadow coordinator
+# Prefix-cache coordinator
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class ShadowRecord:
-    """Per-candidate shadow result, recorded as routing diagnostics only.
+class PrefixCacheCostRecord:
+    """Per-candidate prefix-cache cost estimate.
 
-    It captures what a cache discount *would* have been. Callers must not apply
-    ``shadow_cache_discount`` to routing cost in shadow mode.
+    It captures the cache discount estimate for a candidate. Callers may apply
+    it only when guarded cost adjustment is enabled.
     """
 
     matched_prefix_tokens: int
     expected_cached_tokens: float
-    shadow_cache_discount: float
+    cache_discount: float
     would_apply: bool
     has_history: bool
     meets_threshold: bool
 
 
-class PrefixCacheShadow:
+class PrefixCacheCoordinator:
     """Router-facing coordinator for session-scoped prefix-cache estimates.
 
     Owns the bounded memory and the cost estimator and centralizes the request
@@ -507,14 +469,14 @@ class PrefixCacheShadow:
         cold_cost: float,
         price_delta: float,
         now: float | None = None,
-    ) -> ShadowRecord:
-        """Look up one candidate and return its shadow record (no cost change)."""
+    ) -> PrefixCacheCostRecord:
+        """Look up one candidate and return its prefix-cache cost record."""
         signal = self._memory.lookup(scope, blocks, now=now)
         adjustment = self._estimator.adjust(cold_cost, signal, price_delta)
-        return ShadowRecord(
+        return PrefixCacheCostRecord(
             matched_prefix_tokens=signal.matched_prefix_tokens,
             expected_cached_tokens=signal.expected_cached_tokens,
-            shadow_cache_discount=adjustment.cache_discount,
+            cache_discount=adjustment.cache_discount,
             would_apply=adjustment.applied,
             has_history=signal.has_history,
             meets_threshold=signal.meets_threshold,
@@ -525,14 +487,12 @@ class PrefixCacheShadow:
         scope: CacheScope,
         blocks: Sequence[Block],
         *,
-        observed_cached_tokens: int | None = None,
         now: float | None = None,
     ) -> None:
         """Store the selected provider's blocks so the next turn can match them."""
         self._memory.observe(
             scope,
             blocks,
-            observed_cached_tokens=observed_cached_tokens,
             now=now,
         )
 
@@ -551,9 +511,9 @@ __all__ = [
     "CacheAwareCostEstimator",
     "CacheScope",
     "CacheSignal",
-    "PrefixCacheShadow",
+    "PrefixCacheCoordinator",
+    "PrefixCacheCostRecord",
     "SessionProviderPrefixMemory",
-    "ShadowRecord",
     "build_blocks",
     "canonicalize_prompt",
     "longest_common_prefix_tokens",

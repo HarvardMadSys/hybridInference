@@ -68,7 +68,7 @@ from .hedging import HedgedAdapter
 from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
-from .prefix_cache import PrefixCacheShadow, price_delta_per_token
+from .prefix_cache import PrefixCacheCoordinator, price_delta_per_token
 from .quota import QuotaManager
 from .quota_snapshot import ProviderQuotaSnapshotStore
 
@@ -221,7 +221,7 @@ class RouteWiseRouter(BaseRouter):
         self.conc_mgr: ConcurrencyManager | None = (
             ConcurrencyManager(config) if self.config.concurrency_enabled else None
         )
-        self.prefix_cache_shadow = PrefixCacheShadow(
+        self.prefix_cache = PrefixCacheCoordinator(
             enabled=self.config.prefix_cache_cost_adjustment_enabled,
         )
 
@@ -789,7 +789,7 @@ class RouteWiseRouter(BaseRouter):
             return None
         messages = context.get("messages") or []
         try:
-            blocks = self.prefix_cache_shadow.build_blocks(
+            blocks = self.prefix_cache.build_blocks(
                 messages,
                 tools=params.get("tools") if isinstance(params, dict) else None,
                 response_format=params.get("response_format") if isinstance(params, dict) else None,
@@ -832,7 +832,7 @@ class RouteWiseRouter(BaseRouter):
 
         blocks, info = prefix_context
         provider_id = str(getattr(adapter.config, "provider", "") or "")
-        scope = self.prefix_cache_shadow.scope_for(
+        scope = self.prefix_cache.scope_for(
             session=str(info["session"]),
             provider_id=provider_id,
             endpoint_id=route_candidate.endpoint_id,
@@ -845,13 +845,13 @@ class RouteWiseRouter(BaseRouter):
         scopes = info.get("scopes")
         if isinstance(scopes, dict):
             scopes[route_candidate.endpoint_id] = scope
-        record = self.prefix_cache_shadow.evaluate(
+        record = self.prefix_cache.evaluate(
             scope,
             blocks,
             cold_cost=cold_cost,
             price_delta=delta,
         )
-        discount = record.shadow_cache_discount if record.would_apply else 0.0
+        discount = record.cache_discount if record.would_apply else 0.0
         adjusted = max(0.0, cold_cost - discount)
         return adjusted, discount, record.expected_cached_tokens, record.would_apply
 
@@ -1398,7 +1398,7 @@ class RouteWiseRouter(BaseRouter):
                         selected=selected,
                         hedge_plan=hedge_plan,
                     )
-                if self.prefix_cache_shadow.enabled:
+                if self.prefix_cache.enabled:
                     self._stash_prefix_for_commit(prefix_context, request_id)
                 return adapter
             candidates = [c for c in candidates if c.endpoint_id != selected.endpoint_id]
@@ -1457,10 +1457,9 @@ class RouteWiseRouter(BaseRouter):
         scope = scopes.get(obs.endpoint_id)
         if scope is None:
             return
-        self.prefix_cache_shadow.remember(
+        self.prefix_cache.remember(
             scope,
             blocks,
-            observed_cached_tokens=getattr(obs, "cached_input_tokens", None),
         )
 
     @staticmethod
@@ -1487,7 +1486,7 @@ class RouteWiseRouter(BaseRouter):
 
     def record_observation(self, obs: RoutingObservation) -> None:
         """Update output predictor, latency profile, and L/U envelope."""
-        if self.prefix_cache_shadow.enabled:
+        if self.prefix_cache.enabled:
             self._commit_prefix_cache_observation(obs)
         model_id = self._canonical_model_id(obs.model_id)
         if obs.completion_tokens > 0:

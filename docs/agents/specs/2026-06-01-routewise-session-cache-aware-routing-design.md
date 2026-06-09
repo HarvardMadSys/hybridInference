@@ -112,11 +112,9 @@ request's block sequence — no trie:
 last_blocks
 prefix_token_sums
 last_seen_at
-observed hit/miss/unknown counters
-last_observed_cached_tokens
 ```
 
-Nodes store metadata only (hashes + token counts + counters). Never raw prompt,
+Nodes store metadata only (hashes + token counts). Never raw prompt,
 canonical bytes, token ids, tool-schema text, or credentials. Block hashes use an
 HMAC with a per-process secret.
 
@@ -178,8 +176,9 @@ whether it caches at all), `last_seen_at` within TTL, candidate healthy, and the
 attempt is a selected non-synthetic success (not a fallback loser / failed
 attempt).
 
-Provider usage classification: missing → `unknown`, `== 0` → `confirmed_miss`,
-`> 0` → `confirmed_hit`. `unknown` is never treated as a miss.
+Provider-returned cached-token counts are not stored in prefix memory and never
+feed routing cost. Metrics should derive calibration from route logs when they
+are implemented.
 
 Key rotation invalidates cache: the key pool rotates keys (~5-min TTL); a
 `key_slot_id` change must be treated as cache invalidation, never estimated from
@@ -193,14 +192,14 @@ multi-key pool until `key_slot` is available in the scope.
    TTL/LRU cap. Unit tests only; not wired to the router.
 2. **Observation hook** — write memory after a selected success (streaming only
    after successful finalize). Failures, cancels, timeouts, and non-selected
-   attempts do not write hit/miss.
+   attempts do not write memory.
 3. **Route-time cache signal** — behind `prefix_cache_cost_adjustment_enabled`,
    build blocks once, look up eligible on-demand candidates, adjust effective
    cost, and stash the selected candidate's scope for the selected-success
    memory write. There is no separate shadow-only mode.
 4. **Metrics / report** — per provider/model/session bucket: `matched`,
-   `expected`, `observed_cached_tokens`, hit/miss/unknown, adjustment_applied,
-   route_stayed/switched, calibration error.
+   `expected`, `observed_cached_tokens`, adjustment_applied, route_stayed/switched,
+   calibration error.
 
 ## Prerequisite gate (pick a target model first)
 
@@ -220,7 +219,7 @@ Measure instead:
 ```text
 conditional on staying: observed_cached_tokens > 0 and close to predicted   # staying actually warms cache
 predicted vs observed calibration error, bucketed by provider/scope          # the estimate is honest
-unknown rate is controlled
+cached-token reporting coverage is controlled
 no latency / cost regression; no quota/health/fallback semantics broken
 counterfactual benefit validated via the cost-adjustment small-traffic canary
 ```

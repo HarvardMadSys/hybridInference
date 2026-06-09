@@ -13,7 +13,7 @@ from routing.routewise.prefix_cache import (
     CacheAwareCostEstimator,
     CacheScope,
     CacheSignal,
-    PrefixCacheShadow,
+    PrefixCacheCoordinator,
     SessionProviderPrefixMemory,
     build_blocks,
     canonicalize_prompt,
@@ -142,7 +142,7 @@ class TestSessionProviderPrefixMemory:
     def test_observe_then_lookup_matches_prefix(self):
         mem = SessionProviderPrefixMemory(min_match_tokens=150)
         scope = _scope()
-        mem.observe(scope, _blocks(("a", 100), ("b", 100)), observed_cached_tokens=None, now=0.0)
+        mem.observe(scope, _blocks(("a", 100), ("b", 100)), now=0.0)
         signal = mem.lookup(scope, _blocks(("a", 100), ("b", 100), ("c", 50)), now=1.0)
         assert signal.has_history is True
         assert signal.matched_prefix_tokens == 200
@@ -151,7 +151,7 @@ class TestSessionProviderPrefixMemory:
     def test_below_threshold_does_not_meet(self):
         mem = SessionProviderPrefixMemory(min_match_tokens=500)
         scope = _scope()
-        mem.observe(scope, _blocks(("a", 100)), observed_cached_tokens=10, now=0.0)
+        mem.observe(scope, _blocks(("a", 100)), now=0.0)
         signal = mem.lookup(scope, _blocks(("a", 100)), now=1.0)
         assert signal.matched_prefix_tokens == 100
         assert signal.meets_threshold is False
@@ -159,26 +159,26 @@ class TestSessionProviderPrefixMemory:
     def test_ttl_expiry_makes_lookup_cold(self):
         mem = SessionProviderPrefixMemory(ttl_sec=100.0, min_match_tokens=1)
         scope = _scope()
-        mem.observe(scope, _blocks(("a", 100)), observed_cached_tokens=10, now=0.0)
+        mem.observe(scope, _blocks(("a", 100)), now=0.0)
         assert mem.lookup(scope, _blocks(("a", 100)), now=50.0).has_history is True
         assert mem.lookup(scope, _blocks(("a", 100)), now=200.0).has_history is False
 
     def test_lru_evicts_oldest_over_cap(self):
         mem = SessionProviderPrefixMemory(max_entries=2, ttl_sec=0.0, min_match_tokens=1)
-        mem.observe(_scope(session="a"), _blocks(("x", 10)), observed_cached_tokens=1, now=1.0)
-        mem.observe(_scope(session="b"), _blocks(("x", 10)), observed_cached_tokens=1, now=2.0)
-        mem.observe(_scope(session="c"), _blocks(("x", 10)), observed_cached_tokens=1, now=3.0)
+        mem.observe(_scope(session="a"), _blocks(("x", 10)), now=1.0)
+        mem.observe(_scope(session="b"), _blocks(("x", 10)), now=2.0)
+        mem.observe(_scope(session="c"), _blocks(("x", 10)), now=3.0)
         assert len(mem) == 2
         assert mem.lookup(_scope(session="a"), _blocks(("x", 10)), now=4.0).has_history is False
         assert mem.lookup(_scope(session="c"), _blocks(("x", 10)), now=4.0).has_history is True
 
     def test_lru_lookup_refreshes_recency(self):
         mem = SessionProviderPrefixMemory(max_entries=2, ttl_sec=0.0, min_match_tokens=1)
-        mem.observe(_scope(session="a"), _blocks(("x", 10)), observed_cached_tokens=1, now=1.0)
-        mem.observe(_scope(session="b"), _blocks(("x", 10)), observed_cached_tokens=1, now=2.0)
+        mem.observe(_scope(session="a"), _blocks(("x", 10)), now=1.0)
+        mem.observe(_scope(session="b"), _blocks(("x", 10)), now=2.0)
 
         assert mem.lookup(_scope(session="a"), _blocks(("x", 10)), now=3.0).has_history is True
-        mem.observe(_scope(session="c"), _blocks(("x", 10)), observed_cached_tokens=1, now=4.0)
+        mem.observe(_scope(session="c"), _blocks(("x", 10)), now=4.0)
 
         assert mem.lookup(_scope(session="a"), _blocks(("x", 10)), now=5.0).has_history is True
         assert mem.lookup(_scope(session="b"), _blocks(("x", 10)), now=5.0).has_history is False
@@ -189,24 +189,13 @@ class TestSessionProviderPrefixMemory:
         expired = _scope(session="expired")
         live = _scope(session="live")
 
-        mem.observe(expired, _blocks(("x", 10)), observed_cached_tokens=1, now=0.0)
-        mem.observe(live, _blocks(("x", 10)), observed_cached_tokens=1, now=20.0)
+        mem.observe(expired, _blocks(("x", 10)), now=0.0)
+        mem.observe(live, _blocks(("x", 10)), now=20.0)
         assert len(mem) == 2
 
         assert mem.lookup(expired, _blocks(("x", 10)), now=20.0).has_history is False
         assert len(mem) == 1
         assert mem.lookup(live, _blocks(("x", 10)), now=20.0).has_history is True
-
-    def test_observe_classifies_hit_miss_unknown(self):
-        mem = SessionProviderPrefixMemory(min_match_tokens=1)
-        scope = _scope()
-        mem.observe(scope, _blocks(("a", 100)), observed_cached_tokens=None, now=0.0)
-        mem.observe(scope, _blocks(("a", 100)), observed_cached_tokens=0, now=1.0)
-        mem.observe(scope, _blocks(("a", 100)), observed_cached_tokens=5, now=2.0)
-        signal = mem.lookup(scope, _blocks(("a", 100)), now=3.0)
-        assert signal.unknown_count == 1
-        assert signal.confirmed_miss_count == 1
-        assert signal.confirmed_hit_count == 1
 
 
 @pytest.mark.unit
@@ -264,9 +253,9 @@ class TestCacheAwareCostEstimator:
 
 
 @pytest.mark.unit
-class TestPrefixCacheShadow:
-    def _coord(self) -> PrefixCacheShadow:
-        return PrefixCacheShadow(
+class TestPrefixCacheCoordinator:
+    def _coord(self) -> PrefixCacheCoordinator:
+        return PrefixCacheCoordinator(
             enabled=True,
             memory=SessionProviderPrefixMemory(min_match_tokens=1),
             block_size=8,
@@ -298,19 +287,17 @@ class TestPrefixCacheShadow:
         assert second.has_history is True
         assert second.matched_prefix_tokens > 0
 
-    def test_zero_delta_is_shadow_only(self):
+    def test_zero_delta_does_not_apply_discount(self):
         coord = self._coord()
         scope = coord.scope_for(session="s", provider_id="p", endpoint_id="e", model_profile="m")
         blocks = coord.build_blocks([{"role": "user", "content": "x" * 100}])
         coord.remember(scope, blocks)
         record = coord.evaluate(scope, blocks, cold_cost=0.01, price_delta=0.0)
         assert record.would_apply is False
-        assert record.shadow_cache_discount == 0.0
+        assert record.cache_discount == 0.0
 
 
-def _obs(
-    endpoint_id: str, *, success: bool = True, cached: int | None = None
-) -> RoutingObservation:
+def _obs(endpoint_id: str, *, success: bool = True) -> RoutingObservation:
     return RoutingObservation(
         model_id="m1",
         endpoint_id=endpoint_id,
@@ -319,7 +306,6 @@ def _obs(
         token_count=1,
         success=success,
         quota_committed=0.0,
-        cached_input_tokens=cached,
     )
 
 
@@ -361,7 +347,7 @@ def _fixed_router(*adapters: SimpleNamespace) -> SimpleNamespace:
 
 @pytest.mark.unit
 class TestRouteWiseRouterPrefixCacheWarm:
-    """Warm chain after shadow-only mode was removed.
+    """Cost-adjustment warm chain.
 
     Scopes are collected by ``_apply_prefix_cache_cost_adjustment`` while pricing
     candidates, stashed by ``_stash_prefix_for_commit`` on a committed selection,
@@ -372,7 +358,7 @@ class TestRouteWiseRouterPrefixCacheWarm:
 
     def _router(self) -> RouteWiseRouter:
         router = RouteWiseRouter(config=RouteWiseConfig(prefix_cache_cost_adjustment_enabled=True))
-        router.prefix_cache_shadow = PrefixCacheShadow(
+        router.prefix_cache = PrefixCacheCoordinator(
             enabled=True,
             memory=SessionProviderPrefixMemory(min_match_tokens=1),
             block_size=8,
@@ -382,7 +368,7 @@ class TestRouteWiseRouterPrefixCacheWarm:
         return router
 
     def _scope(self, router, provider, endpoint, *, user="userA"):
-        return router.prefix_cache_shadow.scope_for(
+        return router.prefix_cache.scope_for(
             session="sess-1",
             provider_id=provider,
             endpoint_id=endpoint,
@@ -395,22 +381,20 @@ class TestRouteWiseRouterPrefixCacheWarm:
         # Mirror _select_adapter: the external id lives in req_ctx; scopes were
         # collected by _apply (built directly here); stash keys off the external id.
         req_ctx.set({"request_id": request_id, "affinity_key": "userA"})
-        blocks = router.prefix_cache_shadow.build_blocks(messages)
+        blocks = router.prefix_cache.build_blocks(messages)
         router._stash_prefix_for_commit((blocks, {"scopes": scopes}), request_id)
 
     @staticmethod
-    def _observe(router, request_id, endpoint_id, *, success=True, cached=None):
+    def _observe(router, request_id, endpoint_id, *, success=True):
         req_ctx.set({"request_id": request_id, "affinity_key": "ignored-at-observe"})
-        router._commit_prefix_cache_observation(_obs(endpoint_id, success=success, cached=cached))
+        router._commit_prefix_cache_observation(_obs(endpoint_id, success=success))
 
     def _lookup(self, router, scope, *, messages=_MSGS2):
-        return router.prefix_cache_shadow.memory.lookup(
-            scope, router.prefix_cache_shadow.build_blocks(messages)
-        )
+        return router.prefix_cache.memory.lookup(scope, router.prefix_cache.build_blocks(messages))
 
     def test_flag_defaults_off(self):
         router = RouteWiseRouter(config=RouteWiseConfig())
-        assert router.prefix_cache_shadow.enabled is False
+        assert router.prefix_cache.enabled is False
 
     def test_success_warms_winner(self):
         router = self._router()
@@ -460,20 +444,11 @@ class TestRouteWiseRouterPrefixCacheWarm:
         scope_other_user = self._scope(router, "prov-a", "prov-a:h:1", user="userB")
         assert self._lookup(router, scope_other_user).has_history is False
 
-    def test_observed_cached_tokens_reach_memory(self):
-        router = self._router()
-        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
-        self._stash(router, "r1", {"prov-a:h:1": scope_a})
-        self._observe(router, "r1", "prov-a:h:1", cached=123)
-        signal = router.prefix_cache_shadow.memory.lookup(scope_a, ())
-        assert signal.confirmed_hit_count == 1
-        assert signal.confirmed_miss_count == 0
-
     def test_no_request_id_skips_stash(self):
         router = self._router()
         req_ctx.set({"affinity_key": "userA"})  # no request_id in context
         scope_a = self._scope(router, "prov-a", "prov-a:h:1")
-        blocks = router.prefix_cache_shadow.build_blocks(_MSGS1)
+        blocks = router.prefix_cache.build_blocks(_MSGS1)
         router._stash_prefix_for_commit((blocks, {"scopes": {"prov-a:h:1": scope_a}}), None)
         assert len(router._prefix_cache_pending) == 0
 
@@ -520,7 +495,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
                 prefix_cache_cost_adjustment_enabled=cost_adjustment,
             ),
         )
-        router.prefix_cache_shadow = PrefixCacheShadow(
+        router.prefix_cache = PrefixCacheCoordinator(
             enabled=cost_adjustment,
             memory=SessionProviderPrefixMemory(min_match_tokens=1),
             block_size=8,
@@ -531,8 +506,8 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
 
     @staticmethod
     def _warm_provider_b(router: RouteWiseRouter) -> None:
-        blocks = router.prefix_cache_shadow.build_blocks(_MSGS1)
-        scope = router.prefix_cache_shadow.scope_for(
+        blocks = router.prefix_cache.build_blocks(_MSGS1)
+        scope = router.prefix_cache.scope_for(
             session="sess-1",
             provider_id="prov-b",
             endpoint_id="prov-b:h:1",
@@ -540,7 +515,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
             user="userA",
             cache_params="{}",
         )
-        router.prefix_cache_shadow.remember(scope, blocks)
+        router.prefix_cache.remember(scope, blocks)
 
     @staticmethod
     def _select(router: RouteWiseRouter):

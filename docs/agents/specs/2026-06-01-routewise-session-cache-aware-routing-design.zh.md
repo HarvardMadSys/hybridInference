@@ -102,11 +102,9 @@ v1 按 `(session, provider)` scope 存最近一次（或最近 N 次）成功请
 last_blocks
 prefix_token_sums
 last_seen_at
-observed hit/miss/unknown counters
-last_observed_cached_tokens
 ```
 
-节点**只存元数据**（hash + token 数 + 计数）。**绝不**存 raw prompt、canonical
+节点**只存元数据**（hash + token 数）。**绝不**存 raw prompt、canonical
 bytes、token ids、tool-schema 原文、credential。block hash 用 per-process secret
 的 HMAC。
 
@@ -160,8 +158,8 @@ provider/model/key_slot、`matched_prefix_tokens ≥ threshold`（threshold 按 
 在 TTL 内、candidate healthy、且该 attempt 是 selected 非 synthetic 的成功
 （非 fallback loser / 非 failed attempt）。
 
-provider usage 分类：missing → `unknown`、`== 0` → `confirmed_miss`、
-`> 0` → `confirmed_hit`。`unknown` **绝不**当 miss。
+provider 返回的 cached-token count 不存入 prefix memory，也绝不参与 routing cost。
+后续 metrics 如果要做 calibration，应该从 route logs 派生。
 
 key 轮换使 cache 失效：key pool 轮换 key（~5 分钟 TTL）；`key_slot_id` 一变就当作
 cache 失效，**不得**用旧 key 的历史去估。**现状：`key_slot` 暂未进入 scope**。
@@ -173,14 +171,14 @@ cache 失效，**不得**用旧 key 的历史去估。**现状：`key_slot` 暂�
 1. **Prefix memory primitives** — scope、block 序列、最长前缀比对、TTL/LRU cap。
    只单测；不接 router。
 2. **Observation hook** — selected success 后写 memory（流式仅 successful finalize
-   后写）。失败、取消、超时、未被选中的 attempt 不写 hit/miss。
+   后写）。失败、取消、超时、未被选中的 attempt 不写 memory。
 3. **Route-time cache signal** — 在 `prefix_cache_cost_adjustment_enabled` 后
    build blocks 一次、lookup eligible on-demand candidates、调整 effective
    cost，并 stash selected candidate 的 scope 用于 selected-success 后写
    memory。没有单独 shadow-only 模式。
 4. **Metrics / report** — 按 provider/model/session bucket：`matched`、
-   `expected`、`observed_cached_tokens`、hit/miss/unknown、adjustment_applied、
-   route_stayed/switched、calibration error。
+   `expected`、`observed_cached_tokens`、adjustment_applied、route_stayed/switched、
+   calibration error。
 
 ## 前置 gate（先选目标 model）
 
@@ -197,7 +195,7 @@ cached-input 价的 provider** 当首个目标，否则实现能 ship，但观�
 ```text
 conditional on staying: observed_cached_tokens > 0 and close to predicted   # staying actually warms cache
 predicted vs observed calibration error, bucketed by provider/scope          # the estimate is honest
-unknown rate is controlled
+cached-token reporting coverage is controlled
 no latency / cost regression; no quota/health/fallback semantics broken
 counterfactual benefit validated via the cost-adjustment small-traffic canary
 ```
