@@ -552,21 +552,63 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
         logger.exception("fetch_minimax: unexpected error")
         return _err("minimax", "MiniMax", cookie, "unexpected")
 
+    return _parse_minimax_remains(data, cookie)
+
+
+async def _fetch_minimax_via_api_key(key: str) -> ProviderQuotaResult:
+    """Fetch coding-plan quota via the official token-plan API for one API key."""
+    url = "https://api.minimax.io/v1/token_plan/remains"
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(url, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("minimax", "MiniMax", key, "auth_failed")
+            if resp.status >= 400:
+                return _err("minimax", "MiniMax", key, "unexpected")
+            try:
+                data: dict[str, Any] = await resp.json()
+            except Exception:
+                return _err("minimax", "MiniMax", key, "parse_error")
+    except asyncio.TimeoutError:
+        return _err("minimax", "MiniMax", key, "timeout")
+    except aiohttp.ClientError:
+        return _err("minimax", "MiniMax", key, "unexpected")
+    except Exception:
+        logger.exception("fetch_minimax(api_key): unexpected error")
+        return _err("minimax", "MiniMax", key, "unexpected")
+
+    return _parse_minimax_remains(data, key)
+
+
+def _parse_minimax_remains(data: Any, secret: str) -> ProviderQuotaResult:
+    """Parse a MiniMax ``model_remains`` payload into quota usages.
+
+    Shared by the official ``token_plan/remains`` API-key endpoint and the
+    legacy console session-cookie endpoint -- both return the same structure.
+    """
     if not isinstance(data, dict):
-        return _err("minimax", "MiniMax", cookie, "parse_error")
+        return _err("minimax", "MiniMax", secret, "parse_error")
 
     base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else None
     if base_resp and base_resp.get("status_code") == 1004:
-        return _err("minimax", "MiniMax", cookie, "auth_failed")
+        return _err("minimax", "MiniMax", secret, "auth_failed")
     if base_resp and base_resp.get("status_code") == 2062:
-        return _err("minimax", "MiniMax", cookie, "not_configured")
+        return _err("minimax", "MiniMax", secret, "not_configured")
     if base_resp and base_resp.get("status_code") not in (None, 0):
-        return _err("minimax", "MiniMax", cookie, "unexpected")
+        return _err("minimax", "MiniMax", secret, "unexpected")
 
     body = data.get("data") if isinstance(data.get("data"), dict) else data
     model_remains = body.get("model_remains") if isinstance(body, dict) else None
     if not isinstance(model_remains, list) or not model_remains:
-        return _err("minimax", "MiniMax", cookie, "parse_error")
+        return _err("minimax", "MiniMax", secret, "parse_error")
 
     usages: list[ProviderQuotaUsage] = []
     for entry in model_remains:
@@ -702,13 +744,13 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
             )
 
     if not usages:
-        return _err("minimax", "MiniMax", cookie, "parse_error")
+        return _err("minimax", "MiniMax", secret, "parse_error")
 
     return ProviderQuotaResult(
         name="minimax",
         display_name="MiniMax",
         key_configured=True,
-        key_masked=_mask_key(cookie),
+        key_masked=_mask_key(secret),
         fetched_at=_now(),
         ok=True,
         error=None,
@@ -717,7 +759,19 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
 
 
 async def fetch_minimax() -> list[ProviderQuotaResult]:
-    """Fetch coding-plan quota from MiniMax for all configured session cookies."""
+    """Fetch coding-plan quota from MiniMax.
+
+    Prefers the official token-plan API (``MINIMAX_API_KEY``); falls back to
+    legacy console session cookies when no API key is configured.
+    """
+    api_keys = _discover_env_keys("MINIMAX_API_KEY", "MINIMAX_API_KEY")
+    if api_keys:
+        api_results = await asyncio.gather(
+            *[_fetch_minimax_via_api_key(k) for _, k in api_keys],
+            return_exceptions=True,
+        )
+        return _process_multi_key_results("minimax", "MiniMax", api_keys, api_results)
+
     keys = _discover_env_keys("MINIMAX_SESSION_COOKIE", "MINIMAX_SESSION_COOKIE")
     if not keys and settings.minimax_session_cookie:
         keys = [(1, settings.minimax_session_cookie)]

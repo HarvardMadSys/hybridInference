@@ -63,6 +63,7 @@ class RouteWiseConfig:
     shadow_price_window_hours: int = 24
     envelope_lower_percentile: float = 10.0
     envelope_upper_percentile: float = 90.0
+    envelope_min_samples: int = 30
 
     # Layer 2: Latency-aware provider selection
     latency_slo_sec: float = 3.0

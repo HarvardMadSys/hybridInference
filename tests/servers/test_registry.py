@@ -396,7 +396,7 @@ models:
     base_url: http://example.com/v1
     router: routewise
     router_params:
-      daily_quota: 1000
+      budget_alpha: 0.5
     route:
       - kind: openai_compat
         weight: 1.0
@@ -417,7 +417,7 @@ models:
 
     by_id = {i.model_id: i for i in infos}
     assert by_id["model-with-router"].router == "routewise"
-    assert by_id["model-with-router"].router_params == {"daily_quota": 1000}
+    assert by_id["model-with-router"].router_params == {"budget_alpha": 0.5}
     assert by_id["model-without-router"].router is None
     assert by_id["model-without-router"].router_params is None
 

@@ -43,11 +43,18 @@ class CostEnvelopeSnapshot:
 
 @dataclass
 class CostEnvelopeEstimator:
-    """Sliding-window percentile estimator for workload request costs."""
+    """Sliding-window percentile estimator for workload request costs.
+
+    ``min_samples`` gates calibration: below it ``snapshot`` returns ``None``
+    (callers already treat that as "skip quota candidates"). A one-sample
+    window would otherwise collapse to ``L == U`` and flatten the quota
+    shadow-price curve into a constant.
+    """
 
     lower_percentile: float = 10.0
     upper_percentile: float = 90.0
     window_sec: float = 24 * 3600.0
+    min_samples: int = 30
     _samples: dict[str, deque[tuple[float, float]]] = field(
         default_factory=lambda: defaultdict(deque)
     )
@@ -69,15 +76,29 @@ class CostEnvelopeEstimator:
         with self._lock:
             self._prune_locked(pool, ts)
             values = [cost for _t, cost in self._samples.get(pool, ())]
-        if not values:
+        if len(values) < max(int(self.min_samples), 1):
             return None
-        lower = max(_percentile(values, self.lower_percentile), 1e-12)
-        upper = max(_percentile(values, self.upper_percentile), lower)
+        upper = _percentile(values, self.upper_percentile)
+        if upper <= 0:
+            return None
+        lower = _percentile(values, self.lower_percentile)
+        if lower <= 0 or lower >= upper:
+            # Paper floor fallback: keep 0 < L < U with a bounded U/L ratio so
+            # the quota shadow-price curve neither flattens (L == U) nor turns
+            # into a near-step function (L ~ 0).
+            lower = upper * 1e-3
         return CostEnvelopeSnapshot(
             lower=lower,
             upper=upper,
             sample_count=len(values),
         )
+
+    def sample_count(self, pool: str, *, now: float | None = None) -> int:
+        """Return the in-window sample count for *pool* (even when uncalibrated)."""
+        ts = time.time() if now is None else now
+        with self._lock:
+            self._prune_locked(pool, ts)
+            return len(self._samples.get(pool, ()))
 
     def _prune(self, pool: str, now: float) -> None:
         with self._lock:

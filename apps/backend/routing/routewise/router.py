@@ -71,7 +71,7 @@ from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
 from .prefix_cache import PrefixCacheCoordinator, price_delta_per_token
-from .quota import LocalQuotaPool, QuotaPool, SnapshotQuotaPool
+from .quota import SnapshotQuotaPool
 from .quota_snapshot import ProviderQuotaSnapshotStore
 
 logger = get_logger(__name__)
@@ -218,10 +218,11 @@ class RouteWiseRouter(BaseRouter):
             lower_percentile=self.config.envelope_lower_percentile,
             upper_percentile=self.config.envelope_upper_percentile,
             window_sec=self.config.shadow_price_window_hours * 3600.0,
+            min_samples=self.config.envelope_min_samples,
         )
         self.quota_snapshots = ProviderQuotaSnapshotStore()
         # One resource manager per pool id, built from route-level policies.
-        self.quota_pools: dict[str, QuotaPool] = {}
+        self.quota_pools: dict[str, SnapshotQuotaPool] = {}
         self.concurrency_pools: dict[str, ConcurrencyManager] = {}
         self._endpoint_concurrency_pool: dict[str, str] = {}
         self.prefix_cache = PrefixCacheCoordinator(
@@ -430,11 +431,10 @@ class RouteWiseRouter(BaseRouter):
         """(Re)build per-pool resource managers from route-level policies.
 
         Routes sharing a pool id share one manager and must declare identical
-        policies; conflicting declarations fail at boot. Existing instances
-        are kept when their policy is unchanged so a registry re-attach does
-        not reset live counters. Pool ids are router-scoped: the same id on
-        two models still gets two local counters (snapshot-backed pools are
-        unaffected because the provider reports global usage).
+        policies; conflicting declarations fail at boot. Quota pools are
+        snapshot-backed (provider-reported usage is the truth source), so a
+        shared pool id naturally shares the provider's global accounting.
+        Concurrency counters are router-scoped.
         """
         quota_specs: dict[str, tuple[QuotaPolicy, QuotaSource | None, str]] = {}
         concurrency_specs: dict[str, tuple[ConcurrencyPolicy, str]] = {}
@@ -477,23 +477,19 @@ class RouteWiseRouter(BaseRouter):
                         candidate.concurrency_pool
                     )
 
-        quota_pools: dict[str, QuotaPool] = {}
-        for pool_id, (policy, source, _endpoint) in quota_specs.items():
-            if source is not None:
-                # Snapshot pools are stateless wrappers (truth lives in the
-                # store), so they are always rebuilt against the current store.
-                quota_pools[pool_id] = SnapshotQuotaPool(
-                    self.quota_snapshots,
-                    source,
-                    policy=policy,
+        quota_pools: dict[str, SnapshotQuotaPool] = {}
+        for pool_id, (policy, source, endpoint) in quota_specs.items():
+            if source is None:  # pragma: no cover - enforced in candidates.py
+                raise ValueError(
+                    f"RouteWise quota_pool {pool_id!r} ({endpoint!r}) has no quota_source"
                 )
-                continue
-            existing = self.quota_pools.get(pool_id)
-            if isinstance(existing, LocalQuotaPool) and existing.policy == policy:
-                # Keep live counters across a registry re-attach.
-                quota_pools[pool_id] = existing
-            else:
-                quota_pools[pool_id] = LocalQuotaPool(policy)
+            # Snapshot pools are stateless wrappers (truth lives in the
+            # store), so they are always rebuilt against the current store.
+            quota_pools[pool_id] = SnapshotQuotaPool(
+                self.quota_snapshots,
+                source,
+                policy=policy,
+            )
         self.quota_pools = quota_pools
 
         concurrency_pools: dict[str, ConcurrencyManager] = {}

@@ -1,17 +1,18 @@
 """Quota pools for RouteWise S_Q routing.
 
-Each route-level ``quota:`` block becomes one pool, keyed by ``quota_pool``.
-The router only sees the :class:`QuotaPool` interface; whether the truth
-source is a provider usage API or a local counter is an implementation
-detail:
+Every quota provider must expose a queryable usage API: the route declares a
+``quota_source`` and the provider-reported usage is the truth source for the
+pool. There is deliberately no locally-accounted fallback — counting an
+externally enforced quota in-process means guessing the provider's reset
+semantics (fixed window? rolling? session-anchored?), and a wrong guess
+either strands quota or overruns it. Providers without a usage API should be
+modeled as on-demand instead.
 
-- :class:`SnapshotQuotaPool` -- provider-snapshot-backed. The provider
-  dashboard (via :class:`~routing.routewise.quota_snapshot.ProviderQuotaSnapshotStore`)
-  is the truth source; local consumption is an optimistic increment between
-  refreshes.
-- :class:`LocalQuotaPool` -- locally-accounted for providers without a usage
-  API. Supports a timezone-aware ``daily`` reset window and a ``rolling``
-  sliding window (e.g. a Claude-style 5-hour quota).
+:class:`SnapshotQuotaPool` reads the latest snapshot from
+:class:`~routing.routewise.quota_snapshot.ProviderQuotaSnapshotStore` and
+applies optimistic local increments between refreshes. Window semantics
+(daily, 5-hour, weekly, ...) live entirely on the provider side; the pool
+only consumes ``used / limit / reset_at``.
 
 The shadow-price math itself lives in
 :func:`effective_cost.quota_shadow_price_usd`, which reads ``L/U`` from the
@@ -23,135 +24,15 @@ formulation in the paper: each request routed to S_Q consumes one slot.
 
 from __future__ import annotations
 
-import threading
-import time
-from collections import deque
-from datetime import date, datetime
-from typing import TYPE_CHECKING, Protocol
-from zoneinfo import ZoneInfo
+from typing import TYPE_CHECKING
 
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from .candidates import QuotaPolicy, QuotaSource
     from .quota_snapshot import ProviderQuotaSnapshotStore
 
 logger = get_logger(__name__)
-
-
-class QuotaPool(Protocol):
-    """Router-facing interface for one quota resource pool."""
-
-    @property
-    def ready(self) -> bool:
-        """Whether the pool has usable accounting state right now."""
-        ...
-
-    @property
-    def limit(self) -> int:
-        """Configured request limit for one window."""
-        ...
-
-    @property
-    def remaining(self) -> int:
-        """Requests remaining in the current window (non-negative)."""
-        ...
-
-    @property
-    def used_fraction(self) -> float:
-        """Fraction of the window's quota consumed, clamped to [0, 1]."""
-        ...
-
-    def consume(self) -> bool:
-        """Atomically consume one request slot; False when exhausted."""
-        ...
-
-
-class LocalQuotaPool:
-    """Locally-accounted quota pool for providers without a usage API.
-
-    Args:
-        policy: Route-level quota rule (limit + reset window).
-        time_source: Injectable clock for rolling-window tests.
-    """
-
-    def __init__(
-        self,
-        policy: QuotaPolicy,
-        *,
-        time_source: Callable[[], float] = time.time,
-    ) -> None:
-        self.policy = policy
-        self._limit: int = policy.limit
-        self._time = time_source
-        self._lock = threading.Lock()
-        self._rolling: deque[float] | None = None
-        if policy.window.type == "rolling":
-            self._rolling = deque()
-            self._window_sec = float(policy.window.duration_sec)
-        else:
-            self._used_in_window: int = 0
-            self._reset_tz = ZoneInfo(policy.window.timezone)
-            self._last_reset_date: date = datetime.now(tz=self._reset_tz).date()
-
-    @property
-    def ready(self) -> bool:
-        """Local accounting is always available."""
-        return True
-
-    @property
-    def limit(self) -> int:
-        """Configured request limit for one window."""
-        return self._limit
-
-    @property
-    def remaining(self) -> int:
-        """Requests remaining in the current window (non-negative)."""
-        with self._lock:
-            return max(0, self._limit - self._used_locked())
-
-    @property
-    def used(self) -> int:
-        """Requests consumed in the current window."""
-        with self._lock:
-            return self._used_locked()
-
-    @property
-    def used_fraction(self) -> float:
-        """Fraction of the window's quota consumed, clamped to [0, 1]."""
-        with self._lock:
-            return min(max(self._used_locked() / self._limit, 0.0), 1.0)
-
-    def consume(self) -> bool:
-        """Atomically consume one request slot; False when exhausted."""
-        with self._lock:
-            if self._used_locked() >= self._limit:
-                return False
-            if self._rolling is not None:
-                self._rolling.append(self._time())
-            else:
-                self._used_in_window += 1
-            return True
-
-    def _used_locked(self) -> int:
-        if self._rolling is not None:
-            cutoff = self._time() - self._window_sec
-            while self._rolling and self._rolling[0] <= cutoff:
-                self._rolling.popleft()
-            return len(self._rolling)
-        today = datetime.now(tz=self._reset_tz).date()
-        if today > self._last_reset_date:
-            logger.info(
-                "LocalQuotaPool daily reset: %s -> %s (used=%d)",
-                self._last_reset_date,
-                today,
-                self._used_in_window,
-            )
-            self._used_in_window = 0
-            self._last_reset_date = today
-        return self._used_in_window
 
 
 class SnapshotQuotaPool:

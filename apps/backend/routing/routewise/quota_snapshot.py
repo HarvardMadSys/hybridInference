@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from serving.admin.provider_quotas import fetch_chutes
+from serving.admin.provider_quotas import fetch_chutes, fetch_minimax
 from serving.schemas_admin import ProviderQuotaResult
 from serving.utils.logging import get_logger
 
@@ -66,7 +66,7 @@ class ProviderQuotaSnapshotStore:
         *,
         fetchers: dict[str, QuotaFetcher] | None = None,
     ) -> None:
-        self._fetchers = fetchers or {"chutes": fetch_chutes}
+        self._fetchers = fetchers or {"chutes": fetch_chutes, "minimax": fetch_minimax}
         self._snapshots: dict[QuotaSource, ProviderQuotaSnapshot] = {}
         self._local_increments: dict[QuotaSource, int] = {}
         self._lock = threading.Lock()

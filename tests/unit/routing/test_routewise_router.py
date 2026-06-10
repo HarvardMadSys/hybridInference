@@ -55,7 +55,17 @@ def _make_model_config(
     # emitted by FixedRouter.stream_chat_completion can be json.dumps()'d.
     cfg.base_url = f"https://{provider}.example/v1"
     cfg.pricing = {"prompt": prompt_price, "completion": completion_price}
-    cfg.quota_source = quota_source
+    if quota_source is not None:
+        cfg.quota_source = quota_source
+    elif provider_type == "quota":
+        # Quota routes require a usage truth source; default a stub one.
+        cfg.quota_source = {
+            "provider": "stub",
+            "usage_label": "Daily requests",
+            "unit": "requests",
+        }
+    else:
+        cfg.quota_source = None
     cfg.quota = (
         quota if quota is not None else ({"limit": 10_000} if provider_type == "quota" else None)
     )
@@ -120,6 +130,28 @@ def _quota_pool(router: RouteWiseRouter):
     return next(iter(router.quota_pools.values()))
 
 
+def _seed_quota_snapshots(router: RouteWiseRouter, *, used: float = 0.0) -> None:
+    """Install a ready provider snapshot for every quota pool on the router.
+
+    Quota pools are snapshot-backed; unit tests seed the store directly
+    instead of running the async refresh loop.
+    """
+    from datetime import datetime, timezone
+
+    from routing.routewise.quota_snapshot import ProviderQuotaSnapshot
+
+    now = datetime.now(timezone.utc)
+    for pool in router.quota_pools.values():
+        router.quota_snapshots._snapshots[pool.source] = ProviderQuotaSnapshot(
+            source=pool.source,
+            used=used,
+            limit=float(pool.policy.limit),
+            reset_at=None,
+            fetched_at=now,
+        )
+        router.quota_snapshots._local_increments[pool.source] = 0
+
+
 def _conc_pool(router: RouteWiseRouter):
     """Return the router's only concurrency pool (single-pool test fixtures)."""
     return next(iter(router.concurrency_pools.values()))
@@ -156,6 +188,7 @@ def _make_router_with_quota_and_api(
     fr = _FakeFixedRouter()
     fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
     router = RouteWiseRouter(fixed_router=fr, config=config)
+    _seed_quota_snapshots(router)
     return router, quota_adapter, api_adapter
 
 
@@ -286,6 +319,7 @@ class TestRouteWiseRouterScaffold:
         fr.add("test-model", [(api_adapter, 0.5), (quota_adapter, 0.5)])
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _seed_quota_snapshots(router)
         _warm_envelope(router, lower=0.0000001, upper=0.001)
         selected = router._select_adapter("test-model", {})
         assert selected is quota_adapter
@@ -1042,7 +1076,7 @@ class TestRouteWiseLayer2:
         ) == pytest.approx(30.1)
         assert profile_b.total_count(101.0) == 1
         assert profile_b.error_rate(101.0) == pytest.approx(1.0)
-        assert router.envelope.snapshot("test-model", now=101.0).sample_count == 1
+        assert router.envelope.sample_count("test-model", now=101.0) == 1
 
     def test_multi_model_layer2_isolation(self):
         """Two models sharing one RouteWiseRouter have independent LP state.
@@ -1204,6 +1238,7 @@ def _make_router_three_tier(
         ],
     )
     router = RouteWiseRouter(fixed_router=fr, config=config)
+    _seed_quota_snapshots(router)
     return router, conc_adapter, quota_adapter, api_adapter
 
 
@@ -1650,6 +1685,7 @@ class TestRouteWiseNoApiBaseline:
         fr.add("test-model", [(quota, 1.0)])
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _seed_quota_snapshots(router)
 
         # Exhaust quota.
         for _ in range(5):
@@ -1677,6 +1713,7 @@ class TestRouteWiseNoApiBaseline:
         fr.add("test-model", [(conc, 0.5), (quota, 0.5)])
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _seed_quota_snapshots(router)
 
         # Fill S_C.
         _conc_pool(router).try_acquire()

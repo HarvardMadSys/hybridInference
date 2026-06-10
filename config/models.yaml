@@ -281,10 +281,10 @@ models:
     aliases: ["MiniMax-Fast"]
     router: routewise
     router_params:
-      # RouteWise algorithm options reference. Resource limits (quota windows,
-      # concurrency slots) are configured per route entry below via
-      # `quota: {limit, window: {type: daily|rolling, ...}}` and
-      # `concurrency: {limit}`.
+      # RouteWise algorithm options reference. Resource limits are configured
+      # per route entry below: `quota: {limit}` plus a `quota_source:` block
+      # (the provider usage API is the quota truth source, incl. window/reset
+      # semantics) and `concurrency: {limit}`.
       budget_alpha: 0.5
       latency_hedge_mode: probability_target
       # random_seed: null
@@ -296,6 +296,7 @@ models:
       # shadow_price_window_hours: 24
       # envelope_lower_percentile: 10.0
       # envelope_upper_percentile: 90.0
+      # envelope_min_samples: 30
       # output_default_tokens: 512.0
       # output_min_bucket_samples: 3
       # output_min_model_samples: 3
@@ -333,9 +334,23 @@ models:
           unit: requests
         quota:
           limit: 5000
-          window:
-            type: daily
-            timezone: UTC
+      # S_Q (alternative, not yet enabled): MiniMax coding plan 5h window via
+      # the official token-plan remains API. The API reports remaining percent
+      # per window, so the pool is percent-based (limit: 100).
+      # - kind: minimax
+      #   weight: 1.0
+      #   base_url: ${MINIMAX_BASE_URL}
+      #   api_keys:
+      #     - ${MINIMAX_API_KEY}
+      #   provider_model_id: "MiniMax-M2.5"
+      #   provider_type: quota
+      #   quota_pool: minimax-coding-plan-general
+      #   quota_source:
+      #     provider: minimax
+      #     usage_label: "general (interval)"
+      #     unit: "%"
+      #   quota:
+      #     limit: 100
       # S_C: Featherless Premium; paper real-eval used C=1 for MiniMax-M2.5.
       - kind: featherless
         weight: 1.0

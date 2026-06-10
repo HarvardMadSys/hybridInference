@@ -65,7 +65,7 @@ def test_build_provider_candidates_preserves_routewise_metadata():
             "usage_label": "Daily requests",
             "unit": "requests",
         },
-        quota={"limit": 5000, "window": "daily"},
+        quota={"limit": 5000},
     )
     concurrency = _adapter(
         provider="featherless",
@@ -105,7 +105,6 @@ def test_build_provider_candidates_preserves_routewise_metadata():
     )
     assert quota_candidate.quota_policy is not None
     assert quota_candidate.quota_policy.limit == 5000
-    assert quota_candidate.quota_policy.window.type == "daily"
 
     concurrency_candidate = by_id["glm-test:featherless-api"]
     assert concurrency_candidate.provider_type is ProviderType.CONCURRENCY
@@ -125,6 +124,7 @@ def test_build_provider_candidates_uses_stable_defaults_and_skips_zero_weight():
         provider="chutes",
         endpoint_id="quota-shared",
         provider_type="quota",
+        quota_source={"provider": "stub", "usage_label": "Daily requests", "unit": "requests"},
         quota={"limit": 100},
     )
     api = _adapter(provider="zai", endpoint_id="api-shared", provider_type="on_demand")
@@ -145,6 +145,7 @@ def test_build_provider_candidates_rejects_duplicate_endpoint_id():
         provider="chutes",
         endpoint_id="shared",
         provider_type="quota",
+        quota_source={"provider": "stub", "usage_label": "Daily requests", "unit": "requests"},
         quota={"limit": 100},
     )
     api = _adapter(provider="zai", endpoint_id="shared", provider_type="on_demand")
@@ -155,9 +156,22 @@ def test_build_provider_candidates_rejects_duplicate_endpoint_id():
 
 @pytest.mark.unit
 def test_quota_route_requires_quota_block():
-    quota = _adapter(provider="chutes", provider_type="quota")
+    quota = _adapter(
+        provider="chutes",
+        provider_type="quota",
+        quota_source={"provider": "stub", "usage_label": "Daily requests", "unit": "requests"},
+    )
 
     with pytest.raises(ValueError, match=r"requires a route-level 'quota:' block"):
+        build_provider_candidates("glm-test", [(quota, 1.0)])
+
+
+@pytest.mark.unit
+def test_quota_route_requires_quota_source():
+    """A queryable provider usage API is the quota truth source."""
+    quota = _adapter(provider="chutes", provider_type="quota", quota={"limit": 100})
+
+    with pytest.raises(ValueError, match=r"requires a route-level 'quota_source:'"):
         build_provider_candidates("glm-test", [(quota, 1.0)])
 
 

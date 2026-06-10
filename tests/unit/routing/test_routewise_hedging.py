@@ -40,6 +40,24 @@ def _quota_pool(router):
     return next(iter(router.quota_pools.values()))
 
 
+def _seed_quota_snapshots(router, *, used: float = 0.0) -> None:
+    """Install a ready provider snapshot for every quota pool on the router."""
+    from datetime import datetime, timezone
+
+    from routing.routewise.quota_snapshot import ProviderQuotaSnapshot
+
+    now = datetime.now(timezone.utc)
+    for pool in router.quota_pools.values():
+        router.quota_snapshots._snapshots[pool.source] = ProviderQuotaSnapshot(
+            source=pool.source,
+            used=used,
+            limit=float(pool.policy.limit),
+            reset_at=None,
+            fetched_at=now,
+        )
+        router.quota_snapshots._local_increments[pool.source] = 0
+
+
 def _conc_pool(router):
     """Return the router's only concurrency pool (single-pool test fixtures)."""
     return next(iter(router.concurrency_pools.values()))
@@ -579,6 +597,11 @@ def _make_router_with_api_and_quota(
     quota.config.pricing = {"prompt": "0.0", "completion": "0.0"}
     quota.config.provider_type = "quota"
     quota.config.quota = {"limit": 10}
+    quota.config.quota_source = {
+        "provider": "stub",
+        "usage_label": "Daily requests",
+        "unit": "requests",
+    }
 
     @dataclass
     class _FakeRouteConfig:
@@ -594,6 +617,7 @@ def _make_router_with_api_and_quota(
     fr = _FakeFixedRouter()
     fr.add("test-model", [(api, 0.5), (quota, 0.5)])
     router = RouteWiseRouter(fixed_router=fr, config=config)
+    _seed_quota_snapshots(router)
     return router, api, quota
 
 
@@ -620,6 +644,11 @@ def _make_router_with_api_quota_and_api(
     quota.config.pricing = {"prompt": "0.0", "completion": "0.0"}
     quota.config.provider_type = "quota"
     quota.config.quota = {"limit": quota_limit}
+    quota.config.quota_source = {
+        "provider": "stub",
+        "usage_label": "Daily requests",
+        "unit": "requests",
+    }
 
     api_backup = MagicMock()
     api_backup.config = _make_model_config(
@@ -643,6 +672,7 @@ def _make_router_with_api_quota_and_api(
     fr = _FakeFixedRouter()
     fr.add("test-model", [(api_primary, 0.4), (quota, 0.3), (api_backup, 0.3)])
     router = RouteWiseRouter(fixed_router=fr, config=config)
+    _seed_quota_snapshots(router)
     return router, api_primary, quota, api_backup
 
 

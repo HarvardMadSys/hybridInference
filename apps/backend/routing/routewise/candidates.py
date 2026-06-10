@@ -12,7 +12,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
@@ -77,31 +76,6 @@ class QuotaSource:
         return cls(provider=provider, usage_label=usage_label, unit=unit)
 
 
-_DURATION_UNITS = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
-
-
-def _parse_duration_sec(value: Any, context: str) -> float:
-    """Parse a duration like ``"5h"``, ``"30m"``, or plain seconds."""
-    if isinstance(value, bool):
-        raise ValueError(f"{context} must be a duration like '5h' or seconds; got {value!r}")
-    if isinstance(value, (int, float)):
-        seconds = float(value)
-    elif isinstance(value, str):
-        text = value.strip().lower()
-        unit = _DURATION_UNITS.get(text[-1:]) if text else None
-        try:
-            seconds = float(text[:-1]) * unit if unit is not None else float(text)
-        except ValueError as exc:
-            raise ValueError(
-                f"{context} must be a duration like '5h', '30m', or seconds; got {value!r}"
-            ) from exc
-    else:
-        raise ValueError(f"{context} must be a duration like '5h' or seconds; got {value!r}")
-    if seconds <= 0:
-        raise ValueError(f"{context} must be positive; got {value!r}")
-    return seconds
-
-
 def _parse_positive_int(value: Any, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{context} must be a positive integer; got {value!r}")
@@ -111,75 +85,26 @@ def _parse_positive_int(value: Any, context: str) -> int:
 
 
 @dataclass(frozen=True, slots=True)
-class QuotaWindow:
-    """Reset window for one provider quota pool.
-
-    ``daily`` resets at midnight in ``timezone``; ``rolling`` is a sliding
-    window of ``duration_sec`` seconds (e.g. a Claude-style 5-hour quota).
-    """
-
-    type: str
-    timezone: str = "UTC"
-    duration_sec: float = 0.0
-
-    @classmethod
-    def from_raw(cls, raw: Any, *, context: str) -> QuotaWindow:
-        """Parse a window descriptor; a bare string is sugar for ``{type: ...}``."""
-        if raw is None:
-            return cls(type="daily")
-        if isinstance(raw, str):
-            raw = {"type": raw}
-        if not isinstance(raw, Mapping):
-            raise ValueError(f"{context} must be a string or mapping; got {type(raw).__name__}")
-        window_type = str(raw.get("type", "")).strip().lower()
-        if window_type == "daily":
-            unknown = set(raw) - {"type", "timezone"}
-            if unknown:
-                raise ValueError(f"{context}: unknown keys {sorted(unknown)} for type 'daily'")
-            timezone = str(raw.get("timezone", "UTC")).strip() or "UTC"
-            try:
-                ZoneInfo(timezone)
-            except Exception as exc:
-                raise ValueError(
-                    f"{context}.timezone {timezone!r} is not a known IANA timezone"
-                ) from exc
-            return cls(type="daily", timezone=timezone)
-        if window_type == "rolling":
-            unknown = set(raw) - {"type", "duration"}
-            if unknown:
-                raise ValueError(f"{context}: unknown keys {sorted(unknown)} for type 'rolling'")
-            if "duration" not in raw:
-                raise ValueError(f"{context}: type 'rolling' requires a duration (e.g. '5h')")
-            return cls(
-                type="rolling",
-                duration_sec=_parse_duration_sec(raw["duration"], f"{context}.duration"),
-            )
-        raise ValueError(f"{context}.type must be 'daily' or 'rolling'; got {raw.get('type')!r}")
-
-
-@dataclass(frozen=True, slots=True)
 class QuotaPolicy:
     """Route-level quota resource rule for one provider.
 
-    ``limit`` is always required: it bounds the local optimistic counter and
-    cross-checks the provider-reported limit for snapshot-backed pools.
+    ``limit`` cross-checks the provider-reported limit and is the conversion
+    denominator for percent-only usage APIs. Window/reset semantics are not
+    modeled here: the provider's usage API (``quota_source``) is the truth
+    source for them.
     """
 
     limit: int
-    window: QuotaWindow
 
     @classmethod
     def from_raw(cls, raw: Mapping[str, Any], *, context: str) -> QuotaPolicy:
         """Parse a route-level ``quota:`` block."""
         if not isinstance(raw, Mapping):
             raise ValueError(f"{context} must be a mapping with at least 'limit'")
-        unknown = set(raw) - {"limit", "window"}
+        unknown = set(raw) - {"limit"}
         if unknown:
             raise ValueError(f"{context}: unknown keys {sorted(unknown)}")
-        return cls(
-            limit=_parse_positive_int(raw.get("limit"), f"{context}.limit"),
-            window=QuotaWindow.from_raw(raw.get("window"), context=f"{context}.window"),
-        )
+        return cls(limit=_parse_positive_int(raw.get("limit"), f"{context}.limit"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,10 +194,16 @@ def build_provider_candidates(
         if provider_type is ProviderType.QUOTA:
             quota_pool = _optional_str_attr(config, "quota_pool") or f"{model_id}:{endpoint_id}"
             quota_source_raw = _mapping_attr(config, "quota_source")
-            quota_source = (
-                QuotaSource.from_raw(quota_source_raw, context=f"{endpoint_id}.quota_source")
-                if quota_source_raw is not None
-                else None
+            if quota_source_raw is None:
+                raise ValueError(
+                    f"{endpoint_id}: provider_type 'quota' requires a route-level "
+                    f"'quota_source:' block -- a queryable provider usage API is the "
+                    f"quota truth source. Providers without a usage API should be "
+                    f"modeled as on_demand instead (model {model_id!r})."
+                )
+            quota_source = QuotaSource.from_raw(
+                quota_source_raw,
+                context=f"{endpoint_id}.quota_source",
             )
             quota_raw = _mapping_attr(config, "quota")
             if quota_raw is None:

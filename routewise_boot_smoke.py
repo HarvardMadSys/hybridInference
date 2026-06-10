@@ -111,7 +111,7 @@ def warm(router) -> None:
     for cand in router.route_candidates[MODEL_ID]:
         provider_type = cand.provider_type.value
         ttft = TTFT_MS_BY_PROVIDER_TYPE.get(provider_type, 1500.0)
-        for i in range(16):
+        for i in range(40):
             prompt = rng_prompts[i % len(rng_prompts)]
             router.record_observation(
                 RoutingObservation(
@@ -197,7 +197,7 @@ def main() -> None:
 
     warmed = make_router(fr)
     warm(warmed)
-    dump(warmed, "WARM (16 records/leg; quota dark: no provider snapshot)")
+    dump(warmed, "WARM (40 records/leg; quota dark: no provider snapshot)")
 
     with_quota = make_router(fr)
     warm(with_quota)

@@ -112,6 +112,10 @@ models:
         weight: 1.0
         base_url: https://api.example.test/v1
         provider_type: quota
+        quota_source:
+          provider: chutes
+          usage_label: "Daily requests"
+          unit: requests
         quota:
           limit: 100
         route_metadata:

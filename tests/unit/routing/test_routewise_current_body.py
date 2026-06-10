@@ -48,8 +48,8 @@ def test_envelope_returns_none_until_first_observation():
 
 @pytest.mark.unit
 def test_envelope_returns_observed_percentiles_once_calibrated():
-    """Any non-empty pool reports observed P_lower / P_upper directly."""
-    estimator = CostEnvelopeEstimator(lower_percentile=0, upper_percentile=100)
+    """Any pool past the min-sample gate reports observed P_lower / P_upper."""
+    estimator = CostEnvelopeEstimator(lower_percentile=0, upper_percentile=100, min_samples=1)
 
     estimator.observe("m", 0.02, now=1.0)
     estimator.observe("m", 0.10, now=2.0)
@@ -69,6 +69,7 @@ def test_envelope_returns_none_after_window_evicts_all_samples():
         lower_percentile=10,
         upper_percentile=90,
         window_sec=10.0,
+        min_samples=1,
     )
 
     estimator.observe("m", 0.05, now=0.0)
@@ -77,6 +78,37 @@ def test_envelope_returns_none_after_window_evicts_all_samples():
 
     # Advance past the window: all samples drop and the pool is uncalibrated.
     assert estimator.snapshot("m", now=100.0) is None
+
+
+@pytest.mark.unit
+def test_envelope_min_samples_gates_calibration():
+    """Below ``min_samples`` the pool stays uncalibrated; at it, it calibrates."""
+    estimator = CostEnvelopeEstimator(min_samples=30)
+    for i in range(29):
+        estimator.observe("m", 0.001 + i * 0.0001, now=float(i))
+    assert estimator.snapshot("m", now=29.0) is None
+    assert estimator.sample_count("m", now=29.0) == 29
+
+    estimator.observe("m", 0.01, now=29.5)
+    snap = estimator.snapshot("m", now=30.0)
+    assert snap is not None
+    assert snap.sample_count == 30
+
+
+@pytest.mark.unit
+def test_envelope_floor_fallback_keeps_bounded_ratio():
+    """Degenerate windows (all-equal samples) fall back to L = U * 1e-3.
+
+    Without the paper's floor fallback, P10 == P90 would collapse the quota
+    shadow-price curve into a constant (no rationing).
+    """
+    estimator = CostEnvelopeEstimator(min_samples=1)
+    for i in range(40):
+        estimator.observe("m", 0.002, now=float(i))
+    snap = estimator.snapshot("m", now=40.0)
+    assert snap is not None
+    assert snap.upper == pytest.approx(0.002)
+    assert snap.lower == pytest.approx(0.002 * 1e-3)
 
 
 @pytest.mark.unit

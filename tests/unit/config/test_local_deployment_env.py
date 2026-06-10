@@ -56,7 +56,7 @@ def test_minimax_fast_uses_routewise() -> None:
     assert "concurrency_enabled" not in minimax_fast["router_params"]
     assert "concurrency_limit" not in minimax_fast["router_params"]
     assert routes_by_type["quota"]["quota"]["limit"] == 5000
-    assert routes_by_type["quota"]["quota"]["window"]["type"] == "daily"
+    assert routes_by_type["quota"]["quota_source"]["provider"] == "chutes"
     assert routes_by_type["concurrency"]["concurrency"]["limit"] == 1
 
 
