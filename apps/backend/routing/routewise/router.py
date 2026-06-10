@@ -9,10 +9,11 @@ selection semantics:
 
 When ``latency_hedge_mode="probability_target"``, the router may wrap the
 selected primary in a delayed ``HedgedAdapter`` using RouteWise checkpoint
-probability math. Prefix-cache hits are observed by default without changing
-routing. When the guarded cost-adjustment flag is enabled, API candidates may
-use the session-scoped prefix estimate as part of their effective cost before
-the LP; the ``L/U`` envelope and actual billing remain driven by observed cost.
+probability math. The session prefix cache is gated by
+``prefix_cache_cost_adjustment_enabled`` (default off): when enabled, API
+candidates fold the session-scoped prefix estimate into effective cost before
+the LP and successful selections warm the cache for the next turn; the
+``L/U`` envelope and actual billing remain driven by observed cost.
 """
 
 from __future__ import annotations

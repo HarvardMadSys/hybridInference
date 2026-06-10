@@ -725,7 +725,7 @@ class BaseRouter:
                 # is committed to that upstream. Falling back would splice a
                 # second provider into the same stream.
                 if chunks_yielded:
-                    raise primary_error
+                    raise
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
                 for adapter in fallback_adapters:
                     last_attempted = adapter
@@ -750,7 +750,7 @@ class BaseRouter:
                         self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
-                raise primary_error
+                raise
         except BaseException as e:
             if not hasattr(e, "_routing"):
                 e._routing = {  # type: ignore[attr-defined]
