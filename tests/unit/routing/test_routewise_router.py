@@ -17,7 +17,7 @@ from routing.routewise.candidates import QuotaSource
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.hedging import HedgedAdapter
-from routing.routewise.quota_snapshot import ProviderQuotaSnapshotStore
+from routing.routewise.quota import ProviderQuotaSnapshotStore
 from routing.routewise.router import ProviderType, RouteWiseRouter
 from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 
@@ -138,7 +138,7 @@ def _seed_quota_snapshots(router: RouteWiseRouter, *, used: float = 0.0) -> None
     """
     from datetime import datetime, timezone
 
-    from routing.routewise.quota_snapshot import ProviderQuotaSnapshot
+    from routing.routewise.quota import ProviderQuotaSnapshot
 
     now = datetime.now(timezone.utc)
     for pool in router.quota_pools.values():

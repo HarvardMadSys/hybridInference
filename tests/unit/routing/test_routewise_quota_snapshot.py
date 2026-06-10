@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from routing.routewise.candidates import QuotaSource
-from routing.routewise.quota_snapshot import ProviderQuotaSnapshotStore
+from routing.routewise.quota import ProviderQuotaSnapshotStore
 from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 
 

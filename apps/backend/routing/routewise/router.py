@@ -71,8 +71,7 @@ from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
 from .prefix_cache import PrefixCacheCoordinator, price_delta_per_token
-from .quota import QuotaPool
-from .quota_snapshot import ProviderQuotaSnapshotStore
+from .quota import ProviderQuotaSnapshotStore, QuotaPool
 
 logger = get_logger(__name__)
 

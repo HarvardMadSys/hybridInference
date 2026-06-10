@@ -44,7 +44,7 @@ def _seed_quota_snapshots(router, *, used: float = 0.0) -> None:
     """Install a ready provider snapshot for every quota pool on the router."""
     from datetime import datetime, timezone
 
-    from routing.routewise.quota_snapshot import ProviderQuotaSnapshot
+    from routing.routewise.quota import ProviderQuotaSnapshot
 
     now = datetime.now(timezone.utc)
     for pool in router.quota_pools.values():

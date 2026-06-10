@@ -36,8 +36,7 @@ from .predictor import (
     BucketMeanOutputPredictor,
     BucketMeanPrediction,
 )
-from .quota import QuotaPool
-from .quota_snapshot import ProviderQuotaSnapshot, ProviderQuotaSnapshotStore
+from .quota import ProviderQuotaSnapshot, ProviderQuotaSnapshotStore, QuotaPool
 from .router import RouteWiseRouter
 
 __all__ = [

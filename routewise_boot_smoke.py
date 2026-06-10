@@ -89,7 +89,7 @@ def inject_quota_snapshot(router, *, used: float = 500.0, limit: float = 5000.0)
     """
     from datetime import datetime, timezone
 
-    from routing.routewise.quota_snapshot import ProviderQuotaSnapshot
+    from routing.routewise.quota import ProviderQuotaSnapshot
 
     for cand in router.route_candidates[MODEL_ID]:
         if cand.provider_type.value == "quota" and cand.quota_source is not None:
