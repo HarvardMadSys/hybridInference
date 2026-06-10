@@ -125,8 +125,9 @@ docs/             # User docs, developer docs, agent specs/plans, reviews
 
 - `config/models.yaml`: required model registry.
 - `config/routing.yaml`: optional local/remote split, routing strategy, and health checks.
-- `config/routewise.yaml`: legacy RouteWise config; per-model RouteWise tuning now lives under `router_params:` in `config/models.yaml`.
 - `config/alerts.yaml`: alert rules.
+
+Per-model RouteWise tuning lives under each model's `router_params:` in `config/models.yaml`.
 
 YAML files support `${VAR}` and `${VAR:-default}` environment variable interpolation.
 

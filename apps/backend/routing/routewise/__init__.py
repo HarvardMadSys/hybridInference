@@ -2,10 +2,9 @@
 
 Exports:
     RouteWiseRouter  -- BaseRouter subclass with cost-budgeted provider selection.
-    RouteWiseConfig  -- Dataclass holding policy parameters loaded from
-                        ``config/routewise.yaml``.
+    RouteWiseConfig  -- Dataclass holding per-model policy parameters, populated
+                        from each model's ``router_params`` in ``config/models.yaml``.
     ProviderType -- Enum for on-demand / quota / concurrency provider categories.
-    load_routewise_config -- Loader helper for RouteWiseConfig.
     QuotaManager       -- Daily quota manager with shadow price computation.
     ConcurrencyManager -- Production concurrency slot manager (K=0 binary gate).
     ProviderProfile    -- Real-time latency profile for an API endpoint.
@@ -19,7 +18,7 @@ from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
 from .candidates import CandidatePricing, ProviderCandidate, ProviderType, QuotaSource
 from .concurrency import ConcurrencyManager
-from .config import RouteWiseConfig, load_routewise_config
+from .config import RouteWiseConfig
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
 from .envelope import CostEnvelopeEstimator, CostEnvelopeSnapshot
 from .hedging import HedgedAdapter, ProviderEventSink
@@ -56,7 +55,6 @@ __all__ = [
     "RouteWiseConfig",
     "RouteWiseRouter",
     "api_request_cost_usd",
-    "load_routewise_config",
     "quota_shadow_price_usd",
     "solve_cost_budgeted_mean_ttft",
 ]

@@ -24,7 +24,7 @@ apps/
     routing/      # Routing engine: strategies, routers, health, circuit breaker
     benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
-config/           # YAML config: models, routing, routewise, alerts
+config/           # YAML config: models, routing, alerts
 services/         # llm-prober, freeinference-harness, alert-logger
 tests/
   unit/           # Fast, mocked. Default in CI.
@@ -127,7 +127,6 @@ For the full diagram (network layer, observability, storage), see
 |---|---|
 | `config/models.yaml` | Model registry (required); per-model `router:` / `router_params:` (incl. RouteWise tuning) |
 | `config/routing.yaml` | Local/remote split, health checks (optional) |
-| `config/routewise.yaml` | Legacy standalone RouteWise config — superseded by `router_params:` in `models.yaml` (no live loader) |
 | `config/alerts.yaml` | Alert rules |
 
 YAML supports env var interpolation: `${VAR}` and `${VAR:-default}`.

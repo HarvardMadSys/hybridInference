@@ -77,7 +77,6 @@ The gateway is configured primarily through environment variables and YAML files
 - `.env`: secrets, database settings, provider API keys, auth settings, and runtime options.
 - `config/models.yaml`: model registry and endpoint definitions.
 - `config/routing.yaml`: local/remote split, routing strategy, and health-check settings.
-- `config/routewise.yaml`: legacy RouteWise config; per-model RouteWise tuning now lives under `router_params:` in `config/models.yaml`.
 - `config/alerts.yaml`: alert rules.
 
 YAML configuration supports environment variable interpolation with `${VAR}` and `${VAR:-default}` syntax.
