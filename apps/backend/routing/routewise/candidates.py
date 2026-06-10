@@ -1,7 +1,7 @@
 """RouteWise provider-candidate extraction.
 
 This module is the boundary between FreeInference route configuration and the
-RouteWise body router.  It reads route-level metadata carried on
+RouteWise router.  It reads route-level metadata carried on
 ``ModelConfig`` and normalizes it into stable provider candidates before any
 effective-cost or LP logic runs.
 """

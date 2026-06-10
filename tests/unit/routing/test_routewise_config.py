@@ -19,10 +19,10 @@ class TestRouteWiseConfigDefaults:
         assert cfg.db_bootstrap_max_rows == 50_000
         assert cfg.stateful_providers_single_worker_only is True
         assert cfg.quota_snapshot_refresh_interval_sec == 60.0
-        assert cfg.shadow_price_window_hours == 24
+        assert cfg.envelope_window_hours == 24
         assert cfg.envelope_lower_percentile == 10.0
         assert cfg.envelope_upper_percentile == 90.0
-        # Layer 2 defaults
+        # Latency-layer defaults
         assert cfg.latency_slo_sec == 3.0
         assert cfg.latency_window_sec == 900.0
         assert cfg.latency_max_samples_per_profile == 5000

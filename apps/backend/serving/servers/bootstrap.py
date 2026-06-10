@@ -77,7 +77,7 @@ async def _bootstrap_routewise_from_logs(
             continue
         latency_window_sec = max(float(getattr(rw.config, "latency_window_sec", 0.0) or 0.0), 1.0)
         envelope_window_sec = max(
-            float(getattr(rw.config, "shadow_price_window_hours", 0.0) or 0.0) * 3600.0,
+            float(getattr(rw.config, "envelope_window_hours", 0.0) or 0.0) * 3600.0,
             1.0,
         )
         try:

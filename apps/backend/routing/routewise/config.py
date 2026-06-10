@@ -1,6 +1,6 @@
 """RouteWise policy configuration.
 
-Defines tunable parameters for the current RouteWise body router, which uses
+Defines tunable parameters for the RouteWise router, which uses
 unified effective cost plus a cost-budgeted mean-TTFT LP.
 """
 
@@ -22,7 +22,7 @@ class RouteWiseConfig:
     ``concurrency:`` block in ``models.yaml``.
 
     Attributes:
-        shadow_price_window_hours: Lookback window (hours) for the rolling
+        envelope_window_hours: Lookback window (hours) for the rolling
             envelope used by the quota shadow price.
 
         latency_slo_sec: Target SLO for latency-aware routing (seconds).
@@ -60,12 +60,12 @@ class RouteWiseConfig:
     quota_snapshot_refresh_interval_sec: float = 60.0
 
     # Envelope (workload cost percentile) parameters
-    shadow_price_window_hours: int = 24
+    envelope_window_hours: int = 24
     envelope_lower_percentile: float = 10.0
     envelope_upper_percentile: float = 90.0
     envelope_min_samples: int = 30
 
-    # Layer 2: Latency-aware provider selection
+    # Latency layer: latency-aware provider selection
     latency_slo_sec: float = 3.0
     latency_window_sec: float = 900.0  # 15 min profile window
     latency_max_samples_per_profile: int = 5000

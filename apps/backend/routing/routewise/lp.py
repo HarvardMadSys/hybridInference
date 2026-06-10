@@ -13,7 +13,7 @@ from routewise.core import (
 
 @dataclass(frozen=True)
 class LPCandidate:
-    """One feasible provider in the RouteWise body LP."""
+    """One feasible provider in the RouteWise selection LP."""
 
     endpoint_id: str
     cost_usd: float
@@ -22,7 +22,7 @@ class LPCandidate:
 
 @dataclass(frozen=True)
 class LPSolution:
-    """Sparse provider mixture returned by the body LP."""
+    """Sparse provider mixture returned by the selection LP."""
 
     weights: dict[str, float]
     budget_usd: float
@@ -34,7 +34,7 @@ def solve_cost_budgeted_mean_ttft(
     *,
     alpha: float,
 ) -> LPSolution:
-    """Solve the current RouteWise body LP through ``routewise.core``.
+    """Solve the RouteWise selection LP through ``routewise.core``.
 
     Objective:
         minimize ``sum_j pi_j * (mean_ttft_j + 1e-6 * normalized_cost_j)``

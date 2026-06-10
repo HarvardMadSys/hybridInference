@@ -1,4 +1,4 @@
-"""Effective-cost helpers for the current RouteWise body router."""
+"""Effective-cost helpers for the RouteWise cost layer."""
 
 from __future__ import annotations
 

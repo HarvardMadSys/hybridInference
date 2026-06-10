@@ -1,4 +1,4 @@
-"""Tests for RouteWise router -- scaffold + PD / LA-PD decision logic + Layer 2 + S_C."""
+"""Tests for the RouteWise router: selection, resource pools, latency, hedging wiring."""
 
 from __future__ import annotations
 
@@ -838,7 +838,7 @@ class TestRouteWiseObservation:
 
 
 # ---------------------------------------------------------------------------
-# Layer 2: Latency-aware provider selection tests (PR-4)
+# Latency-aware provider selection tests
 # ---------------------------------------------------------------------------
 
 
@@ -937,7 +937,7 @@ class TestRouteWiseLayer2:
         assert profile.sample_count(now) == 1
 
     def test_record_observation_uses_total_latency_when_ttft_missing(self):
-        """Non-streaming successes still feed the body-latency profile."""
+        """Non-streaming successes still feed the latency profile."""
         config = RouteWiseConfig()
         router, _api_a, _api_b = _make_router_with_two_api(config)
 
@@ -962,8 +962,8 @@ class TestRouteWiseLayer2:
             error_penalty_ms=60_000.0,
         ) == pytest.approx(0.5)
 
-    def test_single_api_uses_body_lp_single_provider_solution(self):
-        """Single S_A provider returns a degenerate body-LP solution."""
+    def test_single_api_uses_lp_single_provider_solution(self):
+        """Single S_A provider returns a degenerate single-provider LP solution."""
         api_only = _make_adapter(
             provider_type="on_demand",
             prompt_price="3.0",
@@ -1006,7 +1006,7 @@ class TestRouteWiseLayer2:
         now = time.time()
         assert profile.error_rate(now) > 0
 
-    def test_body_latency_mean_includes_error_penalty(self):
+    def test_latency_mean_includes_error_penalty(self):
         """Body LP latency matches real-eval mean-with-errors semantics."""
         config = RouteWiseConfig(latency_min_samples=10, latency_unprofiled_ttft_ms=5000.0)
         router, _api_a, _api_b = _make_router_with_two_api(config)
@@ -1244,7 +1244,7 @@ def _make_router_three_tier(
 
 @pytest.mark.unit
 class TestRouteWiseSCDecision:
-    """Layer 1 decision tests for S_C concurrency providers."""
+    """Decision tests for S_C concurrency providers."""
 
     def test_sc_routes_to_concurrency_when_available(self):
         """S_C selected when slots are available."""

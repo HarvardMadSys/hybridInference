@@ -1,7 +1,7 @@
-"""Current RouteWise body router for FreeInference.
+"""RouteWise router for FreeInference.
 
-The production ``routewise`` strategy now follows the current RouteWise
-paper/simulator body-routing semantics:
+The production ``routewise`` strategy follows the RouteWise paper/simulator
+selection semantics:
 
 1. Convert every feasible provider to one effective cost.
 2. Solve a cost-budgeted mean-TTFT LP over all feasible providers.
@@ -172,7 +172,7 @@ def _configured_worker_count() -> int | None:
 
 
 class RouteWiseRouter(BaseRouter):
-    """RouteWise current body router.
+    """RouteWise router.
 
     ``fixed_router.routes`` remains the source of model -> adapter mappings;
     this router only changes the selection policy for models configured with
@@ -216,7 +216,7 @@ class RouteWiseRouter(BaseRouter):
         self.envelope = CostEnvelopeEstimator(
             lower_percentile=self.config.envelope_lower_percentile,
             upper_percentile=self.config.envelope_upper_percentile,
-            window_sec=self.config.shadow_price_window_hours * 3600.0,
+            window_sec=self.config.envelope_window_hours * 3600.0,
             min_samples=self.config.envelope_min_samples,
         )
         self.quota_snapshots = ProviderQuotaSnapshotStore()

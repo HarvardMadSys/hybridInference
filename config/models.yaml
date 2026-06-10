@@ -293,7 +293,7 @@ models:
       # db_bootstrap_max_rows: 50000
       # stateful_providers_single_worker_only: true
       # quota_snapshot_refresh_interval_sec: 60.0
-      # shadow_price_window_hours: 24
+      # envelope_window_hours: 24
       # envelope_lower_percentile: 10.0
       # envelope_upper_percentile: 90.0
       # envelope_min_samples: 30

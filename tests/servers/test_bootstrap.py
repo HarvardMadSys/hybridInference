@@ -255,7 +255,7 @@ class TestBootstrapInitialization:
             db_bootstrap_enabled=True,
             db_bootstrap_max_rows=123,
             latency_window_sec=900.0,
-            shadow_price_window_hours=24,
+            envelope_window_hours=24,
         )
         rw.bootstrap_from_log_rows.return_value = {
             "rows": 1,
@@ -299,7 +299,7 @@ class TestBootstrapInitialization:
             db_bootstrap_enabled=True,
             db_bootstrap_max_rows=123,
             latency_window_sec=900.0,
-            shadow_price_window_hours=24,
+            envelope_window_hours=24,
         )
 
         await bootstrap._bootstrap_routewise_from_logs(
@@ -324,7 +324,7 @@ class TestBootstrapInitialization:
             db_bootstrap_enabled=True,
             db_bootstrap_max_rows=123,
             latency_window_sec=900.0,
-            shadow_price_window_hours=24,
+            envelope_window_hours=24,
         )
         rw.bootstrap_from_log_rows.return_value = {
             "rows": 1,

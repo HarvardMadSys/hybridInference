@@ -678,7 +678,7 @@ def _make_router_with_api_quota_and_api(
 
 @pytest.mark.unit
 class TestRouterHedgeMode:
-    def test_probability_target_mode_wraps_body_router_selection(self):
+    def test_probability_target_mode_wraps_router_selection(self):
         """Probability-target mode returns a real HedgedAdapter."""
         config = RouteWiseConfig(
             budget_alpha=0.0,

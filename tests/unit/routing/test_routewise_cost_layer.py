@@ -1,4 +1,4 @@
-"""Tests for current RouteWise body-router primitives."""
+"""Tests for RouteWise cost-layer primitives (effective cost, envelope, LP)."""
 
 from __future__ import annotations
 

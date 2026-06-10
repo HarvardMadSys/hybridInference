@@ -19,10 +19,11 @@ from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 from routing.strategies import register_strategy
 
-# Former model-level resource fields and where their replacement lives now.
+# Former field names and where their replacement lives now.
 # Kept so a stale models.yaml fails at boot with a pointer instead of a bare
 # "extra inputs are not permitted".
 _MOVED_TO_ROUTE_LEVEL = {
+    "shadow_price_window_hours": "renamed to envelope_window_hours",
     "daily_quota": "route-level quota.limit",
     "reset_timezone": "route-level quota.window.timezone",
     "quota_monthly_fee": "removed (subscription fees are sunk cost)",

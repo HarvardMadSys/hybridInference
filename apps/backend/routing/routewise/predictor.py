@@ -1,6 +1,6 @@
 """Output-token predictor for production RouteWise routing.
 
-The RouteWise body router uses a bucket-mean predictor keyed by
+The RouteWise router uses a bucket-mean predictor keyed by
 ``(model_id, log2(prompt_tokens))``.
 
 This module is independent of ``experiment/`` -- the algorithm is reimplemented

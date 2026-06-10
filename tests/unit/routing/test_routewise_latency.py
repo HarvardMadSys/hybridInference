@@ -1,4 +1,4 @@
-"""Tests for Layer 2 latency profiling."""
+"""Tests for RouteWise latency profiling."""
 
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ class TestProviderProfile:
         assert profile.error_rate(now) == pytest.approx(0.3)
 
     def test_mean_with_errors_uses_synthetic_penalty(self):
-        """Failed attempts enter body latency as synthetic penalty samples."""
+        """Failed attempts enter the latency profile as synthetic penalty samples."""
         profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
         now = 100.0
 

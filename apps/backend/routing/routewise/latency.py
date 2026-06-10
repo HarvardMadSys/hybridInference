@@ -1,10 +1,8 @@
-"""Real-time latency profiling for Layer 2.
+"""Real-time latency profiling for the RouteWise latency layer.
 
 This module provides:
 - ``ProviderProfile``: time-windowed latency and error tracking per endpoint
-  with empirical CDF computation (INFINITY failure mode).
-
-Reference: experiment/strategies/online_latency_router.py.
+  with empirical CDF computation (errors count as missed deadlines).
 """
 
 from __future__ import annotations
