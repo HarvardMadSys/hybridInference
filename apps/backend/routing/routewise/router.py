@@ -550,21 +550,26 @@ class RouteWiseRouter(BaseRouter):
         envelope before requests are served. Pure API or pure concurrency
         models are unaffected.
         """
-        uncalibrated: list[tuple[str, str]] = []
+        uncalibrated: list[tuple[str, str, int]] = []
         for model_id, candidates in self.route_candidates.items():
             if not any(candidate.provider_type is ProviderType.QUOTA for candidate in candidates):
                 continue
             pool = self._routewise_pool(model_id)
             if self.envelope.snapshot(pool) is None:
-                uncalibrated.append((pool, model_id))
+                uncalibrated.append((pool, model_id, self.envelope.sample_count(pool)))
         if not uncalibrated:
             return
-        details = "\n".join(f"  - pool='{p}', model='{m}'" for p, m in uncalibrated)
+        needed = max(int(self.envelope.min_samples), 1)
+        details = "\n".join(
+            f"  - pool='{p}', model='{m}': {n}/{needed} envelope samples in window"
+            for p, m, n in uncalibrated
+        )
         raise EnvelopeNotCalibratedError(
             "RouteWise refuses to start: cost envelope is uncalibrated for "
-            "quota-bearing pools. The quota shadow price requires a workload-"
-            "derived [L, U]; ensure DB bootstrap succeeds or remove quota "
-            "providers from these models.\n" + details
+            f"quota-bearing pools (each needs >= {needed} request-cost samples "
+            "within the lookback window). Ensure api_logs has recent traffic "
+            "for these models before deploying, or remove their quota "
+            "providers.\n" + details
         )
 
     @staticmethod

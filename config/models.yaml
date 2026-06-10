@@ -334,9 +334,13 @@ models:
           unit: requests
         quota:
           limit: 5000
-      # S_Q (alternative, not yet enabled): MiniMax coding plan 5h window via
-      # the official token-plan remains API. The API reports remaining percent
-      # per window, so the pool is percent-based (limit: 100).
+      # S_Q (alternative, NOT enable-ready yet): MiniMax coding plan 5h window
+      # via the official token-plan remains API. The API reports remaining
+      # percent only, so the pool is percent-based (limit: 100). Known gap
+      # before enabling: optimistic consume counts 1 percentage point per
+      # request, which is only accurate for ~100-prompts-per-window plans;
+      # larger tiers need a per-request increment scale (or a plan-size
+      # count conversion in the fetcher) first.
       # - kind: minimax
       #   weight: 1.0
       #   base_url: ${MINIMAX_BASE_URL}

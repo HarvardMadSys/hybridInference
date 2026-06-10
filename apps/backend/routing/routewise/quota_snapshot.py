@@ -87,7 +87,14 @@ class ProviderQuotaSnapshotStore:
             )
 
     def consume(self, source: QuotaSource) -> bool:
-        """Optimistically consume one request for a quota source."""
+        """Optimistically consume one unit for a quota source.
+
+        The increment is one unit of the snapshot's own accounting: one
+        request for count-based usages, one percentage point for
+        percent-based ones. Percent-based pools therefore over-consume
+        locally on plans larger than ~100 requests per window -- see the
+        percent-pool caveat in ``config/models.yaml`` before enabling one.
+        """
         with self._lock:
             snapshot = self._snapshots.get(source)
             if snapshot is None:
