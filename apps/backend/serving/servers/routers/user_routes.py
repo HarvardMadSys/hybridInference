@@ -383,8 +383,11 @@ async def create_api_key(
     if require_verification and not current_user.get("email_verified"):
         raise HTTPException(status_code=403, detail="Email is not verified.")
 
-    # Check if user already has an active API key
-    existing = await op_store.get_active_key_by_account(current_user["user_id"])
+    # Check if user already has an active API key. Use the account-or-user
+    # lookup so legacy keys with account_id IS NULL are also detected — the DB
+    # uniqueness is on user_id, so checking account_id alone would miss them and
+    # let the INSERT fail with a 500 instead of a clean 409.
+    existing = await op_store.get_key_by_account_or_user(current_user["user_id"])
     if existing:
         raise HTTPException(status_code=409, detail="You already have an active API key")
 
@@ -598,7 +601,10 @@ async def regenerate_api_key(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    old_key_row = await op_store.get_active_key_by_account(current_user["user_id"])
+    # Account-or-user lookup so legacy keys with account_id IS NULL are found
+    # (matches the user_id uniqueness constraint); otherwise regenerate would
+    # 404 for these users even though they have a working key.
+    old_key_row = await op_store.get_key_by_account_or_user(current_user["user_id"])
     if not old_key_row:
         raise HTTPException(status_code=404, detail="No active API key found")
 

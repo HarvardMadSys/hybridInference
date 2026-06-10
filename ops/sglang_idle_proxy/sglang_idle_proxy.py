@@ -57,6 +57,9 @@ Example::
     }
 
 ``gpu_index`` can be omitted to auto-pick the least-used GPU.
+
+Set ``"is_embedding": true`` on a model to launch sglang in encode-only mode
+(adds ``--is-embedding``); such models serve ``/v1/embeddings`` instead of chat.
 """
 
 from __future__ import annotations
@@ -188,14 +191,17 @@ class BackendManager:
 
     @property
     def state(self) -> str:
+        """Return the current backend lifecycle phase."""
         with self._lock:
             return self._state
 
     def touch(self) -> None:
+        """Record activity to reset the idle timer."""
         with self._lock:
             self._last_activity = time.monotonic()
 
     def ensure_running(self) -> None:
+        """Start the container if needed and block until it is healthy."""
         should_start = False
         with self._lock:
             if self._state == "ready":
@@ -243,6 +249,12 @@ class BackendManager:
             )
 
     def _resolve_gpu(self) -> str:
+        # An explicit gpu_index pins the model to that device (lets several
+        # models share one GPU); only auto-pick when it is unset.
+        pinned = self.config.get("gpu_index")
+        if pinned not in (None, ""):
+            log.info("[%s] Using pinned GPU %s", self.model_name, pinned)
+            return str(pinned)
         used_gpus = set()
         for mgr in _backends.values():
             if mgr is not self and mgr.state == "ready":
@@ -256,6 +268,7 @@ class BackendManager:
 
     def _start_container(self) -> None:
         gpu = self._resolve_gpu()
+        self._ensure_model_dir()
         subprocess.run(
             ["sudo", "docker", "rm", "-f", self.container],
             check=False,
@@ -295,11 +308,57 @@ class BackendManager:
             "--tp",
             "1",
         ]
-        tcp = self.config.get("tool_call_parser")
-        if tcp:
-            cmd += ["--tool-call-parser", tcp]
+        if self.config.get("is_embedding"):
+            # Embedding models run sglang in encode-only mode; tool-call parsing
+            # and chat-completion endpoints are irrelevant for them.
+            cmd += ["--is-embedding"]
+            attn = self.config.get("attention_backend")
+            if attn:
+                cmd += ["--attention-backend", attn]
+            if self.config.get("disable_radix_cache"):
+                cmd += ["--disable-radix-cache"]
+        else:
+            tcp = self.config.get("tool_call_parser")
+            if tcp:
+                cmd += ["--tool-call-parser", tcp]
         log.info("Running: %s", " ".join(cmd))
         subprocess.run(cmd, check=True, capture_output=True)
+
+    def _ensure_model_dir(self) -> None:
+        model_dir = Path(self.config["model_dir"])
+        config_path = model_dir / "config.json"
+        if config_path.is_file():
+            return
+
+        repo_id = self.config.get("hf_repo")
+        if not repo_id:
+            raise RuntimeError(f"[{self.model_name}] model_dir missing config.json: {model_dir}")
+
+        model_dir.mkdir(parents=True, exist_ok=True)
+        revision = self.config.get("hf_revision")
+        ignore_patterns = self.config.get("hf_ignore_patterns")
+        log.info(
+            "[%s] Downloading %s from Hugging Face to %s …", self.model_name, repo_id, model_dir
+        )
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id=str(repo_id),
+                revision=str(revision) if revision else None,
+                local_dir=str(model_dir),
+                ignore_patterns=list(ignore_patterns) if ignore_patterns else None,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"[{self.model_name}] failed to download Hugging Face model {repo_id}: {exc}"
+            ) from exc
+
+        if not config_path.is_file():
+            raise RuntimeError(
+                f"[{self.model_name}] Hugging Face download completed without config.json: {model_dir}"
+            )
+        log.info("[%s] Downloaded %s.", self.model_name, repo_id)
 
     def _stop_container(self) -> None:
         log.info("[%s] Stopping container %s …", self.model_name, self.container)
@@ -513,31 +572,40 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_error(500, str(exc))
 
     def do_GET(self) -> None:
+        """Handle GET by proxying to the matching backend."""
         self._proxy()
 
     def do_POST(self) -> None:
+        """Handle POST by proxying to the matching backend."""
         self._proxy()
 
     def do_PUT(self) -> None:
+        """Handle PUT by proxying to the matching backend."""
         self._proxy()
 
     def do_DELETE(self) -> None:
+        """Handle DELETE by proxying to the matching backend."""
         self._proxy()
 
     def do_PATCH(self) -> None:
+        """Handle PATCH by proxying to the matching backend."""
         self._proxy()
 
     def do_OPTIONS(self) -> None:
+        """Handle OPTIONS by proxying to the matching backend."""
         self._proxy()
 
     def do_HEAD(self) -> None:
+        """Handle HEAD by proxying to the matching backend."""
         self._proxy()
 
     def log_message(self, fmt: str, *args: object) -> None:  # type: ignore[override]
+        """Route stdlib HTTP server logs through the module logger."""
         log.info(fmt, *args)
 
 
 def main() -> None:
+    """Start the proxy HTTP server and serve until interrupted."""
     models = list(_backends.keys())
     log.info(
         "sglang idle proxy listening on :%d  (%d models: %s)  (idle timeout %ds)",

@@ -2,23 +2,28 @@
 
 A lightweight reverse proxy that lazily starts and stops sglang Docker containers for multiple models. The proxy port stays open permanently; GPU-heavy containers are only running when there is active traffic. The least-used GPU is auto-selected.
 
-Supports **Qwen3.6-35B-A3B-FP8** and **GLM-4.7-Flash** out of the box. Add more models by editing `models.json`.
+Serves both **chat** and **embedding** models from one proxy/port. Supports
+**Qwen3.6-35B-A3B-FP8**, **GLM-4.7-Flash**, and the **bge-m3** embedding model
+out of the box. Add more by editing `models.json` (set `"is_embedding": true`
+for embedding models). Every model is loaded on-demand and stopped when idle.
 
 ## How it works
 
 ```
 Client → spark2:8001 ──SSH tunnel──→ GPU box :8001 (proxy)
-                                        ├─ model="Qwen/..." → :18001 (sglang on GPU 1)
-                                        └─ model="zai-org/GLM-4.7-Flash" → :18002 (sglang on GPU 2)
+                                        ├─ model="Qwen/..."             → :18001 (sglang on GPU 1)
+                                        ├─ model="zai-org/GLM-4.7-Flash" → :18002 (sglang on GPU 2)
+                                        └─ model="BAAI/bge-m3"          → :18012 (sglang --is-embedding on GPU 1)
 ```
 
 1. The proxy listens on port 8001 and accepts all incoming HTTP requests.
 2. Requests are routed to the correct backend based on the `model` field in the request body.
-3. On first request for a model, it picks the least-used GPU and launches the sglang container.
-4. It waits for the container's `/v1/models` health endpoint, then proxies all traffic.
-5. After **20 minutes** with no incoming requests for a model, that container is stopped.
-6. The proxy keeps listening — the next request re-starts the container automatically.
-7. `GET /v1/models` returns a static list of all configured models (no backend needed).
+3. If an `hf_repo` model is not installed, the first request downloads it from Hugging Face.
+4. It picks the configured/least-used GPU and launches the sglang container.
+5. It waits for the container's `/v1/models` health endpoint, then proxies all traffic.
+6. After **20 minutes** with no incoming requests for a model, that container is stopped.
+7. The proxy keeps listening — the next request re-starts the container automatically.
+8. `GET /v1/models` returns a static list of all configured models (no backend needed).
 
 ## Quick start
 
@@ -113,10 +118,16 @@ Models are defined in `sglang_idle_proxy/models.json`:
 | `gpu_index` | GPU device index (omit to auto-pick) |
 | `backend_port` | Host port mapped to the container |
 | `model_dir` | Host path to model weights |
+| `hf_repo` | optional Hugging Face repository downloaded into `model_dir` when absent |
+| `hf_revision` | optional Hugging Face branch, tag, or commit |
+| `hf_ignore_patterns` | optional file globs excluded from the Hugging Face download |
 | `served_name` | `--served-model-name` for sglang |
 | `max_model_len` | `--context-length` |
 | `mem_fraction` | `--mem-fraction-static` |
-| `tool_call_parser` | `--tool-call-parser` (omit to disable) |
+| `tool_call_parser` | `--tool-call-parser` (omit to disable; chat models only) |
+| `is_embedding` | `true` → launch with `--is-embedding` (encode-only); serves `/v1/embeddings` |
+| `attention_backend` | optional `--attention-backend` (embedding models) |
+| `disable_radix_cache` | `true` → launch embedding models with `--disable-radix-cache` |
 
 To add a new model, append an entry to `models.json` and restart the proxy.
 
@@ -139,6 +150,7 @@ When `gpu_index` is not set for a model, the proxy queries `nvidia-smi` at conta
 
 - Python 3.10+
 - Docker with NVIDIA Container Toolkit
+- `huggingface_hub` when any model uses `hf_repo`
 - `lmsysorg/sglang:latest` Docker image
 - Model weights at the paths in `models.json`
 - `nvidia-smi` (for GPU auto-selection; falls back to GPU 0)

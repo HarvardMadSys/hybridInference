@@ -488,6 +488,18 @@ class TestFetchMinimax:
         assert result.error == "not_configured"
 
     @pytest.mark.asyncio
+    async def test_parse_error_when_json_root_is_not_object(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=["unexpected"]),
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is False
+        assert result.error == "parse_error"
+
+    @pytest.mark.asyncio
     async def test_success_parses_remains(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
         monkeypatch.setenv("MINIMAX_GROUP_ID", "test-group-42")
@@ -581,6 +593,249 @@ class TestFetchMinimax:
         assert u.label == "MiniMax-M* (interval)"
         assert u.used == 0.0
         assert u.limit == 4500.0
+
+    @pytest.mark.asyncio
+    async def test_uses_settings_cookie_when_env_missing(self, monkeypatch):
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "model_remains": [
+                {
+                    "model_name": "MiniMax-M2.7",
+                    "end_time": 1777752000000,
+                    "current_interval_total_count": 4500,
+                    "current_interval_usage_count": 1200,
+                    "current_weekly_total_count": 0,
+                }
+            ],
+        }
+        with (
+            patch(
+                "serving.admin.provider_quotas.settings",
+                minimax_session_cookie="session=fromsettings1234",
+                minimax_group_id="",
+            ),
+            patch(
+                "serving.admin.provider_quotas.aiohttp.ClientSession",
+                return_value=_mock_aiohttp_get(status=200, json_data=payload),
+            ) as mock_session_cls,
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        session_cm = mock_session_cls.return_value
+        session = session_cm.__aenter__.return_value
+        assert session.get.call_args.kwargs["headers"]["Cookie"] == "session=fromsettings1234"
+
+    @pytest.mark.asyncio
+    async def test_success_parses_nested_remain_count_shape(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "data": {
+                "model_remains": [
+                    {
+                        "model_name": "MiniMax-M3",
+                        "remain_count": 720,
+                        "total_count": 1000,
+                        "end_time": "2026-04-30T00:00:00Z",
+                    }
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        assert len(result.usages) == 1
+        usage = result.usages[0]
+        assert usage.label == "MiniMax-M3 (interval)"
+        assert usage.used == 280.0
+        assert usage.limit == 1000.0
+        assert usage.reset_at == datetime(2026, 4, 30, 0, 0, 0, tzinfo=timezone.utc)
+
+    @pytest.mark.asyncio
+    async def test_extracts_group_id_from_cookie(self, monkeypatch):
+        cookie = "_token=abc; minimax_group_id_v2=group-from-cookie; locale_preference=en"
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", cookie)
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "model_remains": [
+                {
+                    "model_name": "MiniMax-M3",
+                    "current_interval_total_count": 1000,
+                    "current_interval_usage_count": 200,
+                }
+            ],
+        }
+        with (
+            patch(
+                "serving.admin.provider_quotas.settings",
+                minimax_group_id="",
+                minimax_session_cookie="",
+            ),
+            patch(
+                "serving.admin.provider_quotas.aiohttp.ClientSession",
+                return_value=_mock_aiohttp_get(status=200, json_data=payload),
+            ) as mock_session_cls,
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        session_cm = mock_session_cls.return_value
+        session = session_cm.__aenter__.return_value
+        headers = session.get.call_args.kwargs["headers"]
+        assert headers["x-group-id"] == "group-from-cookie"
+        assert headers["Referer"] == "https://platform.minimax.io/console/usage"
+        assert headers["Accept"] == "application/json, text/plain, */*"
+
+    @pytest.mark.asyncio
+    async def test_success_parses_credit_based_cookie_shape(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "_token=abc; minimax_group_id_v2=test-group")
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "data": {
+                "model_remains": [
+                    {
+                        "model_name": "Token Plan",
+                        "current_interval_total_credits": 5000,
+                        "current_interval_remaining_credits": 3750,
+                        "end_time": "2026-06-07T01:00:00Z",
+                        "current_weekly_total_credits": 30000,
+                        "current_weekly_remaining_credits": 22000,
+                        "weekly_end_time": "2026-06-08T00:00:00Z",
+                    }
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        assert [(u.label, u.used, u.limit, u.unit, u.reset_at) for u in result.usages] == [
+            (
+                "Token Plan (interval)",
+                1250.0,
+                5000.0,
+                "credits",
+                datetime(2026, 6, 7, 1, 0, 0, tzinfo=timezone.utc),
+            ),
+            (
+                "Token Plan (weekly)",
+                8000.0,
+                30000.0,
+                "credits",
+                datetime(2026, 6, 8, 0, 0, 0, tzinfo=timezone.utc),
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_success_parses_percent_only_cookie_shape(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "_token=abc; minimax_group_id_v2=test-group")
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "data": {
+                "model_remains": [
+                    {
+                        "model_name": "Token Plan",
+                        "current_interval_remaining_percent": 25,
+                        "end_time": "2026-06-07T01:00:00Z",
+                        "current_weekly_remaining_percent": 40,
+                        "weekly_end_time": "2026-06-08T00:00:00Z",
+                    }
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        assert [(u.label, u.used, u.limit, u.unit, u.reset_at) for u in result.usages] == [
+            (
+                "Token Plan (interval)",
+                75.0,
+                100.0,
+                "%",
+                datetime(2026, 6, 7, 1, 0, 0, tzinfo=timezone.utc),
+            ),
+            (
+                "Token Plan (weekly)",
+                60.0,
+                100.0,
+                "%",
+                datetime(2026, 6, 8, 0, 0, 0, tzinfo=timezone.utc),
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_weekly_credit_unit_not_overwritten_by_interval_percent(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "_token=abc; minimax_group_id_v2=test-group")
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "data": {
+                "model_remains": [
+                    {
+                        "model_name": "Token Plan",
+                        "current_interval_remaining_percent": 25,
+                        "current_weekly_total_credits": 30000,
+                        "current_weekly_remaining_credits": 22000,
+                    }
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        assert [(u.label, u.used, u.limit, u.unit) for u in result.usages] == [
+            ("Token Plan (interval)", 75.0, 100.0, "%"),
+            ("Token Plan (weekly)", 8000.0, 30000.0, "credits"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_percent_fields_override_zero_absolute_counters(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "_token=abc; minimax_group_id_v2=test-group")
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "data": {
+                "model_remains": [
+                    {
+                        "model_name": "Token Plan",
+                        "current_interval_total_count": 0,
+                        "current_interval_usage_count": 0,
+                        "current_interval_used_count": 0,
+                        "current_interval_remaining_percent": 25,
+                        "current_weekly_total_count": 0,
+                        "current_weekly_usage_count": 0,
+                        "current_weekly_used_count": 0,
+                        "current_weekly_remaining_percent": 40,
+                    }
+                ]
+            },
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        assert [(u.label, u.used, u.limit, u.unit) for u in result.usages] == [
+            ("Token Plan (interval)", 75.0, 100.0, "%"),
+            ("Token Plan (weekly)", 60.0, 100.0, "%"),
+        ]
 
 
 class TestFetchOllama:

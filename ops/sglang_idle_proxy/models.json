@@ -6,7 +6,7 @@
         "model_dir": "/scratch/juncheng/models/Qwen3.6-35B-A3B-FP8",
         "served_name": "Qwen/Qwen3.6-35B-A3B-FP8",
         "max_model_len": 135168,
-        "mem_fraction": "0.90",
+        "mem_fraction": "0.80",
         "tool_call_parser": "qwen3_coder"
     },
     "zai-org/GLM-4.7-Flash": {
@@ -18,5 +18,19 @@
         "max_model_len": 131072,
         "mem_fraction": "0.90",
         "tool_call_parser": "glm47"
+    },
+    "BAAI/bge-m3": {
+        "container": "bge-m3-sglang",
+        "gpu_index": "1",
+        "backend_port": 18012,
+        "model_dir": "/scratch/juncheng/models/bge-m3",
+        "hf_repo": "BAAI/bge-m3",
+        "hf_ignore_patterns": ["onnx/*", "imgs/*", "*.jpg"],
+        "served_name": "BAAI/bge-m3",
+        "max_model_len": 8192,
+        "mem_fraction": "0.12",
+        "is_embedding": true,
+        "attention_backend": "torch_native",
+        "disable_radix_cache": true
     }
 }

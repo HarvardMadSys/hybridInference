@@ -231,6 +231,42 @@ models:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
 
+  - id: minimax-m3
+    name: MiniMax M3
+    provider: minimax
+    quantization: "bf16"
+    input_modalities: ["text", "image"]
+    output_modalities: ["text"]
+    context_length: 204800
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    aliases: ["MiniMax-M3"]
+    # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
+    pricing:
+      prompt: "0.5"
+      completion: "2"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.3"
+      input_cache_writes: "0.0"
+    route:
+      # Remote MiniMax API endpoint
+      - kind: minimax
+        weight: 1.0
+        base_url: ${MINIMAX_BASE_URL}
+        api_keys:
+          - ${MINIMAX_API_KEY}
+        provider_model_id: "MiniMax-M3"
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.24
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "minimax-m3"
+
   - id: minimax-fast
     name: MiniMax Fast
     provider: minimax
@@ -549,24 +585,29 @@ models:
 
 
   # ===== Embedding Models =====
+  # Served locally on a GPU box by ops/sglang_idle_proxy (sglang --is-embedding),
+  # the same idle proxy that serves the local chat models. Reuses LOCAL_DEPLOYMENT_URL
+  # (the proxy's reverse tunnel); the proxy routes by the model field.
 
-  # - id: bge-m3
-  #   name: BGE-M3
-  #   type: embedding
-  #   provider: sglang
-  #   quantization: "fp16"
-  #   input_modalities: ["text"]
-  #   output_modalities: ["embedding"]
-  #   context_length: 8192
-  #   max_output_length: 0
-  #   pricing:
-  #     prompt: "0"
-  #     completion: "0"
-  #   route:
-  #     - kind: sglang
-  #       weight: 1.0
-  #       base_url: "http://host.docker.internal:8005"
-  #       provider_model_id: "bge-m3"
+  - id: bge-m3
+    name: BGE-M3
+    type: embedding
+    provider: sglang
+    quantization: "fp16"
+    input_modalities: ["text"]
+    output_modalities: ["embedding"]
+    context_length: 8192
+    max_output_length: 0
+    pricing:
+      prompt: "0"
+      completion: "0"
+    route:
+      - kind: sglang
+        weight: 1.0
+        base_url: ${LOCAL_DEPLOYMENT_URL}
+        provider_model_id: "BAAI/bge-m3"
+        api_keys:
+          - ${LOCAL_API_KEY}
 
   # ── Anthropic direct (kind: anthropic) ─────────────────────
   # These models route directly to api.anthropic.com via the AnthropicAdapter.
